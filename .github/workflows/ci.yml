@@ -1,0 +1,37 @@
+name: CI
+
+# The safe-merge gate: every PR (and every push to main) must build cleanly,
+# pass the tests, and carry no unresolved conflict markers before it can land.
+# Make this a required check in branch protection so main can never break.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No unresolved conflict markers
+        run: |
+          if grep -rnE '^(<<<<<<< |=======$|>>>>>>> )' src public/index.html; then
+            echo "::error::Unresolved merge conflict markers found — do not land."
+            exit 1
+          fi
+          echo "clean"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type-check / build
+        run: npm run build
+
+      - name: Tests
+        run: npm test

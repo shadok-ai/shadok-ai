@@ -1,0 +1,63 @@
+{
+  "name": "shadok-ai",
+  "version": "0.2.0",
+  "main": "dist/session.js",
+  "scripts": {
+    "test": "node --import tsx --test test/*.ts .claude/skills/shadok-ai-agents/test/*.test.mjs",
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true",
+    "prepublishOnly": "npm run build",
+    "web": "node dist/server.js"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "cockpit",
+    "telegram",
+    "agents",
+    "tmux"
+  ],
+  "author": "shadok-ai-dev",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shadok-ai/shadok-ai.git"
+  },
+  "homepage": "https://github.com/shadok-ai/shadok-ai#readme",
+  "bugs": {
+    "url": "https://github.com/shadok-ai/shadok-ai/issues"
+  },
+  "description": "Web cockpit that drives multiple real Claude Code TUI sessions in parallel, with Telegram control",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist",
+    "public",
+    "context"
+  ],
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/headless": "^6.0.0",
+    "@xterm/xterm": "^6.0.0",
+    "dompurify": "^3.4.12",
+    "express": "^5.2.1",
+    "marked": "^18.0.6",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  },
+  "types": "dist/session.d.ts",
+  "bin": {
+    "shadok-ai": "dist/main.js",
+    "shadok-ai-run": "dist/cli.js"
+  }
+}

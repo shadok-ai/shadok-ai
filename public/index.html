@@ -1,0 +1,4378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>shadok-ai — cockpit</title>
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314161d'/%3E%3Ctext x='15' y='23' font-family='monospace' font-size='20' fill='%23f0a848' text-anchor='middle'%3E%E2%80%BA%3C/text%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #14161d;
+    --bg-raised: #1b1e27;
+    --bg-inset: #0e1015;
+    --line: #2a2e3b;
+    --text: #d8dae2;
+    --text-dim: #7d8293;
+    --amber: #f0a848;
+    --amber-soft: rgba(240, 168, 72, 0.12);
+    --phosphor: #ffb45c;
+    --ok: #7fc97f;
+    --err: #e07a6a;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px;
+    display: flex;
+    flex-direction: column;
+    /* Châssis fixe : la page ne scrolle jamais — seuls les panneaux internes
+       (liste des canaux, transcript, pickers) ont leur propre overflow. */
+    overflow: hidden;
+  }
+  .label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  /* Heure du message, accrochée au label du locuteur. Plus pâle et moins
+     espacée que le label : présente pour qui la cherche, muette sinon. */
+  .label .time {
+    letter-spacing: 0.06em;
+    opacity: 0.6;
+  }
+  .label .time::before {
+    content: "·";
+    margin: 0 5px;
+    opacity: 0.7;
+  }
+
+  /* ── Instrument bar ──────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--bg-raised);
+    flex-wrap: wrap;
+  }
+  /* Keep the toolbar buttons together so they never split across lines. */
+  header button { flex: 0 0 auto; }
+  header .brand {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--amber);
+    letter-spacing: 0.06em;
+  }
+  header .brand::before { content: "◆ "; }
+  header .ver {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: #888;
+    letter-spacing: 0;
+    cursor: pointer;
+  }
+  header .ver:hover { text-decoration: underline; }
+  header .ver.stale { color: var(--amber); }
+  #verMenu {
+    position: fixed; top: 42px; left: 12px; z-index: 1001;
+    background: #14140f; border: 1px solid #3a3a30; border-radius: 6px;
+    padding: 10px 12px; font-family: var(--mono); font-size: 12px;
+    min-width: 210px; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+  #verMenu .vm-row { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
+  #verMenu .vm-label { color: #888; }
+  #verMenu .vm-check { display: flex; align-items: center; gap: 6px; margin-top: 9px; cursor: pointer; }
+  #verMenu .vm-hint { color: #888; font-size: 10px; margin-top: 7px; line-height: 1.4; }
+  /* Per-tab context menu (right-click) — same skin as #verMenu, but placed at
+     the cursor. Home for the per-channel actions. */
+  #tabMenu {
+    position: fixed; z-index: 1002;
+    background: #14140f; border: 1px solid #3a3a30; border-radius: 6px;
+    padding: 4px; font-family: var(--mono); font-size: 12px;
+    min-width: 170px; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+  }
+  #tabMenu .tm-item {
+    display: block; width: 100%; text-align: left; cursor: pointer;
+    background: none; border: 0; color: var(--text); font: inherit;
+    padding: 6px 9px; border-radius: 4px;
+  }
+  #tabMenu .tm-item:hover { background: #26261c; }
+  /* A muted channel says so on its own tab: silence must be explainable. */
+  .tab .mute { font-size: 10px; opacity: 0.75; flex: 0 0 auto; }
+  /* Idem pour l'inverse : un agent qui a des prompts programmés peut parler
+     sans qu'on lui ait rien demandé. */
+  .tab .cron, .tab .tg { font-size: 9px; opacity: 0.75; flex: 0 0 auto; }
+  /* Entête du menu clic droit : l'identité de l'agent, pas une action. */
+  #tabMenu .tm-head {
+    padding: 5px 9px 6px; color: var(--text-dim); font-size: 11px;
+    border-bottom: 1px solid #2c2c22; margin-bottom: 4px;
+    /* Le nom du profil ne coupe pas le menu en deux : une seule ligne, tronquée
+       proprement s'il est long. */
+    max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #tabMenu .tm-head b { color: var(--text); font-weight: normal; }
+  /* Les horaires, eux, passent à la ligne : tronqués ils ne servaient à rien
+     (« daily at 09:00 (Europe/Pa… » ne dit plus l'heure du second cron). */
+  #tabMenu .tm-head .tm-sub {
+    display: block; margin-top: 3px; opacity: 0.8;
+    white-space: normal; line-height: 1.45;
+  }
+  #updateBanner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    background: var(--amber); color: #1a1200;
+    font-family: var(--mono); font-size: 12px; text-align: center;
+    padding: 6px 12px;
+  }
+  .gauge { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .gauge .value {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 180px;
+  }
+  .led {
+    display: inline-block;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: #3a3f4e;
+    vertical-align: -1px;
+    margin-right: 6px;
+    flex: none;
+  }
+  .led.on { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .led.busy { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: breathe 1.2s ease-in-out infinite; }
+  .led.off { background: var(--err); }
+  @keyframes breathe { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .led.busy { animation: none; } }
+  header .spacer { flex: 1; }
+  /* Quota dials (5h / 7d subscription usage).
+     A 240° speedometer whose CENTRE is the ideal pace and whose RIGHT END is
+     exhaustion — see docs/superpowers/specs/2026-07-30-quota-dial-design.md.
+     Position AND colour carry the reading, never colour alone. */
+  .quota { min-width: 56px; }
+  .dial { display: block; width: 56px; height: 44px; }
+  /* opacity on the GROUP, not each path: 24 overlapping-alpha strokes would
+     composite twice at every join and brighten the seams instead of hiding
+     them. One group opacity leaves the marks flat and evenly graduated. */
+  .dial .arc { opacity: 0.6; }
+  .dial .arc path { fill: none; stroke-width: 4; }
+  /* No data: the scale stays, as a ghost, so the widget does not vanish. */
+  .dial.nodata .arc { opacity: 0.18; }
+  /* The "on pace" reference, just outside the arc. The needle's tip meets it
+     exactly when the consumption is on pace — they read as one line. */
+  .dial .tick { stroke: var(--text); stroke-width: 1.5; opacity: 0.75; }
+  .dial .needle {
+    stroke: var(--text);
+    stroke-width: 2;
+    stroke-linecap: round;
+    /* Rotated through the CSS transform PROPERTY, not the SVG attribute: only
+       the property transitions reliably. transform-box/-origin put the pivot on
+       the hub in viewBox units. */
+    transform-box: view-box;
+    transform-origin: 28px 25px;
+    transition: transform 0.4s ease;
+  }
+  .dial .pct {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    fill: var(--text);
+    transition: fill 0.4s ease;
+  }
+  .dial .unit {
+    font-family: var(--mono);
+    font-size: 8px;
+    fill: var(--text-dim);
+    letter-spacing: 0.08em;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dial .needle, .dial .pct { transition: none; }
+  }
+  button {
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0.06em;
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  /* Compact icon buttons in the header (emoji + tooltip). */
+  header button.icon {
+    padding: 5px 8px;
+    font-size: 14px;
+    line-height: 1;
+    letter-spacing: 0;
+  }
+  header button.icon.stop:hover { border-color: var(--err); color: var(--err); }
+  /* "⋯" overflow menu: dropdown of the rarely-used actions. */
+  .more-wrap { position: relative; display: inline-flex; }
+  #moreMenu {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 4px;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    z-index: 30;
+  }
+  #moreMenu button { width: 100%; text-align: left; }
+  button:hover { border-color: var(--amber); color: var(--amber); }
+  button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+  button.primary { background: var(--amber); border-color: var(--amber); color: #1a1205; font-weight: 600; }
+  button.primary:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  /* ── Channels (left column) ──────────────────────────── */
+  #tabbar {
+    width: 220px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--bg-raised);
+    border-right: 1px solid var(--line);
+    padding: 12px 8px;
+    overflow-y: auto;
+  }
+  #tabbar .side-label { padding: 0 8px 8px; }
+  .tab {
+    position: relative;
+    display: flex;
+    /* Aligné en haut : led + icônes se posent sur la ligne du NOM (ligne 1),
+       pas au centre des deux lignes. */
+    align-items: flex-start;
+    gap: 8px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-dim);
+    border-left: 2px solid transparent;
+    border-radius: 4px;
+    padding: 9px 10px 11px;
+    cursor: pointer;
+    user-select: none;
+  }
+  /* Recentre le point d'état sur la ligne du nom (sinon collé tout en haut). */
+  .tab .led { margin-top: 4px; }
+  /* Context-window usage: tiny number + thin bar at the bottom of the tab. */
+  .tab .ctxnum { font-size: 9px; color: var(--text-dim); flex: none; }
+  /* Heure du dernier message, discrète (le nom en flex:1 la pousse à droite). */
+  .tab .lastat { font-size: 9px; color: var(--text-dim); flex: none; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  .tab .ctxbar {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 3px;
+    height: 2px;
+    background: var(--line);
+    border-radius: 1px;
+    overflow: hidden;
+  }
+  .tab .ctxfill {
+    display: block;
+    height: 100%;
+    width: 0%;
+    background: var(--ok);
+    transition: width 0.4s ease;
+  }
+  .tab .ctxfill.warn { background: var(--amber); }
+  .tab .ctxfill.crit { background: var(--err); }
+  .tab:hover { color: var(--text); background: var(--bg-inset); }
+  /* Onglet actif (sélectionné). Volontairement SANS fond : le fond est réservé
+     à l'état de la session (.working/.needs-answer/.unread), sinon un canal
+     juste sélectionné a l'air d'attendre une réponse, et un canal sélectionné
+     ET en attente perd son signal. La sélection passe donc par des canaux
+     qu'AUCUN état ne touche — barre gauche vive (box-shadow), graisse et texte
+     plein — donc lisible quel que soit l'état. */
+  .tab.active {
+    color: var(--text);
+    font-weight: 600;
+    border-left-color: var(--phosphor);
+    border-radius: 0 4px 4px 0;
+    box-shadow: inset 3px 0 0 var(--phosphor);
+  }
+  /* Nom + heure empilés : le titre sur sa ligne (jamais tronqué par l'heure),
+     l'heure en dessous en tout petit. */
+  .tab-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  /* Ligne 2 : « xxx ago » + % de contexte, ensemble sous le nom. */
+  .tab-info { display: flex; align-items: baseline; gap: 6px; }
+  /* Le % de contexte poussé à droite de la ligne (« xxx ago » reste à gauche). */
+  .tab-info .ctxnum { margin-left: auto; }
+  .tab .name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* Main channel of the environment (Telegram General): a home marker, no close. */
+  .tab.main-tab .name::before { content: "🏠 "; }
+  .tab input.rename {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--bg-inset);
+    border: 1px solid var(--amber);
+    border-radius: 3px;
+    color: var(--text);
+    padding: 2px 5px;
+  }
+  .tab .close {
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1;
+    padding: 0 2px;
+    flex: none;
+  }
+  .tab .close:hover { color: var(--err); }
+  /* Per-channel turn timer (thinking time; final time stays dimmed). */
+  .tab .timer {
+    flex: none;
+    font-size: 11px;
+    color: var(--amber);
+    font-variant-numeric: tabular-nums;
+  }
+  .tab .timer.done { color: var(--text-dim); }
+  /* Channel states: working / waiting for an answer / unread response. */
+  .tab.working { background: var(--amber-soft); animation: breathe 1.6s ease-in-out infinite; }
+  .tab.needs-answer {
+    background: rgba(240, 168, 72, 0.28);
+    border-left-color: var(--amber);
+    border-radius: 0 4px 4px 0;
+    color: var(--text);
+  }
+  .tab.unread {
+    background: rgba(127, 201, 127, 0.14);
+    border-left-color: var(--ok);
+    border-radius: 0 4px 4px 0;
+    color: var(--text);
+  }
+  @media (prefers-reduced-motion: reduce) { .tab.working { animation: none; } }
+  #newTab, #newGroup {
+    margin-top: 8px;
+    border: 1px dashed var(--line);
+    font-size: 12px;
+    color: var(--text-dim);
+    padding: 8px;
+  }
+  #newTab:hover, #newGroup:hover { color: var(--amber); border-color: var(--amber); }
+  #newGroup { margin-top: 4px; }
+  @media (max-width: 900px) { #tabbar { width: 150px; } }
+
+  /* ── Tab groups ──────────────────────────────────────── */
+  #ungrouped, .group-body { display: flex; flex-direction: column; gap: 2px; }
+  .group { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+  .group-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    border-radius: 4px;
+    padding: 5px 8px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .group-head:hover { color: var(--text); background: var(--bg-inset); }
+  .group-head .caret { flex: none; font-size: 9px; }
+  .group-head .gname {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .group-head input.rename {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: normal;
+    background: var(--bg-inset);
+    border: 1px solid var(--amber);
+    border-radius: 3px;
+    color: var(--text);
+    padding: 2px 5px;
+  }
+  .group-head .gclose { flex: none; font-size: 13px; padding: 0 2px; line-height: 1; }
+  .group-head .gclose:hover { color: var(--err); }
+  .group-body { padding-left: 10px; }
+  .group.collapsed .group-body { display: none; }
+  .tab.dragging, .group.dragging { opacity: 0.4; }
+  /* While dragging a tab, empty drop zones become visible targets. */
+  body.dragging-tab #ungrouped:empty,
+  body.dragging-tab .group-body:empty {
+    min-height: 26px;
+    border: 1px dashed var(--line);
+    border-radius: 4px;
+  }
+
+  /* ── Body ────────────────────────────────────────────── */
+  main { flex: 1; display: flex; min-height: 0; }
+  /* min-height:0 pour que le transcript (flex:1) borne la hauteur au lieu de
+     pousser le châssis ; overflow-y:auto garde l'écran de setup atteignable s'il
+     dépasse (quand une session tourne, le transcript remplit exactement → inerte). */
+  .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; }
+
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  input[type="text"] {
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--bg-inset);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 9px 10px;
+  }
+  input[type="text"]:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .radio-row { display: flex; gap: 14px; flex-wrap: wrap; }
+  .radio-row label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
+  input[type="radio"] { accent-color: var(--amber); }
+
+  /* Cartes de profil — le profil est LE choix structurant d'un agent (rôle,
+     garde-fous, secrets, modèle), donc en tête de la box et cliquable. */
+  .field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .linkish {
+    background: none; border: none; padding: 0;
+    color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .linkish:hover { color: var(--amber); }
+  #profileGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .profile-card {
+    position: relative;
+    display: flex; flex-direction: column; gap: 4px;
+    text-align: left;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--bg-inset);
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+  }
+  .profile-card:hover { border-color: var(--text-dim); }
+  .profile-card.selected { border-color: var(--amber); box-shadow: inset 0 0 0 1px var(--amber); }
+  .profile-card.selected .pc-name { color: var(--amber); }
+  .profile-card:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .pc-name { font-family: var(--mono); font-size: 13px; }
+  .pc-blurb {
+    color: var(--text-dim); font-size: 11.5px; line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .pc-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+  .pc-badge {
+    font-size: 10.5px; color: var(--text-dim);
+    border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
+  }
+  /* Le crayon n'apparaît qu'au survol : il ne doit pas concurrencer le nom. */
+  .pc-edit { position: absolute; top: 6px; right: 7px; font-size: 11px; color: var(--text-dim); opacity: 0; }
+  .profile-card:hover .pc-edit, .profile-card:focus-within .pc-edit { opacity: 1; }
+  .pc-edit:hover { color: var(--amber); }
+  .grid-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 12px; font-style: italic; }
+
+  /* Sections rares repliées : c'est ce qui empêchait le bouton Start de tenir
+     à l'écran (les listes s'ouvraient d'office dès qu'elles avaient un élément). */
+  .fold > summary {
+    cursor: pointer; list-style: none;
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-dim);
+  }
+  .fold > summary::-webkit-details-marker { display: none; }
+  .fold > summary::before { content: "▸"; }
+  .fold[open] > summary::before { content: "▾"; }
+  .fold > summary:hover { color: var(--text); }
+  .fold > *:not(summary) { margin-top: 8px; }
+  .fold-count { color: var(--amber); }
+  /* Champ sans effet dans le mode courant (resume/continue) — visible mais inerte. */
+  .na { opacity: .45; pointer-events: none; }
+
+  /* Session picker (resume by id) */
+  .session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 230px;
+    overflow-y: auto;
+  }
+  .session-list .empty {
+    color: var(--text-dim);
+    font-size: 12.5px;
+    font-style: italic;
+    padding: 4px 0;
+  }
+  .session-item {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    text-align: left;
+    width: 100%;
+    padding: 8px 10px;
+    font-family: var(--sans);
+    letter-spacing: 0;
+  }
+  .session-item .sid { font-family: var(--mono); font-size: 11px; color: var(--amber); }
+  .session-item .meta { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+  .session-item .preview {
+    font-size: 12.5px;
+    color: var(--text);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .session-item.selected { border-color: var(--amber); background: var(--amber-soft); }
+
+  /* Transcripts (one per channel) */
+  #transcripts { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .transcript {
+    flex: 1;
+    overflow-y: auto;
+    padding: 22px 22px 8px;
+    display: flex;
+    flex-direction: column;
+  }
+  .turn { display: flex; flex-direction: column; gap: 3px; max-width: 82%; margin-top: 8px; }
+  .turn:first-child { margin-top: 0; }
+  /* An activity block sits closer to the text it belongs to than to the next turn. */
+  .turn.activity { margin-top: 5px; }
+  .turn.activity + .turn.claude { margin-top: 5px; }
+  .turn.system + .turn.system { margin-top: 4px; }
+  /* One speaker label per run of turns, not one per bubble — mais seul un tour
+     qui AFFICHE un label ouvre une telle suite. Un bloc d'activité et l'aperçu
+     provisoire sont des `.turn.claude` sans label : les compter revenait à faire
+     absorber le label de la réponse par un tour qui n'en montre aucun. Comme
+     l'agent utilise presque toujours un outil avant d'écrire, sa réponse perdait
+     ainsi label ET heure, alors que les messages du pilote gardaient les leurs. */
+  .turn.claude:not(.activity):not(.live-preview) + .turn.claude:not(.dialog) > .label,
+  .turn.user + .turn.user > .label { display: none; }
+  .turn.user { align-self: flex-end; align-items: flex-end; }
+  .turn.claude { align-self: flex-start; }
+  .bubble {
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-size: 14px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .turn.user .bubble {
+    background: var(--amber-soft);
+    border: 1px solid rgba(240, 168, 72, 0.35);
+  }
+  .turn.claude .bubble {
+    background: var(--bg-inset);
+    border: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 13px;
+    /* Wrap long prose lines so nothing is clipped; still preserves the
+       TUI's own newlines. (Wide tables come through history as real HTML.) */
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-x: auto;
+  }
+  /* History replayed from the .jsonl: raw markdown → HTML rendering. */
+  .turn.hist { opacity: 0.8; }
+  /* Aperçu live du bloc en cours, extrait de l'écran TUI (brut, non-markdown).
+     Grisé + pré-formaté pour signaler que c'est provisoire ; remplacé par le
+     bloc .jsonl (stream-text) dès qu'il arrive. */
+  .turn.claude.live-preview .bubble {
+    opacity: 0.55;
+    white-space: pre-wrap;
+    font-family: var(--mono);
+  }
+  .turn.claude.live-preview .bubble::after {
+    content: "▍";
+    animation: breathe 1s step-start infinite;
+  }
+  .bubble.md {
+    white-space: normal;
+    word-break: break-word;
+    font-family: var(--sans);
+    font-size: 14px;
+  }
+  .bubble.md p { margin: 4px 0; }
+  .bubble.md p:first-child { margin-top: 0; }
+  .bubble.md p:last-child { margin-bottom: 0; }
+  .bubble.md h1, .bubble.md h2, .bubble.md h3, .bubble.md h4 {
+    margin: 9px 0 3px;
+    font-size: 15px;
+    color: var(--amber);
+  }
+  .bubble.md h1:first-child, .bubble.md h2:first-child,
+  .bubble.md h3:first-child, .bubble.md h4:first-child { margin-top: 0; }
+  .bubble.md ul, .bubble.md ol { margin: 4px 0 4px 20px; }
+  .bubble.md li { margin: 2px 0; }
+  .bubble.md li > p { margin: 0; }
+  .bubble.md code {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    background: var(--bg-raised);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  .bubble.md pre {
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 10px 12px;
+    margin: 8px 0;
+    overflow-x: auto;
+  }
+  .bubble.md pre code { background: none; padding: 0; }
+  .bubble.md table {
+    border-collapse: collapse;
+    margin: 8px 0;
+    font-size: 13px;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .bubble.md th, .bubble.md td {
+    border: 1px solid var(--line);
+    padding: 5px 10px;
+    text-align: left;
+    white-space: nowrap;
+  }
+  .bubble.md th {
+    color: var(--amber);
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .bubble.md a { color: var(--amber); }
+  .bubble.md blockquote {
+    border-left: 2px solid var(--amber);
+    padding-left: 10px;
+    color: var(--text-dim);
+    margin: 6px 0;
+  }
+  .turn.system .bubble {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 12.5px;
+    font-style: italic;
+    padding: 2px 0;
+  }
+  /* ── Activity block ──────────────────────────────────────
+     A run of tool calls between two pieces of assistant text. Folds at three
+     levels — output, same-tool run, whole block — each driven by data-folded.
+     Anything containing an error carries .has-err and never folds. */
+  .turn.activity { max-width: 82%; gap: 0; }
+  .act-body, .run-body, .item-out { display: flex; flex-direction: column; }
+  [data-folded="true"] > .act-body,
+  [data-folded="true"] > .run-body,
+  [data-folded="true"] > .item-out { display: none; }
+  /* A lone call needs no run header — it is its own row. */
+  .act-run[data-count="1"] > .run-head { display: none; }
+
+  /* Every fold toggle is a bare left-aligned mono line. */
+  .act-head, .run-head, .item-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-left: 2px solid var(--line);
+    border-radius: 0;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 12px;
+    letter-spacing: 0;
+    line-height: 1.5;
+    padding: 1px 0 1px 10px;
+  }
+  .act-head:hover, .run-head:hover, .item-head:hover {
+    color: var(--text);
+    border-left-color: var(--amber);
+  }
+  .act-head { color: var(--amber); }
+  .act-head .count { font-variant-numeric: tabular-nums; }
+  /* Tool name column, so a run of calls reads as a list rather than prose. */
+  .item-head .tool, .run-head .tool { flex: none; min-width: 62px; color: var(--text); }
+  .item-head .arg, .run-head .arg {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .caret { flex: none; font-size: 9px; opacity: 0.7; }
+  .run-body { padding-left: 12px; }
+  /* Inside a run the tool name is already in the header — don't repeat it. */
+  .act-run:not([data-count="1"]) .item-head .tool { display: none; }
+  .item-head .err-flag { flex: none; color: var(--err); }
+  .has-err > .item-head, .has-err > .run-head { border-left-color: var(--err); }
+
+  /* Tool output. */
+  .result-body {
+    background: var(--bg-inset);
+    border: 1px solid var(--line);
+    border-left: 2px solid var(--text-dim);
+    border-radius: 0 4px 4px 0;
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.4;
+    padding: 8px 10px;
+    margin: 2px 0 2px 10px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-x: auto;
+  }
+  .has-err > .item-out > .result-body { border-left-color: var(--err); color: var(--err); }
+  .result-more {
+    align-self: flex-start;
+    border: none;
+    background: none;
+    color: var(--amber);
+    font-size: 11px;
+    padding: 0 0 2px 10px;
+  }
+  .result-more:hover { text-decoration: underline; }
+
+  /* Choice dialog (TUI question rendered clickable) */
+  .turn.dialog .bubble {
+    background: var(--bg-inset);
+    border: 1px solid var(--amber);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .turn.dialog .question { font-size: 14px; line-height: 1.5; }
+  .choice {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+    text-align: left;
+    width: 100%;
+    padding: 9px 12px;
+    font-family: var(--sans);
+    letter-spacing: 0;
+  }
+  .choice .num { color: var(--amber); font-family: var(--mono); font-size: 12px; }
+  .choice .hint { color: var(--text-dim); font-size: 12.5px; }
+  .choice:disabled { opacity: 0.45; }
+  /* A pace bubble superseded by a newer one, or already acted on. */
+  .turn.dialog.spent .bubble { border-color: var(--line); opacity: 0.5; }
+  .turn.dialog.spent .label { text-decoration: line-through; }
+  .choice.chosen { border-color: var(--amber); color: var(--amber); opacity: 1; }
+  .choice.checked { border-color: var(--amber); }
+  .choice.checked .num { color: var(--amber); }
+  .validate { align-self: flex-end; margin-top: 2px; }
+  .freetext-row { display: flex; gap: 8px; width: 100%; }
+  .freetext-row input { flex: 1; }
+  #thinking { display: none; align-self: flex-start; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; padding: 0 22px 6px; }
+  #thinking.visible { display: block; }
+
+  /* Composer */
+  #composer {
+    display: flex;
+    gap: 10px;
+    padding: 14px 22px 18px;
+    border-top: 1px solid var(--line);
+    background: var(--bg-raised);
+  }
+  #composer textarea {
+    flex: 1;
+    font-family: var(--sans);
+    font-size: 14px;
+    background: var(--bg-inset);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 10px 12px;
+    resize: none;
+    min-height: 42px;
+    max-height: 160px;
+    line-height: 1.45;
+  }
+  #composer textarea:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+
+  /* ── Engine room (live terminal) ─────────────────────── */
+  #machine {
+    width: 46%;
+    max-width: 760px;
+    border-left: 1px solid var(--line);
+    background: var(--bg-inset);
+    display: none;
+    flex-direction: column;
+    min-width: 0;
+  }
+  #machine.open { display: flex; }
+  #machine .mhead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  #screen {
+    flex: 1;
+    overflow: auto;
+    padding: 14px;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.35;
+    white-space: pre;
+    color: var(--phosphor);
+    text-shadow: 0 0 8px rgba(255, 180, 92, 0.25);
+  }
+  /* Interactive terminal (xterm.js), per channel, filling the main area. Toggled
+     by ⌨️; when on, .chat-pane gets .terminal-mode → chat hidden, terminal shown. */
+  #terminalView { flex: 1; min-height: 0; display: none; flex-direction: column; }
+  .chat-pane.terminal-mode #transcripts,
+  .chat-pane.terminal-mode #thinking,
+  .chat-pane.terminal-mode #composer { display: none !important; }
+  .chat-pane.terminal-mode #terminalView { display: flex; }
+  /* Barre du canal actif. Elle vivait DANS #terminalView, donc les actions du
+     canal n'existaient qu'en mode terminal ; elle est maintenant au-dessus des
+     deux vues, et `hidden` ne la retire que le temps du formulaire « New agent »
+     (pas encore de canal sur quoi agir). */
+  #chanBar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg-raised); font-family: var(--mono); font-size: 12px; }
+  #chanBar[hidden] { display: none; }
+  #chanBar .label { color: var(--text-dim); }
+  #chanBar #chanBarName { color: var(--amber); }
+  /* Channel actions on the right of the bar (icons like the header). */
+  .chan-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  #chanBar button.icon { padding: 4px 8px; font-size: 14px; line-height: 1; letter-spacing: 0; }
+  #chanBar button.icon.stop:hover { border-color: var(--err); color: var(--err); }
+  #chanBar button.icon.on { border-color: var(--amber); color: var(--amber); background: rgba(240, 168, 72, 0.15); }
+  /* Status / Directory / Session / Branch : inline & compact, so the channel
+     header stays a thin single line. */
+  #chanBar .gauge { flex-direction: row; align-items: baseline; gap: 4px; }
+  #chanBar .gauge .label { font-size: 10px; }
+  #chanBar #cwdView { display: inline-block; max-width: 200px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+  #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
+  #xtermHost .xterm { height: 100%; }
+  /* Aucun agent ouvert. Le panneau central n'affiche plus un formulaire à demi
+     rempli d'avance : il invite à agir, et rien d'autre. */
+  #emptyState {
+    flex: 1; min-height: 0; display: none;
+    flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px; padding: 32px; text-align: center;
+  }
+  #emptyState.visible { display: flex; }
+  #emptyState .es-title {
+    font-family: var(--mono); font-size: 12px;
+    letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-dim);
+  }
+  #emptyState .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  .keys {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 10px 14px;
+    border-top: 1px solid var(--line);
+  }
+  .keys button { padding: 5px 10px; font-size: 11px; background: var(--bg-raised); }
+  .keys .settle { margin-left: auto; color: var(--amber); }
+
+  /* Worktree checkbox */
+  .check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; cursor: pointer; }
+  .check input { accent-color: var(--amber); margin-top: 2px; }
+  .check-hint { color: var(--text-dim); font-size: 12px; }
+
+  /* Recover-past-sessions list */
+  .recover-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow-y: auto; }
+  .recover-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px 10px;
+    background: var(--bg-inset);
+  }
+  .recover-row .rmeta { flex: 1; min-width: 0; }
+  .recover-row .rprompt {
+    font-size: 13px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .recover-row .rsub {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    /* Long worktree paths must ellipsize, not push the badge over the text. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .recover-row .badge {
+    flex: none;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    border: 1px solid var(--amber);
+    color: var(--amber);
+  }
+  .recover-row .badge.empty { border-color: var(--line); color: var(--text-dim); }
+  .recover-row button { flex: none; }
+  .recover-empty { color: var(--text-dim); font-size: 12px; font-style: italic; }
+
+  /* Diff review panel */
+  #diffpanel {
+    width: 46%;
+    max-width: 760px;
+    border-left: 1px solid var(--line);
+    background: var(--bg-inset);
+    display: none;
+    flex-direction: column;
+    min-width: 0;
+  }
+  #diffpanel.open { display: flex; }
+  #diffpanel .mhead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+  }
+  #diffpanel .mhead button { margin-left: 6px; }
+  #diffStatus {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--text-dim);
+    padding: 8px 14px;
+    border-bottom: 1px solid var(--line);
+    white-space: pre-wrap;
+    max-height: 25%;
+    overflow-y: auto;
+  }
+  #diffStatus:empty { display: none; }
+  #diffBody {
+    flex: 1;
+    overflow: auto;
+    padding: 12px 14px;
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.45;
+    white-space: pre;
+    color: var(--text);
+  }
+  /* diff coloring */
+  #diffBody .add { color: var(--ok); }
+  #diffBody .del { color: var(--err); }
+  #diffBody .hunk { color: var(--amber); }
+  #diffBody .meta { color: var(--text-dim); }
+
+  @media (max-width: 900px) {
+    #machine, #diffpanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
+  }
+  /* ── Popins ───────────────────────────────────────────────
+     UNE CLASSE, pas une liste d'ids. La règle nommait
+     #secretsOverlay/#profilesOverlay/#telegramOverlay ; le panneau des crons,
+     ajouté après, n'y figurait pas — il s'affichait donc dans le flux de la page
+     au lieu de se centrer. Toute popin hérite maintenant du comportement en
+     portant `.overlay`, il n'y a plus de liste à ne pas oublier. */
+  .overlay {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+    background: rgba(8, 9, 13, 0.62);
+    backdrop-filter: blur(2px);
+  }
+  .overlay[hidden] { display: none; }
+  /* Le panneau était hors palette : #1b1d22 au lieu de --bg-raised, #e8e8ea au
+     lieu de --text, des bordures rgba(255,255,255,.15) et un rayon de 10px quand
+     tout le cockpit est à 6 — soit un gris et un blanc qui n'existaient nulle
+     part ailleurs. Le filet ambre en haut reprend la grammaire des instruments
+     (bord de l'onglet actif, ⌨️ allumé) : ce panneau est au premier plan. */
+  #secretsPanel, .sec-panel {
+    background: var(--bg-raised); color: var(--text);
+    width: min(560px, 100%); max-height: min(80vh, 760px); overflow: auto;
+    border: 1px solid var(--line); border-top: 1px solid var(--amber);
+    border-radius: 6px; padding: 14px 16px;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  }
+  /* Squelette entête / corps / pied. Seul le CORPS défile, donc l'action
+     principale reste atteignable : le formulaire de création dépasse l'écran sur
+     un portable, et son bouton « Start » se trouvait en bas d'une page à
+     dérouler. Réservé aux popins qui ont un pied — les autres gardent leur
+     rembourrage simple. */
+  .sec-panel.modal { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .modal > .sec-head {
+    flex: 0 0 auto; margin: 0; padding: 11px 16px;
+    border-bottom: 1px solid var(--line);
+  }
+  /* Même traitement que les libellés du cockpit (.label, barre du canal) : la
+     popin appartient visiblement à la même famille. */
+  .modal > .sec-head strong {
+    font-family: var(--mono); font-size: 11px; font-weight: normal;
+    letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-dim);
+  }
+  .modal > .sec-head strong .obj { color: var(--amber); }
+  .modal-body { flex: 1 1 auto; overflow: auto; padding: 14px 16px; }
+  .modal-foot {
+    flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end;
+    gap: 8px; padding: 11px 16px;
+    border-top: 1px solid var(--line); background: rgba(0, 0, 0, 0.18);
+  }
+  /* Pousse ce qui suit à droite : un pied peut porter une note à gauche. */
+  .modal-foot .foot-note { margin-right: auto; font-size: 11px; color: var(--text-dim); }
+  .sec-panel :focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+  /* Les <select> et les champs numériques n'étaient couverts par aucune règle :
+     ils tombaient sur le rendu par défaut du navigateur — clair — au milieu d'un
+     panneau sombre. */
+  .sec-panel select, .sec-panel input[type=number], .sec-panel input[type=time] {
+    padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
+    background: rgba(0, 0, 0, 0.25); color: inherit; font-family: inherit; font-size: inherit;
+  }
+  /* Une précision dans un libellé ne SE CRIE PAS : `.label` met en majuscules et
+     espace les lettres, ce qui rendait une phrase entière illisible. */
+  .label .check-hint { text-transform: none; letter-spacing: normal; font-weight: normal; }
+  #cronList { list-style: none; padding: 0; margin: 0 0 14px; }
+  #cronList li { padding: 6px 8px; border-radius: 6px; }
+  #cronList li:nth-child(odd) { background: rgba(255, 255, 255, 0.04); }
+  .cron-form { border-top: 1px solid var(--line); padding-top: 12px; }
+  .cron-form .field { margin: 12px 0; }
+  .cron-form .field:last-child { margin-bottom: 0; }
+  /* `.field` est en colonne : sans redresser la direction ici, les trois champs
+     s'empilaient — et `align-items: center` les centrait au lieu de les aligner. */
+  .cron-when { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cron-when input[type=number] { width: 76px; }
+  .sec-panel .field { margin: 8px 0; }
+  .sec-panel textarea, .sec-panel input[type=text], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-family: inherit; }
+  #profilesList { list-style: none; padding: 0; margin: 0 0 8px; }
+  #profilesList li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+  #profilesList li:nth-child(odd) { background: rgba(255,255,255,.04); }
+  #profilesList .pmeta { font-size: 12px; opacity: .7; }
+  #profilesList button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; }
+  #profSecretsList { list-style: none; padding: 0; margin: 4px 0; }
+  #profSecretsList li { display: flex; justify-content: space-between; padding: 3px 6px; }
+  #profSecretsList button { background: none; border: none; color: #e26; cursor: pointer; }
+  #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+  #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
+  .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
+  #secretsPanel .sec-repo { font-size: 12px; opacity: .8; margin-bottom: 4px; word-break: break-all; }
+  #secretsPanel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
+  #secretsList { list-style: none; padding: 0; margin: 0 0 12px; }
+  #secretsList li { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-radius: 6px; }
+  #secretsList li:nth-child(odd) { background: rgba(255,255,255,.04); }
+  #secretsList code { font-size: 13px; }
+  #secretsList button { background: none; border: none; color: #e26; cursor: pointer; font-size: 14px; }
+  #secretsAdd { display: flex; gap: 8px; }
+  #secretsAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; }
+  #secretsAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">shadok-ai <span class="ver" id="verView" title="running version"></span></span>
+  <span class="spacer"></span>
+  <div class="gauge quota" id="quota5h" data-window="5h" title="5h rolling limit">
+    <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="5h rolling limit">
+      <g class="arc"></g>
+      <line class="tick" x1="28" y1="5" x2="28" y2="2" visibility="hidden"></line>
+      <line class="needle" x1="28" y1="13" x2="28" y2="5" visibility="hidden"></line>
+      <text class="pct" x="28" y="28" text-anchor="middle">—</text>
+      <text class="unit" x="28" y="41" text-anchor="middle">5h</text>
+    </svg>
+  </div>
+  <div class="gauge quota" id="quota7d" data-window="7d" title="7d rolling limit">
+    <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="7d rolling limit">
+      <g class="arc"></g>
+      <line class="tick" x1="28" y1="5" x2="28" y2="2" visibility="hidden"></line>
+      <line class="needle" x1="28" y1="13" x2="28" y2="5" visibility="hidden"></line>
+      <text class="pct" x="28" y="28" text-anchor="middle">—</text>
+      <text class="unit" x="28" y="41" text-anchor="middle">7d</text>
+    </svg>
+  </div>
+  <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)">🔑</button>
+  <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)">👤</button>
+  <button id="cronBtn" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)">⏰</button>
+  <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></button>
+  <button id="muteNotif" class="icon" title="Notifications sound">🔔</button>
+  <div class="more-wrap">
+    <button id="moreBtn" class="icon" title="More">⋯</button>
+    <div id="moreMenu" hidden>
+      <button id="toggleDiff">Diff</button>
+    </div>
+  </div>
+  <button id="stopBtn" class="icon stop" title="End session">⏹️</button>
+</header>
+
+<div id="verMenu" hidden>
+  <div class="vm-row"><span class="vm-label">Running</span><span id="vmCurrent">—</span></div>
+  <div class="vm-row"><span class="vm-label">Latest</span><span id="vmLatest">—</span></div>
+  <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
+  <div class="vm-hint" id="vmHint"></div>
+  <label class="vm-check"><input type="checkbox" id="acceptEditsChk"><span>Auto mode</span></label>
+  <div class="vm-hint" id="vmModeHint"></div>
+</div>
+
+<div id="secretsOverlay" class="overlay" hidden>
+  <div id="secretsPanel">
+    <div class="sec-head">
+      <strong>Secret vault</strong>
+      <button id="secretsClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note">A central list of named secrets (stored 600 outside any repo, values write-only). A <b>profile</b> picks which of these to inject as env into its agents at spawn — define a value once here, reference it from any profile.</p>
+    <ul id="secretsList"></ul>
+    <form id="secretsAdd">
+      <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
+      <input id="secretVal" placeholder="value" autocomplete="off" spellcheck="false" />
+      <button type="submit">Add</button>
+    </form>
+  </div>
+</div>
+
+<div id="cronOverlay" class="overlay" hidden>
+  <!-- Le panneau portait id="secretsPanel" — un id en DOUBLON de la vraie popin
+       des secrets, donc $("secretsPanel") pouvait tomber sur le mauvais. -->
+  <div id="cronPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>⏰ Schedule — <span class="obj" id="cronChanName">this agent</span></strong>
+      <button id="cronClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="sec-note">Prompts sent to this agent on a timer — monitoring, reporting. The server fires them even when nobody's watching; answers land here and in Telegram.</p>
+      <p class="sec-note"><b>Simplest way:</b> just ask the agent — « surveille X chaque matin et alerte-moi si Y ». It writes the check and schedules it itself.</p>
+      <ul id="cronList"></ul>
+      <form id="cronAdd" class="cron-form">
+        <div class="field">
+          <span class="label">Prompt to run</span>
+          <textarea id="cronPrompt" rows="2" placeholder="e.g. « Rédige une alerte à partir de l'anomalie détectée »"></textarea>
+        </div>
+        <div class="field">
+          <span class="label">Check command <span class="check-hint">— optional; prints nothing = nothing to report, and the agent stays asleep (0 tokens)</span></span>
+          <input id="cronCheck" placeholder="e.g. ~/scripts/check-budget.sh" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="field cron-when">
+          <select id="cronKind" aria-label="How often">
+            <option value="interval">Every…</option>
+            <option value="daily">Daily at…</option>
+          </select>
+          <span id="cronIntervalFields">
+            <input id="cronEvery" type="number" min="1" value="60" aria-label="Interval">
+            <select id="cronUnit" aria-label="Unit"><option value="1">minutes</option><option value="60">hours</option></select>
+          </span>
+          <span id="cronDailyFields" hidden>
+            <input id="cronTime" type="time" value="09:00" aria-label="Time of day">
+          </span>
+        </div>
+      </form>
+    </div>
+    <div class="modal-foot">
+      <span class="foot-note" id="cronTzNote"></span>
+      <button type="submit" form="cronAdd" class="primary">Add schedule</button>
+    </div>
+  </div>
+</div>
+
+<div id="setupOverlay" class="overlay" hidden>
+  <div id="setupPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>New <span class="obj">agent</span></strong>
+      <button id="setupClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
+          <p class="sec-note">A real Claude Code session, driven inside a pseudo-terminal. Open as many as you want Claudes working in parallel.</p>
+        <div class="field" id="profileField">
+          <div class="field-head">
+            <span class="label">Which agent?</span>
+            <button type="button" class="linkish" id="editProfilesLink" title="Create or edit agent profiles">✎ edit profiles</button>
+          </div>
+          <div id="profileGrid" role="radiogroup" aria-label="Agent profile"></div>
+          <span class="check-hint" id="profileNaNote" hidden>Applies to new sessions only.</span>
+        </div>
+        <div class="field">
+          <span class="label">Working directory</span>
+          <input type="text" id="cwdInput" placeholder="/path/to/project">
+        </div>
+        <label class="check" id="worktreeField">
+          <input type="checkbox" id="worktreeInput" checked>
+          <span>Isolate in a git worktree <span class="check-hint">— the agent edits a fresh branch; review &amp; merge from the Diff panel. Auto-removed on close if unused, kept if it has changes. (new sessions only)</span></span>
+        </label>
+        <label class="check" id="mirrorField">
+        <input type="checkbox" id="mirrorInput">
+        <span>Mirror to Telegram <span class="check-hint">— gives this agent its own topic in the board group, so you can follow it and reply from your phone. Off by default; switchable later from the channel menu.</span></span>
+      </label>
+      <details class="fold" id="advancedField">
+          <summary>Advanced — resume an existing session</summary>
+          <div class="field">
+            <div class="radio-row">
+              <label><input type="radio" name="mode" value="new" checked> new session</label>
+              <label><input type="radio" name="mode" value="continue"> latest in directory</label>
+              <label><input type="radio" name="mode" value="resume"> by id</label>
+            </div>
+          </div>
+          <div class="field" id="resumeField" hidden>
+            <span class="label">Session id</span>
+            <input type="text" id="resumeInput" placeholder="5fe046dd-…">
+            <span class="label">Sessions in this directory</span>
+            <div class="session-list" id="sessionList"></div>
+          </div>
+        </details>
+        <details class="fold" id="recoverField" hidden>
+          <summary>Reopen a past session <span class="fold-count" id="recoverCount"></span></summary>
+          <div class="recover-list" id="recoverList"></div>
+        </details>
+        <details class="fold" id="liveField" hidden>
+          <summary>Agents running now <span class="fold-count" id="liveCount"></span></summary>
+          <div class="recover-list" id="liveList"></div>
+        </details>
+    </div>
+    <div class="modal-foot">
+      <button id="setupCancel">Cancel</button>
+      <button class="primary" id="startBtn">Start agent</button>
+    </div>
+  </div>
+</div>
+
+<div id="profilesOverlay" class="overlay" hidden>
+  <div id="profilesPanel" class="sec-panel">
+    <div class="sec-head">
+      <strong>Agent profiles</strong>
+      <button id="profilesClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note">A profile is a named role applied at spawn: a system prompt, native Claude permission guardrails (e.g. no <code>git commit</code>), extra secrets, and an optional model. Global — reusable on any repo. <b>Soft</b>: agents run as you, so this is a role + guardrail layer, not a sandbox.</p>
+    <ul id="profilesList"></ul>
+    <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:12px 0">
+    <div class="sec-head"><strong id="profEditTitle">New profile</strong></div>
+    <div class="field"><span class="label">Name</span><input id="profName" placeholder="marketing" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><span class="label">Role (system prompt)</span><textarea id="profRole" rows="3" placeholder="You are the paid-marketing agent for biosense…"></textarea></div>
+    <label class="check"><input type="checkbox" id="profReadonly"><span>Read-only preset <span class="check-hint">— deny git commit/push/add/reset/rebase/merge/checkout</span></span></label>
+    <div class="field"><span class="label">Deny (one per line)</span><textarea id="profDeny" rows="2" placeholder="Bash(git commit:*)"></textarea></div>
+    <div class="field"><span class="label">Model (optional)</span><input id="profModel" placeholder="claude-opus-4-8" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><span class="label">Secrets to inject <span class="check-hint">— tick which vault secrets this profile passes to its agents</span></span><ul id="profSecretsList"></ul></div>
+    <div style="display:flex;gap:8px;margin-top:12px">
+      <button id="profSave" class="primary">Save profile</button>
+      <button id="profReset">Clear form</button>
+    </div>
+  </div>
+</div>
+
+<div id="telegramOverlay" class="overlay" hidden>
+  <div id="telegramPanel" class="sec-panel">
+    <div class="sec-head">
+      <strong>Telegram bot</strong>
+      <button id="telegramClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note" id="tgStatus">…</p>
+    <button id="tgUnbind" hidden title="Unbind the board group so you can /setup a fresh one (e.g. after it became a supergroup)">Unbind group</button>
+    <label class="check"><input type="checkbox" id="tgEnabled"><span>Bot enabled</span></label>
+    <div class="field">
+      <span class="label">Bot token <span class="check-hint">— write-only, never shown</span></span>
+      <div style="display:flex;gap:8px">
+        <input id="tgToken" placeholder="paste a new token…" autocomplete="off" spellcheck="false" style="flex:1">
+        <button id="tgTokenSave">Save</button>
+        <button id="tgTokenRemove">Remove</button>
+      </div>
+    </div>
+    <div class="field">
+      <span class="label">Allowed chats <span class="check-hint">— empty = everyone</span></span>
+      <ul id="tgChats"></ul>
+      <form id="tgChatAdd" style="display:flex;gap:8px">
+        <input id="tgChatInput" placeholder="chat id, e.g. -1002…" autocomplete="off" spellcheck="false" style="flex:1">
+        <button type="submit">Add</button>
+      </form>
+    </div>
+    <p class="sec-note">Applies live — running sessions are not interrupted.</p>
+  </div>
+</div>
+
+<main>
+  <nav id="tabbar" aria-label="Agents">
+    <div class="label side-label">Agents</div>
+    <div id="ungrouped"></div>
+    <div id="groups"></div>
+    <button id="newTab" title="New agent">＋ new agent</button>
+    <button id="newGroup" title="New agent group">＋ new group</button>
+  </nav>
+
+  <section class="chat-pane">
+
+    <!-- Barre du canal actif : qui il est, et ses actions. Visible dans les DEUX
+         modes — le terminal n'est qu'une autre vue du même canal, pas un endroit
+         séparé, donc ses actions n'ont pas de raison d'apparaître avec lui. -->
+    <div id="chanBar" hidden>
+      <span class="label" id="chanBarName"></span>
+      <div class="gauge">
+        <span class="label">Status</span>
+        <span class="value"><span id="led" class="led"></span><span id="state">—</span></span>
+      </div>
+      <div class="gauge">
+        <span class="label">Directory</span>
+        <span class="value" id="cwdView">—</span>
+      </div>
+      <div class="gauge">
+        <span class="label">Session</span>
+        <span class="value" id="sessionView">—</span>
+      </div>
+      <div class="gauge" id="branchGauge" hidden>
+        <span class="label">Branch</span>
+        <span class="value" id="branchView">—</span>
+      </div>
+      <span class="chan-actions">
+        <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)">⏰</button>
+        <button id="chanStop" class="icon stop" title="End session">⏹️</button>
+        <button id="chanTerm" class="icon" title="Terminal (toggle, par canal)">⌨️</button>
+      </span>
+    </div>
+
+    <!-- Aucun agent : une invitation, pas un formulaire pré-rempli. La création
+         se fait dans une popin (#setupOverlay) et ne crée le canal qu'à la
+         validation — ouvrir puis renoncer ne laisse plus d'onglet mort-né. -->
+    <div id="emptyState">
+      <span class="es-title">No agent open</span>
+      <p class="es-hint">Each agent is its own Claude Code session, working on its own directory. Start one and it takes the controls.</p>
+      <button class="primary" id="emptyNewBtn">＋ new agent</button>
+    </div>
+
+    <div id="transcripts"></div>
+    <div id="thinking">Claude is working…</div>
+
+    <form id="composer" hidden>
+      <textarea id="promptInput" rows="1"
+        placeholder="Write your prompt — Enter to send, Shift+Enter for a new line"></textarea>
+      <button type="submit" class="primary" id="sendBtn">Send</button>
+    </form>
+
+    <!-- Interactive terminal, per channel, filling the main area (toggled by ⌨️
+         dans la barre du canal ci-dessus). -->
+    <div id="terminalView">
+      <div id="xtermHost"></div>
+    </div>
+  </section>
+
+  <aside id="machine" aria-label="Live terminal screen">
+    <div class="mhead">
+      <span class="label">Engine room — live TUI screen</span>
+      <button id="closeMachine">Close</button>
+    </div>
+    <pre id="screen"></pre>
+    <div class="keys" role="group" aria-label="Keys">
+      <button data-key="escape">Esc</button>
+      <button data-key="enter">Enter</button>
+      <button data-key="up">↑</button>
+      <button data-key="down">↓</button>
+      <button data-key="tab">Tab</button>
+      <button data-key="1">1</button>
+      <button data-key="2">2</button>
+      <button data-key="3">3</button>
+      <button data-key="y">y</button>
+      <button data-key="n">n</button>
+      <button class="settle" id="settleBtn" title="Waits for the current turn to finish and updates the chat">Resync chat</button>
+    </div>
+  </aside>
+
+  <aside id="diffpanel" aria-label="Session changes">
+    <div class="mhead">
+      <span class="label">Changes — <span id="diffBranch">working tree</span></span>
+      <span>
+        <button id="refreshDiff">Refresh</button>
+        <button id="closeDiff">Close</button>
+      </span>
+    </div>
+    <div id="diffStatus"></div>
+    <pre id="diffBody"></pre>
+  </aside>
+</main>
+
+<link rel="stylesheet" href="/vendor/xterm.css">
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
+<script src="/vendor/marked.js"></script>
+<script src="/vendor/purify.js"></script>
+<!-- Les blocs inline portent le nonce de la CSP, injecté par le serveur à
+     chaque requête (src/csp.ts). Un bloc sans lui ne s'exécute pas — c'est ce
+     qui rend inoffensif le HTML qu'un agent pourrait écrire dans le transcript. -->
+<script type="module" nonce="__CSP_NONCE__">
+  import { extractLiveText } from "/live-text.js";
+  import { profileBlurb, profileBadges } from "/profile-card.js";
+  import { notifyState, BLINK_MS } from "/notify.js";
+  import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
+  window.extractLiveText = extractLiveText;
+  window.profileBlurb = profileBlurb;
+  window.profileBadges = profileBadges;
+  window.notifyState = notifyState;
+  window.BLINK_MS = BLINK_MS;
+  window.dialPos = dialPos;
+  window.dialColor = dialColor;
+  window.arcSegments = arcSegments;
+  window.dialTitle = dialTitle;
+  window.SWEEP_DEG = SWEEP_DEG;
+</script>
+<script nonce="__CSP_NONCE__">
+  const $ = (id) => document.getElementById(id);
+  const tabbar = $("tabbar"), newTabBtn = $("newTab"), newGroupBtn = $("newGroup");
+  const ungroupedEl = $("ungrouped"), groupsEl = $("groups");
+  const transcripts = $("transcripts"), thinking = $("thinking");
+  const composer = $("composer"), promptInput = $("promptInput"), sendBtn = $("sendBtn");
+  const machine = $("machine"), screenEl = $("screen");
+
+  // ── Channels ────────────────────────────────────────────
+  // One channel = one WebSocket connection = one claude session server-side
+  // (sessions are shared: several clients can attach to the same id).
+  let tabs = [];
+  let active = null;
+  let seq = 0;
+  // The server's launch directory — the sensible default for new channels.
+  let serverCwd = "";
+  fetch("/defaults")
+    .then((r) => r.json())
+    .then((d) => {
+      serverCwd = d.cwd || "";
+      if (!$("setupOverlay").hidden && !$("cwdInput").value) $("cwdInput").value = serverCwd || "";
+    })
+    .catch(() => {});
+
+  function basename(p) {
+    const parts = p.replace(/\/+$/, "").split("/");
+    return parts[parts.length - 1] || p || "session";
+  }
+
+  function createTab(groupId) {
+    seq++;
+    const el = document.createElement("div");
+    el.className = "transcript";
+    el.hidden = true;
+    transcripts.appendChild(el);
+    // "Collé en bas" : vrai tant que l'utilisateur est proche du bas. Piloté par
+    // SES propres événements scroll — dès qu'il remonte, on cesse de le suivre
+    // (plus de scroll volé pendant le streaming live). Voir pinBottom().
+    el._stickBottom = true;
+    el.addEventListener("scroll", () => {
+      el._stickBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    });
+
+    const btn = document.createElement("div");
+    btn.className = "tab";
+    btn.draggable = true;
+    const led = document.createElement("span");
+    led.className = "led";
+    const name = document.createElement("span");
+    name.className = "name";
+    name.textContent = "agent " + seq;
+    name.title = "Double-click to rename";
+    // Heure du dernier message, en tout petit dans la liste des canaux.
+    const lastAt = document.createElement("span");
+    lastAt.className = "lastat";
+    lastAt.title = "Dernier message";
+    const timer = document.createElement("span");
+    timer.className = "timer";
+    timer.title = "Thinking time for the current turn";
+    const ctxNum = document.createElement("span");
+    ctxNum.className = "ctxnum";
+    const close = document.createElement("span");
+    close.className = "close";
+    close.textContent = "×";
+    close.title = "Close this agent";
+    const mute = document.createElement("span");
+    mute.className = "mute";
+    mute.hidden = true;
+    mute.textContent = "🔕";
+    mute.title = "Notifications muted for this agent";
+    // Un agent peut parler tout seul (prompt programmé) : l'onglet doit le dire,
+    // sinon un message qui arrive sans que personne n'ait rien demandé n'a pas
+    // d'explication visible.
+    const cron = document.createElement("span");
+    cron.className = "cron";
+    cron.hidden = true;
+    cron.textContent = "⏰";
+    // Mirrored to Telegram? Say it on the tab — nothing else distinguishes a
+    // channel you follow on your phone from a purely local one.
+    const tg = document.createElement("span");
+    tg.className = "tg";
+    tg.hidden = true;
+    // Vrai logo Telegram (comme dans le header) plutôt qu'un avion générique.
+    tg.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" style="vertical-align:-1px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>';
+    tg.title = "Mirrored to Telegram";
+    // Nom + heure empilés (l'heure SOUS le titre, pour ne pas le tronquer).
+    const mainCol = document.createElement("div");
+    mainCol.className = "tab-main";
+    // Ligne 2 sous le nom : heure relative « xxx ago » + % de contexte, ensemble.
+    const infoRow = document.createElement("div");
+    infoRow.className = "tab-info";
+    infoRow.append(lastAt, ctxNum);
+    mainCol.append(name, infoRow);
+    btn.append(led, mainCol, mute, cron, tg, timer, close);
+    // Context-window usage: a thin progress bar at the bottom of the tab.
+    const ctxBar = document.createElement("div");
+    ctxBar.className = "ctxbar";
+    const ctxFill = document.createElement("span");
+    ctxFill.className = "ctxfill";
+    ctxBar.appendChild(ctxFill);
+    btn.appendChild(ctxBar);
+    const group = groupId != null && groups.find((g) => g.id === groupId);
+    (group ? group.bodyEl : ungroupedEl).appendChild(btn);
+
+    const tab = {
+      id: seq,
+      status: "setup",   // setup | connecting | ready | busy | dead
+      stateText: "not configured",
+      ws: null,
+      cwd: "",
+      sessionId: null,
+      tokens: null,
+      screenText: "",
+      draft: "",
+      turnStart: null,   // Date.now() while a turn's thinking timer runs
+      contextPct: null,
+      muted: false,      // no favicon pip, no title badge/blink, no chime
+      transcriptEl: el,
+      profile: null,     // « type » de l'agent : le profil appliqué au spawn
+      crons: [],         // libellés des prompts programmés (⏰ sur l'onglet)
+      btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
+      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg,
+      mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
+      lastAtEl: lastAt,
+    };
+    btn._tab = tab;
+    btn.addEventListener("click", (e) => {
+      if (e.target === close) closeTab(tab);
+      else activate(tab);
+    });
+    name.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      startRename(tab);
+    });
+    btn.addEventListener("contextmenu", (e) => {
+      e.preventDefault();   // our menu, not the browser's
+      e.stopPropagation();
+      openTabMenu(tab, e.clientX, e.clientY);
+    });
+    btn.addEventListener("dragstart", (e) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "tab");
+      dragTabEl = btn;
+      document.body.classList.add("dragging-tab");
+      requestAnimationFrame(() => btn.classList.add("dragging"));
+    });
+    btn.addEventListener("dragend", () => endDrag());
+    tabs.push(tab);
+    activate(tab);
+    return tab;
+  }
+
+  // Custom names, remembered by session id.
+  const savedNames = JSON.parse(localStorage.getItem("cp.names") || "{}");
+  function saveName(tab, name) {
+    if (!tab.sessionId) return;
+    savedNames[tab.sessionId] = name;
+    localStorage.setItem("cp.names", JSON.stringify(savedNames));
+  }
+
+  // Composer drafts, one per channel, remembered by session id.
+  const savedDrafts = JSON.parse(localStorage.getItem("cp.drafts") || "{}");
+  function persistDraft(tab) {
+    if (!tab.sessionId) return;
+    clearTimeout(tab.draftTimer);
+    tab.draftTimer = setTimeout(() => {
+      if (tab.draft) savedDrafts[tab.sessionId] = tab.draft;
+      else delete savedDrafts[tab.sessionId];
+      localStorage.setItem("cp.drafts", JSON.stringify(savedDrafts));
+    }, 300);
+  }
+  function dropDraft(tab) {
+    clearTimeout(tab.draftTimer);
+    tab.draft = "";
+    if (tab.sessionId && tab.sessionId in savedDrafts) {
+      delete savedDrafts[tab.sessionId];
+      localStorage.setItem("cp.drafts", JSON.stringify(savedDrafts));
+    }
+  }
+
+  /**
+   * Generic inline rename: swaps `nameEl` for a text input inside `hostEl`
+   * (whose dragging is suspended so text selection doesn't start a drag),
+   * calls `onCommit(value)` on Enter/blur.
+   */
+  function inlineRename(hostEl, nameEl, onCommit) {
+    const wasDraggable = hostEl.draggable;
+    hostEl.draggable = false;
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.className = "rename";
+    inp.value = nameEl.textContent;
+    nameEl.replaceWith(inp);
+    inp.focus();
+    inp.select();
+    let done = false;
+    const commit = (cancel) => {
+      if (done) return;
+      done = true;
+      const v = inp.value.trim();
+      if (!cancel && v) onCommit(v);
+      inp.replaceWith(nameEl);
+      hostEl.draggable = wasDraggable;
+    };
+    inp.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); commit(false); }
+      if (e.key === "Escape") commit(true);
+    });
+    inp.addEventListener("blur", () => commit(false));
+    inp.addEventListener("click", (e) => e.stopPropagation());
+  }
+
+  /** Inline rename of a channel (double-click on its name). */
+  function startRename(tab) {
+    inlineRename(tab.btnEl, tab.nameEl, (v) => {
+      tab.customName = true;
+      tab.nameEl.textContent = v;
+      saveName(tab, v);
+      persistChannels();
+    });
+  }
+
+  // ── Per-channel mute + tab context menu ─────────────────
+  /**
+   * Mutes/unmutes a channel: it stops raising any GLOBAL signal (favicon pip,
+   * title badge, blink, chime) but keeps its own tab colour — muting silences
+   * a channel, it doesn't hide it. Persisted server-side (Channel.muted).
+   */
+  function setMuted(tab, on, persist = true) {
+    tab.muted = !!on;
+    tab.muteEl.hidden = !tab.muted;
+    refreshBadge();
+    if (persist) persistChannels();
+  }
+
+  /**
+   * Montre sur l'onglet qu'un agent a des prompts programmés, et lesquels.
+   * Les libellés viennent du serveur (`/channels`), qui seul connaît le fuseau
+   * appliqué — un « daily at 09:00 » calculé côté navigateur mentirait dès que
+   * le serveur n'est pas dans le même fuseau que le navigateur.
+   */
+  /** Is this channel mirrored into Telegram? `persist` false when the value
+   *  already comes from the registry (restore), so we don't push it back. */
+  function setMirror(tab, on, persist = true) {
+    tab.mirror = !!on;
+    tab.tgEl.hidden = !tab.mirror;
+    if (persist) persistChannels();
+  }
+
+  function setCrons(tab, labels) {
+    tab.crons = Array.isArray(labels) ? labels : [];
+    tab.cronEl.hidden = tab.crons.length === 0;
+    tab.cronEl.title = tab.crons.length
+      ? (tab.crons.length === 1 ? "Scheduled prompt: " : "Scheduled prompts: ") + tab.crons.join(" · ")
+      : "";
+  }
+
+  /**
+   * Relance le process `claude` de cet agent.
+   *
+   * Session vivante → `restart` serveur : il respawn en reprenant le MÊME id de
+   * session, donc l'historique est conservé et le profil/les secrets sont
+   * ré-appliqués (c'est la façon de faire prendre un secret ajouté depuis).
+   * Session morte → le `restart` échouerait (« no session started ») : on
+   * ré-ouvre le lien avec les paramètres de lancement mémorisés.
+   */
+  function reloadTab(tab) {
+    if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
+      addTurn(tab, "system", "", "Reloading the agent — the session and its history are kept.", null, Date.now());
+      tab.ws.send(JSON.stringify({ type: "restart" }));
+      return;
+    }
+    if (tab.launchMsg) {
+      addTurn(tab, "system", "", "Agent was not running — relaunching it.", null, Date.now());
+      launchTab(tab, tab.launchMsg);
+      return;
+    }
+    addTurn(tab, "system", "", "Nothing to reload: this agent has never been launched.", null, Date.now());
+  }
+
+  const tabMenu = document.createElement("div");
+  tabMenu.id = "tabMenu";
+  tabMenu.hidden = true;
+  document.body.appendChild(tabMenu);
+  let tabMenuOpenedAt = 0;
+  function closeTabMenu() { tabMenu.hidden = true; tabMenu.replaceChildren(); }
+  // macOS ctrl-click fires `contextmenu` AND `click`: without the guard the
+  // menu would open and close in the same gesture.
+  document.addEventListener("click", () => {
+    if (Date.now() - tabMenuOpenedAt > 200) closeTabMenu();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTabMenu(); });
+  window.addEventListener("blur", () => closeTabMenu());
+
+  /** Right-click menu on a tab: the home for per-channel actions. */
+  function openTabMenu(tab, x, y) {
+    tabMenu.replaceChildren();
+    // Entête : QUI est cet agent. Le profil est ce qui le qualifie (rôle,
+    // garde-fous, secrets), il est choisi au spawn puis devenait invisible.
+    const head = document.createElement("div");
+    head.className = "tm-head";
+    const who = document.createElement("b");
+    who.textContent = tab.profile || "No profile";
+    head.append("👤 ", who);
+    if (!tab.profile) head.title = "Spawned without a profile — no role, no extra guardrails";
+    if (tab.crons && tab.crons.length) {
+      const sub = document.createElement("span");
+      sub.className = "tm-sub";
+      sub.textContent = "⏰ " + tab.crons.join(" · ");
+      head.appendChild(sub);
+    }
+    tabMenu.appendChild(head);
+    const items = [
+      [tab.muted ? "🔔 Unmute notifications" : "🔕 Mute notifications",
+       () => setMuted(tab, !tab.muted)],
+      ["↻ Reload agent", () => reloadTab(tab)],
+      ["✎ Rename", () => startRename(tab)],
+    ];
+    // The Telegram mirror. The label states the action AND its cost: turning it
+    // off deletes the topic, hence the conversation on the phone — so we confirm.
+    // The main channel (the General) is the board's home base: not un-mirrorable.
+    if (!tab.isMain) {
+      items.push([
+        tab.mirror ? "✈️ Stop mirroring (deletes the topic)" : "✈️ Mirror to Telegram",
+        () => {
+          if (tab.mirror && !confirm("Stop mirroring this agent?\n\nIts Telegram topic will be deleted, with the messages it holds. The agent itself keeps running.")) return;
+          setMirror(tab, !tab.mirror);
+        },
+      ]);
+    }
+    // The main channel is the environment's home base — it can't be closed.
+    if (!tab.isMain) items.push(["✕ Close agent", () => closeTab(tab)]);
+    for (const [label, run] of items) {
+      const b = document.createElement("button");
+      b.className = "tm-item";
+      b.textContent = label;
+      b.addEventListener("click", (e) => { e.stopPropagation(); closeTabMenu(); run(); });
+      tabMenu.appendChild(b);
+    }
+    // Paint offscreen first: the menu must be measured before it can be kept
+    // inside the viewport (right-click near the bottom/right edge otherwise
+    // opens a menu you can't reach).
+    tabMenu.style.left = "0px";
+    tabMenu.style.top = "0px";
+    tabMenu.hidden = false;
+    tabMenuOpenedAt = Date.now();
+    const r = tabMenu.getBoundingClientRect();
+    tabMenu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4)) + "px";
+    tabMenu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + "px";
+  }
+
+  // The main channel of an environment (bound to the Telegram forum's General
+  // topic, which can't be renamed or deleted). It's always the repo-root
+  // session — mark it and remove its close button so it can't be closed here.
+  function markMainTab(tab) {
+    if (tab.isMain) return;
+    tab.isMain = true;
+    tab.btnEl.classList.add("main-tab");
+    tab.btnEl.querySelector(".close")?.remove();
+    tab.nameEl.title = "Main agent of this environment — it can't be closed";
+    if (!tab.customName || tab.nameEl.textContent !== "general") {
+      tab.customName = true;
+      tab.nameEl.textContent = "general";
+    }
+    // Pin it at the very top of the channel list (above groups & other tabs).
+    ungroupedEl.insertBefore(tab.btnEl, ungroupedEl.firstChild);
+  }
+
+  function closeTab(tab) {
+    if (tab.isMain) return; // the environment's main channel is never closed
+    // Full close: end the channel everywhere (stop the agent, delete its
+    // Telegram topic, drop it from the registry). Use the HTTP endpoint so it
+    // works even when the session is dead (no live WebSocket) — a zombie channel
+    // could not be closed before. `dismissed` stops the sync poll from re-adding
+    // it in the brief window before the registry updates.
+    if (tab.sessionId) {
+      dismissedChannels.add(tab.sessionId);
+      fetch("/channel?session=" + encodeURIComponent(tab.sessionId), { method: "DELETE" }).catch(() => {});
+    }
+    removeTabLocal(tab);
+  }
+
+  /**
+   * Remembers the open channels (session id, directory, name, group) so
+   * they can be restored — each session resumed — on the next page load.
+   * DOM order is the source of truth for tab & group ordering.
+   */
+  function persistChannels() {
+    const list = [...tabbar.querySelectorAll(".tab")]
+      .map((el) => el._tab)
+      .filter((t) => t && t.sessionId)
+      .map((t) => ({
+        sessionId: t.sessionId,
+        cwd: t.cwd && t.cwd.startsWith("/") ? t.cwd : "",
+        name: t.nameEl.textContent,
+        branch: t.branch || null,
+        repo: serverCwd || "",
+        group: groupIdOf(t.btnEl),
+        muted: !!t.muted,
+        mirror: !!t.mirror,
+      }));
+    localStorage.setItem("cp.channels", JSON.stringify(list));
+    persistGroups();
+    pushChannels(list);
+  }
+
+  // The channel list is mirrored server-side (keyed by the server's launch
+  // directory), so it survives a wiped browser, another device or a reboot.
+  let channelPushTimer = null;
+  let restoring = true; // suppress pushes until the initial restore is done
+  function pushChannels(list) {
+    if (restoring) return; // never overwrite the server list with a partial one
+    clearTimeout(channelPushTimer);
+    channelPushTimer = setTimeout(() => {
+      fetch("/channels", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(list),
+      }).catch(() => {});
+    }, 400);
+  }
+
+  /** Drops a session id from the remembered channels (invalid / gone). */
+  function forgetChannel(sessionId) {
+    const list = JSON.parse(localStorage.getItem("cp.channels") || "[]").filter(
+      (s) => s.sessionId !== sessionId,
+    );
+    localStorage.setItem("cp.channels", JSON.stringify(list));
+    pushChannels(list);
+  }
+
+  // ── Tab groups ──────────────────────────────────────────
+  let groups = [];
+  let groupSeq = Number(localStorage.getItem("cp.groupSeq") || 0);
+
+  function groupIdOf(tabEl) {
+    const g = tabEl.closest(".group");
+    return g ? g._group.id : null;
+  }
+
+  let groupPushTimer = null;
+  function persistGroups() {
+    const list = [...groupsEl.children].map((el) => ({
+      id: el._group.id,
+      name: el._group.nameEl.textContent,
+      collapsed: el.classList.contains("collapsed"),
+    }));
+    localStorage.setItem("cp.groups", JSON.stringify(list));
+    localStorage.setItem("cp.groupSeq", String(groupSeq));
+    if (restoring) return; // don't overwrite the server set mid-restore
+    clearTimeout(groupPushTimer);
+    groupPushTimer = setTimeout(() => {
+      fetch("/groups", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(list),
+      }).catch(() => {});
+    }, 400);
+  }
+
+  function createGroup(opts = {}) {
+    const id = opts.id != null ? opts.id : ++groupSeq;
+    groupSeq = Math.max(groupSeq, id);
+    const el = document.createElement("div");
+    el.className = "group" + (opts.collapsed ? " collapsed" : "");
+    const head = document.createElement("div");
+    head.className = "group-head";
+    head.draggable = true;
+    const caret = document.createElement("span");
+    caret.className = "caret";
+    const gname = document.createElement("span");
+    gname.className = "gname";
+    gname.textContent = opts.name || "group " + id;
+    gname.title = "Double-click to rename";
+    const gclose = document.createElement("span");
+    gclose.className = "gclose";
+    gclose.textContent = "×";
+    gclose.title = "Ungroup (tabs are kept)";
+    head.append(caret, gname, gclose);
+    const body = document.createElement("div");
+    body.className = "group-body";
+    el.append(head, body);
+    groupsEl.appendChild(el);
+
+    const group = { id, el, headEl: head, bodyEl: body, nameEl: gname };
+    el._group = group;
+    const paintCaret = () => {
+      caret.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
+    };
+    paintCaret();
+    head.addEventListener("click", (e) => {
+      if (e.target === gclose) return dissolveGroup(group);
+      el.classList.toggle("collapsed");
+      paintCaret();
+      persistGroups();
+    });
+    gname.addEventListener("dblclick", (e) => {
+      e.stopPropagation();
+      inlineRename(head, gname, (v) => {
+        gname.textContent = v;
+        persistGroups();
+      });
+    });
+    head.addEventListener("dragstart", (e) => {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", "group");
+      dragGroupEl = el;
+      requestAnimationFrame(() => el.classList.add("dragging"));
+    });
+    head.addEventListener("dragend", () => endDrag());
+    groups.push(group);
+    return group;
+  }
+
+  /** Removes a group; its tabs move back to the ungrouped zone. */
+  function dissolveGroup(group) {
+    while (group.bodyEl.firstChild) ungroupedEl.appendChild(group.bodyEl.firstChild);
+    group.el.remove();
+    groups = groups.filter((g) => g !== group);
+    persistChannels();
+  }
+
+  // ── Drag & drop (tabs + groups, live-sort while dragging) ──
+  let dragTabEl = null;
+  let dragGroupEl = null;
+
+  function endDrag() {
+    if (dragTabEl) dragTabEl.classList.remove("dragging");
+    if (dragGroupEl) dragGroupEl.classList.remove("dragging");
+    dragTabEl = dragGroupEl = null;
+    document.body.classList.remove("dragging-tab");
+    persistChannels();
+  }
+
+  tabbar.addEventListener("dragover", (e) => {
+    if (!dragTabEl && !dragGroupEl) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (dragTabEl) {
+      const overTab = e.target.closest(".tab");
+      if (overTab && overTab !== dragTabEl) {
+        const r = overTab.getBoundingClientRect();
+        const after = e.clientY > r.top + r.height / 2;
+        overTab.parentNode.insertBefore(dragTabEl, after ? overTab.nextSibling : overTab);
+        return;
+      }
+      const head = e.target.closest(".group-head");
+      if (head) {
+        const g = head.parentNode;
+        // Dropping on a header files the tab into that group; unfold it so
+        // the tab stays visible.
+        g.classList.remove("collapsed");
+        g._group.headEl.querySelector(".caret").textContent = "▾";
+        if (dragTabEl.parentNode !== g._group.bodyEl)
+          g._group.bodyEl.appendChild(dragTabEl);
+        return;
+      }
+      const zone = e.target.closest("#ungrouped, .group-body");
+      if (zone && dragTabEl.parentNode !== zone) zone.appendChild(dragTabEl);
+    } else if (dragGroupEl) {
+      const overGroup = e.target.closest(".group");
+      if (overGroup && overGroup !== dragGroupEl) {
+        const r = overGroup.getBoundingClientRect();
+        const after = e.clientY > r.top + r.height / 2;
+        groupsEl.insertBefore(dragGroupEl, after ? overGroup.nextSibling : overGroup);
+      }
+    }
+  });
+  tabbar.addEventListener("drop", (e) => {
+    if (dragTabEl || dragGroupEl) e.preventDefault();
+  });
+
+  /** State line shown while the auto-continue waits for the pace to recover. */
+  const PACE_HOLD_STATE = "waiting on pace";
+
+  function setTabState(tab, status, text) {
+    // A pause of the auto-continue can end without a "pace-resumed": a takeover
+    // cancels the pending retry ("auto-retry-cancelled"), and the parked
+    // callback stands down silently when the turn started on its own
+    // ("working") or the session died ("exited"/"stopped"/"gone"). Every one of
+    // those paths sets the tab state, so hanging the pause indication on the
+    // state line — and dropping it here on any other transition — is what keeps
+    // it from being orphaned. No extra server message, no polling.
+    if (tab.paceHeld && text !== PACE_HOLD_STATE) tab.paceHeld = false;
+    tab.status = status;
+    tab.stateText = text;
+    const ledClass = { setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[status];
+    tab.ledEl.className = "led " + ledClass;
+    if (tab === active) refreshChrome();
+  }
+
+  /** Channel highlight: "working" | "needs-answer" | "unread" | null. */
+  function setTabMood(tab, mood) {
+    const wasNeeds = tab.btnEl.classList.contains("needs-answer");
+    tab.btnEl.classList.toggle("working", mood === "working");
+    tab.btnEl.classList.toggle("needs-answer", mood === "needs-answer");
+    tab.btnEl.classList.toggle("unread", mood === "unread");
+    // A NEW "agent is blocked" in a channel you're not already looking at →
+    // chime once. (Not on unread, not on re-renders of an existing question,
+    // never for a muted channel.)
+    if (mood === "needs-answer" && !wasNeeds && !tab.muted && (document.hidden || tab !== active)) ding();
+    refreshBadge();
+  }
+
+  // ── Thinking timer (one per channel, shown in its tab) ──
+  function fmtElapsed(ms) {
+    const s = Math.floor(ms / 1000);
+    if (s < 60) return s + "s";
+    return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0");
+  }
+  /**
+   * (Re)starts the timer — called when a prompt leaves for this channel, et au
+   * rattachement d'un tour déjà en cours (rechargement de page, tour lancé par un
+   * autre client ou par un cron).
+   *
+   * `elapsedMs` = depuis combien de temps le serveur travaille déjà. On le
+   * convertit en origine LOCALE : tout le compte se fait alors sur l'horloge du
+   * navigateur. Avant, on gardait l'instant de départ du SERVEUR et on le
+   * soustrayait à `Date.now()` du navigateur — l'affichage était donc faux de tout
+   * l'écart entre les deux horloges, ce qui se voit dès qu'on regarde le cockpit
+   * depuis un autre appareil, et pouvait même donner une durée négative.
+   */
+  function startTurnTimer(tab, elapsedMs) {
+    const already = Number.isFinite(elapsedMs) && elapsedMs > 0 ? elapsedMs : 0;
+    tab.turnStart = Date.now() - already;
+    tab.timerEl.classList.remove("done");
+    tab.timerEl.textContent = fmtElapsed(already);
+  }
+  /** Shows a finished turn's duration, dimmed, until the next send. */
+  function showFrozenTime(tab, ms) {
+    tab.timerEl.textContent = fmtElapsed(ms);
+    tab.timerEl.classList.add("done");
+  }
+  /** Freezes the timer; the final time stays dimmed until the next send. */
+  function stopTurnTimer(tab) {
+    if (tab.turnStart) {
+      showFrozenTime(tab, Date.now() - tab.turnStart);
+      tab.turnStart = null;
+    } else tab.timerEl.classList.add("done");
+  }
+  setInterval(() => {
+    for (const t of tabs) {
+      if (t.turnStart) t.timerEl.textContent = fmtElapsed(Date.now() - t.turnStart);
+    }
+  }, 1000);
+
+  // Session ids the user closed here, so the sync poll doesn't re-add them (a
+  // Telegram/live channel survives a client PUT, so it stays in the registry).
+  const dismissedChannels = new Set();
+
+  // Removes a tab locally (no PUT/dismiss) — used when the session ended
+  // elsewhere (another browser, Telegram /end, a closed topic).
+  function removeTabLocal(tab) {
+    tab.closing = true; // stop any auto-reconnect for a tab we're removing
+    if (tab.reconnectTimer) clearTimeout(tab.reconnectTimer);
+    if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.close();
+    dropDraft(tab);
+    tab.btnEl.remove();
+    tab.transcriptEl.remove();
+    tabs = tabs.filter((t) => t !== tab);
+    refreshTitle();
+    if (active === tab) {
+      if (tabs.length) activate(tabs[tabs.length - 1]);
+      // Plus aucun agent : l'invitation, pas un onglet « setup » fantôme.
+      else { active = null; refreshChrome(); }
+    }
+  }
+
+  // Reconcile the open tabs with the server registry every few seconds — the ONE
+  // source of truth. A new session (e.g. a Telegram /spawn) shows up as a tab
+  // live; a renamed channel renames its tab; a channel that left the registry
+  // (ended elsewhere) closes its tab.
+  let lastChannelIds = new Set();
+  async function syncChannels() {
+    if (restoring) return;
+    let chans;
+    try { chans = await (await fetch("/channels")).json(); } catch { return; }
+    if (!Array.isArray(chans)) return;
+    const current = new Set(chans.map((c) => c.sessionId).filter(Boolean));
+    const tabById = new Map(tabs.filter((t) => t.sessionId).map((t) => [t.sessionId, t]));
+    // The main channel = bound to the Telegram General (no threadId).
+    const isMain = (c) => c.telegram && !c.telegram.threadId && c.telegram.chatId < 0;
+    for (const c of chans) {
+      if (!c.sessionId) continue;
+      const t = tabById.get(c.sessionId);
+      if (t) {
+        if (isMain(c)) markMainTab(t);
+        // Identité + horaires : le serveur en est la source (le profil est
+        // server-owned, les crons ne vivent que chez lui). Ré-appliqué à chaque
+        // passage, donc un cron créé depuis Telegram allume l'⏰ ici en 4 s.
+        t.profile = c.profile || null;
+        setCrons(t, c.crons);
+        // A mute set on another device lands here; persist:false, the registry
+        // is already the source of this value.
+        if (typeof c.muted === "boolean" && c.muted !== !!t.muted) setMuted(t, c.muted, false);
+        // A toggle made on another device (or a Telegram-born channel) lights
+        // the ✈️ up here on the next pass.
+        const wantMirror = typeof c.mirror === "boolean" ? c.mirror : !!c.telegram;
+        if (wantMirror !== !!t.mirror) setMirror(t, wantMirror, false);
+        if (c.name && c.name !== t.nameEl.textContent && !t.btnEl.querySelector("input.rename")) {
+          t.customName = true;
+          t.nameEl.textContent = c.name;
+          saveName(t, c.name);
+        }
+      } else if (!dismissedChannels.has(c.sessionId)) {
+        const nt = createTab(c.group);
+        nt.sessionId = c.sessionId;
+        if (c.branch) nt.branch = c.branch;
+        nt.profile = c.profile || null;
+        setCrons(nt, c.crons);
+        if (c.muted) setMuted(nt, true, false);
+        if (typeof c.mirror === "boolean" ? c.mirror : !!c.telegram) setMirror(nt, true, false);
+        if (c.name) {
+          nt.customName = true;
+          nt.nameEl.textContent = c.name;
+        }
+        if (isMain(c)) markMainTab(nt);
+        launchTab(nt, {
+          cwd: c.cwd,
+          resume: c.sessionId,
+          branch: c.branch || undefined,
+          repo: c.repo || serverCwd || undefined,
+        });
+      }
+    }
+    // A channel that was in the registry and is now gone was ended elsewhere.
+    // Never drop the main channel this way (it's the environment's home base).
+    for (const t of [...tabs]) {
+      if (!t.isMain && t.sessionId && lastChannelIds.has(t.sessionId) && !current.has(t.sessionId)) {
+        removeTabLocal(t);
+      }
+    }
+    lastChannelIds = current;
+  }
+  setInterval(syncChannels, 4000);
+
+  function activate(tab) {
+    if (active && active !== tab) {
+      active.draft = promptInput.value;
+      persistDraft(active);
+    }
+    active = tab;
+    // Un reload doit revenir sur le canal qu'on regardait : on mémorise son
+    // sessionId (hors restauration initiale, qui rejoue les activate elle-même).
+    if (!restoring && tab.sessionId) localStorage.setItem("cp.activeSession", tab.sessionId);
+    // Viewing the channel clears its "unread response" highlight.
+    if (tab.btnEl.classList.contains("unread")) setTabMood(tab, null);
+    tabs.forEach((t) => {
+      t.btnEl.classList.toggle("active", t === tab);
+      t.transcriptEl.hidden = t !== tab;
+    });
+    promptInput.value = tab.draft;
+    autosizePrompt();
+    refreshChrome();
+    // Experimental terminal follows the active channel (re-seeds on switch).
+    if (typeof syncTerm === "function") syncTerm();
+    if (tab.status !== "setup") {
+      tab.transcriptEl.scrollTop = tab.transcriptEl.scrollHeight;
+      promptInput.focus();
+    }
+  }
+
+  // ── Window title: tokens consumed ───────────────────────
+  const BASE_TITLE = document.title;
+
+  // ── Notifications: favicon badge + title badge + sound ──────────────
+  // Passive signal (favicon pip + "● " title) whenever a channel wants
+  // attention; an audible chime only when an agent BLOCKS on a question in a
+  // channel you're not already looking at. All driven off setTabMood.
+  const favicon = $("favicon");
+  let titleBase = BASE_TITLE; // current title without the notification badge
+  /** SVG data-URI favicon: the base mark, plus a coloured corner pip if given. */
+  function faviconSVG(dot) {
+    const pip = dot ? `<circle cx="24" cy="8" r="7" fill="${dot}"/>` : "";
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
+      `<rect width="32" height="32" rx="7" fill="#14161d"/>` +
+      `<text x="15" y="23" font-family="monospace" font-size="20" fill="#f0a848" text-anchor="middle">›</text>` +
+      pip + `</svg>`;
+    return "data:image/svg+xml," + encodeURIComponent(svg);
+  }
+  /** What each channel is asking for, as the pure module wants it. */
+  function attentionInput() {
+    return tabs.map((t) => ({
+      mood: t.btnEl.classList.contains("needs-answer") ? "needs-answer"
+        : t.btnEl.classList.contains("unread") ? "unread" : null,
+      muted: !!t.muted,
+    }));
+  }
+
+  // Blink loop: only alive while something actually blinks, so the common case
+  // costs no timer at all.
+  let blinkTimer = null;
+  let blinkPhase = 0;
+  function paint() {
+    // The ESM bridge lands after the document is parsed (gotcha #10): until it
+    // does, keep the plain badge rather than throwing on the first paint.
+    if (!window.notifyState) {
+      favicon.href = faviconSVG(null);
+      document.title = titleBase;
+      return;
+    }
+    const s = window.notifyState(attentionInput(), {
+      hidden: document.hidden,
+      phase: blinkPhase,
+    });
+    favicon.href = faviconSVG(s.color);
+    document.title = s.badge + titleBase;
+    if (s.blink && !blinkTimer) {
+      blinkTimer = setInterval(() => { blinkPhase ^= 1; paint(); }, window.BLINK_MS || 900);
+    } else if (!s.blink && blinkTimer) {
+      clearInterval(blinkTimer);
+      blinkTimer = null;
+      blinkPhase = 0;
+    }
+  }
+  function refreshBadge() { paint(); }
+  // Coming back to the tab must stop the blink at once, not at the next tick.
+  document.addEventListener("visibilitychange", () => { blinkPhase = 0; paint(); });
+  // The bridge is ready by DOMContentLoaded: paint once for real.
+  document.addEventListener("DOMContentLoaded", () => paint());
+
+  // Sound: a short two-note chime via Web Audio (no asset). Muted pref persists.
+  let muted = localStorage.getItem("cp.muteNotif") === "1";
+  let audioCtx = null;
+  function unlockAudio() {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+    } catch { /* no Web Audio: notifications stay silent */ }
+  }
+  // Browsers block audio until a user gesture — arm the context on the first.
+  document.addEventListener("pointerdown", unlockAudio);
+  document.addEventListener("keydown", unlockAudio);
+  function ding() {
+    if (muted || !audioCtx || audioCtx.state !== "running") return;
+    const t0 = audioCtx.currentTime;
+    for (const [freq, at] of [[880, 0], [1320, 0.12]]) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = "sine"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, t0 + at);
+      g.gain.exponentialRampToValueAtTime(0.15, t0 + at + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + 0.16);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(t0 + at); o.stop(t0 + at + 0.18);
+    }
+  }
+  const muteBtn = $("muteNotif");
+  function renderMute() {
+    muteBtn.textContent = muted ? "🔕" : "🔔";
+    muteBtn.title = muted ? "Notifications sound off" : "Notifications sound on";
+  }
+  muteBtn.addEventListener("click", () => {
+    muted = !muted;
+    localStorage.setItem("cp.muteNotif", muted ? "1" : "0");
+    renderMute();
+    if (!muted) unlockAudio();
+  });
+  renderMute();
+
+  function fmtTokens(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1) + "k";
+    return String(n);
+  }
+
+  /**
+   * Shows the tokens consumed by the open channels in the tab title.
+   * Counts fresh input + cache writes + output; cache READS are excluded —
+   * they re-bill the whole context on every turn and would drown the number.
+   */
+  function refreshTitle() {
+    let sum = 0;
+    for (const t of tabs) {
+      if (t.tokens) sum += t.tokens.input + t.tokens.cacheCreation + t.tokens.output;
+    }
+    titleBase = sum ? fmtTokens(sum) + " tok — shadok-ai" : BASE_TITLE;
+    refreshBadge();
+  }
+
+  /**
+   * Keeps header, composer, channel bar and engine room in sync with the active
+   * channel — ou avec l'ABSENCE de canal.
+   *
+   * `active` peut désormais être nul : la création vit dans une popin et ne crée
+   * plus d'onglet « setup » d'avance, donc fermer le dernier agent ne laisse plus
+   * un formulaire à la place. Tout ce qui décrit un canal retombe alors sur « — »
+   * et le panneau central montre l'invitation.
+   */
+  function refreshChrome() {
+    const t = active;
+    if (!t) {
+      $("led").className = "led ";
+      $("state").textContent = "no agent";
+      $("cwdView").textContent = "—";
+      $("sessionView").textContent = "—";
+      $("sessionView").title = "";
+      $("branchGauge").hidden = true;
+      composer.hidden = true;
+      $("chanBar").hidden = true;
+      thinking.classList.remove("visible");
+      screenEl.textContent = "";
+      // Programmer ou arrêter n'a pas de cible : mieux vaut des boutons éteints
+      // qu'une popin qui parle d'un agent inexistant.
+      $("cronBtn").disabled = true;
+      $("stopBtn").disabled = true;
+      $("emptyState").classList.add("visible");
+      return;
+    }
+    $("emptyState").classList.remove("visible");
+    $("cronBtn").disabled = !t.sessionId;
+    $("stopBtn").disabled = false;
+    $("led").className = "led " +
+      ({ setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[t.status]);
+    $("state").textContent = t.stateText;
+    $("cwdView").textContent = t.cwd || "—";
+    // Short id in the header (the full UUID overflowed the toolbar); full id is
+    // still in the tooltip.
+    $("sessionView").textContent = t.sessionId ? t.sessionId.slice(0, 8) : "—";
+    $("sessionView").title = t.sessionId || "";
+    $("branchGauge").hidden = !t.branch;
+    $("branchView").textContent = t.branch || "—";
+    composer.hidden = false;
+    // La barre du canal accompagne les deux vues du canal.
+    $("chanBar").hidden = false;
+    $("chanBarName").textContent = t.nameEl ? t.nameEl.textContent : "";
+    $("chanBarName").title = t.cwd || "";
+    sendBtn.disabled = t.status !== "ready" || !!t.pendingChoices;
+    thinking.classList.toggle("visible", t.status === "busy");
+    screenEl.textContent = t.screenText;
+  }
+
+  /** Paints a channel's context-window usage bar + tiny number in its tab. */
+  function renderContext(tab) {
+    const p = tab.contextPct;
+    if (p == null) {
+      tab.ctxNumEl.textContent = "";
+      tab.ctxFillEl.style.width = "0%";
+      return;
+    }
+    tab.ctxNumEl.textContent = p + "%";
+    tab.ctxFillEl.style.width = Math.min(100, p) + "%";
+    tab.ctxFillEl.classList.toggle("warn", p >= 60 && p < 85);
+    tab.ctxFillEl.classList.toggle("crit", p >= 85);
+  }
+
+  // Recolle la vue en bas UNIQUEMENT si l'utilisateur y est déjà (flag piloté
+  // par ses scrolls). Sinon on ne touche pas à sa position — fini le scroll qui
+  // part dans tous les sens pendant que le texte live se remplit.
+  function pinBottom(tab) {
+    const el = tab.transcriptEl;
+    if (tab === active && el._stickBottom !== false) el.scrollTop = el.scrollHeight;
+  }
+
+  /* Heure d'un message : « 21:57 », avec la date complète en title= — un
+     historique repris peut dater d'avant-hier, et hh:mm seul induirait en
+     erreur. `at` vient du .jsonl (même heure en direct et au rechargement) ;
+     absent sur les vieux transcripts → on n'affiche rien plutôt qu'une heure
+     inventée. */
+  function fmtTime(at) {
+    if (!Number.isFinite(at)) return null;
+    const d = new Date(at);
+    const el = document.createElement("span");
+    el.className = "time";
+    el.textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    el.title = d.toLocaleString();
+    return el;
+  }
+
+  /** Temps relatif compact : "now" / "3m ago" / "2h ago" / "5d ago". */
+  function relTime(ts) {
+    const s = Math.max(0, (Date.now() - ts) / 1000);
+    if (s < 45) return "now";
+    const m = Math.round(s / 60);
+    if (m < 60) return m + "m ago";
+    const h = Math.round(m / 60);
+    if (h < 24) return h + "h ago";
+    return Math.round(h / 24) + "d ago";
+  }
+  /** (Re)pose l'heure relative du dernier message sur l'onglet. */
+  function renderLastAt(tab) {
+    if (!tab.lastAtEl) return;
+    if (!Number.isFinite(tab.lastMsgAt)) { tab.lastAtEl.textContent = ""; return; }
+    tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
+    tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
+  }
+  // Le relatif vieillit tout seul : on rafraîchit tous les onglets périodiquement.
+  setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
+
+  function addTurn(tab, role, who, text, extraClass, at) {
+    // Heure du dernier message dans la liste des canaux, en relatif (« 3m ago »).
+    // Chaque message (historique rejoué ou live) porte `at` ; le dernier gagne.
+    if (Number.isFinite(at)) {
+      tab.lastMsgAt = at;
+      renderLastAt(tab);
+    }
+    const turn = document.createElement("div");
+    turn.className = "turn " + role + (extraClass ? " " + extraClass : "");
+    if (role !== "system") {
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = who;
+      // L'heure vit DANS le label : une suite de bulles du même locuteur n'a
+      // qu'un label (règle CSS `.turn.claude + .turn.claude > .label`), donc
+      // l'heure se groupe pareil au lieu de se répéter à chaque bloc.
+      const time = fmtTime(at);
+      if (time) label.appendChild(time);
+      turn.appendChild(label);
+    }
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    // Claude content (streamed live or replayed history) is raw markdown from
+    // the .jsonl → render to HTML (tables, code, wrapping).
+    //
+    // TOUJOURS assaini : ce Markdown vient de l'agent, donc de ce que l'agent a
+    // lu — un README cloné, une page web, un message Telegram. `marked` laisse
+    // passer le HTML brut, donc un `<img onerror=…>` planté là s'exécuterait
+    // dans le cockpit, qui sait créer un cron (donc lancer un shell). Pas de
+    // DOMPurify chargé → on retombe en texte brut plutôt que d'injecter du HTML
+    // non filtré : perdre la mise en forme est moins grave que l'inverse.
+    if (role === "claude" && (extraClass === "hist" || extraClass === "live") && window.marked && window.DOMPurify) {
+      bubble.classList.add("md");
+      bubble.innerHTML = DOMPurify.sanitize(marked.parse(text));
+    } else {
+      bubble.textContent = text;
+    }
+    turn.appendChild(bubble);
+    tab.transcriptEl.appendChild(turn);
+    pinBottom(tab);
+    return bubble;
+  }
+
+  /* ── Aperçu live du texte en cours ───────────────────────
+     Le .jsonl n'écrit un bloc de texte que TERMINÉ, donc rien ne s'affiche
+     pendant sa génération. On comble avec le dernier bloc lu sur l'écran TUI
+     (window.extractLiveText), dans une bulle provisoire, remplacée par le rendu
+     markdown autoritatif dès que `stream-text` livre le bloc complet.
+
+     Déduplication : après un `stream-text`, l'écran continue de montrer le même
+     bloc `⏺` ; on mémorise la forme-écran de chaque bloc finalisé (`finalizedNorms`) pour ne
+     pas recréer un provisoire qui doublonnerait la bulle déjà finalisée. La
+     comparaison est par INCLUSION normalisée, pas par égalité stricte : le rendu
+     écran d'un même bloc vacille (scroll, wrapping, curseur, lignes qui sortent
+     du viewport pendant qu'un outil tourne), donc une égalité stricte re-matchait
+     puis ne-matchait plus en alternance → le bloc finalisé réapparaissait en
+     aperçu puis disparaissait (clignotement). L'inclusion absorbe ce vacillement. */
+  // Normalise + retire les marqueurs markdown (`*_`#>`) : l'écran TUI montre le
+  // texte RENDU (gras/italique/code en clair), le .jsonl le montre en source ;
+  // on les compare dans la même forme.
+  const normPreview = (s) => (s || "").replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
+  /** Un aperçu correspond-il à un bloc DÉJÀ finalisé ce tour ? On accumule le
+      texte AUTORITATIF complet de chaque bloc (msg.text du stream-text). Toute
+      fenêtre d'écran d'un bloc — même défilée / re-wrappée — en est une
+      sous-chaîne, donc `finalisé.includes(aperçu)` la reconnaît sans dépendre du
+      viewport (une comparaison sur des fenêtres qui se chevauchaient échouait et
+      le bloc réapparaissait → clignotement). */
+  function isFinalizedBlock(tab, nT) {
+    return (tab.finalizedNorms || []).some((f) => f && f.includes(nT));
+  }
+  function updateLivePreview(tab, screen) {
+    if (!window.extractLiveText) return;
+    const txt = extractLiveText(screen);
+    // Extraction vide (outil en cours, spinner, ou frame transitoire pendant que
+    // le bloc défile) → GARDER l'aperçu existant tel quel. L'effacer ici faisait
+    // clignoter le bloc en cours (vide fugace → clear → re-show). Le bloc est de
+    // toute façon effacé à sa finalisation (stream-text) ou en fin de tour.
+    if (!txt) return;
+    // « NOTHING TO SHOW » : le serveur ne streamera JAMAIS ce bloc (jumeau de
+    // isNothingToShow, src/tail.ts — pas de bundler ici, d'où la duplication).
+    // Sans ce garde, l'aperçu gris resterait affiché tout le tour à attendre un
+    // stream-text qui ne vient pas.
+    if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
+    const nT = normPreview(txt);
+    if (nT && isFinalizedBlock(tab, nT)) { clearLivePreview(tab); return; }
+    if (!tab.livePreviewEl) {
+      const turn = document.createElement("div");
+      turn.className = "turn claude live-preview";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      turn.appendChild(bubble);
+      tab.transcriptEl.appendChild(turn);
+      tab.livePreviewEl = turn;
+      tab.livePreviewBubble = bubble;
+    }
+    // N'écrire que si le texte a changé : évite reflows et scintillement quand
+    // deux écrans successifs portent le même bloc.
+    if (tab.livePreviewBubble.textContent !== txt) tab.livePreviewBubble.textContent = txt;
+    pinBottom(tab);
+  }
+
+  function clearLivePreview(tab) {
+    if (tab.livePreviewEl) tab.livePreviewEl.remove();
+    tab.livePreviewEl = null;
+    tab.livePreviewBubble = null;
+  }
+
+  /* ── Activity log ────────────────────────────────────────
+     Tool traffic is grouped instead of stacked. A *block* is a run of tool
+     events between two pieces of assistant text; inside it, consecutive calls
+     to the same tool condense into a *run*; each call hides its own output.
+     At turn-done every block folds — except any that saw an error.
+
+     All fold state lives on `tab.act` (current block) and `tab.turnBlocks`
+     (blocks awaiting the end-of-turn fold). */
+
+  /** Lines of tool output shown before "+ N more lines". */
+  const RESULT_LINES = 12;
+
+  function setFolded(el, folded) {
+    el.dataset.folded = folded ? "true" : "false";
+    const caret = el.querySelector(":scope > .act-head > .caret, :scope > .run-head > .caret, :scope > .item-head > .caret");
+    if (caret) caret.textContent = folded ? "▸" : "▾";
+  }
+
+  function toggleFold(el) {
+    setFolded(el, el.dataset.folded !== "true");
+  }
+
+  /** Marks an element and its ancestors up to the block as containing an error. */
+  function flagError(el) {
+    for (let n = el; n; n = n.parentElement?.closest(".act-run, .turn.activity")) {
+      n.classList.add("has-err");
+      if (n.classList.contains("turn")) break;
+    }
+  }
+
+  /** Opens a fresh activity block at the bottom of the transcript. */
+  function openBlock(tab) {
+    const turn = document.createElement("div");
+    turn.className = "turn claude activity";
+    turn.dataset.folded = "false";
+    const head = document.createElement("button");
+    head.className = "act-head";
+    head.innerHTML = '<span class="caret">▾</span><span class="count"></span>';
+    head.addEventListener("click", () => toggleFold(turn));
+    const body = document.createElement("div");
+    body.className = "act-body";
+    turn.append(head, body);
+    tab.transcriptEl.appendChild(turn);
+    const block = { el: turn, body, countEl: head.querySelector(".count"), calls: 0, errors: 0, run: null };
+    tab.act = block;
+    (tab.turnBlocks ||= []).push(block);
+    return block;
+  }
+
+  function renderBlockCount(block) {
+    const ops = block.calls + (block.calls === 1 ? " operation" : " operations");
+    block.countEl.textContent = block.errors ? ops + " · " + block.errors + " error" + (block.errors > 1 ? "s" : "") : ops;
+  }
+
+  /** Ends the current block so the next tool call starts a new one. */
+  function closeActivity(tab) {
+    tab.act = null;
+  }
+
+  /** Folds every block of the finished turn that saw no error. */
+  function sealTurn(tab) {
+    for (const block of tab.turnBlocks || []) {
+      if (!block.el.classList.contains("has-err")) setFolded(block.el, true);
+    }
+    tab.turnBlocks = [];
+    tab.pendingCalls?.clear();
+    tab.lastCall = null;
+    closeActivity(tab);
+  }
+
+  /** A tool call: appended to the open block, condensed into a run if repeated. */
+  function addToolLine(tab, msg) {
+    const block = tab.act || openBlock(tab);
+    const name = msg.name || "tool";
+
+    if (!block.run || block.run.name !== name) {
+      const runEl = document.createElement("div");
+      runEl.className = "act-run";
+      runEl.dataset.folded = "false";
+      runEl.dataset.count = "1";
+      const head = document.createElement("button");
+      head.className = "run-head";
+      head.innerHTML = '<span class="caret">▾</span><span class="tool"></span><span class="arg"></span>';
+      head.querySelector(".tool").textContent = name;
+      head.addEventListener("click", () => toggleFold(runEl));
+      const body = document.createElement("div");
+      body.className = "run-body";
+      runEl.append(head, body);
+      block.body.appendChild(runEl);
+      block.run = { name, el: runEl, body, argEl: head.querySelector(".arg"), count: 0 };
+    }
+    const run = block.run;
+    run.count += 1;
+    run.el.dataset.count = String(run.count);
+    run.argEl.textContent = "×" + run.count;
+    // A repeated tool folds away; the reader opens it if the detail matters.
+    if (run.count === 2 && !run.el.classList.contains("has-err")) setFolded(run.el, true);
+
+    const item = document.createElement("div");
+    item.className = "act-item";
+    item.dataset.folded = "true";
+    const head = document.createElement("button");
+    head.className = "item-head";
+    head.innerHTML = '<span class="caret">▸</span><span class="tool"></span><span class="arg"></span>';
+    head.querySelector(".tool").textContent = name;
+    head.querySelector(".arg").textContent = msg.summary || "";
+    head.addEventListener("click", () => toggleFold(item));
+    const out = document.createElement("div");
+    out.className = "item-out";
+    item.append(head, out);
+    run.body.appendChild(item);
+
+    block.calls += 1;
+    renderBlockCount(block);
+    (tab.pendingCalls ||= new Map()).set(msg.id || "", item);
+    tab.lastCall = item;
+    pinBottom(tab);
+  }
+
+  /**
+   * Tool output, attached to the call that produced it. Paired by id because
+   * one assistant message may fire several tools at once and their results come
+   * back batched — position alone would mismatch them.
+   */
+  function addResult(tab, msg) {
+    const pending = tab.pendingCalls;
+    let item = msg.toolUseId && pending ? pending.get(msg.toolUseId) : null;
+    if (item) pending.delete(msg.toolUseId);
+    // No id (older server, or an unpaired result): fall back to the last call.
+    else item = tab.lastCall;
+    if (!item || item.querySelector(":scope > .item-out > .result-body")) {
+      // Nothing to attach to — show it on its own rather than dropping it.
+      item = null;
+    }
+    const host = item ? item.querySelector(":scope > .item-out") : orphanItem(tab);
+    const text = msg.text || "";
+
+    const pre = document.createElement("pre");
+    pre.className = "result-body";
+    const lines = text.split("\n");
+    const long = lines.length > RESULT_LINES;
+    const head = () => lines.slice(0, RESULT_LINES).join("\n");
+    pre.textContent = long ? head() : text;
+    host.appendChild(pre);
+    if (long) {
+      const more = document.createElement("button");
+      more.className = "result-more";
+      const label = () => "+ " + (lines.length - RESULT_LINES) + " more lines";
+      more.textContent = label();
+      let expanded = false;
+      more.addEventListener("click", () => {
+        expanded = !expanded;
+        pre.textContent = expanded ? text : head();
+        more.textContent = expanded ? "− collapse" : label();
+      });
+      host.appendChild(more);
+    }
+
+    const target = item || host.closest(".act-item");
+    if (msg.isError) {
+      // Failures stay in the clear: unfolded here, and exempt from turn-done.
+      flagError(target);
+      setFolded(target, false);
+      const run = target.closest(".act-run");
+      if (run) setFolded(run, false);
+      const block = tab.act;
+      if (block) {
+        block.errors += 1;
+        renderBlockCount(block);
+      }
+    }
+    pinBottom(tab);
+  }
+
+  /** A result with no matching call still deserves a row of its own. */
+  function orphanItem(tab) {
+    const block = tab.act || openBlock(tab);
+    const item = document.createElement("div");
+    item.className = "act-item";
+    item.dataset.folded = "false";
+    const head = document.createElement("button");
+    head.className = "item-head";
+    head.innerHTML = '<span class="caret">▾</span><span class="tool">output</span><span class="arg"></span>';
+    head.addEventListener("click", () => toggleFold(item));
+    const out = document.createElement("div");
+    out.className = "item-out";
+    item.append(head, out);
+    block.body.appendChild(item);
+    block.run = null;
+    return out;
+  }
+
+  /**
+   * Renders a TUI dialog clickable in the chat. Single select: one click
+   * validates. Multi-select: clicks toggle checkboxes (the state comes back
+   * from the server and the bubble is re-rendered in place), the Submit
+   * button confirms.
+   */
+  function renderDialog(tab, msg) {
+    let bubble;
+    if (tab.dialogBubble) {
+      bubble = tab.dialogBubble;
+      bubble.textContent = "";
+    } else {
+      const turn = document.createElement("div");
+      turn.className = "turn claude dialog";
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = msg.multi
+        ? "claude — multi-select (check then submit)"
+        : "claude — choice requested";
+      // Une question posée pendant qu'on n'était pas devant : savoir DEPUIS QUAND
+      // elle attend est justement ce qu'on veut voir en revenant.
+      const time = fmtTime(Date.now());
+      if (time) label.appendChild(time);
+      bubble = document.createElement("div");
+      bubble.className = "bubble";
+      turn.append(label, bubble);
+      tab.transcriptEl.appendChild(turn);
+      tab.dialogBubble = bubble;
+    }
+    if (msg.question) {
+      const q = document.createElement("div");
+      q.className = "question";
+      q.textContent = msg.question;
+      bubble.appendChild(q);
+    }
+    const buttons = [];
+    for (const opt of msg.options) {
+      // "Type something" option: free-form text input.
+      if (/^type something/i.test(opt.label)) {
+        const row = document.createElement("div");
+        row.className = "freetext-row";
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.placeholder = opt.n + ". Free-form answer…";
+        const go = document.createElement("button");
+        go.type = "button";
+        go.textContent = "Send";
+        const submitFree = () => {
+          const v = inp.value.trim();
+          if (!v || tab.status !== "ready" || !tab.ws) return;
+          buttons.forEach((x) => (x.disabled = true));
+          inp.disabled = true;
+          tab.ws.send(JSON.stringify({ type: "freetext", n: opt.n, text: v }));
+        };
+        go.addEventListener("click", submitFree);
+        inp.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+            submitFree();
+          }
+        });
+        buttons.push(go);
+        row.append(inp, go);
+        bubble.appendChild(row);
+        continue;
+      }
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "choice" + (opt.checked ? " checked" : "");
+      const num = document.createElement("span");
+      num.className = "num";
+      num.textContent = msg.multi
+        ? (opt.checked ? "☑ " : "☐ ") + opt.n + "."
+        : opt.n + ".";
+      const lab = document.createElement("span");
+      lab.textContent = opt.label;
+      b.append(num, lab);
+      if (opt.hint) {
+        const h = document.createElement("span");
+        h.className = "hint";
+        h.textContent = opt.hint;
+        b.appendChild(h);
+      }
+      b.addEventListener("click", () => {
+        if (tab.status !== "ready" || !tab.ws) return;
+        if (msg.multi) {
+          // Toggle — the bubble will be re-rendered with the fresh state.
+          buttons.forEach((x) => (x.disabled = true));
+          tab.ws.send(JSON.stringify({ type: "toggle", n: opt.n }));
+        } else {
+          buttons.forEach((x) => (x.disabled = true));
+          b.classList.add("chosen");
+          tab.ws.send(JSON.stringify({ type: "choose", n: opt.n }));
+        }
+      });
+      buttons.push(b);
+      bubble.appendChild(b);
+    }
+    if (msg.multi) {
+      const v = document.createElement("button");
+      v.type = "button";
+      v.className = "primary validate";
+      v.textContent = "Submit selection";
+      v.addEventListener("click", () => {
+        if (tab.status !== "ready" || !tab.ws) return;
+        buttons.forEach((x) => (x.disabled = true));
+        v.disabled = true;
+        tab.ws.send(JSON.stringify({ type: "confirm" }));
+      });
+      buttons.push(v);
+      bubble.appendChild(v);
+    }
+    tab.pendingChoices = buttons;
+    pinBottom(tab);
+  }
+
+  /** Disables pending choices (resolved elsewhere or stale). */
+  function retireChoices(tab) {
+    (tab.pendingChoices || []).forEach((b) => (b.disabled = true));
+    tab.pendingChoices = null;
+    tab.dialogBubble = null;
+    if (tab.btnEl.classList.contains("needs-answer")) setTabMood(tab, null);
+  }
+
+  // ── Link ────────────────────────────────────────────────
+  /** Starts a channel's session (from the form or a restore). */
+  function launchTab(t, msg) {
+    t.cwd = msg.cwd || "(server directory)";
+    if (!t.customName) t.nameEl.textContent = basename(msg.cwd || "") || "agent " + t.id;
+    t.launchMsg = msg;      // remembered so a dropped link can reconnect
+    t.closing = false;      // set when the user closes the tab (no reconnect then)
+    t.reconnectAttempts = 0;
+    openLink(t);
+  }
+
+  /** Opens (or re-opens) the WebSocket for a tab. On an unexpected close it
+   *  auto-reconnects with backoff — so a laptop sleep/wake or a brief network
+   *  drop transparently reattaches to the same session (resume by id) instead
+   *  of stranding the tab on "link lost". */
+  function openLink(t) {
+    setTabState(t, "connecting", t.reconnectAttempts ? "reconnecting…" : "connecting…");
+    const ws = new WebSocket(`ws://${location.host}/ws`);
+    t.ws = ws;
+    ws.addEventListener("open", () => {
+      t.reconnectAttempts = 0;
+      // Reattach to the SAME session once we know its id; a brand-new tab still
+      // starts fresh (no sessionId yet).
+      const start = t.sessionId ? { ...t.launchMsg, resume: t.sessionId } : t.launchMsg;
+      ws.send(JSON.stringify({ type: "start", origin: "web", ...start }));
+    });
+    ws.addEventListener("close", () => {
+      if (t.closing) return;         // intentional close — stay gone
+      if (t.ws !== ws) return;       // a newer link already superseded this one
+      scheduleReconnect(t);
+    });
+    ws.addEventListener("message", (ev) => handleMessage(t, JSON.parse(ev.data)));
+  }
+
+  function scheduleReconnect(t) {
+    if (t.closing) return;
+    if (t.reconnectTimer) clearTimeout(t.reconnectTimer);
+    const n = t.reconnectAttempts++;
+    const delay = Math.min(15000, 1000 * 2 ** n) + Math.floor(Math.random() * 500);
+    setTabState(t, "dead", "link lost — reconnecting…");
+    t.reconnectTimer = setTimeout(() => { if (!t.closing) openLink(t); }, delay);
+  }
+
+  /** Reconnect every dropped tab immediately (no backoff wait) — fired when the
+   *  machine/tab comes back (online / visible), the common laptop-wake case. */
+  function reconnectAllNow() {
+    for (const t of tabs) {
+      if (t.closing || !t.sessionId) continue;
+      const st = t.ws && t.ws.readyState;
+      if (st === WebSocket.OPEN || st === WebSocket.CONNECTING) continue;
+      if (t.reconnectTimer) clearTimeout(t.reconnectTimer);
+      t.reconnectAttempts = 0;
+      openLink(t);
+    }
+  }
+  window.addEventListener("online", reconnectAllNow);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) reconnectAllNow(); });
+
+  /**
+   * Lists the agents alive in the server right now — including ones spawned
+   * outside this browser (pilotctl, another tab). They have no transcript
+   * before their first turn, so no other list can surface them. Attaching
+   * shares the same process rather than starting a second one.
+   */
+  async function refreshLiveList() {
+    const field = $("liveField");
+    const listEl = $("liveList");
+    let live = [];
+    try {
+      live = await (await fetch("/live")).json();
+    } catch { live = []; }
+    if (!Array.isArray(live) || live.length === 0) { field.hidden = true; return; }
+    field.hidden = false;
+    $("liveCount").textContent = "(" + live.length + ")";
+    listEl.innerHTML = "";
+    for (const s of live) {
+      const row = document.createElement("div");
+      row.className = "recover-row";
+      const meta = document.createElement("div");
+      meta.className = "rmeta";
+      const p = document.createElement("div");
+      p.className = "rprompt";
+      p.textContent = s.lastPrompt || "(no prompt yet)";
+      const sub = document.createElement("div");
+      sub.className = "rsub";
+      // Id first: it is what identifies the agent, and truncation eats the tail.
+      sub.textContent = s.id.slice(0, 8) + " · " + (s.branch || s.cwd);
+      meta.append(p, sub);
+      const badge = document.createElement("span");
+      badge.className = "badge" + (s.busy ? "" : " empty");
+      badge.textContent = s.busy ? "working" : (s.clients ? "idle" : "detached");
+      const btn = document.createElement("button");
+      btn.textContent = "Attach";
+      btn.addEventListener("click", () => {
+        const t = active;
+        if (!t.customName) { t.customName = true; t.nameEl.textContent = s.id.slice(0, 8); }
+        launchTab(t, { resume: s.id, cwd: s.cwd });
+      });
+      row.append(meta, badge, btn);
+      listEl.appendChild(row);
+    }
+  }
+
+  /** Lists past worktree sessions of the setup's repo, each reopenable. */
+  async function refreshRecoverList() {
+    const cwd = $("cwdInput").value.trim();
+    const field = $("recoverField");
+    const listEl = $("recoverList");
+    if (!cwd) { field.hidden = true; return; }
+    let sessions = [];
+    try {
+      sessions = await (await fetch("/recover?repo=" + encodeURIComponent(cwd))).json();
+    } catch { sessions = []; }
+    if (!Array.isArray(sessions) || sessions.length === 0) { field.hidden = true; return; }
+    field.hidden = false;
+    $("recoverCount").textContent = "(" + sessions.length + ")";
+    listEl.innerHTML = "";
+    for (const s of sessions) {
+      const row = document.createElement("div");
+      row.className = "recover-row";
+      const meta = document.createElement("div");
+      meta.className = "rmeta";
+      const p = document.createElement("div");
+      p.className = "rprompt";
+      p.textContent = s.preview || "(no prompt)";
+      const sub = document.createElement("div");
+      sub.className = "rsub";
+      sub.textContent = s.branch + (s.dirExists ? "" : " · reclaimed");
+      meta.append(p, sub);
+      const badge = document.createElement("span");
+      const changed = s.commits > 0 || s.hasChanges;
+      badge.className = "badge" + (changed ? "" : " empty");
+      badge.textContent = changed
+        ? (s.commits > 0 ? s.commits + " commit" + (s.commits > 1 ? "s" : "") : "changes")
+        : "empty";
+      const btn = document.createElement("button");
+      btn.textContent = "Reopen";
+      btn.disabled = !s.sessionId;
+      btn.addEventListener("click", () => {
+        if (!s.sessionId) return;
+        const t = active;
+        if (!t.customName) { t.customName = true; t.nameEl.textContent = s.branch.replace("shadok-ai/", "wt-"); }
+        launchTab(t, { resume: s.sessionId, cwd: s.cwd, branch: s.branch, repo: cwd });
+      });
+      row.append(meta, badge, btn);
+      listEl.appendChild(row);
+    }
+  }
+
+  /**
+   * Ouvre la popin de création. Elle ne crée RIEN : l'onglet naît au « Start
+   * agent » (cf. startNewAgent). Ouvrir puis renoncer ne laissait auparavant pas
+   * seulement un onglet mort-né — il devenait le canal actif, avec son formulaire
+   * à la place de la conversation qu'on regardait.
+   */
+  function openSetup() {
+    // Ne jamais écraser ce qui est déjà tapé (la popin peut se rouvrir).
+    if (!$("cwdInput").value) {
+      $("cwdInput").value = (active && active.cwd) || localStorage.getItem("cp.cwd") || serverCwd || "";
+    }
+    const last = localStorage.getItem("cp.session");
+    if (last && !$("resumeInput").value) $("resumeInput").value = last;
+    $("startBtn").disabled = false;
+    // Le profil retenu n'est rappelé qu'à l'OUVERTURE : rappelé en continu, il
+    // écraserait le choix en cours de saisie.
+    profileTouched = false;
+    applyRememberedProfile();
+    refreshRecoverList();
+    refreshLiveList();
+    $("setupOverlay").hidden = false;
+    $("cwdInput").focus();
+  }
+  function closeSetup() { $("setupOverlay").hidden = true; }
+
+  /** Valide le formulaire → C'EST ICI que le canal est créé, et pas avant. */
+  function startNewAgent() {
+    const cwd = $("cwdInput").value.trim();
+    const mode = document.querySelector('input[name="mode"]:checked').value;
+    const msg = { cwd };
+    if (mode === "continue") msg.continue = true;
+    if (mode === "resume") {
+      msg.resume = $("resumeInput").value.trim();
+      if (!msg.resume) return alert("Enter a session id.");
+    }
+    if (mode === "new" && $("worktreeInput").checked) msg.worktree = true;
+    if (mode === "new" && selectedProfile) msg.profile = selectedProfile;
+    msg.mirror = $("mirrorInput").checked;
+    localStorage.setItem("cp.cwd", cwd);
+    if (mode === "new") {
+      localStorage.setItem("cp.profile", selectedProfile);
+      if (cwd) localStorage.setItem("cp.profile:" + cwd, selectedProfile);
+    }
+    $("startBtn").disabled = true;
+    closeSetup();
+    // createTab active l'onglet créé ; launchTab ouvre le lien.
+    launchTab(createTab(), msg);
+  }
+
+  // ── Version display + auto-reload ─────────────────────────────────────────
+  // The first version we see is "ours"; if a later (re)connect reports a
+  // different running version, the server was updated underneath us — reload
+  // to pick up the new client. `latest` from npm just drives the badge.
+  let bootVersion = null;
+  let lastVersion = null; // last {current, latest, autoUpdate} seen
+  const verView = document.getElementById("verView");
+  const verMenu = document.getElementById("verMenu");
+  const autoUpdateChk = document.getElementById("autoUpdateChk");
+  const acceptEditsChk = document.getElementById("acceptEditsChk");
+
+  function verIsNewer(cand, cur) {
+    const p = (v) => String(v || "0").replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+    const a = p(cand), b = p(cur);
+    for (let i = 0; i < 3; i++) if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) > (b[i] || 0);
+    return false;
+  }
+
+  function handleVersion(msg) {
+    if (bootVersion === null) bootVersion = msg.current;
+    else if (msg.current && msg.current !== bootVersion) { location.reload(); return; }
+    lastVersion = msg;
+    if (!verView) return;
+    const ahead = msg.latest && verIsNewer(msg.latest, msg.current);
+    verView.textContent = ahead ? "v" + msg.current + " → " + msg.latest : "v" + (msg.current || "?");
+    verView.classList.toggle("stale", !!ahead);
+    verView.title = ahead ? "Update available — click for options" : "running version — click for options";
+    renderVerMenu();
+  }
+
+  function renderVerMenu() {
+    if (!lastVersion || verMenu.hidden) return;
+    const m = lastVersion;
+    document.getElementById("vmCurrent").textContent = "v" + (m.current || "?");
+    const ahead = m.latest && verIsNewer(m.latest, m.current);
+    const latestEl = document.getElementById("vmLatest");
+    latestEl.textContent = m.latest ? "v" + m.latest + (ahead ? " ⚠" : "") : "checking…";
+    latestEl.style.color = ahead ? "var(--amber)" : "";
+    autoUpdateChk.checked = !!m.autoUpdate;
+    document.getElementById("vmHint").textContent = m.autoUpdate
+      ? "New releases install automatically; the page reloads."
+      : (ahead ? "A newer version is available. Tick to update now and going forward."
+               : "Off — this instance stays on its current version.");
+    const autoOn = m.permissionMode === "auto";
+    acceptEditsChk.checked = autoOn;
+    document.getElementById("vmModeHint").textContent = autoOn
+      ? "New agents start in auto mode (Shift+Tab), running without prompts."
+      : (m.permissionMode && m.permissionMode !== "default"
+           ? "Mode: " + m.permissionMode + "."
+           : "New agents ask before each action.");
+  }
+
+  function toggleVerMenu(show) {
+    verMenu.hidden = show === undefined ? !verMenu.hidden : !show;
+    if (!verMenu.hidden) renderVerMenu();
+  }
+
+  if (verView) verView.addEventListener("click", (e) => { e.stopPropagation(); toggleVerMenu(); });
+  // Click outside closes it; clicks inside the menu don't.
+  document.addEventListener("click", (e) => {
+    if (!verMenu.hidden && !verMenu.contains(e.target) && e.target !== verView) toggleVerMenu(false);
+  });
+  autoUpdateChk.addEventListener("change", async () => {
+    const enabled = autoUpdateChk.checked;
+    try {
+      await fetch("/autoupdate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      // The server echoes the new state back over WS (version message); the
+      // hint updates then. If it's turning on while behind, a reload follows.
+    } catch {
+      autoUpdateChk.checked = !enabled; // revert on failure
+    }
+  });
+  acceptEditsChk.addEventListener("change", async () => {
+    const on = acceptEditsChk.checked;
+    try {
+      await fetch("/permission-mode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode: on ? "auto" : "default" }),
+      });
+      // Server echoes the new mode back over WS; the hint updates then. Only
+      // affects agents started after this — running ones keep their mode.
+    } catch {
+      acceptEditsChk.checked = !on; // revert on failure
+    }
+  });
+
+  function showUpdateBanner(version) {
+    let el = document.getElementById("updateBanner");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "updateBanner";
+      document.body.appendChild(el);
+    }
+    el.textContent = "Updating to v" + version + "… the page will reload automatically.";
+  }
+
+  function handleMessage(t, msg) {
+    switch (msg.type) {
+      case "version":
+        handleVersion(msg);
+        break;
+      case "server-reload":
+        showUpdateBanner(msg.version);
+        break;
+      case "history":
+        // Full replay from the transcript (source of truth). Clear first so a
+        // reconnect (laptop wake / dropped link) rebuilds the transcript instead
+        // of appending a second copy of the whole history.
+        t.transcriptEl.innerHTML = "";
+        addTurn(t, "system", "", "— resumed session history —");
+        for (const h of msg.turns) {
+          if (h.role === "user") addTurn(t, "user", "pilot", h.text, "hist", h.at);
+          else addTurn(t, "claude", "claude", h.text, "hist", h.at);
+        }
+        break;
+      case "ready":
+        t.cwd = msg.cwd;
+        t.sessionId = msg.sessionId;
+        t.branch = msg.branch || null;
+        if (t === active) refreshChrome();
+        if (msg.sessionId) {
+          localStorage.setItem("cp.session", msg.sessionId);
+          // A restored/new channel learns its session id here; if it's the one
+          // we're viewing, record it so a reload comes back to it.
+          if (t === active) localStorage.setItem("cp.activeSession", msg.sessionId);
+          // Custom name remembered for this session.
+          if (!t.customName && savedNames[msg.sessionId]) {
+            t.customName = true;
+            t.nameEl.textContent = savedNames[msg.sessionId];
+          }
+          // Draft remembered for this session (channels restored on load
+          // only learn their session id here).
+          if (!t.draft && savedDrafts[msg.sessionId]) {
+            t.draft = savedDrafts[msg.sessionId];
+            if (t === active) {
+              promptInput.value = t.draft;
+              autosizePrompt();
+            }
+          }
+        }
+        // launchTab reuses the tab object, so a bubble armed before the session
+        // ended would come back to life against the *new* session and resend
+        // yesterday's text forced. A new session answers no old question.
+        retirePaceConfirm(t);
+        setTabState(t, "ready", "ready");
+        persistChannels();
+        // Reattaching between turns: restore the last turn's time rather than
+        // leaving a blank timer. A "working" message right after overrides it.
+        if (msg.lastTurnMs) showFrozenTime(t, msg.lastTurnMs);
+        addTurn(t, "system", "", "Session established. The pilot has the controls.");
+        if (t === active) promptInput.focus();
+        break;
+      case "working":
+        // Another client may have resolved the pending dialog.
+        retireChoices(t);
+        // Covers turns started elsewhere (other client, dialog answer, cron) and
+        // the reattach after a page reload — d'où la durée déjà écoulée.
+        if (!t.turnStart) startTurnTimer(t, msg.elapsedMs);
+        setTabMood(t, "working");
+        setTabState(t, "busy", "responding…");
+        clearLivePreview(t);
+        t.finalizedNorms = [];
+        break;
+      case "prompt-echo":
+        // Prompt sent by another tab/interface — or by the server itself
+        // when it auto-retries a turn that died on a transient API error.
+        closeActivity(t);
+        addTurn(t, "user", msg.auto ? "auto-retry" : "pilot (elsewhere)", msg.text, null, Date.now());
+        break;
+      case "tokens":
+        t.tokens = msg.tokens;
+        refreshTitle();
+        break;
+      case "context":
+        t.contextPct = msg.pct;
+        renderContext(t);
+        break;
+      case "stream-text":
+        // A complete assistant text block, streamed from the transcript.
+        // Text ends the current activity block: the next tool call opens a new
+        // one, so the transcript keeps the real text/tools interleaving.
+        retireChoices(t);
+        closeActivity(t);
+        // Accumuler le texte AUTORITATIF complet du bloc (msg.text) pour la dédup
+        // de l'aperçu : toute fenêtre d'écran de ce bloc en est une sous-chaîne,
+        // donc il ne se re-provisoirisera plus tant que l'écran le montre (typique
+        // quand un outil tourne juste après et que l'écran ré-affiche le bloc).
+        {
+          const fin = normPreview(msg.text);
+          if (fin) (t.finalizedNorms ||= []).push(fin);
+        }
+        clearLivePreview(t);
+        // Repli sur l'heure locale si le serveur n'a pas envoyé `at` (transcript
+        // sans timestamp) : un bloc en direct vient d'être écrit, l'écart est nul.
+        addTurn(t, "claude", "claude", msg.text, "live", msg.at ?? Date.now());
+        break;
+      case "stream-tool":
+        // A tool call, grouped into the open activity block.
+        addToolLine(t, msg);
+        break;
+      case "stream-result":
+        // Tool output, attached to the call it belongs to.
+        addResult(t, msg);
+        break;
+      case "turn-done":
+        retireChoices(t);
+        clearLivePreview(t);
+        // Activity recedes now the turn is over — errors excepted.
+        sealTurn(t);
+        if (msg.sessionId && msg.sessionId !== t.sessionId) {
+          t.sessionId = msg.sessionId;
+          localStorage.setItem("cp.session", msg.sessionId);
+          persistChannels();
+        }
+        stopTurnTimer(t);
+        setTabMood(t, t === active ? null : "unread");
+        setTabState(t, "ready", "ready");
+        break;
+      case "dialog":
+        // Re-rendered in place when a dialog is already shown (multi toggle).
+        closeActivity(t);
+        clearLivePreview(t);
+        renderDialog(t, msg);
+        stopTurnTimer(t);
+        setTabMood(t, "needs-answer");
+        setTabState(t, "ready", "choice pending");
+        break;
+      case "screen":
+        t.screenText = msg.text;
+        if (t === active) screenEl.textContent = msg.text;
+        if (msg.working) updateLivePreview(t, msg.text);
+        break;
+      case "term-data":
+        // Experimental raw terminal: bytes from the pane (base64) → xterm.
+        if (term && termSession === t) term.write(b64ToBytes(msg.data));
+        break;
+      case "gone":
+        // Session's directory is gone (e.g. a removed worktree): stop trying
+        // to restore it and forget it so it doesn't resurrect every reload.
+        addTurn(t, "system", "", msg.message);
+        forgetChannel(msg.sessionId);
+        stopTurnTimer(t);
+        setTabMood(t, null);
+        setTabState(t, "dead", "directory gone");
+        break;
+      case "error":
+        addTurn(t, "system", "", "Error: " + msg.message);
+        // Failed before ever going live (e.g. a bad restore): mark dead so it
+        // doesn't hang on "connecting…".
+        if (t.status === "connecting") setTabState(t, "dead", "failed to start");
+        else if (t.status === "busy") {
+          stopTurnTimer(t);
+          setTabMood(t, null);
+          setTabState(t, "ready", "ready");
+        }
+        break;
+      case "exited":
+        addTurn(t, "system", "", "The claude process exited (code " + msg.code + ").");
+        stopTurnTimer(t);
+        setTabMood(t, null);
+        setTabState(t, "dead", "session ended");
+        break;
+      case "stopped":
+        // Explicit end: the session is gone from the registry — drop the tab.
+        stopTurnTimer(t);
+        if (t.sessionId) dismissedChannels.add(t.sessionId);
+        removeTabLocal(t);
+        break;
+      case "auto-retry":
+        // The server will resend "continue" by itself; nothing to do here.
+        addTurn(t, "system", "",
+          "Transient API error — auto-retry in " + Math.round(msg.delayMs / 1000) +
+          " s (attempt " + msg.attempt + "/" + msg.max + ")");
+        setTabState(t, "ready", "auto-retry in " + Math.round(msg.delayMs / 1000) + " s");
+        break;
+      case "auto-retry-cancelled":
+        // A takeover ends a parked auto-continue too, and no "pace-resumed"
+        // follows — say so rather than leaving the pause line hanging.
+        if (t.paceHeld) {
+          addTurn(t, "system", "", "Auto-continue cancelled — back to manual.");
+        }
+        setTabState(t, "ready", "ready");
+        break;
+      case "auto-retry-gave-up":
+        addTurn(t, "system", "",
+          "Transient API error persists after " + msg.attempts +
+          " auto-retries — send a prompt to retry manually.");
+        setTabMood(t, "needs-answer");
+        break;
+      case "pace-blocked":
+        // The client's own check was stale: roll back the optimistic turn state,
+        // then ask. The refusal lands *before* any "working" — the server checks
+        // the pace before it marks the session busy — so the tab is still
+        // "ready" here and what needs undoing is exactly what submitPrompt
+        // rendered ahead of the server: the turn timer and the working mood.
+        // "ready" is therefore the *only* state this rollback may undo —
+        // submitPrompt starts the timer and sets the mood but never touches the
+        // tab state. Guarding on "!== busy" would also catch "dead": if the
+        // pilot exits while the server awaits getUsage(), "exited" marks the tab
+        // dead and this refusal would resurrect it as ready with a green LED,
+        // with no later message to correct it.
+        const rollback = t.status === "ready";
+        if (rollback) {
+          stopTurnTimer(t);
+          // Nothing here should overwrite a live state line: a parked
+          // auto-continue ("waiting on pace") and a pending auto-retry
+          // ("auto-retry in N s") both outlive the refusal. submitPrompt never
+          // changed the text, so re-asserting the current one is the rollback.
+          setTabState(t, "ready", t.stateText);
+        }
+        paceBlocked = true;
+        if (msg.reason) paceReason = msg.reason;
+        renderPaceConfirm(t, msg.text, msg.reason);
+        // After the render: retiring the superseded bubble drops the highlight,
+        // so the new one has to re-raise it. A refusal is a question — when the
+        // user has moved to another channel the bubble lands in a hidden
+        // transcript, so flag it the way auto-retry-gave-up flags a channel
+        // waiting on the user.
+        // The highlight is not part of the rollback: it belongs to the new
+        // bubble. A channel that died between two refusals takes the `rollback
+        // === false` path, and gating on it there left an armed bubble in a
+        // hidden transcript with nothing pointing at it.
+        if (t !== active) setTabMood(t, "needs-answer");
+        else if (rollback) setTabMood(t, null);
+        break;
+      case "pace-hold":
+        addTurn(t, "system", "",
+          "Auto-continue paused — " + (msg.reason || "pace exceeded") +
+          ". Resumes automatically once back under the threshold.");
+        setTabState(t, "ready", PACE_HOLD_STATE);
+        t.paceHeld = true;
+        break;
+      case "pace-resumed":
+        addTurn(t, "system", "", "Pace back under the threshold — auto-continue resumed.");
+        setTabState(t, "ready", "ready");
+        break;
+    }
+  }
+
+  // ── Session picker (resume by id) ───────────────────────
+  /** Lists the directory's resumable sessions; a click fills the id field. */
+  async function refreshSessionList() {
+    const listEl = $("sessionList");
+    listEl.innerHTML = '<div class="empty">loading…</div>';
+    let sessions = [];
+    try {
+      const cwd = $("cwdInput").value.trim();
+      const res = await fetch("/sessions?cwd=" + encodeURIComponent(cwd));
+      sessions = await res.json();
+    } catch {
+      /* server unreachable: leave the list empty */
+    }
+    listEl.innerHTML = "";
+    if (!sessions.length) {
+      listEl.innerHTML = '<div class="empty">No sessions found in this directory.</div>';
+      return;
+    }
+    for (const s of sessions) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "session-item";
+      if (s.id === $("resumeInput").value.trim()) b.classList.add("selected");
+      const sid = document.createElement("span");
+      sid.className = "sid";
+      sid.textContent = (savedNames[s.id] ? savedNames[s.id] + " — " : "") + s.id;
+      const meta = document.createElement("span");
+      meta.className = "meta";
+      meta.textContent = new Date(s.mtime).toLocaleString();
+      b.append(sid, meta);
+      if (s.preview) {
+        const p = document.createElement("span");
+        p.className = "preview";
+        p.textContent = s.preview;
+        b.appendChild(p);
+      }
+      b.addEventListener("click", () => {
+        $("resumeInput").value = s.id;
+        listEl.querySelectorAll(".selected").forEach((x) => x.classList.remove("selected"));
+        b.classList.add("selected");
+      });
+      listEl.appendChild(b);
+    }
+  }
+
+  // ── Controls ────────────────────────────────────────────
+  $("startBtn").addEventListener("click", startNewAgent);
+  $("setupClose").addEventListener("click", closeSetup);
+  $("setupCancel").addEventListener("click", closeSetup);
+  $("setupOverlay").addEventListener("click", (e) => { if (e.target === $("setupOverlay")) closeSetup(); });
+  $("emptyNewBtn").addEventListener("click", openSetup);
+  document.querySelectorAll('input[name="mode"]').forEach((r) =>
+    r.addEventListener("change", () => {
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      const isNew = mode === "new";
+      $("resumeField").hidden = mode !== "resume";
+      // Profil et worktree ne valent que pour une session neuve : startNewAgent
+      // les ignore déjà en resume/continue, l'UI cesse simplement de le cacher.
+      $("profileField").classList.toggle("na", !isNew);
+      $("profileNaNote").hidden = isNew;
+      $("worktreeField").classList.toggle("na", !isNew);
+      $("worktreeInput").disabled = !isNew;
+      if (mode === "resume") refreshSessionList();
+    })
+  );
+  $("cwdInput").addEventListener("change", () => {
+    if (!$("resumeField").hidden) refreshSessionList();
+    refreshRecoverList();
+    // Un autre dossier a peut-être son propre habitué — sauf si on a déjà choisi.
+    if (!profileTouched) applyRememberedProfile();
+  });
+  // Agents can appear while the setup screen sits open (pilotctl spawns one,
+  // another tab starts one) — keep the list current without a reload.
+  setInterval(() => {
+    if (!$("setupOverlay").hidden) refreshLiveList();
+  }, 5000);
+
+  function submitPrompt(t, text, force) {
+    // Any outstanding pace question is answered by the fact that something is
+    // being sent — whether by clicking its own button or by a fresh submit.
+    retirePaceConfirm(t);
+    closeActivity(t);
+    addTurn(t, "user", "pilot", text, null, Date.now());
+    startTurnTimer(t);
+    setTabMood(t, "working");
+    // Mémorise le dernier prompt envoyé de ce canal, pour qu'Échap (interruption)
+    // puisse le remettre dans le composer et le laisser ré-éditer/renvoyer.
+    t.lastSent = text;
+    t.ws.send(JSON.stringify({ type: "prompt", text, ...(force ? { force: true } : {}) }));
+    // The composer is shared and shows the active channel's draft. A forced send
+    // can come from a bubble in a channel the user has since left, and clearing
+    // it then would throw away whatever they are typing in the channel they are
+    // actually looking at.
+    if (t === active) {
+      promptInput.value = "";
+      promptInput.style.height = "auto";
+    }
+    dropDraft(t);
+  }
+
+  /**
+   * Stands the channel's pace question down: its button goes dead and the
+   * bubble is struck through, so the thread still shows the question was asked
+   * without leaving it answerable. Kept in tab.paceBubble — a field of its own,
+   * never tab.dialogBubble, which renderDialog re-renders TUI dialogs through.
+   */
+  function retirePaceConfirm(tab) {
+    const live = tab.paceBubble;
+    if (!live) return;
+    live.btn.disabled = true;
+    live.turn.classList.add("spent");
+    tab.paceBubble = null;
+    // Mirrors retireChoices, but must not steal the highlight of a real TUI
+    // dialog that is still waiting for an answer.
+    if (!tab.pendingChoices && tab.btnEl.classList.contains("needs-answer")) {
+      setTabMood(tab, null);
+    }
+  }
+
+  /**
+   * Above the ideal pace, ask before spending. Rendered in the thread like a TUI
+   * question rather than as a modal — the codebase has no floating dialog.
+   * Each blocked send asks again: forcing covers one message, never a session.
+   * Deliberately does NOT touch tab.dialogBubble or tab.pendingChoices: those
+   * belong to renderDialog, and borrowing them would corrupt a real TUI dialog
+   * and lock the composer.
+   */
+  function renderPaceConfirm(tab, text, reason) {
+    // At most one armed bubble per channel. Without this, a stale bubble stays
+    // clickable forever (clicking yesterday's resends yesterday's text forced),
+    // and two refusals then two quick clicks both clear the "ready" guard —
+    // the tab only turns busy when the server's "working" comes back — so two
+    // forced prompts leave, the second dying as "already in progress".
+    retirePaceConfirm(tab);
+    const turn = document.createElement("div");
+    turn.className = "turn claude dialog";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "shadok-ai — pace exceeded";
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    const q = document.createElement("div");
+    q.className = "question";
+    q.textContent = (reason || "Consumption above the ideal pace")
+      + " — send anyway?";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "choice";
+    btn.textContent = "Force send";
+    btn.addEventListener("click", () => {
+      if (tab.status !== "ready" || !tab.ws) return;
+      // submitPrompt retires this bubble (disabling the button, marking it
+      // spent) — the single-live-bubble rule covers the click too.
+      submitPrompt(tab, text, true);
+    });
+    bubble.append(q, btn);
+    turn.append(label, bubble);
+    tab.transcriptEl.appendChild(turn);
+    tab.paceBubble = { turn, btn };
+    pinBottom(tab);
+  }
+
+  composer.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const t = active;
+    const text = promptInput.value.trim();
+    if (!text || t.status !== "ready" || t.pendingChoices || !t.ws) return;
+    // Checked here so nothing is optimistically rendered before the server
+    // refuses. The server re-checks anyway — it is the authority.
+    if (paceBlocked) return renderPaceConfirm(t, text, paceReason);
+    submitPrompt(t, text);
+  });
+  promptInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      composer.requestSubmit();
+    }
+  });
+  function autosizePrompt() {
+    promptInput.style.height = "auto";
+    promptInput.style.height = Math.min(promptInput.scrollHeight, 160) + "px";
+  }
+  promptInput.addEventListener("input", () => {
+    autosizePrompt();
+    if (!active) return; // aucun agent : le composer est masqué, mais pas de crash gratuit
+    active.draft = promptInput.value;
+    persistDraft(active);
+  });
+
+  // ── Interactive terminal (xterm.js over the raw tmux pipe), per channel ──
+  // The ⌨️ button toggles it for the ACTIVE channel; it fills the main area
+  // (.chat-pane gets .terminal-mode → chat hidden, terminal shown). Raw pane
+  // output streams into xterm, keystrokes go straight back to the pane. Each
+  // channel keeps its own on/off state (tab.termOn). tmux transport only.
+  let term = null, termSession = null, fitAddon = null;
+  const chatPane = document.querySelector(".chat-pane");
+  function b64ToBytes(b64) {
+    const bin = atob(b64), a = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+    return a;
+  }
+  function updateTermBtn() {
+    const on = !!(active && active.termOn);
+    const b = $("chanTerm");
+    b.classList.toggle("on", on);
+    // Le bouton est le SEUL indice du mode maintenant que le bandeau ne dit plus
+    // « Terminal — … » : allumé, il doit annoncer qu'il refermera.
+    b.title = on ? "Close terminal (⌨️ toggle)" : "Terminal (toggle, par canal)";
+  }
+  function syncTerm() {
+    const want = active && active.termOn && active.ws && active.status !== "setup" && window.Terminal;
+    chatPane.classList.toggle("terminal-mode", !!want);
+    updateTermBtn();
+    if (!want) { closeTerm(); return; }
+    if (!term) {
+      term = new window.Terminal({
+        cols: 100, rows: 40, // sensible default; the server sends the real pane size on attach
+        fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+        fontSize: 12, cursorBlink: true,
+        theme: { background: "#0e1015", foreground: "#d8dae2" },
+      });
+      fitAddon = window.FitAddon ? new window.FitAddon.FitAddon() : null;
+      if (fitAddon) term.loadAddon(fitAddon);
+      term.open($("xtermHost"));
+      term.onData((d) => {
+        if (term && termSession && termSession.ws)
+          termSession.ws.send(JSON.stringify({ type: "term-input", data: btoa(d) }));
+      });
+    }
+    if (termSession !== active) {
+      // Re-point the terminal at the newly-active channel (server re-seeds).
+      if (termSession && termSession.ws) try { termSession.ws.send(JSON.stringify({ type: "term-detach" })); } catch {}
+      term.reset();
+      termSession = active;
+      active.ws.send(JSON.stringify({ type: "term-attach" }));
+    }
+    // Fit xterm to the panel, then tell the pane to match so the TUI fills the
+    // full-screen view. rAF so the container has its final size; a second pass
+    // absorbs font/layout settling (xterm cell metrics can lag one frame).
+    requestAnimationFrame(fitTerm);
+    setTimeout(fitTerm, 80);
+    term.focus();
+  }
+  /** Fit the terminal to its container and resize the tmux pane to match. */
+  function fitTerm() {
+    if (!term || !fitAddon || !active || !active.termOn) return;
+    try { fitAddon.fit(); } catch {}
+    if (termSession && termSession.ws)
+      termSession.ws.send(JSON.stringify({ type: "term-resize", cols: term.cols, rows: term.rows }));
+  }
+  window.addEventListener("resize", () => { if (active && active.termOn) fitTerm(); });
+  function closeTerm() {
+    if (termSession && termSession.ws) try { termSession.ws.send(JSON.stringify({ type: "term-detach" })); } catch {}
+    termSession = null;
+    if (term) { term.dispose(); term = null; }
+    fitAddon = null;
+  }
+  // Actions du canal, dans sa barre. Le ⌨️ ouvre ET referme le terminal (il n'y
+  // a plus de bouton dans le header) ; cron/stop réutilisent les handlers des
+  // boutons du header, qui agissent déjà sur le canal actif — celui de la barre.
+  $("chanTerm").addEventListener("click", () => {
+    if (!active) return;
+    active.termOn = !active.termOn;
+    syncTerm();
+  });
+  $("chanCron").addEventListener("click", () => $("cronBtn").click());
+  $("chanStop").addEventListener("click", () => $("stopBtn").click());
+
+  // "⋯" overflow menu (rarely-used actions, e.g. Diff). stopPropagation on the
+  // trigger so the same click doesn't immediately hit the document closer; a
+  // click on a menu item bubbles to the document → menu closes, item still fires.
+  $("moreBtn").addEventListener("click", (e) => {
+    e.stopPropagation();
+    $("moreMenu").hidden = !$("moreMenu").hidden;
+  });
+  document.addEventListener("click", () => { $("moreMenu").hidden = true; });
+
+  // ── Diff panel ──────────────────────────────────────────
+  function colorDiff(text) {
+    const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return text
+      .split("\n")
+      .map((l) => {
+        const e = esc(l);
+        if (/^\+\+\+|^---|^diff |^index /.test(l)) return '<span class="meta">' + e + "</span>";
+        if (/^@@/.test(l)) return '<span class="hunk">' + e + "</span>";
+        if (/^\+/.test(l)) return '<span class="add">' + e + "</span>";
+        if (/^-/.test(l)) return '<span class="del">' + e + "</span>";
+        return e;
+      })
+      .join("\n");
+  }
+  async function loadDiff() {
+    const t = active;
+    if (!t || !t.sessionId) return;
+    $("diffBranch").textContent = t.branch || "working tree";
+    $("diffStatus").textContent = "loading…";
+    $("diffBody").innerHTML = "";
+    try {
+      const d = await (await fetch("/diff?session=" + encodeURIComponent(t.sessionId))).json();
+      $("diffStatus").textContent = d.status || (d.diff ? "" : "no changes");
+      $("diffBody").innerHTML = d.diff ? colorDiff(d.diff) : "";
+    } catch {
+      $("diffStatus").textContent = "diff unavailable";
+    }
+  }
+  $("toggleDiff").addEventListener("click", () => {
+    const open = $("diffpanel").classList.toggle("open");
+    if (open) loadDiff();
+  });
+  $("closeDiff").addEventListener("click", () => $("diffpanel").classList.remove("open"));
+  $("refreshDiff").addEventListener("click", loadDiff);
+  document.querySelectorAll(".keys button[data-key]").forEach((b) =>
+    b.addEventListener("click", () => {
+      if (active && active.ws) active.ws.send(JSON.stringify({ type: "key", key: b.dataset.key }));
+    })
+  );
+  // La touche Échap envoie esc à la session active (comme le bouton Esc de
+  // l'engine room). Précédence : un overlay/panneau ouvert est fermé d'abord
+  // (Échap ne descend pas jusqu'à la session) ; un dialogue clickable en
+  // attente est laissé intact ; sinon on envoie esc. L'engine room ouvert n'est
+  // PAS un panneau à fermer — c'est le terminal, Échap y envoie esc.
+  // L'inline-edit fait stopPropagation, donc ce handler ne le voit pas.
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    // In the interactive terminal, xterm owns every key (incl. Esc) — the raw
+    // keystroke already flows to the pane via term.onData; don't double-handle.
+    if (active && active.termOn) return;
+    // 1. Overlays / panneaux ouverts → fermer, pas d'esc.
+    if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
+    if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
+    if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("telegramOverlay").hidden) { $("telegramOverlay").hidden = true; e.preventDefault(); return; }
+    if ($("diffpanel").classList.contains("open")) { $("diffpanel").classList.remove("open"); e.preventDefault(); return; }
+    // 2. Dialogue clickable en attente de réponse → ne rien faire.
+    if (active && active.dialogBubble) return;
+    // 3. Session active (engine room ouvert inclus) → envoyer esc.
+    if (active && active.ws && active.status !== "setup") {
+      active.ws.send(JSON.stringify({ type: "key", key: "escape" }));
+      e.preventDefault();
+      // Interrompre remet le dernier prompt envoyé dans le composer pour pouvoir
+      // le ré-éditer/renvoyer — sans écraser un brouillon déjà en cours de frappe.
+      if (active.lastSent && !promptInput.value) {
+        promptInput.value = active.lastSent;
+        active.draft = promptInput.value;
+        autosizePrompt();
+        persistDraft(active);
+        promptInput.focus();
+      }
+    }
+  });
+  $("settleBtn").addEventListener("click", () => {
+    if (active && active.ws && active.status === "ready")
+      active.ws.send(JSON.stringify({ type: "settle" }));
+  });
+  $("stopBtn").addEventListener("click", () => {
+    if (active && active.ws) active.ws.send(JSON.stringify({ type: "stop" }));
+  });
+
+  // ── Secret vault panel (central, global; profiles pick which to inject) ──
+  let vaultNames = [];
+  async function loadVault() {
+    try { vaultNames = (await (await fetch("/secrets")).json()).names || []; } catch { vaultNames = []; }
+    if (!Array.isArray(vaultNames)) vaultNames = [];
+    return vaultNames;
+  }
+  function renderSecrets() {
+    const ul = $("secretsList");
+    ul.innerHTML = "";
+    if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
+    for (const k of vaultNames) {
+      const li = document.createElement("li");
+      const code = document.createElement("code"); code.textContent = k;
+      const del = document.createElement("button");
+      del.textContent = "✕"; del.title = "Remove from vault";
+      del.addEventListener("click", async () => {
+        await fetch("/secrets?name=" + encodeURIComponent(k), { method: "DELETE" });
+        await loadVault(); renderSecrets();
+      });
+      li.append(code, del);
+      ul.appendChild(li);
+    }
+  }
+  $("secretsBtn").addEventListener("click", async () => { await loadVault(); renderSecrets(); $("secretsOverlay").hidden = false; $("secretKey").focus(); });
+  $("secretsClose").addEventListener("click", () => { $("secretsOverlay").hidden = true; });
+  $("secretsOverlay").addEventListener("click", (e) => { if (e.target === $("secretsOverlay")) $("secretsOverlay").hidden = true; });
+  $("secretsAdd").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("secretKey").value.trim();
+    const value = $("secretVal").value;
+    if (!name) return;
+    await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value }) });
+    $("secretKey").value = ""; $("secretVal").value = "";
+    await loadVault(); renderSecrets();
+    $("secretKey").focus();
+  });
+  // Parse un bloc collé façon .env → [{name, value}]. Gère `export KEY=VALUE`,
+  // les guillemets simples/doubles englobants, les commentaires (#) et les
+  // lignes vides. Une ligne sans nom d'env valide avant `=` est ignorée — donc
+  // un collage sans aucune paire valide (ex. un simple nom) laisse le collage
+  // normal remplir le champ NAME.
+  function parseEnvSecrets(text) {
+    const out = [];
+    for (const raw of String(text).split(/\r?\n/)) {
+      let line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      if (line.startsWith("export ")) line = line.slice(7).trim();
+      const eq = line.indexOf("=");
+      if (eq <= 0) continue;
+      const name = line.slice(0, eq).trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) continue;
+      let value = line.slice(eq + 1).trim();
+      const q = value[0];
+      if (value.length >= 2 && (q === '"' || q === "'") && value[value.length - 1] === q) {
+        value = value.slice(1, -1);
+      }
+      out.push({ name, value });
+    }
+    return out;
+  }
+  // Coller une liste .env dans le champ NAME ajoute tous les secrets d'un coup.
+  $("secretKey").addEventListener("paste", async (e) => {
+    const text = (e.clipboardData || window.clipboardData).getData("text");
+    const pairs = parseEnvSecrets(text);
+    if (!pairs.length) return; // rien de parsable → collage normal (remplit NAME)
+    e.preventDefault();
+    // Séquentiel : chaque PUT fait un read-modify-write de secrets.json côté
+    // serveur ; les awaits évitent une course sur le fichier.
+    for (const { name, value } of pairs) {
+      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value }) });
+    }
+    $("secretKey").value = ""; $("secretVal").value = "";
+    await loadVault(); renderSecrets();
+    $("secretKey").focus();
+  });
+  // ── Schedule panel (per-channel cron: monitoring / reporting) ───────────
+  function fmtSchedule(s) {
+    if (!s) return "?";
+    if (s.kind === "interval") return s.everyMin % 60 === 0 ? "every " + (s.everyMin / 60) + "h" : "every " + s.everyMin + "m";
+    return "daily at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
+  }
+  /**
+   * Fuseau réellement appliqué aux horaires quotidiens, dans le pied de la popin.
+   * Le panneau annonçait « Times are server-local », ce qui ne dit pas 9h OÙ —
+   * or le serveur peut tourner dans un autre fuseau que le navigateur.
+   */
+  async function showCronTz() {
+    const el = $("cronTzNote");
+    el.textContent = "";
+    try {
+      const tz = await (await fetch("/timezone")).json();
+      const zone = tz.timezone || tz.system;
+      if (zone) el.textContent = "Daily times run in " + zone;
+    } catch { /* la popin marche très bien sans cette note */ }
+  }
+  async function renderCrons() {
+    const ul = $("cronList"); ul.innerHTML = "";
+    showCronTz();
+    $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
+    if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
+    let all = [];
+    try { all = await (await fetch("/crons")).json(); } catch { all = []; }
+    const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === active.sessionId);
+    if (!list.length) { ul.innerHTML = '<li><span style="opacity:.6">no schedule yet</span></li>'; return; }
+    for (const c of list) {
+      const li = document.createElement("li"); li.style.display = "block";
+      const line = document.createElement("div");
+      line.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:space-between";
+      const label = document.createElement("span");
+      label.innerHTML = "<b>" + fmtSchedule(c.schedule) + "</b>" + (c.check ? " <span style='opacity:.6'>+guard</span>" : "") + (c.enabled ? "" : " <span style='opacity:.5'>(paused)</span>");
+      const btns = document.createElement("span");
+      const toggle = document.createElement("button");
+      toggle.textContent = c.enabled ? "Pause" : "Resume";
+      toggle.addEventListener("click", async () => {
+        await fetch("/crons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, enabled: !c.enabled }) });
+        renderCrons();
+      });
+      const del = document.createElement("button");
+      del.textContent = "✕"; del.title = "Delete schedule";
+      del.addEventListener("click", async () => { await fetch("/crons?id=" + encodeURIComponent(c.id), { method: "DELETE" }); renderCrons(); });
+      btns.append(toggle, del);
+      line.append(label, btns);
+      const p = document.createElement("div");
+      p.textContent = c.prompt;
+      p.style.cssText = "opacity:.75;font-size:12px;margin:3px 0 10px;white-space:pre-wrap";
+      li.append(line, p);
+      ul.appendChild(li);
+    }
+  }
+  function cronScheduleFromForm() {
+    if ($("cronKind").value === "daily") {
+      const [h, m] = ($("cronTime").value || "09:00").split(":").map((n) => parseInt(n, 10) || 0);
+      return { kind: "daily", hour: h, minute: m };
+    }
+    const every = Math.max(1, parseInt($("cronEvery").value, 10) || 1);
+    const unit = parseInt($("cronUnit").value, 10) || 1;
+    return { kind: "interval", everyMin: every * unit };
+  }
+  $("cronKind").addEventListener("change", () => {
+    const daily = $("cronKind").value === "daily";
+    $("cronDailyFields").hidden = !daily;
+    $("cronIntervalFields").hidden = daily;
+  });
+  $("cronBtn").addEventListener("click", () => { $("cronOverlay").hidden = false; renderCrons(); });
+  $("cronClose").addEventListener("click", () => { $("cronOverlay").hidden = true; });
+  $("cronOverlay").addEventListener("click", (e) => { if (e.target === $("cronOverlay")) $("cronOverlay").hidden = true; });
+  $("cronAdd").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const prompt = $("cronPrompt").value.trim();
+    if (!prompt || !active || !active.sessionId) return;
+    const check = $("cronCheck").value.trim();
+    await fetch("/crons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: active.sessionId, prompt, schedule: cronScheduleFromForm(), enabled: true, ...(check ? { check } : {}) }) });
+    $("cronPrompt").value = ""; $("cronCheck").value = "";
+    renderCrons();
+  });
+
+  // ── Profiles panel (global agent roles/guardrails/secret refs) ──────────
+  let profileCache = [];       // profiles from the server
+  let editSecretRefs = [];     // secret NAMES the profile being edited injects
+
+  let profileTouched = false;  // l'utilisateur a choisi à la main → on n'écrase plus
+  let selectedProfile = "";    // nom du profil choisi dans la box, "" = aucun
+
+  async function loadProfilesInto() {
+    let failed = false;
+    try { profileCache = await (await fetch("/profiles")).json(); }
+    catch { profileCache = []; failed = true; }
+    if (!Array.isArray(profileCache)) { profileCache = []; failed = true; }
+    renderProfileGrid(failed);
+  }
+
+  /** Peint la grille de la box. La carte « No profile » est toujours présente :
+   *  c'est le défaut, et le seul recours si /profiles est tombé. */
+  function renderProfileGrid(failed) {
+    const grid = $("profileGrid");
+    if (!grid) return;
+    grid.innerHTML = "";
+    if (failed) {
+      const note = document.createElement("div");
+      note.className = "grid-note";
+      note.textContent = "couldn't load profiles";
+      grid.appendChild(note);
+    }
+    // Zéro profil : on montre la porte d'entrée plutôt qu'un « (none) » muet.
+    // Pas de role="radio" → ignorée par la sélection et par les flèches.
+    if (!failed && !profileCache.length) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "profile-card";
+      b.style.gridColumn = "1 / -1";
+      b.textContent = "Create your first profile →";
+      b.addEventListener("click", () => openProfilesPanel());
+      grid.appendChild(b);
+    }
+    for (const p of profileCache) grid.appendChild(profileCardEl(p));
+    grid.appendChild(profileCardEl(null));      // ∅ No profile, toujours en dernier
+    syncProfileSelection();
+  }
+
+  /** Une carte = un <button role="radio">. p === null → la carte « No profile ». */
+  function profileCardEl(p) {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "profile-card";
+    card.setAttribute("role", "radio");
+    card.dataset.profile = p ? p.name : "";
+    const title = document.createElement("div");
+    title.className = "pc-name";
+    title.textContent = p ? p.name : "∅ No profile";
+    const blurb = document.createElement("div");
+    blurb.className = "pc-blurb";
+    // Garde alignée sur window.extractLiveText : si le module ESM n'est pas
+    // encore là, on dégrade en carte sans blurb plutôt que de tout perdre.
+    blurb.textContent = p ? (window.profileBlurb ? window.profileBlurb(p) : "") : "plain Claude";
+    card.append(title, blurb);
+    if (p) {
+      const badges = document.createElement("div");
+      badges.className = "pc-badges";
+      for (const b of window.profileBadges(p)) {
+        const s = document.createElement("span");
+        s.className = "pc-badge";
+        // Chaque badge = icône + libellé, avec une explication au survol (title).
+        s.textContent = (b.icon ? b.icon + " " : "") + b.label;
+        if (b.title) s.title = b.title;
+        badges.appendChild(s);
+      }
+      card.appendChild(badges);
+      // Raccourci : éditer CE profil sans passer par la barre du haut.
+      const pen = document.createElement("span");
+      pen.className = "pc-edit";
+      pen.textContent = "✎";
+      pen.title = "Edit " + p.name;
+      pen.addEventListener("click", (e) => {
+        e.stopPropagation();          // éditer, pas sélectionner la carte
+        openProfilesPanel(p);
+      });
+      card.appendChild(pen);
+    }
+    card.addEventListener("click", () => selectProfile(card.dataset.profile, true));
+    card.addEventListener("keydown", onProfileKey);
+    return card;
+  }
+
+  function selectProfile(name, byUser) {
+    selectedProfile = name || "";
+    if (byUser) profileTouched = true;
+    syncProfileSelection();
+  }
+
+  /** Reflète selectedProfile sur les cartes. Un seul tabindex=0 dans le groupe :
+   *  c'est la convention radiogroup (Tab entre, flèches naviguent). */
+  function syncProfileSelection() {
+    const grid = $("profileGrid");
+    if (!grid) return;
+    const cards = [...grid.querySelectorAll('.profile-card[role="radio"]')];
+    if (!cards.some((c) => c.dataset.profile === selectedProfile)) selectedProfile = "";
+    for (const c of cards) {
+      const on = c.dataset.profile === selectedProfile;
+      c.classList.toggle("selected", on);
+      c.setAttribute("aria-checked", on ? "true" : "false");
+      c.tabIndex = on ? 0 : -1;
+    }
+  }
+
+  let profileTab = null;   // onglet pour lequel la mémoire a déjà été appliquée
+
+  /** Présélectionne le dernier profil utilisé DANS CE DOSSIER (à défaut, le
+   *  dernier utilisé tout court) : le cas courant devient un clic + Start.
+   *  Une clé vide est une valeur légitime — « No profile » choisi exprès — d'où
+   *  le test sur null et non sur la vérité de la chaîne. */
+  function applyRememberedProfile() {
+    const cwd = $("cwdInput").value.trim();
+    const perDir = cwd ? localStorage.getItem("cp.profile:" + cwd) : null;
+    const remembered = perDir !== null ? perDir : (localStorage.getItem("cp.profile") || "");
+    selectProfile(remembered);   // syncProfileSelection retombe sur "" s'il n'existe plus
+  }
+
+  /** Flèches = déplacer la sélection (convention radiogroup). Espace/Entrée
+   *  sont déjà le clic natif du <button>. */
+  function onProfileKey(e) {
+    const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
+    if (!dir) return;
+    e.preventDefault();
+    const cards = [...$("profileGrid").querySelectorAll('.profile-card[role="radio"]')];
+    const i = cards.indexOf(e.currentTarget);
+    const next = cards[(i + dir + cards.length) % cards.length];
+    selectProfile(next.dataset.profile, true);
+    next.focus();
+  }
+  function renderProfilesList() {
+    const ul = $("profilesList");
+    ul.innerHTML = "";
+    if (!profileCache.length) ul.innerHTML = '<li><span style="opacity:.6">no profiles yet</span></li>';
+    for (const p of profileCache) {
+      const li = document.createElement("li");
+      const meta = document.createElement("div");
+      // Nom et modèle en textContent : un profil peut être créé par un agent
+      // (PUT /profiles), donc son nom n'est pas de la donnée de confiance.
+      const strong = document.createElement("b");
+      strong.textContent = p.name;
+      // Badge d'accès SYMÉTRIQUE (🔒 read-only / ✏️ full access) + explication au
+      // survol — même source que les cartes New agent (profileBadges, testé), pour
+      // qu'un profil non bridé ne soit plus « sans icône » (l'ambiguïté du cadenas).
+      const access = (window.profileBadges ? window.profileBadges(p) : [])[0];
+      const guard = document.createElement("span");
+      if (access && access.icon) {
+        guard.textContent = " " + access.icon;
+        guard.title = access.label + " — " + access.title;
+      }
+      const pmeta = document.createElement("div");
+      pmeta.className = "pmeta";
+      pmeta.textContent = `${(p.secrets || []).length} secret(s)${p.model ? " · " + p.model : ""}`;
+      meta.append(strong, guard, pmeta);
+      const btns = document.createElement("div");
+      const edit = document.createElement("button"); edit.textContent = "edit";
+      edit.addEventListener("click", () => fillProfileForm(p));
+      const del = document.createElement("button"); del.textContent = "delete"; del.style.color = "#e26";
+      del.addEventListener("click", async () => { await fetch("/profiles?name=" + encodeURIComponent(p.name), { method: "DELETE" }); await loadProfilesInto(); renderProfilesList(); });
+      btns.append(edit, del);
+      li.append(meta, btns);
+      ul.appendChild(li);
+    }
+  }
+  function fillProfileForm(p) {
+    $("profEditTitle").textContent = "Edit: " + p.name;
+    $("profName").value = p.name;
+    $("profRole").value = p.systemPrompt || "";
+    $("profDeny").value = (p.deny || []).join("\n");
+    $("profModel").value = p.model || "";
+    $("profReadonly").checked = false;
+    editSecretRefs = [...(p.secrets || [])];
+    renderProfSecrets();
+  }
+  function clearProfileForm() {
+    $("profEditTitle").textContent = "New profile";
+    $("profName").value = ""; $("profRole").value = ""; $("profDeny").value = ""; $("profModel").value = "";
+    $("profReadonly").checked = false; editSecretRefs = [];
+    renderProfSecrets();
+  }
+  // The profile's secrets are checkboxes over the vault: pick which named
+  // secrets this profile injects. (Values live in the vault, defined once.)
+  async function renderProfSecrets() {
+    const ul = $("profSecretsList"); ul.innerHTML = "";
+    const names = await loadVault();
+    if (!names.length) { ul.innerHTML = '<li><span style="opacity:.6">vault is empty — add secrets in the Secrets panel</span></li>'; return; }
+    for (const k of names) {
+      const li = document.createElement("li");
+      const label = document.createElement("label"); label.style.display = "flex"; label.style.gap = "6px"; label.style.cursor = "pointer";
+      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = editSecretRefs.includes(k);
+      cb.addEventListener("change", () => {
+        if (cb.checked) { if (!editSecretRefs.includes(k)) editSecretRefs.push(k); }
+        else editSecretRefs = editSecretRefs.filter((x) => x !== k);
+      });
+      const code = document.createElement("code"); code.textContent = k;
+      label.append(cb, code); li.append(label); ul.appendChild(li);
+    }
+  }
+  const READONLY_DENY = ["Bash(git commit:*)","Bash(git push:*)","Bash(git add:*)","Bash(git reset:*)","Bash(git rebase:*)","Bash(git merge:*)","Bash(git checkout:*)"];
+  $("profReadonly").addEventListener("change", (e) => { if (e.target.checked) $("profDeny").value = READONLY_DENY.join("\n"); });
+  $("profSave").addEventListener("click", async () => {
+    const name = $("profName").value.trim(); if (!name) return alert("Name required.");
+    const body = {
+      name,
+      systemPrompt: $("profRole").value,
+      deny: $("profDeny").value.split("\n").map((s) => s.trim()).filter(Boolean),
+      model: $("profModel").value.trim(),
+      secrets: editSecretRefs,   // referenced vault NAMES
+    };
+    await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    await loadProfilesInto(); renderProfilesList(); clearProfileForm();
+  });
+  $("profReset").addEventListener("click", clearProfileForm);
+  /** Ouvre le panneau Profiles, prérempli sur `p` si on vient du crayon d'une carte. */
+  async function openProfilesPanel(p) {
+    await loadProfilesInto();
+    renderProfilesList();
+    if (p) fillProfileForm(p); else clearProfileForm();
+    $("profilesOverlay").hidden = false;
+  }
+  /** Fermer repeint la grille : un profil créé apparaît tout de suite, et la
+   *  sélection retombe sur « No profile » si le profil choisi a été supprimé
+   *  (syncProfileSelection s'en charge). */
+  async function closeProfilesPanel() {
+    $("profilesOverlay").hidden = true;
+    await loadProfilesInto();
+  }
+  $("profilesBtn").addEventListener("click", () => openProfilesPanel());
+  $("editProfilesLink").addEventListener("click", () => openProfilesPanel());
+  $("profilesClose").addEventListener("click", closeProfilesPanel);
+  $("profilesOverlay").addEventListener("click", (e) => { if (e.target === $("profilesOverlay")) closeProfilesPanel(); });
+  // Le pont ESM (window.profileBlurb / profileBadges) s'exécute APRÈS le
+  // parsing, alors que ce script-ci tourne pendant : peindre tout de suite
+  // lèverait sur la 1re carte et laisserait la grille vide, en silence
+  // (promesse non attendue). DOMContentLoaded arrive après le module.
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => loadProfilesInto());
+  } else {
+    loadProfilesInto();
+  }
+
+  // ── Telegram bot config panel ──────────────────────────────────────────
+  let tgAllowed = [];
+  function renderTelegram(s) {
+    tgAllowed = s.allowedChats.slice();
+    const dot = s.running && s.username ? "🟢" : s.tokenError ? "🟠" : "⚪";
+    const who = s.username ? s.username : s.hasToken ? "(token set)" : "no token";
+    const grp = s.boundGroup ? ` · group ${s.boundGroup.chatId}` : " · no group bound (run /setup in Telegram)";
+    const err = s.tokenError ? ` — ${s.tokenError}` : "";
+    $("tgStatus").textContent = `${dot} ${who}${grp}${err}`;
+    $("tgUnbind").hidden = !s.boundGroup; // only offer unbind when a group is bound
+    $("tgEnabled").checked = s.enabled;
+    const tok = $("tgToken");
+    tok.disabled = s.envOverride;
+    tok.placeholder = s.envOverride ? "set by environment variable" : "paste a new token…";
+    const ul = $("tgChats");
+    ul.innerHTML = "";
+    for (const c of s.allowedChats) {
+      const li = document.createElement("li");
+      li.textContent = c + " ";
+      const x = document.createElement("button");
+      x.textContent = "✕";
+      x.addEventListener("click", () => putTelegram({ allowedChats: tgAllowed.filter((v) => v !== c) }));
+      li.appendChild(x);
+      ul.appendChild(li);
+    }
+  }
+  async function loadTelegram() {
+    renderTelegram(await (await fetch("/telegram")).json());
+  }
+  async function putTelegram(patch) {
+    const r = await fetch("/telegram", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (r.ok) renderTelegram(await r.json());
+    else alert((await r.json()).error || "update failed");
+  }
+  $("tgUnbind").addEventListener("click", () => { if (confirm("Unbind the current board group? You'll need to /setup a group again in Telegram.")) putTelegram({ unbindGroup: true }); });
+  $("telegramBtn").addEventListener("click", () => { $("telegramOverlay").hidden = false; loadTelegram(); });
+  $("telegramClose").addEventListener("click", () => { $("telegramOverlay").hidden = true; });
+  $("telegramOverlay").addEventListener("click", (e) => { if (e.target === $("telegramOverlay")) $("telegramOverlay").hidden = true; });
+  $("tgEnabled").addEventListener("change", (e) => putTelegram({ enabled: e.target.checked }));
+  $("tgTokenSave").addEventListener("click", () => {
+    const el = $("tgToken");
+    if (el.value.trim()) { putTelegram({ token: el.value.trim() }); el.value = ""; }
+  });
+  $("tgTokenRemove").addEventListener("click", () => putTelegram({ token: "" }));
+  $("tgChatAdd").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const el = $("tgChatInput");
+    const v = el.value.trim();
+    if (v && !tgAllowed.includes(v)) putTelegram({ allowedChats: [...tgAllowed, v] });
+    el.value = "";
+  });
+
+  newTabBtn.addEventListener("click", openSetup);
+  newGroupBtn.addEventListener("click", () => {
+    createGroup();
+    persistGroups();
+  });
+
+  // ── Quota gauges (5h / 7d) ──────────────────────────────
+  function fmtReset(sec) {
+    if (!sec) return "";
+    const d = sec * 1000 - Date.now();
+    if (d <= 0) return "resets now";
+    const h = Math.floor(d / 3600000);
+    const m = Math.floor((d % 3600000) / 60000);
+    return "resets in " + (h ? h + "h" + (m ? m + "m" : "") : m + "m");
+  }
+  /** Last verdict from /usage — read by the composer before sending. */
+  let paceBlocked = false, paceReason = null;
+
+  /** Paints the static gradient arc of every dial. Runs once: the scale never
+   *  changes, only the needle on top of it does. */
+  function buildDialArcs() {
+    if (!window.arcSegments) return;
+    const NS = "http://www.w3.org/2000/svg";
+    for (const g of document.querySelectorAll(".quota .dial .arc")) {
+      g.replaceChildren(
+        ...window.arcSegments().map(({ d, color }) => {
+          const p = document.createElementNS(NS, "path");
+          p.setAttribute("d", d);
+          // Via the style PROPERTY: color-mix() is not reliably parsed as an
+          // SVG presentation attribute.
+          p.style.stroke = color;
+          return p;
+        }),
+      );
+    }
+  }
+
+  function paintGauge(el, w) {
+    const svg = el.querySelector(".dial");
+    const needle = svg.querySelector(".needle");
+    const tick = svg.querySelector(".tick");
+    const pct = svg.querySelector(".pct");
+    const label = el.dataset.window;
+    const title = window.dialTitle
+      ? window.dialTitle(label, w, w ? fmtReset(w.resetsAt) : "")
+      : label + " rolling limit";
+    el.title = title;
+    svg.setAttribute("aria-label", title);
+    svg.classList.toggle("nodata", !w);
+    // Guard on the ESM bridge (invariant 10): this function can be reached
+    // before the module has run. Degrade to the number rather than paint a
+    // needle at a wrong angle.
+    if (!w || !window.dialPos) {
+      needle.setAttribute("visibility", "hidden");
+      tick.setAttribute("visibility", "hidden");
+      pct.textContent = w ? Math.round(w.usedPercentage) + "%" : "—";
+      pct.style.fill = "var(--text-dim)";
+      return;
+    }
+    const pos = window.dialPos(w.usedPercentage, w.idealPacePct);
+    needle.setAttribute("visibility", "visible");
+    needle.style.transform = "rotate(" + (pos * window.SWEEP_DEG).toFixed(1) + "deg)";
+    // Without a reset time there is no ideal pace, so there is nothing for the
+    // tick to mark — drawing it would assert a reference we do not have.
+    tick.setAttribute("visibility", w.idealPacePct == null ? "hidden" : "visible");
+    pct.textContent = Math.round(w.usedPercentage) + "%";
+    pct.style.fill = window.dialColor(pos);
+  }
+
+  async function refreshUsage() {
+    try {
+      const u = await (await fetch("/usage")).json();
+      paintGauge($("quota5h"), u.fiveHour);
+      paintGauge($("quota7d"), u.sevenDay);
+      paceBlocked = !!u.blocked;
+      paceReason = u.reason || null;
+    } catch {
+      // Leave the gauges on their last values, but not the verdict: a stuck
+      // `true` would make the client demand confirmation forever where the
+      // server would let the send through. The server re-checks and is the
+      // authority, so failing open here costs nothing.
+      paceBlocked = false;
+      paceReason = null;
+    }
+  }
+  // The ESM bridge (window.dialPos & co) runs AFTER this classic script — see
+  // invariant 10 in CLAUDE.md. Painting now would leave blank dials in silence.
+  document.addEventListener("DOMContentLoaded", () => {
+    buildDialArcs();
+    refreshUsage();
+  });
+  setInterval(refreshUsage, 60_000);
+
+  // On load: restore the remembered groups (server-side, keyed by launch
+  // directory), then the remembered channels by resuming each session (the
+  // server replays the history); otherwise start with a blank channel.
+  (async () => {
+    // Fetch defaults + groups + channels in PARALLEL (they were three sequential
+    // round-trips before a single tab could render). Groups are still created
+    // before channel tabs so tabs land in the right group.
+    const [defaultsR, groupsR, channelsR] = await Promise.allSettled([
+      serverCwd ? Promise.resolve(null) : fetch("/defaults").then((r) => r.json()),
+      fetch("/groups").then((r) => r.json()),
+      fetch("/channels").then((r) => r.json()),
+    ]);
+    if (!serverCwd && defaultsR.status === "fulfilled" && defaultsR.value) serverCwd = defaultsR.value.cwd || "";
+
+    let savedGroups =
+      groupsR.status === "fulfilled" && Array.isArray(groupsR.value) && groupsR.value.length ? groupsR.value : [];
+    if (!savedGroups.length) savedGroups = JSON.parse(localStorage.getItem("cp.groups") || "[]");
+    for (const g of savedGroups) createGroup(g);
+
+    let saved =
+      channelsR.status === "fulfilled" && Array.isArray(channelsR.value) && channelsR.value.length ? channelsR.value : [];
+    if (!saved.length) saved = JSON.parse(localStorage.getItem("cp.channels") || "[]");
+
+    const seenIds = new Set();
+    const uniqueChannels = saved.filter(
+      (s) => s.sessionId && !seenIds.has(s.sessionId) && seenIds.add(s.sessionId),
+    );
+    if (uniqueChannels.length) {
+      // 1) Create EVERY tab synchronously — the channel list (left column) shows
+      //    at once, before any (slow) session resume. Sessions are launched
+      //    afterwards, prioritising the visible one.
+      const pending = [];
+      for (const s of uniqueChannels) {
+        const t = createTab(s.group);
+        // Know the session id from the start, so a slow or failed reattach never
+        // drops the channel from a persist (which eroded the list to one).
+        t.sessionId = s.sessionId;
+        if (s.branch) t.branch = s.branch;
+        t.profile = s.profile || null;
+        setCrons(t, s.crons);
+        if (s.muted) setMuted(t, true, false); // restoring: don't push back
+        // The mirror TOO, otherwise the first persist pushes `mirror:false`
+        // back and overwrites the registry — which deleted the topic of a
+        // Telegram-born agent. Restoring: don't push back.
+        if (typeof s.mirror === "boolean" ? s.mirror : !!s.telegram) setMirror(t, true, false);
+        if (s.name) {
+          t.customName = true;
+          t.nameEl.textContent = s.name;
+        }
+        pending.push({
+          t,
+          msg: { cwd: s.cwd, resume: s.sessionId, branch: s.branch || undefined, repo: s.repo || serverCwd || undefined },
+        });
+      }
+      // Revenir sur le canal actif d'avant le reload (fallback : le premier).
+      const savedActive = localStorage.getItem("cp.activeSession");
+      let targetIdx = pending.findIndex((p) => p.t.sessionId === savedActive);
+      if (targetIdx < 0) targetIdx = 0;
+      activate(pending[targetIdx].t);
+      // The tab LIST is complete (all tabs exist with their session ids), so
+      // persistence is safe to re-enable now — even though sessions connect below.
+      restoring = false;
+      persistChannels();
+      if (savedGroups.length) persistGroups(); // sync groups (e.g. from localStorage fallback)
+      // 2) Connect the VISIBLE channel first (its transcript appears fast), then
+      //    ALL the others right after — no artificial delay. (An earlier 120ms
+      //    stagger made the other channels slow to load; the server handles the
+      //    concurrent resumes fine, so we just prioritise the active one.)
+      launchTab(pending[targetIdx].t, pending[targetIdx].msg);
+      for (let i = 0; i < pending.length; i++) {
+        if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
+      }
+    } else {
+      // Rien à restaurer : l'invitation. Le formulaire ne s'ouvre pas de force —
+      // on peut aussi arriver là pour regarder, ou lancer depuis Telegram.
+      refreshChrome();
+      // Nothing to restore: enable persistence for user actions, but do NOT
+      // push a blank list (a failed /channels fetch must never wipe the store).
+      restoring = false;
+    }
+  })();
+</script>
+</body>
+</html>

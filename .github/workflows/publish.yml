@@ -1,0 +1,46 @@
+name: Publish
+
+# Auto-publish on every merge to main (pre-stable mode): the version is
+# <major>.<minor> from package.json + the commit count as patch, e.g. 0.1.42.
+# Bumped in-CI only (never committed/pushed). Auth is npm Trusted Publishing via
+# GitHub OIDC — NO token. One-time setup on npmjs.com: package `shadok-ai` →
+# Settings → Trusted Publisher → GitHub Actions, repo shadok-ai/shadok-ai,
+# workflow `publish.yml`.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for OIDC trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need full history for the commit count
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # OIDC trusted publishing needs Node >= 22.14
+          registry-url: https://registry.npmjs.org
+      - run: npm install -g npm@latest # OIDC needs npm >= 11.5.1
+      - run: npm ci
+      - run: npm test
+      - name: Compute version (major.minor.commitcount)
+        id: ver
+        run: |
+          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          COUNT=$(git rev-list --count HEAD)
+          echo "version=${BASE}.${COUNT}" >> "$GITHUB_OUTPUT"
+      - name: Publish if new
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          if npm view "shadok-ai@$V" version >/dev/null 2>&1; then
+            echo "shadok-ai@$V already published — skipping"
+            exit 0
+          fi
+          npm version "$V" --no-git-tag-version --allow-same-version
+          npm publish --access public
