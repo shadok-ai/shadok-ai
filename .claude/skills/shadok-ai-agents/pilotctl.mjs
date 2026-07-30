@@ -53,7 +53,7 @@ export function parseArgs(argv) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--worktree" || a === "--continue") flags[a.slice(2)] = true;
-    else if (a === "--cwd" || a === "--resume" || a === "--timeout") flags[a.slice(2)] = rest[++i];
+    else if (a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile") flags[a.slice(2)] = rest[++i];
     else pos.push(a);
   }
   return { cmd, pos, flags };
@@ -225,6 +225,9 @@ async function cmdSpawn(flags) {
   if (flags.worktree) startMsg.worktree = true;
   if (flags.resume) startMsg.resume = flags.resume;
   if (flags.continue) startMsg.continue = true;
+  // Sans profil, l'agent délégué démarre en Claude nu : ni rôle, ni garde-fou,
+  // ni secrets. Le serveur ne l'applique qu'aux sessions neuves (pas de resume).
+  if (flags.profile) startMsg.profile = flags.profile;
   const client = await openSession(startMsg);
   const { sessionId, cwd, branch } = client.state.ready;
   let baseSha = null;

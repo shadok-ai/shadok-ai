@@ -29,6 +29,26 @@ test("spawn démarre une session et écrit l'état local", async () => {
   }
 });
 
+test("spawn --profile transmet le profil au serveur", async () => {
+  const mock = await startMockServer({
+    start: [{ type: "ready", sessionId: "prof-1", cwd: "/tmp/x", branch: "shadok-ai/prof1" }],
+  });
+  process.env.SHADOK_PORT = String(mock.port);
+  try {
+    await run(["spawn", "--cwd", "/tmp/x", "--worktree", "--profile", "Shadok-dev"]);
+    // Sans ça, un agent délégué démarre en Claude nu : pas de rôle, pas de
+    // garde-fou, pas de secrets — le profil est le cœur de la délégation.
+    assert.deepEqual(mock.received[0], {
+      type: "start",
+      cwd: "/tmp/x",
+      worktree: true,
+      profile: "Shadok-dev",
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
 test("spawn --resume conserve branch/baseSha existants quand le serveur n'en renvoie pas", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "abc-123", cwd: "/tmp/x" }],

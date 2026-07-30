@@ -22,6 +22,13 @@ test("parseArgs gère --continue et --resume", () => {
   assert.equal(r.flags.resume, "abc-123");
 });
 
+test("parseArgs: --profile prend une valeur, pas un booléen", () => {
+  const r = parseArgs(["spawn", "--worktree", "--profile", "Shadok-dev", "--cwd", "/tmp/y"]);
+  assert.equal(r.flags.profile, "Shadok-dev");
+  assert.equal(r.flags.cwd, "/tmp/y");
+  assert.deepEqual(r.pos, []); // le nom du profil ne doit pas fuir en positionnel
+});
+
 test("state: écriture, lecture, suppression", () => {
   assert.equal(readState("nope"), null);
   writeState("abc", { sessionId: "abc", cwd: "/tmp/x" });
