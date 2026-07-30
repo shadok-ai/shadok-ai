@@ -28,9 +28,18 @@ monde et ne touche ni le pip ni le titre.
 
 ### Condition de déclenchement
 
+> **Corrigé le 2026-07-30.** La v1 lisait `document.hidden` seul, et ne
+> clignotait donc **jamais** dans l'usage réel : `document.hidden` reste faux
+> tant que la fenêtre est affichée, même si une autre application a le focus —
+> or c'est exactement le mode d'usage du cockpit (fenêtre ouverte sur un écran,
+> utilisateur dans son terminal). Le déclencheur est désormais `away =
+> document.hidden || !document.hasFocus()`, un sur-ensemble. Vérifié au
+> navigateur, pas seulement en tests unitaires.
+
 Le badge clignote si et seulement si :
 
-- `document.hidden` est vrai — on ne fait jamais clignoter la page qu'on regarde ;
+- **tu n'es pas sur la page** — onglet caché, fenêtre minimisée, ou fenêtre
+  visible mais sans le focus ;
 - **et** au moins un canal **non muté** est en `needs-answer`.
 
 Une réponse non lue (`unread`) ne clignote pas : elle garde le pip ambre fixe.
