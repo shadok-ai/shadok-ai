@@ -2027,7 +2027,11 @@
     // A NEW "agent is blocked" in a channel you're not already looking at →
     // chime once. (Not on unread, not on re-renders of an existing question,
     // never for a muted channel.)
-    if (mood === "needs-answer" && !wasNeeds && !tab.muted && (document.hidden || tab !== active)) ding();
+    // Même correction que pour le clignotement : « pas devant » inclut la
+    // fenêtre affichée mais sans focus, sinon un agent qui se bloque dans le
+    // canal actif pendant que tu es dans ton terminal ne fait aucun bruit.
+    const away = document.hidden || !document.hasFocus();
+    if (mood === "needs-answer" && !wasNeeds && !tab.muted && (away || tab !== active)) ding();
     refreshBadge();
   }
 
@@ -2229,8 +2233,12 @@
       document.title = titleBase;
       return;
     }
+    // "Ailleurs" = onglet caché OU fenêtre sans focus. document.hidden seul ne
+    // suffit pas : il reste faux tant que la fenêtre est affichée, même si tu
+    // travailles dans une autre application — l'usage normal du cockpit. Avec
+    // lui seul, le clignotement ne se déclenchait jamais quand il servait.
     const s = window.notifyState(attentionInput(), {
-      hidden: document.hidden,
+      away: document.hidden || !document.hasFocus(),
       phase: blinkPhase,
     });
     favicon.href = faviconSVG(s.color);
@@ -2244,8 +2252,13 @@
     }
   }
   function refreshBadge() { paint(); }
-  // Coming back to the tab must stop the blink at once, not at the next tick.
-  document.addEventListener("visibilitychange", () => { blinkPhase = 0; paint(); });
+  // Coming back must stop the blink at once, not at the next tick. Both signals
+  // matter: switching tabs fires visibilitychange, switching application only
+  // fires focus/blur.
+  const repaintOnReturn = () => { blinkPhase = 0; paint(); };
+  document.addEventListener("visibilitychange", repaintOnReturn);
+  window.addEventListener("focus", repaintOnReturn);
+  window.addEventListener("blur", repaintOnReturn);
   // The bridge is ready by DOMContentLoaded: paint once for real.
   document.addEventListener("DOMContentLoaded", () => paint());
 

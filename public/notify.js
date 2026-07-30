@@ -23,6 +23,13 @@ export const BLINK_MS = 900;
 /**
  * L'état d'attention agrégé des canaux.
  *
+ * `away` = l'utilisateur n'est pas sur la page. La v1 lisait `document.hidden`,
+ * qui ne dit PAS « tu regardes ailleurs » : il est faux tant que la fenêtre
+ * reste affichée, même si une autre application a le focus. Or c'est l'usage
+ * normal du cockpit — fenêtre ouverte sur un écran, utilisateur dans son
+ * terminal — donc le clignotement ne se déclenchait jamais là où il servait.
+ * L'appelant compose désormais visibilité ET focus.
+ *
  * `phase` alterne 0/1 au rythme du clignotement. Les deux phases renvoient
  * toujours une couleur ET un badge : Chrome étrangle les timers d'un onglet
  * caché (jusqu'à un réveil par minute après ~5 min), et un on/off gelé sur
@@ -30,11 +37,11 @@ export const BLINK_MS = 900;
  * pire cas est un clignotement lent.
  *
  * @param {Array<{mood?: string|null, muted?: boolean}>} channels
- * @param {{hidden: boolean, phase: number}} view
+ * @param {{away: boolean, phase: number}} view
  * @returns {{color: string|null, badge: string, blink: boolean}}
  */
 export function notifyState(channels, view) {
-  const hidden = !!(view && view.hidden);
+  const away = !!(view && view.away);
   const phase = view && view.phase ? 1 : 0;
 
   let blocked = false;
@@ -49,7 +56,7 @@ export function notifyState(channels, view) {
 
   // Seul un agent bloqué justifie de clignoter : une réponse non lue signale
   // qu'il s'est passé quelque chose, pas qu'on attend après toi.
-  const blink = blocked && hidden;
+  const blink = blocked && away;
   if (!blink) return { color: blocked ? RED : AMBER, badge: "● ", blink: false };
   return phase
     ? { color: RED_DIM, badge: "◉ ", blink: true }
