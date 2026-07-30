@@ -20,7 +20,7 @@ l'UI web (http://localhost:3789) — l'utilisateur peut suivre et intervenir.
 
 | Commande | Effet |
 |---|---|
-| `spawn [--cwd DIR] [--worktree] [--resume ID] [--continue]` | crée un agent → `{sessionId, cwd, branch}`. `--worktree` isole l'agent dans un worktree git (`~/.shadok-ai/worktrees/`, branche `shadok-ai/<tag>`) |
+| `spawn [--cwd DIR] [--worktree] [--profile NOM] [--resume ID] [--continue]` | crée un agent → `{sessionId, cwd, branch}`. `--worktree` isole l'agent dans un worktree git (`~/.shadok-ai/worktrees/`, branche `shadok-ai/<tag>`). `--profile` lui donne un rôle + ses garde-fous + ses secrets (voir ci-dessous) |
 | `prompt <id> "texte" [--timeout s]` | envoie un prompt, attend la fin du tour → `{status:"answer", text, tools}` ou `{status:"dialog", question, options, multi}` ou `{status:"timeout", screen}` ou `{status:"pace-blocked", reason}` |
 | `dialog <id>` | interroge l'état → `{status:"idle"}` ou le dialog en attente |
 | `choose <id> <n>` | dialog single-select : choisit et valide l'option n |
@@ -31,9 +31,24 @@ l'UI web (http://localhost:3789) — l'utilisateur peut suivre et intervenir.
 | `stop <id>` | termine la session (pour TOUS ses clients) |
 | `screen <id>` | screen TUI brut (debug) |
 
+## Choisir un profil (`--profile`)
+
+Un profil est un rôle appliqué au démarrage : prompt système, garde-fous de
+permissions natifs (ex. écritures git bloquées), secrets injectés, modèle
+éventuel. **Sans `--profile`, l'agent démarre en Claude nu** — ni rôle, ni
+garde-fou, ni secrets.
+
+Les profils livrés : `Shadok-Boss` (lit tout, délègue, read-only),
+`Shadok-dev` (code, accès complet), `Shadok-Marketing` et `Shadok-Support`
+(read-only). `pilotctl.mjs list` ne les énumère pas — la liste vit dans le
+panneau Profiles de l'UI, ou via `GET /profiles`.
+
+Le profil n'est appliqué qu'aux sessions **neuves** : avec `--resume` ou
+`--continue`, la session reprend celui qu'elle avait déjà.
+
 ## Flux type : déléguer une tâche à un agent
 
-1. `spawn --worktree --cwd <repo>` → noter `sessionId` et `branch` ;
+1. `spawn --worktree --profile <rôle> --cwd <repo>` → noter `sessionId` et `branch` ;
 2. `prompt <id> "<tâche>"` — lancer via Bash en **run_in_background**
    (un tour peut durer plusieurs minutes) et lire le JSON à la fin ;
 3. si `status:"dialog"` : répondre avec `choose` (single) ou

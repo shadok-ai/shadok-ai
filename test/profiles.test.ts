@@ -100,10 +100,26 @@ test("envVarsNote: lists names, empty for none", () => {
   assert.match(n, /never print or commit/i);
 });
 
-test("DEFAULT_PROFILES: dev is unguarded, marketing/support are read-only", () => {
+test("DEFAULT_PROFILES: dev is unguarded, boss/marketing/support are read-only", () => {
   const by = Object.fromEntries(DEFAULT_PROFILES.map((p) => [p.name, p]));
   assert.ok(!by["Shadok-dev"].deny);
+  assert.deepEqual(by["Shadok-Boss"].deny, READONLY_DENY);
   assert.deepEqual(by["Shadok-Marketing"].deny, READONLY_DENY);
   assert.deepEqual(by["Shadok-Support"].deny, READONLY_DENY);
   for (const p of DEFAULT_PROFILES) assert.ok(p.systemPrompt && p.systemPrompt.length > 40);
+});
+
+test("DEFAULT_PROFILES: le boss est en tête et sait déléguer avec un profil", () => {
+  // En tête parce que c'est la porte d'entrée : première carte de la box.
+  assert.equal(DEFAULT_PROFILES[0].name, "Shadok-Boss");
+  const boss = DEFAULT_PROFILES[0].systemPrompt!;
+  // Un boss qui ne sait pas nommer l'outil de délégation bricole tout seul.
+  assert.match(boss, /shadok-ai-agents/);
+  assert.match(boss, /--profile/);
+  // Les rôles qu'il peut confier doivent exister dans la liste.
+  const names = DEFAULT_PROFILES.map((p) => p.name);
+  for (const role of ["Shadok-dev", "Shadok-Marketing", "Shadok-Support"]) {
+    assert.ok(boss.includes(role), `le boss doit citer ${role}`);
+    assert.ok(names.includes(role), `${role} doit exister`);
+  }
 });
