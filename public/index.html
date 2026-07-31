@@ -869,6 +869,25 @@
   #chanBar .gauge { flex-direction: row; align-items: baseline; gap: 4px; }
   #chanBar .gauge .label { font-size: 10px; }
   #chanBar #cwdView { display: inline-block; max-width: 200px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
+  /* Sélecteur de canal : masqué sur desktop (la sidebar est la navigation). */
+  #chanSelect {
+    display: none;
+    font-family: var(--mono); font-size: 13px;
+    background: var(--bg-inset); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+    max-width: 55vw;
+  }
+  /* ── Mobile : sidebar cachée, navigation par le sélecteur du header canal ── */
+  @media (max-width: 640px) {
+    #tabbar { display: none; }
+    #chanSelect { display: inline-block; }
+    #chanBar #chanBarName { display: none; }
+    /* Bandeau canal condensé : on garde Status + Session, on cache le reste. */
+    #chanBar #dirGauge, #chanBar #branchGauge { display: none !important; }
+    #chanBar .gauge .label { display: none; }   /* valeurs seules, plus compact */
+    #chanBar { gap: 6px; padding: 6px 10px; }
+    header { flex-wrap: wrap; row-gap: 4px; }
+  }
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
   #xtermHost .xterm { height: 100%; }
   /* Aucun agent ouvert. Le panneau central n'affiche plus un formulaire à demi
@@ -1320,11 +1339,13 @@
          séparé, donc ses actions n'ont pas de raison d'apparaître avec lui. -->
     <div id="chanBar" hidden>
       <span class="label" id="chanBarName"></span>
+      <!-- Mobile: sidebar cachée → ce sélecteur change de canal / en crée un. -->
+      <select id="chanSelect" title="Canal"></select>
       <div class="gauge">
         <span class="label">Status</span>
         <span class="value"><span id="led" class="led"></span><span id="state">—</span></span>
       </div>
-      <div class="gauge">
+      <div class="gauge" id="dirGauge">
         <span class="label">Directory</span>
         <span class="value" id="cwdView">—</span>
       </div>
@@ -1646,6 +1667,7 @@
       tab.nameEl.textContent = v;
       saveName(tab, v);
       persistChannels();
+      rebuildChanSelect();   // le nom change → mettre à jour le sélecteur mobile
     });
   }
 
@@ -2329,7 +2351,33 @@
    * un formulaire à la place. Tout ce qui décrit un canal retombe alors sur « — »
    * et le panneau central montre l'invitation.
    */
+  /** (Re)construit le sélecteur mobile : une option par canal + « ＋ New agent ». */
+  function rebuildChanSelect() {
+    const sel = $("chanSelect");
+    if (!sel) return;
+    const cur = active ? String(active.id) : "";
+    sel.innerHTML = "";
+    for (const t of tabs) {
+      const o = document.createElement("option");
+      o.value = String(t.id);
+      o.textContent = t.nameEl ? t.nameEl.textContent : "agent " + t.id;
+      sel.appendChild(o);
+    }
+    const nw = document.createElement("option");
+    nw.value = "__new__";
+    nw.textContent = "＋ New agent";
+    sel.appendChild(nw);
+    sel.value = cur;
+  }
+  $("chanSelect").addEventListener("change", () => {
+    const v = $("chanSelect").value;
+    if (v === "__new__") { createTab(); return; }
+    const t = tabs.find((x) => String(x.id) === v);
+    if (t) activate(t);
+  });
+
   function refreshChrome() {
+    rebuildChanSelect();   // garde le sélecteur mobile en phase (liste + actif)
     const t = active;
     if (!t) {
       $("led").className = "led ";
