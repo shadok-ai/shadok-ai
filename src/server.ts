@@ -83,11 +83,13 @@ import {
   isPermissionMode,
   envVarsNote,
   seedDefaultProfiles,
+  seedTweakProfile,
   loadProfiles,
   upsertProfile,
   removeProfile,
   type Profile,
 } from "./profiles.js";
+import { ensureSelfRepo } from "./selfrepo.js";
 import {
   createWorktree,
   pruneWorktree,
@@ -612,6 +614,14 @@ app.get("/recover", (req, res) => {
 // Server-side defaults (the launch directory pre-fills the working dir field).
 app.get("/defaults", (_req, res) => {
   res.json({ cwd: process.cwd() });
+});
+// Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
+// back the directory to start the agent in. Sits here so it inherits the same
+// password gate as its neighbours.
+app.post("/tweak/prepare", (_req, res) => {
+  const r = ensureSelfRepo();
+  if (r.error) return res.status(500).json({ error: r.error });
+  res.json({ cwd: r.cwd });
 });
 // Running version + latest seen on npm (null if not yet polled / check disabled).
 app.get("/version", (_req, res) =>
@@ -2015,6 +2025,14 @@ migrateTgBindings();
 // Seed the starter agent profiles (Shadok-dev / -Marketing / -Support) on a
 // fresh install, when the user has none yet.
 seedDefaultProfiles();
+// Install/refresh the managed Shadok-Tweak role from the repo's prompt file, so
+// it tracks this build instead of going stale in the user's profiles.json.
+try {
+  const tweak = fs.readFileSync(path.join(__dirname, "..", "context", "tweak-prompt.md"), "utf8").trim();
+  if (tweak) seedTweakProfile(tweak);
+} catch {
+  /* best effort — the CTA still starts an agent, just without the role */
+}
 
 // Install/refresh the bundled "shadok-scheduler" skill so agents can set up
 // their own channel's crons in plain language. Server-owned, overwritten each
