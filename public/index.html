@@ -1605,15 +1605,37 @@
 
   // Composer drafts, one per channel, remembered by session id.
   const savedDrafts = JSON.parse(localStorage.getItem("cp.drafts") || "{}");
+  /** Écrit MAINTENANT le brouillon de cet onglet, sans attendre le débounce. */
+  function writeDraft(tab) {
+    if (!tab.sessionId) return;
+    clearTimeout(tab.draftTimer);
+    if (tab.draft) savedDrafts[tab.sessionId] = tab.draft;
+    else delete savedDrafts[tab.sessionId];
+    localStorage.setItem("cp.drafts", JSON.stringify(savedDrafts));
+  }
   function persistDraft(tab) {
     if (!tab.sessionId) return;
     clearTimeout(tab.draftTimer);
-    tab.draftTimer = setTimeout(() => {
-      if (tab.draft) savedDrafts[tab.sessionId] = tab.draft;
-      else delete savedDrafts[tab.sessionId];
-      localStorage.setItem("cp.drafts", JSON.stringify(savedDrafts));
-    }, 300);
+    tab.draftTimer = setTimeout(() => writeDraft(tab), 300);
   }
+  /**
+   * Vide les écritures en attente de TOUS les onglets.
+   *
+   * Le débounce se réarme à chaque frappe : tant qu'on écrit sans marquer 300 ms
+   * de pause, rien n'était jamais écrit — un rechargement en plein élan (typique
+   * de l'auto-update, qui tombe quand il tombe) emportait tout le message. On
+   * force donc l'écriture au moment où la page s'en va.
+   */
+  function flushDrafts() {
+    for (const t of tabs) writeDraft(t);
+  }
+  // `pagehide` couvre le rechargement, la navigation et la mise en bfcache ;
+  // `visibilitychange` rattrape le mobile, où l'onglet peut être tué sans que
+  // `pagehide` ne parte. localStorage étant synchrone, l'écriture aboutit.
+  window.addEventListener("pagehide", flushDrafts);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushDrafts();
+  });
   function dropDraft(tab) {
     clearTimeout(tab.draftTimer);
     tab.draft = "";
@@ -2156,6 +2178,7 @@
       } else if (!dismissedChannels.has(c.sessionId)) {
         const nt = createTab(c.group);
         nt.sessionId = c.sessionId;
+        nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
         setCrons(nt, c.crons);
@@ -3115,7 +3138,14 @@
 
   function handleVersion(msg) {
     if (bootVersion === null) bootVersion = msg.current;
-    else if (msg.current && msg.current !== bootVersion) { location.reload(); return; }
+    else if (msg.current && msg.current !== bootVersion) {
+      // Mise à jour : la page part maintenant. On écrit d'abord — c'est LE cas
+      // où l'on perdait un message en cours de frappe, puisque le rechargement
+      // n'est pas déclenché par l'utilisateur.
+      flushDrafts();
+      location.reload();
+      return;
+    }
     lastVersion = msg;
     if (!verView) return;
     const ahead = msg.latest && verIsNewer(msg.latest, msg.current);
@@ -3238,6 +3268,10 @@
               promptInput.value = t.draft;
               autosizePrompt();
             }
+          } else if (t.draft) {
+            // Tapé AVANT que la session ne soit connue : `persistDraft` refuse
+            // d'écrire sans id, ce texte n'était donc dans aucun stockage.
+            writeDraft(t);
           }
         }
         // launchTab reuses the tab object, so a bubble armed before the session
@@ -4394,6 +4428,11 @@
         // Know the session id from the start, so a slow or failed reattach never
         // drops the channel from a persist (which eroded the list to one).
         t.sessionId = s.sessionId;
+        // Le brouillon revient DÈS la création de l'onglet, sans attendre le
+        // `ready` : après une mise à jour le serveur redémarre, la reconnexion
+        // prend plusieurs secondes, et l'utilisateur retrouvait un champ vide —
+        // de quoi croire que son message était perdu et le retaper.
+        t.draft = savedDrafts[s.sessionId] || "";
         if (s.branch) t.branch = s.branch;
         t.profile = s.profile || null;
         setCrons(t, s.crons);
