@@ -147,12 +147,17 @@ both are silent in the DOM.
 `origin` — "web"/"cron"/"telegram"…, renvoyé dans `prompt-echo` pour dire QUI a
 parlé),
 `prompt` (text, `force?`), `choose` n, `toggle` n, `confirm`, `freetext` n
-text, `key`, `settle`, `restart`, `stop` (`sessionId?` — kills a specific
-channel, so the UI can remove a zombie).
+text, `key`, `settle`, `restart`, `set-profile` (`profile` — le nom du profil ou
+`null` ; `restart?` pour l'appliquer tout de suite en re-spawnant sur place.
+C'est le SEUL chemin légitime : `profile` est `SERVER_OWNED` sur le canal, donc
+un PUT `/channels` du navigateur ne peut pas y toucher), `stop` (`sessionId?` —
+kills a specific channel, so the UI can remove a zombie).
 
 **server → client:** `ready`, `working` (porte `elapsedMs` — depuis combien de temps le tour tourne ; le client s'ancre sur la DURÉE et jamais sur un instant serveur, sinon le chrono est faux de tout l'écart entre les deux horloges), `turn-done`, `stream-text`,
 `stream-tool`, `stream-result`, `history`, `dialog`, `screen`, `tokens`,
-`context`, `prompt-echo`, `pace-blocked` / `pace-hold` / `pace-resumed`,
+`context`, `profile` (le couple `{profile, applied}` — désiré vs celui que le
+process en cours porte vraiment ; leur écart est ce que l'UI montre comme « at
+next reload »), `prompt-echo`, `pace-blocked` / `pace-hold` / `pace-resumed`,
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
 `stopped`. `error` carries an optional `code` (today only `"busy"`, on a prompt
 refused mid-turn) so a machine client can classify a refusal without matching on
