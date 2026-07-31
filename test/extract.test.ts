@@ -167,6 +167,18 @@ function withTempHome(fn: (cwd: string, sid: string) => void) {
         message: { content: [{ type: "text", text: "NOTHING TO SHOW" }] },
       }),
       JSON.stringify({ type: "user", message: { content: "[Request interrupted…" } }),
+      // Un tour déclenché par un cron : le prompt est écrit dans le transcript
+      // comme n'importe quel message utilisateur, mais ne doit jamais être rendu.
+      JSON.stringify({
+        type: "user",
+        timestamp: "2026-07-28T22:10:00.000Z",
+        message: { content: "⏰ [cron] Résultat du monitoring :\n3 kB de dump\n\nRédige l'état des lieux." },
+      }),
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-07-28T22:10:30.000Z",
+        message: { content: [{ type: "text", text: "Rapport du matin." }] },
+      }),
     ].join("\n");
     fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines);
     fn(cwd, sid);
@@ -310,4 +322,15 @@ test("resumedTurnStart : reprend le transcript, sauf quand il n'est pas croyable
   // et pas une durée de réflexion.
   assert.equal(resumedTurnStart(now, now - MAX_RESUMED_TURN_MS - 1), now);
   assert.equal(resumedTurnStart(now, now - MAX_RESUMED_TURN_MS + 1), now - MAX_RESUMED_TURN_MS + 1);
+});
+
+test("loadHistory : le prompt d'un cron n'est jamais rejoué, sa réponse si", () => {
+  withTempHome((cwd, sid) => {
+    const turns = loadHistory(cwd, sid);
+    // Aucun tour utilisateur ne porte le prompt programmé…
+    assert.equal(turns.some((t) => t.role === "user" && /\[cron\]/.test(t.text)), false);
+    assert.equal(turns.some((t) => /dump/.test(t.text)), false);
+    // …mais ce que l'agent en a répondu reste, c'est tout l'intérêt du cron.
+    assert.equal(turns.some((t) => t.role === "assistant" && /Rapport du matin/.test(t.text)), true);
+  });
 });

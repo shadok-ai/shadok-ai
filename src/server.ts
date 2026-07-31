@@ -57,6 +57,7 @@ import {
   nextRunAfterFailure,
   isTransient,
   CRON_MAX_RETRIES,
+  markCronPrompt,
   normalizeSchedule,
   scheduleLabel,
   cronTimeZone,
@@ -251,7 +252,7 @@ async function fireCron(c: Cron): Promise<{ outcome: string; reason?: DriveReaso
   } else {
     promptText = c.prompt; // no guard at all: the agent always runs
   }
-  const res = await driveChannel(c.sessionId, promptText, target);
+  const res = await driveChannel(c.sessionId, markCronPrompt(promptText), target);
   if (res.ok) {
     console.log(`${cronTag(c)} fired${checkNote} -> ok`);
     return { outcome: check.kind === "failed" ? "check-failed" : "ok" };
@@ -1795,8 +1796,12 @@ wss.on("connection", (ws: WebSocket) => {
           clearRetry(session, true);
           session.retryCount = 0;
           session.lastPrompt = text;
-          // The session's other clients see the prompt arrive.
-          broadcast(session, { type: "prompt-echo", text, ...(origin ? { origin } : {}) }, ws);
+          // The session's other clients see the prompt arrive — sauf un cron :
+          // ce n'est pas quelqu'un qui parle, et son texte (le prompt PLUS le
+          // dump de sa garde) noyait la réponse dans les deux interfaces. La
+          // marque dans le contenu assure le même masquage à la relecture.
+          if (origin !== "cron")
+            broadcast(session, { type: "prompt-echo", text, ...(origin ? { origin } : {}) }, ws);
           session.busy = true;
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));

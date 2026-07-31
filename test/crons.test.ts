@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  CRON_PROMPT_MARK,
+  markCronPrompt,
+  isCronPrompt,
   CRON_MAX_RETRIES,
   CRON_RETRY_DELAY_MS,
   isTransient,
@@ -238,4 +241,23 @@ test("resolveCronId: rien ne matche → not-found (et non un faux succès)", () 
 test("resolveCronId: un id complet gagne même s'il préfixe un autre id", () => {
   const nested = [cron("abc"), cron("abcdef")];
   assert.deepEqual(resolveCronId(nested, "abc"), { ok: true, id: "abc" });
+});
+
+test("markCronPrompt : marque, et ne double pas la marque", () => {
+  const marked = markCronPrompt("Rédige l'état des lieux.");
+  assert.ok(marked.startsWith(CRON_PROMPT_MARK));
+  assert.ok(marked.endsWith("Rédige l'état des lieux."));
+  // Idempotent : un cron rejoué (retry après échec de livraison) ne doit pas
+  // accumuler les marques dans le texte que lit l'agent.
+  assert.equal(markCronPrompt(marked), marked);
+});
+
+test("isCronPrompt : strict — la marque doit OUVRIR le message", () => {
+  assert.equal(isCronPrompt(markCronPrompt("x")), true);
+  assert.equal(isCronPrompt("  " + CRON_PROMPT_MARK + " x"), true);
+  // Quelqu'un qui PARLE de la marque ne se fait pas museler (cf. invariant 2 :
+  // une heuristique trop large a déjà coûté cher ici).
+  assert.equal(isCronPrompt("comment marche le " + CRON_PROMPT_MARK + " ?"), false);
+  assert.equal(isCronPrompt("Rédige l'état des lieux."), false);
+  assert.equal(isCronPrompt(""), false);
 });
