@@ -180,3 +180,25 @@ export function permissionModeArgs(raw: string | undefined): string[] {
   return m && m !== "default" && isPermissionMode(m) ? ["--permission-mode", m] : [];
 }
 
+
+/** The managed profile behind the "Tweak Shadok-AI" CTA. */
+export const TWEAK_PROFILE_NAME = "Shadok-Tweak";
+
+/**
+ * Pure: the profile after refreshing ONLY its system prompt. The prompt is
+ * server-owned (it tracks `context/tweak-prompt.md` and would otherwise go
+ * stale in the user's profiles.json), but a secret or model the user attached
+ * in the editor is theirs and survives.
+ */
+export function withManagedPrompt(
+  existing: Profile | undefined,
+  name: string,
+  systemPrompt: string,
+): Profile {
+  return { ...(existing ?? { name }), name, systemPrompt };
+}
+
+/** Install/refresh the tweak profile from the repo's prompt file. Idempotent. */
+export function seedTweakProfile(systemPrompt: string): void {
+  upsertProfile(withManagedPrompt(getProfile(TWEAK_PROFILE_NAME), TWEAK_PROFILE_NAME, systemPrompt));
+}
