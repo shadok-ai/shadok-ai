@@ -3644,6 +3644,14 @@
     for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
     return a;
   }
+  // Keystroke → base64, UTF-8 first. btoa() alone treats the string as Latin1,
+  // so "é" (U+00E9) went out as the single byte 0xE9 instead of its UTF-8 pair
+  // 0xC3 0xA9 → mojibake in the pane; anything above U+00FF (emoji…) threw.
+  function strToB64Utf8(s) {
+    let bin = "";
+    for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b);
+    return btoa(bin);
+  }
   function updateTermBtn() {
     const on = !!(active && active.termOn);
     const b = $("chanTerm");
@@ -3669,7 +3677,7 @@
       term.open($("xtermHost"));
       term.onData((d) => {
         if (term && termSession && termSession.ws)
-          termSession.ws.send(JSON.stringify({ type: "term-input", data: btoa(d) }));
+          termSession.ws.send(JSON.stringify({ type: "term-input", data: strToB64Utf8(d) }));
       });
     }
     if (termSession !== active) {
