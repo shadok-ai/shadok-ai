@@ -164,6 +164,49 @@ discard a dirty tree — the safety is structural, not a check we could forget.
 A branch that carries commits always survives; `/recover` recreates its
 checkout on demand (`ensureWorktreeCheckout`). See invariant #5.
 
+## Tweaking shadok-ai from inside shadok-ai (`src/selfrepo.ts`)
+
+The people who feel a rough edge in the cockpit are rarely the ones who can fix
+it: doing so means knowing the cockpit is itself a git repo, cloning it, finding
+the right working directory, and knowing enough of the invariants not to break
+the session you are talking in. The **Tweak Shadok-AI** card, pinned at the
+bottom of the agents column, collapses that into one click.
+
+What the click does:
+
+1. `POST /tweak/prepare` → `ensureSelfRepo()` clones
+   `https://github.com/shadok-ai/shadok-ai.git` into `~/.shadok-ai/self/shadok-ai`,
+   or fast-forwards its `main` if it is already there, and returns that path.
+2. The client starts an **ordinary session** on it with `worktree: true` and
+   `profile: "Shadok-Tweak"`. Everything downstream — the `shadok-ai/<tag>`
+   branch, the isolated checkout, the Diff panel, `pruneWorktree` on close — is
+   the existing machinery, unchanged.
+
+Three decisions are worth keeping in mind if you touch this:
+
+- **The clone is separate from the launch directory**, even for a maintainer who
+  already has one. It is predictable, and it can never be the directory the
+  running server was started from. It is also the first session whose repo is not
+  the launch repo, which is what invariant 20 is about.
+- **The clone is anonymous, and authentication is deferred to push time.** A user
+  can describe an idea, watch the agent work and read the whole diff before
+  connecting any GitHub account. Only when there is something worth pushing does
+  the agent run `gh auth login` (device flow, relayed in the chat), fork under the
+  user's account and open the PR. No token is ever pasted into the cockpit.
+- **The role is injected through the profile pipeline, not a new path.**
+  `context/tweak-prompt.md` is versioned in the repo, and `seedTweakProfile`
+  refreshes the managed `Shadok-Tweak` profile's `systemPrompt` from it at every
+  boot, so it tracks the running build instead of rotting in the user's
+  `profiles.json`. Only that field is rewritten (`withManagedPrompt`), so a vault
+  secret or model attached in the Profiles editor survives. `profile` is already
+  re-applied on resume and restart, so the role is not lost when a session comes
+  back.
+
+The card is a **desktop affordance**: under 640px `#tabbar` is hidden entirely,
+so the CTA is not offered on a phone. Reviewing a diff or driving a code change
+on that screen is not realistic, and once started the tweak session is a normal
+channel reachable from the mobile channel selector like any other.
+
 ## Interactive dialogs
 
 `detectDialog(screen)` finds numbered options with a `❯` selector, strips any

@@ -66,6 +66,16 @@ the only coloured element there and reads as an action rather than a session.
   real signals (a tab awaiting an answer, the quota dials) and becomes noise.
 - The column narrows to 150px under 900px wide; the copy must wrap to three
   lines there without truncation.
+- The card is sticky over a scrolling list, so its background must be **opaque**
+  — `--amber-soft` alone is translucent and lets the tabs show through it.
+  Layer it: `linear-gradient(var(--amber-soft), var(--amber-soft)), var(--bg-raised)`.
+
+**Desktop only, deliberately.** Under 640px `#tabbar` is `display: none` (the
+mobile layout replaces it with a channel selector in the header), so the CTA is
+simply not offered on a phone. Reviewing a diff or driving a code change on that
+screen is not realistic, and a second entry point in the mobile header would
+contradict the one-door rule below. Once started, a tweak session is a normal
+channel and is reachable from the mobile selector like any other.
 
 Copy note: `now!` was considered and dropped. Urgency ages badly on a permanent
 element, and the real barrier to clicking is not motivation but not knowing what
@@ -101,9 +111,7 @@ covered by the page nonce and would silently not run (invariant 12).
 New module `src/selfrepo.ts`:
 
 - `SELF_REPO_URL = "https://github.com/shadok-ai/shadok-ai.git"` — the canonical
-  remote. Note that `package.json`'s `repository.url` still points at the
-  pre-migration `gnarco/shadok-ai`; fix that field in the same change, since it
-  is the first place an implementation would look for this URL.
+  remote.
 - `selfRepoDir()` → `~/.shadok-ai/self/shadok-ai`. A separate copy even when the
   user happens to have their own clone: predictable, and it is never the
   directory the running server was launched from.
@@ -123,6 +131,13 @@ and the existing prune-on-close rules all apply unchanged.
 Auth is deliberately deferred to the moment a PR is pushed: the user can
 describe an idea, watch the agent work and read the diff before connecting any
 account.
+
+**This is the first session whose repo is not the launch repo**, which turned out
+to matter: the browser fabricated `repo: serverCwd` for every channel, and
+`mergeChannels` stores a brand-new channel as-is, so the wrong value stuck — and
+`repo` is what `ensureWorktreeCheckout` uses to recreate a reclaimed checkout. The
+client no longer sends the key and the server asserts it from
+`session.worktree.repo` at `ready`. See invariant 20.
 
 ## 3. The agent's context
 

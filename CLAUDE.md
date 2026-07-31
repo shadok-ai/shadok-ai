@@ -90,6 +90,8 @@ both are silent in the DOM.
 | `src/extract.ts` | Parse the transcript / screen: `loadHistory`, `detectDialog`, `listSessions`, `findSessionId`. |
 | `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. |
+| `src/selfrepo.ts` | The working copy of shadok-ai's OWN source (`~/.shadok-ai/self/shadok-ai`) behind the "Tweak Shadok-AI" CTA: anonymous clone (no auth needed to start), `main` hard-reset to the remote on each use, never the launch directory. Only the base clone is refreshed — a live tweak session's worktree is a separate checkout and is never touched. Pure cores (`selfRepoPlan`, `gitFailReason`) tested. |
+| `context/tweak-prompt.md` | Role of the tweak agent: read the cloned `CLAUDE.md` first, verify on a free port and never touch 3789, deliver as fork + PR (never a merge), talk to someone who may not be a developer. Injected through the managed `Shadok-Tweak` profile, whose `systemPrompt` is refreshed from this file at every boot (`seedTweakProfile` / `withManagedPrompt`) — only that field, so a secret or model the user attached survives. |
 | `src/usage.ts` | Fetches subscription usage (5h/7d) from `/api/oauth/usage`. |
 | `src/pace.ts` | The quota **guardrail**: ideal-pace computation + block verdict. |
 | `src/retry.ts` | Auto-retry of turns that died on a transient API error (529, 5xx, timeout). |
@@ -162,7 +164,8 @@ the message text.
 `/sessions` `/recover` (resumable), `/diff`, `/channels` `/groups` (GET/PUT,
 persisted per launch dir ; le GET de `/channels` ajoute un `crons` **dérivé** —
 les horaires du canal, pour l'⏰ de l'onglet — jamais stocké, cf. invariant 6),
-`/defaults` (server cwd), `/profiles` `/secrets`
+`/defaults` (server cwd), `/tweak/prepare` (POST — clone/refresh shadok-ai's own
+source, returns the cwd to start the tweak agent in), `/profiles` `/secrets`
 (GET/PUT/DELETE), `/telegram` (GET/PUT — bot config from the GUI), `/version`,
 `/autoupdate`, `/permission-mode`, `/login`, `/vendor/marked.js`.
 
@@ -294,6 +297,20 @@ Auth section of `docs/architecture.md`).
    hiding behind a generic `error`. The same trap waits for any future machine
    client (a "run now" button, a webhook): `process.cwd()` is the server's, never
    the session's.
+
+20. **A session's repo is NOT the launch directory — and `mergeChannels` trusts a
+   brand-new channel wholesale.** The browser used to send `repo: serverCwd` for
+   every channel in `persistChannels`. That was accidentally right for years,
+   because every worktree came from the repo the server was launched in. The
+   "Tweak Shadok-AI" agent is the first whose repo differs (a worktree of
+   `~/.shadok-ai/self/shadok-ai`), and a wrong `repo` is not cosmetic: it is what
+   `ensureWorktreeCheckout` uses to recreate a reclaimed checkout, so a reopened
+   session would hunt its branch in a repository that never had it. `repo` is
+   server-owned, but `mergeChannels` pushes a channel the client just created
+   **as-is** (`if (!prev) result.push(c)`) — being in `SERVER_OWNED` protects a
+   field only once something is stored for that id. So the client no longer
+   invents the key, and the server asserts it from `session.worktree.repo` at
+   `ready`, ASSERT-only like `branch` (invariant 19).
 
 ## Conventions
 
