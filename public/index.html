@@ -258,10 +258,8 @@
   .tab {
     position: relative;
     display: flex;
-    /* Aligné en haut : led + icônes se posent sur la ligne du NOM (ligne 1),
-       pas au centre des deux lignes. */
-    align-items: flex-start;
-    gap: 8px;
+    flex-direction: column;   /* ligne 1 (led+nom+icônes) puis ligne 2 (infos) */
+    gap: 1px;
     font-family: var(--mono);
     font-size: 12px;
     color: var(--text-dim);
@@ -271,8 +269,7 @@
     cursor: pointer;
     user-select: none;
   }
-  /* Recentre le point d'état sur la ligne du nom (sinon collé tout en haut). */
-  .tab .led { margin-top: 4px; }
+  .tab-row1 { display: flex; align-items: center; gap: 8px; }
   /* Context-window usage: tiny number + thin bar at the bottom of the tab. */
   .tab .ctxnum { font-size: 9px; color: var(--text-dim); flex: none; }
   /* Heure du dernier message, discrète (le nom en flex:1 la pousse à droite). */
@@ -310,14 +307,12 @@
     border-radius: 0 4px 4px 0;
     box-shadow: inset 3px 0 0 var(--phosphor);
   }
-  /* Nom + heure empilés : le titre sur sa ligne (jamais tronqué par l'heure),
-     l'heure en dessous en tout petit. */
-  .tab-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  /* Ligne 2 : « xxx ago » + % de contexte, ensemble sous le nom. */
-  .tab-info { display: flex; align-items: baseline; gap: 6px; }
-  /* Le % de contexte poussé à droite de la ligne (« xxx ago » reste à gauche). */
-  .tab-info .ctxnum { margin-left: auto; }
+  /* Ligne 2 pleine largeur : « xxx ago » à gauche, % de contexte tout à droite. */
+  .tab-row2 { display: flex; align-items: baseline; gap: 6px; }
+  .tab-row2 .ctxnum { margin-left: auto; }
   .tab .name {
+    flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1533,14 +1528,15 @@
     tg.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" style="vertical-align:-1px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>';
     tg.title = "Mirrored to Telegram";
     // Nom + heure empilés (l'heure SOUS le titre, pour ne pas le tronquer).
-    const mainCol = document.createElement("div");
-    mainCol.className = "tab-main";
-    // Ligne 2 sous le nom : heure relative « xxx ago » + % de contexte, ensemble.
-    const infoRow = document.createElement("div");
-    infoRow.className = "tab-info";
-    infoRow.append(lastAt, ctxNum);
-    mainCol.append(name, infoRow);
-    btn.append(led, mainCol, timer, mute, cron, tg, close);
+    // Deux lignes : ligne 1 = led + nom + icônes ; ligne 2 PLEINE LARGEUR =
+    // « xxx ago » à gauche, % de contexte tout à droite (plus caché par les icônes).
+    const row1 = document.createElement("div");
+    row1.className = "tab-row1";
+    row1.append(led, name, timer, mute, cron, tg, close);
+    const row2 = document.createElement("div");
+    row2.className = "tab-row2";
+    row2.append(lastAt, ctxNum);
+    btn.append(row1, row2);
     // Context-window usage: a thin progress bar at the bottom of the tab.
     const ctxBar = document.createElement("div");
     ctxBar.className = "ctxbar";
