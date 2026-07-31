@@ -94,6 +94,37 @@ export function resolveCronTarget(
   };
 }
 
+/**
+ * Marque portée par le TEXTE d'un prompt envoyé par un cron.
+ *
+ * Pourquoi dans le contenu et pas seulement dans le protocole (`origin: "cron"`)
+ * : le prompt part dans la TUI, donc Claude Code l'écrit dans le transcript
+ * comme n'importe quel message utilisateur. Ne masquer que l'écho direct
+ * laissait le mur de texte — le prompt PLUS la sortie de la garde, des
+ * kilo-octets — revenir au rechargement de la page et dans le backfill d'un
+ * topic Telegram, qui relisent tous deux `loadHistory`.
+ *
+ * Même parti pris que la sentinelle `NOTHING TO SHOW` : une marque dans le
+ * contenu, filtrée partout où l'on rend. Elle a un second effet utile — l'agent
+ * apprend que ce tour vient d'une programmation, ce que rien ne lui disait.
+ */
+export const CRON_PROMPT_MARK = "⏰ [cron]";
+
+/** Préfixe le prompt d'un cron. Idempotent : re-marquer ne double pas la marque. */
+export function markCronPrompt(text: string): string {
+  return isCronPrompt(text) ? text : `${CRON_PROMPT_MARK} ${text}`;
+}
+
+/**
+ * Ce texte est-il un prompt de cron ? Volontairement STRICT — la marque doit
+ * OUVRIR le message. Un agent (ou un humain) qui cite « ⏰ [cron] » au milieu
+ * d'une phrase ne doit pas voir son message disparaître : c'est le coût d'une
+ * heuristique trop large que rappelle l'invariant 2.
+ */
+export function isCronPrompt(text: string): boolean {
+  return typeof text === "string" && text.trimStart().startsWith(CRON_PROMPT_MARK);
+}
+
 /** Why a cron's delivery to its channel failed. Lives here (not in server.ts)
  *  so `nextRunAfterFailure` can be typed and tested without the server. */
 export type DriveReason =
