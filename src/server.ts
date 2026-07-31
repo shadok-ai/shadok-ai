@@ -1770,7 +1770,15 @@ wss.on("connection", (ws: WebSocket) => {
             // `upsertInto` skips undefined, so omitting the key keeps the stored
             // value; this is how `repo` already behaves (never rewritten). The
             // branch is what lets a reclaimed checkout be recreated later.
-            ...(worktree ? { branch: worktree.branch } : {}),
+            //
+            // `repo` is asserted here for the same reason, and it is NOT always
+            // the launch directory: the "Tweak Shadok-AI" agent runs in a
+            // worktree of shadok-ai's own clone. The client used to fabricate
+            // `repo: serverCwd` for every channel, which was accidentally right
+            // only while every worktree came from the launch repo — and
+            // `ensureWorktreeCheckout` would then hunt the branch in the wrong
+            // repository. The session's own worktree is the only source of truth.
+            ...(worktree ? { branch: worktree.branch, repo: worktree.repo } : {}),
             profile,
             // The form's choice, recorded as soon as we're `ready` — that's
             // where the Telegram loop reads it. Absent (a client that ignores
