@@ -1039,7 +1039,11 @@ function pilotPrompt(): string | null {
 function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
   const profile = profileName ? getProfile(profileName) : undefined;
   // Env = the vault secrets the profile references (none without a profile).
-  const env = secretsFor(profile?.secrets);
+  // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
+  // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
+  // must never print" was noise that buried the real ones.
+  const secretEnv = secretsFor(profile?.secrets);
+  const env: Record<string, string> = { ...secretEnv };
   // Self-scheduling context: lets the shadok-scheduler skill register/list/remove
   // crons on THIS channel via the local API (so the user can set up monitoring in
   // plain language just by asking the agent).
@@ -1049,7 +1053,9 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
-  const note = envVarsNote(Object.keys(env));
+  // Les noms RÉSOLUS : un profil qui référence un secret absent du vault ne doit
+  // pas faire promettre à l'agent une variable qui n'existe pas.
+  const note = envVarsNote(Object.keys(secretEnv));
   const sp = pilotPrompt();
   const fullArgs = [
     ...args,

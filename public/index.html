@@ -485,6 +485,9 @@
   .profile-card:hover .pc-edit, .profile-card:focus-within .pc-edit { opacity: 1; }
   .pc-edit:hover { color: var(--amber); }
   .grid-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 12px; font-style: italic; }
+  /* Un secret que personne ne référence n'atteindra jamais un agent : on le dit
+     sur la ligne du secret, pas seulement dans un paragraphe d'entête. */
+  .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Sélecteur de profil d'un agent en cours (menu contextuel de l'onglet). */
   #profSwitchGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 18px 18px; }
   .sec-note.warn { color: var(--amber); }
@@ -1158,7 +1161,9 @@
       <strong>Secret vault</strong>
       <button id="secretsClose" title="Close">✕</button>
     </div>
-    <p class="sec-note">A central list of named secrets (stored 600 outside any repo, values write-only). A <b>profile</b> picks which of these to inject as env into its agents at spawn — define a value once here, reference it from any profile.</p>
+    <p class="sec-note">A central list of named secrets (stored 600 outside any repo, values write-only).</p>
+    <p class="sec-note warn"><b>A secret here reaches no agent on its own.</b> It is injected as an environment variable only into agents whose <b>profile</b> references it — define the value once here, then tick it in a profile.
+      <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
     <ul id="secretsList"></ul>
     <form id="secretsAdd">
       <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
@@ -4003,9 +4008,20 @@
     const ul = $("secretsList");
     ul.innerHTML = "";
     if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
+    // Combien de profils référencent chaque secret. Un blurb se lit une fois ;
+    // un secret marqué « inutilisé » montre le problème là où il est.
+    const usage = {};
+    for (const p of profileCache) for (const n of p.secrets || []) usage[n] = (usage[n] || 0) + 1;
     for (const k of vaultNames) {
       const li = document.createElement("li");
       const code = document.createElement("code"); code.textContent = k;
+      if (!usage[k]) {
+        const warn = document.createElement("span");
+        warn.className = "sec-orphan";
+        warn.textContent = "⚠ no profile uses it";
+        warn.title = "No agent will ever receive this secret until a profile references it";
+        code.appendChild(warn);
+      }
       const del = document.createElement("button");
       del.textContent = "✕"; del.title = "Remove from vault";
       del.addEventListener("click", async () => {
@@ -4016,7 +4032,19 @@
       ul.appendChild(li);
     }
   }
-  $("secretsBtn").addEventListener("click", async () => { await loadVault(); renderSecrets(); $("secretsOverlay").hidden = false; $("secretKey").focus(); });
+  // profileCache alimente l'avertissement « aucun profil ne l'utilise » : il doit
+  // être frais à l'ouverture, sinon on afficherait un diagnostic périmé.
+  $("secretsBtn").addEventListener("click", async () => {
+    await Promise.all([loadVault(), loadProfilesInto()]);
+    renderSecrets();
+    $("secretsOverlay").hidden = false;
+    $("secretKey").focus();
+  });
+  // Le chaînon manquant : depuis les secrets, aller les accrocher à un profil.
+  $("secretsToProfiles").addEventListener("click", () => {
+    $("secretsOverlay").hidden = true;
+    openProfilesPanel();
+  });
   $("secretsClose").addEventListener("click", () => { $("secretsOverlay").hidden = true; });
   $("secretsOverlay").addEventListener("click", (e) => { if (e.target === $("secretsOverlay")) $("secretsOverlay").hidden = true; });
   $("secretsAdd").addEventListener("submit", async (e) => {
