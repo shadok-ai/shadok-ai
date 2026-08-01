@@ -111,9 +111,14 @@ export async function getUsage(): Promise<Usage | null> {
   if (cache && Date.now() - cache.fetchedAt < TTL_MS) return cache;
   if (inflight) return inflight;
   inflight = (async () => {
-    const token = readOAuthToken();
-    if (!token) return null;
     try {
+      // Inside the try so `finally` ALWAYS clears `inflight`. A bare
+      // `return null` before the try skipped the reset, so a single
+      // token-less read (e.g. at boot, before credentials are readable)
+      // left `inflight` stuck on a resolved promise — every later call
+      // returned it and usage stayed null until the process restarted.
+      const token = readOAuthToken();
+      if (!token) return null;
       const res = await fetch(USAGE_URL, {
         headers: {
           Authorization: `Bearer ${token}`,
