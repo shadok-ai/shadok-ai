@@ -418,6 +418,15 @@ never woken and the run costs **zero tokens**; print something → that output i
 prepended to the prompt and the agent runs. A monitoring cron that is quiet 23
 hours a day therefore costs nothing 23 hours a day.
 
+Those secrets come from the channel's **profile** and from nowhere else
+(`secretsFor(profile?.secrets)` in `runCronCheck`). A channel with no profile —
+the default — gives its guard none, and `secretsFor` skips a name missing from
+the vault without a word. The agent that wrote the check has the key in its own
+env, so testing the command by hand proves nothing about the guard's. That
+asymmetry is why agents hardcode values into check scripts "just in case";
+`schedule.py env` (the `shadok-scheduler` skill) prints the real list so they
+don't have to guess.
+
 That convention has a sharp edge worth knowing (invariant #16): `grep`, `diff`
 and `test` all exit non-zero *precisely* when there is nothing to report. So
 `runCronCheck` keys on **stdout** for news, and treats a non-zero exit as broken

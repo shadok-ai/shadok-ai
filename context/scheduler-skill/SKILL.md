@@ -33,6 +33,24 @@ Result: quiet days cost nothing; the LLM is spent only to word a real alert.
 For pure reporting where you WANT output every run (e.g. a daily figures digest),
 omit the check — the prompt runs every time.
 
+### What a check can see — secrets and cwd
+
+A check does **not** run inside this agent's process. The server runs it with
+`sh -c`, in the CHANNEL's directory, with the secrets of the channel's
+**profile** injected as environment variables.
+
+So reference a secret by name (`$MY_API_KEY`) and trust it: never hardcode a
+value into a check script, and never try to source a shell profile to get one.
+
+The sharp edge is the other direction. A channel with **no profile**, or a
+profile that doesn't list that name, gets **nothing** — the variable is simply
+absent, and you find out at 6am rather than now. A name that isn't in the vault
+is skipped just as silently. Your own shell having the key proves nothing about
+the guard's.
+
+`schedule.py env` prints exactly what a guard gets here. Run it before writing a
+check that needs a secret.
+
 ## Commands
 
 ```
@@ -40,6 +58,7 @@ python3 scripts/schedule.py add --schedule <spec> --prompt "<text>" [--check "<s
 python3 scripts/schedule.py list
 python3 scripts/schedule.py del <id>
 python3 scripts/schedule.py tz [<zone>|-]
+python3 scripts/schedule.py env
 ```
 
 `<spec>`: `every:30m` · `every:2h` · `daily:09:00`.
