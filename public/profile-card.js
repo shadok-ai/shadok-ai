@@ -63,3 +63,18 @@ export function profileBadges(profile) {
     });
   return out;
 }
+
+/**
+ * Le nom proposé pour un nouvel agent : celui de son PROFIL, parce que c'est ce
+ * qui distingue deux agents lancés sur le même dépôt — le dossier, lui, est le
+ * même pour tous et donnait des colonnes entières d'onglets homonymes.
+ * Sans profil, on retombe sur le nom du dossier ; en dernier recours "agent",
+ * jamais une chaîne vide (un onglet sans nom est illisible).
+ */
+export function defaultAgentName(profileName, cwd) {
+  const p = String(profileName ?? "").trim();
+  if (p) return p;
+  const dir = String(cwd ?? "").trim().replace(/[/\\]+$/, "");
+  const base = dir.split(/[/\\]/).pop() || "";
+  return base || "agent";
+}

@@ -1228,6 +1228,10 @@
           <span class="check-hint" id="profileNaNote" hidden>Applies to new sessions only.</span>
         </div>
         <div class="field">
+          <span class="label">Name</span>
+          <input type="text" id="nameInput" placeholder="agent" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
           <span class="label">Working directory</span>
           <input type="text" id="cwdInput" placeholder="/path/to/project">
         </div>
@@ -1463,12 +1467,13 @@
      qui rend inoffensif le HTML qu'un agent pourrait écrire dans le transcript. -->
 <script type="module" nonce="__CSP_NONCE__">
   import { extractLiveText } from "/live-text.js";
-  import { profileBlurb, profileBadges } from "/profile-card.js";
+  import { profileBlurb, profileBadges, defaultAgentName } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
   window.extractLiveText = extractLiveText;
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
+  window.defaultAgentName = defaultAgentName;
   window.notifyState = notifyState;
   window.BLINK_MS = BLINK_MS;
   window.dialPos = dialPos;
@@ -3228,6 +3233,10 @@
     // écraserait le choix en cours de saisie.
     profileTouched = false;
     applyRememberedProfile();
+    // Même règle que le profil : on ne repropose le défaut qu'à l'OUVERTURE,
+    // pour ne pas écraser un nom en cours de frappe.
+    nameTouched = false;
+    refreshDefaultName();
     refreshRecoverList();
     refreshLiveList();
     $("setupOverlay").hidden = false;
@@ -3256,7 +3265,13 @@
     $("startBtn").disabled = true;
     closeSetup();
     // createTab active l'onglet créé ; launchTab ouvre le lien.
-    launchTab(createTab(), msg);
+    const t = createTab();
+    // Le nom est posé AVANT launchTab, qui sinon écrase avec basename(cwd).
+    // customName le protège aussi du `ready` et de la restauration des canaux.
+    const wanted = $("nameInput").value.trim() || defaultAgentNameNow();
+    t.customName = true;
+    t.nameEl.textContent = wanted;
+    launchTab(t, msg);
   }
 
   // ── Version display + auto-reload ─────────────────────────────────────────
@@ -3685,11 +3700,16 @@
       if (mode === "resume") refreshSessionList();
     })
   );
+  $("nameInput").addEventListener("input", () => {
+    nameTouched = $("nameInput").value.trim() !== "";
+  });
   $("cwdInput").addEventListener("change", () => {
     if (!$("resumeField").hidden) refreshSessionList();
     refreshRecoverList();
     // Un autre dossier a peut-être son propre habitué — sauf si on a déjà choisi.
     if (!profileTouched) applyRememberedProfile();
+    // Sans profil, le défaut EST le dossier : il doit suivre la saisie.
+    refreshDefaultName();
   });
   // Agents can appear while the setup screen sits open (pilotctl spawns one,
   // another tab starts one) — keep the list current without a reload.
@@ -4247,6 +4267,9 @@
     selectedProfile = name || "";
     if (byUser) profileTouched = true;
     syncProfileSelection();
+    // Le nom par défaut DÉRIVE du profil : changer de carte doit le reproposer,
+    // sinon on lance un « Shadok-dev » qui tourne en fait sur Shadok-Support.
+    refreshDefaultName();
   }
 
   function syncProfileSelection() {
@@ -4282,6 +4305,23 @@
     const perDir = cwd ? localStorage.getItem("cp.profile:" + cwd) : null;
     const remembered = perDir !== null ? perDir : (localStorage.getItem("cp.profile") || "");
     selectProfile(remembered);   // syncProfileSelection retombe sur "" s'il n'existe plus
+  }
+
+  // ── Nom par défaut d'un nouvel agent ─────────────────────────────────────
+  let nameTouched = false;   // l'utilisateur a tapé le sien → on n'écrase plus
+
+  /** Le défaut courant, d'après le profil sélectionné et le dossier saisi. */
+  function defaultAgentNameNow() {
+    // Garde alignée sur les autres usages du pont ESM (cf. invariant 10) : si le
+    // module n'est pas encore là, un nom vide vaut mieux qu'une exception.
+    return window.defaultAgentName ? window.defaultAgentName(selectedProfile, $("cwdInput").value) : "";
+  }
+
+  /** Repose le défaut dans le champ, sauf si l'utilisateur l'a déjà écrit. */
+  function refreshDefaultName() {
+    if (nameTouched) return;
+    const el = $("nameInput");
+    if (el) el.value = defaultAgentNameNow();
   }
 
   /** Flèches = déplacer la sélection (convention radiogroup). Espace/Entrée
