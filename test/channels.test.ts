@@ -137,3 +137,27 @@ test("isMirrored: with no intent, an existing binding means mirrored (migration)
   assert.equal(isMirrored({ sessionId: "a", cwd: "", telegram: { chatId: -100, threadId: 3 } }), true);
   assert.equal(isMirrored({ sessionId: "a", cwd: "" }), false);
 });
+
+test("mergeChannels: a client that omits `repo` never erases the stored one", () => {
+  // `repo` is server-owned and is NOT always the launch directory — the tweak
+  // agent lives in a worktree of shadok-ai's own clone. The client no longer
+  // sends it at all, so the stored value has to survive the round trip;
+  // otherwise a reclaimed checkout would be hunted in the wrong repository.
+  const stored = [
+    { sessionId: "s1", cwd: "/wt/a", branch: "shadok-ai/a", repo: "/home/u/.shadok-ai/self/shadok-ai" },
+  ];
+  const client = [{ sessionId: "s1", cwd: "/wt/a", name: "tweak" }];
+  const out = mergeChannels(stored, client as any, new Set(["s1"]));
+  assert.equal(out[0].repo, "/home/u/.shadok-ai/self/shadok-ai");
+  assert.equal(out[0].branch, "shadok-ai/a");
+  assert.equal(out[0].name, "tweak");
+});
+
+test("upsertInto: `repo` is asserted, and never cleared by a later resume", () => {
+  // A resume has no worktree object, so it omits both keys; `upsertInto` skips
+  // undefined, which is what keeps the branch and the repo alive.
+  let list = upsertInto([], { sessionId: "s1", cwd: "/wt/a", branch: "shadok-ai/a", repo: "/self" });
+  list = upsertInto(list, { sessionId: "s1", cwd: "/wt/a" });
+  assert.equal(list[0].repo, "/self");
+  assert.equal(list[0].branch, "shadok-ai/a");
+});

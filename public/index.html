@@ -370,6 +370,48 @@
   }
   #newTab:hover, #newGroup:hover { color: var(--amber); border-color: var(--amber); }
   #newGroup { margin-top: 4px; }
+  /* Le seul élément coloré de la colonne : les onglets sont des lignes sans
+     bordure et les ＋ des boutons fantômes, donc une carte pleine se lit comme
+     une action et non comme une session. Épinglée en bas (margin-top:auto +
+     sticky) pour rester atteignable quand la liste des agents défile. */
+  #tweakCta {
+    margin-top: auto;
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
+    padding: 8px;
+    border: 1px solid var(--amber);
+    border-radius: 6px;
+    /* Empilé sur le fond de la colonne, PAS `var(--amber-soft)` seul : la carte
+       est sticky, et un fond translucide laisserait les onglets défiler au
+       travers. */
+    background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--bg-raised);
+    /* Ombre douce vers le haut : sépare la carte de la liste qui passe dessous,
+       sans ajouter de filet qui doublerait la bordure. */
+    box-shadow: 0 -8px 10px -8px rgba(0, 0, 0, 0.6);
+  }
+  #tweakCta .tweak-title {
+    font-family: var(--mono);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--amber);
+  }
+  #tweakCta .tweak-sub { font-size: 10px; color: var(--text-dim); }
+  #tweakCta .tweak-arrow { display: inline-block; transition: transform 0.15s ease; }
+  /* Aucune animation permanente : un élément qui clignote ici entrerait en
+     concurrence avec les vrais signaux (onglet en attente, jauges) et
+     deviendrait du bruit. */
+  #tweakCta:hover {
+    border-color: var(--amber);
+    box-shadow: 0 -8px 10px -8px rgba(0, 0, 0, 0.6), 0 0 12px rgba(240, 168, 72, 0.18);
+  }
+  #tweakCta:hover .tweak-arrow { transform: translateX(2px); }
+  #tweakCta.busy { opacity: 0.7; cursor: default; }
+  #tweakCta.failed { border-color: var(--err); background: transparent; }
+  #tweakCta.failed .tweak-title { color: var(--err); }
   @media (max-width: 900px) { #tabbar { width: 150px; } }
 
   /* ── Tab groups ──────────────────────────────────────── */
@@ -1369,6 +1411,11 @@
     <div id="groups"></div>
     <button id="newTab" title="New agent">＋ new agent</button>
     <button id="newGroup" title="New agent group">＋ new group</button>
+    <button id="tweakCta" type="button"
+            title="Change shadok-ai itself — the agent works on a branch and opens a pull request">
+      <span class="tweak-title">🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span></span>
+      <span class="tweak-sub">change the cockpit itself</span>
+    </button>
   </nav>
 
   <section class="chat-pane">
@@ -2014,7 +2061,11 @@
         cwd: t.cwd && t.cwd.startsWith("/") ? t.cwd : "",
         name: t.nameEl.textContent,
         branch: t.branch || null,
-        repo: serverCwd || "",
+        // Surtout PAS de `repo` ici : c'est un champ appartenant au serveur, et
+        // le déduire du répertoire de lancement était faux dès qu'un agent vit
+        // dans le worktree d'un AUTRE dépôt (le canal « tweak »). Omettre la
+        // clé laisse la valeur stockée intacte (mergeChannels), et le serveur
+        // l'affirme depuis le worktree réel de la session.
         group: groupIdOf(t.btnEl),
         muted: !!t.muted,
         mirror: !!t.mirror,
@@ -4217,13 +4268,17 @@
   function renderProfileGrid(failed) {
     const grid = $("profileGrid");
     if (!grid) return;
-    renderProfileCards(grid, selectedProfile, (n) => selectProfile(n, true), failed);
+    // Le rôle « tweak » a son propre CTA en bas de la colonne des agents : une
+    // carte ici serait une deuxième porte, subtilement différente, vers le même
+    // agent. Il reste listé dans le panneau Profils, pour qu'on puisse tout de
+    // même lui attacher un secret ou un modèle.
+    renderProfileCards(grid, selectedProfile, (n) => selectProfile(n, true), failed, "Shadok-Tweak");
   }
 
   /** Peint les cartes de profil dans `container`. Générique : la box de création
    *  ET le sélecteur du menu d'onglet s'en servent — la logique de carte (blurb,
    *  badges, crayon, clavier) ne vit qu'ici, en un seul exemplaire. */
-  function renderProfileCards(container, selected, onPick, failed) {
+  function renderProfileCards(container, selected, onPick, failed, exclude) {
     container.innerHTML = "";
     if (failed) {
       const note = document.createElement("div");
@@ -4231,9 +4286,14 @@
       note.textContent = "couldn't load profiles";
       container.appendChild(note);
     }
+    // `exclude` sert à la box de création, qui masque le rôle « tweak » (il a
+    // son propre CTA). Surtout PAS ici pour tout le monde : le sélecteur du menu
+    // d'onglet montre le profil COURANT comme sélectionné, et un agent tweak n'y
+    // trouverait plus son propre rôle.
+    const list = profileCache.filter((p) => p && p.name !== exclude);
     // Zéro profil : on montre la porte d'entrée plutôt qu'un « (none) » muet.
     // Pas de role="radio" → ignorée par la sélection et par les flèches.
-    if (!failed && !profileCache.length) {
+    if (!failed && !list.length) {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "profile-card";
@@ -4242,7 +4302,7 @@
       b.addEventListener("click", () => openProfilesPanel());
       container.appendChild(b);
     }
-    for (const p of profileCache) container.appendChild(profileCardEl(p, onPick));
+    for (const p of list) container.appendChild(profileCardEl(p, onPick));
     container.appendChild(profileCardEl(null, onPick));   // ∅ No profile, en dernier
     markProfileSelection(container, selected);
   }
@@ -4534,6 +4594,51 @@
   });
 
   newTabBtn.addEventListener("click", openSetup);
+
+  // Un clic démarre un agent sur le code source de shadok-ai lui-même : le
+  // dossier, le worktree et le rôle sont tous déjà décidés, donc un formulaire
+  // ne ferait que demander d'approuver des choix qu'on ne peut pas juger.
+  const tweakCta = $("tweakCta");
+  const tweakTitle = tweakCta.querySelector(".tweak-title");
+  const tweakSub = tweakCta.querySelector(".tweak-sub");
+  let tweakBusy = false;
+
+  function setTweakCta(state, reason) {
+    tweakCta.classList.toggle("busy", state === "busy");
+    tweakCta.classList.toggle("failed", state === "failed");
+    if (state === "busy") {
+      tweakTitle.textContent = "⋯ fetching source";
+      tweakSub.textContent = "first time only";
+    } else if (state === "failed") {
+      tweakTitle.textContent = "⚠ " + reason;
+      tweakSub.textContent = "click to retry";
+    } else {
+      // Littéral fixe de ce fichier, jamais du texte écrit par un agent.
+      tweakTitle.innerHTML = '🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span>';
+      tweakSub.textContent = "change the cockpit itself";
+    }
+  }
+
+  tweakCta.addEventListener("click", async () => {
+    if (tweakBusy) return;
+    tweakBusy = true;
+    setTweakCta("busy");
+    let data;
+    try {
+      const r = await fetch("/tweak/prepare", { method: "POST" });
+      data = await r.json();
+    } catch {
+      data = { error: "server unreachable" };
+    }
+    tweakBusy = false;
+    if (!data || !data.cwd) return setTweakCta("failed", (data && data.error) || "failed");
+    setTweakCta("idle");
+    const t = createTab();
+    t.customName = true;             // launchTab ne nomme qu'un onglet qui n'a pas de nom
+    t.nameEl.textContent = "tweak";
+    t.profile = "Shadok-Tweak";
+    launchTab(t, { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" });
+  });
   newGroupBtn.addEventListener("click", () => {
     createGroup();
     persistGroups();

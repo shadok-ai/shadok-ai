@@ -83,11 +83,13 @@ import {
   isPermissionMode,
   envVarsNote,
   seedDefaultProfiles,
+  seedTweakProfile,
   loadProfiles,
   upsertProfile,
   removeProfile,
   type Profile,
 } from "./profiles.js";
+import { ensureSelfRepo } from "./selfrepo.js";
 import {
   createWorktree,
   pruneWorktree,
@@ -612,6 +614,14 @@ app.get("/recover", (req, res) => {
 // Server-side defaults (the launch directory pre-fills the working dir field).
 app.get("/defaults", (_req, res) => {
   res.json({ cwd: process.cwd() });
+});
+// Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
+// back the directory to start the agent in. Sits here so it inherits the same
+// password gate as its neighbours.
+app.post("/tweak/prepare", (_req, res) => {
+  const r = ensureSelfRepo();
+  if (r.error) return res.status(500).json({ error: r.error });
+  res.json({ cwd: r.cwd });
 });
 // Running version + latest seen on npm (null if not yet polled / check disabled).
 app.get("/version", (_req, res) =>
@@ -1824,7 +1834,15 @@ wss.on("connection", (ws: WebSocket) => {
             // `upsertInto` skips undefined, so omitting the key keeps the stored
             // value; this is how `repo` already behaves (never rewritten). The
             // branch is what lets a reclaimed checkout be recreated later.
-            ...(worktree ? { branch: worktree.branch } : {}),
+            //
+            // `repo` is asserted here for the same reason, and it is NOT always
+            // the launch directory: the "Tweak Shadok-AI" agent runs in a
+            // worktree of shadok-ai's own clone. The client used to fabricate
+            // `repo: serverCwd` for every channel, which was accidentally right
+            // only while every worktree came from the launch repo — and
+            // `ensureWorktreeCheckout` would then hunt the branch in the wrong
+            // repository. The session's own worktree is the only source of truth.
+            ...(worktree ? { branch: worktree.branch, repo: worktree.repo } : {}),
             profile,
             // The form's choice, recorded as soon as we're `ready` — that's
             // where the Telegram loop reads it. Absent (a client that ignores
@@ -2064,6 +2082,14 @@ migrateTgBindings();
 // Seed the starter agent profiles (Shadok-dev / -Marketing / -Support) on a
 // fresh install, when the user has none yet.
 seedDefaultProfiles();
+// Install/refresh the managed Shadok-Tweak role from the repo's prompt file, so
+// it tracks this build instead of going stale in the user's profiles.json.
+try {
+  const tweak = fs.readFileSync(path.join(__dirname, "..", "context", "tweak-prompt.md"), "utf8").trim();
+  if (tweak) seedTweakProfile(tweak);
+} catch {
+  /* best effort — the CTA still starts an agent, just without the role */
+}
 
 // Install/refresh the bundled "shadok-scheduler" skill so agents can set up
 // their own channel's crons in plain language. Server-owned, overwritten each

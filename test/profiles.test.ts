@@ -7,6 +7,8 @@ import {
   DEFAULT_PROFILES,
   permissionModeArgs,
   isPermissionMode,
+  TWEAK_PROFILE_NAME,
+  withManagedPrompt,
 } from "../src/profiles.js";
 import { normalizeVault, secretsFor } from "../src/secrets.js";
 
@@ -133,4 +135,34 @@ test("DEFAULT_PROFILES: le boss est en tête et sait déléguer avec un profil",
     assert.ok(boss.includes(role), `le boss doit citer ${role}`);
     assert.ok(names.includes(role), `${role} doit exister`);
   }
+});
+
+test("withManagedPrompt creates the profile when it does not exist yet", () => {
+  const p = withManagedPrompt(undefined, TWEAK_PROFILE_NAME, "role text");
+  assert.equal(p.name, TWEAK_PROFILE_NAME);
+  assert.equal(p.systemPrompt, "role text");
+});
+
+test("withManagedPrompt refreshes ONLY the system prompt", () => {
+  // The prompt is server-owned and tracks the repo file, but whatever the user
+  // attached in the Profiles editor (a vault secret, a model) is theirs and
+  // must survive every boot.
+  const existing = {
+    name: TWEAK_PROFILE_NAME,
+    systemPrompt: "stale text",
+    secrets: ["GH_TOKEN"],
+    model: "opus",
+    deny: ["Bash(rm:*)"],
+  };
+  const p = withManagedPrompt(existing, TWEAK_PROFILE_NAME, "fresh text");
+  assert.equal(p.systemPrompt, "fresh text");
+  assert.deepEqual(p.secrets, ["GH_TOKEN"]);
+  assert.equal(p.model, "opus");
+  assert.deepEqual(p.deny, ["Bash(rm:*)"]);
+});
+
+test("withManagedPrompt does not mutate the profile it was given", () => {
+  const existing = { name: TWEAK_PROFILE_NAME, systemPrompt: "stale" };
+  withManagedPrompt(existing, TWEAK_PROFILE_NAME, "fresh");
+  assert.equal(existing.systemPrompt, "stale");
 });
