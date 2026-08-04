@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { profileBlurb, profileBadges } from "../public/profile-card.js";
+import { profileBlurb, profileBadges, defaultAgentName } from "../public/profile-card.js";
 
 test("blurb: garde la 1re phrase et retire l'amorce « You are <nom>, »", () => {
   const p = {
@@ -64,4 +64,26 @@ test("badges: un seul secret est au singulier", () => {
 
 test("badges: profil vide ne casse pas", () => {
   assert.equal(profileBadges(null)[0].label, "full access");
+});
+
+test("defaultAgentName: un profil choisi donne son nom à l'agent", () => {
+  assert.equal(defaultAgentName("Shadok-dev", "/Users/a/projects/shadok-ai"), "Shadok-dev");
+  assert.equal(defaultAgentName("Shadok-Boss", ""), "Shadok-Boss");
+});
+
+test("defaultAgentName: sans profil, on retombe sur le dossier", () => {
+  assert.equal(defaultAgentName("", "/Users/a/projects/shadok-ai"), "shadok-ai");
+  assert.equal(defaultAgentName(null, "/Users/a/projects/biosense/"), "biosense");
+});
+
+test("defaultAgentName: ni profil ni dossier → un nom quand même", () => {
+  // Un onglet sans nom est illisible dans la colonne : jamais de chaîne vide.
+  assert.equal(defaultAgentName("", ""), "agent");
+  assert.equal(defaultAgentName(null, null), "agent");
+  assert.equal(defaultAgentName(undefined, undefined), "agent");
+});
+
+test("defaultAgentName: les espaces autour ne comptent pas", () => {
+  assert.equal(defaultAgentName("  Shadok-dev  ", "/x/y"), "Shadok-dev");
+  assert.equal(defaultAgentName("   ", "/x/y"), "y");
 });

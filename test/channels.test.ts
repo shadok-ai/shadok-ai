@@ -54,6 +54,18 @@ test("mergeChannels: client drives name/group; server-owned fields preserved", (
   ]);
 });
 
+test("mergeChannels: un client ne peut ni changer ni effacer le profil d'un canal", () => {
+  // C'est l'invariant que le chemin dédié `set-profile` protège : un client
+  // périmé ne doit pas pouvoir déshabiller un agent de ses garde-fous en
+  // renvoyant simplement sa liste de canaux.
+  const stored: Channel[] = [{ sessionId: "a", cwd: "/real", profile: "Shadok-Support" }];
+  const client: Channel[] = [{ sessionId: "a", cwd: "/real", name: "renamed", profile: "Shadok-dev" }];
+  assert.equal(mergeChannels(stored, client, new Set())[0].profile, "Shadok-Support");
+  // Et l'omission pure ne l'efface pas non plus.
+  const dropped: Channel[] = [{ sessionId: "a", cwd: "/real", name: "renamed" }];
+  assert.equal(mergeChannels(stored, dropped, new Set())[0].profile, "Shadok-Support");
+});
+
 test("mergeChannels: a client omission of a Telegram session does NOT drop it", () => {
   const stored: Channel[] = [
     { sessionId: "web", cwd: "/w" },

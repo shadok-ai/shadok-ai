@@ -992,6 +992,10 @@ type ClientMessage =
   | { type: "key"; key: string }
   | { type: "settle" }
   | { type: "restart" }
+  /** Change the agent's profile. `profile: null` = no profile. `restart` applies
+   *  it right away (re-spawn in place, history kept); without it the change is
+   *  stored and takes effect at the next restart. */
+  | { type: "set-profile"; profile: string | null; restart?: boolean }
   /** Experimental raw terminal: attach/detach the pipe, or feed raw input
    *  bytes (base64). */
   | { type: "term-attach" }
@@ -1045,7 +1049,11 @@ function pilotPrompt(): string | null {
 function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
   const profile = profileName ? getProfile(profileName) : undefined;
   // Env = the vault secrets the profile references (none without a profile).
-  const env = secretsFor(profile?.secrets);
+  // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
+  // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
+  // must never print" was noise that buried the real ones.
+  const secretEnv = secretsFor(profile?.secrets);
+  const env: Record<string, string> = { ...secretEnv };
   // Self-scheduling context: lets the shadok-scheduler skill register/list/remove
   // crons on THIS channel via the local API (so the user can set up monitoring in
   // plain language just by asking the agent).
@@ -1055,7 +1063,9 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
-  const note = envVarsNote(Object.keys(env));
+  // Les noms RÉSOLUS : un profil qui référence un secret absent du vault ne doit
+  // pas faire promettre à l'agent une variable qui n'existe pas.
+  const note = envVarsNote(Object.keys(secretEnv));
   const sp = pilotPrompt();
   const fullArgs = [
     ...args,
@@ -1095,8 +1105,14 @@ interface Live {
   restarting?: boolean;
   /** Isolated git worktree, when the session runs in one. */
   worktree: Worktree | null;
-  /** Agent profile applied at spawn — re-applied on restart. */
+  /** Agent profile applied at spawn — re-applied on restart. This is the
+   *  DESIRED one: `set-profile` without a restart changes it while the running
+   *  process still carries the old one. */
   profile?: string | null;
+  /** The profile the RUNNING process actually got. Differs from `profile` only
+   *  between a stored change and the restart that applies it — that gap is what
+   *  the UI shows as "(at next reload)". */
+  appliedProfile?: string | null;
   /** Reclaim timer armed when no client is attached. */
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** Token usage per assistant message id (final counts win), from the .jsonl. */
@@ -1147,6 +1163,52 @@ function broadcast(s: Live, msg: object, except?: WebSocket) {
   for (const c of s.clients) {
     if (c !== except && c.readyState === c.OPEN) c.send(data);
   }
+}
+
+/**
+ * Re-spawns the agent in place, resuming the same session id, so it picks up
+ * fresh env (newly-added secrets) or a freshly-changed profile. History is
+ * preserved (resume reads the transcript); every attached client keeps its ref.
+ * Shared by the `restart` message and by `set-profile` with `restart: true`.
+ */
+async function restartSession(s: Live): Promise<void> {
+  s.restarting = true;
+  // The raw pipe is bound to the pilot we're about to replace — close it;
+  // clients re-attach on the next "ready" if the terminal is open.
+  s.rawOff?.();
+  s.rawOff = null;
+  s.pilotOff?.();
+  if (s.screenTimer) clearInterval(s.screenTimer);
+  s.screenTimer = null;
+  s.stopTail?.();
+  s.stopTail = null;
+  if (s.retryTimer) clearTimeout(s.retryTimer);
+  s.retryTimer = null;
+  // Clean /exit (not a hard kill) so claude releases the session lock
+  // and `--resume` works; then make sure the tmux session is gone.
+  await s.pilot.stop();
+  if (USE_TMUX) {
+    for (let i = 0; i < 30 && tmuxHasSession("sk-" + s.id); i++) await sleep(100);
+  }
+  s.busy = false;
+  s.lastScreen = "";
+  broadcast(s, { type: "working", startedAt: Date.now(), elapsedMs: 0 });
+  // Resume only if there's a transcript; a never-used session has
+  // nothing to resume (claude --resume would exit) — re-create it.
+  const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id));
+  s.pilot = makePilot(s.id, s.cwd, hasTranscript ? ["--resume", s.id] : ["--session-id", s.id], s.profile);
+  s.appliedProfile = s.profile;   // le nouveau process porte le profil désiré
+  await attachPilot(s);
+  s.restarting = false;
+  broadcast(s, { type: "ready", sessionId: s.id, cwd: s.cwd, branch: s.worktree?.branch ?? null });
+  broadcastProfile(s);            // l'écart « au prochain reload » vient de se refermer
+  broadcast(s, { type: "screen", text: s.pilot.screen(), working: s.pilot.isWorking() });
+}
+
+/** Tells every attached client (other tabs, other devices) both the desired and
+ *  the running profile — the pair is what lets the UI show "(at next reload)". */
+function broadcastProfile(s: Live) {
+  broadcast(s, { type: "profile", profile: s.profile ?? null, applied: s.appliedProfile ?? null });
 }
 
 function destroySession(s: Live) {
@@ -1231,6 +1293,7 @@ async function createSession(
     cwd,
     pilot,
     profile,
+    appliedProfile: profile,   // le process qu'on vient de lancer l'a bien reçu
     clients: new Set(),
     busy: false,
     lastPrompt: "",
@@ -1725,6 +1788,7 @@ wss.on("connection", (ws: WebSocket) => {
               ...(session.worktree ? { branch: session.worktree.branch } : {}),
             });
             send({ type: "tokens", tokens: tokenTotals(session) });
+            send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });
             if (session.contextPct !== null) send({ type: "context", pct: session.contextPct });
             send({
               type: "screen",
@@ -1787,6 +1851,7 @@ wss.on("connection", (ws: WebSocket) => {
             ...(typeof msg.mirror === "boolean" ? { mirror: msg.mirror } : {}),
           });
           send({ type: "tokens", tokens: tokenTotals(session) });
+          send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });
             if (session.contextPct !== null) send({ type: "context", pct: session.contextPct });
           sendPendingDialog(session, send);
           break;
@@ -1973,40 +2038,24 @@ wss.on("connection", (ws: WebSocket) => {
         }
 
         case "restart": {
-          // Re-spawn the agent in place, resuming the same session id, so it
-          // picks up fresh env (e.g. newly-added secrets). History is preserved
-          // (resume reads the transcript); every attached client keeps its ref.
+          if (!session) return fail("no session started");
+          await restartSession(session);
+          break;
+        }
+        case "set-profile": {
+          // Changing what an agent IS (role, guardrails, secrets, model) after
+          // the fact. `profile` is SERVER_OWNED on the channel, so a browser PUT
+          // can't touch it — this is the only legitimate path.
           if (!session) return fail("no session started");
           const s = session;
-          s.restarting = true;
-          // The raw pipe is bound to the pilot we're about to replace — close it;
-          // clients re-attach on the next "ready" if the terminal is open.
-          s.rawOff?.();
-          s.rawOff = null;
-          s.pilotOff?.();
-          if (s.screenTimer) clearInterval(s.screenTimer);
-          s.screenTimer = null;
-          s.stopTail?.();
-          s.stopTail = null;
-          if (s.retryTimer) clearTimeout(s.retryTimer);
-          s.retryTimer = null;
-          // Clean /exit (not a hard kill) so claude releases the session lock
-          // and `--resume` works; then make sure the tmux session is gone.
-          await s.pilot.stop();
-          if (USE_TMUX) {
-            for (let i = 0; i < 30 && tmuxHasSession("sk-" + s.id); i++) await sleep(100);
-          }
-          s.busy = false;
-          s.lastScreen = "";
-          broadcast(s, { type: "working", startedAt: Date.now(), elapsedMs: 0 });
-          // Resume only if there's a transcript; a never-used session has
-          // nothing to resume (claude --resume would exit) — re-create it.
-          const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id));
-          s.pilot = makePilot(s.id, s.cwd, hasTranscript ? ["--resume", s.id] : ["--session-id", s.id], s.profile);
-          await attachPilot(s);
-          s.restarting = false;
-          broadcast(s, { type: "ready", sessionId: s.id, cwd: s.cwd, branch: s.worktree?.branch ?? null });
-          broadcast(s, { type: "screen", text: s.pilot.screen(), working: s.pilot.isWorking() });
+          const name = msg.profile ?? null;
+          // Refuse an unknown name rather than silently spawning bare: a typo
+          // would strip the agent of its guardrails without anyone noticing.
+          if (name !== null && !getProfile(name)) return fail(`unknown profile: ${name}`);
+          s.profile = name;
+          upsertChannel({ sessionId: s.id, profile: name });
+          broadcastProfile(s);            // même sans restart : l'écart est visible partout
+          if (msg.restart) await restartSession(s);
           break;
         }
         case "stop": {

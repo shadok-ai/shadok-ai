@@ -109,7 +109,7 @@ both are silent in the DOM.
 | `public/index.html` | The entire web client (no framework, no build). Agents (la création est une **popin** `#setupOverlay`, profile-first : une grille de cartes, le reste replié ; le canal ne naît qu'au « Start agent », cf. invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
 | `public/live-text.js` | Pure `extractLiveText(screen)` — pulls the in-flight assistant text block from the TUI screen for the web live preview. ESM: loaded by the browser (bridged to `window.extractLiveText`) AND imported by `test/live-text.test.ts`. |
 | `public/notify.js` | Pure `notifyState(channels, {hidden, phase})` → `{color, badge, blink}` — la décision favicon/titre/clignotement. Le badge ne clignote que si l'onglet navigateur est caché ET qu'un canal **non muté** attend une réponse ; les deux phases restent visibles (un timer étranglé par le navigateur ne doit jamais rendre la page calme). ESM : chargé par le navigateur ET importé par `test/notify.test.ts`. |
-| `public/profile-card.js` | Pure `profileBlurb` / `profileBadges` — the labels a profile card shows, derived from `systemPrompt` / `deny` / `model` / `secrets` (nothing added to `Profile`). ESM: loaded by the browser AND imported by `test/profile-card.test.ts`. |
+| `public/profile-card.js` | Pure `profileBlurb` / `profileBadges` — the labels a profile card shows, derived from `systemPrompt` / `deny` / `model` / `secrets` (nothing added to `Profile`) — plus `defaultAgentName(profile, cwd)`, the name proposed for a new agent (profile → directory → `"agent"`). ESM: loaded by the browser AND imported by `test/profile-card.test.ts`. |
 | `public/gauge-dial.js` | Pure `dialPos` / `dialAngle` / `dialColor` / `arcSegments` / `dialTitle` — the geometry of the 240° quota dial, whose centre is the ideal pace and whose right end is exhaustion. ESM: loaded by the browser AND imported by `test/gauge-dial.test.ts`. |
 | `context/pilot-prompt.md` | System prompt appended to **every piloted session** via `--append-system-prompt` (wired in `makePilot`, server.ts). Tells the agent it runs under the cockpit (chat rendering, sibling sessions, worktree discipline). `SHADOK_PILOT_PROMPT=0` disables. |
 | `.claude/skills/shadok-ai-agents/pilotctl.mjs` | Thin client that lets an agent spawn/pilot other agents through the server (used by the `shadok-ai-agents` skill). |
@@ -149,12 +149,17 @@ both are silent in the DOM.
 `origin` — "web"/"cron"/"telegram"…, renvoyé dans `prompt-echo` pour dire QUI a
 parlé),
 `prompt` (text, `force?`), `choose` n, `toggle` n, `confirm`, `freetext` n
-text, `key`, `settle`, `restart`, `stop` (`sessionId?` — kills a specific
-channel, so the UI can remove a zombie).
+text, `key`, `settle`, `restart`, `set-profile` (`profile` — le nom du profil ou
+`null` ; `restart?` pour l'appliquer tout de suite en re-spawnant sur place.
+C'est le SEUL chemin légitime : `profile` est `SERVER_OWNED` sur le canal, donc
+un PUT `/channels` du navigateur ne peut pas y toucher), `stop` (`sessionId?` —
+kills a specific channel, so the UI can remove a zombie).
 
 **server → client:** `ready`, `working` (porte `elapsedMs` — depuis combien de temps le tour tourne ; le client s'ancre sur la DURÉE et jamais sur un instant serveur, sinon le chrono est faux de tout l'écart entre les deux horloges), `turn-done`, `stream-text`,
 `stream-tool`, `stream-result`, `history`, `dialog`, `screen`, `tokens`,
-`context`, `prompt-echo`, `pace-blocked` / `pace-hold` / `pace-resumed`,
+`context`, `profile` (le couple `{profile, applied}` — désiré vs celui que le
+process en cours porte vraiment ; leur écart est ce que l'UI montre comme « at
+next reload »), `prompt-echo`, `pace-blocked` / `pace-hold` / `pace-resumed`,
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
 `stopped`. `error` carries an optional `code` (today only `"busy"`, on a prompt
 refused mid-turn) so a machine client can classify a refusal without matching on

@@ -527,6 +527,14 @@
   .profile-card:hover .pc-edit, .profile-card:focus-within .pc-edit { opacity: 1; }
   .pc-edit:hover { color: var(--amber); }
   .grid-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 12px; font-style: italic; }
+  /* Un secret que personne ne référence n'atteindra jamais un agent : on le dit
+     sur la ligne du secret, pas seulement dans un paragraphe d'entête. */
+  .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
+  /* Sélecteur de profil d'un agent en cours (menu contextuel de l'onglet). */
+  #profSwitchGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 18px 18px; }
+  .sec-note.warn { color: var(--amber); }
+  /* Redémarrer coupe un tour en cours : le bouton doit le dire. */
+  #profConfirmRestart.danger { background: #e2564a; border-color: #e2564a; color: #fff; }
 
   /* Sections rares repliées : c'est ce qui empêchait le bouton Start de tenir
      à l'écran (les listes s'ouvraient d'office dès qu'elles avaient un élément). */
@@ -1195,7 +1203,9 @@
       <strong>Secret vault</strong>
       <button id="secretsClose" title="Close">✕</button>
     </div>
-    <p class="sec-note">A central list of named secrets (stored 600 outside any repo, values write-only). A <b>profile</b> picks which of these to inject as env into its agents at spawn — define a value once here, reference it from any profile.</p>
+    <p class="sec-note">A central list of named secrets (stored 600 outside any repo, values write-only).</p>
+    <p class="sec-note warn"><b>A secret here reaches no agent on its own.</b> It is injected as an environment variable only into agents whose <b>profile</b> references it — define the value once here, then tick it in a profile.
+      <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
     <ul id="secretsList"></ul>
     <form id="secretsAdd">
       <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
@@ -1265,6 +1275,10 @@
           <span class="check-hint" id="profileNaNote" hidden>Applies to new sessions only.</span>
         </div>
         <div class="field">
+          <span class="label">Name</span>
+          <input type="text" id="nameInput" placeholder="agent" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field">
           <span class="label">Working directory</span>
           <input type="text" id="cwdInput" placeholder="/path/to/project">
         </div>
@@ -1304,6 +1318,36 @@
     <div class="modal-foot">
       <button id="setupCancel">Cancel</button>
       <button class="primary" id="startBtn">Start agent</button>
+    </div>
+  </div>
+</div>
+
+<!-- Changer le profil d'un agent EN COURS. Deux popins : le choix, puis la
+     confirmation — parce qu'appliquer redémarre le process, ce qui ne doit
+     jamais arriver sur un simple clic. -->
+<div id="profSwitchOverlay" class="overlay" hidden>
+  <div class="sec-panel modal">
+    <div class="sec-head">
+      <strong>Profile — <span id="profSwitchWho">agent</span></strong>
+      <button id="profSwitchClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note">Applying re-spawns the agent in place. Its history is kept and the conversation continues.</p>
+    <div id="profSwitchGrid" role="radiogroup" aria-label="Agent profile"></div>
+  </div>
+</div>
+
+<div id="profConfirmOverlay" class="overlay" hidden>
+  <div class="sec-panel modal">
+    <div class="sec-head">
+      <strong id="profConfirmTitle">Switch profile?</strong>
+      <button id="profConfirmClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note" id="profConfirmBody"></p>
+    <p class="sec-note warn" id="profConfirmBusy" hidden>⚠ A turn is in flight — it will be interrupted.</p>
+    <div class="modal-foot">
+      <button id="profConfirmCancel">Cancel</button>
+      <button id="profConfirmSave">Save only</button>
+      <button class="primary" id="profConfirmRestart">Restart now</button>
     </div>
   </div>
 </div>
@@ -1475,12 +1519,13 @@
      qui rend inoffensif le HTML qu'un agent pourrait écrire dans le transcript. -->
 <script type="module" nonce="__CSP_NONCE__">
   import { extractLiveText } from "/live-text.js";
-  import { profileBlurb, profileBadges } from "/profile-card.js";
+  import { profileBlurb, profileBadges, defaultAgentName } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
   window.extractLiveText = extractLiveText;
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
+  window.defaultAgentName = defaultAgentName;
   window.notifyState = notifyState;
   window.BLINK_MS = BLINK_MS;
   window.dialPos = dialPos;
@@ -1616,7 +1661,11 @@
       lastAtEl: lastAt,
     };
     btn._tab = tab;
+    // Un touchend synthétise un click : après un appui long, il ne doit pas
+    // activer l'onglet par-dessus le menu qu'on vient d'ouvrir.
+    let longPressed = 0;
     btn.addEventListener("click", (e) => {
+      if (Date.now() - longPressed < 500) return;
       if (e.target === close) closeTab(tab);
       else activate(tab);
     });
@@ -1629,6 +1678,28 @@
       e.stopPropagation();
       openTabMenu(tab, e.clientX, e.clientY);
     });
+    // Appui long = clic droit du tactile. Sans ça le menu — et donc tout ce
+    // qu'il contient (profil, rename, mute, mirror, close) — est inatteignable
+    // depuis un téléphone, alors que le cockpit se pilote aussi comme ça.
+    let pressTimer = null, pressAt = null;
+    const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; pressAt = null; };
+    btn.addEventListener("touchstart", (e) => {
+      const t0 = e.touches[0];
+      pressAt = { x: t0.clientX, y: t0.clientY };
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        longPressed = Date.now();   // le click qui suit n'est pas une activation
+        openTabMenu(tab, pressAt.x, pressAt.y);
+      }, 500);
+    }, { passive: true });
+    // Un doigt qui bouge, c'est un scroll ou un drag, pas un appui long.
+    btn.addEventListener("touchmove", (e) => {
+      if (!pressAt) return;
+      const t0 = e.touches[0];
+      if (Math.abs(t0.clientX - pressAt.x) > 10 || Math.abs(t0.clientY - pressAt.y) > 10) cancelPress();
+    }, { passive: true });
+    btn.addEventListener("touchend", cancelPress);
+    btn.addEventListener("touchcancel", cancelPress);
     btn.addEventListener("dragstart", (e) => {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", "tab");
@@ -1652,15 +1723,37 @@
 
   // Composer drafts, one per channel, remembered by session id.
   const savedDrafts = JSON.parse(localStorage.getItem("cp.drafts") || "{}");
+  /** Écrit MAINTENANT le brouillon de cet onglet, sans attendre le débounce. */
+  function writeDraft(tab) {
+    if (!tab.sessionId) return;
+    clearTimeout(tab.draftTimer);
+    if (tab.draft) savedDrafts[tab.sessionId] = tab.draft;
+    else delete savedDrafts[tab.sessionId];
+    localStorage.setItem("cp.drafts", JSON.stringify(savedDrafts));
+  }
   function persistDraft(tab) {
     if (!tab.sessionId) return;
     clearTimeout(tab.draftTimer);
-    tab.draftTimer = setTimeout(() => {
-      if (tab.draft) savedDrafts[tab.sessionId] = tab.draft;
-      else delete savedDrafts[tab.sessionId];
-      localStorage.setItem("cp.drafts", JSON.stringify(savedDrafts));
-    }, 300);
+    tab.draftTimer = setTimeout(() => writeDraft(tab), 300);
   }
+  /**
+   * Vide les écritures en attente de TOUS les onglets.
+   *
+   * Le débounce se réarme à chaque frappe : tant qu'on écrit sans marquer 300 ms
+   * de pause, rien n'était jamais écrit — un rechargement en plein élan (typique
+   * de l'auto-update, qui tombe quand il tombe) emportait tout le message. On
+   * force donc l'écriture au moment où la page s'en va.
+   */
+  function flushDrafts() {
+    for (const t of tabs) writeDraft(t);
+  }
+  // `pagehide` couvre le rechargement, la navigation et la mise en bfcache ;
+  // `visibilitychange` rattrape le mobile, où l'onglet peut être tué sans que
+  // `pagehide` ne parte. localStorage étant synchrone, l'écriture aboutit.
+  window.addEventListener("pagehide", flushDrafts);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushDrafts();
+  });
   function dropDraft(tab) {
     clearTimeout(tab.draftTimer);
     tab.draft = "";
@@ -1772,6 +1865,75 @@
     addTurn(tab, "system", "", "Nothing to reload: this agent has never been launched.", null, Date.now());
   }
 
+  // ── Changer le profil d'un agent en cours ────────────────────────────────
+  let profSwitchTab = null;   // l'onglet dont on règle le profil
+  let profPending = null;     // le profil choisi, en attente de confirmation
+
+  function closeProfSwitch() { $("profSwitchOverlay").hidden = true; profSwitchTab = null; }
+  function closeProfConfirm() { $("profConfirmOverlay").hidden = true; profPending = null; }
+
+  /** Le sélecteur : les mêmes cartes que la box, avec le profil courant coché. */
+  async function openProfileSwitcher(tab) {
+    if (!tab.sessionId) return;   // jamais lancé : la box de création s'en charge
+    profSwitchTab = tab;
+    $("profSwitchWho").textContent = tab.nameEl ? tab.nameEl.textContent : "agent";
+    await loadProfilesInto();     // la liste a pu changer depuis le dernier passage
+    renderProfileCards(
+      $("profSwitchGrid"),
+      tab.profile || "",
+      (name) => askProfileSwitch(tab, name),
+      false,
+    );
+    $("profSwitchOverlay").hidden = false;
+  }
+
+  /** La confirmation. Trois issues : redémarrer, enregistrer seulement, annuler
+   *  — d'où une popin maison plutôt qu'un confirm() natif, qui n'en offre que deux. */
+  function askProfileSwitch(tab, name) {
+    const target = name || "";
+    if (target === (tab.profile || "")) { closeProfSwitch(); return; }  // déjà celui-là
+    profPending = { tab, name: target || null };
+    $("profConfirmTitle").textContent = "Switch to " + (target || "No profile") + "?";
+    $("profConfirmBody").textContent =
+      "The agent re-spawns in place. Its history is kept (--resume) and the conversation continues.";
+    // Un tour en cours sera coupé — on le dit, on ne l'interdit pas : rattraper
+    // un agent parti de travers est précisément un cas d'usage.
+    const busy = tab.status === "busy";
+    $("profConfirmBusy").hidden = !busy;
+    $("profConfirmRestart").classList.toggle("danger", busy);
+    $("profConfirmOverlay").hidden = false;
+    $("profConfirmRestart").focus();
+  }
+
+  function sendProfile(tab, name, restart) {
+    if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+      addTurn(tab, "system", "", "Agent isn't connected — profile unchanged.", null, Date.now());
+      return;
+    }
+    tab.ws.send(JSON.stringify({ type: "set-profile", profile: name, restart: !!restart }));
+    addTurn(tab, "system", "",
+      restart
+        ? "Profile → " + (name || "No profile") + ". Restarting the agent; history is kept."
+        : "Profile → " + (name || "No profile") + ". Applied at the next reload.",
+      null, Date.now());
+  }
+
+  $("profSwitchClose").addEventListener("click", closeProfSwitch);
+  $("profSwitchOverlay").addEventListener("click", (e) => { if (e.target === $("profSwitchOverlay")) closeProfSwitch(); });
+  $("profConfirmClose").addEventListener("click", closeProfConfirm);
+  $("profConfirmCancel").addEventListener("click", closeProfConfirm);
+  // Fermer sans choisir ne doit RIEN changer — d'où un vrai Cancel distinct de
+  // « enregistrer seulement ».
+  $("profConfirmOverlay").addEventListener("click", (e) => { if (e.target === $("profConfirmOverlay")) closeProfConfirm(); });
+  $("profConfirmSave").addEventListener("click", () => {
+    const p = profPending; closeProfConfirm(); closeProfSwitch();
+    if (p) sendProfile(p.tab, p.name, false);
+  });
+  $("profConfirmRestart").addEventListener("click", () => {
+    const p = profPending; closeProfConfirm(); closeProfSwitch();
+    if (p) sendProfile(p.tab, p.name, true);
+  });
+
   const tabMenu = document.createElement("div");
   tabMenu.id = "tabMenu";
   tabMenu.hidden = true;
@@ -1797,6 +1959,14 @@
     who.textContent = tab.profile || "No profile";
     head.append("👤 ", who);
     if (!tab.profile) head.title = "Spawned without a profile — no role, no extra guardrails";
+    // Profil changé mais pas encore appliqué : le dire, sinon l'entête mentirait
+    // sur ce qui tourne réellement.
+    if (tab.sessionId && (tab.appliedProfile ?? null) !== (tab.profile ?? null)) {
+      const pend = document.createElement("span");
+      pend.className = "tm-sub";
+      pend.textContent = "at next reload — running: " + (tab.appliedProfile || "No profile");
+      head.appendChild(pend);
+    }
     if (tab.crons && tab.crons.length) {
       const sub = document.createElement("span");
       sub.className = "tm-sub";
@@ -1810,6 +1980,9 @@
       ["↻ Reload agent", () => reloadTab(tab)],
       ["✎ Rename", () => startRename(tab)],
     ];
+    // Le profil ne se règle ici que pour un agent lancé : sinon c'est la box de
+    // création qui le porte, et il n'y a pas de session à redémarrer.
+    if (tab.sessionId) items.push(["👤 Change profile…", () => openProfileSwitcher(tab)]);
     // The Telegram mirror. The label states the action AND its cost: turning it
     // off deletes the topic, hence the conversation on the phone — so we confirm.
     // The main channel (the General) is the board's home base: not un-mirrorable.
@@ -2207,6 +2380,7 @@
       } else if (!dismissedChannels.has(c.sessionId)) {
         const nt = createTab(c.group);
         nt.sessionId = c.sessionId;
+        nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
         setCrons(nt, c.crons);
@@ -3115,6 +3289,10 @@
     // écraserait le choix en cours de saisie.
     profileTouched = false;
     applyRememberedProfile();
+    // Même règle que le profil : on ne repropose le défaut qu'à l'OUVERTURE,
+    // pour ne pas écraser un nom en cours de frappe.
+    nameTouched = false;
+    refreshDefaultName();
     refreshRecoverList();
     refreshLiveList();
     $("setupOverlay").hidden = false;
@@ -3143,7 +3321,13 @@
     $("startBtn").disabled = true;
     closeSetup();
     // createTab active l'onglet créé ; launchTab ouvre le lien.
-    launchTab(createTab(), msg);
+    const t = createTab();
+    // Le nom est posé AVANT launchTab, qui sinon écrase avec basename(cwd).
+    // customName le protège aussi du `ready` et de la restauration des canaux.
+    const wanted = $("nameInput").value.trim() || defaultAgentNameNow();
+    t.customName = true;
+    t.nameEl.textContent = wanted;
+    launchTab(t, msg);
   }
 
   // ── Version display + auto-reload ─────────────────────────────────────────
@@ -3166,7 +3350,14 @@
 
   function handleVersion(msg) {
     if (bootVersion === null) bootVersion = msg.current;
-    else if (msg.current && msg.current !== bootVersion) { location.reload(); return; }
+    else if (msg.current && msg.current !== bootVersion) {
+      // Mise à jour : la page part maintenant. On écrit d'abord — c'est LE cas
+      // où l'on perdait un message en cours de frappe, puisque le rechargement
+      // n'est pas déclenché par l'utilisateur.
+      flushDrafts();
+      location.reload();
+      return;
+    }
     lastVersion = msg;
     if (!verView) return;
     const ahead = msg.latest && verIsNewer(msg.latest, msg.current);
@@ -3289,6 +3480,10 @@
               promptInput.value = t.draft;
               autosizePrompt();
             }
+          } else if (t.draft) {
+            // Tapé AVANT que la session ne soit connue : `persistDraft` refuse
+            // d'écrire sans id, ce texte n'était donc dans aucun stockage.
+            writeDraft(t);
           }
         }
         // launchTab reuses the tab object, so a bubble armed before the session
@@ -3319,6 +3514,12 @@
         // when it auto-retries a turn that died on a transient API error.
         closeActivity(t);
         addTurn(t, "user", msg.auto ? "auto-retry" : "pilot (elsewhere)", msg.text, null, Date.now());
+        break;
+      case "profile":
+        // Le couple désiré / en vigueur. Diffusé à TOUS les clients : changer le
+        // profil depuis un onglet met les autres à jour sans reload.
+        t.profile = msg.profile;
+        t.appliedProfile = msg.applied;
         break;
       case "tokens":
         t.tokens = msg.tokens;
@@ -3555,11 +3756,16 @@
       if (mode === "resume") refreshSessionList();
     })
   );
+  $("nameInput").addEventListener("input", () => {
+    nameTouched = $("nameInput").value.trim() !== "";
+  });
   $("cwdInput").addEventListener("change", () => {
     if (!$("resumeField").hidden) refreshSessionList();
     refreshRecoverList();
     // Un autre dossier a peut-être son propre habitué — sauf si on a déjà choisi.
     if (!profileTouched) applyRememberedProfile();
+    // Sans profil, le défaut EST le dossier : il doit suivre la saisie.
+    refreshDefaultName();
   });
   // Agents can appear while the setup screen sits open (pilotctl spawns one,
   // another tab starts one) — keep the list current without a reload.
@@ -3827,6 +4033,10 @@
     // keystroke already flows to the pane via term.onData; don't double-handle.
     if (active && active.termOn) return;
     // 1. Overlays / panneaux ouverts → fermer, pas d'esc.
+    // La confirmation d'abord : elle est empilée AU-DESSUS du sélecteur, et
+    // Échap ne doit rien changer (ni enregistrer, ni redémarrer).
+    if (!$("profConfirmOverlay").hidden) { closeProfConfirm(); e.preventDefault(); return; }
+    if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
@@ -3869,9 +4079,20 @@
     const ul = $("secretsList");
     ul.innerHTML = "";
     if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
+    // Combien de profils référencent chaque secret. Un blurb se lit une fois ;
+    // un secret marqué « inutilisé » montre le problème là où il est.
+    const usage = {};
+    for (const p of profileCache) for (const n of p.secrets || []) usage[n] = (usage[n] || 0) + 1;
     for (const k of vaultNames) {
       const li = document.createElement("li");
       const code = document.createElement("code"); code.textContent = k;
+      if (!usage[k]) {
+        const warn = document.createElement("span");
+        warn.className = "sec-orphan";
+        warn.textContent = "⚠ no profile uses it";
+        warn.title = "No agent will ever receive this secret until a profile references it";
+        code.appendChild(warn);
+      }
       const del = document.createElement("button");
       del.textContent = "✕"; del.title = "Remove from vault";
       del.addEventListener("click", async () => {
@@ -3882,7 +4103,19 @@
       ul.appendChild(li);
     }
   }
-  $("secretsBtn").addEventListener("click", async () => { await loadVault(); renderSecrets(); $("secretsOverlay").hidden = false; $("secretKey").focus(); });
+  // profileCache alimente l'avertissement « aucun profil ne l'utilise » : il doit
+  // être frais à l'ouverture, sinon on afficherait un diagnostic périmé.
+  $("secretsBtn").addEventListener("click", async () => {
+    await Promise.all([loadVault(), loadProfilesInto()]);
+    renderSecrets();
+    $("secretsOverlay").hidden = false;
+    $("secretKey").focus();
+  });
+  // Le chaînon manquant : depuis les secrets, aller les accrocher à un profil.
+  $("secretsToProfiles").addEventListener("click", () => {
+    $("secretsOverlay").hidden = true;
+    openProfilesPanel();
+  });
   $("secretsClose").addEventListener("click", () => { $("secretsOverlay").hidden = true; });
   $("secretsOverlay").addEventListener("click", (e) => { if (e.target === $("secretsOverlay")) $("secretsOverlay").hidden = true; });
   $("secretsAdd").addEventListener("submit", async (e) => {
@@ -4035,36 +4268,47 @@
   function renderProfileGrid(failed) {
     const grid = $("profileGrid");
     if (!grid) return;
-    grid.innerHTML = "";
-    if (failed) {
-      const note = document.createElement("div");
-      note.className = "grid-note";
-      note.textContent = "couldn't load profiles";
-      grid.appendChild(note);
-    }
     // Le rôle « tweak » a son propre CTA en bas de la colonne des agents : une
     // carte ici serait une deuxième porte, subtilement différente, vers le même
     // agent. Il reste listé dans le panneau Profils, pour qu'on puisse tout de
     // même lui attacher un secret ou un modèle.
-    const gridList = profileCache.filter((p) => p && p.name !== "Shadok-Tweak");
+    renderProfileCards(grid, selectedProfile, (n) => selectProfile(n, true), failed, "Shadok-Tweak");
+  }
+
+  /** Peint les cartes de profil dans `container`. Générique : la box de création
+   *  ET le sélecteur du menu d'onglet s'en servent — la logique de carte (blurb,
+   *  badges, crayon, clavier) ne vit qu'ici, en un seul exemplaire. */
+  function renderProfileCards(container, selected, onPick, failed, exclude) {
+    container.innerHTML = "";
+    if (failed) {
+      const note = document.createElement("div");
+      note.className = "grid-note";
+      note.textContent = "couldn't load profiles";
+      container.appendChild(note);
+    }
+    // `exclude` sert à la box de création, qui masque le rôle « tweak » (il a
+    // son propre CTA). Surtout PAS ici pour tout le monde : le sélecteur du menu
+    // d'onglet montre le profil COURANT comme sélectionné, et un agent tweak n'y
+    // trouverait plus son propre rôle.
+    const list = profileCache.filter((p) => p && p.name !== exclude);
     // Zéro profil : on montre la porte d'entrée plutôt qu'un « (none) » muet.
     // Pas de role="radio" → ignorée par la sélection et par les flèches.
-    if (!failed && !gridList.length) {
+    if (!failed && !list.length) {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "profile-card";
       b.style.gridColumn = "1 / -1";
       b.textContent = "Create your first profile →";
       b.addEventListener("click", () => openProfilesPanel());
-      grid.appendChild(b);
+      container.appendChild(b);
     }
-    for (const p of gridList) grid.appendChild(profileCardEl(p));
-    grid.appendChild(profileCardEl(null));      // ∅ No profile, toujours en dernier
-    syncProfileSelection();
+    for (const p of list) container.appendChild(profileCardEl(p, onPick));
+    container.appendChild(profileCardEl(null, onPick));   // ∅ No profile, en dernier
+    markProfileSelection(container, selected);
   }
 
   /** Une carte = un <button role="radio">. p === null → la carte « No profile ». */
-  function profileCardEl(p) {
+  function profileCardEl(p, onPick) {
     const card = document.createElement("button");
     card.type = "button";
     card.className = "profile-card";
@@ -4102,8 +4346,8 @@
       });
       card.appendChild(pen);
     }
-    card.addEventListener("click", () => selectProfile(card.dataset.profile, true));
-    card.addEventListener("keydown", onProfileKey);
+    card.addEventListener("click", () => onPick(card.dataset.profile));
+    card.addEventListener("keydown", (e) => onProfileKey(e, onPick));
     return card;
   }
 
@@ -4111,21 +4355,31 @@
     selectedProfile = name || "";
     if (byUser) profileTouched = true;
     syncProfileSelection();
+    // Le nom par défaut DÉRIVE du profil : changer de carte doit le reproposer,
+    // sinon on lance un « Shadok-dev » qui tourne en fait sur Shadok-Support.
+    refreshDefaultName();
   }
 
-  /** Reflète selectedProfile sur les cartes. Un seul tabindex=0 dans le groupe :
-   *  c'est la convention radiogroup (Tab entre, flèches naviguent). */
   function syncProfileSelection() {
     const grid = $("profileGrid");
     if (!grid) return;
-    const cards = [...grid.querySelectorAll('.profile-card[role="radio"]')];
-    if (!cards.some((c) => c.dataset.profile === selectedProfile)) selectedProfile = "";
+    selectedProfile = markProfileSelection(grid, selectedProfile);
+  }
+
+  /** Reflète la sélection sur les cartes d'un conteneur. Un seul tabindex=0 :
+   *  c'est la convention radiogroup (Tab entre, flèches naviguent). Renvoie le
+   *  nom réellement retenu — "" si le profil visé n'existe plus. */
+  function markProfileSelection(container, selected) {
+    const cards = [...container.querySelectorAll('.profile-card[role="radio"]')];
+    let on = selected || "";
+    if (!cards.some((c) => c.dataset.profile === on)) on = "";
     for (const c of cards) {
-      const on = c.dataset.profile === selectedProfile;
-      c.classList.toggle("selected", on);
-      c.setAttribute("aria-checked", on ? "true" : "false");
-      c.tabIndex = on ? 0 : -1;
+      const hit = c.dataset.profile === on;
+      c.classList.toggle("selected", hit);
+      c.setAttribute("aria-checked", hit ? "true" : "false");
+      c.tabIndex = hit ? 0 : -1;
     }
+    return on;
   }
 
   let profileTab = null;   // onglet pour lequel la mémoire a déjà été appliquée
@@ -4141,16 +4395,35 @@
     selectProfile(remembered);   // syncProfileSelection retombe sur "" s'il n'existe plus
   }
 
+  // ── Nom par défaut d'un nouvel agent ─────────────────────────────────────
+  let nameTouched = false;   // l'utilisateur a tapé le sien → on n'écrase plus
+
+  /** Le défaut courant, d'après le profil sélectionné et le dossier saisi. */
+  function defaultAgentNameNow() {
+    // Garde alignée sur les autres usages du pont ESM (cf. invariant 10) : si le
+    // module n'est pas encore là, un nom vide vaut mieux qu'une exception.
+    return window.defaultAgentName ? window.defaultAgentName(selectedProfile, $("cwdInput").value) : "";
+  }
+
+  /** Repose le défaut dans le champ, sauf si l'utilisateur l'a déjà écrit. */
+  function refreshDefaultName() {
+    if (nameTouched) return;
+    const el = $("nameInput");
+    if (el) el.value = defaultAgentNameNow();
+  }
+
   /** Flèches = déplacer la sélection (convention radiogroup). Espace/Entrée
    *  sont déjà le clic natif du <button>. */
-  function onProfileKey(e) {
+  function onProfileKey(e, onPick) {
     const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
     if (!dir) return;
     e.preventDefault();
-    const cards = [...$("profileGrid").querySelectorAll('.profile-card[role="radio"]')];
+    // Les voisines viennent du conteneur de la carte, pas d'un id en dur : la
+    // même logique sert la box de création et le sélecteur du menu d'onglet.
+    const cards = [...e.currentTarget.parentElement.querySelectorAll('.profile-card[role="radio"]')];
     const i = cards.indexOf(e.currentTarget);
     const next = cards[(i + dir + cards.length) % cards.length];
-    selectProfile(next.dataset.profile, true);
+    onPick(next.dataset.profile);
     next.focus();
   }
   function renderProfilesList() {
@@ -4495,6 +4768,11 @@
         // Know the session id from the start, so a slow or failed reattach never
         // drops the channel from a persist (which eroded the list to one).
         t.sessionId = s.sessionId;
+        // Le brouillon revient DÈS la création de l'onglet, sans attendre le
+        // `ready` : après une mise à jour le serveur redémarre, la reconnexion
+        // prend plusieurs secondes, et l'utilisateur retrouvait un champ vide —
+        // de quoi croire que son message était perdu et le retaper.
+        t.draft = savedDrafts[s.sessionId] || "";
         if (s.branch) t.branch = s.branch;
         t.profile = s.profile || null;
         setCrons(t, s.crons);

@@ -83,9 +83,17 @@ const FILE = path.join(os.homedir(), ".shadok-ai", "profiles.json");
  *  so it knows what's available without hunting. "" when there are none. */
 export function envVarsNote(names: string[]): string {
   if (!names.length) return "";
+  // Formulée pour couper court au réflexe qui faisait échouer les agents :
+  // partir chercher un .env à charger, puis conclure que le secret manque.
+  // On dit donc explicitement que c'est DÉJÀ posé, et on donne le test de
+  // présence qui ne révèle pas la valeur.
   return (
-    `Secrets available to you as environment variables: ${names.join(", ")}. ` +
-    `Read them from the environment (e.g. $NAME / process.env.NAME); never print or commit their values.`
+    `Credentials available to you: ${names.join(", ")}. ` +
+    `They are already set as environment variables in every command you run with the Bash tool — ` +
+    `there is no .env file to load and nothing to source or export. Use them directly, e.g. ` +
+    `curl -H "Authorization: Bearer $${names[0]}" …, or process.env.${names[0]} in Node. ` +
+    `To check one is present without revealing it: [ -n "$${names[0]}" ] && echo set. ` +
+    `Never print, log or commit their values.`
   );
 }
 

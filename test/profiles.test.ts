@@ -99,7 +99,18 @@ test("envVarsNote: lists names, empty for none", () => {
   assert.equal(envVarsNote([]), "");
   const n = envVarsNote(["GOOGLE_ADWORDS", "META_TOKEN"]);
   assert.match(n, /GOOGLE_ADWORDS, META_TOKEN/);
-  assert.match(n, /never print or commit/i);
+  assert.match(n, /never print, log or commit/i);
+});
+
+test("envVarsNote: dit qu'elles sont DÉJÀ posées, et qu'il n'y a pas de .env", () => {
+  // Ce qui bloquait les agents : ils partaient chercher un fichier à sourcer.
+  // La note doit couper court, sinon elle ne sert à rien.
+  const n = envVarsNote(["GITHUB_TOKEN"]);
+  assert.match(n, /already set/i);
+  assert.match(n, /Bash/);
+  assert.match(n, /\.env/);
+  // Et donner de quoi vérifier la présence SANS révéler la valeur.
+  assert.match(n, /-n "\$GITHUB_TOKEN"/);
 });
 
 test("DEFAULT_PROFILES: dev is unguarded, boss/marketing/support are read-only", () => {
