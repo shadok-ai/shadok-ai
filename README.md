@@ -122,6 +122,28 @@ the same-origin policy, so without that check any page you happen to visit could
 drive your agents. Behind a reverse proxy that rewrites `Host`, list the public
 origin in `SHADOK_ORIGINS`.
 
+### SSH identity in Docker
+
+When shadok-ai runs **in a container** it gives itself an SSH key on first boot
+so agents can `git clone/push` private repos and `ssh` into servers. The key
+lives under `~/.shadok-ai/ssh/` — i.e. on the **`shadok-data` volume you already
+mount** — so it **survives `docker restart` and `docker rm`+recreate** (unlike a
+plain `~/.ssh`, which is wiped on recreate). Each container has its own volume,
+hence its own unique key; `~/.ssh` is symlinked to it, so `git`/`ssh` use it with
+no extra config. Nothing to add to `docker run`.
+
+Read the public key to register it (GitHub **deploy key**, or the target hosts'
+`authorized_keys`):
+
+```
+docker logs <name> | grep 'ssh identity'          # printed on every boot
+docker exec <name> cat /root/.shadok-ai/ssh/id_ed25519.pub
+```
+
+On a normal (non-Docker) host this is a **no-op** — shadok never touches your
+`~/.ssh`. Detection is `/.dockerenv`; `SHADOK_SSH_IDENTITY=0` disables it,
+`SHADOK_FORCE_SSH_IDENTITY=1` forces it on.
+
 ### Configuration
 
 Config lives in `~/.shadok-ai/config.json` (mode 600) and is **authoritative
@@ -146,6 +168,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |
+| `SHADOK_SSH_IDENTITY=0` · `SHADOK_FORCE_SSH_IDENTITY=1` | disable / force the Docker SSH identity |
 | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALLOWED_CHATS` | override the stored config |
 | `CLAUDE_CODE_OAUTH_TOKEN` | only for the usage gauges; `claude` itself uses the keychain |
 

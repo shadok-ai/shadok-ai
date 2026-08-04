@@ -23,6 +23,7 @@ import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 import { screenShowsWork } from "./detect.js";
 import { PtyPilot } from "./session.js";
+import { ensureSshIdentity } from "./ssh.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, type TokenUsage } from "./tail.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
@@ -2131,6 +2132,12 @@ server.on("error", (err: NodeJS.ErrnoException) => {
     process.exit(1);
   }
 });
+// Persistent per-container SSH identity: in Docker, generate/reuse a key on the
+// shadok-data volume and point ~/.ssh at it so agents' git/ssh survive a
+// recreate. No-op on a normal host. Its GIT_SSH_COMMAND fallback is merged into
+// the env every spawned agent inherits.
+Object.assign(process.env, ensureSshIdentity());
+
 server.listen(port, HOST, () => {
   console.log(`shadok-ai web: http://localhost:${port}${HOST === "127.0.0.1" ? "" : `  (bind ${HOST})`}`);
   console.log(
