@@ -104,6 +104,7 @@ both are silent in the DOM.
 | `src/config.ts` | `~/.shadok-ai/config.json` (600): port, **per-launch-dir** Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`. Config is authoritative over env once set. |
 | `src/crons.ts` | Prompts programmés par canal (`~/.shadok-ai/crons/<enc>.json`) + le `check` déterministe qui évite de réveiller le LLM pour rien. `nextRunFor` calcule un `daily` dans un **fuseau IANA explicite** (`cron.tz` → config `timezone` → machine) : sans ça l'heure suit la machine, et un serveur en UTC décale tout en silence. `nextRunAfterFailure` décide où reprogrammer un tir dont la livraison s'est perdue (cf. invariant 15). `resolveCronTarget` dit OÙ un cron tourne (cwd/profile/branch/repo du canal) — une seule source de vérité pour la garde et pour la reprise (cf. invariant 19). Le tir lui-même vit dans `server.ts` (`cronTick` / `fireCron` / `driveChannel` / `settleCron`). Porte aussi `CRON_PROMPT_MARK` : le texte d'un prompt de cron est préfixé, parce qu'il finit dans le transcript comme un message utilisateur ordinaire — masquer le seul écho direct le laissait revenir au rechargement web et au backfill Telegram, qui relisent `loadHistory`. Jumeau de `NOTHING TO SHOW`. |
 | `src/secrets.ts` | Central secret vault (`~/.shadok-ai/secrets.json`, 600). Profiles reference secrets **by name**; values are injected as env at spawn. |
+| `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). **Docker-only** (`/.dockerenv`): generates an ed25519 key under `~/.shadok-ai/ssh/` — on the `shadok-data` volume, so it survives restart AND recreate — and symlinks `~/.ssh` to it so agents' `git`/`ssh` use it. NO-OP on a normal host (never touches `~/.ssh`). Pure `sshPaths`/`planDotSshWiring`/`inContainer` are unit-tested. Voir invariant 21. |
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow, e.g. no `git commit`) + secrets + model, applied at spawn via `profileArgs`. Stored on the channel (`profile`) → re-applied on resume/restart. SOFT (same OS user, not a sandbox). |
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
 | `public/index.html` | The entire web client (no framework, no build). Agents (la création est une **popin** `#setupOverlay`, profile-first : une grille de cartes, le reste replié ; le canal ne naît qu'au « Start agent », cf. invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
@@ -316,6 +317,19 @@ Auth section of `docs/architecture.md`).
    field only once something is stored for that id. So the client no longer
    invents the key, and the server asserts it from `session.worktree.repo` at
    `ready`, ASSERT-only like `branch` (invariant 19).
+
+21. **The SSH identity must never touch a real host's `~/.ssh`, and must live on
+    the mounted volume — not `/root/.ssh`.** `ensureSshIdentity` (`src/ssh.ts`)
+    runs at boot but is a NO-OP unless `/.dockerenv` is present: on a developer's
+    Mac it must not read, move, or symlink `~/.ssh`. In a container it puts the
+    key under `~/.shadok-ai/ssh/` **because that is the only path on a volume that
+    survives `docker rm`+recreate** (the ephemeral `/root/.ssh` does not — a plain
+    restart keeps it, a recreate wipes it, which is exactly the failure this
+    fixes). Wiring `~/.ssh` is best-effort and **never destructive**: it migrates a
+    pre-existing `~/.ssh` into the volume without clobbering the managed key/config
+    and never deletes a user file; on any doubt it leaves `~/.ssh` alone and falls
+    back to `GIT_SSH_COMMAND`. The whole thing is swallowed on error — an SSH-setup
+    failure must never take down the boot path.
 
 ## Conventions
 
