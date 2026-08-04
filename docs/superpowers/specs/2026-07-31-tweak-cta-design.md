@@ -81,14 +81,31 @@ Copy note: `now!` was considered and dropped. Urgency ages badly on a permanent
 element, and the real barrier to clicking is not motivation but not knowing what
 the button does — which is what the sub-line answers.
 
-### Interaction
+### Interaction — the card is the channel
 
 One click starts the agent. No pre-filled `New agent` box: the working
 directory, the worktree, the profile and the context are all already decided,
 and showing a form the user cannot meaningfully change would only ask them to
 approve choices they have no basis to judge.
 
-States on the card itself:
+**The tweak channel is unique, and it lives in the card's slot** — it never adds
+a row to the agents list. Clicking does not spawn a session per click: the CTA is
+only visible while no tweak channel exists, and once started its **tab takes the
+card's place**. That tab is an ordinary `.tab` element simply moved into the
+slot, so it inherits — with no duplicated code — the session states, the ✕, the
+rename, and the context menu, **including `✈️ Mirror to Telegram`**. Closing it
+puts the CTA back, so the feature never disappears without a way back.
+
+Consequences worth stating:
+
+- The channel is restored into the slot on reload and when it is discovered from
+  the registry (born on another device or in Telegram), keyed on
+  `profile === "Shadok-Tweak"`. Should a second tweak channel ever exist, only
+  the first is adopted; the rest behave as ordinary agents.
+- The slot is not a drop target: `dragover` skips a `.tab.tweak`, otherwise a
+  dragged agent would insert itself there and end up pinned at the bottom.
+
+States on the card, while it is still a CTA:
 
 | State | Card shows | Notes |
 |---|---|---|

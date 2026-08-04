@@ -374,10 +374,27 @@
      bordure et les ＋ des boutons fantômes, donc une carte pleine se lit comme
      une action et non comme une session. Épinglée en bas (margin-top:auto +
      sticky) pour rester atteignable quand la liste des agents défile. */
-  #tweakCta {
+  /* L'emplacement réservé au canal « tweak », épinglé en bas de la colonne. Il
+     porte tantôt le CTA (aucune session), tantôt l'ONGLET du canal lui-même —
+     qui est un `.tab` ordinaire déplacé ici, donc états, menu contextuel et
+     rattachement Telegram marchent sans code en double. */
+  #tweakSlot {
     margin-top: auto;
     position: sticky;
     bottom: 0;
+    padding-top: 8px;
+    background: var(--bg-raised);
+    /* Sépare de la liste qui défile dessous, sans ajouter de filet. */
+    box-shadow: 0 -8px 10px -8px rgba(0, 0, 0, 0.6);
+  }
+  /* L'onglet du canal tweak garde la teinte de son emplacement, pour qu'on le
+     reconnaisse au même endroit qu'avant de l'avoir démarré. */
+  #tweakSlot .tab {
+    border: 1px solid var(--amber);
+    background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--bg-raised);
+  }
+  #tweakSlot .tab .name { color: var(--amber); }
+  #tweakCta {
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -385,13 +402,8 @@
     padding: 8px;
     border: 1px solid var(--amber);
     border-radius: 6px;
-    /* Empilé sur le fond de la colonne, PAS `var(--amber-soft)` seul : la carte
-       est sticky, et un fond translucide laisserait les onglets défiler au
-       travers. */
+    width: 100%;
     background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--bg-raised);
-    /* Ombre douce vers le haut : sépare la carte de la liste qui passe dessous,
-       sans ajouter de filet qui doublerait la bordure. */
-    box-shadow: 0 -8px 10px -8px rgba(0, 0, 0, 0.6);
   }
   #tweakCta .tweak-title {
     font-family: var(--mono);
@@ -404,10 +416,7 @@
   /* Aucune animation permanente : un élément qui clignote ici entrerait en
      concurrence avec les vrais signaux (onglet en attente, jauges) et
      deviendrait du bruit. */
-  #tweakCta:hover {
-    border-color: var(--amber);
-    box-shadow: 0 -8px 10px -8px rgba(0, 0, 0, 0.6), 0 0 12px rgba(240, 168, 72, 0.18);
-  }
+  #tweakCta:hover { border-color: var(--amber); box-shadow: 0 0 12px rgba(240, 168, 72, 0.18); }
   #tweakCta:hover .tweak-arrow { transform: translateX(2px); }
   #tweakCta.busy { opacity: 0.7; cursor: default; }
   #tweakCta.failed { border-color: var(--err); background: transparent; }
@@ -1411,11 +1420,13 @@
     <div id="groups"></div>
     <button id="newTab" title="New agent">＋ new agent</button>
     <button id="newGroup" title="New agent group">＋ new group</button>
-    <button id="tweakCta" type="button"
-            title="Change shadok-ai itself — the agent works on a branch and opens a pull request">
-      <span class="tweak-title">🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span></span>
-      <span class="tweak-sub">change the cockpit itself</span>
-    </button>
+    <div id="tweakSlot">
+      <button id="tweakCta" type="button"
+              title="Change shadok-ai itself — the agent works on a branch and opens a pull request">
+        <span class="tweak-title">🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span></span>
+        <span class="tweak-sub">change the cockpit itself</span>
+      </button>
+    </div>
   </nav>
 
   <section class="chat-pane">
@@ -2209,7 +2220,9 @@
     e.dataTransfer.dropEffect = "move";
     if (dragTabEl) {
       const overTab = e.target.closest(".tab");
-      if (overTab && overTab !== dragTabEl) {
+      // L'emplacement du bas n'accueille QUE le canal tweak : sans ce garde, un
+      // onglet traîné au-dessus s'y insérerait et se retrouverait épinglé là.
+      if (overTab && overTab !== dragTabEl && !overTab.classList.contains("tweak")) {
         const r = overTab.getBoundingClientRect();
         const after = e.clientY > r.top + r.height / 2;
         overTab.parentNode.insertBefore(dragTabEl, after ? overTab.nextSibling : overTab);
@@ -2330,6 +2343,9 @@
     if (tab.reconnectTimer) clearTimeout(tab.reconnectTimer);
     if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.close();
     dropDraft(tab);
+    // Le canal tweak fermé, son emplacement redevient le CTA — sinon le bas de
+    // la colonne resterait vide et la fonctionnalité disparaîtrait sans retour.
+    if (tab.isTweak) document.getElementById("tweakCta").hidden = false;
     tab.btnEl.remove();
     tab.transcriptEl.remove();
     tabs = tabs.filter((t) => t !== tab);
@@ -2383,6 +2399,9 @@
         nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
+        // Un canal tweak né ailleurs (autre appareil, Telegram) reprend sa place
+        // en bas plutôt que d'apparaître comme un agent ordinaire de la liste.
+        if (nt.profile === "Shadok-Tweak" && !tweakTab()) markTweakTab(nt);
         setCrons(nt, c.crons);
         if (c.muted) setMuted(nt, true, false);
         if (typeof c.mirror === "boolean" ? c.mirror : !!c.telegram) setMirror(nt, true, false);
@@ -4598,6 +4617,13 @@
   // Un clic démarre un agent sur le code source de shadok-ai lui-même : le
   // dossier, le worktree et le rôle sont tous déjà décidés, donc un formulaire
   // ne ferait que demander d'approuver des choix qu'on ne peut pas juger.
+  //
+  // Le canal tweak est UNIQUE et vit dans son emplacement en bas de colonne : le
+  // CTA n'est visible que tant qu'il n'existe pas. Une fois lancé, son onglet
+  // prend la place du CTA — un `.tab` ordinaire simplement déplacé là, donc il
+  // hérite sans code en double des états, du menu contextuel, du rattachement
+  // Telegram, du renommage et de la fermeture.
+  const tweakSlot = $("tweakSlot");
   const tweakCta = $("tweakCta");
   const tweakTitle = tweakCta.querySelector(".tweak-title");
   const tweakSub = tweakCta.querySelector(".tweak-sub");
@@ -4619,8 +4645,26 @@
     }
   }
 
+  /** L'onglet du canal tweak, s'il existe. */
+  function tweakTab() { return tabs.find((t) => t.isTweak); }
+
+  /** Déplace l'onglet dans l'emplacement du bas et masque le CTA : à partir de
+   *  là, c'est LUI qu'on voit et qu'on clique. `appendChild` déplace le nœud,
+   *  donc l'onglet quitte la liste de gauche sans être recréé. */
+  function markTweakTab(t) {
+    t.isTweak = true;
+    t.btnEl.classList.add("tweak");
+    t.btnEl.draggable = false;       // il n'a pas à finir dans un groupe
+    tweakSlot.appendChild(t.btnEl);
+    tweakCta.hidden = true;
+  }
+
   tweakCta.addEventListener("click", async () => {
     if (tweakBusy) return;
+    // Ceinture : le CTA est masqué dès qu'un canal tweak existe, mais s'il
+    // réapparaissait on active l'existant plutôt que d'en ouvrir un second.
+    const already = tweakTab();
+    if (already) return activate(already);
     tweakBusy = true;
     setTweakCta("busy");
     let data;
@@ -4637,6 +4681,7 @@
     t.customName = true;             // launchTab ne nomme qu'un onglet qui n'a pas de nom
     t.nameEl.textContent = "tweak";
     t.profile = "Shadok-Tweak";
+    markTweakTab(t);
     launchTab(t, { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" });
   });
   newGroupBtn.addEventListener("click", () => {
@@ -4775,6 +4820,8 @@
         t.draft = savedDrafts[s.sessionId] || "";
         if (s.branch) t.branch = s.branch;
         t.profile = s.profile || null;
+        // Au rechargement, le canal tweak retrouve son emplacement du bas.
+        if (t.profile === "Shadok-Tweak" && !tweakTab()) markTweakTab(t);
         setCrons(t, s.crons);
         if (s.muted) setMuted(t, true, false); // restoring: don't push back
         // The mirror TOO, otherwise the first persist pushes `mirror:false`

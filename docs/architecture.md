@@ -182,6 +182,15 @@ What the click does:
    branch, the isolated checkout, the Diff panel, `pruneWorktree` on close — is
    the existing machinery, unchanged.
 
+The card is not a launcher that piles up sessions: **it is the channel's slot**.
+The tweak channel is unique, the CTA shows only while it does not exist, and once
+started the channel's own tab is *moved* into the slot rather than added to the
+agents list. Being a real `.tab`, it carries the session states, the ✕, the
+rename and the whole context menu — `✈️ Mirror to Telegram` included — without a
+line of parallel code. Closing it restores the CTA. On reload, or when the
+channel is discovered from the registry (born on another device or in Telegram),
+it is routed back to the slot on `profile === "Shadok-Tweak"`.
+
 Three decisions are worth keeping in mind if you touch this:
 
 - **The clone is separate from the launch directory**, even for a maintainer who

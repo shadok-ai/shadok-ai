@@ -63,15 +63,17 @@ Enter to skip; you can add it later from the web UI).
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
 - **Diff panel** — what an agent actually changed, against its base.
-- **Tweak Shadok-AI** — a card at the bottom of the agents column. One click
-  clones shadok-ai's own source into `~/.shadok-ai/self/shadok-ai`, starts an
-  agent on it in its own worktree, and that agent delivers its change as a
+- **Tweak Shadok-AI** — a card pinned at the bottom of the agents column. One
+  click clones shadok-ai's own source into `~/.shadok-ai/self/shadok-ai` and
+  starts an agent on it in its own worktree; that agent delivers its change as a
   **pull request** — a fork under your GitHub account, since you need no rights
   on the repo. Nothing to configure and no token to paste: the clone is
   anonymous, so you describe an idea, watch it work and read the diff first, and
   it only asks for GitHub (via `gh auth login`, device code relayed in the chat)
-  when there is something worth pushing. Desktop only — the agents column is
-  hidden on phones.
+  when there is something worth pushing. It is **one channel, not a launcher**:
+  the card becomes that channel's tab, with the usual menu — mute, reload,
+  rename, change profile, mirror to Telegram, close — and closing it brings the
+  card back. Desktop only: the agents column is hidden on phones.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)
