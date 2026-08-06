@@ -331,6 +331,21 @@ Auth section of `docs/architecture.md`).
     back to `GIT_SSH_COMMAND`. The whole thing is swallowed on error — an SSH-setup
     failure must never take down the boot path.
 
+22. **The browser's socket scheme follows the page's — never hardcode `ws://`.**
+    `openLink` (`public/index.html`) built `` `ws://${location.host}/ws` ``. That is
+    correct on every developer setup, because they are all `http://localhost:3789`,
+    and it breaks the moment the cockpit sits behind a TLS reverse proxy: the
+    browser blocks a `ws://` socket from an HTTPS page as mixed content. The
+    failure mode is the nasty one — the page is static HTML, so it paints
+    perfectly, and only the channels never connect. Nothing appears in the DOM,
+    tsc and the tests were green, and the server even answers `101` to a `curl`
+    upgrade, so the proxy looks correct. It shipped to two HTTPS instances before
+    anyone noticed. `test/ws-url.test.ts` scans `index.html` for it, the same way
+    `test/csp.test.ts` locks the nonce. The proxy side has a twin trap: it must
+    forward `Upgrade`/`Connection` or the socket dies before reaching us (README,
+    "Behind TLS"). The server-side sockets (`telegram.ts`, `server.ts`) stay
+    `ws://` on purpose — they dial 127.0.0.1, where there is no TLS.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).
