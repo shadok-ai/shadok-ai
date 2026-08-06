@@ -3158,7 +3158,12 @@
    *  of stranding the tab on "link lost". */
   function openLink(t) {
     setTabState(t, "connecting", t.reconnectAttempts ? "reconnecting…" : "connecting…");
-    const ws = new WebSocket(`ws://${location.host}/ws`);
+    // The scheme MUST follow the page's. On an HTTPS page — the cockpit behind an
+    // nginx/TLS reverse proxy — a `ws://` socket is blocked as mixed content, and
+    // the failure is invisible: the page is static HTML so it paints normally,
+    // while every channel stays stuck "connecting…" forever. Never hardcode `ws://`.
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${scheme}//${location.host}/ws`);
     t.ws = ws;
     ws.addEventListener("open", () => {
       t.reconnectAttempts = 0;

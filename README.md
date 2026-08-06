@@ -124,6 +124,27 @@ the same-origin policy, so without that check any page you happen to visit could
 drive your agents. Behind a reverse proxy that rewrites `Host`, list the public
 origin in `SHADOK_ORIGINS`.
 
+### Behind TLS (nginx, Caddy…)
+
+Serving the cockpit over HTTPS works, with one requirement: **the proxy must
+forward the WebSocket upgrade**. Everything live — the channel list included —
+travels over `/ws`, and the page itself is static HTML, so a proxy that drops
+`Upgrade`/`Connection` produces a cockpit that loads perfectly and then never
+connects. In nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:3789;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+}
+```
+
+The client picks `wss://` on its own when the page is HTTPS, so there is nothing
+to configure on that side.
+
 ### SSH identity in Docker
 
 When shadok-ai runs **in a container** it gives itself an SSH key on first boot
