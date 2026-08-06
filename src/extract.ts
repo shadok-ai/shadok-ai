@@ -67,6 +67,29 @@ export interface TuiDialog {
 }
 
 /**
+ * The identity of a rendered dialog, to tell "still the same question" from
+ * "a new one".
+ *
+ * The screen is re-read several times a second and a dialog's pixels move
+ * constantly (footer clock, cursor, the ❯ travelling between options), so the
+ * raw screen is useless as an identity. What must NOT change silently is the
+ * question and the set of labels; the ❯ position and the checkbox states are
+ * excluded on purpose — the user moving the cursor is not a new question.
+ */
+export function dialogKey(d: TuiDialog): string {
+  return JSON.stringify([d.question, d.multi, d.options.map((o) => [o.n, o.label])]);
+}
+
+/**
+ * The resume-from-summary prompt, which is auto-answered at startup and must
+ * never reach a client (invariant 4). A stale copy would otherwise flash before
+ * the auto-answer lands.
+ */
+export function isResumeSummaryDialog(d: TuiDialog): boolean {
+  return d.options.some((o) => /full session/i.test(o.label)) && /resum|summary/i.test(d.question);
+}
+
+/**
  * Detects an interactive TUI dialog (multiple-choice question, permission
  * prompt…): numbered options, one of which carries the "❯" selector.
  */

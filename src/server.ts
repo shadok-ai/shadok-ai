@@ -10,6 +10,8 @@ import express from "express";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
+  dialogKey,
+  isResumeSummaryDialog,
   findSessionId,
   lastPromptAt,
   listSessions,
@@ -1089,6 +1091,9 @@ interface Live {
   lastPrompt: string;
   screenTimer: ReturnType<typeof setInterval> | null;
   lastScreen: string;
+  /** Identity of the dialog last broadcast, so the screen watcher can surface a
+   *  NEW question without re-sending the current one 3 times a second. */
+  lastDialogKey: string | null;
   /** Context-window usage (%) parsed from the TUI footer, per session. */
   contextPct: number | null;
   /** Stops the .jsonl tail loop (content streaming). */
@@ -1193,6 +1198,7 @@ async function restartSession(s: Live): Promise<void> {
   }
   s.busy = false;
   s.lastScreen = "";
+  s.lastDialogKey = null;
   broadcast(s, { type: "working", startedAt: Date.now(), elapsedMs: 0 });
   // Resume only if there's a transcript; a never-used session has
   // nothing to resume (claude --resume would exit) — re-create it.
@@ -1300,6 +1306,7 @@ async function createSession(
     lastPrompt: "",
     screenTimer: null,
     lastScreen: "",
+    lastDialogKey: null,
     contextPct: null,
     stopTail: null,
     recentTexts: [],
@@ -1372,6 +1379,18 @@ async function attachPilot(s: Live): Promise<void> {
         s.contextPct = pct;
         broadcast(s, { type: "context", pct });
       }
+      // A question that appeared without anyone calling `finishTurn`. Typing in
+      // the terminal view writes straight to the pilot (`case "key"`), so no
+      // handler ever ran the detection: the dialog existed on the screen only —
+      // visible in the engine room, absent from the chat. Detecting on every
+      // screen change closes that hole for `key` and for any future path that
+      // bypasses `finishTurn`. `publishDialog` dedups, so a dialog sitting
+      // there while the footer clock ticks is announced exactly once.
+      if (settled && !s.busy) {
+        const d = detectDialog(scr);
+        if (d) publishDialog(s, d);
+        else s.lastDialogKey = null;
+      }
     }
     // Spontaneous resume: work restarting without a client prompt (e.g. a
     // background agent completing and waking the model). No handler called
@@ -1442,8 +1461,11 @@ async function finishTurn(s: Live) {
   try {
     await s.pilot.waitForIdle({ stableMs: 2000, timeoutMs: 900_000 });
     const dialog = detectDialog(s.pilot.screen());
-    if (dialog) broadcast(s, dialogMessage(s, dialog));
+    if (dialog) publishDialog(s, dialog);
     else {
+      // Forget the answered question: asking the SAME one again later must
+      // still reach the clients, and the dedup key would otherwise swallow it.
+      s.lastDialogKey = null;
       broadcast(s, { type: "turn-done", sessionId: s.id });
       maybeScheduleRetry(s);
     }
@@ -1538,9 +1560,27 @@ function sendPendingDialog(s: Live, send: (msg: object) => void) {
   const d = detectDialog(s.pilot.screen());
   // The resume-from-summary prompt is auto-answered at startup; don't surface
   // it (a stale copy can otherwise flash before the auto-answer lands).
-  if (d && d.options.some((o) => /full session/i.test(o.label)) && /resum|summary/i.test(d.question))
-    return;
-  if (d) send(dialogMessage(s, d));
+  if (!d || isResumeSummaryDialog(d)) return;
+  send(dialogMessage(s, d));
+}
+
+/**
+ * Broadcasts a dialog to every client, at most once per distinct question.
+ *
+ * Detection used to live ONLY in `finishTurn`, i.e. only on the paths that
+ * submit something on the user's behalf. Raw keystrokes from the terminal view
+ * (`case "key"`) don't go through it, so a question asked after typing there was
+ * never announced: it sat on the screen, visible in the engine room and nowhere
+ * else. The screen watcher now detects too, which covers `key` and anything
+ * else that ever bypasses `finishTurn` — the dedup key is what makes that
+ * affordable three times a second.
+ */
+function publishDialog(s: Live, d: TuiDialog): void {
+  if (isResumeSummaryDialog(d)) return;
+  const key = dialogKey(d);
+  if (key === s.lastDialogKey) return;
+  s.lastDialogKey = key;
+  broadcast(s, dialogMessage(s, d));
 }
 
 /** Cancels a pending auto-retry (user took over, or session ends). */

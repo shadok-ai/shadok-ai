@@ -346,6 +346,23 @@ Auth section of `docs/architecture.md`).
     "Behind TLS"). The server-side sockets (`telegram.ts`, `server.ts`) stay
     `ws://` on purpose — they dial 127.0.0.1, where there is no TLS.
 
+23. **Dialog detection belongs to the screen watcher, not to one input path.**
+    `detectDialog` used to be reachable only from `finishTurn`, i.e. only from the
+    handlers that submit on the user's behalf (`prompt`, `choose`, `toggle`,
+    `confirm`, `freetext`). `case "key"` — the terminal view — writes the
+    keystrokes straight to the pilot and returns, so a question asked after typing
+    there was **never announced**: it sat on the screen, visible in the engine room
+    and absent from the chat, with `/live` reporting `busy: false` because the
+    server never knew a turn had started. The `isWorking()` line in the watcher
+    was not a safety net either — by the time a dialog is up, the screen no longer
+    looks busy, so it never fired. The watcher now runs `detectDialog` on every
+    screen change while `!busy`, which covers `key` and anything that ever bypasses
+    `finishTurn`. That is affordable only because `publishDialog` dedups on
+    `dialogKey` (question + labels, deliberately NOT the ❯ position nor the
+    checkbox states — a cursor move is not a new question, and a multi-select
+    toggle re-renders through its own direct broadcast). `finishTurn` clears the
+    key on `turn-done` so asking the SAME question twice still reaches the clients.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).
