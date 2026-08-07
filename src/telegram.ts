@@ -89,6 +89,28 @@ export function parseCommand(text: string): { cmd: string; arg: string } | null 
  * devenir une énigme de syntaxe : `/tools yes` bascule plutôt que d'échouer.
  * Pure — testée unitairement.
  */
+/**
+ * May we (re)open a Telegram bridge for this channel right now?
+ *
+ * The whole rule, in one place, because two reconcilers ask it: the boot pass
+ * and the 5s loop. They used to answer it separately, and only the boot one knew
+ * how to rebuild a bridge that had died — so a session restarted afterwards
+ * stayed deaf towards Telegram until something unrelated restarted the server.
+ *
+ * `sessionAlive` is the load-bearing term. Without it a dormant channel would
+ * get a `claude` respawned under it just to fill a topic: mirroring an idle
+ * channel is the topic's job, not a live process's.
+ */
+export function shouldReattachBridge(o: {
+  threadId?: number | null;
+  hasBridge: boolean;
+  sessionAlive: boolean;
+}): boolean {
+  if (o.threadId == null) return false; // no topic bound → nothing to reattach to
+  if (o.hasBridge) return false;        // already connected
+  return o.sessionAlive;
+}
+
 export function nextToolsState(arg: string, current: boolean): boolean {
   const a = arg.trim().toLowerCase();
   if (a === "on") return true;
@@ -1313,6 +1335,34 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
   // (a stale channel from a past run isn't), and a session already handled by a
   // bridge (a /spawn) is skipped so we never double-create.
   const mirroring = new Set<string>();
+  /**
+   * Reattach a still-running agent to the topic it is already bound to, when its
+   * bridge is gone. Returns true if it opened one.
+   *
+   * A bridge dies with its WebSocket (`ws.on("close")` drops it from `bridges`),
+   * which is what ending a session does — a restart, a killed pane, a crash.
+   * Both reconcilers need this exact rule, so it lives in one place: the boot
+   * pass and the 5s loop must not drift apart on WHEN an agent may be revived.
+   *
+   * The `tmuxHasSession` guard is the load-bearing half. Without it, a dormant
+   * channel would get a `claude` respawned under it merely to fill a topic —
+   * mirroring an idle channel is the topic's job, not a live process's.
+   */
+  const reattachLiveBridge = (c: { sessionId: string; telegram?: { chatId: number; threadId?: number } | null; profile?: string | null }): boolean => {
+    const th = c.telegram?.threadId;
+    if (th == null) return false;
+    const key = bindKey({ id: c.telegram!.chatId, type: "supergroup" }, th);
+    const ok = shouldReattachBridge({
+      threadId: th,
+      hasBridge: bridges.has(key),
+      sessionAlive: tmuxHasSession("sk-" + c.sessionId),
+    });
+    if (!ok) return false;
+    console.log(`telegram: reattaching live agent ${c.sessionId.slice(0, 8)} (topic ${th})`);
+    openBridge(key, c.telegram!.chatId, th, { resumeId: c.sessionId, profile: c.profile ?? undefined });
+    return true;
+  };
+
   const reconcileWebChannels = async () => {
     const group = loadTgGroup();
     if (group === null) return;
@@ -1356,6 +1406,13 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         continue;
       }
       if (!wanted) continue;
+      // A channel that HAS a binding but LOST its bridge — a restarted session,
+      // a killed pane, a crash. Rebuilding it used to happen only in
+      // `reconcileOnBoot`, i.e. at server boot, so such a channel stayed deaf in
+      // the agent → Telegram direction until something unrelated restarted the
+      // server. The mirroring loop below could never save it either: it only
+      // ever considers channels with NO binding at all.
+      if (!bridged.has(c.sessionId)) reattachLiveBridge(c);
       // Mirror every un-bound web channel into the board as a topic — LIVE OR
       // NOT (an idle channel like a monitoring digest must still appear in
       // Telegram). openBridge resumes the existing session; no respawn.
@@ -1461,12 +1518,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     // son historique). On se limite aux sessions dont le tmux tourne encore :
     // rouvrir un canal dormant ferait renaître un `claude` pour rien.
     for (const c of loadChannels()) {
-      const th = c.telegram?.threadId;
-      if (!th || !bound.has(th)) continue;
-      const key = `topic:${c.telegram!.chatId}:${th}`;
-      if (bridges.has(key) || !tmuxHasSession("sk-" + c.sessionId)) continue;
-      console.log(`telegram: reconcile — reattaching live agent ${c.sessionId.slice(0, 8)} (topic ${th})`);
-      openBridge(key, c.telegram!.chatId, th, { resumeId: c.sessionId, profile: c.profile ?? undefined });
+      // `bound` = the topic still exists on Telegram's side, checked just above.
+      // The rest of the rule (live session, no bridge yet) is shared with the 5s
+      // loop through `reattachLiveBridge`, so the two can't drift apart.
+      if (c.telegram?.threadId && bound.has(c.telegram.threadId)) reattachLiveBridge(c);
     }
 
     let kept = [...bound];
