@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  shouldReattachBridge,
   bindKey,
   chunk,
   parseCommand,
@@ -511,4 +512,33 @@ test("prefaceMatches: deux blocs qui divergent dès l'ouverture ne s'apparient p
   const preface = "Voici le résultat de l'analyse du bridge Telegram et de sa file d'envoi.";
   const auth = "Voici le plan de migration de la base de données vers le nouveau schéma.";
   assert.equal(prefaceMatches(preface, auth), false);
+});
+
+test("a live agent whose bridge died is reattachable", () => {
+  // The case that shipped this fix: a session restarted after a killed pane.
+  // Its channel still carries the binding, but `ws.on("close")` had dropped the
+  // bridge, and nothing outside `reconcileOnBoot` knew how to rebuild it — so
+  // the topic went deaf in the agent → Telegram direction until an unrelated
+  // server restart.
+  assert.equal(shouldReattachBridge({ threadId: 366, hasBridge: false, sessionAlive: true }), true);
+});
+
+test("a dormant channel is NEVER revived just to fill a topic", () => {
+  // The load-bearing guard: without it the 5s loop would respawn a `claude`
+  // under every idle mirrored channel. Mirroring an idle channel is the topic's
+  // job, not a live process's.
+  assert.equal(shouldReattachBridge({ threadId: 366, hasBridge: false, sessionAlive: false }), false);
+});
+
+test("an already-bridged channel is left alone", () => {
+  // Called every 5s: without this the loop would rebuild a working bridge over
+  // and over, and each rebuild replays into the topic.
+  assert.equal(shouldReattachBridge({ threadId: 366, hasBridge: true, sessionAlive: true }), false);
+});
+
+test("no topic bound means nothing to reattach to", () => {
+  // A web-only channel: the mirroring path creates its topic, this one must not
+  // pretend it already has one.
+  assert.equal(shouldReattachBridge({ threadId: null, hasBridge: false, sessionAlive: true }), false);
+  assert.equal(shouldReattachBridge({ hasBridge: false, sessionAlive: true }), false);
 });

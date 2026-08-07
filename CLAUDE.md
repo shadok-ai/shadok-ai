@@ -215,6 +215,16 @@ Auth section of `docs/architecture.md`).
    auto-update**. The web recovered (it reloads history); Telegram never did.
    And resuming is useless if nobody reads: `reconcileOnBoot` reattaches the
    bridges whose tmux agent is still alive. Keep both halves.
+   **Boot is not the only moment a bridge dies.** A bridge goes with its
+   WebSocket (`ws.on("close")` drops it from `bridges`), so ending a session —
+   a restart, a killed pane, a crash — takes it too, and rebuilding it only at
+   boot left a restarted channel deaf towards Telegram until something unrelated
+   restarted the server. The 5s `reconcileWebChannels` loop could not save it
+   either: it only ever looked at channels with NO binding. Both reconcilers now
+   share one rule, `shouldReattachBridge` — bound topic, no bridge, **and a live
+   tmux session**. That last term is load-bearing: without it the loop would
+   respawn a `claude` under every idle mirrored channel, and mirroring an idle
+   channel is the topic's job, not a live process's.
 8. **Don't let an agent restart the server.** It kills sibling PTY sessions
    mid-work. (tmux mitigates, but still.) Only the human / top-level restarts it.
    To try your own build, run it side by side on a free port — see "Running YOUR
