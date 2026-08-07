@@ -89,6 +89,7 @@ both are silent in the DOM.
 | `src/tail.ts` | Tails a session's `.jsonl` transcript → streams assistant text/tool_use/tool_result + token usage. **This is the source of truth for content**, not the screen. Also owns `isNothingToShow` — a text block that is *only* `NOTHING TO SHOW` is dropped (a cron with no signal must be able to stay silent); the twin filters live in `loadHistory` and the web live preview. |
 | `src/extract.ts` | Parse the transcript / screen: `loadHistory`, `detectDialog`, `listSessions`, `findSessionId`. |
 | `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. |
+| `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. Pure, tested against a real message whose CLI footer read 41%. Voir invariant 24. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. |
 | `src/selfrepo.ts` | The working copy of shadok-ai's OWN source (`~/.shadok-ai/self/shadok-ai`) behind the "Tweak Shadok-AI" CTA: anonymous clone (no auth needed to start), `main` hard-reset to the remote on each use, never the launch directory. Only the base clone is refreshed — a live tweak session's worktree is a separate checkout and is never touched. Pure cores (`selfRepoPlan`, `gitFailReason`) tested. |
 | `context/tweak-prompt.md` | Role of the tweak agent: read the cloned `CLAUDE.md` first, verify on a free port and never touch 3789, deliver as fork + PR (never a merge), talk to someone who may not be a developer. Injected through the managed `Shadok-Tweak` profile, whose `systemPrompt` is refreshed from this file at every boot (`seedTweakProfile` / `withManagedPrompt`) — only that field, so a secret or model the user attached survives. |
@@ -123,6 +124,10 @@ both are silent in the DOM.
   everything). **Control** (submit, detect turn end, dialogs, engine-room
   screen) flows through the pilot's rendered screen. Don't scrape the screen
   for response text — that's what caused truncation; use the tail.
+  - The **context gauge** used to break this rule and paid for it: it scraped
+    `ctx:NN%` off the footer, a string only a custom statusLine ever prints, so
+    it worked nowhere but the author's machine. It now comes from the transcript
+    like every other datum (`src/context.ts`, invariant 24).
   - **One deliberate exception (web only): the live text *preview*.** The
     `.jsonl` writes a text block only once it's *complete*, so a long paragraph
     stays invisible during generation then appears at once. `public/live-text.js`
@@ -362,6 +367,28 @@ Auth section of `docs/architecture.md`).
     checkbox states — a cursor move is not a new question, and a multi-select
     toggle re-renders through its own direct broadcast). `finishTurn` clears the
     key on `turn-done` so asking the SAME question twice still reaches the clients.
+
+24. **The context gauge reads the transcript, never the footer — and the window is
+    a SETTING, not a model.** The percentage used to come from
+    `screen.match(/ctx:\s*(\d+)\s*%/)`. That string is not produced by Claude
+    Code: it comes from a **custom statusLine** the user happens to have
+    configured. So the gauge worked on the author's machine and on essentially no
+    one else's — every fresh install and every container showed no bar at all,
+    silently, because a footer that never matches is indistinguishable from a
+    session that has not answered yet. It is now computed from the `.jsonl` token
+    usage, which is where the rest of the content already comes from. Two traps
+    live in that arithmetic. **Cache reads count** — they are context the model
+    was given, and excluding them under-reports a long session by most of its
+    size; output does not count, the next request does not start from it. And the
+    1M window is **per-session**, written as a suffix on the model setting
+    (`"opus[1m]"`), while the transcript records the RESOLVED name
+    (`claude-opus-4-8`) with the suffix stripped — so it cannot be recovered from
+    the transcript, and matching on model NAMES is wrong, the same model runs at
+    either size. When nothing is configured (a container's `settings.json` has no
+    model), the standard window is assumed and `effectiveWindow` promotes it on
+    proof: 409k tokens cannot fit in 200k. Verified end to end — the same message
+    the CLI footer showed as `ctx:41%` computes to 41%, with or without the model
+    setting.
 
 ## Conventions
 

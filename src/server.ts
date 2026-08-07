@@ -107,6 +107,7 @@ import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
 import { bindRefusal, originAllowed, parseOrigins, resolveHost } from "./net.js";
+import { pctFromUsage, windowForModel } from "./context.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER } from "./csp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1049,6 +1050,30 @@ function pilotPrompt(): string | null {
   return pilotPromptCache;
 }
 
+/**
+ * The model SETTING this session runs with — the string that may carry the
+ * `[1m]` suffix, not the resolved model name.
+ *
+ * Two sources, in the order the CLI itself resolves them: a shadok profile that
+ * pins a model passes it as `--model` (`profileArgs`), and otherwise the process
+ * inherits `~/.claude/settings.json`. Reading that file is why this cannot live
+ * in the pure `context.ts`. Returns null when nothing is set anywhere — a
+ * container's settings.json typically has no model at all — and `windowForModel`
+ * then assumes the standard window, which `effectiveWindow` corrects if the
+ * session ever proves it wrong.
+ */
+function sessionModelSetting(profileName?: string | null): string | null {
+  const pinned = (profileName ? getProfile(profileName) : undefined)?.model?.trim();
+  if (pinned) return pinned;
+  try {
+    const raw = fs.readFileSync(path.join(os.homedir(), ".claude", "settings.json"), "utf8");
+    const model = JSON.parse(raw)?.model;
+    return typeof model === "string" && model.trim() ? model.trim() : null;
+  } catch {
+    return null; // no settings file, unreadable, or not JSON — assume the default
+  }
+}
+
 function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
   const profile = profileName ? getProfile(profileName) : undefined;
   // Env = the vault secrets the profile references (none without a profile).
@@ -1094,8 +1119,10 @@ interface Live {
   /** Identity of the dialog last broadcast, so the screen watcher can surface a
    *  NEW question without re-sending the current one 3 times a second. */
   lastDialogKey: string | null;
-  /** Context-window usage (%) parsed from the TUI footer, per session. */
+  /** Context-window fill (%), computed from the transcript's token usage. */
   contextPct: number | null;
+  /** The window this session's model setting asks for (see `windowForModel`). */
+  contextWindow: number;
   /** Stops the .jsonl tail loop (content streaming). */
   stopTail: (() => void) | null;
   /** Les derniers blocs de texte DÉJÀ diffusés, pour ne pas les reproposer en
@@ -1295,6 +1322,9 @@ async function createSession(
   profile: string | null = null,
 ): Promise<Live> {
   const pilot = makePilot(id, cwd, args, profile);
+  // Resumed sessions start with what the transcript already consumed.
+  const seededUsage = scanUsage(sessionFilePath(cwd, id));
+  const contextWindow = windowForModel(sessionModelSetting(profile));
   const s: Live = {
     id,
     cwd,
@@ -1307,13 +1337,15 @@ async function createSession(
     screenTimer: null,
     lastScreen: "",
     lastDialogKey: null,
-    contextPct: null,
+    contextWindow,
+    // A reattached session must show its bar at once, not only after the next
+    // turn writes a usage record — so seed from the transcript's last message.
+    contextPct: pctFromUsage([...seededUsage.values()].pop(), contextWindow),
     stopTail: null,
     recentTexts: [],
     worktree,
     idleTimer: null,
-    // Resumed sessions start with what the transcript already consumed.
-    usage: scanUsage(sessionFilePath(cwd, id)),
+    usage: seededUsage,
     retryTimer: null,
     retryCount: 0,
     errorsAtTurnStart: [],
@@ -1357,6 +1389,14 @@ async function attachPilot(s: Live): Promise<void> {
     else if (e.kind === "usage") {
       s.usage.set(e.messageId, e.usage);
       broadcast(s, { type: "tokens", tokens: tokenTotals(s) });
+      // Context fill comes from THIS message, not from the running totals: the
+      // window holds one request's prompt, while the totals accumulate the whole
+      // session and would climb past 100% on any long conversation.
+      const pct = pctFromUsage(e.usage, s.contextWindow);
+      if (pct !== null && pct !== s.contextPct) {
+        s.contextPct = pct;
+        broadcast(s, { type: "context", pct });
+      }
     } else
       broadcast(s, {
         type: "stream-result",
@@ -1372,13 +1412,6 @@ async function attachPilot(s: Live): Promise<void> {
     if (scr !== s.lastScreen) {
       s.lastScreen = scr;
       broadcast(s, { type: "screen", text: scr, working: pilot.isWorking() });
-      // Context-window usage from the TUI footer ("… ctx:37% …"), per session.
-      const m = scr.match(/ctx:\s*(\d+)\s*%/i);
-      const pct = m ? Number(m[1]) : s.contextPct;
-      if (pct !== s.contextPct) {
-        s.contextPct = pct;
-        broadcast(s, { type: "context", pct });
-      }
       // A question that appeared without anyone calling `finishTurn`. Typing in
       // the terminal view writes straight to the pilot (`case "key"`), so no
       // handler ever ran the detection: the dialog existed on the screen only —
