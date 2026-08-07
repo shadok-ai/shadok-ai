@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { screenShowsWork, inputText } from "./detect.js";
+import { screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
 /**
@@ -43,6 +43,11 @@ function tmuxOk(args: string[]): boolean {
 /** True when a tmux session with this exact name is alive. */
 export function tmuxHasSession(name: string): boolean {
   return tmuxOk(["has-session", "-t", name]);
+}
+
+/** Kills a tmux session by name. Idempotent: an absent session is a no-op. */
+export function tmuxKillSession(name: string): void {
+  tmuxOk(["kill-session", "-t", name]);
 }
 
 /**
@@ -364,8 +369,12 @@ export class TmuxPilot {
 
   /** A concise client-facing error; the full screen goes to the server log only. */
   private submitError(reason: string): Error {
-    console.error(`[${this.name}] submit failed — ${reason}. Screen:\n${this.screen()}`);
-    return new Error(`submit: ${reason}.`);
+    const screen = this.screen();
+    // Name the blocking state when we recognise it: the bare symptom points at
+    // the input box, which is exactly where the answer is NOT.
+    const because = describeStuckScreen(screen);
+    console.error(`[${this.name}] submit failed — ${reason}. Screen:\n${screen}`);
+    return new Error(because ? `submit: ${reason} — ${because}.` : `submit: ${reason}.`);
   }
 
   async waitFor(
@@ -406,16 +415,33 @@ export class TmuxPilot {
   }
 
   /** Clean shutdown: /exit, then kill the tmux session as a fallback. */
+  /**
+   * End the agent, gracefully if possible but ALWAYS for real.
+   *
+   * The graceful `/exit` matters — it lets claude release its session lock so a
+   * later `--resume` works. But it goes through `submit()`, which is exactly
+   * what fails on a TUI wedged somewhere without an input box: precisely the
+   * case a restart exists to rescue. So the kill is unconditional, and the only
+   * thing consulted is `hasSession()`.
+   *
+   * `this.exited` is deliberately NOT an early-return any more. That flag means
+   * "I believe this ended"; believing it here returned without killing anything,
+   * and `start()` then adopted the surviving pane — turning a restart the user
+   * explicitly asked for into a silent reattach to the very process they wanted
+   * gone. Three agents sat wedged on Claude Code's onboarding screen for a day
+   * that way, and every "Reload agent" was a no-op.
+   */
   async stop(): Promise<void> {
-    if (this.exited) return;
-    try {
-      await this.submit("/exit");
-      const deadline = Date.now() + 8_000;
-      while (Date.now() < deadline && this.hasSession()) await sleep(200);
-    } catch {
-      /* fall through to kill */
+    if (this.hasSession()) {
+      try {
+        await this.submit("/exit");
+        const deadline = Date.now() + 8_000;
+        while (Date.now() < deadline && this.hasSession()) await sleep(200);
+      } catch {
+        /* fall through to the hard kill */
+      }
     }
-    this.kill();
+    this.kill(); // idempotent: killing an absent session is a no-op
   }
 
   /** Kills the tmux session (ends the agent). */

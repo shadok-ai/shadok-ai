@@ -26,7 +26,7 @@ import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retr
 import { screenShowsWork } from "./detect.js";
 import { PtyPilot } from "./session.js";
 import { ensureSshIdentity } from "./ssh.js";
-import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxPaneCwd } from "./tmux.js";
+import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, type TokenUsage } from "./tail.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
 import { getUsage, type Window } from "./usage.js";
@@ -1222,6 +1222,17 @@ async function restartSession(s: Live): Promise<void> {
   await s.pilot.stop();
   if (USE_TMUX) {
     for (let i = 0; i < 30 && tmuxHasSession("sk-" + s.id); i++) await sleep(100);
+    // A restart the user ASKED for must never degrade into a reattach.
+    // `TmuxPilot.start()` adopts an existing pane by design — that is what makes
+    // a session survive a server restart — so a pane that outlived the stop
+    // would be inherited along with whatever wedged it, silently: same pane,
+    // same stuck process, no error anywhere. This loop used to merely WATCH the
+    // stop fail. Now it enforces the outcome.
+    if (tmuxHasSession("sk-" + s.id)) {
+      console.error(`[sk-${s.id}] restart: the pane outlived stop() — killing it before respawn`);
+      tmuxKillSession("sk-" + s.id);
+      for (let i = 0; i < 20 && tmuxHasSession("sk-" + s.id); i++) await sleep(100);
+    }
   }
   s.busy = false;
   s.lastScreen = "";

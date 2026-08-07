@@ -88,7 +88,7 @@ both are silent in the DOM.
 | `src/tmux.ts` | `TmuxPilot` — same interface as `PtyPilot`, but runs `claude` in a **detached tmux session** (`sk-<sessionId>`). **Survives server restart** (reattaches). Default transport when tmux is present. |
 | `src/tail.ts` | Tails a session's `.jsonl` transcript → streams assistant text/tool_use/tool_result + token usage. **This is the source of truth for content**, not the screen. Also owns `isNothingToShow` — a text block that is *only* `NOTHING TO SHOW` is dropped (a cron with no signal must be able to stay silent); the twin filters live in `loadHistory` and the web live preview. |
 | `src/extract.ts` | Parse the transcript / screen: `loadHistory`, `detectDialog`, `listSessions`, `findSessionId`. |
-| `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. |
+| `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. Also `inputText` and `describeStuckScreen`, which names a recognisable blocking state (first-run screen, masked field, pending question) so a submit failure says WHY instead of accusing the input box. Voir invariant 25. |
 | `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. Pure, tested against a real message whose CLI footer read 41%. Voir invariant 24. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. |
 | `src/selfrepo.ts` | The working copy of shadok-ai's OWN source (`~/.shadok-ai/self/shadok-ai`) behind the "Tweak Shadok-AI" CTA: anonymous clone (no auth needed to start), `main` hard-reset to the remote on each use, never the launch directory. Only the base clone is refreshed — a live tweak session's worktree is a separate checkout and is never touched. Pure cores (`selfRepoPlan`, `gitFailReason`) tested. |
@@ -389,6 +389,32 @@ Auth section of `docs/architecture.md`).
     proof: 409k tokens cannot fit in 200k. Verified end to end — the same message
     the CLI footer showed as `ctx:41%` computes to 41%, with or without the model
     setting.
+
+25. **A restart must GUARANTEE a new process — `TmuxPilot.start()` adopts an
+    existing pane by design.** That adoption is what makes an agent survive a
+    server restart, and it is also the trap: if the pane outlives the stop, the
+    "restart" silently reattaches to the very process the user wanted gone. Same
+    pane, same wedged state, no error, nothing in the log — `Reload agent` became
+    a no-op. Two things allowed it. `stop()` began with `if (this.exited) return`,
+    and `exited` **latches on a single failed `has-session` probe** (`tmuxOk`
+    swallows every tmux error into `false`), so a pilot that wrongly believed
+    itself dead returned without killing. And the graceful exit runs through
+    `submit("/exit")`, which needs an input box — precisely what a wedged TUI does
+    not have, so the very situation a restart exists to rescue is the one where
+    the graceful path cannot work. Now: `stop()` consults `hasSession()` and never
+    the flag, and `restartSession` **enforces** the outcome (hard `tmuxKillSession`
+    + re-check) instead of merely watching its wait loop expire. The rule
+    generalises — any code that respawns must verify the old process is gone, not
+    assume a stop worked.
+    Where the wedged agents came from is worth keeping too: `/root/.claude.json`
+    holds the onboarding state and is **not** on a volume, so a container recreate
+    loses it. `reconcileOnBoot` respawns sessions ~1s after boot, i.e. before a
+    post-`run` `docker cp` can restore the file — the agents land on Claude Code's
+    first-run screen and never reach a prompt. Restore that file BEFORE the
+    container starts (`docker create` → `docker cp` → `docker start`).
+    `describeStuckScreen` (`src/detect.ts`) now names such a screen in the submit
+    error: the bare "the text never appeared in the input box" points at an input
+    box that does not exist, and sent two investigations to the wrong subsystem.
 
 ## Conventions
 

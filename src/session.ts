@@ -1,6 +1,6 @@
 import pty from "node-pty";
 import xterm from "@xterm/headless";
-import { screenShowsWork, inputText } from "./detect.js";
+import { screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
 
 const { Terminal } = xterm;
 
@@ -177,8 +177,12 @@ export class PtyPilot {
 
   /** A concise client-facing error; the full screen goes to the server log only. */
   private submitError(reason: string): Error {
-    console.error(`submit failed — ${reason}. Screen:\n${this.screen()}`);
-    return new Error(`submit: ${reason}.`);
+    const screen = this.screen();
+    // Name the blocking state when we recognise it: the bare symptom points at
+    // the input box, which is exactly where the answer is NOT.
+    const because = describeStuckScreen(screen);
+    console.error(`submit failed — ${reason}. Screen:\n${screen}`);
+    return new Error(because ? `submit: ${reason} — ${because}.` : `submit: ${reason}.`);
   }
 
   press(key: "enter" | "escape" | "up" | "down" | "left" | "right" | "tab" | "ctrl-c"): void {

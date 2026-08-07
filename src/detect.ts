@@ -63,3 +63,28 @@ export function inputText(screen: string): string {
   }
   return inputLine.replace(/^\s*[❯!]\s*/, "").trim();
 }
+
+/**
+ * Why a screen refused a prompt — named, when the shape is recognisable.
+ *
+ * `submit` reports "the text never appeared in the input box", which describes
+ * the SYMPTOM and points at the input box, where there is nothing to find. Three
+ * agents were once wedged on Claude Code's first-run screen — no input box at
+ * all, every prompt echoed into a masked field — and that message sent the
+ * investigation towards session startup, twice, before anyone looked at the
+ * pane. Naming what is actually on screen turns hours into seconds.
+ *
+ * Returns null when nothing is recognised: a vague message beats a confident
+ * wrong one.
+ */
+export function describeStuckScreen(screen: string): string | null {
+  if (/Welcome to Claude Code/i.test(screen))
+    return "the agent is sitting on Claude Code's first-run screen, so it never reached a prompt — its onboarding state (~/.claude.json) was missing when it started";
+  // A masked field echoes every pasted character as an asterisk, so the text is
+  // physically on screen yet unreadable — and unreadable is what breaks submit.
+  if (/\*{20,}/.test(screen))
+    return "the screen is a masked input field (long runs of asterisks), so the pasted text is never readable back";
+  if (/^\s*❯\s*\d+\.\s+\S/m.test(screen))
+    return "the agent is waiting on a question, not on a prompt — answer it first";
+  return null;
+}
