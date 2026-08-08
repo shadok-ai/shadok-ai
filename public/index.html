@@ -3589,6 +3589,11 @@
         setTabState(t, "busy", "responding…");
         clearLivePreview(t);
         t.finalizedNorms = [];
+        // Aucun texte visible produit pour l'instant ce tour. Sert au turn-done à
+        // décider s'il y a vraiment « à lire » : un tour qui ne sort que
+        // NOTHING TO SHOW (filtré par le tail → aucun stream-text) ne doit pas
+        // marquer le canal comme non-lu.
+        t.turnHadText = false;
         break;
       case "prompt-echo":
         // Prompt sent by another tab/interface — or by the server itself
@@ -3625,6 +3630,9 @@
           if (fin) (t.finalizedNorms ||= []).push(fin);
         }
         clearLivePreview(t);
+        // Du texte visible est arrivé (NOTHING TO SHOW est filtré par le tail
+        // avant d'arriver ici) → il y a vraiment quelque chose à lire.
+        t.turnHadText = true;
         // Repli sur l'heure locale si le serveur n'a pas envoyé `at` (transcript
         // sans timestamp) : un bloc en direct vient d'être écrit, l'écart est nul.
         addTurn(t, "claude", "claude", msg.text, "live", msg.at ?? Date.now());
@@ -3648,7 +3656,10 @@
           persistChannels();
         }
         stopTurnTimer(t);
-        setTabMood(t, t === active ? null : "unread");
+        // « unread » seulement si le tour a produit du texte visible. Un tour
+        // vide (ex. cron qui conclut NOTHING TO SHOW) ne réclame aucune lecture,
+        // ni sur l'onglet ni sur le favicon.
+        setTabMood(t, (t === active || !t.turnHadText) ? null : "unread");
         setTabState(t, "ready", "ready");
         break;
       case "dialog":
