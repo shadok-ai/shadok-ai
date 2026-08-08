@@ -9,6 +9,8 @@ import {
   isAgentPrompt,
   linkRefusal,
   markAgentPrompt,
+  notificationText,
+  type ChildReport,
 } from "../src/kinship.js";
 import type { Channel } from "../src/channels.js";
 
@@ -94,4 +96,47 @@ test("markAgentPrompt is idempotent and detectable", () => {
   assert.ok(isAgentPrompt(`  \n${once}`));
   assert.equal(isAgentPrompt("a human typed this"), false);
   assert.equal(isAgentPrompt(""), false);
+});
+
+const base: ChildReport = { name: "auth-fix", sessionId: "abcd1234", kind: "done" };
+
+test("notificationText: a finished child carries its own summary and pointers", () => {
+  const t = notificationText({ ...base, summary: "Fixed the login bug.", branch: "shadok-ai/abcd1234" }, 3789);
+  assert.match(t, /auth-fix/);
+  assert.match(t, /Fixed the login bug\./);
+  assert.match(t, /abcd1234/);
+  assert.match(t, /shadok-ai\/abcd1234/);
+  // Pointers, never the payload: the parent is the largest session in the tree,
+  // so it fetches the diff only if it decides it needs one.
+  assert.match(t, /\/diff\?session=abcd1234/);
+  assert.doesNotMatch(t, /^\+\+\+|^---/m);
+});
+
+test("notificationText: a pending question lists its options and how to answer", () => {
+  const t = notificationText(
+    { ...base, kind: "dialog", question: "Allow rm -rf?", options: ["Yes", "No"] },
+    3789,
+  );
+  assert.match(t, /Allow rm -rf\?/);
+  assert.match(t, /1\. Yes/);
+  assert.match(t, /2\. No/);
+  assert.match(t, /pilotctl choose abcd1234/);
+});
+
+test("notificationText: a death is announced as such, not as a completion", () => {
+  const t = notificationText({ ...base, kind: "exited" }, 3789);
+  assert.match(t, /stopped before finishing/i);
+  // A failure that says nothing is indistinguishable from a run with nothing to
+  // say (invariant 15), so it must still reach the parent with its pointers.
+  assert.match(t, /abcd1234/);
+});
+
+test("notificationText: no summary still produces a usable message", () => {
+  const t = notificationText(base, 3789);
+  assert.match(t, /auth-fix/);
+  assert.match(t, /abcd1234/);
+});
+
+test("notificationText: a blank summary is not rendered as an empty gap", () => {
+  assert.doesNotMatch(notificationText({ ...base, summary: "   \n  " }, 3789), /\n\n\n/);
 });

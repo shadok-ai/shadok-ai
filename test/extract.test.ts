@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { isAgentPrompt, markAgentPrompt } from "../src/kinship.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -333,4 +334,12 @@ test("loadHistory : le prompt d'un cron n'est jamais rejoué, sa réponse si", (
     // …mais ce que l'agent en a répondu reste, c'est tout l'intérêt du cron.
     assert.equal(turns.some((t) => t.role === "assistant" && /Rapport du matin/.test(t.text)), true);
   });
+});
+
+test("loadHistory drops a parent notification, like a scheduled prompt", () => {
+  // It reaches the transcript as an ordinary user message. Without the filter
+  // it reads as something the human typed, and comes back on every web reload
+  // and Telegram backfill — the bug CRON_PROMPT_MARK already exists to prevent.
+  assert.equal(isAgentPrompt(markAgentPrompt('Agent "kid" finished its turn.')), true);
+  assert.equal(isAgentPrompt("please review the diff"), false);
 });

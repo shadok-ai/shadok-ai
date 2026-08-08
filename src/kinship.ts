@@ -106,3 +106,52 @@ export function markAgentPrompt(text: string): string {
 export function isAgentPrompt(text: string): boolean {
   return typeof text === "string" && text.trimStart().startsWith(AGENT_PROMPT_MARK);
 }
+
+/** What happened to a child, as its parent will be told it. */
+export interface ChildReport {
+  /** The child channel's display name, or its short id when unnamed. */
+  name: string;
+  sessionId: string;
+  kind: "done" | "dialog" | "exited" | "timeout";
+  /** The child's own last assistant text block — what it wrote to be read. */
+  summary?: string;
+  /** kind === "dialog": the pending question and its options. */
+  question?: string;
+  options?: string[];
+  branch?: string | null;
+}
+
+const HEADLINE: Record<ChildReport["kind"], (name: string) => string> = {
+  done: (n) => `Agent "${n}" finished its turn.`,
+  dialog: (n) => `Agent "${n}" is waiting on a question.`,
+  exited: (n) => `Agent "${n}" stopped before finishing.`,
+  timeout: (n) => `Agent "${n}" hit the delivery timeout.`,
+};
+
+/**
+ * The prompt a parent receives about one child.
+ *
+ * Deliberately small. The parent is almost always the LARGEST session in the
+ * tree, which makes it the worst place to pour volume into: measured on this
+ * repo's transcripts, a call re-reads ~359k tokens of prefix, i.e. ~36k
+ * effective per wake. So this carries the child's own summary plus POINTERS,
+ * never the diff — the parent fetches that if it decides it needs one.
+ */
+export function notificationText(r: ChildReport, port: number): string {
+  const lines = [HEADLINE[r.kind](r.name)];
+
+  if (r.kind === "dialog" && r.question) {
+    lines.push("", `Question: ${r.question}`);
+    if (r.options?.length) lines.push(...r.options.map((o, i) => `  ${i + 1}. ${o}`));
+    lines.push("", `Answer with \`pilotctl choose ${r.sessionId} <n>\`, or leave it for the human.`);
+  } else if (r.summary?.trim()) {
+    lines.push("", r.summary.trim());
+  }
+
+  const pointers = [`session \`${r.sessionId}\``];
+  if (r.branch) pointers.push(`branch \`${r.branch}\``);
+  pointers.push(`diff: http://127.0.0.1:${port}/diff?session=${r.sessionId}`);
+  lines.push("", pointers.join(" · "));
+
+  return lines.join("\n");
+}

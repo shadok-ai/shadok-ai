@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { newestTranscriptById, isNothingToShow, parseTimestamp } from "./tail.js";
 import { isCronPrompt } from "./crons.js";
+import { isAgentPrompt } from "./kinship.js";
 
 /**
  * Extracts the response: everything after the "❯ <prompt>" echo in the
@@ -235,9 +236,10 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
     if (e.type === "user") {
       const text = userPromptText(e);
       if (text === null) continue; // résultat d'outil, rappel système, interruption
-      // Prompt programmé : il n'est pas montré en direct, il ne doit pas
-      // réapparaître à la relecture (rechargement web, backfill d'un topic).
-      if (isCronPrompt(text)) continue;
+      // Machine-written user messages: a scheduled prompt and a notification
+      // about a child agent. Neither is shown live, so neither may come back on
+      // a reload or a topic backfill.
+      if (isCronPrompt(text) || isAgentPrompt(text)) continue;
       turns.push({ role: "user", text, ...when });
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
       const text = e.message.content
