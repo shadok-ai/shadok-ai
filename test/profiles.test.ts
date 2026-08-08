@@ -113,11 +113,12 @@ test("envVarsNote: dit qu'elles sont DÉJÀ posées, et qu'il n'y a pas de .env"
   assert.match(n, /-n "\$GITHUB_TOKEN"/);
 });
 
-test("DEFAULT_PROFILES: dev is unguarded, boss/marketing/support are read-only", () => {
+test("DEFAULT_PROFILES: dev is unguarded, boss/marketing/content/support are read-only", () => {
   const by = Object.fromEntries(DEFAULT_PROFILES.map((p) => [p.name, p]));
   assert.ok(!by["Shadok-dev"].deny);
   assert.deepEqual(by["Shadok-Boss"].deny, READONLY_DENY);
   assert.deepEqual(by["Shadok-Marketing"].deny, READONLY_DENY);
+  assert.deepEqual(by["Shadok-Content"].deny, READONLY_DENY);
   assert.deepEqual(by["Shadok-Support"].deny, READONLY_DENY);
   for (const p of DEFAULT_PROFILES) assert.ok(p.systemPrompt && p.systemPrompt.length > 40);
 });
@@ -131,7 +132,7 @@ test("DEFAULT_PROFILES: le boss est en tête et sait déléguer avec un profil",
   assert.match(boss, /--profile/);
   // Les rôles qu'il peut confier doivent exister dans la liste.
   const names = DEFAULT_PROFILES.map((p) => p.name);
-  for (const role of ["Shadok-dev", "Shadok-Marketing", "Shadok-Support"]) {
+  for (const role of ["Shadok-dev", "Shadok-Marketing", "Shadok-Content", "Shadok-Support"]) {
     assert.ok(boss.includes(role), `le boss doit citer ${role}`);
     assert.ok(names.includes(role), `${role} doit exister`);
   }
@@ -165,4 +166,17 @@ test("withManagedPrompt does not mutate the profile it was given", () => {
   const existing = { name: TWEAK_PROFILE_NAME, systemPrompt: "stale" };
   withManagedPrompt(existing, TWEAK_PROFILE_NAME, "fresh");
   assert.equal(existing.systemPrompt, "stale");
+});
+
+test("Shadok-Content: sait qu'il PEUT écrire des fichiers, et se distingue de Marketing", () => {
+  const c = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Content")!.systemPrompt!;
+  // READONLY_DENY ne bloque que git : sans cette phrase, un agent dont le
+  // livrable est un fichier refuse de le créer (cf. la formulation de Marketing).
+  assert.match(c, /may write and edit files/i);
+  assert.match(c, /git writes are blocked/i);
+  // La frontière avec Marketing doit être écrite, sinon le boss choisit au hasard.
+  assert.match(c, /Shadok-Marketing owns paid/i);
+  // Le livrable est un fichier Markdown avec de quoi le publier.
+  assert.match(c, /Markdown file/i);
+  assert.match(c, /front matter/i);
 });
