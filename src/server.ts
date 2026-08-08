@@ -25,6 +25,7 @@ import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 import { screenShowsWork } from "./detect.js";
 import { PtyPilot } from "./session.js";
+import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -1263,6 +1264,9 @@ function sessionModelSetting(profileName?: string | null): string | null {
 }
 
 function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
+  // A worktree is a brand-new directory, so it carries a brand-new trust
+  // dialog. Seed it before the process exists, not after it is stuck on it.
+  ensureProjectTrusted(cwd);
   const profile = profileName ? getProfile(profileName) : undefined;
   // Env = the vault secrets the profile references (none without a profile).
   // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
@@ -2479,6 +2483,10 @@ server.on("error", (err: NodeJS.ErrnoException) => {
     process.exit(1);
   }
 });
+// Before anything can spawn: make sure `claude` will not open on its first-run
+// screens. reconcileOnBoot respawns sessions ~1s after boot, so this has to
+// happen first — that race is exactly what produced the zombie agents.
+ensureClaudeHome();
 // Persistent per-container SSH identity: in Docker, generate/reuse a key on the
 // shadok-data volume and point ~/.ssh at it so agents' git/ssh survive a
 // recreate. No-op on a normal host. Its GIT_SSH_COMMAND fallback is merged into

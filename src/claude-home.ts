@@ -1,3 +1,8 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 /**
  * Seeding of Claude Code's first-run state.
  *
@@ -74,4 +79,73 @@ export function seedPlan(
   }
 
   return changed ? out : null;
+}
+
+const homeFile = (): string => path.join(os.homedir(), ".claude.json");
+
+/** The claude CLI's version, or a conservative fallback. */
+function claudeVersion(): string {
+  try {
+    return (
+      parseClaudeVersion(execFileSync("claude", ["--version"], { encoding: "utf8" })) ?? "0.0.0"
+    );
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/**
+ * Read the file, or null when it exists but does not parse.
+ *
+ * Null means "leave it alone". We never "repair" an unparseable ~/.claude.json
+ * by overwriting it: the file carries the whole per-project history, and
+ * destroying it costs incomparably more than the screen this module avoids.
+ */
+function readHome(file: string): ClaudeHome | null {
+  if (!fs.existsSync(file)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Atomic write: a temp file in the SAME directory, then rename. An interrupted
+ * write must never leave a truncated ~/.claude.json behind.
+ */
+function writeHome(file: string, data: ClaudeHome): void {
+  const tmp = `${file}.shadok-${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+/** Apply a plan for `cwd` (or the globals only when cwd is undefined). */
+function seed(cwd?: string): void {
+  try {
+    const file = homeFile();
+    const existing = readHome(file);
+    if (existing === null) return; // unparseable → hands off
+    const plan = seedPlan(existing, { version: claudeVersion(), cwd });
+    if (plan) writeHome(file, plan);
+  } catch {
+    // A failed seed must never take down the boot path or a spawn — same rule
+    // as ensureSshIdentity.
+  }
+}
+
+/** Called once at boot: the globals that answer the theme picker. */
+export function ensureClaudeHome(): void {
+  seed();
+}
+
+/**
+ * Called before EVERY spawn, for that session's directory.
+ *
+ * This cannot be a boot-time-only concern: a worktree is a brand-new directory
+ * for every agent, therefore a brand-new trust dialog every time.
+ */
+export function ensureProjectTrusted(cwd: string): void {
+  seed(cwd);
 }
