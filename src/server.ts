@@ -1723,6 +1723,16 @@ function publishDialog(s: Live, d: TuiDialog): void {
   if (key === s.lastDialogKey) return;
   s.lastDialogKey = key;
   broadcast(s, dialogMessage(s, d));
+  // A child blocked on a question is the deadlock this whole thing exists to
+  // break: its turn is suspended, and its parent believes it is still working.
+  // Hooking HERE covers every path — including raw `key` input — because this
+  // is the single funnel for dialogs (invariant 23). The dedup above is what
+  // keeps that affordable: the screen watcher runs several times a second.
+  notifyParent(s, {
+    kind: "dialog",
+    question: d.question,
+    options: d.options.map((o) => o.label),
+  });
 }
 
 /** Cancels a pending auto-retry (user took over, or session ends). */

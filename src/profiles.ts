@@ -21,6 +21,12 @@ export interface Profile {
   /** Names of vault secrets to inject as env (references, not values). */
   secrets?: string[];
   model?: string;
+  /** May this agent answer a dialog pending on one of ITS OWN children?
+   *  Opt-in on purpose: answering a child's permission prompt lets a
+   *  READONLY_DENY agent authorise a child to do what it cannot do itself, so
+   *  as an ambient right it would make the guardrail that forces delegation
+   *  bypassable BY delegating. */
+  canAnswerChildren?: boolean;
 }
 
 /** Deny patterns that keep an agent from writing to git — the read-only preset. */
@@ -54,6 +60,9 @@ export const DEFAULT_PROFILES: Profile[] = [
       "Say what you are about to spawn and why BEFORE you spawn it — each agent burns the same quota as a normal session, so delegate on purpose, not by reflex. Never land anything yourself: merging is a human-reviewed step. Never stop a session you did not create — it may be the user's own.",
     deny: READONLY_DENY,
     secrets: [],
+    // The boss is the one role that exists to run other agents, so it is the
+    // one that may unblock them. Everything else keeps the default (absent).
+    canAnswerChildren: true,
   },
   {
     name: "Shadok-dev",
