@@ -57,9 +57,12 @@ export function seedPlan(
       changed = true;
     }
   };
+  // These two answer the theme picker. `theme` is deliberately NOT written:
+  // verified 2026-08-08 that the CLI DELETES an unknown top-level `theme` key
+  // on its next write, and that the picker is already skipped without it — so
+  // seeding one would be cargo cult that also implies we control the theme.
   add("hasCompletedOnboarding", true);
   add("lastOnboardingVersion", opts.version);
-  add("theme", "dark");
 
   if (opts.cwd) {
     const projects = { ...(existing.projects ?? {}) };

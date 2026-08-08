@@ -19,7 +19,6 @@ test("a virgin file gets every global key plus the project entry", () => {
   assert.deepEqual(out, {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
-    theme: "dark",
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -32,7 +31,6 @@ test("an already-onboarded file needs no write at all", () => {
   const existing = {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.0.0",
-    theme: "light",
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -41,11 +39,19 @@ test("an already-onboarded file needs no write at all", () => {
 });
 
 test("a present value is NEVER overwritten", () => {
-  // The user's theme and their onboarding version are theirs. We only ever add.
-  const out = seedPlan({ theme: "light", lastOnboardingVersion: "1.0.0" }, { version: "2.1.226" });
-  assert.equal(out?.theme, "light");
+  // The onboarding version already recorded is the CLI's business, not ours.
+  const out = seedPlan({ lastOnboardingVersion: "1.0.0" }, { version: "2.1.226" });
   assert.equal(out?.lastOnboardingVersion, "1.0.0");
   assert.equal(out?.hasCompletedOnboarding, true);
+});
+
+test("no theme is ever written", () => {
+  // Verified 2026-08-08 on a clean container: the CLI DELETES an unknown
+  // top-level theme key on its next write, and the picker is already skipped
+  // without it. Seeding one would be cargo cult that also implies we control
+  // the theme.
+  const out = seedPlan({}, { version: "2.1.226" });
+  assert.equal("theme" in (out ?? {}), false);
 });
 
 test("other projects and unknown top-level keys survive untouched", () => {
@@ -54,7 +60,6 @@ test("other projects and unknown top-level keys survive untouched", () => {
   const existing = {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
-    theme: "dark",
     userID: "abc",
     projects: { "/other": { lastCost: 42, hasTrustDialogAccepted: true } },
   };

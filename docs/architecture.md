@@ -362,7 +362,9 @@ independent.
 **Seeding (`claude-home.ts`).** `seedPlan` is pure: given the current
 `~/.claude.json` it returns the merged object to write, or `null` when nothing
 is missing. `ensureClaudeHome()` runs once at boot with the globals
-(`hasCompletedOnboarding`, `lastOnboardingVersion`, `theme`);
+(`hasCompletedOnboarding`, `lastOnboardingVersion` — and deliberately **not**
+`theme`: the CLI deletes an unknown top-level `theme` key on its next write, and
+the picker is already skipped without it);
 `ensureProjectTrusted(cwd)` runs inside `makePilot` before every spawn, because
 a worktree is a brand-new directory and therefore a brand-new trust dialog.
 

@@ -57,10 +57,18 @@ theme question, no trust dialog:
 {
   "hasCompletedOnboarding": true,
   "lastOnboardingVersion": "<claude version>",
-  "theme": "dark",
   "projects": { "<cwd>": { "hasTrustDialogAccepted": true, "hasCompletedProjectOnboarding": true } }
 }
 ```
+
+**A `theme` key is NOT part of that set**, though the first draft of this design
+assumed it was. Seeding one on a clean container showed the CLI **deleting** it
+on its next write, and a second probe confirmed the picker is skipped by
+`hasCompletedOnboarding` alone. Writing it would have been cargo cult that also
+implied shadok controls the theme, which it does not. The two remaining keys
+answer the picker; `projects[<cwd>]` answers the trust dialog, and without it a
+seeded HOME still stops on "Quick safety check: Is this a project you created or
+one you trust?".
 
 **`claude auth status --json`** answers deterministically, with no TTY:
 
