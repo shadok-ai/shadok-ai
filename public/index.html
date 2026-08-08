@@ -1184,7 +1184,7 @@
 <body>
 
 <header>
-  <span class="brand">shadok-ai <span class="ver" id="verView" title="running version"></span></span>
+  <span class="brand">shadok-ai <span class="ver" id="verView" title="Running version"></span></span>
   <span class="spacer"></span>
   <div class="gauge quota" id="quota5h" data-window="5h" title="5h rolling limit">
     <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="5h rolling limit">
@@ -1208,7 +1208,7 @@
   <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)">👤</button>
   <button id="cronBtn" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)">⏰</button>
   <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></button>
-  <button id="muteNotif" class="icon" title="Notifications sound">🔔</button>
+  <button id="muteNotif" class="icon" title="Mute the notification sound">🔔</button>
   <div class="more-wrap">
     <button id="moreBtn" class="icon" title="More">⋯</button>
     <div id="moreMenu" hidden>
@@ -1260,7 +1260,7 @@
       <form id="cronAdd" class="cron-form">
         <div class="field">
           <span class="label">Prompt to run</span>
-          <textarea id="cronPrompt" rows="2" placeholder="e.g. « Rédige une alerte à partir de l'anomalie détectée »"></textarea>
+          <textarea id="cronPrompt" rows="2" placeholder="e.g. Write a clear alert from the anomaly the guard reported"></textarea>
         </div>
         <div class="field">
           <span class="label">Check command <span class="check-hint">— optional; prints nothing = nothing to report, and the agent stays asleep (0 tokens)</span></span>
@@ -1295,7 +1295,7 @@
       <button id="setupClose" title="Close">✕</button>
     </div>
     <div class="modal-body">
-          <p class="sec-note">A real Claude Code session, driven inside a pseudo-terminal. Open as many as you want Claudes working in parallel.</p>
+          <p class="sec-note">A real Claude Code session — not a wrapper around an API. Open as many as you like and let them work side by side.</p>
         <div class="field" id="profileField">
           <div class="field-head">
             <span class="label">Which agent?</span>
@@ -1314,7 +1314,7 @@
         </label>
         <label class="check" id="mirrorField">
         <input type="checkbox" id="mirrorInput">
-        <span>Mirror to Telegram <span class="check-hint">— gives this agent its own topic in the board group, so you can follow it and reply from your phone. Off by default; switchable later from the channel menu.</span></span>
+        <span>Mirror to Telegram <span class="check-hint">— gives this agent its own topic in the board group, so you can follow it and reply from your phone. Off by default; switchable later from the agent menu.</span></span>
       </label>
       <details class="fold" id="advancedField">
           <summary>Advanced — working directory, resume an existing session</summary>
@@ -1458,7 +1458,7 @@
     <div id="chanBar" hidden>
       <span class="label" id="chanBarName"></span>
       <!-- Mobile: sidebar cachée → ce sélecteur change de canal / en crée un. -->
-      <select id="chanSelect" title="Canal"></select>
+      <select id="chanSelect" title="Agent"></select>
       <div class="gauge">
         <span class="label">Status</span>
         <span class="value"><span id="led" class="led"></span><span id="state">—</span></span>
@@ -1478,7 +1478,7 @@
       <span class="chan-actions">
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)">⏰</button>
         <button id="chanStop" class="icon stop" title="End session">⏹️</button>
-        <button id="chanTerm" class="icon" title="Terminal (toggle, par canal)">⌨️</button>
+        <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent">⌨️</button>
       </span>
     </div>
 
@@ -1487,7 +1487,7 @@
          validation — ouvrir puis renoncer ne laisse plus d'onglet mort-né. -->
     <div id="emptyState">
       <span class="es-title">No agent open</span>
-      <p class="es-hint">Each agent is its own Claude Code session, working on its own directory. Start one and it takes the controls.</p>
+      <p class="es-hint">Every agent is a real Claude Code session with its own directory and its own branch. Start one and it takes the controls.</p>
       <button class="primary" id="emptyNewBtn">＋ new agent</button>
     </div>
 
@@ -2675,7 +2675,10 @@
   const muteBtn = $("muteNotif");
   function renderMute() {
     muteBtn.textContent = muted ? "🔕" : "🔔";
-    muteBtn.title = muted ? "Notifications sound off" : "Notifications sound on";
+    // A toggle's tooltip says what the click will do, not what the state is:
+    // "Notifications sound on" reads as a status line and leaves you guessing
+    // whether clicking turns it on or off.
+    muteBtn.title = muted ? "Turn the notification sound on" : "Mute the notification sound";
   }
   muteBtn.addEventListener("click", () => {
     muted = !muted;
