@@ -9,8 +9,6 @@ export interface Worktree {
   path: string;
   /** Branch created for this session. */
   branch: string;
-  /** Commit the branch forked from (diff baseline). */
-  baseSha: string;
   /** The original repository the worktree belongs to. */
   repo: string;
 }
@@ -34,18 +32,43 @@ export function isGitRepo(cwd: string): boolean {
 }
 
 /**
+ * What an agent's work is measured against: the tip of whatever the repo itself
+ * has checked out (a branch lives in one worktree only, so this is never the
+ * agent's own). One definition of "the base", shared by the diff panel and the
+ * recover list. Resolved to a commit rather than a name so a detached repo HEAD
+ * doesn't yield the literal ref "HEAD" — which, read from inside a worktree,
+ * would point at the agent's own tip and hide all of its committed work.
+ */
+function baseRef(repo: string): string {
+  return git(repo, ["rev-parse", "HEAD"]);
+}
+
+/**
+ * The fork point of `ref` off the base branch, computed LIVE rather than
+ * frozen at spawn. A stored base sha starts lying the moment the branch is
+ * rebased onto a moved base — and a diff against the base's *tip* credits the
+ * agent with everything the base did meanwhile. The merge-base is right in
+ * both cases.
+ */
+function forkPoint(cwd: string, repo: string, ref: string): string {
+  return git(cwd, ["merge-base", baseRef(repo), ref]);
+}
+
+/**
  * Creates an isolated git worktree off the repo's current HEAD, on a fresh
  * branch, so an agent's edits stay contained until the user merges them.
  * The checkout lives under ~/.shadok-ai/worktrees to avoid polluting the repo.
  */
 export function createWorktree(repo: string, tag: string): Worktree {
-  const baseSha = git(repo, ["rev-parse", "HEAD"]);
+  // Resolve HEAD instead of forking off the symbolic name: a commit landing in
+  // the repo between these two calls must not move the fork point.
+  const head = git(repo, ["rev-parse", "HEAD"]);
   const repoName = path.basename(path.resolve(repo)).replace(/[^a-zA-Z0-9._-]/g, "-");
   const branch = `shadok-ai/${tag}`;
   const dir = path.join(os.homedir(), ".shadok-ai", "worktrees", `${repoName}-${tag}`);
   fs.mkdirSync(path.dirname(dir), { recursive: true });
-  git(repo, ["worktree", "add", "-b", branch, dir, baseSha]);
-  return { path: dir, branch, baseSha, repo };
+  git(repo, ["worktree", "add", "-b", branch, dir, head]);
+  return { path: dir, branch, repo };
 }
 
 /**
@@ -142,9 +165,9 @@ export interface PastSession {
  * unfinished work can be reopened and continued.
  */
 export function listPastSessions(repo: string): PastSession[] {
-  let base = "main";
+  let base: string;
   try {
-    base = git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]);
+    base = baseRef(repo);
   } catch {
     return [];
   }
@@ -167,8 +190,14 @@ export function listPastSessions(repo: string): PastSession[] {
     let commits = 0;
     let hasChanges = false;
     try {
+      // `base..branch` already means "reachable from the branch, not from the
+      // base", so the count is the agent's own commits however far the base
+      // moved — and it stays right if the agent merged the base in (those
+      // commits are reachable from the base, hence excluded).
       commits = Number(git(repo, ["rev-list", "--count", `${base}..${branch}`]) || "0");
-      hasChanges = git(repo, ["diff", "--shortstat", base, branch]).trim() !== "";
+      // The diff needed the fix: two-dot compares the two TIPS, so a base that
+      // moved on shows up as changes of the branch (inverted, at that).
+      hasChanges = git(repo, ["diff", "--shortstat", `${base}...${branch}`]).trim() !== "";
     } catch {
       // ignore
     }
@@ -193,18 +222,31 @@ export interface DiffResult {
 }
 
 /**
- * Returns the changes made in `cwd`: `git status` plus the full diff. With a
- * known baseline (worktree), diffs against the fork point so committed work
- * shows too; otherwise diffs the working tree against HEAD.
+ * Returns the changes made in `cwd`: `git status` plus the full diff. Given the
+ * originating `repo` (a worktree session), diffs against the fork point off its
+ * base branch, so committed work shows too and the base's own work doesn't;
+ * otherwise diffs the working tree against HEAD.
+ *
+ * Note this is the merge-base and not `git diff base...HEAD`: the three-dot
+ * form stops at the branch tip, which would hide everything the agent has not
+ * committed yet — and uncommitted work is most of what the panel is for.
  */
-export function gitDiff(cwd: string, baseSha?: string | null): DiffResult {
+export function gitDiff(cwd: string, repo?: string | null): DiffResult {
   let status = "",
     diff = "",
     branch: string | null = null;
   try {
     branch = git(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
     status = git(cwd, ["status", "--short"]);
-    diff = git(cwd, ["diff", baseSha ?? "HEAD"]);
+    let from = "HEAD";
+    if (repo) {
+      try {
+        from = forkPoint(cwd, repo, "HEAD");
+      } catch {
+        // Unrelated histories, detached base…: fall back to the working tree.
+      }
+    }
+    diff = git(cwd, ["diff", from]);
     // Include untracked files (diff doesn't show them).
     const untracked = git(cwd, ["ls-files", "--others", "--exclude-standard"])
       .split("\n")

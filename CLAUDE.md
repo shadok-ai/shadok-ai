@@ -453,6 +453,23 @@ Auth section of `docs/architecture.md`).
     `branch` and `repo` (invariant 19): a client that omits the key must never
     erase a link that already exists.
 
+27. **The diff baseline is COMPUTED, never stored — and `A...B` is the wrong
+    way to compute it.** `Worktree` used to carry a `baseSha` frozen at spawn,
+    and `gitDiff` diffed against it. Two ways that goes wrong, in opposite
+    directions: a sha frozen days ago is no longer where the branch forks once
+    the agent rebases (the panel then shows main's work as the agent's), and
+    diffing against the base's *tip* instead has the same effect from the start.
+    Both disappear with `git merge-base <base> HEAD` recomputed on each call —
+    one field of state removed rather than added. The trap in the fix is the
+    obvious spelling: `git diff <base>...HEAD` also picks the merge-base, but it
+    stops at the branch **tip**, so everything the agent has not committed yet
+    vanishes from the panel — and uncommitted work is most of what the panel is
+    for. Diff against the merge-base COMMIT (`git diff <mb>`), which compares it
+    to the working tree. Same split in `listPastSessions`: `hasChanges` needed
+    the three-dot form (it compares two refs, no working tree involved), while
+    `commits` was already right as `base..branch` — that range excludes the
+    base's commits by construction, even ones the agent merged in.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).
