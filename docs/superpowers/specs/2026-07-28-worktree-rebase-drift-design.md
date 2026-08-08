@@ -3,6 +3,9 @@
 Date : 2026-07-28
 Statut : **validé (brainstorming), implémentation reportée** — décision explicite
 du 2026-07-28 : on garde le design sous le coude, on ne code pas maintenant.
+**Sauf la section 1 (« supprimer `baseSha` »), livrée le 2026-08-09** : elle vaut
+isolément, elle règle la douleur #3 sans rebase, et elle retire un champ d'état.
+Les sections 2 à 5 et les questions ouvertes restent en l'état.
 
 > **Reposé le 2026-08-08.** Ce fichier a été écrit avant la migration vers
 > `shadok-ai/shadok-ai` et n'avait jamais été mergé : le nouvel historique n'a pas

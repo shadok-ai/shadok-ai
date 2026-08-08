@@ -690,7 +690,13 @@ app.get("/usage", async (_req, res) => {
 app.get("/diff", (req, res) => {
   const s = sessions.get(String(req.query.session ?? ""));
   if (!s) return res.json({ status: "", diff: "", branch: null, error: "no such session" });
-  res.json(gitDiff(s.cwd, s.worktree?.baseSha ?? null));
+  // The repo is what gives the diff a baseline (gitDiff computes the fork point
+  // off it). A RESUME has no `worktree` object even when the session lives in
+  // one (invariant 19), and a multi-day agent — the very case the live base
+  // exists for — has certainly been resumed by then, so fall back to the
+  // channel's own `repo`, as endChannel already does.
+  const ch = loadChannels().find((c) => c.sessionId === s.id);
+  res.json(gitDiff(s.cwd, s.worktree?.repo ?? ch?.repo ?? null));
 });
 // Past worktree sessions of a repo (for reopening unfinished work).
 app.get("/recover", (req, res) => {

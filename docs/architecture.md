@@ -629,10 +629,12 @@ parent (a known rough edge).
 - Agent worktrees are branched from HEAD at spawn and never rebased, so a
   long-running agent drifts from a moving main. A full design exists and was
   **deliberately deferred** — see
-  `docs/superpowers/specs/2026-07-28-worktree-rebase-drift-design.md`. One piece
-  of it stands alone and is worth doing regardless: replacing the frozen
-  `baseSha` with a `merge-base` computed live, which makes the diff panel show
-  only the agent's own work whatever the base did.
+  `docs/superpowers/specs/2026-07-28-worktree-rebase-drift-design.md`. Only its
+  section 1 has landed: the frozen `baseSha` is gone, `gitDiff` and
+  `listPastSessions` compute the fork point live (`merge-base` off the repo's
+  own branch), so the diff panel and the recover list show the agent's own work
+  whatever the base did — rebased or not. The drift itself (telling the agent
+  main moved, and the rebase procedure) is still open.
 - The interactive terminal (raw byte plane) is **experimental** and tmux-only. It
   deliberately breaks the "screen is control only" rule, and it has no equivalent
   under node-pty.
