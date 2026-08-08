@@ -104,6 +104,7 @@ both are silent in the DOM.
 | `src/net.ts` | Où on écoute et qui peut parler : `resolveHost` (`SHADOK_HOST`, loopback par défaut), `bindRefusal` (fail-closed : pas de bind réseau sans mot de passe), `originAllowed` (same-origin, cf. invariant 11). Pur, testé. |
 | `src/config.ts` | `~/.shadok-ai/config.json` (600): port, **per-launch-dir** Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`. Config is authoritative over env once set. |
 | `src/crons.ts` | Prompts programmés par canal (`~/.shadok-ai/crons/<enc>.json`) + le `check` déterministe qui évite de réveiller le LLM pour rien. `nextRunFor` calcule un `daily` dans un **fuseau IANA explicite** (`cron.tz` → config `timezone` → machine) : sans ça l'heure suit la machine, et un serveur en UTC décale tout en silence. `nextRunAfterFailure` décide où reprogrammer un tir dont la livraison s'est perdue (cf. invariant 15). `resolveCronTarget` dit OÙ un cron tourne (cwd/profile/branch/repo du canal) — une seule source de vérité pour la garde et pour la reprise (cf. invariant 19). Le tir lui-même vit dans `server.ts` (`cronTick` / `fireCron` / `driveChannel` / `settleCron`). Porte aussi `CRON_PROMPT_MARK` : le texte d'un prompt de cron est préfixé, parce qu'il finit dans le transcript comme un message utilisateur ordinaire — masquer le seul écho direct le laissait revenir au rechargement web et au backfill Telegram, qui relisent `loadHistory`. Jumeau de `NOTHING TO SHOW`. |
+| `src/kinship.ts` | Who launched whom, and what a parent is told about it. `linkRefusal` (self / cycle / unknown parent / depth / fan-out — every refusal **explicit**, never a silently dropped field), `chainDepth`, `childrenOf`, `notificationText` (the child's own summary + pointers, **never the diff**: the parent is the biggest session in the tree), and `AGENT_PROMPT_MARK` — twin of `CRON_PROMPT_MARK`, since a notification also lands in the transcript as an ordinary user message. Pure, tested. The delivery itself lives in `server.ts` (`notifyParent` / `deliverToParent` / `parentInbox` / `flushParentInbox`). |
 | `src/secrets.ts` | Central secret vault (`~/.shadok-ai/secrets.json`, 600). Profiles reference secrets **by name**; values are injected as env at spawn. |
 | `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). **Docker-only** (`/.dockerenv`): generates an ed25519 key under `~/.shadok-ai/ssh/` — on the `shadok-data` volume, so it survives restart AND recreate — and symlinks `~/.ssh` to it so agents' `git`/`ssh` use it. NO-OP on a normal host (never touches `~/.ssh`). Pure `sshPaths`/`planDotSshWiring`/`inContainer` are unit-tested. Voir invariant 21. |
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow, e.g. no `git commit`) + secrets + model, applied at spawn via `profileArgs`. Stored on the channel (`profile`) → re-applied on resume/restart. SOFT (same OS user, not a sandbox). |
@@ -152,10 +153,17 @@ both are silent in the DOM.
 ## WebSocket protocol (`/ws`)
 
 **client → server:** `start` (cwd/resume/continue/worktree/branch/repo/profile/
+`parent` — qui a lancé cet agent ; pilotctl y met son propre `SHADOK_SESSION_ID`,
+donc le lien ne se configure pas. Un lien refusé est ABANDONNÉ et journalisé,
+jamais fatal au spawn : tuer un agent pour un mauvais lien serait pire qu'un
+agent qui ne rend de comptes à personne./
 `origin` — "web"/"cron"/"telegram"…, renvoyé dans `prompt-echo` pour dire QUI a
 parlé),
 `prompt` (text, `force?`), `choose` n, `toggle` n, `confirm`, `freetext` n
-text, `key`, `settle`, `restart`, `set-profile` (`profile` — le nom du profil ou
+text, `key`, `settle`, `restart`, `set-parent` (`parent` — le canal qui est prévenu quand celui-ci finit, bloque
+ou meurt ; `null` détache. Refusé **explicitement** sur un cycle, un parent
+inconnu ou un plafond),
+`set-profile` (`profile` — le nom du profil ou
 `null` ; `restart?` pour l'appliquer tout de suite en re-spawnant sur place.
 C'est le SEUL chemin légitime : `profile` est `SERVER_OWNED` sur le canal, donc
 un PUT `/channels` du navigateur ne peut pas y toucher), `stop` (`sessionId?` —
@@ -163,13 +171,14 @@ kills a specific channel, so the UI can remove a zombie).
 
 **server → client:** `ready`, `working` (porte `elapsedMs` — depuis combien de temps le tour tourne ; le client s'ancre sur la DURÉE et jamais sur un instant serveur, sinon le chrono est faux de tout l'écart entre les deux horloges), `turn-done`, `stream-text`,
 `stream-tool`, `stream-result`, `history`, `dialog`, `screen`, `tokens`,
-`context`, `profile` (le couple `{profile, applied}` — désiré vs celui que le
+`context`, `parent` (le canal parent a changé — diffusé, donc tous les onglets suivent),
+`profile` (le couple `{profile, applied}` — désiré vs celui que le
 process en cours porte vraiment ; leur écart est ce que l'UI montre comme « at
 next reload »), `prompt-echo`, `pace-blocked` / `pace-hold` / `pace-resumed`,
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
-`stopped`. `error` carries an optional `code` (today only `"busy"`, on a prompt
-refused mid-turn) so a machine client can classify a refusal without matching on
-the message text.
+`stopped`. `error` carries an optional `code` — `"busy"` (prompt refused
+mid-turn) or `"link-refused"` (a `set-parent` the server will not accept) — so a
+machine client can classify a refusal without matching on the message text.
 
 **HTTP:** `/usage` (5h/7d + pace verdict), `/live` (running sessions),
 `/sessions` `/recover` (resumable), `/diff`, `/channels` `/groups` (GET/PUT,
@@ -425,6 +434,24 @@ Auth section of `docs/architecture.md`).
     `describeStuckScreen` (`src/detect.ts`) now names such a screen in the submit
     error: the bare "the text never appeared in the input box" points at an input
     box that does not exist, and sent two investigations to the wrong subsystem.
+
+26. **A field accepted in `start` is not a field STORED — and only the browser
+    tells you.** `parent` was added to the `start` message, sent by `pilotctl`
+    from its own `SHADOK_SESSION_ID`, typed in `ClientMessage`, and covered by
+    unit tests. `tsc` was clean, 408 tests were green, and the automatic link —
+    the entire point of the feature — did **nothing**: the handler simply never
+    read `msg.parent`, so it was dropped between the wire and `upsertChannel`.
+    Only an end-to-end run against a real server on a free port surfaced it. The
+    class generalises beyond this field: a `start` payload is a plain object,
+    every unknown key is silently ignored, and no type in the union proves that
+    anyone consumed it. When you widen `start`, assert the value came out the
+    other side. Two smaller rules came with it: the link is validated exactly
+    like `set-parent` (a cycle costs the same either way), but a refusal at
+    start only DROPS the link instead of failing the spawn — killing an agent
+    over a bad link is worse than one that reports to nobody — and it is logged,
+    so it is not a silent loss. And `parent` is ASSERT-only on the channel, like
+    `branch` and `repo` (invariant 19): a client that omits the key must never
+    erase a link that already exists.
 
 ## Conventions
 

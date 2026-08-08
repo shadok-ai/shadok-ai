@@ -4,10 +4,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { startMockServer } from "./mock-server.mjs";
+import { buildStartMsg } from "../pilotctl.mjs";
 
 process.env.SHADOK_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "pilotctl-test-"));
 process.env.SHADOK_NO_HOLDER = "1";
 process.env.SHADOK_NO_AUTOSTART = "1";
+// Run these as a ROOT spawn whatever the ambient environment. The suite is
+// itself often run from inside a piloted session, which exports
+// SHADOK_SESSION_ID — the spawn would then correctly link to that session and
+// the assertions below would pass or fail depending on WHERE the tests ran.
+// The parent-linking rule is covered by the buildStartMsg tests, which pass an
+// explicit env.
+delete process.env.SHADOK_SESSION_ID;
 const { run, readState, writeState } = await import("../pilotctl.mjs");
 
 test("spawn démarre une session et écrit l'état local", async () => {
@@ -81,4 +89,29 @@ test("spawn propage l'erreur du serveur", async () => {
   } finally {
     await mock.close();
   }
+});
+
+test("buildStartMsg carries the spawner's own session id as parent", () => {
+  // The link is what makes the spawner — and only the spawner — hear back.
+  assert.equal(buildStartMsg({ worktree: true }, { SHADOK_SESSION_ID: "boss-id" }).parent, "boss-id");
+});
+
+test("buildStartMsg omits parent when the spawner has no session id", () => {
+  // A human shell or the CLI: this creates a root, not an orphan child.
+  assert.equal("parent" in buildStartMsg({ worktree: true }, {}), false);
+});
+
+test("buildStartMsg lets an explicit --parent win over the ambient session id", () => {
+  assert.equal(buildStartMsg({ parent: "chosen" }, { SHADOK_SESSION_ID: "boss-id" }).parent, "chosen");
+});
+
+test("buildStartMsg treats --parent none as a deliberate detach", () => {
+  assert.equal(buildStartMsg({ parent: "none" }, { SHADOK_SESSION_ID: "boss-id" }).parent, null);
+});
+
+test("buildStartMsg still forwards the other spawn flags", () => {
+  const m = buildStartMsg({ cwd: "/w", worktree: true, profile: "Shadok-dev" }, {});
+  assert.equal(m.cwd, "/w");
+  assert.equal(m.worktree, true);
+  assert.equal(m.profile, "Shadok-dev");
 });

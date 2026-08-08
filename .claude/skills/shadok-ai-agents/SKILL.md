@@ -66,6 +66,25 @@ Le profil n'est appliqué qu'aux sessions **neuves** : avec `--resume` ou
 Agents parallèles : répéter `spawn` (un id par agent), lancer les `prompt`
 en arrière-plan simultanément.
 
+## On te prévient : tes agents te répondent
+
+Un agent que tu spawnes est enregistré comme ton **enfant**, automatiquement —
+rien à passer. Tu reçois alors un message quand il :
+
+- **termine son tour** (avec son propre résumé et un lien vers son `diff`) ;
+- **bloque sur une question** (la question, ses options, et comment y répondre) ;
+- **meurt ou expire** — sinon tu attendrais indéfiniment un agent déjà parti.
+
+Ces messages arrivent préfixés `🤖 [agent]`. Tu es prévenu de **tes** enfants et
+d'aucun autre canal.
+
+Conséquence pratique : **ne boucle plus pour surveiller un agent**. Lance le
+`prompt` en arrière-plan et passe à autre chose — le sondage répété coûte un tour
+à chaque fois, et l'information vient à toi.
+
+`--parent none` spawne un agent délibérément non rattaché ; `--parent <id>` le
+rattache ailleurs.
+
 ## Garde-fous
 
 - Ne JAMAIS `stop` une session que cette conversation n'a pas créée : elle

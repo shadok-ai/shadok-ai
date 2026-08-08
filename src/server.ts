@@ -27,7 +27,7 @@ import { screenShowsWork } from "./detect.js";
 import { PtyPilot } from "./session.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
-import { scanUsage, sessionFilePath, tailSession, clearTailPos, type TokenUsage } from "./tail.js";
+import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
 import { getUsage, type Window } from "./usage.js";
 import {
@@ -39,6 +39,7 @@ import {
   mergeClientChannels,
   loadTgGroup,
   saveTgGroup,
+  type Channel,
 } from "./channels.js";
 import {
   startTelegram,
@@ -71,6 +72,13 @@ import {
   type CronTarget,
   type DriveReason,
 } from "./crons.js";
+import {
+  childrenOf,
+  linkRefusal,
+  markAgentPrompt,
+  notificationText,
+  type ChildReport,
+} from "./kinship.js";
 import {
   loadConfig,
   saveConfig,
@@ -333,6 +341,80 @@ function driveChannel(sessionId: string, text: string, target: CronTarget): Prom
     // just the socket we closed ourselves.
     ws.on("close", () => finish({ ok: false, reason: "ws-error", detail: "closed before the turn ended" }));
   });
+}
+
+/**
+ * Notifications waiting for a parent that is mid-turn, keyed by the PARENT's
+ * session id. A prompt sent during a turn is refused (`code:"busy"`), so
+ * without this a child finishing while its parent thinks would simply be lost.
+ *
+ * It is also where batching comes from, for free: a parent is busy precisely
+ * when it is working, so several children coalesce on their own — no timer, no
+ * window, and the expensive case partly corrects itself.
+ */
+const parentInbox = new Map<string, string[]>();
+
+/** A child's display name for its parent, falling back to a short id. */
+function childLabel(channels: readonly Channel[], childId: string): string {
+  const ch = channels.find((c) => c.sessionId === childId);
+  return ch?.name?.trim() || childId.slice(0, 8);
+}
+
+/** Send one message (or a coalesced batch) to a parent, over the cron path. */
+function deliverToParent(parentId: string, text: string): void {
+  const target = resolveCronTarget(loadChannels(), parentId, process.cwd());
+  const tag = `agent: → ${parentId.slice(0, 8)}`;
+  // Fire and forget: awaiting would hold the CHILD's finishTurn open for as
+  // long as the parent takes to think.
+  void driveChannel(parentId, text, target).then((res) => {
+    console.log(res.ok ? `${tag} delivered` : `${tag} failed (${res.reason})`);
+  });
+}
+
+/**
+ * Tell a child's parent what just happened to it. A channel with no parent
+ * notifies nobody — that scoping is the whole point: a parent hears about the
+ * agents IT launched and nothing else.
+ */
+function notifyParent(child: Live, report: Omit<ChildReport, "name" | "sessionId">): void {
+  const channels = loadChannels();
+  const me = channels.find((c) => c.sessionId === child.id);
+  const parentId = me?.parent ?? null;
+  if (!parentId) return;
+  if (!channels.some((c) => c.sessionId === parentId)) return; // parent is gone
+  // A child whose whole answer is the silence placeholder wakes nobody — the
+  // same right to stay quiet a cron has.
+  if (report.kind === "done" && report.summary && isNothingToShow(report.summary)) return;
+
+  const text = markAgentPrompt(
+    notificationText(
+      {
+        ...report,
+        name: childLabel(channels, child.id),
+        sessionId: child.id,
+        branch: child.worktree?.branch ?? me?.branch ?? null,
+      },
+      boundPort,
+    ),
+  );
+
+  const parent = sessions.get(parentId);
+  if (parent?.busy) {
+    parentInbox.set(parentId, [...(parentInbox.get(parentId) ?? []), text]);
+    console.log(`agent: ${child.id.slice(0, 8)} → ${parentId.slice(0, 8)} queued (parent busy)`);
+    return;
+  }
+  deliverToParent(parentId, text);
+}
+
+/** Flush whatever piled up for a parent that has just gone idle. */
+function flushParentInbox(parentId: string): void {
+  const queued = parentInbox.get(parentId);
+  if (!queued?.length) return;
+  parentInbox.delete(parentId);
+  // One wake for the whole batch: N separate wakes would re-pay the parent's
+  // entire prefix N times over for the same information.
+  deliverToParent(parentId, queued.join("\n\n---\n\n"));
 }
 
 /**
@@ -980,6 +1062,10 @@ type ClientMessage =
       repo?: string;
       /** Agent profile to apply (role/guardrails/secrets) — new sessions only. */
       profile?: string;
+      /** The channel that launched this one. pilotctl sends its own
+       *  SHADOK_SESSION_ID here, so the link needs no configuring. Refused on a
+       *  cycle / unknown parent / cap, exactly like `set-parent`. */
+      parent?: string | null;
       /** Qui pilote ce client : "web", "cron", "telegram", "cli"… Voyage avec
        *  l'écho de prompt pour que les autres clients puissent dire qui a parlé. */
       origin?: string;
@@ -1000,6 +1086,11 @@ type ClientMessage =
    *  it right away (re-spawn in place, history kept); without it the change is
    *  stored and takes effect at the next restart. */
   | { type: "set-profile"; profile: string | null; restart?: boolean }
+  /** Attach this channel under another (or detach with null), so that parent —
+   *  and only that parent — is told when this agent finishes, blocks on a
+   *  question, or dies. Like `profile`, `parent` is SERVER_OWNED, so this is
+   *  the only path that may write it. */
+  | { type: "set-parent"; parent: string | null }
   /** Experimental raw terminal: attach/detach the pipe, or feed raw input
    *  bytes (base64). */
   | { type: "term-attach" }
@@ -1379,6 +1470,10 @@ async function attachPilot(s: Live): Promise<void> {
   s.pilotOff = pilot.onExit((code) => {
     if (s.restarting) return; // a restart is swapping the pilot; don't tear down
     broadcast(s, { type: "exited", code });
+    // A failure must notify too. A lost run that says nothing is
+    // indistinguishable from a run with nothing to say (invariant 15), and the
+    // parent would otherwise wait forever for a child that is already gone.
+    notifyParent(s, { kind: "exited" });
     destroySession(s);
   });
   pilot.start();
@@ -1512,6 +1607,9 @@ async function finishTurn(s: Live) {
       s.lastDialogKey = null;
       broadcast(s, { type: "turn-done", sessionId: s.id });
       maybeScheduleRetry(s);
+      // As a CHILD: tell whoever launched this agent that it is done, with its
+      // own last block as the summary — what it wrote to be read.
+      notifyParent(s, { kind: "done", summary: s.recentTexts[s.recentTexts.length - 1] });
     }
   } finally {
     s.busy = false;
@@ -1519,6 +1617,10 @@ async function finishTurn(s: Live) {
     // ends it, but both freeze the client's timer, so both are worth keeping.
     if (s.turnStartedAt) s.lastTurnMs = Date.now() - s.turnStartedAt;
     s.turnStartedAt = null;
+    // As a PARENT: anything that piled up while this session was working goes
+    // out now. It has to be here, after `busy` is cleared — a prompt sent
+    // during a turn is exactly what the queue exists to avoid.
+    flushParentInbox(s.id);
   }
 }
 
@@ -1625,6 +1727,16 @@ function publishDialog(s: Live, d: TuiDialog): void {
   if (key === s.lastDialogKey) return;
   s.lastDialogKey = key;
   broadcast(s, dialogMessage(s, d));
+  // A child blocked on a question is the deadlock this whole thing exists to
+  // break: its turn is suspended, and its parent believes it is still working.
+  // Hooking HERE covers every path — including raw `key` input — because this
+  // is the single funnel for dialogs (invariant 23). The dedup above is what
+  // keeps that affordable: the screen watcher runs several times a second.
+  notifyParent(s, {
+    kind: "dialog",
+    question: d.question,
+    options: d.options.map((o) => o.label),
+  });
 }
 
 /** Cancels a pending auto-retry (user took over, or session ends). */
@@ -1898,6 +2010,17 @@ wss.on("connection", (ws: WebSocket) => {
             const stored = loadChannels().find((c) => c.sessionId === id)?.profile;
             if (stored != null) profile = stored; // the channel's own profile wins on resume
           }
+          // Who launched this agent. Validated exactly like `set-parent` — a
+          // cycle costs the same either way — but a refusal here only DROPS the
+          // link instead of failing the start: the agent itself is fine, and
+          // killing a spawn over a bad link would be a worse outcome than one
+          // that reports to nobody. Logged so it isn't a silent loss.
+          let parentAtStart: string | null | undefined;
+          if (msg.parent !== undefined) {
+            const refusal = linkRefusal(loadChannels(), id, msg.parent ?? null);
+            if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
+            else parentAtStart = msg.parent ?? null;
+          }
           session = await createSession(id, effectiveCwd, args, worktree, profile);
           session.clients.add(ws);
           if (resumed) {
@@ -1934,6 +2057,12 @@ wss.on("connection", (ws: WebSocket) => {
             // the field) → decide nothing, and `isMirrored` falls back to the
             // binding.
             ...(typeof msg.mirror === "boolean" ? { mirror: msg.mirror } : {}),
+            // Who launched this agent, sent by pilotctl from its own
+            // SHADOK_SESSION_ID. ASSERT-only, like `branch` and `repo`: a
+            // client that omits the key must not erase a link that already
+            // exists. Validated for the same reasons `set-parent` validates —
+            // a cycle here would be just as expensive.
+            ...(parentAtStart !== undefined ? { parent: parentAtStart } : {}),
           });
           send({ type: "tokens", tokens: tokenTotals(session) });
           send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });
@@ -2141,6 +2270,21 @@ wss.on("connection", (ws: WebSocket) => {
           upsertChannel({ sessionId: s.id, profile: name });
           broadcastProfile(s);            // même sans restart : l'écart est visible partout
           if (msg.restart) await restartSession(s);
+          break;
+        }
+        case "set-parent": {
+          // Attach this agent under another, or detach with null. `parent` is
+          // SERVER_OWNED on the channel, so a browser PUT can't touch it —
+          // this is the only legitimate path, exactly like `set-profile`.
+          if (!session) return fail("no session started");
+          const s = session;
+          const wanted = msg.parent ?? null;
+          const refusal = linkRefusal(loadChannels(), s.id, wanted);
+          // Refuse out loud. Dropping the link silently would leave the parent
+          // believing it will be notified, waiting for a child it isn't linked to.
+          if (refusal) return fail(`cannot attach: ${refusal}`, "link-refused");
+          upsertChannel({ sessionId: s.id, parent: wanted });
+          broadcast(s, { type: "parent", parent: wanted });
           break;
         }
         case "stop": {

@@ -180,3 +180,13 @@ test("Shadok-Content: sait qu'il PEUT écrire des fichiers, et se distingue de M
   assert.match(c, /Markdown file/i);
   assert.match(c, /front matter/i);
 });
+
+test("only the boss may answer its children's questions", () => {
+  const boss = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Boss");
+  assert.equal(boss?.canAnswerChildren, true);
+  // The others delegate nothing, and an ambient right would let a read-only
+  // profile authorise a child to do what it cannot do itself.
+  for (const p of DEFAULT_PROFILES.filter((x) => x.name !== "Shadok-Boss")) {
+    assert.notEqual(p.canAnswerChildren, true);
+  }
+});

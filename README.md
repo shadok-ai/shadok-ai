@@ -53,6 +53,13 @@ Enter to skip; you can add it later from the web UI).
   run costs **zero tokens**; prints something → that output is prepended to the
   prompt and the agent runs. A watcher that is quiet most of the day costs
   nothing most of the day.
+- **Agents that report back** — an agent that launches other agents is told when
+  each one finishes, blocks on a question, or dies. It hears about **its own**
+  children and nothing else, so a busy channel never wakes it. What arrives is
+  the child's own summary plus pointers (branch, diff link) — never the diff
+  itself, which on a large session costs far more than it is worth. The link is
+  set automatically at spawn; you can also attach or detach an agent by hand
+  from its ⋯ menu.
 - **Quota gauges + pace guard** — 5h and 7d subscription usage, with an
   optional block when you're burning faster than the window elapses (any
   message can force through).
@@ -322,7 +329,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 | Message | Purpose |
 |---|---|
-| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"cli"`…) travels with `prompt-echo` so other clients can say who spoke |
+| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"cli"`…) travels with `prompt-echo` so other clients can say who spoke. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
 | `{type:"prompt", text, force?}` | sends a prompt (`force` bypasses the pace guard) |
 | `{type:"choose", n}` | single-select dialog: picks and validates option n |
 | `{type:"toggle", n}` / `{type:"confirm"}` | multi-select: toggles option n / submits |
@@ -330,6 +337,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"key", key}` | raw keystroke (`enter`, `escape`, `up`, `down`, `tab`, `ctrl-c`, or a single character) |
 | `{type:"settle"}` | after a manual intervention: waits for the turn to finish |
 | `{type:"restart"}` | respawns the agent in place (picks up new secrets/profile) |
+| `{type:"set-parent", parent}` | attach this channel under another (`null` detaches). Refused **explicitly** on a self-link, a cycle, an unknown parent, or a chain/fan-out past its cap |
 | `{type:"term-attach"}` · `{type:"term-detach"}` | **experimental, tmux only** — open/close the pane's raw byte pipe |
 | `{type:"term-input", data}` · `{type:"term-resize", cols, rows}` | raw input (base64) / match the pane to the viewport |
 | `{type:"stop", sessionId?}` | ends the session for all clients; `sessionId` targets another channel (zombie cleanup) |
@@ -343,6 +351,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"stream-text", text, at?}` | a complete assistant text block, from the transcript. `at` is when it was **written**, not when we read it |
 | `{type:"stream-tool", id, name, summary}` / `{type:"stream-result", …}` | tool call / tool result |
 | `{type:"tokens", tokens}` / `{type:"context", pct}` | token usage / context fill |
+| `{type:"parent", parent}` | the channel's parent changed (broadcast, so every tab follows) |
 | `{type:"prompt-echo", text}` | prompt sent by another client of the session |
 | `{type:"dialog", question, options:[{n,label,hint,checked?}], multi}` | choice pending |
 | `{type:"history", turns:[…]}` | transcript replayed when resuming/attaching |

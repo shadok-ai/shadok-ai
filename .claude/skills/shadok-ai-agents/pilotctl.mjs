@@ -53,7 +53,7 @@ export function parseArgs(argv) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--worktree" || a === "--continue") flags[a.slice(2)] = true;
-    else if (a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile") flags[a.slice(2)] = rest[++i];
+    else if (a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent") flags[a.slice(2)] = rest[++i];
     else pos.push(a);
   }
   return { cmd, pos, flags };
@@ -218,8 +218,17 @@ export async function ensureHolder(id, cwd) {
   writeState(id, { ...(readState(id) ?? { sessionId: id }), cwd: cwd ?? null, holderPid: child.pid });
 }
 
-async function cmdSpawn(flags) {
-  await ensureServer();
+/**
+ * The `start` payload for a spawn. Pure, so the parent-linking rule is testable
+ * without a server.
+ *
+ * `SHADOK_SESSION_ID` is set by the server on every piloted session, so an agent
+ * that spawns another is identified with no extra plumbing and nothing to
+ * configure — and it is then the only channel told when that child finishes,
+ * blocks or dies. A human shell has no such variable and therefore creates a
+ * root.
+ */
+export function buildStartMsg(flags, env = process.env) {
   const startMsg = {};
   if (flags.cwd) startMsg.cwd = flags.cwd;
   if (flags.worktree) startMsg.worktree = true;
@@ -228,6 +237,16 @@ async function cmdSpawn(flags) {
   // Sans profil, l'agent délégué démarre en Claude nu : ni rôle, ni garde-fou,
   // ni secrets. Le serveur ne l'applique qu'aux sessions neuves (pas de resume).
   if (flags.profile) startMsg.profile = flags.profile;
+  // "none" is the escape hatch: spawn something deliberately unlinked.
+  if (flags.parent === "none") startMsg.parent = null;
+  else if (flags.parent) startMsg.parent = flags.parent;
+  else if (env.SHADOK_SESSION_ID) startMsg.parent = env.SHADOK_SESSION_ID;
+  return startMsg;
+}
+
+async function cmdSpawn(flags) {
+  await ensureServer();
+  const startMsg = buildStartMsg(flags);
   const client = await openSession(startMsg);
   const { sessionId, cwd, branch } = client.state.ready;
   let baseSha = null;
