@@ -26,6 +26,7 @@ import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retr
 import { screenShowsWork } from "./detect.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
+import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -754,6 +755,27 @@ app.post("/tweak/prepare", (_req, res) => {
 app.get("/version", (_req, res) =>
   res.json({ current: OWN_VERSION, latest: latestKnown, autoUpdate, permissionMode }),
 );
+
+// Claude sign-in state. Instance-global — NOT per session — hence HTTP rather
+// than a WS message: every tab and the Telegram bridge share one answer.
+app.get("/auth", async (_req, res) => res.json(await authStatus()));
+
+app.post("/auth/login", async (_req, res) => {
+  const r = await startLogin();
+  if ("error" in r) return res.status(502).json(r);
+  res.json(r);
+});
+
+app.post("/auth/code", async (req, res) => {
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  const r = await submitLoginCode(code);
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
+app.delete("/auth/login", (_req, res) => {
+  cancelLogin();
+  res.json({ ok: true });
+});
 // Channel list, persisted server-side per launch directory — survives a wiped
 // browser, another device, a restart or a reboot.
 /**
@@ -1994,6 +2016,16 @@ wss.on("connection", (ws: WebSocket) => {
       switch (msg.type) {
         case "start": {
           if (session) return fail("session already started");
+          // Refusing here is what actually prevents zombies. The historical
+          // failure was never "the login was missing" — it was "an agent was
+          // allowed to start without one", and then sat on the first-run screen
+          // for a day. `code` lets a machine client classify the refusal
+          // without matching on message text (same contract as "busy").
+          if (!(await authStatus()).loggedIn)
+            return fail(
+              "this shadok-ai instance is not signed in to Claude — sign in from the cockpit",
+              "logged-out",
+            );
           if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
           const cwd = msg.cwd?.trim() || process.cwd();
           // Deterministic id: enforced with --session-id for a new session,
