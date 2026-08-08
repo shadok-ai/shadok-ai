@@ -547,6 +547,64 @@ message at all. `isNothingToShow` (`src/tail.ts`) drops a text block that is
 *only* `NOTHING TO SHOW`; twin filters live in `loadHistory` and in the web live
 preview, so the placeholder never surfaces on any of the three paths.
 
+## Parent and child agents (`src/kinship.ts`)
+
+An agent that spawns another is recorded as its **parent** (`Channel.parent`,
+server-owned and persisted, so the tree survives the auto-update restart that
+would otherwise orphan every child). The child stores its parent and never the
+reverse: one writer per fact, and the two directions cannot disagree.
+
+The link is set automatically at spawn — `pilotctl` reads `SHADOK_SESSION_ID`,
+which the server already exports on every piloted session, so nothing has to be
+configured — or by hand through `set-parent`, the only path allowed to write a
+server-owned field. `linkRefusal` refuses a self-link, a cycle, an unknown
+parent, and anything past `MAX_LINK_DEPTH` / `MAX_FANOUT`, always **explicitly**:
+the silent version would leave a parent believing it will be notified, waiting
+for a child it was never linked to.
+
+**Scoping is the point.** A parent hears about its own children and nothing
+else. Without it a chatty Telegram channel would wake a boss on every turn, and
+a wake is not free: measured on this repo's transcripts, an API call re-reads
+~359k tokens of prefix, about 36k effective per wake in a large session. That
+same arithmetic is why the payload is the child's own summary plus pointers
+(branch, `/diff` link) and **never the diff** — the parent fetches it if it
+decides it needs one.
+
+Delivery reuses `driveChannel`, the function crons already use, so a child's
+completion is indistinguishable from a cron firing, which is indistinguishable
+from a human typing. It is fire-and-forget: awaiting would hold the *child's*
+`finishTurn` open for as long as the parent takes to think.
+
+Two hooks suffice. `finishTurn` covers a completed turn; `publishDialog` covers
+a pending question — and that one is a single funnel only because invariant 23
+moved dialog detection into the screen watcher, so raw `key` input goes through
+it too. Its dedup on `dialogKey` is what makes hooking there affordable at all,
+since the watcher runs several times a second. A death notifies as well: a
+failure that says nothing is indistinguishable from a run with nothing to say
+(invariant 15), and the parent would wait forever. A child whose whole answer is
+`NOTHING TO SHOW` wakes nobody, and `loadHistory` filters `AGENT_PROMPT_MARK`
+beside the cron mark so a notification never resurfaces on a reload or backfill.
+
+`parentInbox` holds notifications for a parent that is mid-turn, since a prompt
+sent during a turn is refused with `code:"busy"`. `flushParentInbox` runs in
+`finishTurn`'s `finally`, **after** `busy` is cleared — any earlier and it would
+hit the very refusal the queue exists to avoid. It doubles as free batching: a
+parent is busy precisely when it is working, so several children coalesce with
+no timer, and one wake carries the batch instead of re-paying the prefix N times.
+
+**Two bounds and one caveat.** `MAX_LINK_DEPTH` and `MAX_FANOUT` stop a
+notification→spawn→notification cascade, which the pace guard cannot bound (it
+blocks one prompt at a time, never a chain). And answering a child's dialog is a
+**profile capability** (`canAnswerChildren`, set only on `Shadok-Boss`), not an
+ambient right: a `READONLY_DENY` boss could otherwise authorise a child to do
+what it is itself forbidden from doing, making the guardrail that forces
+delegation bypassable by delegating.
+
+Known cost, written down rather than discovered later: the parent's context
+grows with every notification and it re-pays that prefix on every wake. That is
+a curve, not a plateau. The mitigation is the deferred agent-fork idea — fan
+out, synthesise, fork to start light on the next batch.
+
 ## Spawning agents (`shadok-ai-agents` skill)
 
 `pilotctl.mjs` is a thin WS/HTTP client so an agent (or a human script) can
@@ -560,8 +618,10 @@ parent (a known rough edge).
 - Much was built in low-visibility agent sessions; detection heuristics,
   `pilotctl`, `/live`, auto-retry and pace are the least-reviewed areas — most
   past bugs were found there.
-- No orchestration/verification layer yet: agents run in parallel but don't
-  coordinate, and nothing gates the quality of their work before it lands.
+- Agents run in parallel and a parent now hears back from the ones it launched,
+  but nothing *orchestrates* them: there are no declarative pipelines ("when A
+  finishes, run B"), and nothing gates the quality of their work before it lands.
+  The parent is a model; the notification only gives it the information.
 - Landing/merge was the #1 source of breakage (blind merges, conflict markers).
   The `pr-merge` skill now carries that flow, but it is a *procedure*, not an
   enforced gate: nothing structurally prevents a blind merge in the shared
