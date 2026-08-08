@@ -1308,10 +1308,6 @@
           <span class="label">Name</span>
           <input type="text" id="nameInput" placeholder="agent" autocomplete="off" spellcheck="false">
         </div>
-        <div class="field">
-          <span class="label">Working directory</span>
-          <input type="text" id="cwdInput" placeholder="/path/to/project">
-        </div>
         <label class="check" id="worktreeField">
           <input type="checkbox" id="worktreeInput" checked>
           <span>Isolate in a git worktree <span class="check-hint">— the agent edits a fresh branch; review &amp; merge from the Diff panel. Auto-removed on close if unused, kept if it has changes. (new sessions only)</span></span>
@@ -1321,7 +1317,11 @@
         <span>Mirror to Telegram <span class="check-hint">— gives this agent its own topic in the board group, so you can follow it and reply from your phone. Off by default; switchable later from the channel menu.</span></span>
       </label>
       <details class="fold" id="advancedField">
-          <summary>Advanced — resume an existing session</summary>
+          <summary>Advanced — working directory, resume an existing session</summary>
+          <div class="field">
+            <span class="label">Working directory <span class="check-hint">— defaults to where shadok-ai runs; point at another repo for a multi-project agent.</span></span>
+            <input type="text" id="cwdInput" placeholder="/path/to/project">
+          </div>
           <div class="field">
             <div class="radio-row">
               <label><input type="radio" name="mode" value="new" checked> new session</label>
@@ -3323,10 +3323,16 @@
    * à la place de la conversation qu'on regardait.
    */
   function openSetup() {
-    // Ne jamais écraser ce qui est déjà tapé (la popin peut se rouvrir).
-    if (!$("cwdInput").value) {
-      $("cwdInput").value = (active && active.cwd) || localStorage.getItem("cp.cwd") || serverCwd || "";
-    }
+    // Défauts PRÉVISIBLES à chaque ouverture. Le navigateur restaure l'état des
+    // champs de formulaire (un mode "continue"/"resume" choisi une fois, une case
+    // worktree décochée, un cwd de worktree) — c'est ce qui faisait retomber
+    // « créer un agent » dans le répertoire de base, en silence. On réaffirme le
+    // défaut : session NEUVE, worktree isolé, depuis la base.
+    const newRadio = document.querySelector('input[name="mode"][value="new"]');
+    newRadio.checked = true;
+    newRadio.dispatchEvent(new Event("change")); // réactive worktree/profil, cache le resume
+    $("worktreeInput").checked = true;
+    $("cwdInput").value = serverCwd || "";
     const last = localStorage.getItem("cp.session");
     if (last && !$("resumeInput").value) $("resumeInput").value = last;
     $("startBtn").disabled = false;
@@ -3341,7 +3347,9 @@
     refreshRecoverList();
     refreshLiveList();
     $("setupOverlay").hidden = false;
-    $("cwdInput").focus();
+    // Le cwd est désormais dans le fold « Advanced » (replié) : on focus le nom,
+    // premier champ du flux principal.
+    $("nameInput").focus();
   }
   function closeSetup() { $("setupOverlay").hidden = true; }
 
