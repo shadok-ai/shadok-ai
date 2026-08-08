@@ -308,7 +308,9 @@
     box-shadow: inset 3px 0 0 var(--phosphor);
   }
   /* Ligne 2 pleine largeur : « xxx ago » à gauche, % de contexte tout à droite. */
-  .tab-row2 { display: flex; align-items: baseline; gap: 6px; }
+  /* Hauteur RÉSERVÉE même vide : « xxx ago » / % arrivent après le reload — sans
+     ça l'onglet grandit d'une ligne au moment où ils apparaissent (jump / clip). */
+  .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
   .tab .name {
     flex: 1;
