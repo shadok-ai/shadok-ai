@@ -1098,6 +1098,10 @@
     backdrop-filter: blur(2px);
   }
   .overlay[hidden] { display: none; }
+  /* A real OAuth URL is ~400 chars. Shown in full on purpose — a headless
+     server's operator often has to carry it to another device by hand — so it
+     has to wrap instead of pushing the panel off screen. */
+  #authLink { word-break: break-all; font-size: 12px; line-height: 1.4; }
   /* Le panneau était hors palette : #1b1d22 au lieu de --bg-raised, #e8e8ea au
      lieu de --text, des bordures rgba(255,255,255,.15) et un rayon de 10px quand
      tout le cockpit est à 6 — soit un gris et un blanc qui n'existaient nulle
@@ -1430,6 +1434,31 @@
       </form>
     </div>
     <p class="sec-note">Applies live — running sessions are not interrupted.</p>
+  </div>
+</div>
+
+<!-- Sign-in card. Exists ONLY while the instance is signed out: there is no
+     button that opens it when everything is fine, because it would have
+     nothing to say. Deliberately has no close button — while signed out
+     nothing works, so dismissing it would only hide the reason. -->
+<div id="authOverlay" class="overlay" hidden>
+  <div id="authPanel" class="sec-panel">
+    <div class="sec-head">
+      <strong>Sign in to Claude</strong>
+    </div>
+    <p class="sec-note">This instance isn't signed in to Claude, so it can't start any agent.</p>
+    <div class="field">
+      <span class="label">1 — Open this link and authorise</span>
+      <a id="authLink" target="_blank" rel="noopener">starting…</a>
+    </div>
+    <div class="field">
+      <span class="label">2 — Paste the code you get back</span>
+      <form id="authCodeForm" style="display:flex;gap:8px">
+        <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
+        <button type="submit">Sign in</button>
+      </form>
+    </div>
+    <p class="sec-note" id="authMsg" hidden></p>
   </div>
 </div>
 
@@ -3793,6 +3822,9 @@
         setTabState(t, "dead", "directory gone");
         break;
       case "error":
+        // A refusal for lack of credentials is not this agent's problem: it is
+        // the instance's. Surface the fix instead of a line in the transcript.
+        if (msg.code === "logged-out") { openAuthCard(); }
         addTurn(t, "system", "", "Error: " + msg.message);
         // Failed before ever going live (e.g. a bad restore): mark dead so it
         // doesn't hang on "connecting…".
@@ -4799,6 +4831,66 @@
     if (r.ok) renderTelegram(await r.json());
     else alert((await r.json()).error || "update failed");
   }
+  // --- Sign-in card -------------------------------------------------------
+  // Opened at exactly two moments: on load when /auth reports signed out, and
+  // on a `start` refused with code "logged-out". Never otherwise.
+  async function checkAuth() {
+    try {
+      const s = await (await fetch("/auth")).json();
+      if (s && s.loggedIn) { $("authOverlay").hidden = true; return; }
+      openAuthCard();
+    } catch {
+      // A failed check must not block a cockpit that is in fact working.
+    }
+  }
+
+  async function openAuthCard() {
+    if (!$("authOverlay").hidden) return;   // a flow is already on screen
+    $("authOverlay").hidden = false;
+    $("authMsg").hidden = true;
+    const link = $("authLink");
+    link.textContent = "starting…";
+    link.removeAttribute("href");
+    try {
+      const r = await (await fetch("/auth/login", { method: "POST" })).json();
+      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      else link.textContent = (r && r.error) || "could not start the sign-in";
+    } catch {
+      link.textContent = "could not start the sign-in";
+    }
+  }
+
+  $("authCodeForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = $("authCode").value.trim();
+    if (!code) return;
+    const msg = $("authMsg");
+    msg.hidden = true;
+    let r;
+    try {
+      r = await (await fetch("/auth/code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      })).json();
+    } catch {
+      r = { ok: false, error: "the server did not answer" };
+    }
+    if (r && r.ok) {
+      $("authCode").value = "";
+      // Name the account: a machine can serve several people, and "signed in"
+      // without saying as whom is the kind of detail that costs an hour later.
+      let who = "";
+      try { who = ((await (await fetch("/auth")).json()) || {}).email || ""; } catch {}
+      msg.textContent = "✅ Signed in" + (who ? " as " + who : "") + ".";
+      msg.hidden = false;
+      setTimeout(() => { $("authOverlay").hidden = true; }, 1500);
+    } else {
+      msg.textContent = (r && r.error) || "the code was refused";
+      msg.hidden = false;
+    }
+  });
+
   $("tgUnbind").addEventListener("click", () => { if (confirm("Unbind the current board group? You'll need to /setup a group again in Telegram.")) putTelegram({ unbindGroup: true }); });
   $("telegramBtn").addEventListener("click", () => { $("telegramOverlay").hidden = false; loadTelegram(); });
   $("telegramClose").addEventListener("click", () => { $("telegramOverlay").hidden = true; });
@@ -4978,6 +5070,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     buildDialArcs();
     refreshUsage();
+    checkAuth();
   });
   setInterval(refreshUsage, 60_000);
 
