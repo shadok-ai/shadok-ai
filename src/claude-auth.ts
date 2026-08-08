@@ -97,6 +97,8 @@ type Verdict = "success" | "invalid-code" | "ended" | "timeout";
 
 interface Flow {
   child: ChildProcessWithoutNullStreams;
+  /** The OAuth URL this child printed, once it has. */
+  url: string | null;
   /** Everything the child has written since the last code was submitted. */
   out: string;
   /** Resolver waiting on the verdict for the code we just wrote. */
@@ -126,6 +128,11 @@ export function cancelLogin(): void {
 }
 
 export async function startLogin(): Promise<{ url: string } | { error: string }> {
+  // Reuse a flow that already printed its URL instead of replacing it. Each
+  // flow carries its own PKCE challenge, so restarting would silently kill the
+  // link the user is already looking at — which a plain page reload, or a
+  // second tab, would otherwise do.
+  if (flow && !flow.ended && flow.url) return { url: flow.url };
   cancelLogin();
   const child = spawn("claude", ["auth", "login", "--claudeai"], {
     // BROWSER is neutralised: on a desktop host the CLI would otherwise open a
@@ -135,6 +142,7 @@ export async function startLogin(): Promise<{ url: string } | { error: string }>
   });
   const f: Flow = {
     child,
+    url: null,
     out: "",
     pending: null,
     ended: false,
@@ -176,6 +184,7 @@ export async function startLogin(): Promise<{ url: string } | { error: string }>
     const poll = setInterval(() => {
       const url = parseLoginUrl(f.out);
       if (url) {
+        f.url = url;
         clearInterval(poll);
         clearTimeout(deadline);
         resolve({ url });
