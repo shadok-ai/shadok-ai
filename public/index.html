@@ -2002,6 +2002,44 @@
   window.addEventListener("blur", () => closeTabMenu());
 
   /** Right-click menu on a tab: the home for per-channel actions. */
+  /** Readable name of a parent channel, falling back to a short id. */
+  function parentLabel(sessionId) {
+    const t = tabs.find((x) => x.sessionId === sessionId);
+    return t && t.nameEl ? t.nameEl.textContent : String(sessionId).slice(0, 8);
+  }
+
+  /**
+   * Second page of the tab menu: which agent this one reports to.
+   *
+   * Candidates are NOT filtered here. Deciding what is a legal link (cycles,
+   * depth, fan-out) is the server's job and it refuses out loud — duplicating
+   * that rule in the browser would give it two homes and one of them would
+   * drift.
+   */
+  function openParentPicker(tab) {
+    const others = tabs.filter((t) => t.sessionId && t.sessionId !== tab.sessionId);
+    tabMenu.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "tm-head";
+    head.textContent = others.length ? "Report to which agent?" : "No other agent to report to";
+    tabMenu.appendChild(head);
+    for (const other of others) {
+      const b = document.createElement("button");
+      b.className = "tm-item";
+      b.textContent = other.nameEl ? other.nameEl.textContent : other.sessionId.slice(0, 8);
+      b.addEventListener("click", (e) => {        // never onclick=: the CSP nonce
+        e.stopPropagation();                       // does not cover inline handlers
+        closeTabMenu();
+        sendTo(tab, { type: "set-parent", parent: other.sessionId });
+      });
+      tabMenu.appendChild(b);
+    }
+    // Reopen in place: the click handler that brought us here closed the menu,
+    // and left/top are still the coordinates openTabMenu measured.
+    tabMenu.hidden = false;
+    tabMenuOpenedAt = Date.now();
+  }
+
   function openTabMenu(tab, x, y) {
     tabMenu.replaceChildren();
     // Entête : QUI est cet agent. Le profil est ce qui le qualifie (rôle,
@@ -2046,6 +2084,14 @@
           if (tab.mirror && !confirm("Stop mirroring this agent?\n\nIts Telegram topic will be deleted, with the messages it holds. The agent itself keeps running.")) return;
           setMirror(tab, !tab.mirror);
         },
+      ]);
+    }
+    // Who hears about this agent. Set automatically when an agent spawns
+    // another; this is the manual half, for an agent started by hand.
+    if (tab.sessionId) {
+      items.push([
+        tab.parent ? "🔗 Detach from " + parentLabel(tab.parent) : "🔗 Report to…",
+        () => (tab.parent ? sendTo(tab, { type: "set-parent", parent: null }) : openParentPicker(tab)),
       ]);
     }
     // The main channel is the environment's home base — it can't be closed.
@@ -2422,6 +2468,9 @@
         // server-owned, les crons ne vivent que chez lui). Ré-appliqué à chaque
         // passage, donc un cron créé depuis Telegram allume l'⏰ ici en 4 s.
         t.profile = c.profile || null;
+        // Server-owned like `profile`: who this agent reports to must survive a
+        // reload, or the menu would offer to attach an agent that already is.
+        t.parent = c.parent || null;
         setCrons(t, c.crons);
         // A mute set on another device lands here; persist:false, the registry
         // is already the source of this value.
@@ -2441,6 +2490,7 @@
         nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
+        nt.parent = c.parent || null;
         // Un canal tweak né ailleurs (autre appareil, Telegram) reprend sa place
         // en bas plutôt que d'apparaître comme un agent ordinaire de la liste.
         if (nt.profile === "Shadok-Tweak" && !tweakTab()) markTweakTab(nt);
@@ -3630,6 +3680,11 @@
         // profil depuis un onglet met les autres à jour sans reload.
         t.profile = msg.profile;
         t.appliedProfile = msg.applied;
+        break;
+      case "parent":
+        // Broadcast to every client, like `profile`: attaching from one tab
+        // must update the others without a reload.
+        t.parent = msg.parent;
         break;
       case "tokens":
         t.tokens = msg.tokens;

@@ -1062,6 +1062,10 @@ type ClientMessage =
       repo?: string;
       /** Agent profile to apply (role/guardrails/secrets) — new sessions only. */
       profile?: string;
+      /** The channel that launched this one. pilotctl sends its own
+       *  SHADOK_SESSION_ID here, so the link needs no configuring. Refused on a
+       *  cycle / unknown parent / cap, exactly like `set-parent`. */
+      parent?: string | null;
       /** Qui pilote ce client : "web", "cron", "telegram", "cli"… Voyage avec
        *  l'écho de prompt pour que les autres clients puissent dire qui a parlé. */
       origin?: string;
@@ -2006,6 +2010,17 @@ wss.on("connection", (ws: WebSocket) => {
             const stored = loadChannels().find((c) => c.sessionId === id)?.profile;
             if (stored != null) profile = stored; // the channel's own profile wins on resume
           }
+          // Who launched this agent. Validated exactly like `set-parent` — a
+          // cycle costs the same either way — but a refusal here only DROPS the
+          // link instead of failing the start: the agent itself is fine, and
+          // killing a spawn over a bad link would be a worse outcome than one
+          // that reports to nobody. Logged so it isn't a silent loss.
+          let parentAtStart: string | null | undefined;
+          if (msg.parent !== undefined) {
+            const refusal = linkRefusal(loadChannels(), id, msg.parent ?? null);
+            if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
+            else parentAtStart = msg.parent ?? null;
+          }
           session = await createSession(id, effectiveCwd, args, worktree, profile);
           session.clients.add(ws);
           if (resumed) {
@@ -2042,6 +2057,12 @@ wss.on("connection", (ws: WebSocket) => {
             // the field) → decide nothing, and `isMirrored` falls back to the
             // binding.
             ...(typeof msg.mirror === "boolean" ? { mirror: msg.mirror } : {}),
+            // Who launched this agent, sent by pilotctl from its own
+            // SHADOK_SESSION_ID. ASSERT-only, like `branch` and `repo`: a
+            // client that omits the key must not erase a link that already
+            // exists. Validated for the same reasons `set-parent` validates —
+            // a cycle here would be just as expensive.
+            ...(parentAtStart !== undefined ? { parent: parentAtStart } : {}),
           });
           send({ type: "tokens", tokens: tokenTotals(session) });
           send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });
