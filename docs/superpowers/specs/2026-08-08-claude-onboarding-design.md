@@ -86,6 +86,21 @@ Paste code here if prompted >                 ← reads the code from stdin
 Invalid code. Please make sure the full code was copied.
 ```
 
+**One first-run screen appears only AFTER signing in** — found the hard way, on
+the clean container, by the first human to reach it. Claude Code offers its
+fullscreen renderer ("Flicker-free output · Mouse support · Selected text
+auto-copies") as a **blocking** dialog (`❯ 1. Yes, try it / 2. Not now`), so it
+reaches the chat as a question before the agent is usable. No pre-login probe
+could ever have seen it, which is the lesson worth keeping: the signed-out
+screens are not the whole set.
+
+It is counted by `fullscreenUpsellSeenCount`, but seeding a counter means
+guessing its threshold. The durable answer is to record an explicit `tui`
+preference in `~/.claude/settings.json` — a choice already made cannot be
+upsold. Evidence: a developer machine with `tui` set has never accumulated that
+counter in 792 startups. Confirmed by A/B on the container: remove the key and
+the dialog returns, seed it and the agent goes straight to its prompt.
+
 **An invalid code does NOT end the flow** (verified during implementation): the
 CLI prints its refusal and **re-prompts**, so a second and third attempt reach
 the same child. A retry therefore needs no new URL and no new authorisation —

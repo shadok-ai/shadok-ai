@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseClaudeVersion, seedPlan } from "../src/claude-home.js";
+import { parseClaudeVersion, seedPlan, settingsPlan } from "../src/claude-home.js";
 
 test("parseClaudeVersion pulls the semver out of the CLI banner", () => {
   assert.equal(parseClaudeVersion("2.1.226 (Claude Code)\n"), "2.1.226");
@@ -84,4 +84,22 @@ test("an existing project entry keeps its own keys and gains only what's missing
 test("no cwd means globals only — no empty projects map invented", () => {
   const out = seedPlan({}, { version: "2.1.226" });
   assert.equal(out?.projects, undefined);
+});
+
+test("settingsPlan records an explicit tui choice on a fresh install", () => {
+  // The fullscreen upsell appears AFTER the sign-in, so no pre-login probe ever
+  // saw it. A choice already made cannot be upsold.
+  assert.deepEqual(settingsPlan({}), { tui: "fullscreen" });
+});
+
+test("settingsPlan never overrides the user's own tui choice", () => {
+  assert.equal(settingsPlan({ tui: "classic" }), null);
+  assert.equal(settingsPlan({ tui: "fullscreen" }), null);
+});
+
+test("settingsPlan keeps every other setting untouched", () => {
+  // settings.json is hand-edited: permissions, hooks, model. Losing one of
+  // those to suppress an upsell would be a terrible trade.
+  const out = settingsPlan({ permissions: { allow: ["Bash(git *)"] }, model: "opus" });
+  assert.deepEqual(out, { permissions: { allow: ["Bash(git *)"] }, model: "opus", tui: "fullscreen" });
 });

@@ -368,6 +368,16 @@ the picker is already skipped without it);
 `ensureProjectTrusted(cwd)` runs inside `makePilot` before every spawn, because
 a worktree is a brand-new directory and therefore a brand-new trust dialog.
 
+`settingsPlan` covers a second file and a subtler case: `~/.claude/settings.json`
+gets an explicit `tui` value, which suppresses the fullscreen renderer upsell.
+That one is **not** an onboarding screen — it appears only **after** a sign-in,
+so no signed-out probe can find it, and it is *blocking* (`❯ 1. Yes, try it /
+2. Not now`), reaching the chat as a question before the agent is usable. It is
+counted by `fullscreenUpsellSeenCount`, but seeding a counter means guessing its
+threshold; recording a preference is durable, because a choice already made
+cannot be upsold. Same additive rule: a `tui` the user set is never touched, and
+the rest of `settings.json` — permissions, hooks, model — is preserved.
+
 Three properties are load-bearing. It is **purely additive** — a key already
 present is never overwritten — which is what removes the need for the Docker
 gate that `src/ssh.ts` had to adopt: on a machine that has used Claude Code

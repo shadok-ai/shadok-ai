@@ -84,7 +84,34 @@ export function seedPlan(
   return changed ? out : null;
 }
 
+export interface ClaudeSettings {
+  tui?: string;
+  [k: string]: unknown;
+}
+
+/**
+ * Pure: `~/.claude/settings.json` after adding the keys that suppress a
+ * first-run *upsell*, or null when nothing is missing.
+ *
+ * The fullscreen upsell ("Flicker-free output · Mouse support · Selected text
+ * auto-copies") is not gated by the onboarding flags — it appears AFTER the
+ * sign-in, which is why no probe caught it before a real account reached the
+ * screen. It is counted by `fullscreenUpsellSeenCount`, but seeding a counter
+ * means guessing its threshold; recording an explicit `tui` preference is the
+ * durable answer, because a choice already made cannot be upsold. Evidence: a
+ * developer machine with `tui` set has never accumulated that counter in 792
+ * startups.
+ */
+export function settingsPlan(existing: ClaudeSettings): ClaudeSettings | null {
+  if ("tui" in existing) return null; // the user's own choice, never overridden
+  // "fullscreen" is the value both working installations run — shadok reads
+  // content from the transcript, not the screen, so the TUI's rendering mode
+  // does not affect it either way.
+  return { ...existing, tui: "fullscreen" };
+}
+
 const homeFile = (): string => path.join(os.homedir(), ".claude.json");
+const settingsFile = (): string => path.join(os.homedir(), ".claude", "settings.json");
 
 /** The claude CLI's version, or a conservative fallback. */
 function claudeVersion(): string {
@@ -138,9 +165,36 @@ function seed(cwd?: string): void {
   }
 }
 
-/** Called once at boot: the globals that answer the theme picker. */
+/** Called once at boot: the globals, plus the settings that kill the upsell. */
 export function ensureClaudeHome(): void {
   seed();
+  seedSettings();
+}
+
+/** Apply `settingsPlan` to `~/.claude/settings.json`. Same rules as `seed`. */
+function seedSettings(): void {
+  try {
+    const file = settingsFile();
+    let existing: ClaudeSettings | null = {};
+    if (fs.existsSync(file)) {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+        existing =
+          parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+      } catch {
+        existing = null; // hand-edited into invalid JSON → never clobber it
+      }
+    }
+    if (existing === null) return;
+    const plan = settingsPlan(existing);
+    if (!plan) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.shadok-${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(plan, null, 2));
+    fs.renameSync(tmp, file);
+  } catch {
+    // Never take down the boot path.
+  }
 }
 
 /**
