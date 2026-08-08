@@ -1595,6 +1595,27 @@
     return parts[parts.length - 1] || p || "session";
   }
 
+  /**
+   * Send one protocol message on a channel's socket. Returns false when it
+   * could not go out.
+   *
+   * Every caller needs the same three guards, and before this helper each one
+   * carried a different subset by hand: `active` can legitimately be null
+   * (invariant 18), a tab may not have connected yet, and `send()` THROWS on a
+   * socket that is closing — which is why the terminal paths had already grown
+   * their own try/catch. Centralising them means a new call site cannot forget
+   * the one that matters.
+   */
+  function sendTo(ch, msg) {
+    if (!ch || !ch.ws || ch.ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ch.ws.send(JSON.stringify(msg));
+      return true;
+    } catch {
+      return false;                 // socket died between the check and the send
+    }
+  }
+
   function createTab(groupId) {
     seq++;
     const el = document.createElement("div");
@@ -1886,7 +1907,7 @@
   function reloadTab(tab) {
     if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
       addTurn(tab, "system", "", "Reloading the agent — the session and its history are kept.", null, Date.now());
-      tab.ws.send(JSON.stringify({ type: "restart" }));
+      sendTo(tab, { type: "restart" });
       return;
     }
     if (tab.launchMsg) {
@@ -1942,7 +1963,7 @@
       addTurn(tab, "system", "", "Agent isn't connected — profile unchanged.", null, Date.now());
       return;
     }
-    tab.ws.send(JSON.stringify({ type: "set-profile", profile: name, restart: !!restart }));
+    sendTo(tab, { type: "set-profile", profile: name, restart: !!restart });
     addTurn(tab, "system", "",
       restart
         ? "Profile → " + (name || "No profile") + ". Restarting the agent; history is kept."
@@ -3120,7 +3141,7 @@
           if (!v || tab.status !== "ready" || !tab.ws) return;
           buttons.forEach((x) => (x.disabled = true));
           inp.disabled = true;
-          tab.ws.send(JSON.stringify({ type: "freetext", n: opt.n, text: v }));
+          sendTo(tab, { type: "freetext", n: opt.n, text: v });
         };
         go.addEventListener("click", submitFree);
         inp.addEventListener("keydown", (e) => {
@@ -3157,11 +3178,11 @@
         if (msg.multi) {
           // Toggle — the bubble will be re-rendered with the fresh state.
           buttons.forEach((x) => (x.disabled = true));
-          tab.ws.send(JSON.stringify({ type: "toggle", n: opt.n }));
+          sendTo(tab, { type: "toggle", n: opt.n });
         } else {
           buttons.forEach((x) => (x.disabled = true));
           b.classList.add("chosen");
-          tab.ws.send(JSON.stringify({ type: "choose", n: opt.n }));
+          sendTo(tab, { type: "choose", n: opt.n });
         }
       });
       buttons.push(b);
@@ -3176,7 +3197,7 @@
         if (tab.status !== "ready" || !tab.ws) return;
         buttons.forEach((x) => (x.disabled = true));
         v.disabled = true;
-        tab.ws.send(JSON.stringify({ type: "confirm" }));
+        sendTo(tab, { type: "confirm" });
       });
       buttons.push(v);
       bubble.appendChild(v);
@@ -3869,6 +3890,14 @@
   }, 5000);
 
   function submitPrompt(t, text, force) {
+    // Send BEFORE touching the UI. Everything below is optimistic — it shows the
+    // turn, marks the tab busy, clears the composer and drops the draft — so on
+    // a socket that is not open the user would watch their message vanish into
+    // a channel that never received it.
+    if (!sendTo(t, { type: "prompt", text, ...(force ? { force: true } : {}) })) {
+      addTurn(t, "system", "", "Not sent: this agent is not connected. Your text is still in the box.");
+      return;
+    }
     // Any outstanding pace question is answered by the fact that something is
     // being sent — whether by clicking its own button or by a fresh submit.
     retirePaceConfirm(t);
@@ -3879,7 +3908,6 @@
     // Mémorise le dernier prompt envoyé de ce canal, pour qu'Échap (interruption)
     // puisse le remettre dans le composer et le laisser ré-éditer/renvoyer.
     t.lastSent = text;
-    t.ws.send(JSON.stringify({ type: "prompt", text, ...(force ? { force: true } : {}) }));
     // The composer is shared and shows the active channel's draft. A forced send
     // can come from a bubble in a channel the user has since left, and clearing
     // it then would throw away whatever they are typing in the channel they are
@@ -4025,15 +4053,15 @@
       term.open($("xtermHost"));
       term.onData((d) => {
         if (term && termSession && termSession.ws)
-          termSession.ws.send(JSON.stringify({ type: "term-input", data: strToB64Utf8(d) }));
+          sendTo(termSession, { type: "term-input", data: strToB64Utf8(d) });
       });
     }
     if (termSession !== active) {
       // Re-point the terminal at the newly-active channel (server re-seeds).
-      if (termSession && termSession.ws) try { termSession.ws.send(JSON.stringify({ type: "term-detach" })); } catch {}
+      sendTo(termSession, { type: "term-detach" });
       term.reset();
       termSession = active;
-      active.ws.send(JSON.stringify({ type: "term-attach" }));
+      sendTo(active, { type: "term-attach" });
     }
     // Fit xterm to the panel, then tell the pane to match so the TUI fills the
     // full-screen view. rAF so the container has its final size; a second pass
@@ -4047,11 +4075,11 @@
     if (!term || !fitAddon || !active || !active.termOn) return;
     try { fitAddon.fit(); } catch {}
     if (termSession && termSession.ws)
-      termSession.ws.send(JSON.stringify({ type: "term-resize", cols: term.cols, rows: term.rows }));
+      sendTo(termSession, { type: "term-resize", cols: term.cols, rows: term.rows });
   }
   window.addEventListener("resize", () => { if (active && active.termOn) fitTerm(); });
   function closeTerm() {
-    if (termSession && termSession.ws) try { termSession.ws.send(JSON.stringify({ type: "term-detach" })); } catch {}
+    sendTo(termSession, { type: "term-detach" });
     termSession = null;
     if (term) { term.dispose(); term = null; }
     fitAddon = null;
@@ -4113,7 +4141,7 @@
   $("refreshDiff").addEventListener("click", loadDiff);
   document.querySelectorAll(".keys button[data-key]").forEach((b) =>
     b.addEventListener("click", () => {
-      if (active && active.ws) active.ws.send(JSON.stringify({ type: "key", key: b.dataset.key }));
+      sendTo(active, { type: "key", key: b.dataset.key });
     })
   );
   // La touche Échap envoie esc à la session active (comme le bouton Esc de
@@ -4142,7 +4170,7 @@
     if (active && active.dialogBubble) return;
     // 3. Session active (engine room ouvert inclus) → envoyer esc.
     if (active && active.ws && active.status !== "setup") {
-      active.ws.send(JSON.stringify({ type: "key", key: "escape" }));
+      sendTo(active, { type: "key", key: "escape" });
       e.preventDefault();
       // Interrompre remet le dernier prompt envoyé dans le composer pour pouvoir
       // le ré-éditer/renvoyer — sans écraser un brouillon déjà en cours de frappe.
@@ -4157,10 +4185,10 @@
   });
   $("settleBtn").addEventListener("click", () => {
     if (active && active.ws && active.status === "ready")
-      active.ws.send(JSON.stringify({ type: "settle" }));
+      sendTo(active, { type: "settle" });
   });
   $("stopBtn").addEventListener("click", () => {
-    if (active && active.ws) active.ws.send(JSON.stringify({ type: "stop" }));
+    sendTo(active, { type: "stop" });
   });
 
   // ── Secret vault panel (central, global; profiles pick which to inject) ──
