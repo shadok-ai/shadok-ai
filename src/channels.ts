@@ -29,6 +29,13 @@ export interface Channel {
   /** Agent profile applied at spawn (role/guardrails/secrets) — re-applied on
    *  resume/restart so the guardrails aren't lost. */
   profile?: string | null;
+  /** The channel that spawned this one, or one attached to it by hand. Only
+   *  this parent is told when the agent finishes, blocks on a question or dies
+   *  — without that scoping a chatty channel would wake a boss on every turn,
+   *  and a wake in a large session is not free. The CHILD stores its parent and
+   *  never the reverse, so there is one writer per fact and the two directions
+   *  cannot disagree. */
+  parent?: string | null;
   /** Muted channel: it raises no global signal (favicon pip, title badge,
    *  blink, chime). Client-owned like `name`/`group`, stored here so the mute
    *  survives a reload and follows the user's other devices. */
@@ -49,7 +56,7 @@ export function isMirrored(c: Channel): boolean {
 }
 
 /** Fields the server owns; a browser PUT must never overwrite or drop them. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "parent"] as const;
 
 /**
  * The registry is stored server-side, keyed by the directory the server was

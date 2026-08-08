@@ -161,3 +161,22 @@ test("upsertInto: `repo` is asserted, and never cleared by a later resume", () =
   assert.equal(list[0].repo, "/self");
   assert.equal(list[0].branch, "shadok-ai/a");
 });
+
+test("mergeChannels: a stale client cannot rewrite or erase a channel's parent", () => {
+  // Same protection `set-profile` gets: the link decides who is woken when this
+  // agent finishes, so a browser echoing an old list must not be able to move it.
+  const stored: Channel[] = [{ sessionId: "kid", cwd: "/w", parent: "boss" }];
+  const client: Channel[] = [{ sessionId: "kid", cwd: "/w", parent: "someone-else" }];
+  assert.equal(mergeChannels(stored, client, new Set(["kid"]))[0].parent, "boss");
+
+  const dropped: Channel[] = [{ sessionId: "kid", cwd: "/w" }];
+  assert.equal(mergeChannels(stored, dropped, new Set(["kid"]))[0].parent, "boss");
+});
+
+test("mergeChannels: a brand-new channel keeps the parent it was created with", () => {
+  // Nothing is stored for this id yet, so SERVER_OWNED cannot protect it —
+  // being in that list only guards a field once a previous value exists
+  // (invariant 20). The server asserts it at `ready` instead.
+  const out = mergeChannels([], [{ sessionId: "kid", cwd: "/w", parent: "boss" }], new Set(["kid"]));
+  assert.equal(out[0].parent, "boss");
+});
