@@ -2812,17 +2812,27 @@
     if (tab === active && el._stickBottom !== false) el.scrollTop = el.scrollHeight;
   }
 
-  /* Heure d'un message : « 21:57 », avec la date complète en title= — un
-     historique repris peut dater d'avant-hier, et hh:mm seul induirait en
-     erreur. `at` vient du .jsonl (même heure en direct et au rechargement) ;
-     absent sur les vieux transcripts → on n'affiche rien plutôt qu'une heure
-     inventée. */
+  /* Date/heure d'un message. Aujourd'hui → heure seule (« 21:57 »). Un autre
+     jour → date + heure (« 3 août, 21:57 »), avec l'année si elle diffère —
+     sinon un historique repris de plusieurs jours affichait juste « 21:57 », ce
+     qui induit en erreur. Date complète en title=. `at` vient du .jsonl (même
+     valeur en direct et au rechargement) ; absent sur les vieux transcripts →
+     on n'affiche rien plutôt qu'une heure inventée. */
   function fmtTime(at) {
     if (!Number.isFinite(at)) return null;
     const d = new Date(at);
+    const now = new Date();
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const el = document.createElement("span");
     el.className = "time";
-    el.textContent = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (d.toDateString() === now.toDateString()) {
+      el.textContent = time;
+    } else {
+      const date = d.toLocaleDateString([], d.getFullYear() === now.getFullYear()
+        ? { day: "numeric", month: "short" }
+        : { day: "numeric", month: "short", year: "numeric" });
+      el.textContent = date + ", " + time;
+    }
     el.title = d.toLocaleString();
     return el;
   }
