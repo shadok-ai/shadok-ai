@@ -520,25 +520,36 @@ test("a live agent whose bridge died is reattachable", () => {
   // bridge, and nothing outside `reconcileOnBoot` knew how to rebuild it — so
   // the topic went deaf in the agent → Telegram direction until an unrelated
   // server restart.
-  assert.equal(shouldReattachBridge({ threadId: 366, hasBridge: false, sessionAlive: true }), true);
+  assert.equal(shouldReattachBridge({ chatId: -100, hasBridge: false, sessionAlive: true }), true);
 });
 
 test("a dormant channel is NEVER revived just to fill a topic", () => {
   // The load-bearing guard: without it the 5s loop would respawn a `claude`
   // under every idle mirrored channel. Mirroring an idle channel is the topic's
   // job, not a live process's.
-  assert.equal(shouldReattachBridge({ threadId: 366, hasBridge: false, sessionAlive: false }), false);
+  assert.equal(shouldReattachBridge({ chatId: -100, hasBridge: false, sessionAlive: false }), false);
 });
 
 test("an already-bridged channel is left alone", () => {
   // Called every 5s: without this the loop would rebuild a working bridge over
   // and over, and each rebuild replays into the topic.
-  assert.equal(shouldReattachBridge({ threadId: 366, hasBridge: true, sessionAlive: true }), false);
+  assert.equal(shouldReattachBridge({ chatId: -100, hasBridge: true, sessionAlive: true }), false);
 });
 
-test("no topic bound means nothing to reattach to", () => {
+test("no BINDING means nothing to reattach to", () => {
   // A web-only channel: the mirroring path creates its topic, this one must not
-  // pretend it already has one.
-  assert.equal(shouldReattachBridge({ threadId: null, hasBridge: false, sessionAlive: true }), false);
+  // pretend it already has one. What disqualifies it is the absence of a bound
+  // chat — not the absence of a topic (see the General below).
+  assert.equal(shouldReattachBridge({ chatId: null, hasBridge: false, sessionAlive: true }), false);
   assert.equal(shouldReattachBridge({ hasBridge: false, sessionAlive: true }), false);
+});
+
+test("the group's General is bound too, even with no threadId", () => {
+  // The bug this fixes: the main channel lives in the board group's General,
+  // which by construction has NO threadId — that is how the code recognises it
+  // (`mergeChannels` forces the name "general" on `telegram.threadId == null`).
+  // Keying the guard on the topic instead of the binding meant its bridge was
+  // never rebuilt once it died: the web channel kept working while Telegram
+  // went silent, with no error anywhere.
+  assert.equal(shouldReattachBridge({ chatId: -100, threadId: null, hasBridge: false, sessionAlive: true }), true);
 });

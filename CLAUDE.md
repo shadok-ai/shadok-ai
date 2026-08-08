@@ -230,10 +230,16 @@ Auth section of `docs/architecture.md`).
    boot left a restarted channel deaf towards Telegram until something unrelated
    restarted the server. The 5s `reconcileWebChannels` loop could not save it
    either: it only ever looked at channels with NO binding. Both reconcilers now
-   share one rule, `shouldReattachBridge` — bound topic, no bridge, **and a live
+   share one rule, `shouldReattachBridge` — bound **chat**, no bridge, **and a live
    tmux session**. That last term is load-bearing: without it the loop would
    respawn a `claude` under every idle mirrored channel, and mirroring an idle
    channel is the topic's job, not a live process's.
+   **Bound CHAT, not bound topic.** Keying that rule on `threadId` silently
+   excluded the board's General, which by construction has none — that is how
+   `mergeChannels` recognises the main channel. Its bridge was therefore never
+   rebuilt once it died: the web channel kept working while Telegram went quiet,
+   with nothing in the log to show for it. A DM has no topic either, and keys as
+   `private:<id>`, never `group:<id>`.
 8. **Don't let an agent restart the server.** It kills sibling PTY sessions
    mid-work. (tmux mitigates, but still.) Only the human / top-level restarts it.
    To try your own build, run it side by side on a free port — see "Running YOUR

@@ -102,11 +102,19 @@ export function parseCommand(text: string): { cmd: string; arg: string } | null 
  * channel is the topic's job, not a live process's.
  */
 export function shouldReattachBridge(o: {
+  /** The bound chat: a topic's group, the board's General, or a DM. Absent =
+   *  the channel has no Telegram binding at all. */
+  chatId?: number | null;
   threadId?: number | null;
   hasBridge: boolean;
   sessionAlive: boolean;
 }): boolean {
-  if (o.threadId == null) return false; // no topic bound → nothing to reattach to
+  // What disqualifies a channel is having NO binding — not having no topic.
+  // Keying this on `threadId` silently excluded the board's General, which by
+  // construction has none (`mergeChannels` recognises the main channel exactly
+  // that way). Its bridge was therefore never rebuilt once it died: the web
+  // channel kept working while Telegram went quiet, with nothing in the log.
+  if (o.chatId == null) return false;
   if (o.hasBridge) return false;        // already connected
   return o.sessionAlive;
 }
@@ -1349,17 +1357,22 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
    * mirroring an idle channel is the topic's job, not a live process's.
    */
   const reattachLiveBridge = (c: { sessionId: string; telegram?: { chatId: number; threadId?: number } | null; profile?: string | null }): boolean => {
-    const th = c.telegram?.threadId;
-    if (th == null) return false;
-    const key = bindKey({ id: c.telegram!.chatId, type: "supergroup" }, th);
+    const chatId = c.telegram?.chatId;
+    if (chatId == null) return false;
+    const th = c.telegram?.threadId; // undefined = the board group's General
+    // A DM keys as `private:<id>`, never `group:<id>` — forcing "supergroup"
+    // here would open a SECOND bridge under a key no message ever resolves to.
+    const key = bindKey({ id: chatId, type: chatId < 0 ? "supergroup" : "private" }, th);
     const ok = shouldReattachBridge({
+      chatId,
       threadId: th,
       hasBridge: bridges.has(key),
       sessionAlive: tmuxHasSession("sk-" + c.sessionId),
     });
     if (!ok) return false;
-    console.log(`telegram: reattaching live agent ${c.sessionId.slice(0, 8)} (topic ${th})`);
-    openBridge(key, c.telegram!.chatId, th, { resumeId: c.sessionId, profile: c.profile ?? undefined });
+    const where = th == null ? (chatId < 0 ? "General" : "DM") : `topic ${th}`;
+    console.log(`telegram: reattaching live agent ${c.sessionId.slice(0, 8)} (${where})`);
+    openBridge(key, chatId, th, { resumeId: c.sessionId, profile: c.profile ?? undefined });
     return true;
   };
 
