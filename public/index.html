@@ -2495,11 +2495,22 @@
       pip + `</svg>`;
     return "data:image/svg+xml," + encodeURIComponent(svg);
   }
+  /** Favicon « en train de bosser » : la marque + un arc qui tourne (angle animé). */
+  function faviconWorkingSVG(angle) {
+    const svg =
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
+      `<rect width="32" height="32" rx="7" fill="#14161d"/>` +
+      `<text x="15" y="23" font-family="monospace" font-size="20" fill="#f0a848" text-anchor="middle">›</text>` +
+      `<g transform="rotate(${angle} 24 8)"><circle cx="24" cy="8" r="6" fill="none" stroke="#f0a848" stroke-width="2.5" stroke-linecap="round" stroke-dasharray="26 40"/></g>` +
+      `</svg>`;
+    return "data:image/svg+xml," + encodeURIComponent(svg);
+  }
   /** What each channel is asking for, as the pure module wants it. */
   function attentionInput() {
     return tabs.map((t) => ({
       mood: t.btnEl.classList.contains("needs-answer") ? "needs-answer"
-        : t.btnEl.classList.contains("unread") ? "unread" : null,
+        : t.btnEl.classList.contains("unread") ? "unread"
+        : t.btnEl.classList.contains("working") ? "working" : null,
       muted: !!t.muted,
     }));
   }
@@ -2508,10 +2519,14 @@
   // costs no timer at all.
   let blinkTimer = null;
   let blinkPhase = 0;
+  let workTimer = null;   // anime le favicon « working » (spinner)
+  let workAngle = 0;
+  function stopWork() { if (workTimer) { clearInterval(workTimer); workTimer = null; } }
   function paint() {
     // The ESM bridge lands after the document is parsed (gotcha #10): until it
     // does, keep the plain badge rather than throwing on the first paint.
     if (!window.notifyState) {
+      stopWork();
       favicon.href = faviconSVG(null);
       document.title = titleBase;
       return;
@@ -2524,8 +2539,21 @@
       away: document.hidden || !document.hasFocus(),
       phase: blinkPhase,
     });
-    favicon.href = faviconSVG(s.color);
     document.title = s.badge + titleBase;
+    // « working » = favicon animé (spinner). Le module ne renvoie ce mode que si
+    // RIEN de plus prioritaire (bloqué / non-lu) n'attend — la priorité est donc
+    // gérée en amont : un agent qui attend gagne toujours sur un agent qui bosse.
+    if (s.mode === "working") {
+      if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; blinkPhase = 0; }
+      if (!workTimer) {
+        const tick = () => { workAngle = (workAngle + 30) % 360; favicon.href = faviconWorkingSVG(workAngle); };
+        tick();
+        workTimer = setInterval(tick, 120);
+      }
+      return;
+    }
+    stopWork();
+    favicon.href = faviconSVG(s.color);
     if (s.blink && !blinkTimer) {
       blinkTimer = setInterval(() => { blinkPhase ^= 1; paint(); }, window.BLINK_MS || 900);
     } else if (!s.blink && blinkTimer) {
