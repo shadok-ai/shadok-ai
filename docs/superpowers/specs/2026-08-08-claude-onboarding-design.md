@@ -1,4 +1,4 @@
-# Claude Code onboarding: seeded first-run state + interactive login — design
+# Claude Code onboarding and login: seeded first-run state + interactive login — design
 
 Date: 2026-08-08 · Status: approved
 
@@ -16,16 +16,18 @@ host. Two things stand in the way today:
 2. A virgin container has **no Claude credentials at all**, and the login is an
    interactive OAuth flow that assumes a terminal.
 
+And a third thing, which is not onboarding but shares every mechanism with it:
+**the login does not stay valid forever**. An instance that logs out mid-life
+must be repairable from wherever the user happens to be — which, in practice, is
+Telegram more often than the cockpit. Onboarding happens once per instance;
+re-login happens repeatedly, so it is the path that will see the most use.
+
 After this change: shadok seeds the first-run state itself, and offers the login
-as a link + code-paste card in the cockpit.
+as a link + code-paste — as a card in the cockpit, and as `/login` + `/code` in
+Telegram, both driving the same single flow.
 
 ## Out of scope
 
-- **Telegram login.** An instance that is not logged in is almost always a new
-  instance, and a new instance has no Telegram binding either — the web is the
-  only entry point that exists at that moment. A `/spawn` on a logged-out
-  instance must still answer clearly instead of failing silently, but the login
-  itself is web-only in v1.
 - **A general "instance status" panel.** Considered and dropped: everything it
   would display is either permanent and invisible (the seeded state, which nobody
   ever consults) or transient and blocking (not logged in → nothing works). A
@@ -185,6 +187,41 @@ out, and on a `start` refused with `code: "logged-out"`. It shows:
 It closes on success and does not exist otherwise. There is no entry point to
 open it when the instance is healthy.
 
+### Part 5 — Telegram: re-login mid-life
+
+Onboarding happens once; **logging out mid-life happens repeatedly**, and when it
+does the user is usually not in front of the cockpit. So the same flow gets a
+Telegram door.
+
+**Two explicit commands, no captured state.** `/login` starts the flow and
+replies with the link; `/code <code>` submits it. The tempting alternative —
+"after `/login`, treat the next plain message as the code" — is rejected on
+purpose: a Telegram topic **is** an agent, so a bare message in it is a prompt.
+Capturing the next one would one day swallow a real prompt from a user who had
+forgotten a flow was open.
+
+**Owner-only.** An OAuth code grants access to the account, so both commands go
+through `dmGate` / the bound board group, exactly like `/secret`. Never from an
+arbitrary topic.
+
+**One flow, two doors.** `LoginFlow` is already a single instance-global object
+(credentials are machine-global). The consequence is free and worth stating: the
+URL is identical on both sides, and a code pasted from Telegram closes the web
+card on its next `GET /auth`.
+
+**How the user finds out.** shadok reacts to a **real failure** — a spawn refused
+with `logged-out`, or a cron that could not fire for that reason — and posts one
+message to the board group (or the owner DM) naming the cause and the `/login`
+remedy. It is **deduplicated until the state flips back**: a cron on a 5-minute
+slot would otherwise turn one logout into a flood, and a channel that cries wolf
+gets muted before the day it is right.
+
+Periodic polling of `claude auth status` was considered and rejected for the same
+reason: an expired-but-refreshable OAuth token can report itself logged out while
+the CLI would renew it without complaint, so a poll manufactures false alarms
+about a session that is in fact fine. A refused spawn is not a guess — it is the
+thing the user actually cares about, already having happened.
+
 ## Testing
 
 **Unit (pure, no spawn):** `seedPlan` — empty plan on an already-onboarded file,
@@ -212,9 +249,17 @@ The sequence that constitutes the proof:
 Step 4 is the point of the whole feature: the ritual is gone because the file no
 longer needs restoring.
 
+**The mid-life path, on the same container**, since it is the one that will
+actually be used repeatedly: bind a Telegram bot, log the instance out
+(`claude auth logout` inside the container), then attempt a spawn. Expected: the
+spawn is refused, **one** message lands in the board group, a second attempt
+produces no second message, `/login` returns the link, `/code <code>` restores
+the session, and the open web card closes on its own within the cache window.
+
 ## Documentation shipped with the change
 
-- `README.md` — the login card, the `/auth` endpoints, and a rewritten container
+- `README.md` — the login card, the `/login` and `/code` Telegram commands, the
+  `/auth` endpoints, and a rewritten container
   recreate procedure that no longer needs the `docker create` → `docker cp` →
   `docker start` ordering.
 - `CLAUDE.md` — `src/claude-home.ts` and `src/claude-auth.ts` in the architecture
