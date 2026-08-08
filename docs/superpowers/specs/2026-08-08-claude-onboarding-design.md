@@ -78,6 +78,18 @@ Paste code here if prompted >                 ← reads the code from stdin
 Invalid code. Please make sure the full code was copied.
 ```
 
+**An invalid code does NOT end the flow** (verified during implementation): the
+CLI prints its refusal and **re-prompts**, so a second and third attempt reach
+the same child. A retry therefore needs no new URL and no new authorisation —
+which is why `submitLoginCode` keeps the flow alive on `invalid-code` and only
+reports `ended` when the child has actually died.
+
+**A success is not detectable from the text.** The refusal wording above was
+observed; no success wording ever was. So success is taken from the child
+**exiting cleanly** after a code was submitted — a signal that can be proven,
+unlike a guessed phrase, which would produce a sign-in that silently never
+completes.
+
 This is the load-bearing finding: **the login touches none of the screen
 heuristics**. No `detectDialog`, no `screenShowsWork`, nothing from the fragile
 family that invariant nº 2 warns about. It is a spawn, a stdout parser and one
