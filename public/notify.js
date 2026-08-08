@@ -46,19 +46,27 @@ export function notifyState(channels, view) {
 
   let blocked = false;
   let unread = false;
+  let working = false;
   for (const c of channels || []) {
     if (!c || c.muted) continue; // un canal muté ne remonte aucun signal global
     if (c.mood === "needs-answer") blocked = true;
     else if (c.mood === "unread") unread = true;
+    else if (c.mood === "working") working = true;
   }
 
-  if (!blocked && !unread) return { color: null, badge: "", blink: false };
-
-  // Seul un agent bloqué justifie de clignoter : une réponse non lue signale
-  // qu'il s'est passé quelque chose, pas qu'on attend après toi.
-  const blink = blocked && away;
-  if (!blink) return { color: blocked ? RED : AMBER, badge: "● ", blink: false };
-  return phase
-    ? { color: RED_DIM, badge: "◉ ", blink: true }
-    : { color: RED, badge: "● ", blink: true };
+  // Priorité : « il y a quelque chose à faire » (bloqué) prime sur « quelque
+  // chose est arrivé » (non-lu), qui prime sur « ça bosse ». `mode` dit à
+  // l'appelant quel favicon dessiner (le mode "working" est ANIMÉ côté DOM).
+  if (blocked) {
+    // Seul un agent bloqué justifie de clignoter, et seulement si tu es ailleurs.
+    if (!away) return { color: RED, badge: "● ", blink: false, mode: "blocked" };
+    return phase
+      ? { color: RED_DIM, badge: "◉ ", blink: true, mode: "blocked" }
+      : { color: RED, badge: "● ", blink: true, mode: "blocked" };
+  }
+  if (unread) return { color: AMBER, badge: "● ", blink: false, mode: "unread" };
+  // « working » n'a ni couleur de pip ni badge : le favicon est animé (spinner)
+  // par l'appelant tant que le mode vaut "working".
+  if (working) return { color: null, badge: "", blink: false, mode: "working" };
+  return { color: null, badge: "", blink: false, mode: null };
 }

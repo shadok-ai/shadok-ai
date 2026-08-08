@@ -53,10 +53,24 @@ test("tous mutés → rien du tout", () => {
   assert.equal(s.blink, false);
 });
 
-test("un canal qui travaille ou au repos ne réclame rien", () => {
+test("un canal qui travaille → mode working, pas de pip ni de clignotement", () => {
   const s = notifyState([{ mood: "working" }, { mood: null }], { away: true, phase: 0 });
-  assert.equal(s.color, null);
+  assert.equal(s.color, null);   // pas de couleur de pip : le favicon est animé
   assert.equal(s.blink, false);
+  assert.equal(s.mode, "working");
+});
+
+test("un canal au repos ne réclame rien", () => {
+  const s = notifyState([{ mood: null }], { away: true, phase: 0 });
+  assert.equal(s.mode, null);
+  assert.equal(s.color, null);
+});
+
+test("priorité : bloqué > non-lu > working", () => {
+  // bloqué + working → bloqué gagne
+  assert.equal(notifyState([{ mood: "working" }, needs()], { away: false, phase: 0 }).mode, "blocked");
+  // non-lu + working → non-lu gagne
+  assert.equal(notifyState([{ mood: "working" }, unread()], { away: false, phase: 0 }).mode, "unread");
 });
 
 // L'invariant qui protège du timer étranglé par le navigateur : les DEUX phases
@@ -79,7 +93,7 @@ test("la phase n'a aucun effet quand on ne clignote pas", () => {
 
 test("aucun canal → état neutre", () => {
   const s = notifyState([], { away: true, phase: 0 });
-  assert.deepEqual(s, { color: null, badge: "", blink: false });
+  assert.deepEqual(s, { color: null, badge: "", blink: false, mode: null });
 });
 
 test("le tick est assez lent pour survivre au clamp 1s des onglets cachés", () => {
