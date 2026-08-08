@@ -352,6 +352,65 @@ default. Configurable from the GUI (`POST /permission-mode`), persisted in
 `config.json`, overridable with `SHADOK_PERMISSION_MODE`. Only affects agents
 started *after* the change — a running one keeps its launch mode.
 
+## Claude onboarding and sign-in (`src/claude-home.ts`, `src/claude-auth.ts`)
+
+A fresh instance has no Claude credentials and no Claude Code onboarding state,
+and both failures look identical from the cockpit: the agent starts, sits on a
+screen with no input box, and every prompt fails. Two modules, deliberately
+independent.
+
+**Seeding (`claude-home.ts`).** `seedPlan` is pure: given the current
+`~/.claude.json` it returns the merged object to write, or `null` when nothing
+is missing. `ensureClaudeHome()` runs once at boot with the globals
+(`hasCompletedOnboarding`, `lastOnboardingVersion`, `theme`);
+`ensureProjectTrusted(cwd)` runs inside `makePilot` before every spawn, because
+a worktree is a brand-new directory and therefore a brand-new trust dialog.
+
+Three properties are load-bearing. It is **purely additive** — a key already
+present is never overwritten — which is what removes the need for the Docker
+gate that `src/ssh.ts` had to adopt: on a machine that has used Claude Code
+before, the plan is empty and nothing is written. The write is **atomic** (temp
+file in the same directory, then rename), because the file carries megabytes of
+per-project history and truncating it costs incomparably more than the screen
+this avoids. And a file that fails to parse is **left alone**, never "repaired".
+
+**Sign-in (`claude-auth.ts`).** The design decision worth recording: the sign-in
+is a **piped child process**, not a piloted screen. `claude auth login
+--claudeai` needs no PTY — with plain pipes it prints the OAuth URL on stdout
+and reads the code from stdin. Driving it through `PtyPilot`/`TmuxPilot` and
+`detectDialog` would have worked too, and would have put one of the most
+fragile parts of the codebase (the screen heuristics, invariant nº 2) on the
+critical path of the one flow a brand-new user meets first. A stdout parser and
+one `stdin.write` have neither the fragility nor the latency.
+
+Two traps live in that parsing. The CLI wraps the URL in an **OSC 8 hyperlink**,
+so the URL appears twice in the raw stream and a naive regex captures a
+fragment — `parseLoginUrl` strips escapes before matching. And **success is a
+clean exit, not a string**: the refusal wording was observed, the success
+wording never was, and guessing it would report a completed sign-in as never
+finishing (invariant 29).
+
+`startLogin` / `submitLoginCode` / `cancelLogin` drive **one instance-global
+flow**, because the credentials are machine-global and two concurrent logins
+would race for the same keychain entry. The upside is free: the web card
+(`#authOverlay`) and Telegram's `/login` + `/code` share the same URL, and a
+code pasted from either finishes the other's flow.
+
+The `start` WS handler refuses to spawn while signed out, with `code:
+"logged-out"` — following the `code: "busy"` precedent so a machine client
+classifies the refusal without matching message text. That refusal, not the
+sign-in itself, is what prevents zombie agents: the historical failure was an
+agent allowed to start with no credentials. It also calls `announceLoggedOut()`,
+which posts once to the Telegram board group and is deduplicated until the state
+flips back (`shouldAnnounceLoggedOut`, pure and tested) — a five-minute cron
+would otherwise turn one sign-out into a flood.
+
+Deliberately **not** built: an "instance status" panel. Everything it would show
+is either permanent and invisible (the seeded state) or transient and blocking
+(signed out → nothing works), so it would read "all good" almost always and
+never be visited. The onboarding is instead cards that exist only while
+something is missing.
+
 ## Auth (optional password gate)
 
 Set a password (`--password`, `SHADOK_GUI_PASSWORD`, or config) and every page,

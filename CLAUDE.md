@@ -107,6 +107,8 @@ both are silent in the DOM.
 | `src/kinship.ts` | Who launched whom, and what a parent is told about it. `linkRefusal` (self / cycle / unknown parent / depth / fan-out — every refusal **explicit**, never a silently dropped field), `chainDepth`, `childrenOf`, `notificationText` (the child's own summary + pointers, **never the diff**: the parent is the biggest session in the tree), and `AGENT_PROMPT_MARK` — twin of `CRON_PROMPT_MARK`, since a notification also lands in the transcript as an ordinary user message. Pure, tested. The delivery itself lives in `server.ts` (`notifyParent` / `deliverToParent` / `parentInbox` / `flushParentInbox`). |
 | `src/secrets.ts` | Central secret vault (`~/.shadok-ai/secrets.json`, 600). Profiles reference secrets **by name**; values are injected as env at spawn. `secretWriteVerdict` (pure, tested) is the no-silent-overwrite rule behind `PUT /secrets`: an existing name is refused unless the caller passes `overwrite: true`. HTTP is the only way an AGENT can reach the vault (Telegram's `/secret` calls `setSecret()` directly), so that endpoint is exactly the machine boundary. |
 | `context/secrets-skill/` | The `shadok-secrets` skill, seeded into `~/.claude/skills/` at boot (`seedSecretsSkill`, twin of `seedSchedulerSkill`): lets an agent store a credential it OBTAINED itself. `scripts/secret.py` has `list` and `set NAME --stdin` and **no `get`** — `--stdin` is required so a value can never sit in `argv`, which `ps` exposes machine-wide. |
+| `src/claude-home.ts` | Seeds Claude Code's first-run state in `~/.claude.json` — the globals at boot, `projects[<cwd>]` before **every** spawn (a worktree is a new directory, so a new trust dialog every time). PURELY ADDITIVE: a key already present is never overwritten, which is why it needs no Docker gate — contrast `src/ssh.ts` (invariant 21). Atomic write; an unparseable file is left alone rather than "repaired". Pure `seedPlan` / `parseClaudeVersion` tested. |
+| `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs **no PTY**: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. One instance-global flow, two doors (the web card, Telegram `/login`+`/code`). Success is a clean **exit**, never a parsed string (voir invariant 29). Pure `parseAuthStatus` / `parseLoginUrl` / `parseLoginOutcome` tested. |
 | `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). **Docker-only** (`/.dockerenv`): generates an ed25519 key under `~/.shadok-ai/ssh/` — on the `shadok-data` volume, so it survives restart AND recreate — and symlinks `~/.ssh` to it so agents' `git`/`ssh` use it. NO-OP on a normal host (never touches `~/.ssh`). Pure `sshPaths`/`planDotSshWiring`/`inContainer` are unit-tested. Voir invariant 21. |
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow, e.g. no `git commit`) + secrets + model, applied at spawn via `profileArgs`. Stored on the channel (`profile`) → re-applied on resume/restart. SOFT (same OS user, not a sandbox). |
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
@@ -441,8 +443,12 @@ Auth section of `docs/architecture.md`).
     holds the onboarding state and is **not** on a volume, so a container recreate
     loses it. `reconcileOnBoot` respawns sessions ~1s after boot, i.e. before a
     post-`run` `docker cp` can restore the file — the agents land on Claude Code's
-    first-run screen and never reach a prompt. Restore that file BEFORE the
-    container starts (`docker create` → `docker cp` → `docker start`).
+    first-run screen and never reach a prompt. **`src/claude-home.ts` closes that
+    race**: `ensureClaudeHome()` runs before `ensureSshIdentity()` in the boot
+    path, so the file is written before anything can spawn and the
+    `docker create` → `docker cp` → `docker start` ordering is no longer needed.
+    Keep the history anyway — the symptom it names is what a *future* onboarding
+    change would surface again.
     `describeStuckScreen` (`src/detect.ts`) now names such a screen in the submit
     error: the bare "the text never appeared in the input box" points at an input
     box that does not exist, and sent two investigations to the wrong subsystem.
@@ -501,6 +507,20 @@ Auth section of `docs/architecture.md`).
     `~/.shadok-ai/profiles.json` directly. This removes the accident and takes
     the capability off the documented surface; a hard boundary needs a separate
     OS user or a container per agent.
+29. **A signal you never observed is not a signal — and the sign-in's success is
+    one of them.** `claude auth login --claudeai` prints `Invalid code. Please
+    make sure the full code was copied.` on a refusal; that wording was captured
+    from the real binary. It presumably prints *something* on success too, but
+    nobody ever saw it, and matching a guessed phrase would produce the worst
+    failure this feature can have: a sign-in that completed fine, reported as
+    never finishing, forever. So success is taken from the child **exiting
+    cleanly** after a code was submitted — an observable fact. Two neighbours
+    follow the same rule. An invalid code does **not** end the flow (verified: the
+    CLI re-prompts, so a retry reuses the same child and needs no new URL), and
+    `parseAuthStatus` reads anything it cannot parse as *logged out*, because the
+    cost of a spurious card is one click while the cost of a spurious spawn is a
+    zombie agent nobody notices for a day. Generalise it: when a state can be read
+    from an exit code, a file, or an API, prefer that over the prose next to it.
 
 ## Conventions
 
