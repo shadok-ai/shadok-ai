@@ -49,6 +49,8 @@ import {
   closeTelegramTopic,
   probeToken,
   isStalePreface,
+  announceLoggedOut,
+  resetLoggedOutNotice,
   type TelegramHandle,
 } from "./telegram.js";
 import { migrateTgBindings } from "./channels.js";
@@ -769,6 +771,7 @@ app.post("/auth/login", async (_req, res) => {
 app.post("/auth/code", async (req, res) => {
   const code = typeof req.body?.code === "string" ? req.body.code : "";
   const r = await submitLoginCode(code);
+  if (r.ok) resetLoggedOutNotice(); // the next sign-out gets announced again
   res.status(r.ok ? 200 : 400).json(r);
 });
 
@@ -2021,11 +2024,16 @@ wss.on("connection", (ws: WebSocket) => {
           // allowed to start without one", and then sat on the first-run screen
           // for a day. `code` lets a machine client classify the refusal
           // without matching on message text (same contract as "busy").
-          if (!(await authStatus()).loggedIn)
+          if (!(await authStatus()).loggedIn) {
+            // Telling the user is the whole point: a cron refused at 4am must
+            // not be discovered a day later. Deduplicated inside, so a
+            // five-minute cron does not turn one sign-out into a flood.
+            announceLoggedOut();
             return fail(
               "this shadok-ai instance is not signed in to Claude — sign in from the cockpit",
               "logged-out",
             );
+          }
           if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
           const cwd = msg.cwd?.trim() || process.cwd();
           // Deterministic id: enforced with --session-id for a new session,
