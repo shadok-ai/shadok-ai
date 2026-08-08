@@ -2780,6 +2780,10 @@
     $("chanBarName").title = t.cwd || "";
     sendBtn.disabled = t.status !== "ready" || !!t.pendingChoices;
     thinking.classList.toggle("visible", t.status === "busy");
+    // Afficher/masquer « Shadok is working… » change la hauteur de la zone de
+    // transcript : sans re-coller en bas, le dernier message passe sous le pli
+    // (typiquement « coupé » juste après l'envoi d'un prompt).
+    pinBottom(t);
     screenEl.textContent = t.screenText;
   }
 
@@ -3957,6 +3961,9 @@
     // being sent — whether by clicking its own button or by a fresh submit.
     retirePaceConfirm(t);
     closeActivity(t);
+    // Envoyer = revenir en bas, quoi qu'il arrive (même si on avait scrollé plus
+    // haut) : on veut voir son message et la réponse qui suit.
+    t.transcriptEl._stickBottom = true;
     addTurn(t, "user", "pilot", text, null, Date.now());
     startTurnTimer(t);
     setTabMood(t, "working");
