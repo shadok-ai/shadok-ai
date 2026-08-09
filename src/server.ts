@@ -2350,6 +2350,24 @@ function seedSchedulerSkill(): void {
 }
 seedSchedulerSkill();
 
+// Install/refresh the bundled "shadok-secrets" skill, so an agent that obtains
+// a credential can keep it for the next one. Server-owned, overwritten each
+// boot to stay current — same contract as the scheduler skill above.
+function seedSecretsSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "secrets-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-secrets");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "secret.py"), path.join(dst, "scripts", "secret.py"));
+    fs.chmodSync(path.join(dst, "scripts", "secret.py"), 0o755);
+  } catch {
+    /* best effort — the vault still works from the GUI and Telegram */
+  }
+}
+seedSecretsSkill();
+
 // Fail-closed AVANT d'écouter : exposer le cockpit au réseau sans mot de passe
 // donne l'exécution de commandes à quiconque l'atteint. Mieux vaut ne pas
 // démarrer que démarrer grand ouvert.
