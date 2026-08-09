@@ -10,7 +10,7 @@ import {
   TWEAK_PROFILE_NAME,
   withManagedPrompt,
 } from "../src/profiles.js";
-import { normalizeVault, secretsFor } from "../src/secrets.js";
+import { normalizeVault, secretsFor, secretWriteVerdict } from "../src/secrets.js";
 
 test("profileArgs: empty/undefined profile → no extra args", () => {
   assert.deepEqual(profileArgs(null), []);
@@ -189,4 +189,16 @@ test("only the boss may answer its children's questions", () => {
   for (const p of DEFAULT_PROFILES.filter((x) => x.name !== "Shadok-Boss")) {
     assert.notEqual(p.canAnswerChildren, true);
   }
+});
+
+test("secretWriteVerdict: a fresh name is always created", () => {
+  assert.equal(secretWriteVerdict(false, false), "created");
+  assert.equal(secretWriteVerdict(false, true), "created");
+});
+
+test("secretWriteVerdict: an existing name needs an explicit overwrite", () => {
+  // The one destructive move: replacing a real credential with something else,
+  // with nothing on screen to show it happened. A machine must not do it alone.
+  assert.equal(secretWriteVerdict(true, false), "refused");
+  assert.equal(secretWriteVerdict(true, true), "updated");
 });

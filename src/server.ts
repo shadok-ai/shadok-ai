@@ -86,7 +86,7 @@ import {
   applyTelegramPatch,
   type TelegramPatch,
 } from "./config.js";
-import { secretsFor, secretNames, setSecret, deleteSecret } from "./secrets.js";
+import { secretsFor, secretNames, setSecret, deleteSecret, secretWriteVerdict } from "./secrets.js";
 import {
   getProfile,
   profileArgs,
@@ -842,11 +842,17 @@ app.put("/groups", (req, res) => {
 // returned — only names. A profile references names to inject them.
 app.get("/secrets", (_req, res) => res.json({ names: secretNames() }));
 app.put("/secrets", (req, res) => {
-  const { name, value } = req.body ?? {};
+  const { name, value, overwrite } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
     return res.status(400).json({ error: "name and value required" });
-  setSecret(name.trim(), value);
-  res.json({ names: secretNames() });
+  const key = name.trim();
+  // HTTP is the ONLY way an agent can reach the vault — it is a separate
+  // process, and Telegram's /secret calls setSecret() directly. So guarding
+  // here guards exactly the machine path, and nothing a human does by hand.
+  const verdict = secretWriteVerdict(secretNames().includes(key), overwrite === true);
+  if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
+  setSecret(key, value);
+  res.json({ names: secretNames(), result: verdict });
 });
 app.delete("/secrets", (req, res) => {
   const name = String(req.query.name ?? req.body?.name ?? "").trim();

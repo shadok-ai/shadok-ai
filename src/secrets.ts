@@ -37,6 +37,19 @@ export function normalizeVault(raw: unknown): Vault {
   return out;
 }
 
+export type SecretWrite = "created" | "updated" | "refused";
+
+/**
+ * Pure: what a write to `name` should do. Overwriting is the only destructive
+ * move the vault allows — it replaces a live credential and leaves no trace,
+ * and the vault keeps no history to undo it. So it takes an explicit intent,
+ * which the human surfaces carry and a machine does not.
+ */
+export function secretWriteVerdict(exists: boolean, overwrite: boolean): SecretWrite {
+  if (!exists) return "created";
+  return overwrite ? "updated" : "refused";
+}
+
 // ── Vault API ────────────────────────────────────────────────────────────
 
 let migrated = false;
