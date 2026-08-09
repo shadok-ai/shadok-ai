@@ -30,6 +30,7 @@ l'UI web (http://localhost:3789) — l'utilisateur peut suivre et intervenir.
 | `diff <id>` | changements de l'agent (git status + diff vs la base du worktree) |
 | `stop <id>` | termine la session (pour TOUS ses clients) |
 | `screen <id>` | screen TUI brut (debug) |
+| `profile-prompt "<texte>" [--name NOM] [--readonly]` | réécrit le **prompt système** d'un profil : le tien par défaut ; n'importe lequel (et création avec `--name`) sous le profil de tête |
 
 ## Choisir un profil (`--profile`)
 
@@ -45,6 +46,35 @@ panneau Profiles de l'UI, ou via `GET /profiles`.
 
 Le profil n'est appliqué qu'aux sessions **neuves** : avec `--resume` ou
 `--continue`, la session reprend celui qu'elle avait déjà.
+
+## Faire évoluer ton propre rôle (`profile-prompt`)
+
+Tu peux réécrire le **prompt système** de ton profil — pour y consigner ce que
+tu as appris sur ce dépôt, une convention à ne plus redécouvrir, un piège à
+éviter. Sous le profil de tête, tu peux réécrire n'importe quel prompt et
+**fabriquer** un rôle (`--name`, plus `--readonly` pour qu'il naisse avec les
+écritures git bloquées).
+
+Ce que tu ne peux **pas** toucher : `deny`, `allow`, `secrets`, `model`. Ce sont
+les garde-fous, ils appartiennent à l'humain et s'éditent depuis l'UI web — un
+agent read-only ne doit pas pouvoir s'accorder les écritures git, ni un rôle
+fabriqué s'attribuer les secrets du coffre. Ces champs sont ignorés ici, pas
+seulement refusés.
+
+L'autorisation repose sur `$SHADOK_SESSION_KEY`, injectée dans ton env au
+démarrage — l'id de session ne conviendrait pas, `/live` le publie.
+
+Le prompt est passé à `claude` **au spawn** : une modification prend effet au
+prochain redémarrage de l'agent, pas en cours de session.
+
+```bash
+node .claude/skills/shadok-ai-agents/pilotctl.mjs profile-prompt "$(cat <<'TXT'
+… le nouveau prompt complet …
+TXT
+)"
+```
+
+Écris le prompt **entier** : il remplace l'ancien, il ne s'y ajoute pas.
 
 ## Flux type : déléguer une tâche à un agent
 

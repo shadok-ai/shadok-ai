@@ -7,6 +7,7 @@ import {
   originAllowed,
   parseOrigins,
   resolveHost,
+  browserOrigin,
 } from "../src/net.js";
 
 // ── Interface d'écoute ───────────────────────────────────────────────────
@@ -100,4 +101,15 @@ test("SHADOK_ORIGINS ouvre une origine précise (reverse proxy)", () => {
   assert.equal(originAllowed("https://cockpit.example.com", "127.0.0.1:3789", allow), true);
   assert.equal(originAllowed("https://Cockpit.Example.com/", "127.0.0.1:3789", allow), true);
   assert.equal(originAllowed("https://evil.com", "127.0.0.1:3789", allow), false);
+});
+
+test("browserOrigin: seul un navigateur same-origin passe", () => {
+  // Utilisé UNIQUEMENT pour garder les routes qui changent les garde-fous d'un
+  // profil. originAllowed laisse passer les clients sans Origin (invariant 11 :
+  // Telegram, pilotctl, la CLI) — ici c'est précisément ce qu'on refuse.
+  assert.equal(browserOrigin("http://localhost:3789", "localhost:3789"), true);
+  assert.equal(browserOrigin(undefined, "localhost:3789"), false, "un shell d'agent n'envoie pas d'Origin");
+  assert.equal(browserOrigin("", "localhost:3789"), false);
+  assert.equal(browserOrigin("http://evil.example", "localhost:3789"), false);
+  assert.equal(browserOrigin("null", "localhost:3789"), false, "origine opaque");
 });

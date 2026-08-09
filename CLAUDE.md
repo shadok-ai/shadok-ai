@@ -187,8 +187,12 @@ persisted per launch dir ; le GET de `/channels` ajoute un `crons` **dérivé** 
 les horaires du canal, pour l'⏰ de l'onglet — jamais stocké, cf. invariant 6),
 `/defaults` (server cwd), `/tweak/prepare` (POST — clone/refresh shadok-ai's own
 source, returns the cwd to start the tweak agent in), `/profiles` `/secrets`
-(GET/PUT/DELETE — GET returns NAMES only; PUT refuses an existing name with 409
-unless `overwrite: true`), `/telegram` (GET/PUT — bot config from the GUI), `/version`,
+(GET/PUT/DELETE). `/secrets`: GET returns NAMES only, and PUT refuses an
+existing name with 409 unless `overwrite: true`. `PUT /profiles` writes the
+GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
+`/profiles/prompt` (PUT) is the only profile write an agent can make — a
+`systemPrompt`, its own or, under the lead profile, any.
+`/telegram` (GET/PUT — bot config from the GUI), `/version`,
 `/autoupdate`, `/permission-mode`, `/login`, `/vendor/marked.js`.
 
 Everything except `/login` sits behind the optional password gate (see the
@@ -477,6 +481,26 @@ Auth section of `docs/architecture.md`).
     the three-dot form (it compares two refs, no working tree involved), while
     `commits` was already right as `base..branch` — that range excludes the
     base's commits by construction, even ones the agent merged in.
+
+28. **A profile carries the GUARDRAILS, so an agent must never be able to write
+    one.** `PUT /profiles` accepts `deny`/`allow`/`secrets`/`model`, and until
+    now nothing stopped an agent from calling it: `requestAuthed` returns true
+    outright when no GUI password is set, and the origin guard deliberately lets
+    Origin-less callers through (invariant 11, for Telegram and pilotctl). A
+    read-only agent could therefore `curl -X PUT /profiles -d '{"deny":[]}'` and
+    hand itself git writes. That route now requires a real same-origin `Origin`
+    header (`browserOrigin`, stricter than `originAllowed` on purpose), and
+    agents get `PUT /profiles/prompt`, which only ever writes `systemPrompt` —
+    an update reuses the stored profile, so guardrails survive by construction,
+    and a created role gets `secrets: []` whatever the body asked for. Scoping
+    is the per-session `SHADOK_SESSION_KEY` from the agent's env, **never the
+    session id**: `/live` publishes every id, so it proves nothing. Two limits
+    to keep honest — a managed prompt (`Shadok-Tweak`) is refused rather than
+    swallowed, since a boot would silently overwrite it; and none of this is a
+    sandbox. Agents run as the same OS user and can rewrite
+    `~/.shadok-ai/profiles.json` directly. This removes the accident and takes
+    the capability off the documented surface; a hard boundary needs a separate
+    OS user or a container per agent.
 
 ## Conventions
 
