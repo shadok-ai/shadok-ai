@@ -1215,7 +1215,6 @@
       <button id="toggleDiff">Diff</button>
     </div>
   </div>
-  <button id="stopBtn" class="icon stop" title="End session">⏹️</button>
 </header>
 
 <div id="verMenu" hidden>
@@ -2759,13 +2758,13 @@
       // Programmer ou arrêter n'a pas de cible : mieux vaut des boutons éteints
       // qu'une popin qui parle d'un agent inexistant.
       $("cronBtn").disabled = true;
-      $("stopBtn").disabled = true;
+      $("chanStop").disabled = true;
       $("emptyState").classList.add("visible");
       return;
     }
     $("emptyState").classList.remove("visible");
     $("cronBtn").disabled = !t.sessionId;
-    $("stopBtn").disabled = false;
+    $("chanStop").disabled = false;
     $("led").className = "led " +
       ({ setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[t.status]);
     $("state").textContent = t.stateText;
@@ -4168,7 +4167,9 @@
     syncTerm();
   });
   $("chanCron").addEventListener("click", () => $("cronBtn").click());
-  $("chanStop").addEventListener("click", () => $("stopBtn").click());
+  $("chanStop").addEventListener("click", () => {
+    sendTo(active, { type: "stop" });
+  });
 
   // "⋯" overflow menu (rarely-used actions, e.g. Diff). stopPropagation on the
   // trigger so the same click doesn't immediately hit the document closer; a
@@ -4261,9 +4262,6 @@
   $("settleBtn").addEventListener("click", () => {
     if (active && active.ws && active.status === "ready")
       sendTo(active, { type: "settle" });
-  });
-  $("stopBtn").addEventListener("click", () => {
-    sendTo(active, { type: "stop" });
   });
 
   // ── Secret vault panel (central, global; profiles pick which to inject) ──
