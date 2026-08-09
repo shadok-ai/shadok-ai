@@ -98,6 +98,9 @@ import {
   loadProfiles,
   upsertProfile,
   removeProfile,
+  promptEditVerdict,
+  READONLY_DENY,
+  TWEAK_PROFILE_NAME,
   type Profile,
 } from "./profiles.js";
 import { ensureSelfRepo } from "./selfrepo.js";
@@ -114,7 +117,9 @@ import { latestVersion, update } from "./updater.js";
 import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
-import { bindRefusal, originAllowed, parseOrigins, resolveHost } from "./net.js";
+import { bindRefusal, originAllowed, parseOrigins, resolveHost,
+  browserOrigin,
+} from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER } from "./csp.js";
 
@@ -549,6 +554,35 @@ function sendLogin(res: express.Response): void {
 }
 
 /** Le garde same-origin de ce serveur (cf. `originAllowed`). */
+/**
+ * Per-session capability key, injected into the agent's env as
+ * SHADOK_SESSION_KEY. The session id is PUBLIC (`/live` lists every id), so it
+ * cannot prove "this is my own profile" — this can. Same-user shell access
+ * still trumps it: soft isolation, not a sandbox.
+ */
+const sessionKeys = new Map<string, string>();
+function sessionKeyFor(id: string): string {
+  let k = sessionKeys.get(id);
+  if (!k) {
+    k = randomUUID();
+    sessionKeys.set(id, k);
+  }
+  return k;
+}
+function sessionForKey(key: string): string | null {
+  for (const [id, k] of sessionKeys) if (k === key) return id;
+  return null;
+}
+
+/** A browser on our own origin — the only caller allowed to change guardrails. */
+function requestFromBrowser(req: { headers: Record<string, unknown> }): boolean {
+  return browserOrigin(
+    req.headers.origin as string | undefined,
+    req.headers.host as string | undefined,
+    EXTRA_ORIGINS,
+  );
+}
+
 function requestOriginOk(req: { headers: Record<string, unknown> }): boolean {
   return originAllowed(
     req.headers.origin as string | undefined,
@@ -863,7 +897,15 @@ app.delete("/secrets", (req, res) => {
 // Agent profiles (global): role + permission guardrails + referenced secrets,
 // applied at spawn. `secrets` is a list of vault NAMES (not values).
 app.get("/profiles", (_req, res) => res.json(loadProfiles()));
+// Full profile write — INCLUDING the guardrails (deny/allow/secrets/model).
+// Browser-only: an agent's shell sends no Origin and is refused here. Without
+// this gate any agent could `curl -X PUT /profiles` with `deny: []` and strip
+// its own guardrails. Agents get the narrow, prompt-only route below.
 app.put("/profiles", (req, res) => {
+  if (!requestFromBrowser(req))
+    return res.status(403).json({
+      error: "guardrails are edited from the web UI only; agents use PUT /profiles/prompt",
+    });
   const b = req.body ?? {};
   if (typeof b.name !== "string" || !b.name.trim())
     return res.status(400).json({ error: "name required" });
@@ -877,6 +919,49 @@ app.put("/profiles", (req, res) => {
   };
   upsertProfile(p);
   res.json(loadProfiles());
+});
+
+/**
+ * The ONLY profile write an agent can make: its own `systemPrompt` — and for
+ * the lead profile, any prompt plus minting new roles. Guardrails are never
+ * read from this body, so a read-only agent can never hand itself git writes,
+ * and a created profile never carries a vault secret (the one capability the
+ * lead does not already have: it can already spawn a full-access Shadok-dev).
+ *
+ * Authorization is the session KEY from the agent's env, never the session id —
+ * `/live` publishes every id.
+ */
+app.put("/profiles/prompt", (req, res) => {
+  const b = req.body ?? {};
+  const key = typeof b.key === "string" ? b.key : "";
+  const id = key ? sessionForKey(key) : null;
+  if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  const caller =
+    sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
+  const target = typeof b.name === "string" && b.name.trim() ? b.name.trim() : (caller ?? "");
+  const existing = target ? getProfile(target) : undefined;
+  const verdict = promptEditVerdict({
+    caller,
+    target,
+    targetExists: !!existing,
+    managed: target === TWEAK_PROFILE_NAME,
+  });
+  if (!verdict.ok) return res.status(403).json({ error: verdict.error });
+  const systemPrompt = typeof b.systemPrompt === "string" ? b.systemPrompt : "";
+  if (!systemPrompt.trim()) return res.status(400).json({ error: "systemPrompt required" });
+  // Mise à jour : on repart de l'existant, donc deny/allow/secrets/model
+  // survivent. Création : jamais de secret, et l'accès est un choix explicite.
+  const next: Profile = verdict.create
+    ? { name: target, systemPrompt, deny: b.readOnly ? [...READONLY_DENY] : undefined, secrets: [] }
+    : { ...existing!, systemPrompt };
+  upsertProfile(next);
+  console.log(`profile-prompt: ${id.slice(0, 8)} (${caller ?? "no profile"}) → ${target}${verdict.create ? " [created]" : ""}`);
+  res.json({
+    ok: true,
+    profile: target,
+    created: verdict.create,
+    note: "applies at the agent's next restart — the prompt is passed at spawn",
+  });
 });
 app.delete("/profiles", (req, res) => {
   const name = String(req.query.name ?? req.body?.name ?? "").trim();
@@ -1191,6 +1276,9 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   env.SHADOK_SESSION_ID = id;
   env.SHADOK_PORT = String(boundPort || START_PORT);
   if (GUI_PASSWORD) env.SHADOK_AUTH = `sk_auth=${AUTH_TOKEN}`;
+  // Prouve QUI appelle /profiles/prompt : sans elle, « mon propre profil » ne
+  // veut rien dire, l'id de session étant public.
+  env.SHADOK_SESSION_KEY = sessionKeyFor(id);
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
@@ -1360,6 +1448,7 @@ function broadcastProfile(s: Live) {
 }
 
 function destroySession(s: Live) {
+  sessionKeys.delete(s.id);
   if (s.screenTimer) clearInterval(s.screenTimer);
   s.screenTimer = null;
   if (s.idleTimer) clearTimeout(s.idleTimer);

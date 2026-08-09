@@ -52,7 +52,7 @@ export function parseArgs(argv) {
   const pos = [];
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === "--worktree" || a === "--continue") flags[a.slice(2)] = true;
+    if (a === "--worktree" || a === "--continue" || a === "--readonly") flags[a.slice(2)] = true;
     else if (a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent") flags[a.slice(2)] = rest[++i];
     else pos.push(a);
   }
@@ -396,6 +396,34 @@ async function cmdStop(id) {
   return { stopped: true, sessionId: id };
 }
 
+/**
+ * Rewrite a profile's SYSTEM PROMPT — your own by default, any one if you run
+ * under the lead profile (which may also mint a new role with --name/--readonly).
+ *
+ * Guardrails (deny/allow/secrets/model) are NOT touchable here by design: they
+ * are the human's, edited from the web UI. Authorization is SHADOK_SESSION_KEY,
+ * injected into your env at spawn — the session id would not do, it is public.
+ *
+ * The prompt is passed to claude at spawn, so a change lands at the agent's
+ * next restart, not mid-session.
+ */
+async function cmdProfilePrompt(text, flags) {
+  const key = process.env.SHADOK_SESSION_KEY;
+  if (!key) throw new Error("no SHADOK_SESSION_KEY in env — not running as a piloted agent");
+  if (!text || !text.trim()) throw new Error("a system prompt is required");
+  const body = { key, systemPrompt: text };
+  if (flags.name) body.name = flags.name;
+  if (flags.readonly) body.readOnly = true;
+  const r = await fetch(`${httpBase()}/profiles/prompt`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error ?? `HTTP ${r.status}`);
+  return out;
+}
+
 async function cmdScreen(id, flags) {
   await ensureServer();
   const st = readState(id);
@@ -408,7 +436,7 @@ async function cmdScreen(id, flags) {
 }
 
 const HELP =
-  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen> …";
+  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt> …";
 
 export async function run(argv) {
   const { cmd, pos, flags } = parseArgs(argv);
@@ -437,6 +465,8 @@ export async function run(argv) {
       return cmdStop(pos[0]);
     case "screen":
       return cmdScreen(pos[0], flags);
+    case "profile-prompt":
+      return cmdProfilePrompt(pos[0], flags);
     default:
       throw new Error(HELP);
   }

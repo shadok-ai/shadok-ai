@@ -57,6 +57,7 @@ export const DEFAULT_PROFILES: Profile[] = [
       "KNOW. Read the repo, CLAUDE.md, docs/ and its specs, and the git history before you answer. When the user asks a question, answer it yourself: conclusion first, compact. Never make someone wait behind a spawned agent when a read would do.\n\n" +
       "DELEGATE. You have READ-ONLY access to the code — git writes are blocked, and that is deliberate. Every piece of actual work (a feature, a fix, a refactor, a research pass) goes to a dedicated agent, never to you. Use the `shadok-ai-agents` skill: `pilotctl.mjs spawn --worktree --profile <role> --cwd <repo>`, then `prompt <id> \"<brief>\"` in the background. Write a brief precise enough to be executed without you: the goal, the constraints, and how you'll know it's done. Then follow up, read `diff <id>`, and report it to the user.\n\n" +
       "Pick the role deliberately: Shadok-dev for code, Shadok-Marketing for paid acquisition and ad copy, Shadok-Content for articles and organic/SEO work, Shadok-Support for user-facing answers. Spawn without --profile only when none of them fits.\n\n" +
+      "SHAPE THE ROLES. You may rewrite any profile's system prompt, and mint new ones, with `pilotctl.mjs profile-prompt \"<text>\" --name <role> [--readonly]` — use it to record what a role should have known from the start. You cannot touch a profile's guardrails (deny/allow/secrets/model): those are the human's, and a role you create never carries a vault secret. A prompt change takes effect at that agent's next restart.\n\n" +
       "Say what you are about to spawn and why BEFORE you spawn it — each agent burns the same quota as a normal session, so delegate on purpose, not by reflex. Never land anything yourself: merging is a human-reviewed step. Never stop a session you did not create — it may be the user's own.",
     deny: READONLY_DENY,
     secrets: [],
@@ -238,4 +239,48 @@ export function withManagedPrompt(
 /** Install/refresh the tweak profile from the repo's prompt file. Idempotent. */
 export function seedTweakProfile(systemPrompt: string): void {
   upsertProfile(withManagedPrompt(getProfile(TWEAK_PROFILE_NAME), TWEAK_PROFILE_NAME, systemPrompt));
+}
+
+/** The lead profile: the only one allowed to shape OTHER profiles (see below). */
+export const BOSS_PROFILE_NAME = "Shadok-Boss";
+
+export type PromptEdit = { ok: true; create: boolean } | { ok: false; error: string };
+
+/**
+ * Who may rewrite whose `systemPrompt` — the whole policy, in one pure place.
+ *
+ * An agent may reshape its OWN role and nothing else; the lead profile may
+ * reshape any role and mint new ones. What NOBODY may touch through this path
+ * is `deny`/`allow`/`secrets`/`model`: the guardrails stay the human's, behind
+ * the same-origin gate on `PUT /profiles`. Letting an agent edit its own `deny`
+ * would let a read-only agent hand itself git writes.
+ *
+ * Soft by construction: agents run as the same OS user and can rewrite
+ * ~/.shadok-ai/profiles.json directly. This removes the accident and keeps the
+ * capability off the documented surface — it is not a sandbox.
+ */
+export function promptEditVerdict(opts: {
+  /** Profile of the calling session, null when it spawned bare. */
+  caller: string | null;
+  /** Profile being edited. */
+  target: string;
+  targetExists: boolean;
+  /** Prompt owned by the server (refreshed from a repo file at every boot). */
+  managed: boolean;
+}): PromptEdit {
+  const target = opts.target.trim();
+  if (!target) return { ok: false, error: "profile name required" };
+  // Refuser plutôt qu'avaler : un prompt managé serait réécrit au prochain boot
+  // et l'édition disparaîtrait sans un mot.
+  if (opts.managed)
+    return {
+      ok: false,
+      error: `${target} takes its prompt from context/tweak-prompt.md at every boot — edit that file instead`,
+    };
+  if (!opts.caller) return { ok: false, error: "this agent has no profile, so it has no prompt to edit" };
+  if (opts.caller === BOSS_PROFILE_NAME) return { ok: true, create: !opts.targetExists };
+  if (target !== opts.caller)
+    return { ok: false, error: `an agent may only edit its own profile (${opts.caller})` };
+  if (!opts.targetExists) return { ok: false, error: `${target} no longer exists` };
+  return { ok: true, create: false };
 }

@@ -97,3 +97,26 @@ export function originAllowed(
     return false;
   }
 }
+
+/**
+ * A BROWSER on our own origin — the only caller allowed to change a profile's
+ * guardrails (deny/allow/secrets/model).
+ *
+ * Deliberately stricter than `originAllowed`, which lets an Origin-less client
+ * through because Telegram, pilotctl, the CLI and the scheduler need that
+ * (invariant 11). An agent's shell is exactly such a caller, and that is what
+ * we refuse here: without this, any agent could `curl -X PUT /profiles` with
+ * `deny: []` and strip its own guardrails.
+ *
+ * Not a cryptographic boundary — an agent running as the same OS user can forge
+ * the header, or rewrite ~/.shadok-ai/profiles.json outright. It removes the
+ * accident and takes the capability off the documented surface.
+ */
+export function browserOrigin(
+  origin: string | undefined,
+  host: string | undefined,
+  extraAllowed: string[] = [],
+): boolean {
+  if (!origin || !origin.trim()) return false;
+  return originAllowed(origin, host, extraAllowed);
+}

@@ -9,6 +9,8 @@ import {
   isPermissionMode,
   TWEAK_PROFILE_NAME,
   withManagedPrompt,
+  promptEditVerdict,
+  BOSS_PROFILE_NAME,
 } from "../src/profiles.js";
 import { normalizeVault, secretsFor, secretWriteVerdict } from "../src/secrets.js";
 
@@ -201,4 +203,56 @@ test("secretWriteVerdict: an existing name needs an explicit overwrite", () => {
   // with nothing on screen to show it happened. A machine must not do it alone.
   assert.equal(secretWriteVerdict(true, false), "refused");
   assert.equal(secretWriteVerdict(true, true), "updated");
+});
+
+// ── Qui peut réécrire le prompt de quel profil ───────────────────────────
+const edit = (o: Parameters<typeof promptEditVerdict>[0]) => promptEditVerdict(o);
+
+test("promptEdit: un agent réécrit SON prompt, et seulement le sien", () => {
+  assert.deepEqual(
+    edit({ caller: "Shadok-Content", target: "Shadok-Content", targetExists: true, managed: false }),
+    { ok: true, create: false },
+  );
+  const other = edit({ caller: "Shadok-Content", target: "Shadok-dev", targetExists: true, managed: false });
+  assert.equal(other.ok, false);
+  assert.match((other as { error: string }).error, /own profile/i);
+});
+
+test("promptEdit: le boss réécrit n'importe quel prompt et peut en créer un", () => {
+  assert.deepEqual(
+    edit({ caller: BOSS_PROFILE_NAME, target: "Shadok-dev", targetExists: true, managed: false }),
+    { ok: true, create: false },
+  );
+  assert.deepEqual(
+    edit({ caller: BOSS_PROFILE_NAME, target: "Shadok-SEO", targetExists: false, managed: false }),
+    { ok: true, create: true },
+  );
+});
+
+test("promptEdit: créer est réservé au boss", () => {
+  const v = edit({ caller: "Shadok-dev", target: "Shadok-Nouveau", targetExists: false, managed: false });
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /own profile/i);
+});
+
+test("promptEdit: un agent sans profil n'a rien à éditer", () => {
+  const v = edit({ caller: null, target: "Shadok-dev", targetExists: true, managed: false });
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /no profile/i);
+});
+
+test("promptEdit: un prompt managé par le serveur est refusé, pas avalé", () => {
+  // Shadok-Tweak est rafraîchi depuis context/tweak-prompt.md à chaque boot :
+  // accepter l'édition la ferait disparaître au prochain redémarrage, sans un mot.
+  for (const caller of [BOSS_PROFILE_NAME, TWEAK_PROFILE_NAME]) {
+    const v = edit({ caller, target: TWEAK_PROFILE_NAME, targetExists: true, managed: true });
+    assert.equal(v.ok, false, `${caller} ne doit pas pouvoir éditer un prompt managé`);
+    assert.match((v as { error: string }).error, /tweak-prompt\.md/);
+  }
+});
+
+test("promptEdit: un nom de profil vide est refusé", () => {
+  const v = edit({ caller: BOSS_PROFILE_NAME, target: "  ", targetExists: false, managed: false });
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /name required/i);
 });
