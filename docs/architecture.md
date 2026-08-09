@@ -323,6 +323,28 @@ Without this gate a public bot username is an open shell.
 Guardrails are **soft**: the agent runs as the same OS user. This is a
 misfire-prevention mechanism, not a sandbox — don't treat it as containment.
 
+**An agent can add to the vault, and only add.** A credential an agent obtains
+itself — `gh auth login`, a provisioning CLI — used to die with the session. The
+`shadok-secrets` skill (seeded at boot from `context/secrets-skill/`) gives it a
+way to keep that credential for the next agent, under three constraints that are
+the whole design:
+
+- **Write-only.** There is no `get`, and `GET /secrets` returns names. A value
+  leaves the vault in exactly one way: injected as env into an agent at spawn.
+- **The value never touches `argv`.** `secret.py set NAME --stdin` makes the flag
+  *required*, so there is structurally no argument to leak — `ps` shows a
+  process's arguments to every user on the machine.
+- **No silent overwrite.** `PUT /secrets` refuses an existing name (409) unless
+  the caller passes `overwrite: true`. The web Secrets panel passes it, because a
+  person reading the list and clicking Save is deliberate. An agent does not, and
+  is told to report the clash rather than work around it. Overwriting is the only
+  destructive move here: it replaces a live credential, shows nothing, and the
+  vault keeps no history.
+
+Telegram needs no guard: `/secret NAME value` calls `setSecret()` directly, in
+the server's own process. HTTP is the only door an agent has, which is why
+guarding the endpoint guards precisely the machine path.
+
 ## Permission mode
 
 Spawned agents start in `acceptEdits` (the Shift+Tab auto-accept-edits mode) by

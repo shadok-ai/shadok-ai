@@ -4321,7 +4321,10 @@
     const name = $("secretKey").value.trim();
     const value = $("secretVal").value;
     if (!name) return;
-    await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value }) });
+    // `overwrite` parce qu'une personne qui lit la liste du coffre et clique
+    // Save agit délibérément. Le drapeau existe pour empêcher un AGENT de
+    // remplacer un identifiant en silence — pas pour ralentir l'humain.
+    await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
     $("secretKey").value = ""; $("secretVal").value = "";
     await loadVault(); renderSecrets();
     $("secretKey").focus();
@@ -4359,7 +4362,7 @@
     // Séquentiel : chaque PUT fait un read-modify-write de secrets.json côté
     // serveur ; les awaits évitent une course sur le fichier.
     for (const { name, value } of pairs) {
-      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value }) });
+      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
     }
     $("secretKey").value = ""; $("secretVal").value = "";
     await loadVault(); renderSecrets();
