@@ -104,6 +104,11 @@
     letter-spacing: 0.06em;
   }
   header .brand::before { content: "◆ "; }
+  /* The brand name doubles as the cockpit's editable title: click to rename,
+     Enter/blur commits, Escape cancels. Kept subtle until hovered. */
+  header .brand-name { cursor: text; border-radius: 3px; padding: 0 3px; outline: none; }
+  header .brand-name:hover { background: rgba(240, 168, 72, 0.14); }
+  header .brand-name:focus { background: rgba(240, 168, 72, 0.22); cursor: text; }
   header .ver {
     font-family: var(--mono);
     font-size: 10px;
@@ -1268,7 +1273,7 @@
 <body>
 
 <header>
-  <span class="brand">shadok-ai <span class="ver" id="verView" title="Running version"></span></span>
+  <span class="brand"><span class="brand-name" id="brandName" title="Click to rename this cockpit">shadok-ai</span> <span class="ver" id="verView" title="Running version"></span></span>
   <span class="spacer"></span>
   <div class="gauge quota" id="quota5h" data-window="5h" title="5h rolling limit">
     <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="5h rolling limit">
@@ -2679,6 +2684,19 @@
   // channel you're not already looking at. All driven off setTabMood.
   const favicon = $("favicon");
   let titleBase = BASE_TITLE; // current title without the notification badge
+
+  // ── Cockpit name: editable header brand, persisted server-side ──────────
+  // Several cockpits (one per launch directory) are easy to confuse; a custom
+  // name lands in BOTH the header brand and the browser tab, and survives a
+  // reload because the server owns it (per launch dir). Null → default brand.
+  let cockpitTitle = null;
+  function applyCockpitTitle(title) {
+    cockpitTitle = title && title.trim() ? title.trim() : null;
+    const brandName = $("brandName");
+    if (brandName && !brandName.isContentEditable) brandName.textContent = cockpitTitle || "shadok-ai";
+    titleBase = cockpitTitle || BASE_TITLE;
+    paint(); // re-stamp document.title (with any notification badge)
+  }
   /** SVG data-URI favicon: the base mark, plus a coloured corner pip if given. */
   /** L'indicateur remplit TOUT le favicon : au repos, fond sombre + chevron
    *  ambre ; pour un état (rouge = à faire, ambre = à lire) tout le carré prend
@@ -3690,6 +3708,55 @@
   }
 
   if (verView) verView.addEventListener("click", (e) => { e.stopPropagation(); toggleVerMenu(); });
+
+  // ── Rename the cockpit by clicking its name in the header ──────────────
+  const brandNameEl = $("brandName");
+  if (brandNameEl) {
+    const startRename = () => {
+      if (brandNameEl.isContentEditable) return;
+      brandNameEl.contentEditable = "plaintext-only";
+      brandNameEl.spellcheck = false;
+      brandNameEl.focus();
+      const r = document.createRange();
+      r.selectNodeContents(brandNameEl);
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+    };
+    const commitRename = async () => {
+      if (!brandNameEl.isContentEditable) return;
+      brandNameEl.contentEditable = "false";
+      // Collapse to one line: contenteditable can capture pasted newlines.
+      const next = (brandNameEl.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
+      applyCockpitTitle(next || null); // optimistic; server echo reconciles below
+      try {
+        const res = await fetch("/title", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ title: next }),
+        });
+        const j = await res.json();
+        applyCockpitTitle(j && j.title ? j.title : null);
+      } catch {
+        /* offline: keep the optimistic value, the next reload re-fetches */
+      }
+    };
+    brandNameEl.addEventListener("click", startRename);
+    brandNameEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); brandNameEl.blur(); }
+      else if (e.key === "Escape") {
+        e.preventDefault();
+        brandNameEl.textContent = cockpitTitle || "shadok-ai"; // discard edits
+        brandNameEl.blur();
+      }
+    });
+    brandNameEl.addEventListener("blur", commitRename);
+  }
+  // Restore the saved name as early as possible (a brief default flash is fine).
+  fetch("/title")
+    .then((r) => r.json())
+    .then((j) => applyCockpitTitle(j && j.title ? j.title : null))
+    .catch(() => {});
   // Click outside closes it; clicks inside the menu don't.
   document.addEventListener("click", (e) => {
     if (!verMenu.hidden && !verMenu.contains(e.target) && e.target !== verView) toggleVerMenu(false);

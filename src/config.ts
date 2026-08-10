@@ -44,6 +44,12 @@ export interface Config {
    * les horaires sans rien dire. Un cron peut le surcharger via son `tz`.
    */
   timezone?: string;
+  /**
+   * Per launch-directory cockpit name, keyed by absolute cwd. Shown in the
+   * header brand and the browser tab so several cockpits (one per directory)
+   * stay distinguishable. Absent = the default "shadok-ai".
+   */
+  cockpitTitle?: Record<string, string>;
 }
 
 export const SHADOK_DIR = path.join(os.homedir(), ".shadok-ai");
@@ -83,6 +89,24 @@ export function setTokenForCwd(cfg: Config, cwd: string, token: string | null): 
 export function effectiveToken(cfg: Config, cwd: string, env: NodeJS.ProcessEnv = process.env): string | null {
   if (env.TELEGRAM_BOT_TOKEN) return env.TELEGRAM_BOT_TOKEN;
   return cfg.tokens?.[cwd] ?? null;
+}
+
+/** This directory's cockpit name, or null when none is set (→ default brand). */
+export function titleForCwd(cfg: Config, cwd: string): string | null {
+  const t = cfg.cockpitTitle?.[cwd];
+  return t && t.trim() ? t.trim() : null;
+}
+
+/**
+ * Set (or clear) this directory's cockpit name and persist. An empty/blank
+ * title removes the entry so the cockpit falls back to the default brand.
+ */
+export function setTitleForCwd(cfg: Config, cwd: string, title: string): void {
+  const t = title.trim();
+  cfg.cockpitTitle ??= {};
+  if (t) cfg.cockpitTitle[cwd] = t;
+  else delete cfg.cockpitTitle[cwd];
+  saveConfig(cfg);
 }
 
 export interface TelegramConfig {

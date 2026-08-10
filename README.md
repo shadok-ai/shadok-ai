@@ -417,12 +417,14 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
-`/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/profiles`, `/secrets`,
-`/telegram`, `/defaults`, `/version`, `/autoupdate`, `/permission-mode`,
-`/tweak/prepare` (POST — clone/refresh shadok-ai's own source, returns the cwd
-to start the tweak agent in), and the sign-in group: `/auth` (GET — `{loggedIn,
-email?, subscriptionType?}`), `/auth/login` (POST — start a flow, returns
-`{url}`; DELETE — cancel it), `/auth/code` (POST `{code}`).
+`/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/title` (GET/PUT — the
+cockpit's name, per launch directory: click the header brand to rename it, so
+several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
+`/profiles`, `/secrets`, `/telegram`, `/defaults`, `/version`, `/autoupdate`,
+`/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
+returns the cwd to start the tweak agent in), and the sign-in group: `/auth` (GET
+— `{loggedIn, email?, subscriptionType?}`), `/auth/login` (POST — start a flow,
+returns `{url}`; DELETE — cancel it), `/auth/code` (POST `{code}`).
 
 ## Library
 
