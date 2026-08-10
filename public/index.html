@@ -1550,13 +1550,21 @@
      qui rend inoffensif le HTML qu'un agent pourrait écrire dans le transcript. -->
 <script type="module" nonce="__CSP_NONCE__">
   import { extractLiveText } from "/live-text.js";
-  import { profileBlurb, profileBadges, defaultAgentName } from "/profile-card.js";
+  import {
+    profileBlurb,
+    profileBadges,
+    defaultAgentName,
+    hasReadonlyPreset,
+    applyReadonlyPreset,
+  } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
   window.extractLiveText = extractLiveText;
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
+  window.hasReadonlyPreset = hasReadonlyPreset;
+  window.applyReadonlyPreset = applyReadonlyPreset;
   window.notifyState = notifyState;
   window.BLINK_MS = BLINK_MS;
   window.dialPos = dialPos;
@@ -4665,14 +4673,14 @@
     $("profRole").value = p.systemPrompt || "";
     $("profDeny").value = (p.deny || []).join("\n");
     $("profModel").value = p.model || "";
-    $("profReadonly").checked = false;
+    syncReadonlyBox();   // la case suit le deny réel, elle n'est plus figée à false
     editSecretRefs = [...(p.secrets || [])];
     renderProfSecrets();
   }
   function clearProfileForm() {
     $("profEditTitle").textContent = "New profile";
     $("profName").value = ""; $("profRole").value = ""; $("profDeny").value = ""; $("profModel").value = "";
-    $("profReadonly").checked = false; editSecretRefs = [];
+    $("profReadonly").checked = false; editSecretRefs = [];   // zone deny vidée juste au-dessus
     renderProfSecrets();
   }
   // The profile's secrets are checkboxes over the vault: pick which named
@@ -4694,7 +4702,24 @@
     }
   }
   const READONLY_DENY = ["Bash(git commit:*)","Bash(git push:*)","Bash(git add:*)","Bash(git reset:*)","Bash(git rebase:*)","Bash(git merge:*)","Bash(git checkout:*)"];
-  $("profReadonly").addEventListener("change", (e) => { if (e.target.checked) $("profDeny").value = READONLY_DENY.join("\n"); });
+  /** Les motifs saisis, un par ligne, sans les vides. */
+  function denyLines() {
+    return $("profDeny").value.split("\n").map((x) => x.trim()).filter(Boolean);
+  }
+  /** La case reflète la zone de texte, qui reste la source de vérité. */
+  function syncReadonlyBox() {
+    $("profReadonly").checked = window.hasReadonlyPreset
+      ? window.hasReadonlyPreset(denyLines(), READONLY_DENY)
+      : false;
+  }
+  // Interrupteur à DOUBLE SENS. L'ancien ne réagissait qu'au cochage et écrasait
+  // toute la zone : décocher ne faisait rien, et un motif perso disparaissait.
+  $("profReadonly").addEventListener("change", (e) => {
+    $("profDeny").value = window.applyReadonlyPreset(denyLines(), e.target.checked, READONLY_DENY).join("\n");
+  });
+  // Éditer les motifs à la main doit remettre la case d'accord avec eux, sinon
+  // elle se remet à mentir dès la première ligne tapée.
+  $("profDeny").addEventListener("input", syncReadonlyBox);
   $("profSave").addEventListener("click", async () => {
     const name = $("profName").value.trim(); if (!name) return alert("Name required.");
     const body = {
