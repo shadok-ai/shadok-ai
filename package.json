@@ -19,7 +19,7 @@
     "tmux"
   ],
   "author": "shadok-ai-dev",
-  "license": "ISC",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shadok-ai/shadok-ai.git"
