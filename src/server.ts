@@ -88,6 +88,8 @@ import {
   saveConfig,
   telegramConfig,
   applyTelegramPatch,
+  titleForCwd,
+  setTitleForCwd,
   type TelegramPatch,
 } from "./config.js";
 import { secretsFor, secretNames, setSecret, deleteSecret, secretWriteVerdict } from "./secrets.js";
@@ -744,6 +746,16 @@ app.get("/recover", (req, res) => {
 // Server-side defaults (the launch directory pre-fills the working dir field).
 app.get("/defaults", (_req, res) => {
   res.json({ cwd: process.cwd() });
+});
+// Cockpit name (header brand + browser tab), per launch directory — so several
+// cockpits stay distinguishable across a reload. Empty PUT clears it.
+app.get("/title", (_req, res) => {
+  res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
+});
+app.put("/title", (req, res) => {
+  const raw = String(req.body?.title ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
+  setTitleForCwd(loadConfig(), process.cwd(), raw);
+  res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
 });
 // Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
 // back the directory to start the agent in. Sits here so it inherits the same

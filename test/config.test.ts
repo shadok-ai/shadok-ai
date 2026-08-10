@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch } from "../src/config.js";
+import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch, titleForCwd } from "../src/config.js";
 
 test("effectiveToken: an explicit env var always wins", () => {
   assert.equal(
@@ -80,4 +80,14 @@ test("applyTelegramPatch: does not mutate the input config", () => {
   const input = { tokens: { "/x": "old" } };
   applyTelegramPatch(input, "/x", { token: "new" }, false);
   assert.equal(input.tokens["/x"], "old");
+});
+
+test("titleForCwd: this dir's name, trimmed", () => {
+  assert.equal(titleForCwd({ cockpitTitle: { "/x": "  Prod  " } }, "/x"), "Prod");
+});
+
+test("titleForCwd: null when unset, blank, or another dir", () => {
+  assert.equal(titleForCwd({}, "/x"), null);
+  assert.equal(titleForCwd({ cockpitTitle: { "/x": "   " } }, "/x"), null);
+  assert.equal(titleForCwd({ cockpitTitle: { "/x": "Prod" } }, "/other"), null);
 });

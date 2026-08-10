@@ -102,7 +102,7 @@ both are silent in the DOM.
 | `src/supervisor.ts` / `src/updater.ts` / `src/update-flag.ts` | Self-update: the supervisor runs the npm-installed server as a child, restarts it on the update exit code; the updater fetches `@latest` into `~/.shadok-ai/app`. |
 | `src/csp.ts` | La Content-Security-Policy (`cspHeader`) et l'injection du nonce dans la page (`injectNonce`, marqueur `__CSP_NONCE__`). Pur, testé. Voir invariant 12. |
 | `src/net.ts` | Où on écoute et qui peut parler : `resolveHost` (`SHADOK_HOST`, loopback par défaut), `bindRefusal` (fail-closed : pas de bind réseau sans mot de passe), `originAllowed` (same-origin, cf. invariant 11). Pur, testé. |
-| `src/config.ts` | `~/.shadok-ai/config.json` (600): port, **per-launch-dir** Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`. Config is authoritative over env once set. |
+| `src/config.ts` | `~/.shadok-ai/config.json` (600): port, **per-launch-dir** Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`, and `cockpitTitle` (**per-launch-dir** display name, `titleForCwd`/`setTitleForCwd` — the header brand + browser tab, so several cockpits stay apart). Config is authoritative over env once set. |
 | `src/crons.ts` | Prompts programmés par canal (`~/.shadok-ai/crons/<enc>.json`) + le `check` déterministe qui évite de réveiller le LLM pour rien. `nextRunFor` calcule un `daily` dans un **fuseau IANA explicite** (`cron.tz` → config `timezone` → machine) : sans ça l'heure suit la machine, et un serveur en UTC décale tout en silence. `nextRunAfterFailure` décide où reprogrammer un tir dont la livraison s'est perdue (cf. invariant 15). `resolveCronTarget` dit OÙ un cron tourne (cwd/profile/branch/repo du canal) — une seule source de vérité pour la garde et pour la reprise (cf. invariant 19). Le tir lui-même vit dans `server.ts` (`cronTick` / `fireCron` / `driveChannel` / `settleCron`). Porte aussi `CRON_PROMPT_MARK` : le texte d'un prompt de cron est préfixé, parce qu'il finit dans le transcript comme un message utilisateur ordinaire — masquer le seul écho direct le laissait revenir au rechargement web et au backfill Telegram, qui relisent `loadHistory`. Jumeau de `NOTHING TO SHOW`. |
 | `src/kinship.ts` | Who launched whom, and what a parent is told about it. `linkRefusal` (self / cycle / unknown parent / depth / fan-out — every refusal **explicit**, never a silently dropped field), `chainDepth`, `childrenOf`, `notificationText` (the child's own summary + pointers, **never the diff**: the parent is the biggest session in the tree), and `AGENT_PROMPT_MARK` — twin of `CRON_PROMPT_MARK`, since a notification also lands in the transcript as an ordinary user message. Pure, tested. The delivery itself lives in `server.ts` (`notifyParent` / `deliverToParent` / `parentInbox` / `flushParentInbox`). |
 | `src/secrets.ts` | Central secret vault (`~/.shadok-ai/secrets.json`, 600). Profiles reference secrets **by name**; values are injected as env at spawn. `secretWriteVerdict` (pure, tested) is the no-silent-overwrite rule behind `PUT /secrets`: an existing name is refused unless the caller passes `overwrite: true`. HTTP is the only way an AGENT can reach the vault (Telegram's `/secret` calls `setSecret()` directly), so that endpoint is exactly the machine boundary. |
@@ -187,8 +187,10 @@ machine client can classify a refusal without matching on the message text.
 `/sessions` `/recover` (resumable), `/diff`, `/channels` `/groups` (GET/PUT,
 persisted per launch dir ; le GET de `/channels` ajoute un `crons` **dérivé** —
 les horaires du canal, pour l'⏰ de l'onglet — jamais stocké, cf. invariant 6),
-`/defaults` (server cwd), `/tweak/prepare` (POST — clone/refresh shadok-ai's own
-source, returns the cwd to start the tweak agent in), `/profiles` `/secrets`
+`/defaults` (server cwd), `/title` (GET/PUT — the cockpit's per-launch-dir
+name; empty PUT reverts to default), `/tweak/prepare` (POST — clone/refresh
+shadok-ai's own source, returns the cwd to start the tweak agent in),
+`/profiles` `/secrets`
 (GET/PUT/DELETE). `/secrets`: GET returns NAMES only, and PUT refuses an
 existing name with 409 unless `overwrite: true`. `PUT /profiles` writes the
 GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
