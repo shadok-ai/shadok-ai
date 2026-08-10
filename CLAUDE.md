@@ -522,6 +522,30 @@ Auth section of `docs/architecture.md`).
     zombie agent nobody notices for a day. Generalise it: when a state can be read
     from an exit code, a file, or an API, prefer that over the prose next to it.
 
+30. **On a phone the viewport is THREE different rectangles, and CSS only knows
+    two of them.** The cockpit is a fixed chassis, so its height is load-bearing:
+    `100%` is the *layout* viewport, which assumes the URL bar retracted — that is
+    what put the composer under the browser's own bar. `100dvh` follows the bar.
+    Neither follows the **keyboard**: when it opens, the layout viewport keeps its
+    full height, the composer ends up underneath, and the browser then scrolls the
+    document to reveal the field — which is the "everything jumps up" symptom, the
+    header leaving by the top. Only `visualViewport` reports the keyboard, so
+    `syncViewport` sizes the chassis from it (`--app-h`, `body.vv-sized`) and the
+    browser's rescue scroll has nothing left to do. Guarded on `(pointer: coarse)`:
+    on a desktop `visualViewport` also tracks pinch-zoom, and resizing the page on
+    every pinch would be a regression for nobody's benefit.
+    The sideways drift had the same single root cause as the jump, and it is not
+    where anyone looks: **Safari zooms into any focused field whose font is under
+    16px.** The zoom makes the layout viewport wider than the screen, so the whole
+    interface can suddenly be dragged left and right — and whatever sat at the
+    right edge of the header (the 🔑) is simply off-screen. Nothing overflows,
+    every element measures correctly, and a desktop browser narrowed to 390px
+    reproduces none of it. The fix is 16px fields, **not** `maximum-scale=1`: that
+    would take pinch-zoom from the people who need it. Each rule has to match or
+    beat the specificity of the one it corrects (`#composer textarea` beats a bare
+    `textarea`) or it silently loses. `test/mobile-viewport.test.ts` locks all of
+    it, the way `test/csp.test.ts` locks the nonce.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).

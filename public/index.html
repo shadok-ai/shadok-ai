@@ -2,7 +2,12 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- viewport-fit=cover: the page reaches under the notch and the home indicator;
+     the `env(safe-area-inset-*)` rules below put the CONTENT back in the clear.
+     No `maximum-scale` / `user-scalable=no`: banning zoom to avoid Safari's
+     focus zoom would take pinch-zoom from the people who need it — the 16px
+     fields (see the coarse-pointer query) fix it at the source instead. -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>shadok-ai — cockpit</title>
 <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314161d'/%3E%3Ctext x='16' y='25' font-family='monospace' font-size='26' font-weight='700' fill='%23f0a848' text-anchor='middle'%3E%E2%80%BA%3C/text%3E%3C/svg%3E">
 <style>
@@ -24,6 +29,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { height: 100%; }
+  html { overflow: hidden; }
   body {
     background: var(--bg);
     color: var(--text);
@@ -32,9 +38,31 @@
     display: flex;
     flex-direction: column;
     /* Châssis fixe : la page ne scrolle jamais — seuls les panneaux internes
-       (liste des canaux, transcript, pickers) ont leur propre overflow. */
+       (liste des canaux, transcript, pickers) ont leur propre overflow.
+       `position: fixed` pins the chassis TO the viewport: on a phone
+       `overflow: hidden` alone does not stop the browser from dragging the page
+       around — that is what let the whole interface slide left and right as soon
+       as a zoom (even an accidental one) made the layout viewport wider than the
+       screen. `overscroll-behavior` kills the rubber-band and pull-to-refresh. */
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
     overflow: hidden;
+    overscroll-behavior: none;
+    /* Landscape: the notch eats one edge. The content steps aside, the background
+       does not. */
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
   }
+  /* Chassis height — three levels, coarsest first:
+     1. `100%`: the LAYOUT viewport. On a phone it assumes the URL bar retracted,
+        so the bottom of the page (the composer) ended up UNDER the browser bar.
+     2. `100dvh`: follows the URL bar as it retracts and comes back.
+     3. `--app-h`: additionally follows the on-screen KEYBOARD, which no CSS unit
+        reports. Set from `visualViewport` (see `syncViewport`), touch only. */
+  body { height: 100dvh; }
+  body.vv-sized { height: var(--app-h); }
   .label {
     font-family: var(--mono);
     font-size: 10px;
@@ -66,6 +94,9 @@
   }
   /* Keep the toolbar buttons together so they never split across lines. */
   header button { flex: 0 0 auto; }
+  /* A box that is no box: the buttons stay flex items of `header`. It exists only
+     so the mobile query can give them a line of their own. */
+  .hdr-tools { display: contents; }
   header .brand {
     font-family: var(--mono);
     font-size: 14px;
@@ -870,12 +901,17 @@
   #composer {
     display: flex;
     gap: 10px;
-    padding: 14px 22px 18px;
+    /* The bottom padding absorbs the home indicator (viewport-fit=cover): without
+       it the field slides under it and half the text becomes unreadable. */
+    padding: 14px 22px calc(18px + env(safe-area-inset-bottom, 0px));
     border-top: 1px solid var(--line);
     background: var(--bg-raised);
   }
   #composer textarea {
     flex: 1;
+    /* Without it a textarea never shrinks below its intrinsic width (~20 columns)
+       and pushes the composer off the screen on a small phone. */
+    min-width: 0;
     font-family: var(--sans);
     font-size: 14px;
     background: var(--bg-inset);
@@ -955,13 +991,43 @@
   /* ── Mobile : sidebar cachée, navigation par le sélecteur du header canal ── */
   @media (max-width: 640px) {
     #tabbar { display: none; }
-    #chanSelect { display: inline-block; }
+    #chanSelect { display: inline-block; min-width: 0; }
     #chanBar #chanBarName { display: none; }
     /* Bandeau canal condensé : on garde Status + Session, on cache le reste. */
     #chanBar #dirGauge, #chanBar #branchGauge { display: none !important; }
     #chanBar .gauge .label { display: none; }   /* valeurs seules, plus compact */
     #chanBar { gap: 6px; padding: 6px 10px; }
-    header { flex-wrap: wrap; row-gap: 4px; }
+    header { flex-wrap: wrap; row-gap: 6px; gap: 8px; padding: 8px 12px; }
+    /* Row 1: brand + dials. Row 2: every icon, left-aligned. They used to spread
+       across the two rows as space allowed, and the first of them (🔑) ended up
+       flush against the right edge. */
+    .hdr-tools { display: flex; flex: 1 0 100%; align-items: center; gap: 6px; }
+    header button.icon { padding: 5px 7px; }
+    .quota { min-width: 46px; }
+    .dial { width: 46px; height: 36px; }
+    /* A bit more room for a thumb, a bit less margin wasted on a narrow screen. */
+    .transcript { padding: 14px 14px 6px; }
+    #composer { padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
+    #thinking { padding: 0 14px 6px; }
+    .turn, .turn.activity { max-width: 92%; }
+    /* Keyboard up: the instrument bar steps aside. It is of no use while typing
+       and it costs a good third of the conversation still visible; it comes back
+       the moment the keyboard closes. */
+    body.kb-up header { display: none; }
+  }
+  /* iOS Safari ZOOMS INTO any focused field whose font is under 16px. That zoom is
+     the single cause of two symptoms that look unrelated: the layout viewport
+     becomes wider than the screen, so the interface starts sliding left and
+     right, and the page jumps up on focus. We do not ban zoom in the viewport tag
+     (that would take it from whoever needs it) — the fields get 16px. Keyed on
+     the POINTER, not on width: a large touch tablet behaves exactly the same.
+     Every selector here has to match or beat the specificity of the rule it
+     corrects (`#composer textarea`, `input[type="text"]`) — otherwise the
+     original wins and the zoom is back, in silence. */
+  @media (pointer: coarse) {
+    textarea, select,
+    input[type="text"], input[type="password"], input[type="number"], input[type="search"],
+    #composer textarea, #chanSelect { font-size: 16px; }
   }
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
   #xtermHost .xterm { height: 100%; }
@@ -1092,6 +1158,11 @@
      portant `.overlay`, il n'y a plus de liste à ne pas oublier. */
   .overlay {
     position: fixed; inset: 0; z-index: 50;
+    /* Same trap as the chassis: `inset: 0` spans the LAYOUT viewport, so with the
+       keyboard up a popin centres itself over a height that includes the keyboard
+       — and its field ends up underneath. `--app-h` brings it back to what is
+       visible; unset (desktop), `auto` lets `inset: 0` stretch as before. */
+    height: var(--app-h, auto);
     display: flex; align-items: center; justify-content: center;
     padding: 24px;
     background: rgba(8, 9, 13, 0.62);
@@ -1113,6 +1184,15 @@
     border: 1px solid var(--line); border-top: 1px solid var(--amber);
     border-radius: 6px; padding: 14px 16px;
     box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+  }
+  /* Popins on a phone: near full screen, and bounded by the POPIN (hence by
+     `--app-h`, keyboard deducted) instead of `80vh`, which counts the keyboard in
+     and leaves the field under it. This query has to stay AFTER the rules it
+     corrects — the main mobile query sits higher in the sheet, and at equal
+     specificity order decides: both rules were mute when written up there. */
+  @media (max-width: 640px) {
+    .overlay { padding: 10px; }
+    #secretsPanel, .sec-panel { width: 100%; max-height: 100%; }
   }
   /* Squelette entête / corps / pied. Seul le CORPS défile, donc l'action
      principale reste atteignable : le formulaire de création dépasse l'écran sur
@@ -1208,6 +1288,12 @@
       <text class="unit" x="28" y="41" text-anchor="middle">7d</text>
     </svg>
   </div>
+  <!-- The global actions, in ONE container. `display: contents` on desktop: they
+       stay direct items of the bar and the layout does not move a pixel. On a
+       phone this container becomes a ROW OF ITS OWN, so no icon gets pushed
+       against the right edge (the 🔑 was there, 16px from it — out of sight at
+       the slightest zoom). -->
+  <div class="hdr-tools">
   <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)">🔑</button>
   <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)">👤</button>
   <button id="cronBtn" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)">⏰</button>
@@ -1218,6 +1304,7 @@
     <div id="moreMenu" hidden>
       <button id="toggleDiff">Diff</button>
     </div>
+  </div>
   </div>
 </header>
 
@@ -4121,6 +4208,45 @@
     active.draft = promptInput.value;
     persistDraft(active);
   });
+
+  /* ── The on-screen keyboard is not a CSS unit ─────────────────────────────
+     When it opens, the LAYOUT viewport keeps its full height: the chassis still
+     believes it owns the screen, the composer ends up under the keyboard, and the
+     browser then scrolls the document to reveal the field — that is the
+     "everything jumps up", the header leaving by the top. `visualViewport` is the
+     only thing that reports the keyboard, so the chassis is sized from it and the
+     browser's rescue scroll has nothing left to do. Coarse pointers only: on a
+     desktop `visualViewport` also tracks pinch-zoom, and resizing the page on
+     every pinch would be a regression for nobody's benefit. */
+  if (matchMedia("(pointer: coarse)").matches) {
+    // The shortcut reminder needs two lines and gets clipped by a one-line field
+    // — and it does not address a phone anyway, where there is neither
+    // Shift+Enter nor a physical keyboard.
+    promptInput.placeholder = "Write your prompt";
+  }
+  if (window.visualViewport && matchMedia("(pointer: coarse)").matches) {
+    const vv = window.visualViewport;
+    let pending = 0;
+    const syncViewport = () => {
+      pending = 0;
+      document.documentElement.style.setProperty("--app-h", vv.height + "px");
+      document.body.classList.add("vv-sized");
+      // `innerHeight` is the LAYOUT viewport: it does not move when the keyboard
+      // opens, so the gap between the two IS the keyboard. The threshold keeps a
+      // retracting URL bar from being read as one.
+      document.body.classList.toggle("kb-up", window.innerHeight - vv.height > 120);
+      // The chassis now fits above the keyboard: if the browser already dragged
+      // the document, that offset hides nothing but the header.
+      if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+      // The transcript just shrank: the last message must stay the last message
+      // visible (pinBottom leaves a reader who scrolled up alone).
+      if (active) pinBottom(active);
+    };
+    const schedule = () => { if (!pending) pending = requestAnimationFrame(syncViewport); };
+    vv.addEventListener("resize", schedule);
+    vv.addEventListener("scroll", schedule);
+    syncViewport();
+  }
 
   // ── Interactive terminal (xterm.js over the raw tmux pipe), per channel ──
   // The ⌨️ button toggles it for the ACTIVE channel; it fills the main area
