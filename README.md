@@ -15,9 +15,10 @@ npx shadok-ai
 Then open **http://localhost:3789**.
 
 **Prerequisites:** Node ≥ 20 and the [`claude`](https://claude.com/claude-code)
-CLI installed and signed in on the machine (shadok-ai drives your existing
-Claude Code, on your subscription). `tmux` is optional but recommended — with
-it, agents survive the server restarting.
+CLI installed (shadok-ai drives your existing Claude Code, on your
+subscription). It does **not** need to be signed in beforehand — if it isn't,
+the cockpit offers the sign-in itself (see below). `tmux` is optional but
+recommended — with it, agents survive the server restarting.
 
 On the first run it asks once for an optional **Telegram bot token** (press
 Enter to skip; you can add it later from the web UI).
@@ -155,6 +156,48 @@ location / {
 
 The client picks `wss://` on its own when the page is HTTPS, so there is nothing
 to configure on that side.
+
+### Signing in to Claude
+
+A fresh machine — most often a fresh container — has two things in its way, and
+shadok handles both so you never need a shell on the host.
+
+**The first-run screens are pre-answered.** A virgin `claude` opens on a theme
+picker, then on a per-directory trust dialog, and an agent started there never
+reaches a prompt: no input box, every prompt fails, the tab reads "failed to
+start". shadok seeds the answers in `~/.claude.json` — at boot for the global
+ones, and before every spawn for the session's directory, because a worktree is
+a brand-new directory and therefore a brand-new trust dialog. The seeding is
+**purely additive**: a value already there is never overwritten, so on a machine
+that has used Claude Code before, nothing is written at all.
+
+**The sign-in is offered in the cockpit.** When the instance isn't signed in, a
+card takes over the page with the OAuth link and a field for the code you get
+back; agents refuse to start until it's done, so you can't accidentally
+manufacture an agent with no credentials. The card exists only while it's
+needed — there is no button that opens it when everything is fine.
+
+**From Telegram**, which is where you usually are when a session signs out
+mid-life:
+
+```
+/login          → replies with the link
+/code <code>    → finishes the sign-in (your message is deleted afterwards)
+```
+
+Both are restricted to the bound board group or the owner's DM, like `/secret` —
+an OAuth code grants access to the account. The sign-in is instance-global, so
+the link is the same on both sides and a code pasted in Telegram also closes the
+card open in a browser. When a spawn is refused for lack of credentials, shadok
+posts **one** message to the board group; it won't repeat until the state flips
+back.
+
+**In Docker**, this replaces the old recreate ritual. `/root/.claude.json` is
+not on a volume, so `docker rm` + recreate used to lose the onboarding state and
+the respawned agents landed on the first-run screen — which meant restoring the
+file *before* starting the container (`docker create` → `docker cp` →
+`docker start`). That ordering is no longer necessary: shadok writes the file
+itself, before any session spawns.
 
 ### SSH identity in Docker
 
@@ -364,14 +407,16 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"auto-retry"}` / `-cancelled` / `-gave-up` | transient API error being retried |
 | `{type:"version", …}` / `{type:"server-reload", version}` | update available / server updated, reload |
 | `{type:"term-data", data}` | **experimental** — raw pane output (base64) for a client-side terminal emulator |
-| `{type:"gone"}` / `{type:"error", message, code?}` / `{type:"exited", code}` / `{type:"stopped"}` | session lost, errors, termination. `error.code` is `"busy"` for a prompt refused mid-turn, so a machine client needn't match on the message text |
+| `{type:"gone"}` / `{type:"error", message, code?}` / `{type:"exited", code}` / `{type:"stopped"}` | session lost, errors, termination. `error.code` is `"busy"` for a prompt refused mid-turn and `"logged-out"` for a spawn refused because the instance isn't signed in — so a machine client needn't match on the message text |
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
 `/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/profiles`, `/secrets`,
 `/telegram`, `/defaults`, `/version`, `/autoupdate`, `/permission-mode`,
 `/tweak/prepare` (POST — clone/refresh shadok-ai's own source, returns the cwd
-to start the tweak agent in).
+to start the tweak agent in), and the sign-in group: `/auth` (GET — `{loggedIn,
+email?, subscriptionType?}`), `/auth/login` (POST — start a flow, returns
+`{url}`; DELETE — cancel it), `/auth/code` (POST `{code}`).
 
 ## Library
 

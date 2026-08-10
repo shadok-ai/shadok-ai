@@ -21,6 +21,7 @@ import {
   makeSendQueue,
   nextToolsState,
   isFreetextOption,
+  shouldAnnounceLoggedOut,
 } from "../src/telegram.js";
 
 test("migratedGroupId: follows the bound board group to its new supergroup id", () => {
@@ -552,4 +553,17 @@ test("the group's General is bound too, even with no threadId", () => {
   // never rebuilt once it died: the web channel kept working while Telegram
   // went silent, with no error anywhere.
   assert.equal(shouldReattachBridge({ chatId: -100, threadId: null, hasBridge: false, sessionAlive: true }), true);
+});
+
+test("a sign-out is announced once, not on every refused spawn", () => {
+  // A five-minute cron would otherwise turn one sign-out into a flood, and a
+  // channel that cries wolf gets muted long before the day it is right.
+  assert.equal(shouldAnnounceLoggedOut(false, true), true);
+  assert.equal(shouldAnnounceLoggedOut(true, true), false);
+});
+
+test("with nobody to speak to, the notice is NOT burnt", () => {
+  // Telegram off or no board group bound: staying silent is right, but latching
+  // the flag here would mean the REAL sign-out is never announced either.
+  assert.equal(shouldAnnounceLoggedOut(false, false), false);
 });

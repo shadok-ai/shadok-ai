@@ -18,6 +18,7 @@ import {
   setTgTools,
 } from "./channels.js";
 import { secretNames, setSecret, deleteSecret } from "./secrets.js";
+import { authStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { getProfile, profileNames } from "./profiles.js";
 import { tmuxHasSession } from "./tmux.js";
 import { randomUUID } from "node:crypto";
@@ -500,6 +501,51 @@ export function closeTelegramTopic(chatId: number, threadId: number): void {
   closeTopicImpl?.(chatId, threadId);
 }
 
+/**
+ * Have we already told the user this instance is signed out?
+ *
+ * Deduplicated until the state flips back: a cron on a 5-minute slot would
+ * otherwise turn one sign-out into a flood, and a channel that cries wolf gets
+ * muted long before the day it is right.
+ */
+let loggedOutAnnounced = false;
+/** Returns whether anything was actually sent (false = nowhere to speak). */
+let announceLoggedOutImpl: (() => boolean) | null = null;
+
+/**
+ * Tell the board group, ONCE, that the instance needs signing in again.
+ *
+ * Called from the server's spawn refusal, so it covers every door at once: the
+ * web, a cron that could not fire, `pilotctl`. Silent when Telegram is off or
+ * no board group is bound.
+ *
+ * The flag latches only when a message really went out — otherwise a refusal
+ * that happened while Telegram was down would burn the one announcement the
+ * user was ever going to get.
+ */
+export function announceLoggedOut(): void {
+  if (!shouldAnnounceLoggedOut(loggedOutAnnounced, announceLoggedOutImpl !== null)) return;
+  if (announceLoggedOutImpl?.()) loggedOutAnnounced = true;
+}
+
+/**
+ * Pure: may we announce a sign-out right now?
+ *
+ * Two conditions, and the second is the one that is easy to get wrong. We must
+ * NOT latch the flag when there is nobody to speak to (Telegram off, no board
+ * group) — otherwise a refusal that happened while the bridge was down would
+ * burn the single announcement the user was ever going to get, and the real
+ * sign-out would then be silent forever.
+ */
+export function shouldAnnounceLoggedOut(alreadyAnnounced: boolean, canSpeak: boolean): boolean {
+  return !alreadyAnnounced && canSpeak;
+}
+
+/** Called when a sign-in succeeds, so the NEXT sign-out is announced again. */
+export function resetLoggedOutNotice(): void {
+  loggedOutAnnounced = false;
+}
+
 export interface TelegramHandle {
   stop(): void;
   running(): boolean;
@@ -864,6 +910,19 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       ...extra,
     });
 
+  // Signed-out announcement: wired here rather than next to renameTopicImpl
+  // because it needs `reply`, which is defined just above.
+  announceLoggedOutImpl = () => {
+    const group = loadTgGroup();
+    if (group === null) return false; // nowhere to speak — don't burn the notice
+    reply(
+      group,
+      undefined,
+      "🔐 This shadok-ai instance is signed out of Claude — agents can't start.\nSend /login here to fix it.",
+    );
+    return true;
+  };
+
   // A flushed album: download everything, then ONE prompt with all the paths.
   // One failed file doesn't sink the album — it's reported, the rest is sent.
   const albums = makeAlbumBuffer<{ b: Bridge; att: TgAttachment; caption?: string }>(async (_gid, items) => {
@@ -952,7 +1011,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       switch (cmd.cmd) {
         case "start":
         case "help":
-          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)");
+          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in");
           return;
         case "setup":
           if (isGroup) await reply(chat.id, threadId, "✅ already this instance's board.");
@@ -1129,6 +1188,37 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             threadId,
             `🔐 vault:\n${names.length ? names.map((k) => "• " + k).join("\n") : "(none)"}\n\nSet: /secret NAME value  ·  remove: /unsecret NAME\nProfiles pick which secrets they inject (web Profiles panel).`,
           );
+          return;
+        }
+        case "login": {
+          // An OAuth code grants access to the account, so this needs the same
+          // gate as /secret. Reaching here IS the gate: guardDm has already run
+          // for a private chat, and a group that is not the bound board was
+          // turned away above.
+          const r = await startLogin();
+          if ("error" in r) {
+            await reply(chat.id, threadId, `⚠️ Couldn't start the sign-in: ${r.error}`);
+            return;
+          }
+          await reply(
+            chat.id,
+            threadId,
+            `🔐 Open this link, authorise, then send me the code with /code <the-code>:\n\n${r.url}`,
+          );
+          return;
+        }
+        case "code": {
+          const r = await submitLoginCode(cmd.arg);
+          if (r.ok) {
+            const s = await authStatus(true);
+            resetLoggedOutNotice(); // the next sign-out gets announced again
+            // Delete the message: an OAuth code has no business lingering in
+            // the chat history, same reasoning as /secret.
+            await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(chat.id, threadId, `✅ Signed in${s.email ? ` as ${s.email}` : ""}.`);
+          } else {
+            await reply(chat.id, threadId, `⚠️ ${r.error}`);
+          }
           return;
         }
         case "secret": {

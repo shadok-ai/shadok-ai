@@ -25,6 +25,8 @@ import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 import { screenShowsWork } from "./detect.js";
 import { PtyPilot } from "./session.js";
+import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
+import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -47,6 +49,8 @@ import {
   closeTelegramTopic,
   probeToken,
   isStalePreface,
+  announceLoggedOut,
+  resetLoggedOutNotice,
   type TelegramHandle,
 } from "./telegram.js";
 import { migrateTgBindings } from "./channels.js";
@@ -753,6 +757,28 @@ app.post("/tweak/prepare", (_req, res) => {
 app.get("/version", (_req, res) =>
   res.json({ current: OWN_VERSION, latest: latestKnown, autoUpdate, permissionMode }),
 );
+
+// Claude sign-in state. Instance-global — NOT per session — hence HTTP rather
+// than a WS message: every tab and the Telegram bridge share one answer.
+app.get("/auth", async (_req, res) => res.json(await authStatus()));
+
+app.post("/auth/login", async (_req, res) => {
+  const r = await startLogin();
+  if ("error" in r) return res.status(502).json(r);
+  res.json(r);
+});
+
+app.post("/auth/code", async (req, res) => {
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  const r = await submitLoginCode(code);
+  if (r.ok) resetLoggedOutNotice(); // the next sign-out gets announced again
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
+app.delete("/auth/login", (_req, res) => {
+  cancelLogin();
+  res.json({ ok: true });
+});
 // Channel list, persisted server-side per launch directory — survives a wiped
 // browser, another device, a restart or a reboot.
 /**
@@ -1263,6 +1289,9 @@ function sessionModelSetting(profileName?: string | null): string | null {
 }
 
 function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
+  // A worktree is a brand-new directory, so it carries a brand-new trust
+  // dialog. Seed it before the process exists, not after it is stuck on it.
+  ensureProjectTrusted(cwd);
   const profile = profileName ? getProfile(profileName) : undefined;
   // Env = the vault secrets the profile references (none without a profile).
   // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
@@ -1990,6 +2019,21 @@ wss.on("connection", (ws: WebSocket) => {
       switch (msg.type) {
         case "start": {
           if (session) return fail("session already started");
+          // Refusing here is what actually prevents zombies. The historical
+          // failure was never "the login was missing" — it was "an agent was
+          // allowed to start without one", and then sat on the first-run screen
+          // for a day. `code` lets a machine client classify the refusal
+          // without matching on message text (same contract as "busy").
+          if (!(await authStatus()).loggedIn) {
+            // Telling the user is the whole point: a cron refused at 4am must
+            // not be discovered a day later. Deduplicated inside, so a
+            // five-minute cron does not turn one sign-out into a flood.
+            announceLoggedOut();
+            return fail(
+              "this shadok-ai instance is not signed in to Claude — sign in from the cockpit",
+              "logged-out",
+            );
+          }
           if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
           const cwd = msg.cwd?.trim() || process.cwd();
           // Deterministic id: enforced with --session-id for a new session,
@@ -2479,6 +2523,10 @@ server.on("error", (err: NodeJS.ErrnoException) => {
     process.exit(1);
   }
 });
+// Before anything can spawn: make sure `claude` will not open on its first-run
+// screens. reconcileOnBoot respawns sessions ~1s after boot, so this has to
+// happen first — that race is exactly what produced the zombie agents.
+ensureClaudeHome();
 // Persistent per-container SSH identity: in Docker, generate/reuse a key on the
 // shadok-data volume and point ~/.ssh at it so agents' git/ssh survive a
 // recreate. No-op on a normal host. Its GIT_SSH_COMMAND fallback is merged into
