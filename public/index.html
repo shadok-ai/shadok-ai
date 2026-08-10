@@ -105,10 +105,38 @@
   }
   header .brand::before { content: "◆ "; }
   /* The brand name doubles as the cockpit's editable title: click to rename,
-     Enter/blur commits, Escape cancels. Kept subtle until hovered. */
-  header .brand-name { cursor: text; border-radius: 3px; padding: 0 3px; outline: none; }
-  header .brand-name:hover { background: rgba(240, 168, 72, 0.14); }
-  header .brand-name:focus { background: rgba(240, 168, 72, 0.22); cursor: text; }
+     Enter/blur commits, Escape cancels. A dashed outline + pencil on hover make
+     the affordance obvious; the outline turns solid amber while editing. */
+  header .brand-name {
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 1px 5px;
+    outline: none;
+    border: 1px dashed transparent;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  header .brand-name:hover {
+    background: rgba(240, 168, 72, 0.12);
+    border-color: rgba(240, 168, 72, 0.5);
+  }
+  header .brand.editing .brand-name,
+  header .brand-name:focus {
+    cursor: text;
+    background: rgba(240, 168, 72, 0.16);
+    border: 1px solid var(--amber);
+  }
+  /* Pencil cue: hidden until the brand is hovered, gone while editing. */
+  header .brand-edit {
+    margin-left: 4px;
+    font-size: 11px;
+    color: var(--amber);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  header .brand:hover .brand-edit { opacity: 0.75; }
+  header .brand-edit:hover { opacity: 1; }
+  header .brand.editing .brand-edit { opacity: 0; pointer-events: none; }
   header .ver {
     font-family: var(--mono);
     font-size: 10px;
@@ -1273,7 +1301,7 @@
 <body>
 
 <header>
-  <span class="brand"><span class="brand-name" id="brandName" title="Click to rename this cockpit">shadok-ai</span> <span class="ver" id="verView" title="Running version"></span></span>
+  <span class="brand"><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span></span>
   <span class="spacer"></span>
   <div class="gauge quota" id="quota5h" data-window="5h" title="5h rolling limit">
     <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="5h rolling limit">
@@ -3712,8 +3740,11 @@
   // ── Rename the cockpit by clicking its name in the header ──────────────
   const brandNameEl = $("brandName");
   if (brandNameEl) {
+    const brandEl = brandNameEl.closest(".brand");
+    const brandEditEl = $("brandEdit");
     const startRename = () => {
       if (brandNameEl.isContentEditable) return;
+      if (brandEl) brandEl.classList.add("editing");
       brandNameEl.contentEditable = "plaintext-only";
       brandNameEl.spellcheck = false;
       brandNameEl.focus();
@@ -3725,6 +3756,7 @@
     };
     const commitRename = async () => {
       if (!brandNameEl.isContentEditable) return;
+      if (brandEl) brandEl.classList.remove("editing");
       brandNameEl.contentEditable = "false";
       // Collapse to one line: contenteditable can capture pasted newlines.
       const next = (brandNameEl.textContent || "").replace(/\s+/g, " ").trim().slice(0, 60);
@@ -3742,6 +3774,7 @@
       }
     };
     brandNameEl.addEventListener("click", startRename);
+    if (brandEditEl) brandEditEl.addEventListener("click", startRename);
     brandNameEl.addEventListener("keydown", (e) => {
       if (e.key === "Enter") { e.preventDefault(); brandNameEl.blur(); }
       else if (e.key === "Escape") {
