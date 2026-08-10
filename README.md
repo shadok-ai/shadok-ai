@@ -75,6 +75,12 @@ Enter to skip; you can add it later from the web UI).
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
 - **Diff panel** — what an agent actually changed, against its base.
+- **Phone layout** — the cockpit is a fixed chassis that never pans sideways,
+  sized on the *visual* viewport so the composer stays clear of the browser's
+  own bar and, when the keyboard opens, sits right above it (the instrument bar
+  folds away while you type). Fields are 16px, which is what stops Safari from
+  zooming in on focus. The agents column is replaced by a channel selector in
+  the channel bar.
 - **Tweak Shadok-AI** — a card pinned at the bottom of the agents column. One
   click clones shadok-ai's own source into `~/.shadok-ai/self/shadok-ai` and
   starts an agent on it in its own worktree; that agent delivers its change as a
