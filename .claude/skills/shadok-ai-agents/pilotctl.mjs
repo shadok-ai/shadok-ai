@@ -14,6 +14,11 @@ export const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 export const port = () => Number(process.env.SHADOK_PORT ?? 3789);
 export const httpBase = () => `http://localhost:${port()}`;
 export const wsUrl = () => `ws://localhost:${port()}/ws`;
+// When a GUI password is set, the server injects SHADOK_AUTH=sk_auth=<token>
+// into every agent's env; loopback HTTP + WS calls must present it as the cookie
+// or the password gate 401s them — exactly what secret.py / schedule.py and the
+// Telegram bridge already do. Empty when no password is set → no change.
+export const authHeaders = () => (process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {});
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export function stateDir() {
@@ -61,7 +66,7 @@ export function parseArgs(argv) {
 
 function connect() {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl());
+    const ws = new WebSocket(wsUrl(), { headers: authHeaders() });
     ws.once("open", () => resolve(ws));
     ws.once("error", reject);
   });
@@ -152,6 +157,7 @@ async function serverUp() {
   try {
     const r = await fetch(`${httpBase()}/sessions?cwd=${encodeURIComponent(os.homedir())}`, {
       signal: AbortSignal.timeout(1500),
+      headers: authHeaders(),
     });
     return r.ok;
   } catch {
@@ -307,7 +313,7 @@ async function cmdDialog(id, flags) {
 async function cmdList(flags) {
   await ensureServer();
   const cwd = flags.cwd ?? process.cwd();
-  const r = await fetch(`${httpBase()}/sessions?cwd=${encodeURIComponent(cwd)}`);
+  const r = await fetch(`${httpBase()}/sessions?cwd=${encodeURIComponent(cwd)}`, { headers: authHeaders() });
   const resumable = await r.json();
   const dir = stateDir();
   const agents = !fs.existsSync(dir)
@@ -322,7 +328,7 @@ async function cmdList(flags) {
 
 async function cmdDiff(id) {
   await ensureServer();
-  const r = await fetch(`${httpBase()}/diff?session=${encodeURIComponent(id)}`);
+  const r = await fetch(`${httpBase()}/diff?session=${encodeURIComponent(id)}`, { headers: authHeaders() });
   const body = await r.json();
   if (!body.error) return body;
   // Session no longer live server-side: diff the worktree locally against
@@ -416,7 +422,7 @@ async function cmdProfilePrompt(text, flags) {
   if (flags.readonly) body.readOnly = true;
   const r = await fetch(`${httpBase()}/profiles/prompt`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   const out = await r.json();
