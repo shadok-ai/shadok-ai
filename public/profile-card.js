@@ -78,3 +78,32 @@ export function defaultAgentName(profileName, cwd) {
   const base = dir.split(/[/\\]/).pop() || "";
   return base || "agent";
 }
+
+/**
+ * La case « read-only » du formulaire de profil reflète-t-elle un profil
+ * réellement read-only ? Vrai seulement si TOUT le preset est présent : un
+ * preset à moitié appliqué ne doit pas se donner des airs d'être en place.
+ *
+ * Volontairement plus strict que le badge de la carte, qui répond à une autre
+ * question — « ce profil a-t-il des garde-fous ? » — et s'allume dès qu'il
+ * existe un `deny`, fût-il personnalisé.
+ */
+export function hasReadonlyPreset(deny, preset) {
+  const have = new Set(deny || []);
+  return (preset || []).length > 0 && preset.every((p) => have.has(p));
+}
+
+/**
+ * Coche/décoche le preset SANS toucher aux motifs personnalisés : décocher
+ * retire les motifs du preset et laisse le reste, cocher ajoute ceux qui
+ * manquent en fin de liste. La zone de texte reste la source de vérité — elle
+ * n'est jamais écrasée en bloc, ce que faisait l'ancien gestionnaire.
+ */
+export function applyReadonlyPreset(deny, on, preset) {
+  const list = [...(deny || [])];
+  const p = preset || [];
+  if (!on) return list.filter((x) => !p.includes(x));
+  const have = new Set(list);
+  for (const x of p) if (!have.has(x)) list.push(x);
+  return list;
+}

@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { profileBlurb, profileBadges, defaultAgentName } from "../public/profile-card.js";
+import { readFileSync } from "node:fs";
+import { READONLY_DENY } from "../src/profiles.js";
+import {
+  profileBlurb,
+  profileBadges,
+  defaultAgentName,
+  hasReadonlyPreset,
+  applyReadonlyPreset,
+} from "../public/profile-card.js";
 
 test("blurb: garde la 1re phrase et retire l'amorce « You are <nom>, »", () => {
   const p = {
@@ -86,4 +94,51 @@ test("defaultAgentName: ni profil ni dossier → un nom quand même", () => {
 test("defaultAgentName: les espaces autour ne comptent pas", () => {
   assert.equal(defaultAgentName("  Shadok-dev  ", "/x/y"), "Shadok-dev");
   assert.equal(defaultAgentName("   ", "/x/y"), "y");
+});
+
+// ── La case « read-only » du formulaire de profil ────────────────────────
+const PRESET = [
+  "Bash(git commit:*)", "Bash(git push:*)", "Bash(git add:*)", "Bash(git reset:*)",
+  "Bash(git rebase:*)", "Bash(git merge:*)", "Bash(git checkout:*)",
+];
+
+test("hasReadonlyPreset: cochée seulement si TOUT le preset est là", () => {
+  assert.equal(hasReadonlyPreset(PRESET, PRESET), true);
+  assert.equal(hasReadonlyPreset([...PRESET, "Bash(rm:*)"], PRESET), true, "un motif perso en plus ne décoche pas");
+  assert.equal(hasReadonlyPreset(PRESET.slice(0, 3), PRESET), false, "preset partiel");
+  assert.equal(hasReadonlyPreset([], PRESET), false);
+  assert.equal(hasReadonlyPreset(["Bash(rm:*)"], PRESET), false, "des garde-fous, mais pas CE preset");
+});
+
+test("applyReadonlyPreset: décocher n'enlève que le preset, jamais le perso", () => {
+  const before = [...PRESET, "Bash(rm:*)", "Read(/etc/**)"];
+  assert.deepEqual(applyReadonlyPreset(before, false, PRESET), ["Bash(rm:*)", "Read(/etc/**)"]);
+});
+
+test("applyReadonlyPreset: cocher ajoute ce qui manque et garde l'ordre existant", () => {
+  const before = ["Bash(rm:*)", "Bash(git commit:*)"];
+  const after = applyReadonlyPreset(before, true, PRESET);
+  assert.equal(after[0], "Bash(rm:*)", "le perso reste en tête");
+  for (const p of PRESET) assert.ok(after.includes(p), `${p} doit être présent`);
+  assert.equal(after.filter((x) => x === "Bash(git commit:*)").length, 1, "pas de doublon");
+});
+
+test("applyReadonlyPreset: cocher deux fois ne change rien la seconde", () => {
+  const once = applyReadonlyPreset(["Bash(rm:*)"], true, PRESET);
+  assert.deepEqual(applyReadonlyPreset(once, true, PRESET), once);
+});
+
+test("applyReadonlyPreset: décocher un profil sans preset ne casse rien", () => {
+  assert.deepEqual(applyReadonlyPreset([], false, PRESET), []);
+  assert.deepEqual(applyReadonlyPreset(["Bash(rm:*)"], false, PRESET), ["Bash(rm:*)"]);
+});
+
+test("le preset du client ne doit pas dériver de celui du serveur", () => {
+  // Il est dupliqué dans index.html (le navigateur ne peut pas importer le TS).
+  // Sans ce garde, une modif de READONLY_DENY côté serveur laisserait la case du
+  // formulaire poser des garde-fous périmés, en silence.
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const m = html.match(/const READONLY_DENY = (\[[^\]]*\]);/);
+  assert.ok(m, "READONLY_DENY introuvable dans index.html");
+  assert.deepEqual(JSON.parse(m![1]), READONLY_DENY);
 });
