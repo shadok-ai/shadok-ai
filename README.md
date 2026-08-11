@@ -187,6 +187,14 @@ location / {
 The client picks `wss://` on its own when the page is HTTPS, so there is nothing
 to configure on that side.
 
+**Idle timeout.** A resting agent's `/ws` carries no traffic, and proxies
+idle-close a quiet socket (nginx `proxy_read_timeout`, 60s by default;
+Cloudflare ~100s) — the symptom is a cockpit that keeps flashing
+"reconnecting…" even though nothing is wrong. The server sends a WebSocket ping
+every 25s (tunable with `SHADOK_WS_PING_MS`) to keep the connection warm, so no
+proxy change is normally needed; if your proxy still cuts it, raise
+`proxy_read_timeout` above the ping interval.
+
 ### Signing in to Claude
 
 A fresh machine — most often a fresh container — has two things in its way, and

@@ -130,6 +130,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
   browserOrigin,
 } from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
+import { startHeartbeat } from "./heartbeat.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER } from "./csp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1104,6 +1105,11 @@ const wss = new WebSocketServer({
 wss.on("error", (err: NodeJS.ErrnoException) => {
   if (err.code !== "EADDRINUSE") console.error(`ws server error: ${err.message}`);
 });
+// Keep idle /ws connections alive through reverse proxies (nginx/Caddy/Cloudflare
+// idle-close a quiet socket, so a resting agent's client would loop on
+// "reconnecting"). Ping well under the common 60s window; a client that misses a
+// pong is dropped.
+startHeartbeat(wss, Number(process.env.SHADOK_WS_PING_MS ?? 25000));
 
 // ── Version / auto-update ───────────────────────────────────────────────────
 // The running server's own version (this is the managed install's package.json
