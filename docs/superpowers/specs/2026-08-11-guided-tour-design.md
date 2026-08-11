@@ -99,9 +99,28 @@ preference of *this browser*, not of the instance: a new device is often a new
 person, and that person is exactly who the tour is for. It also costs no
 endpoint and no `/channels`-style merge rule.
 
-The tour auto-runs on load when the flag is absent **and** the sign-in card is
-not showing — a signed-out instance has one thing to do, and a tour over a
-blocking card would be absurd.
+### Order on a brand-new instance: tour first, sign-in after
+
+A fresh instance is signed out, so the sign-in card would otherwise be the very
+first thing anyone sees — asking someone to authorise an OAuth flow before they
+know what the thing is. So on first load the order is **welcome → tour →
+sign-in card**.
+
+The card is **deferred, not skipped**. Signing in is not optional: whether the
+tour is completed or skipped, the card opens the moment it ends. What changes is
+only *when*, never *whether*.
+
+Three consequences worth stating, because each is a way to get this wrong:
+
+- The deferral applies **only to the auto-open on load**. A spawn refused with
+  `code: "logged-out"` mid-session still opens the card immediately — there is no
+  tour in the way, and the user just asked for something that cannot happen.
+- A browser that has already seen the tour gets the card straight away. The
+  deferral is tied to the tour actually running, not to the instance being new.
+- During the tour the cockpit is signed out, so the controls being pointed at
+  would refuse to work if clicked. That is acceptable — the tour explains, it
+  does not ask anyone to click — and step 3 (`.tab.active`) is skipped anyway on
+  an instance with no agent, by the visibility rule above.
 
 ## Testing
 
@@ -112,6 +131,12 @@ the enclosing one; a single rect is returned unchanged; an empty list yields
 `null` so the caller skips rather than framing `0,0`. `visibleSteps(steps,
 isVisible)` — drops steps whose target is missing, keeps `target: null` steps
 always, and renumbers so the counter matches what the user will actually see.
+
+**The ordering, against a signed-out instance:** on first load the welcome
+screen appears and the sign-in card does **not**; skipping the tour opens the
+card immediately; completing it opens the card at the end; reloading afterwards
+(tour flag now set) opens the card straight away with no tour. This is the part
+a unit test cannot reach, so it is checked in the browser.
 
 **Browser, on a side instance (port 3899, `SHADOK_VERSION_CHECK_MIN=0`):**
 screenshots of each step at 1280×900 **and** at 390×844, reading the console
