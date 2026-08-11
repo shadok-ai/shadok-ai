@@ -1200,6 +1200,17 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             await reply(chat.id, threadId, `⚠️ Couldn't start the sign-in: ${r.error}`);
             return;
           }
+          if ("alreadySignedIn" in r) {
+            // Answer the question that was actually asked instead of handing
+            // out a link nobody needs.
+            const s = await authStatus(true);
+            await reply(
+              chat.id,
+              threadId,
+              `✅ This instance is already signed in${s.email ? ` as ${s.email}` : ""}.`,
+            );
+            return;
+          }
           await reply(
             chat.id,
             threadId,

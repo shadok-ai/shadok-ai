@@ -402,6 +402,14 @@ clean exit, not a string**: the refusal wording was observed, the success
 wording never was, and guessing it would report a completed sign-in as never
 finishing (invariant 29).
 
+`authStatus` reports **three** states, not two: "I observed it is signed out" and
+"I could not look" are different facts. The probe is a ~850ms process spawn, so
+it flakes on a busy machine — and collapsing a failed probe into *signed out*
+popped the sign-in card, spawned a login child and refused every spawn on
+instances that were signed in the whole time. `unknown` retries once, is never
+cached, never opens the card and never blocks a spawn; only an observed
+`signed-out` does any of that.
+
 `startLogin` / `submitLoginCode` / `cancelLogin` drive **one instance-global
 flow**, because the credentials are machine-global and two concurrent logins
 would race for the same keychain entry. The upside is free: the web card
