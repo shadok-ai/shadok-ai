@@ -122,6 +122,30 @@ from the board group's creator, so an instance that already has an owner never
 hands itself to whoever messages next — a bot username is public, and a DM is a
 shell.
 
+### Running in Docker
+
+The repo ships an official `Dockerfile`:
+
+```bash
+docker build -t shadok-ai .
+docker run -d --name shadok-ai --restart unless-stopped \
+  -p 127.0.0.1:3789:3789 \
+  -v shadok-data:/root/.shadok-ai \
+  -v shadok-claude:/root/.claude \
+  -v shadok-workspace:/workspace \
+  -e SHADOK_HOST=0.0.0.0 -e SHADOK_GUI_PASSWORD=change-me \
+  shadok-ai
+```
+
+The image bundles **Claude Code**, **shadok-ai** and a **headless browser**
+(Playwright Chromium, at `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers`) so
+an agent can screenshot or drive the web with no first-run download; `git`, `gh`,
+`tmux`, `jq` and a C toolchain are there for agents' own work. The three volumes
+are what survive `docker restart` **and** `docker rm`+recreate: `~/.shadok-ai`
+(vault, profiles, channels, crons, SSH identity), `~/.claude` (credentials,
+transcripts), `/workspace` (agents' files). A fresh container needs a one-time
+Claude login: `docker exec -it shadok-ai claude`.
+
 ### Exposing it beyond this machine
 
 The cockpit runs arbitrary commands on the host by design, so it binds
