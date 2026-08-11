@@ -26,20 +26,27 @@ test("parseAuthStatus reads the CLI's JSON", () => {
   );
   assert.deepEqual(s, {
     loggedIn: true,
+    state: "signed-in",
     authMethod: "claude.ai",
     email: "a@b.c",
     subscriptionType: "max",
   });
 });
 
-test("parseAuthStatus treats anything unreadable as logged OUT", () => {
-  // An instance we cannot PROVE is authenticated must be treated as not
-  // authenticated: the cost of a spurious card is a click, the cost of a
-  // spurious spawn is a zombie agent nobody notices for a day.
-  assert.equal(parseAuthStatus("").loggedIn, false);
-  assert.equal(parseAuthStatus("command not found").loggedIn, false);
-  assert.equal(parseAuthStatus('{"loggedIn":false}').loggedIn, false);
-  assert.equal(parseAuthStatus("[1,2,3]").loggedIn, false);
+test("a CLI that ANSWERED signed-out is signed-out", () => {
+  const s = parseAuthStatus('{"loggedIn":false,"authMethod":"none"}');
+  assert.equal(s.state, "signed-out");
+  assert.equal(s.loggedIn, false);
+});
+
+test("output we could not read is UNKNOWN, never signed-out", () => {
+  // THE distinction this type exists for. The probe is a ~850ms process spawn
+  // and can fail; reading a failure as "signed out" popped the sign-in card and
+  // spawned a login child on instances that were signed in the whole time.
+  for (const bad of ["", "command not found", "[1,2,3]", '{"loggedIn":tr']) {
+    assert.equal(parseAuthStatus(bad).state, "unknown", bad);
+    assert.equal(parseAuthStatus(bad).loggedIn, false, bad);
+  }
 });
 
 test("parseLoginUrl survives the OSC 8 hyperlink wrapper", () => {

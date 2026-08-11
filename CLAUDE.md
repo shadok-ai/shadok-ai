@@ -518,11 +518,19 @@ Auth section of `docs/architecture.md`).
     never finishing, forever. So success is taken from the child **exiting
     cleanly** after a code was submitted — an observable fact. Two neighbours
     follow the same rule. An invalid code does **not** end the flow (verified: the
-    CLI re-prompts, so a retry reuses the same child and needs no new URL), and
-    `parseAuthStatus` reads anything it cannot parse as *logged out*, because the
-    cost of a spurious card is one click while the cost of a spurious spawn is a
-    zombie agent nobody notices for a day. Generalise it: when a state can be read
-    from an exit code, a file, or an API, prefer that over the prose next to it.
+    CLI re-prompts, so a retry reuses the same child and needs no new URL).
+    Generalise it: when a state can be read from an exit code, a file, or an API,
+    prefer that over the prose next to it.
+    **Corollary, learned the hard way one day later: "I observed it is signed
+    out" and "I could not look" are DIFFERENT facts.** `parseAuthStatus` first
+    collapsed them, reading unparseable output as *signed out* on the argument
+    that a spurious card costs one click. It does not: the card **spawns a
+    `claude auth login` child** and the same verdict **refuses every spawn**. And
+    the probe is a ~850ms process spawn whose error `execFile` was silently
+    dropping, so a busy machine popped the sign-in card on instances that were
+    signed in the whole time. `AuthState` is now three-valued; only `signed-out`
+    is ever asserted, `unknown` retries once, is never cached, never opens the
+    card and never blocks a spawn.
 
 30. **On a phone the viewport is THREE different rectangles, and CSS only knows
     two of them.** The cockpit is a fixed chassis, so its height is load-bearing:

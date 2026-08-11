@@ -1204,8 +1204,23 @@
   .overlay[hidden] { display: none; }
   /* A real OAuth URL is ~400 chars. Shown in full on purpose — a headless
      server's operator often has to carry it to another device by hand — so it
-     has to wrap instead of pushing the panel off screen. */
-  #authLink { word-break: break-all; font-size: 12px; line-height: 1.4; }
+     has to wrap instead of pushing the panel off screen. The page sets no <a>
+     colour anywhere else (this is its first link), so without this the browser
+     default blue lands on a near-black panel and is unreadable. */
+  #authLink {
+    display: block;
+    word-break: break-all;
+    font-family: var(--mono);
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--amber);
+    text-decoration: none;
+    border: 1px solid var(--line);
+    background: var(--bg-inset);
+    border-radius: 6px;
+    padding: 8px 10px;
+  }
+  #authLink:hover { border-color: var(--amber); text-decoration: underline; }
   /* Le panneau était hors palette : #1b1d22 au lieu de --bg-raised, #e8e8ea au
      lieu de --text, des bordures rgba(255,255,255,.15) et un rayon de 10px quand
      tout le cockpit est à 6 — soit un gris et un blanc qui n'existaient nulle
@@ -5088,8 +5103,12 @@
   async function checkAuth() {
     try {
       const s = await (await fetch("/auth")).json();
-      if (s && s.loggedIn) { $("authOverlay").hidden = true; return; }
-      openAuthCard();
+      // ONLY a signed-out state we actually observed opens the card. "unknown"
+      // means the probe failed, and treating that as signed out is what made
+      // the card pop — and a `claude auth login` child spawn — on instances
+      // that were signed in the whole time.
+      if (s && s.state === "signed-out") openAuthCard();
+      else $("authOverlay").hidden = true;
     } catch {
       // A failed check must not block a cockpit that is in fact working.
     }
@@ -5104,6 +5123,9 @@
     link.removeAttribute("href");
     try {
       const r = await (await fetch("/auth/login", { method: "POST" })).json();
+      // The server has the last word: it re-checks, and if the instance turns
+      // out to be signed in it spawns nothing and says so.
+      if (r && r.alreadySignedIn) { $("authOverlay").hidden = true; return; }
       if (r && r.url) { link.href = r.url; link.textContent = r.url; }
       else link.textContent = (r && r.error) || "could not start the sign-in";
     } catch {
