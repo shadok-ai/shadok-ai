@@ -5245,6 +5245,21 @@
     startTour(null);
   });
 
+  /**
+   * First load: welcome and tour BEFORE the sign-in card.
+   *
+   * A fresh instance is signed out, so the card would otherwise be the very
+   * first thing anyone sees — asking someone to authorise an OAuth flow before
+   * they know what the thing is. The card is DEFERRED, never skipped: signing
+   * in is not optional, so it opens the moment the tour ends either way.
+   */
+  function maybeStartTour() {
+    let seen = false;
+    try { seen = !!localStorage.getItem(TOUR_SEEN_KEY); } catch { seen = true; }
+    if (seen) { checkAuth(); return; }
+    startTour(() => checkAuth());
+  }
+
   // --- Sign-in card -------------------------------------------------------
   // Opened at exactly two moments: on load when /auth reports signed out, and
   // on a `start` refused with code "logged-out". Never otherwise.
@@ -5491,7 +5506,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     buildDialArcs();
     refreshUsage();
-    checkAuth();
+    maybeStartTour();   // the tour runs first; it calls checkAuth() when it ends
   });
   setInterval(refreshUsage, 60_000);
 
