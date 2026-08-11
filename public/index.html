@@ -1252,6 +1252,19 @@
   }
   /* Pousse ce qui suit à droite : un pied peut porter une note à gauche. */
   .modal-foot .foot-note { margin-right: auto; font-size: 11px; color: var(--text-dim); }
+  /* Popins sans pied dont le contenu peut s'allonger (listes de secrets, de
+     profils…). Sans ça, TOUT le panneau défilait et le ✕ partait avec l'entête.
+     Ici l'entête — titre, ✕ et description — reste épinglée, seul le corps
+     défile. Même intention que `.modal`, mais on garde le titre en gras (pas le
+     libellé mono des modales) et on ne réclame pas de pied. */
+  .sec-panel.pinned { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .sec-panel.pinned > .pin-head {
+    flex: 0 0 auto; padding: 14px 16px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .sec-panel.pinned > .pin-head > .sec-head { margin-bottom: 8px; }
+  .sec-panel.pinned > .pin-head > .sec-note:last-child { margin-bottom: 0; }
+  .sec-panel.pinned > .pin-body { flex: 1 1 auto; overflow: auto; padding: 12px 16px 14px; }
   .sec-panel :focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
   /* Les <select> et les champs numériques n'étaient couverts par aucune règle :
      ils tombaient sur le rendu par défaut du navigateur — clair — au milieu d'un
@@ -1351,20 +1364,24 @@
 </div>
 
 <div id="secretsOverlay" class="overlay" hidden>
-  <div id="secretsPanel">
-    <div class="sec-head">
-      <strong>Secret vault</strong>
-      <button id="secretsClose" title="Close">✕</button>
+  <div id="secretsPanel" class="sec-panel pinned">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong>Secret vault</strong>
+        <button id="secretsClose" title="Close">✕</button>
+      </div>
+      <p class="sec-note">A central list of named secrets (stored 600 outside any repo, values write-only).</p>
+      <p class="sec-note warn"><b>A secret here reaches no agent on its own.</b> It is injected as an environment variable only into agents whose <b>profile</b> references it — define the value once here, then tick it in a profile.
+        <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
     </div>
-    <p class="sec-note">A central list of named secrets (stored 600 outside any repo, values write-only).</p>
-    <p class="sec-note warn"><b>A secret here reaches no agent on its own.</b> It is injected as an environment variable only into agents whose <b>profile</b> references it — define the value once here, then tick it in a profile.
-      <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
-    <ul id="secretsList"></ul>
-    <form id="secretsAdd">
-      <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
-      <input id="secretVal" placeholder="value" autocomplete="off" spellcheck="false" />
-      <button type="submit">Add</button>
-    </form>
+    <div class="pin-body">
+      <ul id="secretsList"></ul>
+      <form id="secretsAdd">
+        <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
+        <input id="secretVal" placeholder="value" autocomplete="off" spellcheck="false" />
+        <button type="submit">Add</button>
+      </form>
+    </div>
   </div>
 </div>
 
@@ -1506,12 +1523,15 @@
 </div>
 
 <div id="profilesOverlay" class="overlay" hidden>
-  <div id="profilesPanel" class="sec-panel">
-    <div class="sec-head">
-      <strong>Agent profiles</strong>
-      <button id="profilesClose" title="Close">✕</button>
+  <div id="profilesPanel" class="sec-panel pinned">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong>Agent profiles</strong>
+        <button id="profilesClose" title="Close">✕</button>
+      </div>
+      <p class="sec-note">A profile is a named role applied at spawn: a system prompt, native Claude permission guardrails (e.g. no <code>git commit</code>), extra secrets, and an optional model. Global — reusable on any repo. <b>Soft</b>: agents run as you, so this is a role + guardrail layer, not a sandbox.</p>
     </div>
-    <p class="sec-note">A profile is a named role applied at spawn: a system prompt, native Claude permission guardrails (e.g. no <code>git commit</code>), extra secrets, and an optional model. Global — reusable on any repo. <b>Soft</b>: agents run as you, so this is a role + guardrail layer, not a sandbox.</p>
+    <div class="pin-body">
     <ul id="profilesList"></ul>
     <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:12px 0">
     <div class="sec-head"><strong id="profEditTitle">New profile</strong></div>
@@ -1525,16 +1545,20 @@
       <button id="profSave" class="primary">Save profile</button>
       <button id="profReset">Clear form</button>
     </div>
+    </div>
   </div>
 </div>
 
 <div id="telegramOverlay" class="overlay" hidden>
-  <div id="telegramPanel" class="sec-panel">
-    <div class="sec-head">
-      <strong>Telegram bot</strong>
-      <button id="telegramClose" title="Close">✕</button>
+  <div id="telegramPanel" class="sec-panel pinned">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong>Telegram bot</strong>
+        <button id="telegramClose" title="Close">✕</button>
+      </div>
+      <p class="sec-note" id="tgStatus">…</p>
     </div>
-    <p class="sec-note" id="tgStatus">…</p>
+    <div class="pin-body">
     <button id="tgUnbind" hidden title="Unbind the board group so you can /setup a fresh one (e.g. after it became a supergroup)">Unbind group</button>
     <label class="check"><input type="checkbox" id="tgEnabled"><span>Bot enabled</span></label>
     <div class="field">
@@ -1554,6 +1578,7 @@
       </form>
     </div>
     <p class="sec-note">Applies live — running sessions are not interrupted.</p>
+    </div>
   </div>
 </div>
 
