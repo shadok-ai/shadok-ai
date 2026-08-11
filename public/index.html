@@ -1202,6 +1202,35 @@
     backdrop-filter: blur(2px);
   }
   .overlay[hidden] { display: none; }
+  /* Above the other popins: during the tour it is the thing being interacted
+     with, and the sign-in card may already be on screen behind it. */
+  #tourOverlay { z-index: 60; }
+  #tourBubble {
+    max-width: 340px;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  }
+  #tourBubble strong { display: block; margin-bottom: 6px; }
+  #tourBubble p { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+  #tourFoot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  #tourFoot .spacer { flex: 1; }
+  /* Spotlight mode: the overlay stops centring and stops dimming — the hole
+     does the dimming, so the target stays at full brightness. */
+  #tourOverlay.spotlight { display: block; padding: 0; background: transparent; backdrop-filter: none; }
+  #tourOverlay.spotlight #tourBubble { position: fixed; }
+  #tourHole {
+    position: fixed;
+    border-radius: 10px;
+    box-shadow: 0 0 0 9999px rgba(8, 9, 13, 0.72);
+    /* Clicks in the hole fall through to the overlay, which ends the tour —
+       the same "click outside" gesture as everywhere else. */
+    pointer-events: none;
+    transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
+  }
+  #tourOverlay:not(.spotlight) #tourHole { display: none; }
   /* A real OAuth URL is ~400 chars. Shown in full on purpose — a headless
      server's operator often has to carry it to another device by hand — so it
      has to wrap instead of pushing the panel off screen. The page sets no <a>
@@ -1364,6 +1393,7 @@
     <button id="moreBtn" class="icon" title="More">⋯</button>
     <div id="moreMenu" hidden>
       <button id="toggleDiff">Diff</button>
+      <button id="tourReplay">Guided tour</button>
     </div>
   </div>
   </div>
@@ -1619,6 +1649,23 @@
       </form>
     </div>
     <p class="sec-note" id="authMsg" hidden></p>
+  </div>
+</div>
+
+<!-- The guided tour. ONE overlay, two modes: centred (the welcome card, using
+     .overlay's own flex centring) and spotlight (.spotlight), where the dimming
+     comes from #tourHole's huge box-shadow instead of the overlay background. -->
+<div id="tourOverlay" class="overlay" hidden>
+  <div id="tourHole" aria-hidden="true"></div>
+  <div id="tourBubble" role="dialog" aria-labelledby="tourTitle">
+    <strong id="tourTitle"></strong>
+    <p id="tourBody"></p>
+    <div id="tourFoot">
+      <span id="tourCount" class="check-hint"></span>
+      <span class="spacer"></span>
+      <button id="tourSkip">Skip</button>
+      <button id="tourNext" class="primary">Next ›</button>
+    </div>
   </div>
 </div>
 
