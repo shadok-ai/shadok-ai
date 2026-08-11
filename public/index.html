@@ -673,6 +673,16 @@
   }
   .turn { display: flex; flex-direction: column; gap: 3px; max-width: 82%; margin-top: 8px; }
   .turn:first-child { margin-top: 0; }
+  /* Copier : toujours visible, jamais au survol — sur un téléphone il n'y a pas
+     de survol, et un bouton qu'on ne peut pas révéler n'existe pas. */
+  .turn .copy {
+    align-self: flex-end; margin-top: 2px; padding: 2px 6px;
+    font-size: 10px; line-height: 1.4; cursor: pointer;
+    background: none; border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text-dim); opacity: 0.5;
+  }
+  .turn .copy:hover, .turn .copy:focus-visible { opacity: 1; }
+  .turn .copy.done { opacity: 1; color: var(--ok, #7ac77a); border-color: currentColor; }
   /* An activity block sits closer to the text it belongs to than to the next turn. */
   .turn.activity { margin-top: 5px; }
   .turn.activity + .turn.claude { margin-top: 5px; }
@@ -1747,6 +1757,7 @@
     applyReadonlyPreset,
   } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
+  import { echoAuthor } from "/echo-author.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
   window.extractLiveText = extractLiveText;
   window.profileBlurb = profileBlurb;
@@ -1754,6 +1765,7 @@
   window.defaultAgentName = defaultAgentName;
   window.hasReadonlyPreset = hasReadonlyPreset;
   window.applyReadonlyPreset = applyReadonlyPreset;
+  window.echoAuthor = echoAuthor;
   window.notifyState = notifyState;
   window.BLINK_MS = BLINK_MS;
   window.dialPos = dialPos;
@@ -3066,6 +3078,63 @@
   // Le relatif vieillit tout seul : on rafraîchit tous les onglets périodiquement.
   setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
 
+  /**
+   * Copie un texte, avec repli. `navigator.clipboard` n'existe QUE dans un
+   * contexte sécurisé : servi en http sur une IP de LAN — le cas d'un téléphone
+   * sur le réseau — il est absent, et sans repli le bouton ne ferait rien sans
+   * rien dire. Renvoie true si la copie a eu lieu.
+   */
+  async function copyText(text) {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+        return true;
+      }
+    } catch { /* refusé (permission, focus perdu) : on tente le repli */ }
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove();
+      return ok;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Le bouton « copier » d'un message. Le texte copié est la SOURCE (markdown
+   *  brut), pas le rendu : c'est ce qu'on veut recoller ailleurs. */
+  function addCopyButton(turn, text) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "copy";
+    b.textContent = "⧉ copy";
+    b.title = "Copy this message";
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const ok = await copyText(text);
+      b.textContent = ok ? "✓ copied" : "⚠ failed";
+      b.classList.toggle("done", ok);
+      setTimeout(() => {
+        b.textContent = "⧉ copy";
+        b.classList.remove("done");
+      }, 1500);
+    });
+    turn.appendChild(b);
+  }
+
+  /** Étiquette d'auteur d'un prompt venu d'ailleurs — la décision vit dans
+   *  /echo-author.js (pure, testée). Garde sur `window` : le pont ESM tourne
+   *  APRÈS l'analyse du document (invariant 10). */
+  function echoAuthorLabel(msg) {
+    return window.echoAuthor ? window.echoAuthor(msg) : "pilot (elsewhere)";
+  }
+
   function addTurn(tab, role, who, text, extraClass, at) {
     // Heure du dernier message dans la liste des canaux, en relatif (« 3m ago »).
     // Chaque message (historique rejoué ou live) porte `at` ; le dernier gagne.
@@ -3104,6 +3173,9 @@
       bubble.textContent = text;
     }
     turn.appendChild(bubble);
+    // Pas sur les lignes de service (« session ended », activité) : il n'y a
+    // rien à recoller ailleurs.
+    if (role !== "system" && text) addCopyButton(turn, text);
     tab.transcriptEl.appendChild(turn);
     pinBottom(tab);
     return bubble;
@@ -3952,8 +4024,11 @@
       case "prompt-echo":
         // Prompt sent by another tab/interface — or by the server itself
         // when it auto-retries a turn that died on a transient API error.
+        // Name the author when the sending client knew it (Telegram tells us
+        // who typed). Falling back to the origin still beats "elsewhere": a
+        // scheduled run answering on its own has an explanation this way.
         closeActivity(t);
-        addTurn(t, "user", msg.auto ? "auto-retry" : "pilot (elsewhere)", msg.text, null, Date.now());
+        addTurn(t, "user", echoAuthorLabel(msg), msg.text, null, Date.now());
         break;
       case "profile":
         // Le couple désiré / en vigueur. Diffusé à TOUS les clients : changer le
@@ -4332,6 +4407,51 @@
     if (paceBlocked) return renderPaceConfirm(t, text, paceReason);
     submitPrompt(t, text);
   });
+  /**
+   * Coller une image dans le composeur.
+   *
+   * Le cockpit n'avait AUCUN moyen de passer un fichier à un agent — seul
+   * Telegram savait le faire : une capture d'écran obligeait à l'enregistrer
+   * quelque part puis à taper son chemin à la main.
+   *
+   * L'image part au serveur, qui la dépose là où atterrissent déjà les pièces
+   * jointes Telegram, et renvoie la ligne toute faite (`[Image jointe : …]`) :
+   * un seul format pour l'agent, quelle que soit la surface. On l'INSÈRE dans
+   * le composeur au lieu d'envoyer tout de suite — l'utilisateur voit ce qui
+   * part et peut encore écrire sa consigne.
+   */
+  promptInput.addEventListener("paste", async (e) => {
+    const items = [...(e.clipboardData?.items ?? [])].filter((i) => i.type.startsWith("image/"));
+    if (!items.length) return; // collage de texte ordinaire : ne rien intercepter
+    e.preventDefault();
+    for (const item of items) {
+      const blob = item.getAsFile();
+      if (!blob) continue;
+      const mark = "⏳ image…";
+      insertAtCursor(promptInput, mark + "\n");
+      try {
+        const r = await fetch("/paste", { method: "POST", headers: { "content-type": blob.type }, body: blob });
+        const j = await r.json();
+        if (!r.ok || !j.line) throw new Error(j.error || `HTTP ${r.status}`);
+        promptInput.value = promptInput.value.replace(mark, j.line);
+      } catch (err) {
+        // Le dire dans le composeur : un marqueur qui reste sans explication
+        // laisserait croire à un envoi en cours qui n'arrivera jamais.
+        promptInput.value = promptInput.value.replace(mark, `⚠️ image non envoyée (${err.message})`);
+      }
+      promptInput.dispatchEvent(new Event("input")); // hauteur + brouillon
+    }
+  });
+
+  /** Insère du texte à la position du curseur, sans écraser la saisie en cours. */
+  function insertAtCursor(el, text) {
+    const start = el.selectionStart ?? el.value.length;
+    const end = el.selectionEnd ?? el.value.length;
+    el.value = el.value.slice(0, start) + text + el.value.slice(end);
+    const pos = start + text.length;
+    el.setSelectionRange(pos, pos);
+  }
+
   promptInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();

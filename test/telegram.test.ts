@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   shouldReattachBridge,
+  senderName,
+  pasteExtension,
   bindKey,
   chunk,
   parseCommand,
@@ -566,4 +568,37 @@ test("with nobody to speak to, the notice is NOT burnt", () => {
   // Telegram off or no board group bound: staying silent is right, but latching
   // the flag here would mean the REAL sign-out is never announced either.
   assert.equal(shouldAnnounceLoggedOut(false, false), false);
+});
+
+test("senderName: a human is named the way Telegram names them", () => {
+  assert.equal(senderName({ first_name: "Alexandre", last_name: "Cognard" }), "Alexandre Cognard");
+  assert.equal(senderName({ first_name: "Alexandre" }), "Alexandre");
+  // No display name at all: the handle is still better than nothing.
+  assert.equal(senderName({ username: "gnarco" }), "@gnarco");
+});
+
+test("senderName: nothing usable → undefined, never an empty label", () => {
+  // The web falls back to its own wording; an empty string would print a blank
+  // author above the bubble.
+  assert.equal(senderName({}), undefined);
+  assert.equal(senderName(undefined), undefined);
+  assert.equal(senderName({ first_name: "   " }), undefined);
+});
+
+test("pasteExtension: the common screenshot types keep a truthful extension", () => {
+  assert.equal(pasteExtension("image/png"), "png");
+  assert.equal(pasteExtension("image/jpeg"), "jpg");
+  assert.equal(pasteExtension("image/webp"), "webp");
+  assert.equal(pasteExtension("image/gif"), "gif");
+  // Browsers append parameters; they are not part of the type.
+  assert.equal(pasteExtension("image/png; charset=binary"), "png");
+  assert.equal(pasteExtension("IMAGE/PNG"), "png");
+});
+
+test("pasteExtension: anything unknown lands on a neutral extension", () => {
+  // A whitelist, not a split on "/": the content-type is attacker-controlled and
+  // ends up in a filename. "image/../../etc/passwd" must not become a path.
+  assert.equal(pasteExtension("image/svg+xml"), "bin");
+  assert.equal(pasteExtension("image/../../etc/passwd"), "bin");
+  assert.equal(pasteExtension(""), "bin");
 });
