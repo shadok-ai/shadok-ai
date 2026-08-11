@@ -27,6 +27,7 @@ import { screenShowsWork } from "./detect.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
+import { starCount } from "./stars.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -825,6 +826,10 @@ app.delete("/auth/login", (_req, res) => {
   cancelLogin();
   res.json({ ok: true });
 });
+
+// The header's GitHub button. Proxied through us so the browser never talks to
+// GitHub: no third-party script, no CSP to widen, and no user IP handed over.
+app.get("/stars", async (_req, res) => res.json({ count: await starCount() }));
 // Channel list, persisted server-side per launch directory — survives a wiped
 // browser, another device, a restart or a reboot.
 /**
