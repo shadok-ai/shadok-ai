@@ -51,11 +51,13 @@ would need `PUPPETEER_EXECUTABLE_PATH`, which is a niche not worth a second
 
 ## Verification
 
-I cannot `docker build` from inside the cockpit container (no Docker socket), so
-correctness is enforced by a **build-only CI job** (`.github/workflows/docker.yml`,
-path-gated to Docker changes) that builds the image on the PR. That is the
-authoritative check that the Dockerfile is valid and the browser install
-succeeds.
+The Dockerfile can't be built from inside a cockpit container (no Docker socket).
+It was build-verified once on the PR — a full `docker build` that installed the
+apt deps and downloaded Playwright's Chromium into `/opt/playwright-browsers`
+successfully. No ongoing CI gate is kept for it: shipping the image is a rare
+change, and a Docker build on every relevant PR was judged not worth the
+maintenance surface. Re-verify with `docker build -t shadok-ai .` when the
+Dockerfile changes.
 
 ## Out of scope
 
