@@ -1795,6 +1795,11 @@
   } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
+  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js";
+  window.TOUR_STEPS = TOUR_STEPS;
+  window.bubblePlacement = bubblePlacement;
+  window.unionRect = unionRect;
+  window.visibleSteps = visibleSteps;
   window.extractLiveText = extractLiveText;
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
@@ -5144,6 +5149,102 @@
     if (r.ok) renderTelegram(await r.json());
     else alert((await r.json()).error || "update failed");
   }
+  // --- Guided tour --------------------------------------------------------
+  const TOUR_SEEN_KEY = "shadok.tourSeen";
+  let tourSteps = [];
+  let tourAt = 0;
+  let tourOnEnd = null;
+
+  /** Every element a step points at, in DOM order. */
+  function tourTargets(target) {
+    const sels = Array.isArray(target) ? target : [target];
+    return sels.map((s) => document.querySelector(s)).filter(Boolean);
+  }
+
+  /** On screen = present, not hidden, and actually occupying space. */
+  function tourVisible(target) {
+    return tourTargets(target).some((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+  }
+
+  function paintTourStep() {
+    const step = tourSteps[tourAt];
+    if (!step) return endTour();
+    const overlay = $("tourOverlay");
+    $("tourTitle").textContent = step.title;
+    $("tourBody").textContent = step.body;
+    $("tourCount").textContent = `${tourAt + 1}/${tourSteps.length}`;
+    $("tourNext").textContent = tourAt === tourSteps.length - 1 ? "Done" : "Next ›";
+
+    if (step.target === null) {
+      overlay.classList.remove("spotlight");
+      $("tourBubble").style.top = $("tourBubble").style.left = "";
+      return;
+    }
+    const rects = tourTargets(step.target).map((el) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, left: r.left, width: r.width, height: r.height };
+    });
+    const box = window.unionRect(rects);
+    // The step was filtered in because it was visible; if it vanished since
+    // (a closed tab), skip forward rather than frame nothing.
+    if (!box) { tourAt++; return paintTourStep(); }
+    overlay.classList.add("spotlight");
+    const pad = 6;
+    Object.assign($("tourHole").style, {
+      top: box.top - pad + "px",
+      left: box.left - pad + "px",
+      width: box.width + pad * 2 + "px",
+      height: box.height + pad * 2 + "px",
+    });
+    const b = $("tourBubble").getBoundingClientRect();
+    const p = window.bubblePlacement({
+      target: box,
+      bubble: { width: b.width || 340, height: b.height || 160 },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      gap: 12,
+    });
+    Object.assign($("tourBubble").style, { top: p.top + "px", left: p.left + "px" });
+  }
+
+  /** Start the tour. `onEnd` runs once, whether it is completed or skipped. */
+  function startTour(onEnd) {
+    // window.visibleSteps comes from the ESM bridge, which runs AFTER this
+    // classic script — so this must never be called at parse time (invariant 10).
+    tourSteps = window.visibleSteps(window.TOUR_STEPS, tourVisible);
+    if (!tourSteps.length) { onEnd?.(); return; }
+    tourOnEnd = onEnd ?? null;
+    tourAt = 0;
+    $("tourOverlay").hidden = false;
+    paintTourStep();
+  }
+
+  function endTour() {
+    $("tourOverlay").hidden = true;
+    $("tourOverlay").classList.remove("spotlight");
+    try { localStorage.setItem(TOUR_SEEN_KEY, "1"); } catch { /* private mode */ }
+    const done = tourOnEnd;
+    tourOnEnd = null;
+    done?.();
+  }
+
+  $("tourNext").addEventListener("click", () => { tourAt++; paintTourStep(); });
+  $("tourSkip").addEventListener("click", endTour);
+  // A click on the overlay itself — including through the hole, which has
+  // pointer-events: none — ends it. Nobody is trapped in a tutorial.
+  $("tourOverlay").addEventListener("click", (e) => { if (e.target === $("tourOverlay")) endTour(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("tourOverlay").hidden) { endTour(); e.preventDefault(); }
+  });
+  // Re-place on resize: a rotated phone moves every target.
+  window.addEventListener("resize", () => { if (!$("tourOverlay").hidden) paintTourStep(); });
+  $("tourReplay").addEventListener("click", () => {
+    $("moreMenu").hidden = true;
+    startTour(null);
+  });
+
   // --- Sign-in card -------------------------------------------------------
   // Opened at exactly two moments: on load when /auth reports signed out, and
   // on a `start` refused with code "logged-out". Never otherwise.

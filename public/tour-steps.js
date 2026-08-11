@@ -48,7 +48,11 @@ export const TOUR_STEPS = [
       "🔑 secrets injected into agents that need them · 👤 profiles (role, guardrails, model) · " +
       "⏰ scheduled prompts for monitoring · Telegram settings · 🔔 notifications · " +
       "⋯ for the diff of what an agent changed.",
-    target: ".hdr-tools",
+    // NOT `.hdr-tools`, which is `display: contents` on desktop and therefore
+    // generates no box at all — its rect is all zeros, so the step would have
+    // been dropped as "not visible" on the very layout where the toolbar is
+    // most obvious. Framing the buttons themselves works on both layouts.
+    target: ["#secretsBtn", "#profilesBtn", "#cronBtn", "#telegramBtn", "#muteNotif", "#moreBtn"],
   },
   {
     id: "quota",
