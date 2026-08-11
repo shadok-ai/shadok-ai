@@ -777,7 +777,7 @@ app.get("/auth", async (_req, res) => res.json(await authStatus()));
 app.post("/auth/login", async (_req, res) => {
   const r = await startLogin();
   if ("error" in r) return res.status(502).json(r);
-  res.json(r);
+  res.json(r);   // {url} or {alreadySignedIn:true} — the latter spawns nothing
 });
 
 app.post("/auth/code", async (req, res) => {
@@ -2036,7 +2036,16 @@ wss.on("connection", (ws: WebSocket) => {
           // allowed to start without one", and then sat on the first-run screen
           // for a day. `code` lets a machine client classify the refusal
           // without matching on message text (same contract as "busy").
-          if (!(await authStatus()).loggedIn) {
+          // Only a state we OBSERVED refuses a spawn. A probe that failed
+          // ("unknown") means we could not look, not that the instance is
+          // signed out — punishing the user for our own flakiness would block
+          // an agent on a machine that is perfectly fine. The seeding already
+          // removed the silent-zombie failure this guard was protecting
+          // against, and an agent spawned without credentials now fails loudly.
+          const auth = await authStatus();
+          if (auth.state === "unknown")
+            console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
+          if (auth.state === "signed-out") {
             // Telling the user is the whole point: a cron refused at 4am must
             // not be discovered a day later. Deduplicated inside, so a
             // five-minute cron does not turn one sign-out into a flood.

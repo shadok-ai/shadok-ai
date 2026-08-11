@@ -13,27 +13,44 @@ import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child
  * See docs/superpowers/specs/2026-08-08-claude-onboarding-design.md.
  */
 
+/**
+ * Three states, not two.
+ *
+ * "I observed that it is signed out" and "I could not look" are different
+ * facts, and collapsing them was a real bug: `claude auth status` takes ~850ms
+ * and can fail (timeout, truncated output, a busy machine), which produced an
+ * empty stdout, which read as *signed out* — so the cockpit popped its sign-in
+ * card and spawned a `claude auth login` child on an instance that was
+ * perfectly signed in. Only `signed-out` is ever asserted; `unknown` is
+ * reported as such and acted on conservatively but never announced to the user.
+ */
+export type AuthState = "signed-in" | "signed-out" | "unknown";
+
 export interface AuthStatus {
+  /** True only for `signed-in`. Kept for callers that just need a boolean. */
   loggedIn: boolean;
+  state: AuthState;
   authMethod?: string;
   email?: string;
   subscriptionType?: string;
 }
 
-/** Pure: `claude auth status --json`. Anything unreadable reads as logged out. */
+/** Pure: `claude auth status --json`. Unreadable output is `unknown`, NOT signed out. */
 export function parseAuthStatus(stdout: string): AuthStatus {
   try {
     const j = JSON.parse(stdout);
-    if (!j || typeof j !== "object" || Array.isArray(j)) return { loggedIn: false };
-    if (j.loggedIn !== true) return { loggedIn: false };
+    if (!j || typeof j !== "object" || Array.isArray(j))
+      return { loggedIn: false, state: "unknown" };
+    if (j.loggedIn !== true) return { loggedIn: false, state: "signed-out" };
     return {
       loggedIn: true,
+      state: "signed-in",
       ...(typeof j.authMethod === "string" ? { authMethod: j.authMethod } : {}),
       ...(typeof j.email === "string" ? { email: j.email } : {}),
       ...(typeof j.subscriptionType === "string" ? { subscriptionType: j.subscriptionType } : {}),
     };
   } catch {
-    return { loggedIn: false };
+    return { loggedIn: false, state: "unknown" };
   }
 }
 
@@ -82,14 +99,23 @@ export function invalidateAuthStatus(): void {
   cached = null;
 }
 
-export async function authStatus(force = false): Promise<AuthStatus> {
-  if (!force && cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
-  const status = await new Promise<AuthStatus>((resolve) => {
+const probe = (): Promise<AuthStatus> =>
+  new Promise((resolve) => {
     execFile("claude", ["auth", "status", "--json"], { timeout: 15_000 }, (_err, stdout) =>
       resolve(parseAuthStatus(stdout ?? "")),
     );
   });
-  cached = { at: Date.now(), status };
+
+export async function authStatus(force = false): Promise<AuthStatus> {
+  if (!force && cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
+  let status = await probe();
+  // One retry, because the probe is a ~850ms process spawn and a busy machine
+  // makes it flake. A single retry turns the common transient failure into a
+  // definite answer instead of a wrong one.
+  if (status.state === "unknown") status = await probe();
+  // NEVER cache "unknown": holding a failed probe for 30s would keep the whole
+  // instance in a doubtful state long after the cause passed.
+  if (status.state !== "unknown") cached = { at: Date.now(), status };
   return status;
 }
 
@@ -127,12 +153,18 @@ export function cancelLogin(): void {
   flow = null;
 }
 
-export async function startLogin(): Promise<{ url: string } | { error: string }> {
+export async function startLogin(): Promise<
+  { url: string } | { alreadySignedIn: true } | { error: string }
+> {
   // Reuse a flow that already printed its URL instead of replacing it. Each
   // flow carries its own PKCE challenge, so restarting would silently kill the
   // link the user is already looking at — which a plain page reload, or a
   // second tab, would otherwise do.
   if (flow && !flow.ended && flow.url) return { url: flow.url };
+  // Never spawn a sign-in on an instance that is already signed in. This is the
+  // backstop for the whole class of "it launched for nothing": whatever led the
+  // caller here, a forced re-check has the last word.
+  if ((await authStatus(true)).state === "signed-in") return { alreadySignedIn: true };
   cancelLogin();
   const child = spawn("claude", ["auth", "login", "--claudeai"], {
     // BROWSER is neutralised: on a desktop host the CLI would otherwise open a

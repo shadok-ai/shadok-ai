@@ -108,7 +108,7 @@ both are silent in the DOM.
 | `src/secrets.ts` | Central secret vault (`~/.shadok-ai/secrets.json`, 600). Profiles reference secrets **by name**; values are injected as env at spawn. `secretWriteVerdict` (pure, tested) is the no-silent-overwrite rule behind `PUT /secrets`: an existing name is refused unless the caller passes `overwrite: true`. HTTP is the only way an AGENT can reach the vault (Telegram's `/secret` calls `setSecret()` directly), so that endpoint is exactly the machine boundary. |
 | `context/secrets-skill/` | The `shadok-secrets` skill, seeded into `~/.claude/skills/` at boot (`seedSecretsSkill`, twin of `seedSchedulerSkill`): lets an agent store a credential it OBTAINED itself. `scripts/secret.py` has `list` and `set NAME --stdin` and **no `get`** — `--stdin` is required so a value can never sit in `argv`, which `ps` exposes machine-wide. |
 | `src/claude-home.ts` | Seeds Claude Code's first-run state in `~/.claude.json` — the globals at boot, `projects[<cwd>]` before **every** spawn (a worktree is a new directory, so a new trust dialog every time) — plus an explicit `tui` in `~/.claude/settings.json`, which kills the fullscreen-renderer upsell. That upsell appears only AFTER a sign-in and is **blocking**, so no signed-out probe can find it: the signed-out screens are not the whole set. PURELY ADDITIVE: a key already present is never overwritten, which is why it needs no Docker gate — contrast `src/ssh.ts` (invariant 21). Atomic write; an unparseable file is left alone rather than "repaired". Pure `seedPlan` / `parseClaudeVersion` tested. |
-| `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs **no PTY**: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. One instance-global flow, two doors (the web card, Telegram `/login`+`/code`). Success is a clean **exit**, never a parsed string (voir invariant 26). Pure `parseAuthStatus` / `parseLoginUrl` / `parseLoginOutcome` tested. |
+| `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs **no PTY**: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. One instance-global flow, two doors (the web card, Telegram `/login`+`/code`). Success is a clean **exit**, never a parsed string (voir invariant 29). Pure `parseAuthStatus` / `parseLoginUrl` / `parseLoginOutcome` tested. |
 | `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). **Docker-only** (`/.dockerenv`): generates an ed25519 key under `~/.shadok-ai/ssh/` — on the `shadok-data` volume, so it survives restart AND recreate — and symlinks `~/.ssh` to it so agents' `git`/`ssh` use it. NO-OP on a normal host (never touches `~/.ssh`). Pure `sshPaths`/`planDotSshWiring`/`inContainer` are unit-tested. Voir invariant 21. |
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow, e.g. no `git commit`) + secrets + model, applied at spawn via `profileArgs`. Stored on the channel (`profile`) → re-applied on resume/restart. SOFT (same OS user, not a sandbox). |
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
@@ -180,8 +180,10 @@ process en cours porte vraiment ; leur écart est ce que l'UI montre comme « at
 next reload »), `prompt-echo`, `pace-blocked` / `pace-hold` / `pace-resumed`,
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
 `stopped`. `error` carries an optional `code` — `"busy"` (prompt refused
-mid-turn) or `"link-refused"` (a `set-parent` the server will not accept) — so a
-machine client can classify a refusal without matching on the message text.
+mid-turn), `"link-refused"` (a `set-parent` the server will not accept) or
+`"logged-out"` (a spawn refused because the instance is not signed in to Claude)
+— so a machine client can classify a refusal without matching on the message
+text.
 
 **HTTP:** `/usage` (5h/7d + pace verdict), `/live` (running sessions),
 `/sessions` `/recover` (resumable), `/diff`, `/channels` `/groups` (GET/PUT,
@@ -518,11 +520,19 @@ Auth section of `docs/architecture.md`).
     never finishing, forever. So success is taken from the child **exiting
     cleanly** after a code was submitted — an observable fact. Two neighbours
     follow the same rule. An invalid code does **not** end the flow (verified: the
-    CLI re-prompts, so a retry reuses the same child and needs no new URL), and
-    `parseAuthStatus` reads anything it cannot parse as *logged out*, because the
-    cost of a spurious card is one click while the cost of a spurious spawn is a
-    zombie agent nobody notices for a day. Generalise it: when a state can be read
-    from an exit code, a file, or an API, prefer that over the prose next to it.
+    CLI re-prompts, so a retry reuses the same child and needs no new URL).
+    Generalise it: when a state can be read from an exit code, a file, or an API,
+    prefer that over the prose next to it.
+    **Corollary, learned the hard way one day later: "I observed it is signed
+    out" and "I could not look" are DIFFERENT facts.** `parseAuthStatus` first
+    collapsed them, reading unparseable output as *signed out* on the argument
+    that a spurious card costs one click. It does not: the card **spawns a
+    `claude auth login` child** and the same verdict **refuses every spawn**. And
+    the probe is a ~850ms process spawn whose error `execFile` was silently
+    dropping, so a busy machine popped the sign-in card on instances that were
+    signed in the whole time. `AuthState` is now three-valued; only `signed-out`
+    is ever asserted, `unknown` retries once, is never cached, never opens the
+    card and never blocks a spawn.
 
 30. **On a phone the viewport is THREE different rectangles, and CSS only knows
     two of them.** The cockpit is a fixed chassis, so its height is load-bearing:
