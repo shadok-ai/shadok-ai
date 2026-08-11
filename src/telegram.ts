@@ -52,7 +52,9 @@ const MSG_LIMIT = 4000; // Telegram hard limit is 4096; leave headroom.
 
 // Downloaded Telegram attachments live OUTSIDE any repo/worktree (never in a
 // diff, never committed by accident). Claude reads them by absolute path.
-const MEDIA_DIR = path.join(SHADOK_DIR, "media");
+// Exporté : le cockpit web y dépose aussi les images collées, pour que les
+// deux surfaces partagent un seul dossier (et une seule purge).
+export const MEDIA_DIR = path.join(SHADOK_DIR, "media");
 const TG_FILE_LIMIT = 20 * 1024 * 1024; // Bot API getFile hard limit
 const MEDIA_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // purge after 30 days
 
@@ -118,6 +120,19 @@ export function shouldReattachBridge(o: {
   if (o.chatId == null) return false;
   if (o.hasBridge) return false;        // already connected
   return o.sessionAlive;
+}
+
+/**
+ * The display name of whoever sent a Telegram message, for the web cockpit's
+ * author label. Telegram guarantees none of these fields, so the caller must be
+ * able to fall back: an empty string would print a blank author above a bubble,
+ * which reads as a bug rather than as "unknown". Pure — unit tested.
+ */
+export function senderName(from?: { first_name?: string; last_name?: string; username?: string }): string | undefined {
+  const full = [from?.first_name, from?.last_name].map((p) => (p ?? "").trim()).filter(Boolean).join(" ");
+  if (full) return full;
+  const handle = (from?.username ?? "").trim();
+  return handle ? "@" + handle : undefined;
 }
 
 export function nextToolsState(arg: string, current: boolean): boolean {
@@ -202,6 +217,27 @@ export function attachmentOf(msg: any): TgAttachment | null {
     };
   }
   return null;
+}
+
+/**
+ * The file extension for an image pasted into the cockpit, from its
+ * `content-type`.
+ *
+ * A WHITELIST, not a split on "/": the header is attacker-controlled and the
+ * result ends up in a filename — `image/../../etc/passwd` must not become a
+ * path. Anything unrecognised gets a neutral `bin`; the agent reads the file by
+ * content anyway, so a wrong-but-harmless extension beats a clever one.
+ */
+export function pasteExtension(contentType: string): string {
+  const type = contentType.split(";")[0].trim().toLowerCase();
+  const known: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",
+    "image/webp": "webp",
+    "image/gif": "gif",
+  };
+  return known[type] ?? "bin";
 }
 
 /** Storage name under ~/.shadok-ai/media: keep the original name so Claude
@@ -896,8 +932,11 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     return openBridge(key, chatId, threadId, { resumeId: saved?.sessionId, name, profile: saved?.profile ?? undefined });
   };
 
-  const promptTo = (b: Bridge, text: string) => {
-    if (b.ready && b.ws.readyState === WebSocket.OPEN) b.ws.send(JSON.stringify({ type: "prompt", text }));
+  // `from`: who typed it, carried so the OTHER clients (the web cockpit) can
+  // name the author instead of showing an anonymous "pilot (elsewhere)".
+  const promptTo = (b: Bridge, text: string, from?: string) => {
+    if (b.ready && b.ws.readyState === WebSocket.OPEN)
+      b.ws.send(JSON.stringify({ type: "prompt", text, ...(from ? { from } : {}) }));
     else b.pending.push(text);
   };
 
@@ -925,7 +964,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
 
   // A flushed album: download everything, then ONE prompt with all the paths.
   // One failed file doesn't sink the album — it's reported, the rest is sent.
-  const albums = makeAlbumBuffer<{ b: Bridge; att: TgAttachment; caption?: string }>(async (_gid, items) => {
+  const albums = makeAlbumBuffer<{ b: Bridge; att: TgAttachment; caption?: string; from?: string }>(async (_gid, items) => {
     const b = items[0].b;
     const caption = items.find((i) => i.caption)?.caption;
     const ok: { path: string; kind: "image" | "file" }[] = [];
@@ -938,7 +977,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       }
     }
     if (failed.length) reply(b.chatId, b.threadId, "⚠️ téléchargement raté : " + failed.join(", "));
-    if (ok.length) promptTo(b, attachmentPrompt(ok, caption));
+    if (ok.length) promptTo(b, attachmentPrompt(ok, caption), items.find((i) => i.from)?.from);
     else b.typing.stop(); // rien à envoyer : ne pas laisser « typing » tourner
   });
 
@@ -1292,12 +1331,12 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       const caption = typeof msg.caption === "string" ? msg.caption : undefined;
       if (msg.media_group_id) {
         // Album: buffer, flushed as ONE prompt once the group settles.
-        albums.add(`${key}:${msg.media_group_id}`, { b, att, caption });
+        albums.add(`${key}:${msg.media_group_id}`, { b, att, caption, from: senderName(msg.from) });
         return;
       }
       try {
         const p = await downloadAttachment(att);
-        promptTo(b, attachmentPrompt([{ path: p, kind: att.kind }], caption));
+        promptTo(b, attachmentPrompt([{ path: p, kind: att.kind }], caption), senderName(msg.from));
       } catch (e: any) {
         b.typing.stop();
         await reply(
@@ -1319,7 +1358,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       else b.pendingActions.push(wsMsg);
       return;
     }
-    promptTo(b, msg.text);
+    promptTo(b, msg.text, senderName(msg.from));
   };
 
   const handleCallback = async (cq: any) => {

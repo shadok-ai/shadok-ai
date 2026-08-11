@@ -51,6 +51,9 @@ import {
   isStalePreface,
   announceLoggedOut,
   resetLoggedOutNotice,
+  attachmentPrompt,
+  pasteExtension,
+  MEDIA_DIR,
   type TelegramHandle,
 } from "./telegram.js";
 import { migrateTgBindings } from "./channels.js";
@@ -156,6 +159,8 @@ process.on("exit", () => releaseInstanceLock());
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
+/** A pasted screenshot is a few hundred kB; past this it is not a paste. */
+const PASTE_LIMIT = "12mb";
 
 // ── Optional GUI password ────────────────────────────────────────────────
 // If SHADOK_GUI_PASSWORD is set (at startup, via env or the CLI --password
@@ -643,6 +648,34 @@ app.get(["/", "/index.html"], (_req, res) => {
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
   res.type("html").send(injectNonce(html, nonce));
+});
+
+/**
+ * An image pasted into the composer. The web had no way to hand a file to an
+ * agent at all — only Telegram did — so a screenshot meant saving it somewhere
+ * and typing the path by hand.
+ *
+ * Same destination as the Telegram attachments (`MEDIA_DIR`): one folder, one
+ * purge, and the agent reads the file by absolute path exactly the same way.
+ *
+ * `requestFromBrowser` (stricter than the WS origin guard, cf. the profile
+ * guardrails): this route WRITES a file, so an `Origin`-less caller — a script,
+ * a curl — has no business here even on loopback.
+ */
+app.post("/paste", express.raw({ type: "image/*", limit: PASTE_LIMIT }), (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
+  const body = req.body as Buffer;
+  if (!Buffer.isBuffer(body) || !body.length) return res.status(400).json({ error: "empty body" });
+  const ext = pasteExtension(String(req.headers["content-type"] ?? ""));
+  try {
+    fs.mkdirSync(MEDIA_DIR, { recursive: true });
+    const file = path.join(MEDIA_DIR, `paste-${randomUUID()}.${ext}`);
+    fs.writeFileSync(file, body);
+    // The very wording Telegram already uses, so an agent sees one format.
+    res.json({ path: file, line: attachmentPrompt([{ path: file, kind: "image" }]) });
+  } catch (e) {
+    res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 app.use(express.static(path.join(__dirname, "..", "public")));
@@ -1209,7 +1242,10 @@ type ClientMessage =
       mirror?: boolean;
     }
   /** `force`: envoyer malgré un dépassement du rythme. Vaut pour ce message seul. */
-  | { type: "prompt"; text: string; force?: boolean }
+  /** `from`: display name of whoever typed it, when a client knows it (the
+   *  Telegram bridge does). Echoed to the OTHER clients so the web can name the
+   *  author instead of an anonymous "pilot (elsewhere)". */
+  | { type: "prompt"; text: string; force?: boolean; from?: string }
   | { type: "choose"; n: number }
   | { type: "toggle"; n: number }
   | { type: "confirm" }
@@ -2264,7 +2300,11 @@ wss.on("connection", (ws: WebSocket) => {
           // dump de sa garde) noyait la réponse dans les deux interfaces. La
           // marque dans le contenu assure le même masquage à la relecture.
           if (origin !== "cron")
-            broadcast(session, { type: "prompt-echo", text, ...(origin ? { origin } : {}) }, ws);
+            broadcast(
+              session,
+              { type: "prompt-echo", text, ...(origin ? { origin } : {}), ...(msg.from ? { from: msg.from } : {}) },
+              ws,
+            );
           session.busy = true;
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));

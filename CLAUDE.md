@@ -114,6 +114,7 @@ both are silent in the DOM.
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
 | `public/index.html` | The entire web client (no framework, no build). Agents (la création est une **popin** `#setupOverlay`, profile-first : une grille de cartes, le reste replié ; le canal ne naît qu'au « Start agent », cf. invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
 | `public/live-text.js` | Pure `extractLiveText(screen)` — pulls the in-flight assistant text block from the TUI screen for the web live preview. ESM: loaded by the browser (bridged to `window.extractLiveText`) AND imported by `test/live-text.test.ts`. |
+| `public/echo-author.js` | Pure `echoAuthor(msg)` — the author label above a prompt that came from ANOTHER client: the sender's name when the emitting client knows it (Telegram does), else its origin, else the generic wording. ESM: loaded by the browser AND imported by `test/echo-author.test.ts`. |
 | `public/notify.js` | Pure `notifyState(channels, {hidden, phase})` → `{color, badge, blink}` — la décision favicon/titre/clignotement. Le badge ne clignote que si l'onglet navigateur est caché ET qu'un canal **non muté** attend une réponse ; les deux phases restent visibles (un timer étranglé par le navigateur ne doit jamais rendre la page calme). ESM : chargé par le navigateur ET importé par `test/notify.test.ts`. |
 | `public/profile-card.js` | Pure `profileBlurb` / `profileBadges` — the labels a profile card shows, derived from `systemPrompt` / `deny` / `model` / `secrets` (nothing added to `Profile`) — plus `defaultAgentName(profile, cwd)`, the name proposed for a new agent (profile → directory → `"agent"`). ESM: loaded by the browser AND imported by `test/profile-card.test.ts`. |
 | `public/gauge-dial.js` | Pure `dialPos` / `dialAngle` / `dialColor` / `arcSegments` / `dialTitle` — the geometry of the 240° quota dial, whose centre is the ideal pace and whose right end is exhaustion. ESM: loaded by the browser AND imported by `test/gauge-dial.test.ts`. |
@@ -199,7 +200,10 @@ GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
 `/profiles/prompt` (PUT) is the only profile write an agent can make — a
 `systemPrompt`, its own or, under the lead profile, any.
 `/telegram` (GET/PUT — bot config from the GUI), `/version`,
-`/autoupdate`, `/permission-mode`, `/login`, `/vendor/marked.js`.
+`/autoupdate`, `/permission-mode`, `/login`, `/vendor/marked.js`,
+`/paste` (POST — an image pasted into the composer; lands in the same
+`MEDIA_DIR` as Telegram attachments and returns the ready-made
+`[Image jointe : …]` line. Browser-origin only: it writes a file).
 
 Everything except `/login` sits behind the optional password gate (see the
 Auth section of `docs/architecture.md`).
