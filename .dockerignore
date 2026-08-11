@@ -1,0 +1,4 @@
+# The image installs shadok-ai from npm and COPYs nothing from the build
+# context, so send an empty context — the build never reads these anyway, and an
+# empty context keeps `docker build` fast and free of the repo's own secrets.
+*

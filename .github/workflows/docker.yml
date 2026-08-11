@@ -1,0 +1,26 @@
+name: Docker image
+
+# Build the official image whenever something that affects it changes, so a
+# broken Dockerfile can never land. Build-only (no push) — publishing the image
+# is out of scope here. Path-gated so ordinary PRs don't pay the browser-install
+# build time.
+
+on:
+  pull_request:
+    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml]
+  push:
+    branches: [main]
+    paths: [Dockerfile, .dockerignore, .github/workflows/docker.yml]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: shadok-ai:ci
