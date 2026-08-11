@@ -1212,6 +1212,35 @@
     backdrop-filter: blur(2px);
   }
   .overlay[hidden] { display: none; }
+  /* Above the other popins: during the tour it is the thing being interacted
+     with, and the sign-in card may already be on screen behind it. */
+  #tourOverlay { z-index: 60; }
+  #tourBubble {
+    max-width: 340px;
+    background: var(--bg-raised);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+  }
+  #tourBubble strong { display: block; margin-bottom: 6px; }
+  #tourBubble p { color: var(--text-dim); font-size: 13px; line-height: 1.5; }
+  #tourFoot { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  #tourFoot .spacer { flex: 1; }
+  /* Spotlight mode: the overlay stops centring and stops dimming — the hole
+     does the dimming, so the target stays at full brightness. */
+  #tourOverlay.spotlight { display: block; padding: 0; background: transparent; backdrop-filter: none; }
+  #tourOverlay.spotlight #tourBubble { position: fixed; }
+  #tourHole {
+    position: fixed;
+    border-radius: 10px;
+    box-shadow: 0 0 0 9999px rgba(8, 9, 13, 0.72);
+    /* Clicks in the hole fall through to the overlay, which ends the tour —
+       the same "click outside" gesture as everywhere else. */
+    pointer-events: none;
+    transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
+  }
+  #tourOverlay:not(.spotlight) #tourHole { display: none; }
   /* A real OAuth URL is ~400 chars. Shown in full on purpose — a headless
      server's operator often has to carry it to another device by hand — so it
      has to wrap instead of pushing the panel off screen. The page sets no <a>
@@ -1373,6 +1402,7 @@
     <button id="moreBtn" class="icon" title="More">⋯</button>
     <div id="moreMenu" hidden>
       <button id="toggleDiff">Diff</button>
+      <button id="tourReplay">Guided tour</button>
     </div>
   </div>
   </div>
@@ -1631,6 +1661,23 @@
   </div>
 </div>
 
+<!-- The guided tour. ONE overlay, two modes: centred (the welcome card, using
+     .overlay's own flex centring) and spotlight (.spotlight), where the dimming
+     comes from #tourHole's huge box-shadow instead of the overlay background. -->
+<div id="tourOverlay" class="overlay" hidden>
+  <div id="tourHole" aria-hidden="true"></div>
+  <div id="tourBubble" role="dialog" aria-labelledby="tourTitle">
+    <strong id="tourTitle"></strong>
+    <p id="tourBody"></p>
+    <div id="tourFoot">
+      <span id="tourCount" class="check-hint"></span>
+      <span class="spacer"></span>
+      <button id="tourSkip">Skip</button>
+      <button id="tourNext" class="primary">Next ›</button>
+    </div>
+  </div>
+</div>
+
 <main>
   <nav id="tabbar" aria-label="Agents">
     <div class="label side-label">Agents</div>
@@ -1758,6 +1805,11 @@
   import { notifyState, BLINK_MS } from "/notify.js";
   import { echoAuthor } from "/echo-author.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
+  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js";
+  window.TOUR_STEPS = TOUR_STEPS;
+  window.bubblePlacement = bubblePlacement;
+  window.unionRect = unionRect;
+  window.visibleSteps = visibleSteps;
   window.extractLiveText = extractLiveText;
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
@@ -5215,6 +5267,117 @@
     if (r.ok) renderTelegram(await r.json());
     else alert((await r.json()).error || "update failed");
   }
+  // --- Guided tour --------------------------------------------------------
+  const TOUR_SEEN_KEY = "shadok.tourSeen";
+  let tourSteps = [];
+  let tourAt = 0;
+  let tourOnEnd = null;
+
+  /** Every element a step points at, in DOM order. */
+  function tourTargets(target) {
+    const sels = Array.isArray(target) ? target : [target];
+    return sels.map((s) => document.querySelector(s)).filter(Boolean);
+  }
+
+  /** On screen = present, not hidden, and actually occupying space. */
+  function tourVisible(target) {
+    return tourTargets(target).some((el) => {
+      const r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+  }
+
+  function paintTourStep() {
+    const step = tourSteps[tourAt];
+    if (!step) return endTour();
+    const overlay = $("tourOverlay");
+    $("tourTitle").textContent = step.title;
+    $("tourBody").textContent = step.body;
+    $("tourCount").textContent = `${tourAt + 1}/${tourSteps.length}`;
+    $("tourNext").textContent = tourAt === tourSteps.length - 1 ? "Done" : "Next ›";
+
+    if (step.target === null) {
+      overlay.classList.remove("spotlight");
+      $("tourBubble").style.top = $("tourBubble").style.left = "";
+      return;
+    }
+    const rects = tourTargets(step.target).map((el) => {
+      const r = el.getBoundingClientRect();
+      return { top: r.top, left: r.left, width: r.width, height: r.height };
+    });
+    const box = window.unionRect(rects);
+    // The step was filtered in because it was visible; if it vanished since
+    // (a closed tab), skip forward rather than frame nothing.
+    if (!box) { tourAt++; return paintTourStep(); }
+    overlay.classList.add("spotlight");
+    const pad = 6;
+    Object.assign($("tourHole").style, {
+      top: box.top - pad + "px",
+      left: box.left - pad + "px",
+      width: box.width + pad * 2 + "px",
+      height: box.height + pad * 2 + "px",
+    });
+    const b = $("tourBubble").getBoundingClientRect();
+    const p = window.bubblePlacement({
+      target: box,
+      bubble: { width: b.width || 340, height: b.height || 160 },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      gap: 12,
+    });
+    Object.assign($("tourBubble").style, { top: p.top + "px", left: p.left + "px" });
+  }
+
+  /** Start the tour. `onEnd` runs once, whether it is completed or skipped. */
+  function startTour(onEnd) {
+    // window.visibleSteps comes from the ESM bridge, which runs AFTER this
+    // classic script — so this must never be called at parse time (invariant 10).
+    tourSteps = window.visibleSteps(window.TOUR_STEPS, tourVisible);
+    if (!tourSteps.length) { onEnd?.(); return; }
+    tourOnEnd = onEnd ?? null;
+    tourAt = 0;
+    $("tourOverlay").hidden = false;
+    paintTourStep();
+  }
+
+  function endTour() {
+    $("tourOverlay").hidden = true;
+    $("tourOverlay").classList.remove("spotlight");
+    try { localStorage.setItem(TOUR_SEEN_KEY, "1"); } catch { /* private mode */ }
+    const done = tourOnEnd;
+    tourOnEnd = null;
+    done?.();
+  }
+
+  $("tourNext").addEventListener("click", () => { tourAt++; paintTourStep(); });
+  $("tourSkip").addEventListener("click", endTour);
+  // A click on the overlay itself — including through the hole, which has
+  // pointer-events: none — ends it. Nobody is trapped in a tutorial.
+  $("tourOverlay").addEventListener("click", (e) => { if (e.target === $("tourOverlay")) endTour(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("tourOverlay").hidden) { endTour(); e.preventDefault(); }
+  });
+  // Re-place on resize: a rotated phone moves every target.
+  window.addEventListener("resize", () => { if (!$("tourOverlay").hidden) paintTourStep(); });
+  $("tourReplay").addEventListener("click", () => {
+    $("moreMenu").hidden = true;
+    startTour(null);
+  });
+
+  /**
+   * First load: welcome and tour BEFORE the sign-in card.
+   *
+   * A fresh instance is signed out, so the card would otherwise be the very
+   * first thing anyone sees — asking someone to authorise an OAuth flow before
+   * they know what the thing is. The card is DEFERRED, never skipped: signing
+   * in is not optional, so it opens the moment the tour ends either way.
+   */
+  function maybeStartTour() {
+    let seen = false;
+    try { seen = !!localStorage.getItem(TOUR_SEEN_KEY); } catch { seen = true; }
+    if (seen) { checkAuth(); return; }
+    startTour(() => checkAuth());
+  }
+
   // --- Sign-in card -------------------------------------------------------
   // Opened at exactly two moments: on load when /auth reports signed out, and
   // on a `start` refused with code "logged-out". Never otherwise.
@@ -5461,7 +5624,7 @@
   document.addEventListener("DOMContentLoaded", () => {
     buildDialArcs();
     refreshUsage();
-    checkAuth();
+    maybeStartTour();   // the tour runs first; it calls checkAuth() when it ends
   });
   setInterval(refreshUsage, 60_000);
 

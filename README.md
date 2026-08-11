@@ -92,6 +92,14 @@ Enter to skip; you can add it later from the web UI).
   the card becomes that channel's tab, with the usual menu — mute, reload,
   rename, change profile, mirror to Telegram, close — and closing it brings the
   card back. Desktop only: the agents column is hidden on phones.
+- **Guided tour** — on a browser's first visit, a welcome card explains what
+  shadok-ai is, then a spotlight walks the real controls: the agents column, an
+  agent's ⋯ menu, the toolbar, the quota dials. Skip and Escape end it at any
+  point; ⋯ → *Guided tour* replays it. A step whose target isn't on screen is
+  **dropped rather than faked**, so the phone (no agents column) and an empty
+  cockpit (no agent tab) get a shorter tour instead of a spotlight on nothing.
+  On a brand-new instance it comes **before** the sign-in card — being asked to
+  authorise an OAuth flow before you know what the thing is takes it backwards.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)
