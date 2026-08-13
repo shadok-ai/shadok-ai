@@ -94,6 +94,8 @@ import {
   applyTelegramPatch,
   titleForCwd,
   setTitleForCwd,
+  themeForCwd,
+  setThemeForCwd,
   type TelegramPatch,
 } from "./config.js";
 import { secretsFor, secretNames, setSecret, deleteSecret, secretWriteVerdict } from "./secrets.js";
@@ -791,6 +793,15 @@ app.put("/title", (req, res) => {
   const raw = String(req.body?.title ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
   setTitleForCwd(loadConfig(), process.cwd(), raw);
   res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
+});
+// Colour palette, per launch directory — an accent key ("emerald"…). The setter
+// validates against the known palettes; the default/unknown clears it.
+app.get("/theme", (_req, res) => {
+  res.json({ theme: themeForCwd(loadConfig(), process.cwd()) });
+});
+app.put("/theme", (req, res) => {
+  setThemeForCwd(loadConfig(), process.cwd(), String(req.body?.theme ?? ""));
+  res.json({ theme: themeForCwd(loadConfig(), process.cwd()) });
 });
 // Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
 // back the directory to start the agent in. Sits here so it inherits the same

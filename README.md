@@ -460,6 +460,8 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
+`/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
+key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default),
 `/profiles`, `/secrets`, `/telegram`, `/defaults`, `/version`, `/autoupdate`,
 `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
 returns the cwd to start the tweak agent in), and the sign-in group: `/auth` (GET

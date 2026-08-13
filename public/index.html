@@ -19,13 +19,25 @@
     --text: #d8dae2;
     --text-dim: #7d8293;
     --amber: #f0a848;
-    --amber-soft: rgba(240, 168, 72, 0.12);
+    /* Accent tints derive from --amber via color-mix, so a palette only has to
+       redefine --amber (and --phosphor) and every tinted surface follows. */
+    --amber-soft: color-mix(in srgb, var(--amber) 12%, transparent);
     --phosphor: #ffb45c;
     --ok: #7fc97f;
     --err: #e07a6a;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
   }
+  /* Colour palettes, chosen per instance from the ⋯ menu and stored server-side
+     (like the instance name). Only the accent family changes; the dark base
+     stays constant for readability, and every tinted surface follows because it
+     derives from --amber (color-mix). The default (amber) needs no attribute.
+     Accents are 6-digit hex on purpose — the favicon appends an alpha byte. */
+  :root[data-theme="emerald"] { --amber: #45c58a; --phosphor: #6fe3ab; }
+  :root[data-theme="azure"]   { --amber: #5aa9f0; --phosphor: #86c4ff; }
+  :root[data-theme="violet"]  { --amber: #b98cf0; --phosphor: #d0b0ff; }
+  :root[data-theme="rose"]    { --amber: #f07a9e; --phosphor: #ff9cba; }
+  :root[data-theme="cyan"]    { --amber: #3fc7d4; --phosphor: #6ee3ee; }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   [hidden] { display: none !important; }
   html, body { height: 100%; }
@@ -136,13 +148,13 @@
     transition: background 0.12s, border-color 0.12s;
   }
   header .brand-name:hover {
-    background: rgba(240, 168, 72, 0.12);
-    border-color: rgba(240, 168, 72, 0.5);
+    background: var(--amber-soft);
+    border-color: color-mix(in srgb, var(--amber) 50%, transparent);
   }
   header .brand.editing .brand-name,
   header .brand-name:focus {
     cursor: text;
-    background: rgba(240, 168, 72, 0.16);
+    background: color-mix(in srgb, var(--amber) 16%, transparent);
     border: 1px solid var(--amber);
   }
   /* Pencil cue: hidden until the brand is hovered, gone while editing. */
@@ -323,6 +335,17 @@
   /* The star lives in the header pill on desktop; its menu twin appears only on
      a phone (see the mobile query). */
   #starMenuItem { display: none; }
+  #moreMenu .mm-sep { height: 1px; background: var(--line); margin: 4px 2px; }
+  #moreMenu .mm-label { padding: 2px 4px; font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); }
+  .mm-themes { display: flex; gap: 6px; padding: 2px 4px 4px; }
+  /* Swatch buttons must override `#moreMenu button { width:100% }` — hence the
+     id-scoped selector so specificity wins. */
+  #moreMenu .mm-themes button {
+    width: 20px; height: 20px; min-width: 20px; padding: 0; border-radius: 50%;
+    border: 2px solid transparent; cursor: pointer; background: var(--sw, #888);
+  }
+  #moreMenu .mm-themes button:hover { border-color: var(--text-dim); }
+  #moreMenu .mm-themes button.active { border-color: var(--text); }
   button:hover { border-color: var(--amber); color: var(--amber); }
   button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   button.primary { background: var(--amber); border-color: var(--amber); color: #1a1205; font-weight: 600; }
@@ -438,7 +461,7 @@
   /* Channel states: working / waiting for an answer / unread response. */
   .tab.working { background: var(--amber-soft); animation: breathe 1.6s ease-in-out infinite; }
   .tab.needs-answer {
-    background: rgba(240, 168, 72, 0.28);
+    background: color-mix(in srgb, var(--amber) 28%, transparent);
     color: var(--text);
   }
   .tab.unread {
@@ -503,7 +526,7 @@
   /* Aucune animation permanente : un élément qui clignote ici entrerait en
      concurrence avec les vrais signaux (onglet en attente, jauges) et
      deviendrait du bruit. */
-  #tweakCta:hover { border-color: var(--amber); box-shadow: 0 0 12px rgba(240, 168, 72, 0.18); }
+  #tweakCta:hover { border-color: var(--amber); box-shadow: 0 0 12px color-mix(in srgb, var(--amber) 18%, transparent); }
   #tweakCta:hover .tweak-arrow { transform: translateX(2px); }
   #tweakCta.busy { opacity: 0.7; cursor: default; }
   #tweakCta.failed { border-color: var(--err); background: transparent; }
@@ -730,7 +753,7 @@
   }
   .turn.user .bubble {
     background: var(--amber-soft);
-    border: 1px solid rgba(240, 168, 72, 0.35);
+    border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   }
   .turn.claude .bubble {
     background: var(--bg-inset);
@@ -1040,7 +1063,7 @@
   .chan-actions { margin-left: auto; display: flex; align-items: center; gap: 6px; }
   #chanBar button.icon { padding: 4px 8px; font-size: 14px; line-height: 1; letter-spacing: 0; }
   #chanBar button.icon.stop:hover { border-color: var(--err); color: var(--err); }
-  #chanBar button.icon.on { border-color: var(--amber); color: var(--amber); background: rgba(240, 168, 72, 0.15); }
+  #chanBar button.icon.on { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 15%, transparent); }
   /* Status / Directory / Session / Branch : inline & compact, so the channel
      header stays a thin single line. */
   #chanBar .gauge { flex-direction: row; align-items: baseline; gap: 4px; }
@@ -1433,6 +1456,11 @@
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
            pushed the icons off the row); it reappears here instead. -->
       <button id="starMenuItem">★ Star on GitHub</button>
+      <div class="mm-sep"></div>
+      <div class="mm-label">Palette</div>
+      <!-- Colour swatches, filled by JS from THEMES; picking one re-themes the
+           whole cockpit and persists per instance. -->
+      <div id="themeRow" class="mm-themes"></div>
     </div>
   </div>
   <!-- GitHub's official button rebuilt locally: its real widget is a script
@@ -2876,26 +2904,94 @@
     titleBase = cockpitTitle || BASE_TITLE;
     paint(); // re-stamp document.title (with any notification badge)
   }
+
+  // ── Colour palette: per instance, persisted server-side (like the name) ──
+  // Each theme is an accent; the CSS blocks (:root[data-theme=…]) redefine the
+  // accent family and everything tinted follows. "amber" is the default and
+  // carries NO attribute, so it falls back to :root.
+  const THEMES = [
+    { key: "amber",   label: "Amber",   color: "#f0a848" },
+    { key: "emerald", label: "Emerald", color: "#45c58a" },
+    { key: "azure",   label: "Azure",   color: "#5aa9f0" },
+    { key: "violet",  label: "Violet",  color: "#b98cf0" },
+    { key: "rose",    label: "Rose",    color: "#f07a9e" },
+    { key: "cyan",    label: "Cyan",    color: "#3fc7d4" },
+  ];
+  let cockpitTheme = "amber";
+  function applyTheme(key) {
+    cockpitTheme = THEMES.some((t) => t.key === key) ? key : "amber";
+    const root = document.documentElement;
+    if (cockpitTheme === "amber") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", cockpitTheme);
+    renderThemeSwatches();
+    paint(); // the themed favicon reads --amber/--bg live
+  }
+  function renderThemeSwatches() {
+    const row = $("themeRow");
+    if (!row) return;
+    row.replaceChildren();
+    for (const t of THEMES) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.title = t.label;
+      b.setAttribute("aria-label", t.label);
+      b.style.setProperty("--sw", t.color);
+      if (t.key === cockpitTheme) b.classList.add("active");
+      b.addEventListener("click", (e) => {
+        e.stopPropagation(); // keep the menu open so palettes can be compared
+        saveTheme(t.key);
+      });
+      row.appendChild(b);
+    }
+  }
+  async function saveTheme(key) {
+    applyTheme(key); // optimistic; the server echo reconciles below
+    try {
+      const res = await fetch("/theme", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ theme: key }),
+      });
+      const j = await res.json();
+      applyTheme(j && j.theme ? j.theme : "amber");
+    } catch {
+      /* offline: keep the optimistic theme, the next reload re-fetches */
+    }
+  }
+  renderThemeSwatches(); // paint the swatches now; the load fetch sets the active one
+
+  /** A themed CSS custom property, read live so the favicon follows the palette.
+     A standalone SVG data-URI can't see the page's variables, so we inline the
+     resolved value. Palette accents are 6-digit hex (see the theme blocks). */
+  function themeColor(name, fallback) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    return v || fallback;
+  }
   /** SVG data-URI favicon: the base mark, plus a coloured corner pip if given. */
   /** L'indicateur remplit TOUT le favicon : au repos, fond sombre + chevron
-   *  ambre ; pour un état (rouge = à faire, ambre = à lire) tout le carré prend
+   *  accent ; pour un état (rouge = à faire, ambre = à lire) tout le carré prend
    *  la couleur, chevron sombre par-dessus. Bien plus visible qu'une pastille. */
   function faviconSVG(bg) {
+    const base = themeColor("--bg", "#14161d");
+    const accent = themeColor("--amber", "#f0a848");
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
-      `<rect width="32" height="32" rx="7" fill="${bg || "#14161d"}"/>` +
-      `<text x="16" y="25" font-family="monospace" font-size="26" font-weight="700" fill="${bg ? "#14161d" : "#f0a848"}" text-anchor="middle">›</text>` +
+      `<rect width="32" height="32" rx="7" fill="${bg || base}"/>` +
+      `<text x="16" y="25" font-family="monospace" font-size="26" font-weight="700" fill="${bg ? base : accent}" text-anchor="middle">›</text>` +
       `</svg>`;
     return "data:image/svg+xml," + encodeURIComponent(svg);
   }
   /** Favicon « en train de bosser » : un GROS spinner centré qui remplit le
-   *  favicon (piste faible + arc ambre qui tourne). */
+   *  favicon (piste faible + arc accent qui tourne). */
   function faviconWorkingSVG(angle) {
+    const base = themeColor("--bg", "#14161d");
+    const accent = themeColor("--amber", "#f0a848");
+    const track = accent + "38"; // ~0.22 alpha on a 6-digit-hex accent
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
-      `<rect width="32" height="32" rx="7" fill="#14161d"/>` +
-      `<circle cx="16" cy="16" r="11" fill="none" stroke="rgba(240,168,72,0.22)" stroke-width="4"/>` +
-      `<g transform="rotate(${angle} 16 16)"><circle cx="16" cy="16" r="11" fill="none" stroke="#f0a848" stroke-width="4" stroke-linecap="round" stroke-dasharray="34 100"/></g>` +
+      `<rect width="32" height="32" rx="7" fill="${base}"/>` +
+      `<circle cx="16" cy="16" r="11" fill="none" stroke="${track}" stroke-width="4"/>` +
+      `<g transform="rotate(${angle} 16 16)"><circle cx="16" cy="16" r="11" fill="none" stroke="${accent}" stroke-width="4" stroke-linecap="round" stroke-dasharray="34 100"/></g>` +
       `</svg>`;
     return "data:image/svg+xml," + encodeURIComponent(svg);
   }
@@ -4000,6 +4096,11 @@
   fetch("/title")
     .then((r) => r.json())
     .then((j) => applyCockpitTitle(j && j.title ? j.title : null))
+    .catch(() => {});
+  // Same for the colour palette (both are per-instance settings the server owns).
+  fetch("/theme")
+    .then((r) => r.json())
+    .then((j) => applyTheme(j && j.theme ? j.theme : "amber"))
     .catch(() => {});
   // Click outside closes it; clicks inside the menu don't.
   document.addEventListener("click", (e) => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch, titleForCwd } from "../src/config.js";
+import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch, titleForCwd, themeForCwd } from "../src/config.js";
 
 test("effectiveToken: an explicit env var always wins", () => {
   assert.equal(
@@ -90,4 +90,15 @@ test("titleForCwd: null when unset, blank, or another dir", () => {
   assert.equal(titleForCwd({}, "/x"), null);
   assert.equal(titleForCwd({ cockpitTitle: { "/x": "   " } }, "/x"), null);
   assert.equal(titleForCwd({ cockpitTitle: { "/x": "Prod" } }, "/other"), null);
+});
+
+test("themeForCwd: a known non-default palette is returned per dir", () => {
+  assert.equal(themeForCwd({ cockpitTheme: { "/x": "emerald" } }, "/x"), "emerald");
+  assert.equal(themeForCwd({ cockpitTheme: { "/x": "emerald" } }, "/other"), null);
+});
+
+test("themeForCwd: default, unknown, or unset resolve to null", () => {
+  assert.equal(themeForCwd({}, "/x"), null);
+  assert.equal(themeForCwd({ cockpitTheme: { "/x": "amber" } }, "/x"), null); // default stored as absent
+  assert.equal(themeForCwd({ cockpitTheme: { "/x": "chartreuse" } }, "/x"), null); // unknown ignored
 });
