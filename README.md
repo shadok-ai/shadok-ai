@@ -100,6 +100,13 @@ Enter to skip; you can add it later from the web UI).
   cockpit (no agent tab) get a shorter tour instead of a spotlight on nothing.
   On a brand-new instance it comes **before** the sign-in card — being asked to
   authorise an OAuth flow before you know what the thing is takes it backwards.
+- **A lead agent from the start** — an instance with no channel at all gets one:
+  `general`, running the **Shadok-Boss** profile, in the launch directory and
+  without a worktree. It is created at boot, or right after the first sign-in on
+  a brand-new instance (which is signed out at boot, so there is nothing to
+  spawn yet). The condition is "no channel", which makes it idempotent: it never
+  appears twice, and closing every channel brings it back on the next start.
+  Nothing is prompted — the agent waits for you.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)

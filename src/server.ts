@@ -28,6 +28,7 @@ import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { starCount } from "./stars.js";
+import { ensureFirstAgent } from "./first-agent.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -190,6 +191,33 @@ let tgBridge: TelegramHandle = {
 };
 let boundPort = 0;
 const tgCookie = () => (GUI_PASSWORD ? `sk_auth=${AUTH_TOKEN}` : undefined);
+
+/**
+ * Start the instance's lead agent when it has no channel at all.
+ *
+ * Called from two places — the boot callback, and a successful sign-in — because
+ * a brand-new instance is signed OUT at boot and would be skipped there. The
+ * "no channel" condition makes both calls idempotent, so neither needs to know
+ * about the other.
+ */
+async function startFirstAgent(): Promise<void> {
+  try {
+    const why = await ensureFirstAgent({
+      port: boundPort,
+      cookie: tgCookie(),
+      cwd: process.cwd(),
+      // `start` carries no name, so the channel is named once the server has
+      // told us its session id.
+      onReady: (sessionId, name) => {
+        upsertChannel({ sessionId, name });
+        console.log(`first agent: started "${name}" (${sessionId.slice(0, 8)})`);
+      },
+    });
+    if (why !== "first-boot") console.log(`first agent: skipped (${why})`);
+  } catch (e) {
+    console.log(`first agent: could not start — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
 function restartTelegram(): void {
   tgBridge.stop();
   tgBridge = startTelegram(boundPort, tgCookie());
@@ -831,6 +859,10 @@ app.post("/auth/code", async (req, res) => {
   const r = await submitLoginCode(code);
   if (r.ok) resetLoggedOutNotice(); // the next sign-out gets announced again
   res.status(r.ok ? 200 : 400).json(r);
+  // A brand-new instance was signed out at boot, so this is where its lead
+  // agent is really born. Answer the browser FIRST — the spawn takes seconds
+  // and the sign-in card has no reason to wait for it.
+  if (r.ok) void startFirstAgent();
 });
 
 app.delete("/auth/login", (_req, res) => {
@@ -2635,4 +2667,8 @@ server.listen(port, HOST, () => {
   primeCrons();
   const cronTimer = setInterval(cronTick, 30_000);
   cronTimer.unref();
+  // The lead agent, if this instance has none. Deferred a beat so it dials a
+  // server that is already accepting, and never awaited: a cockpit that starts
+  // without its lead agent is a far smaller problem than a boot that hangs.
+  setTimeout(() => void startFirstAgent(), 1500).unref?.();
 });
