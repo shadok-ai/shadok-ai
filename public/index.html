@@ -320,6 +320,9 @@
     z-index: 30;
   }
   #moreMenu button { width: 100%; text-align: left; }
+  /* The star lives in the header pill on desktop; its menu twin appears only on
+     a phone (see the mobile query). */
+  #starMenuItem { display: none; }
   button:hover { border-color: var(--amber); color: var(--amber); }
   button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   button.primary { background: var(--amber); border-color: var(--amber); color: #1a1205; font-weight: 600; }
@@ -1066,6 +1069,10 @@
        flush against the right edge. */
     .hdr-tools { display: flex; flex: 1 0 100%; align-items: center; gap: 6px; }
     header button.icon { padding: 5px 7px; }
+    /* The star pill is the widest tool and would push an icon off the row; on a
+       phone it moves into the ⋯ menu (#starMenuItem) instead. */
+    #starBtn { display: none; }
+    #moreMenu #starMenuItem { display: block; }
     .quota { min-width: 46px; }
     .dial { width: 46px; height: 36px; }
     /* A bit more room for a thumb, a bit less margin wasted on a narrow screen. */
@@ -1423,6 +1430,9 @@
     <div id="moreMenu" hidden>
       <button id="toggleDiff">Diff</button>
       <button id="tourReplay">Guided tour</button>
+      <!-- On a phone the header star pill is dropped (it's the widest tool, and
+           pushed the icons off the row); it reappears here instead. -->
+      <button id="starMenuItem">★ Star on GitHub</button>
     </div>
   </div>
   <!-- GitHub's official button rebuilt locally: its real widget is a script
@@ -1756,6 +1766,11 @@
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)">⏰</button>
         <button id="chanStop" class="icon stop" title="End session">⏹️</button>
         <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent">⌨️</button>
+        <!-- The per-agent menu (rename, profile, mirror, report to, close). It's
+             the same menu a right-click / long-press on a tab opens — but with the
+             sidebar hidden on a phone there was no way to reach it, so it lives
+             here too. -->
+        <button id="chanMenu" class="icon" title="Agent menu — rename, profile, mirror, close…" aria-haspopup="true">⋯</button>
       </span>
     </div>
 
@@ -4680,6 +4695,16 @@
   $("chanStop").addEventListener("click", () => {
     sendTo(active, { type: "stop" });
   });
+  // The per-agent menu, opened from the channel header — the same one a
+  // right-click / long-press on a tab shows. stopPropagation so the document
+  // click closer (which runs openTabMenu's own guard) doesn't fire for this
+  // click; anchored just under the button, openTabMenu clamps it on-screen.
+  $("chanMenu").addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!active) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    openTabMenu(active, r.right, r.bottom + 4);
+  });
 
   // "⋯" overflow menu (rarely-used actions, e.g. Diff). stopPropagation on the
   // trigger so the same click doesn't immediately hit the document closer; a
@@ -4689,6 +4714,11 @@
     $("moreMenu").hidden = !$("moreMenu").hidden;
   });
   document.addEventListener("click", () => { $("moreMenu").hidden = true; });
+  // The star's menu twin (shown only on a phone) opens the repo in a new tab.
+  $("starMenuItem").addEventListener("click", () => {
+    $("moreMenu").hidden = true;
+    window.open("https://github.com/shadok-ai/shadok-ai", "_blank", "noopener");
+  });
 
   // ── Diff panel ──────────────────────────────────────────
   function colorDiff(text) {
