@@ -2895,7 +2895,7 @@
     }
   }
 
-  // ── Window title: tokens consumed ───────────────────────
+  // ── Window title: instance name, then tokens consumed ───────────────────
   const BASE_TITLE = document.title;
 
   // ── Notifications: favicon badge + title badge + sound ──────────────
@@ -2904,6 +2904,20 @@
   // channel you're not already looking at. All driven off setTabMood.
   const favicon = $("favicon");
   let titleBase = BASE_TITLE; // current title without the notification badge
+  let titleTokens = 0; // summed tokens across open channels (0 = none yet)
+
+  // The tab title is: INSTANCE NAME first, then the tokens consumed —
+  // "Prod — 12.3k tok". Name alone when there are no tokens yet; the default
+  // "shadok-ai — cockpit" only when neither a custom name nor tokens exist.
+  // Both the name change and the token tick funnel through here, so one no
+  // longer clobbers the other (they used to fight over titleBase).
+  function recomposeTitle() {
+    const name = cockpitTitle || "shadok-ai";
+    titleBase = titleTokens
+      ? name + " — " + fmtTokens(titleTokens) + " tok"
+      : (cockpitTitle || BASE_TITLE);
+    paint(); // re-stamp document.title (with any notification badge)
+  }
 
   // ── Cockpit name: editable header brand, persisted server-side ──────────
   // Several cockpits (one per launch directory) are easy to confuse; a custom
@@ -2914,8 +2928,7 @@
     cockpitTitle = title && title.trim() ? title.trim() : null;
     const brandName = $("brandName");
     if (brandName && !brandName.isContentEditable) brandName.textContent = cockpitTitle || "shadok-ai";
-    titleBase = cockpitTitle || BASE_TITLE;
-    paint(); // re-stamp document.title (with any notification badge)
+    recomposeTitle(); // name goes first in the tab title, tokens after
     if (typeof scheduleReflow === "function") scheduleReflow(); // name width changed
   }
 
@@ -3125,17 +3138,18 @@
   }
 
   /**
-   * Shows the tokens consumed by the open channels in the tab title.
-   * Counts fresh input + cache writes + output; cache READS are excluded —
-   * they re-bill the whole context on every turn and would drown the number.
+   * The tokens consumed by the open channels, shown AFTER the instance name in
+   * the tab title. Counts fresh input + cache writes + output; cache READS are
+   * excluded — they re-bill the whole context on every turn and would drown the
+   * number. The name/tokens composition lives in recomposeTitle.
    */
   function refreshTitle() {
     let sum = 0;
     for (const t of tabs) {
       if (t.tokens) sum += t.tokens.input + t.tokens.cacheCreation + t.tokens.output;
     }
-    titleBase = sum ? fmtTokens(sum) + " tok — shadok-ai" : BASE_TITLE;
-    refreshBadge();
+    titleTokens = sum;
+    recomposeTitle();
   }
 
   /**
