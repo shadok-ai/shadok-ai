@@ -43,6 +43,8 @@ import {
   mergeClientChannels,
   loadTgGroup,
   saveTgGroup,
+  isHomeChannel,
+  homeAdoptionTarget,
   type Channel,
 } from "./channels.js";
 import {
@@ -200,6 +202,22 @@ const tgCookie = () => (GUI_PASSWORD ? `sk_auth=${AUTH_TOKEN}` : undefined);
  * "no channel" condition makes both calls idempotent, so neither needs to know
  * about the other.
  */
+/**
+ * Give a cockpit that predates the `home` flag its home base, without ever
+ * guessing: `homeAdoptionTarget` designates a channel only when exactly one is
+ * already playing the part, and refuses otherwise.
+ */
+function adoptHomeChannel(): void {
+  try {
+    const id = homeAdoptionTarget(loadChannels(), process.cwd());
+    if (!id) return;
+    upsertChannel({ sessionId: id, home: true });
+    console.log(`home channel: adopted the existing "general" (${id.slice(0, 8)})`);
+  } catch {
+    /* a cockpit without a home base still works */
+  }
+}
+
 async function startFirstAgent(): Promise<void> {
   try {
     const why = await ensureFirstAgent({
@@ -209,7 +227,9 @@ async function startFirstAgent(): Promise<void> {
       // `start` carries no name, so the channel is named once the server has
       // told us its session id.
       onReady: (sessionId, name) => {
-        upsertChannel({ sessionId, name });
+        // `home` here rather than in the `start` handler: this is the ONE
+        // channel an instance is born with, and nothing else may mint one.
+        upsertChannel({ sessionId, name, home: true });
         console.log(`first agent: started "${name}" (${sessionId.slice(0, 8)})`);
       },
     });
@@ -983,8 +1003,10 @@ app.put("/channels", (req, res) => {
 app.delete("/channel", async (req, res) => {
   const id = String(req.query.session ?? "").trim();
   if (!id) return res.status(400).json({ error: "session required" });
-  await endChannel(id);
-  res.json({ ok: true });
+  const ok = await endChannel(id);
+  // 409, not 200: the caller asked for something the server will not do, and a
+  // client that believes it succeeded removes a tab the registry still has.
+  res.status(ok ? 200 : 409).json(ok ? { ok } : { ok, error: "the home channel can't be closed" });
 });
 app.get("/groups", (_req, res) => res.json(loadGroups()));
 app.put("/groups", (req, res) => {
@@ -1604,13 +1626,13 @@ function destroySession(s: Live) {
  * notifies clients if one exists. This is what makes ✕ / "End session" / `/end`
  * able to remove a channel that no longer has a running agent.
  */
-async function endChannel(sessionId: string) {
+async function endChannel(sessionId: string): Promise<boolean> {
   const ch = loadChannels().find((c) => c.sessionId === sessionId);
-  // The main channel — a GROUP's General topic (chatId < 0, no threadId) — is
-  // the environment's home base; never delete it. A DM binding also has no
-  // threadId (positive chatId) but is an ordinary channel that MUST stay
-  // closable, so gate on chatId < 0.
-  if (ch?.telegram && ch.telegram.threadId == null && ch.telegram.chatId < 0) return;
+  // The home base is never deleted — see `isHomeChannel` for the two ways a
+  // channel earns that, and why a DM binding is not one of them. The refusal is
+  // RETURNED rather than swallowed: a caller that is told "ok" while nothing
+  // happened drops the tab from its own list and the two views disagree.
+  if (ch && isHomeChannel(ch)) return false;
   removeChannel(sessionId); // registry first, so the sync poll sees it gone
   if (ch?.telegram?.threadId) closeTelegramTopic(ch.telegram.chatId, ch.telegram.threadId);
   const s = sessions.get(sessionId);
@@ -1628,6 +1650,7 @@ async function endChannel(sessionId: string) {
     const outcome = pruneWorktree(repo, worktreeBranch);
     if (outcome !== "none") console.log(`worktree ${worktreeBranch}: ${outcome} on session end`);
   }
+  return true;
 }
 
 function detach(ws: WebSocket, s: Live) {
@@ -2670,5 +2693,8 @@ server.listen(port, HOST, () => {
   // The lead agent, if this instance has none. Deferred a beat so it dials a
   // server that is already accepting, and never awaited: a cockpit that starts
   // without its lead agent is a far smaller problem than a boot that hangs.
+  // Adopt BEFORE the spawn check: an instance whose `general` predates the flag
+  // must be recognised, not given a second one.
+  adoptHomeChannel();
   setTimeout(() => void startFirstAgent(), 1500).unref?.();
 });

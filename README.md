@@ -105,8 +105,13 @@ Enter to skip; you can add it later from the web UI).
   without a worktree. It is created at boot, or right after the first sign-in on
   a brand-new instance (which is signed out at boot, so there is nothing to
   spawn yet). The condition is "no channel", which makes it idempotent: it never
-  appears twice, and closing every channel brings it back on the next start.
-  Nothing is prompted — the agent waits for you.
+  appears twice. Nothing is prompted — the agent waits for you.
+  It is the environment's **home base**: pinned at the top of the list, with no
+  close button and no *Close agent* in its menu. You can still reload, rename,
+  re-profile or mute it — "permanent" should not mean "stuck". A cockpit that
+  already had a `general` at its launch directory adopts it on the next start,
+  and only ever when exactly one channel matches: a wrong adoption would be
+  irreversible from the UI, since that channel becomes the one you cannot close.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)

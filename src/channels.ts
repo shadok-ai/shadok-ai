@@ -19,6 +19,9 @@ export interface Channel {
   repo?: string;
   /** Tab group id (client-owned metadata). */
   group?: number | null;
+  /** The environment's home base: pinned, never closable. Server-owned, so a
+   *  stale client's PUT cannot clear it. See `isHomeChannel`. */
+  home?: boolean;
   /** Present iff the session is bound to a Telegram chat/topic — what IS. */
   telegram?: TgBinding | null;
   /** What the user WANTS: should this channel also live in Telegram?
@@ -56,7 +59,41 @@ export function isMirrored(c: Channel): boolean {
 }
 
 /** Fields the server owns; a browser PUT must never overwrite or drop them. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "parent"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "parent", "home"] as const;
+
+/**
+ * Pure: is this channel the environment's home base — pinned and never closable?
+ *
+ * Two ways to be one, and both are needed. The explicit `home` flag is set on
+ * the lead agent an instance starts life with. The Telegram clause is the rule
+ * that predates the flag and is kept verbatim, so an instance already running
+ * with a bound board does not lose its home base on upgrade.
+ *
+ * The `chatId < 0` half of that clause is load-bearing: a DM binding ALSO has no
+ * threadId, but it is an ordinary channel that must stay closable — treating it
+ * as home once made a bogus second "general" appear.
+ */
+export function isHomeChannel(c: Pick<Channel, "home" | "telegram">): boolean {
+  if (c.home) return true;
+  return !!c.telegram && c.telegram.threadId == null && c.telegram.chatId < 0;
+}
+
+/**
+ * Pure: the channel an existing instance should adopt as its home base, or null.
+ *
+ * For cockpits that predate the flag. It only ever designates a channel already
+ * playing the part — named `general`, in the launch directory, with no worktree
+ * — and **refuses when it cannot tell**: zero candidates, or several. A wrong
+ * adoption is irreversible from the UI, since the channel becomes precisely the
+ * one that cannot be closed; doing nothing always stays recoverable.
+ */
+export function homeAdoptionTarget(channels: Channel[], launchCwd: string): string | null {
+  if (channels.some((c) => isHomeChannel(c))) return null;
+  const candidates = channels.filter(
+    (c) => c.name === "general" && c.cwd === launchCwd && !c.branch,
+  );
+  return candidates.length === 1 ? candidates[0].sessionId : null;
+}
 
 /**
  * The registry is stored server-side, keyed by the directory the server was

@@ -2803,7 +2803,10 @@
     const current = new Set(chans.map((c) => c.sessionId).filter(Boolean));
     const tabById = new Map(tabs.filter((t) => t.sessionId).map((t) => [t.sessionId, t]));
     // The main channel = bound to the Telegram General (no threadId).
-    const isMain = (c) => c.telegram && !c.telegram.threadId && c.telegram.chatId < 0;
+    // The home base: the explicit server-owned flag, or a bound board's General
+    // (the rule that predates it). Mirrors `isHomeChannel` in src/channels.ts —
+    // the server decides, this only has to agree.
+    const isMain = (c) => !!c.home || (c.telegram && !c.telegram.threadId && c.telegram.chatId < 0);
     for (const c of chans) {
       if (!c.sessionId) continue;
       const t = tabById.get(c.sessionId);
