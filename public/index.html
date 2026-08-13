@@ -5647,6 +5647,11 @@
     }
     if (r && r.ok) {
       $("authCode").value = "";
+      // The login just wrote the OAuth credentials the usage gauges read from
+      // (src/usage.ts, live-first). Repaint them now — otherwise a freshly
+      // signed-in instance shows blank dials until the next 60s poll, which
+      // reads as "usage is broken" right after onboarding.
+      refreshUsage();
       // Name the account: a machine can serve several people, and "signed in"
       // without saying as whom is the kind of detail that costs an hour later.
       let who = "";
