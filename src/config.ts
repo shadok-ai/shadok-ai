@@ -50,6 +50,12 @@ export interface Config {
    * stay distinguishable. Absent = the default "shadok-ai".
    */
   cockpitTitle?: Record<string, string>;
+  /**
+   * Per launch-directory colour palette (an accent key like "emerald"), keyed by
+   * absolute cwd. Absent = the default "amber". Like the name, it re-themes only
+   * this instance and survives a reload.
+   */
+  cockpitTheme?: Record<string, string>;
 }
 
 export const SHADOK_DIR = path.join(os.homedir(), ".shadok-ai");
@@ -106,6 +112,27 @@ export function setTitleForCwd(cfg: Config, cwd: string, title: string): void {
   cfg.cockpitTitle ??= {};
   if (t) cfg.cockpitTitle[cwd] = t;
   else delete cfg.cockpitTitle[cwd];
+  saveConfig(cfg);
+}
+
+/** Known colour palettes; the first, "amber", is the default (stored as absent). */
+export const COCKPIT_THEMES = ["amber", "emerald", "azure", "violet", "rose", "cyan"] as const;
+
+/** This directory's palette key, or null for the default ("amber"). */
+export function themeForCwd(cfg: Config, cwd: string): string | null {
+  const t = cfg.cockpitTheme?.[cwd];
+  return t && t !== "amber" && (COCKPIT_THEMES as readonly string[]).includes(t) ? t : null;
+}
+
+/**
+ * Set (or clear) this directory's palette and persist. The default ("amber") and
+ * any unknown key clear the entry, so the instance falls back to the default.
+ */
+export function setThemeForCwd(cfg: Config, cwd: string, theme: string): void {
+  const t = (theme || "").trim();
+  cfg.cockpitTheme ??= {};
+  if (t && t !== "amber" && (COCKPIT_THEMES as readonly string[]).includes(t)) cfg.cockpitTheme[cwd] = t;
+  else delete cfg.cockpitTheme[cwd];
   saveConfig(cfg);
 }
 
