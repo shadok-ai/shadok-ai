@@ -594,7 +594,18 @@
   /* min-height:0 pour que le transcript (flex:1) borne la hauteur au lieu de
      pousser le châssis ; overflow-y:auto garde l'écran de setup atteignable s'il
      dépasse (quand une session tourne, le transcript remplit exactement → inerte). */
-  .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; }
+  .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; position: relative; }
+  /* File drag-and-drop target: a dashed accent overlay while a file hovers.
+     pointer-events:none so the drop still lands on the pane underneath. */
+  .chat-pane.dropping::after {
+    content: "＋ Drop files to attach";
+    position: absolute; inset: 6px; z-index: 40;
+    display: flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, var(--amber) 12%, rgba(8, 9, 13, 0.6));
+    border: 2px dashed var(--amber); border-radius: 10px;
+    color: var(--amber); font-family: var(--mono); font-size: 15px; letter-spacing: 0.04em;
+    pointer-events: none;
+  }
 
   .field { display: flex; flex-direction: column; gap: 6px; }
   input[type="text"] {
@@ -727,12 +738,12 @@
   /* Copier : toujours visible, jamais au survol — sur un téléphone il n'y a pas
      de survol, et un bouton qu'on ne peut pas révéler n'existe pas. */
   .turn .copy {
-    align-self: flex-end; margin-top: 2px; padding: 2px 6px;
-    font-size: 10px; line-height: 1.4; cursor: pointer;
-    background: none; border: 1px solid var(--line); border-radius: 6px;
-    color: var(--text-dim); opacity: 0.5;
+    align-self: flex-end; margin-top: 2px; padding: 3px 8px;
+    font-size: 11px; line-height: 1.4; cursor: pointer;
+    background: var(--bg-inset); border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text-dim); opacity: 0.9; transition: color 0.12s, border-color 0.12s;
   }
-  .turn .copy:hover, .turn .copy:focus-visible { opacity: 1; }
+  .turn .copy:hover, .turn .copy:focus-visible { opacity: 1; color: var(--amber); border-color: var(--amber); }
   .turn .copy.done { opacity: 1; color: var(--ok, #7ac77a); border-color: currentColor; }
   /* An activity block sits closer to the text it belongs to than to the next turn. */
   .turn.activity { margin-top: 5px; }
@@ -4648,44 +4659,81 @@
    * surface. On l'INSÈRE dans le composeur au lieu d'envoyer tout de suite —
    * l'utilisateur voit ce qui part et peut encore écrire sa consigne.
    */
-  let pasteSeq = 0; // makes each placeholder unique so N pastes don't collide
+  let pasteSeq = 0; // makes each placeholder unique so N attachments don't collide
+  // Upload ONE file to /paste and swap its placeholder for the ready-made line.
+  // Shared by paste and drag-and-drop so both behave identically.
+  async function attachFile(file) {
+    if (!file) return;
+    const isImg = (file.type || "").startsWith("image/");
+    const name = file.name || "";
+    const label = name || (isImg ? "image" : "fichier");
+    // Zero-width spaces keep the visible label clean while making the marker
+    // unique — replace() only hits the first match, so identical labels
+    // (two screenshots are both "image.png") must not share a placeholder.
+    const mark = "⏳ " + label + "…" + "​".repeat(++pasteSeq);
+    insertAtCursor(promptInput, mark + "\n");
+    try {
+      const r = await fetch("/paste", {
+        method: "POST",
+        headers: {
+          "content-type": file.type || "application/octet-stream",
+          "x-filename": encodeURIComponent(name),
+        },
+        body: file,
+      });
+      const j = await r.json();
+      if (!r.ok || !j.line) throw new Error(j.error || `HTTP ${r.status}`);
+      promptInput.value = promptInput.value.replace(mark, j.line);
+    } catch (err) {
+      // Le dire dans le composeur : un marqueur qui reste sans explication
+      // laisserait croire à un envoi en cours qui n'arrivera jamais.
+      promptInput.value = promptInput.value.replace(mark, `⚠️ ${label} non envoyé (${err.message})`);
+    }
+    promptInput.dispatchEvent(new Event("input")); // hauteur + brouillon
+  }
+
   promptInput.addEventListener("paste", async (e) => {
     // ANY file, not just images — a PDF, a CSV, whatever. `kind === "file"`
     // captures real files while leaving an ordinary text paste untouched.
     const items = [...(e.clipboardData?.items ?? [])].filter((i) => i.kind === "file");
     if (!items.length) return;
     e.preventDefault();
-    for (const item of items) {
-      const blob = item.getAsFile();
-      if (!blob) continue;
-      const isImg = (blob.type || "").startsWith("image/");
-      const name = blob.name || "";
-      const label = name || (isImg ? "image" : "fichier");
-      // Zero-width spaces keep the visible label clean while making the marker
-      // unique — replace() only hits the first match, so identical labels
-      // (two screenshots are both "image.png") must not share a placeholder.
-      const mark = "⏳ " + label + "…" + "​".repeat(++pasteSeq);
-      insertAtCursor(promptInput, mark + "\n");
-      try {
-        const r = await fetch("/paste", {
-          method: "POST",
-          headers: {
-            "content-type": blob.type || "application/octet-stream",
-            "x-filename": encodeURIComponent(name),
-          },
-          body: blob,
-        });
-        const j = await r.json();
-        if (!r.ok || !j.line) throw new Error(j.error || `HTTP ${r.status}`);
-        promptInput.value = promptInput.value.replace(mark, j.line);
-      } catch (err) {
-        // Le dire dans le composeur : un marqueur qui reste sans explication
-        // laisserait croire à un envoi en cours qui n'arrivera jamais.
-        promptInput.value = promptInput.value.replace(mark, `⚠️ ${label} non envoyé (${err.message})`);
-      }
-      promptInput.dispatchEvent(new Event("input")); // hauteur + brouillon
-    }
+    for (const item of items) await attachFile(item.getAsFile());
   });
+
+  // Drag-and-drop files anywhere on the chat pane → attach them, same path as
+  // paste. Only reacts to an OS file drag (`types` includes "Files"), so the
+  // internal tab/group reordering DnD is untouched. A depth counter keeps the
+  // highlight steady while the cursor crosses child elements.
+  const dropZone = document.querySelector(".chat-pane");
+  if (dropZone) {
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+    let dragDepth = 0;
+    const clearDrop = () => { dragDepth = 0; dropZone.classList.remove("dropping"); };
+    dropZone.addEventListener("dragenter", (e) => {
+      if (!hasFiles(e) || !active) return;
+      e.preventDefault();
+      dragDepth++;
+      dropZone.classList.add("dropping");
+    });
+    dropZone.addEventListener("dragover", (e) => {
+      if (!hasFiles(e) || !active) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    });
+    dropZone.addEventListener("dragleave", (e) => {
+      if (!hasFiles(e)) return;
+      if (--dragDepth <= 0) clearDrop();
+    });
+    dropZone.addEventListener("drop", async (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      clearDrop();
+      if (!active) return; // no composer to attach to
+      for (const f of [...(e.dataTransfer.files || [])]) await attachFile(f);
+      promptInput.focus();
+    });
+  }
 
   /** Insère du texte à la position du curseur, sans écraser la saisie en cours. */
   function insertAtCursor(el, text) {
