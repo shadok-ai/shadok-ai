@@ -207,9 +207,12 @@ GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
 `systemPrompt`, its own or, under the lead profile, any.
 `/telegram` (GET/PUT — bot config from the GUI), `/version`,
 `/autoupdate`, `/permission-mode`, `/login`, `/vendor/marked.js`,
-`/paste` (POST — an image pasted into the composer; lands in the same
-`MEDIA_DIR` as Telegram attachments and returns the ready-made
-`[Image jointe : …]` line. Browser-origin only: it writes a file).
+`/paste` (POST — ANY file pasted into the composer, not just images; lands
+in the same `MEDIA_DIR` as Telegram attachments, keeps the original name via
+the `x-filename` header so the extension stays truthful, and returns the
+ready-made `[Image jointe : …]` / `[Fichier joint : …]` line. Accepts every
+content type (`express.raw({type:()=>true})`). Browser-origin only: it writes
+a file).
 
 Everything except `/login` sits behind the optional password gate (see the
 Auth section of `docs/architecture.md`).
