@@ -1092,10 +1092,10 @@
     #chanBar .gauge .label { display: none; }   /* valeurs seules, plus compact */
     #chanBar { gap: 6px; padding: 6px 10px; }
     header { flex-wrap: wrap; row-gap: 6px; gap: 8px; padding: 8px 12px; }
-    /* One header row: brand + dials + as many tool icons as fit. The spacer that
-       right-aligns them on desktop is dropped so they pack left; whatever doesn't
-       fit is moved into the ⋯ menu by reflowHeaderTools (JS). .hdr-tools keeps
-       its base `display: contents`, so the icons stay direct header flex items. */
+    /* One header row: brand + dials + ⋯. reflowHeaderTools (JS) moves ALL tool
+       icons into the ⋯ menu on a phone, so nothing wraps to a second line. The
+       spacer that right-aligns them on desktop is dropped so what remains packs
+       left. .hdr-tools keeps its base `display: contents`. */
     header .spacer { display: none; }
     header button.icon { padding: 5px 7px; }
     /* The star pill is the widest tool and would push an icon off the row; on a
@@ -4849,34 +4849,23 @@
     window.open("https://github.com/shadok-ai/shadok-ai", "_blank", "noopener");
   });
 
-  // ── Header tool overflow ─────────────────────────────────────────────
-  // The header is one row: brand + dials + as many tool icons as fit. Any icon
-  // that would push the ⋯ button onto a second line is moved INTO the ⋯ menu —
-  // the real button element, so its click handler travels with it. Desktop has
-  // room for them all. Recomputed on load, on resize, and when the name changes.
+  // ── Header tools placement ───────────────────────────────────────────
+  // Desktop keeps every tool icon in the header. A phone keeps the header to a
+  // SINGLE row (brand + dials + ⋯) by moving EVERY tool icon into the ⋯ menu —
+  // the real button elements, so their click handlers travel with them.
+  // Recomputed on load, on resize, and when the instance name changes.
   const OVERFLOW_TOOLS = ["secretsBtn", "profilesBtn", "telegramBtn", "muteNotif"];
   function reflowHeaderTools() {
     const hdrTools = document.querySelector(".hdr-tools");
     const moreWrap = document.querySelector(".more-wrap");
-    const moreBtn = $("moreBtn");
     const overflow = $("overflowTools");
-    const brand = $("brandName");
-    if (!hdrTools || !moreWrap || !moreBtn || !overflow || !brand) return;
-    // 1. Reset: every tool back in the header, in the declared order.
+    if (!hdrTools || !moreWrap || !overflow) return;
+    const mobile = matchMedia("(max-width: 640px)").matches;
     for (const id of OVERFLOW_TOOLS) {
       const el = $(id);
-      if (el) hdrTools.insertBefore(el, moreWrap);
-    }
-    // 2. Only a narrow screen needs to shed icons.
-    if (!matchMedia("(max-width: 640px)").matches) return;
-    // 3. Move icons from the end into the menu until ⋯ is back on the first row.
-    //    Two rows → ⋯ sits a line-height below the brand; the 8px threshold
-    //    ignores sub-pixel jitter.
-    const rowTop = () => brand.getBoundingClientRect().top;
-    for (let i = OVERFLOW_TOOLS.length - 1; i >= 0; i--) {
-      if (moreBtn.getBoundingClientRect().top - rowTop() < 8) break; // it fits now
-      const el = $(OVERFLOW_TOOLS[i]);
-      if (el) overflow.insertBefore(el, overflow.firstChild); // keep original order
+      if (!el) continue;
+      if (mobile) overflow.appendChild(el);          // all into the ⋯ menu
+      else hdrTools.insertBefore(el, moreWrap);       // back in the header, in order
     }
   }
   let reflowPending = false;
