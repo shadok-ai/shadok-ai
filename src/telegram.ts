@@ -236,8 +236,33 @@ export function pasteExtension(contentType: string): string {
     "image/jpg": "jpg",
     "image/webp": "webp",
     "image/gif": "gif",
+    "image/svg+xml": "svg",
+    // Non-image types now that any file can be pasted. The extension is what
+    // lets an agent's Read tool treat a PDF as a PDF, so it must be truthful.
+    "application/pdf": "pdf",
+    "text/plain": "txt",
+    "text/markdown": "md",
+    "text/csv": "csv",
+    "application/json": "json",
+    "application/zip": "zip",
   };
   return known[type] ?? "bin";
+}
+
+/**
+ * The on-disk name for a file pasted into the composer. Keeps the ORIGINAL name
+ * (and extension) when the browser supplied one — Claude reads by extension, so
+ * a real `.pdf`/`.csv` matters — prefixed with a uuid to avoid collisions and
+ * stripped of anything path-ish or shell-hostile. Falls back to the content
+ * type, then a neutral `bin`; the agent reads by content anyway. Pure/testable.
+ */
+export function pasteFileName(id: string, name: string, contentType: string): string {
+  const base = name
+    ? path.basename(name).replace(/[^\w.\- ]+/g, "_").replace(/^[.\s]+/, "").trim()
+    : "";
+  if (base && /\.[A-Za-z0-9]{1,8}$/.test(base)) return `paste-${id}-${base}`; // real ext kept
+  const ext = pasteExtension(contentType);
+  return base ? `paste-${id}-${base}.${ext}` : `paste-${id}.${ext}`;
 }
 
 /** Storage name under ~/.shadok-ai/media: keep the original name so Claude

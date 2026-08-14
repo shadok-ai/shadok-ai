@@ -56,7 +56,7 @@ import {
   announceLoggedOut,
   resetLoggedOutNotice,
   attachmentPrompt,
-  pasteExtension,
+  pasteFileName,
   MEDIA_DIR,
   type TelegramHandle,
 } from "./telegram.js";
@@ -166,8 +166,9 @@ process.on("exit", () => releaseInstanceLock());
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
-/** A pasted screenshot is a few hundred kB; past this it is not a paste. */
-const PASTE_LIMIT = "12mb";
+/** A screenshot is a few hundred kB, but any file can be pasted now (a PDF
+ *  easily tops 12 MB); past this a paste is really an upload it shouldn't be. */
+const PASTE_LIMIT = "50mb";
 
 // ── Optional GUI password ────────────────────────────────────────────────
 // If SHADOK_GUI_PASSWORD is set (at startup, via env or the CLI --password
@@ -703,28 +704,37 @@ app.get(["/", "/index.html"], (_req, res) => {
 });
 
 /**
- * An image pasted into the composer. The web had no way to hand a file to an
- * agent at all — only Telegram did — so a screenshot meant saving it somewhere
- * and typing the path by hand.
+ * Any file pasted into the composer — an image, a PDF, a CSV, anything. The web
+ * had no way to hand a file to an agent at all (only Telegram did), so a
+ * screenshot or a document meant saving it somewhere and typing the path by
+ * hand. It started image-only; now it takes any type, since an agent can read a
+ * PDF/CSV/text by path just as well.
  *
  * Same destination as the Telegram attachments (`MEDIA_DIR`): one folder, one
  * purge, and the agent reads the file by absolute path exactly the same way.
+ * The original filename (via `x-filename`) is preserved so the extension stays
+ * truthful — a `.pdf` is what makes the agent's Read tool treat it as a PDF.
+ *
+ * `express.raw({ type: () => true })`: accept EVERY content type (image-only
+ * before), so a non-image body is still parsed to a Buffer rather than dropped.
  *
  * `requestFromBrowser` (stricter than the WS origin guard, cf. the profile
  * guardrails): this route WRITES a file, so an `Origin`-less caller — a script,
  * a curl — has no business here even on loopback.
  */
-app.post("/paste", express.raw({ type: "image/*", limit: PASTE_LIMIT }), (req, res) => {
+app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
   const body = req.body as Buffer;
   if (!Buffer.isBuffer(body) || !body.length) return res.status(400).json({ error: "empty body" });
-  const ext = pasteExtension(String(req.headers["content-type"] ?? ""));
+  const contentType = String(req.headers["content-type"] ?? "");
+  const name = decodeURIComponent(String(req.headers["x-filename"] ?? ""));
+  const kind = contentType.trim().toLowerCase().startsWith("image/") ? "image" : "file";
   try {
     fs.mkdirSync(MEDIA_DIR, { recursive: true });
-    const file = path.join(MEDIA_DIR, `paste-${randomUUID()}.${ext}`);
+    const file = path.join(MEDIA_DIR, pasteFileName(randomUUID(), name, contentType));
     fs.writeFileSync(file, body);
     // The very wording Telegram already uses, so an agent sees one format.
-    res.json({ path: file, line: attachmentPrompt([{ path: file, kind: "image" }]) });
+    res.json({ path: file, line: attachmentPrompt([{ path: file, kind }]) });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
   }

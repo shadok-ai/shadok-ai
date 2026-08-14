@@ -4636,36 +4636,52 @@
     submitPrompt(t, text);
   });
   /**
-   * Coller une image dans le composeur.
+   * Coller N'IMPORTE QUEL fichier dans le composeur — image, PDF, CSV, etc.
    *
    * Le cockpit n'avait AUCUN moyen de passer un fichier à un agent — seul
-   * Telegram savait le faire : une capture d'écran obligeait à l'enregistrer
-   * quelque part puis à taper son chemin à la main.
+   * Telegram savait le faire : une capture d'écran (ou un document) obligeait à
+   * l'enregistrer quelque part puis à taper son chemin à la main.
    *
-   * L'image part au serveur, qui la dépose là où atterrissent déjà les pièces
-   * jointes Telegram, et renvoie la ligne toute faite (`[Image jointe : …]`) :
-   * un seul format pour l'agent, quelle que soit la surface. On l'INSÈRE dans
-   * le composeur au lieu d'envoyer tout de suite — l'utilisateur voit ce qui
-   * part et peut encore écrire sa consigne.
+   * Le fichier part au serveur, qui le dépose là où atterrissent déjà les pièces
+   * jointes Telegram, et renvoie la ligne toute faite (`[Image jointe : …]` ou
+   * `[Fichier joint : …]`) : un seul format pour l'agent, quelle que soit la
+   * surface. On l'INSÈRE dans le composeur au lieu d'envoyer tout de suite —
+   * l'utilisateur voit ce qui part et peut encore écrire sa consigne.
    */
+  let pasteSeq = 0; // makes each placeholder unique so N pastes don't collide
   promptInput.addEventListener("paste", async (e) => {
-    const items = [...(e.clipboardData?.items ?? [])].filter((i) => i.type.startsWith("image/"));
-    if (!items.length) return; // collage de texte ordinaire : ne rien intercepter
+    // ANY file, not just images — a PDF, a CSV, whatever. `kind === "file"`
+    // captures real files while leaving an ordinary text paste untouched.
+    const items = [...(e.clipboardData?.items ?? [])].filter((i) => i.kind === "file");
+    if (!items.length) return;
     e.preventDefault();
     for (const item of items) {
       const blob = item.getAsFile();
       if (!blob) continue;
-      const mark = "⏳ image…";
+      const isImg = (blob.type || "").startsWith("image/");
+      const name = blob.name || "";
+      const label = name || (isImg ? "image" : "fichier");
+      // Zero-width spaces keep the visible label clean while making the marker
+      // unique — replace() only hits the first match, so identical labels
+      // (two screenshots are both "image.png") must not share a placeholder.
+      const mark = "⏳ " + label + "…" + "​".repeat(++pasteSeq);
       insertAtCursor(promptInput, mark + "\n");
       try {
-        const r = await fetch("/paste", { method: "POST", headers: { "content-type": blob.type }, body: blob });
+        const r = await fetch("/paste", {
+          method: "POST",
+          headers: {
+            "content-type": blob.type || "application/octet-stream",
+            "x-filename": encodeURIComponent(name),
+          },
+          body: blob,
+        });
         const j = await r.json();
         if (!r.ok || !j.line) throw new Error(j.error || `HTTP ${r.status}`);
         promptInput.value = promptInput.value.replace(mark, j.line);
       } catch (err) {
         // Le dire dans le composeur : un marqueur qui reste sans explication
         // laisserait croire à un envoi en cours qui n'arrivera jamais.
-        promptInput.value = promptInput.value.replace(mark, `⚠️ image non envoyée (${err.message})`);
+        promptInput.value = promptInput.value.replace(mark, `⚠️ ${label} non envoyé (${err.message})`);
       }
       promptInput.dispatchEvent(new Event("input")); // hauteur + brouillon
     }

@@ -4,6 +4,7 @@ import {
   shouldReattachBridge,
   senderName,
   pasteExtension,
+  pasteFileName,
   bindKey,
   chunk,
   parseCommand,
@@ -585,11 +586,17 @@ test("senderName: nothing usable → undefined, never an empty label", () => {
   assert.equal(senderName({ first_name: "   " }), undefined);
 });
 
-test("pasteExtension: the common screenshot types keep a truthful extension", () => {
+test("pasteExtension: the common paste types keep a truthful extension", () => {
   assert.equal(pasteExtension("image/png"), "png");
   assert.equal(pasteExtension("image/jpeg"), "jpg");
   assert.equal(pasteExtension("image/webp"), "webp");
   assert.equal(pasteExtension("image/gif"), "gif");
+  assert.equal(pasteExtension("image/svg+xml"), "svg");
+  // Now that any file can be pasted, the non-image types matter too — a PDF
+  // must land on ".pdf" so the agent's Read tool treats it as a PDF.
+  assert.equal(pasteExtension("application/pdf"), "pdf");
+  assert.equal(pasteExtension("text/csv"), "csv");
+  assert.equal(pasteExtension("application/json"), "json");
   // Browsers append parameters; they are not part of the type.
   assert.equal(pasteExtension("image/png; charset=binary"), "png");
   assert.equal(pasteExtension("IMAGE/PNG"), "png");
@@ -598,7 +605,29 @@ test("pasteExtension: the common screenshot types keep a truthful extension", ()
 test("pasteExtension: anything unknown lands on a neutral extension", () => {
   // A whitelist, not a split on "/": the content-type is attacker-controlled and
   // ends up in a filename. "image/../../etc/passwd" must not become a path.
-  assert.equal(pasteExtension("image/svg+xml"), "bin");
+  assert.equal(pasteExtension("application/x-made-up"), "bin");
   assert.equal(pasteExtension("image/../../etc/passwd"), "bin");
   assert.equal(pasteExtension(""), "bin");
+});
+
+test("pasteFileName: keeps the original name and extension, uuid-prefixed", () => {
+  assert.equal(pasteFileName("ID", "report.pdf", "application/pdf"), "paste-ID-report.pdf");
+  assert.equal(pasteFileName("ID", "data.csv", ""), "paste-ID-data.csv");
+});
+
+test("pasteFileName: no name → uuid + extension from the content type", () => {
+  assert.equal(pasteFileName("ID", "", "image/png"), "paste-ID.png");
+  assert.equal(pasteFileName("ID", "", "application/pdf"), "paste-ID.pdf");
+  assert.equal(pasteFileName("ID", "", ""), "paste-ID.bin");
+});
+
+test("pasteFileName: a name without extension gets one from the content type", () => {
+  assert.equal(pasteFileName("ID", "screenshot", "image/png"), "paste-ID-screenshot.png");
+});
+
+test("pasteFileName: strips path-ish and shell-hostile characters", () => {
+  // basename defeats traversal; the rest is sanitised, leading dots removed.
+  assert.equal(pasteFileName("ID", "../../etc/passwd", "application/octet-stream"), "paste-ID-passwd.bin");
+  assert.equal(pasteFileName("ID", ".bashrc", "text/plain"), "paste-ID-bashrc.txt"); // leading dot stripped, ext from type
+  assert.ok(!/[/\\;]/.test(pasteFileName("ID", "a;b/c.txt", "text/plain")));
 });
