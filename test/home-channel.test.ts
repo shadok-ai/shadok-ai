@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { homeAdoptionTarget, isHomeChannel, type Channel } from "../src/channels.js";
+import {
+  homeAdoptionTarget,
+  homeChannelForGeneral,
+  isHomeChannel,
+  type Channel,
+} from "../src/channels.js";
 
 const ch = (over: Partial<Channel>): Channel => ({ sessionId: "s", cwd: "/w", ...over });
 
@@ -60,4 +65,24 @@ test("adoption ignores a general that lives in a worktree or elsewhere", () => {
     ch({ sessionId: "b", cwd: "/other", name: "general" }),
   ];
   assert.equal(homeAdoptionTarget(list, "/w"), null);
+});
+
+test("General adopts the unbound web home instead of spawning a second general", () => {
+  // The bug: the home base has `home: true` but no Telegram binding, so
+  // channelForTelegram misses it and a second "general" is created. General
+  // must resume THIS session.
+  const list = [ch({ sessionId: "home", cwd: "/w", name: "general", home: true })];
+  assert.equal(homeChannelForGeneral(list), "home");
+});
+
+test("General does NOT re-adopt a home that is already Telegram-bound", () => {
+  // Once bound, the home is found by channelForTelegram; re-adopting it here
+  // would resume it twice.
+  const list = [ch({ sessionId: "home", cwd: "/w", home: true, telegram: { chatId: -100 } as any })];
+  assert.equal(homeChannelForGeneral(list), null);
+});
+
+test("General adoption returns null when there is no unbound home", () => {
+  assert.equal(homeChannelForGeneral([ch({ sessionId: "a", name: "docs" })]), null);
+  assert.equal(homeChannelForGeneral([]), null);
 });
