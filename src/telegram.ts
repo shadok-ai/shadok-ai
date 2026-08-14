@@ -6,6 +6,7 @@ import {
   upsertChannel,
   removeChannel,
   channelForTelegram,
+  homeChannelForGeneral,
   loadTgGroup,
   saveTgGroup,
   loadTgOwner,
@@ -952,9 +953,19 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     const existing = bridges.get(key);
     if (existing && existing.ws.readyState <= WebSocket.OPEN) return existing;
     const saved = channelForTelegram(chatId, threadId);
+    // The board's General (no threadId, a group) is the environment's home base.
+    // The web home channel has `home: true` but NO Telegram binding until now, so
+    // `channelForTelegram` misses it and we would spawn a SECOND "general" beside
+    // it. Adopt the home session instead so the one channel gains the binding.
+    const chans = loadChannels();
+    const adoptId =
+      !saved && threadId == null && chatId < 0 ? homeChannelForGeneral(chans) : null;
+    const adopted = adoptId ? chans.find((c) => c.sessionId === adoptId) : undefined;
+    const resumeId = saved?.sessionId ?? adoptId ?? undefined;
     // Carry the topic's profile so a re-created session keeps its role/secrets
     // (else its cron scripts lose their env). saved?.profile is a name or null.
-    return openBridge(key, chatId, threadId, { resumeId: saved?.sessionId, name, profile: saved?.profile ?? undefined });
+    const profile = saved?.profile ?? adopted?.profile ?? undefined;
+    return openBridge(key, chatId, threadId, { resumeId, name, profile });
   };
 
   // `from`: who typed it, carried so the OTHER clients (the web cockpit) can

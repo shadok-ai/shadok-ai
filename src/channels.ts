@@ -96,6 +96,21 @@ export function homeAdoptionTarget(channels: Channel[], launchCwd: string): stri
 }
 
 /**
+ * Pure: the sessionId a board group's General topic should ADOPT, or null.
+ *
+ * The web home base (`home: true`) carries no Telegram binding until a group is
+ * bound, so `channelForTelegram(chatId, undefined)` misses it — and the bridge
+ * then spawns a SECOND session for General, leaving two "general" channels (the
+ * exact bug this fixes). Resuming the home session instead makes the one channel
+ * gain the binding. Only a home WITHOUT a binding is a target: one already bound
+ * is found by `channelForTelegram` and must not be re-adopted.
+ */
+export function homeChannelForGeneral(channels: Channel[]): string | null {
+  const home = channels.find((c) => c.home && !c.telegram);
+  return home ? home.sessionId : null;
+}
+
+/**
  * The registry is stored server-side, keyed by the directory the server was
  * launched from — so the set of sessions survives a wiped browser, another
  * device, a restart, or a reboot. One file per launch dir:
