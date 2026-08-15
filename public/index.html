@@ -4236,6 +4236,12 @@
         // ended would come back to life against the *new* session and resend
         // yesterday's text forced. A new session answers no old question.
         retirePaceConfirm(t);
+        // A reload broadcasts a transient "working" (restart in progress) that is
+        // closed by this "ready" — the fresh process is idle again. Drop that
+        // highlight here (setTabMood repaints the favicon too); a real turn
+        // re-asserts it with its own "working". Without this the channel stayed
+        // lit "working" after every reload.
+        if (t.btnEl.classList.contains("working")) setTabMood(t, null);
         setTabState(t, "ready", "ready");
         persistChannels();
         // Reattaching between turns: restore the last turn's time rather than
