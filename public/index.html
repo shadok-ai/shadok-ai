@@ -3802,6 +3802,13 @@
     t.cwd = msg.cwd || "(server directory)";
     if (!t.customName) t.nameEl.textContent = basename(msg.cwd || "") || "agent " + t.id;
     t.launchMsg = msg;      // remembered so a dropped link can reconnect
+    // Le choix « miroir » voyage dans le message de lancement : le serveur
+    // l'enregistre au `ready`. L'ONGLET doit le savoir aussi, sinon le premier
+    // `persistChannels` repousse sa valeur par défaut (false) et écrase ce que
+    // le serveur vient d'écrire — l'agent n'était alors jamais mirorré, et
+    // seule la bascule du menu marchait. Ici plutôt que chez l'appelant :
+    // launchTab est l'entonnoir de TOUS les chemins de création.
+    if (typeof msg.mirror === "boolean") setMirror(t, msg.mirror, false);
     t.closing = false;      // set when the user closes the tab (no reconnect then)
     t.reconnectAttempts = 0;
     openLink(t);
