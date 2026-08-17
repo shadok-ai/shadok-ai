@@ -24,7 +24,7 @@ skip, and a way to replay it later.
 
 ## Design
 
-### The sequence — five screens, four spotlights
+### The sequence — six screens, five spotlights
 
 Grouped deliberately: a spotlight can frame a **region**, not just one control,
 which covers nine landmarks in four stops. A tour with a step per button is a
@@ -35,8 +35,24 @@ tour people abandon.
 | 1 | **Welcome** — every agent is a real Claude Code session, in its own directory and branch, driven from here or from Telegram | `null` (centred card) |
 | 2 | **The agents column** — create an agent, group them, and the *Tweak Shadok-AI* card at the bottom | `#tabbar` |
 | 3 | **An agent's tab and its ⋯ menu** — mute, reload, rename, change profile, mirror to Telegram, close | `.tab.active` |
-| 4 | **The toolbar** — 🔑 secrets, 👤 profiles, ⏰ schedules, Telegram, 🔔 notifications, ⋯ diff | `.hdr-tools` |
-| 5 | **The quota dials** — 5h / 7d usage and the pace guard; the bubble also *names* the version badge next to the cockpit name (`#verView`) rather than spotlighting it | `["#quota5h", "#quota7d"]` |
+| 4 | **Scheduled prompts and the guard** — a recurring prompt plus a shell check that runs *without the model*: silent means the agent is never woken, at zero tokens | `.tab.active` |
+| 5 | **The toolbar** — 🔑 secrets, 👤 profiles, Telegram, 🔔 notifications, ⋯ diff | `.hdr-tools` |
+| 6 | **The quota dials** — 5h / 7d usage and the pace guard; the bubble also *names* the version badge next to the cockpit name (`#verView`) rather than spotlighting it | `["#quota5h", "#quota7d"]` |
+
+**Step 4 breaks the grouping rule on purpose, and it is the one exception.**
+Everything else in the tour is a landmark; a schedule is the reason to open the
+cockpit again tomorrow. It shipped as the last clause of the toolbar step —
+sixth in a list of six — so the single capability no competing cockpit has was
+the least prominent sentence in the tour, and a first-time visitor met agents, a
+menu, a toolbar and a gauge, all of which the alternatives also have, then left
+without meeting this one.
+
+It reuses step 3's target rather than pointing at something of its own, because
+that is where it genuinely lives: inside an agent's ⋯ menu. Two consecutive
+stops on the same rectangle is the cost of not opening a menu on the visitor's
+behalf mid-tour. `test/tour-steps.test.ts` locks the order — this step must
+follow the one that introduced the menu, or the bubble refers to a ⋯ nobody has
+been shown yet.
 
 `target` is therefore `string | string[] | null`. The array form exists for a
 concrete reason rather than generality: the two dials are separate sibling

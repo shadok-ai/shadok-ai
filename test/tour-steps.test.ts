@@ -94,3 +94,29 @@ test("a bubble taller than the viewport still lands on screen", () => {
   assert.equal(p.top, 12);
   assert.equal(p.left, 12);
 });
+
+test("the tour shows the scheduled-prompt guard, and shows it on its own", () => {
+  // The one capability no competing cockpit has. It used to be the sixth clause
+  // of the toolbar step, which is the same as not being in the tour: a
+  // first-time visitor met agents, a menu, a toolbar and a gauge — all of them
+  // things other tools also have — and left without meeting this one.
+  const step = TOUR_STEPS.find((s) => s.id === "schedule");
+  assert.ok(step, "the tour must carry a step about scheduled prompts");
+  // The claim, not just the word: a schedule is unremarkable, a schedule that
+  // costs nothing when there is nothing to report is the whole point.
+  assert.match(step.body, /zero tokens/i);
+  assert.match(step.body, /without the model/i);
+});
+
+test("it follows the step that introduced the menu it lives in", () => {
+  // "Schedule" is inside an agent's ⋯ menu, so it only makes sense once that
+  // menu has been pointed at. Order is the only thing that carries that here.
+  const ids = TOUR_STEPS.map((s) => s.id);
+  assert.equal(ids.indexOf("schedule"), ids.indexOf("tab") + 1);
+});
+
+test("the toolbar step no longer repeats it", () => {
+  // Left in both places, the tour says it twice and leads with neither.
+  const tools = TOUR_STEPS.find((s) => s.id === "tools");
+  assert.doesNotMatch(tools.body, /scheduled prompts/i);
+});

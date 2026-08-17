@@ -42,12 +42,26 @@ export const TOUR_STEPS = [
     target: ".tab.active",
   },
   {
+    // Deliberately its own stop, against this file's own "group landmarks"
+    // rule: a schedule is not a landmark, it is the reason to open the cockpit
+    // again tomorrow. It used to be the last clause of the toolbar step, sixth
+    // in a list of six — so the one capability no other tool has was the least
+    // prominent thing in the tour, and a first-time visitor never met it.
+    id: "schedule",
+    title: "They can work while you're away",
+    body:
+      "“Schedule”, in that same ⋯ menu, pairs a recurring prompt with a shell check that runs " +
+      "without the model. Silent check → nothing happened, the agent stays asleep at zero " +
+      "tokens. Otherwise it wakes up holding the finding, and tells you here or on Telegram.",
+    target: ".tab.active",
+  },
+  {
     id: "tools",
     title: "The toolbar",
     body:
       "🔑 secrets injected into agents that need them · 👤 profiles (role, guardrails, model) · " +
       "Telegram settings · 🔔 notifications · ⋯ for the diff of what an agent changed " +
-      "and to replay this tour. Scheduled prompts live in each agent's own ⋯ menu.",
+      "and to replay this tour.",
     // NOT `.hdr-tools`, which is `display: contents` on desktop and therefore
     // generates no box at all — its rect is all zeros, so the step would have
     // been dropped as "not visible" on the very layout where the toolbar is
