@@ -1,29 +1,29 @@
-// Libellés dérivés d'un Profile pour les cartes de la box « New agent » —
-// voir docs/superpowers/specs/2026-07-29-agent-creation-box-design.md.
+// Labels derived from a Profile for the "New agent" box's cards — see
+// docs/superpowers/specs/2026-07-29-agent-creation-box-design.md.
 //
-// Chargé tel quel par le navigateur (ESM) et importé par les tests node/tsx,
-// comme public/live-text.js.
+// Loaded as is by the browser (ESM) and imported by the node/tsx tests, like
+// public/live-text.js.
 //
-// Rien n'est ajouté au type Profile : tout se déduit de ce qui existe déjà
-// (systemPrompt, deny, model, secrets), donc les profils déjà enregistrés
-// s'affichent sans migration ni formulaire à re-remplir.
+// Nothing is added to the Profile type: everything is derived from what is
+// already there (systemPrompt, deny, model, secrets), so profiles already
+// stored display with no migration and no form to fill in again.
 
-/** Au-delà, la carte deviendrait un pavé : on tronque. */
+/** Beyond this the card would turn into a wall of text: truncate. */
 const MAX_BLURB = 90;
 
 /**
- * Une ligne de présentation tirée du systemPrompt : sa première phrase, sans
- * le « You are <nom>, » d'amorce — redondant avec le titre de la carte — et
- * tronquée sur une frontière de mot. "" si le profil n'a pas de prompt.
+ * A one-line pitch taken from the systemPrompt: its first sentence, without the
+ * "You are <name>," opener — redundant with the card's title — and truncated on
+ * a word boundary. "" when the profile has no prompt.
  */
 export function profileBlurb(profile) {
   const raw = ((profile && profile.systemPrompt) || "").trim();
   if (!raw) return "";
-  // Première phrase : premier « . » suivi d'un espace ou de la fin.
+  // First sentence: the first "." followed by a space or by the end.
   const m = raw.match(/^[\s\S]*?\.(?=\s|$)/);
   let s = (m ? m[0] : raw).trim();
-  // Le nom peut contenir un tiret (Shadok-dev) : on ne coupe que sur « , » ou
-  // un tiret cadratin, jamais sur le trait d'union du nom lui-même.
+  // The name can contain a hyphen (Shadok-dev): we only cut on "," or an em
+  // dash, never on the name's own hyphen.
   s = s.replace(/^you are\s+[^,—]{1,40}?\s*[,—]\s*/i, "");
   if (s.length <= MAX_BLURB) return s;
   const cut = s.slice(0, MAX_BLURB);
@@ -32,8 +32,8 @@ export function profileBlurb(profile) {
 }
 
 /**
- * Les garde-fous du profil en badges courts : accès git (le seul qui compte
- * vraiment au moment de choisir), modèle forcé, nombre de secrets injectés.
+ * The profile's guardrails as short badges: git access (the only one that
+ * really matters when choosing), forced model, number of injected secrets.
  */
 export function profileBadges(profile) {
   const p = profile || {};
@@ -44,32 +44,32 @@ export function profileBadges(profile) {
           label: "read-only",
           icon: "🔒",
           title:
-            "Écritures git bloquées (commit / push / merge…). Ce profil lit et diagnostique, il ne modifie pas le code.",
+            "Git writes blocked (commit / push / merge…). This profile reads and diagnoses, it does not change the code.",
         }
       : {
           label: "full access",
           icon: "✏️",
-          title: "Peut modifier et committer le code — aucun garde-fou de permission sur ce profil.",
+          title: "Can change and commit the code — no permission guardrail on this profile.",
         },
   ];
   if (p.model)
-    out.push({ label: p.model, icon: "", title: "Modèle forcé pour les sessions de ce profil." });
+    out.push({ label: p.model, icon: "", title: "Model forced for this profile's sessions." });
   const n = (p.secrets || []).length;
   if (n)
     out.push({
       label: n + " secret" + (n > 1 ? "s" : ""),
       icon: "🔑",
-      title: "Secret(s) du coffre injecté(s) en variables d'environnement au démarrage de l'agent.",
+      title: "Vault secret(s) injected as environment variables when the agent starts.",
     });
   return out;
 }
 
 /**
- * Le nom proposé pour un nouvel agent : celui de son PROFIL, parce que c'est ce
- * qui distingue deux agents lancés sur le même dépôt — le dossier, lui, est le
- * même pour tous et donnait des colonnes entières d'onglets homonymes.
- * Sans profil, on retombe sur le nom du dossier ; en dernier recours "agent",
- * jamais une chaîne vide (un onglet sans nom est illisible).
+ * The name proposed for a new agent: its PROFILE's, because that is what tells
+ * two agents launched on the same repo apart — the directory is the same for
+ * all of them and produced whole columns of identically named tabs. With no
+ * profile we fall back to the directory's name; as a last resort "agent", never
+ * an empty string (an unnamed tab is unreadable).
  */
 export function defaultAgentName(profileName, cwd) {
   const p = String(profileName ?? "").trim();
@@ -80,13 +80,13 @@ export function defaultAgentName(profileName, cwd) {
 }
 
 /**
- * La case « read-only » du formulaire de profil reflète-t-elle un profil
- * réellement read-only ? Vrai seulement si TOUT le preset est présent : un
- * preset à moitié appliqué ne doit pas se donner des airs d'être en place.
+ * Does the profile form's "read-only" checkbox reflect a genuinely read-only
+ * profile? True only when the WHOLE preset is present: a half-applied preset
+ * must not pretend to be in place.
  *
- * Volontairement plus strict que le badge de la carte, qui répond à une autre
- * question — « ce profil a-t-il des garde-fous ? » — et s'allume dès qu'il
- * existe un `deny`, fût-il personnalisé.
+ * Deliberately stricter than the card's badge, which answers a different
+ * question — "does this profile have guardrails?" — and lights up as soon as a
+ * `deny` exists, custom or not.
  */
 export function hasReadonlyPreset(deny, preset) {
   const have = new Set(deny || []);
@@ -94,10 +94,10 @@ export function hasReadonlyPreset(deny, preset) {
 }
 
 /**
- * Coche/décoche le preset SANS toucher aux motifs personnalisés : décocher
- * retire les motifs du preset et laisse le reste, cocher ajoute ceux qui
- * manquent en fin de liste. La zone de texte reste la source de vérité — elle
- * n'est jamais écrasée en bloc, ce que faisait l'ancien gestionnaire.
+ * Tick/untick the preset WITHOUT touching custom patterns: unticking removes
+ * the preset's patterns and leaves the rest, ticking appends the missing ones.
+ * The textarea stays the source of truth — it is never overwritten wholesale,
+ * which is what the old handler did.
  */
 export function applyReadonlyPreset(deny, on, preset) {
   const list = [...(deny || [])];
@@ -109,11 +109,10 @@ export function applyReadonlyPreset(deny, on, preset) {
 }
 
 /**
- * Rôles pilotés par le SERVEUR, qui n'ont rien à faire dans une liste où l'on
- * choisit un profil. `Shadok-Tweak` reprend son prompt de
- * `context/tweak-prompt.md` à chaque boot et possède son propre CTA : l'offrir
- * comme un rôle ordinaire promet une personnalisation que le prochain
- * redémarrage effacera.
+ * Roles driven by the SERVER, which have no business in a list where one PICKS a
+ * profile. `Shadok-Tweak` takes its prompt from `context/tweak-prompt.md` at
+ * every boot and has its own CTA: offering it as an ordinary role promises a
+ * customisation the next restart will erase.
  */
 export const MANAGED_PROFILES = ["Shadok-Tweak"];
 

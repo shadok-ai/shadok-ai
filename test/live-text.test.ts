@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { extractLiveText } from "../public/live-text.js";
 
-// Bas d'écran commun (séparateurs + box de saisie + footer).
+// Shared bottom of screen (separators + input box + footer).
 const FOOTER = [
   "────────────────────────────────────────────",
   "❯ ",
@@ -11,87 +11,67 @@ const FOOTER = [
   "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
 ].join("\n");
 
-test("nouveau bullet ● (Claude Code 2.1): reconnu comme un bloc de texte", () => {
-  // Claude Code 2.1 rend le bloc assistant avec "●" (U+25CF) au lieu de "⏺"
-  // (U+23FA). Sans le reconnaître, extractLiveText renvoyait "" → aperçu live et
-  // préface de question morts sur les versions récentes.
+test("single in-flight block: unwraps the continuations", () => {
   const screen = [
-    "● Une réponse en cours d'écriture qui s'étale sur plusieurs",
-    "  lignes enroulées par le terminal.",
-    "✻ Crunched for 2s",
-    FOOTER,
-  ].join("\n");
-  assert.equal(
-    extractLiveText(screen),
-    "Une réponse en cours d'écriture qui s'étale sur plusieurs lignes enroulées par le terminal.",
-  );
-});
-
-test("● tool_use n'est pas du texte (comme ⏺)", () => {
-  assert.equal(extractLiveText(["● Bash(ls -la)", FOOTER].join("\n")), "");
-});
-
-test("bloc unique en cours: dé-wrappe les continuations", () => {
-  const screen = [
-    "⏺ Voici une introduction en cours d'écriture qui s'étale sur plusieurs",
-    "  lignes parce que le terminal les enroule à la largeur, et le texte",
-    "  continue encore un peu ici.",
+    "⏺ Here is an introduction being written that spreads over several",
+    "  lines because the terminal wraps them to the width, and the text",
+    "  carries on a little further here.",
     "✽ Composing… (4s · esc to interrupt)",
     FOOTER,
   ].join("\n");
   assert.equal(
     extractLiveText(screen),
-    "Voici une introduction en cours d'écriture qui s'étale sur plusieurs lignes parce que le terminal les enroule à la largeur, et le texte continue encore un peu ici.",
+    "Here is an introduction being written that spreads over several lines because the terminal wraps them to the width, and the text carries on a little further here.",
   );
 });
 
-test("multi-bloc: renvoie le dernier bloc de texte, pas le premier", () => {
+test("multi-block: returns the last text block, not the first", () => {
   const screen = [
-    "⏺ Premier paragraphe déjà terminé.",
+    "⏺ First paragraph, already finished.",
     "",
     "  Ran 1 shell command",
     "",
-    "⏺ Deuxième paragraphe en cours d'écriture maintenant.",
+    "⏺ Second paragraph being written right now.",
     "✽ Composing… (2s · esc to interrupt)",
     FOOTER,
   ].join("\n");
-  assert.equal(extractLiveText(screen), "Deuxième paragraphe en cours d'écriture maintenant.");
+  assert.equal(extractLiveText(screen), "Second paragraph being written right now.");
 });
 
-test("bloc multi-paragraphes en cours: tous les paragraphes (séparés par une ligne vide) sont capturés", () => {
-  // Capture réelle : un long bloc assistant dont les paragraphes sont séparés
-  // par une ligne vide. Avant le fix, l'extraction s'arrêtait à la 1re ligne
-  // vide → seul le 1er paragraphe s'affichait en aperçu, tout le reste
-  // apparaissait "d'un coup" à la finalisation (« le stream bizarre »).
+test("in-flight multi-paragraph block: every paragraph (blank-line separated) is captured", () => {
+  // A real capture: a long assistant block whose paragraphs are separated by a
+  // blank line. Before the fix, extraction stopped at the 1st blank line → only
+  // the 1st paragraph showed in the preview, and all the rest appeared "at
+  // once" on finalisation (the "weird streaming").
   const screen = [
-    "⏺ C'est fait, et la réponse à ta question a changé en cours de route.",
+    "⏺ Done, and the answer to your question changed along the way.",
     "",
-    "  Maintenant oui, à jour : main local = origin/main, 0 commit de retard.",
+    "  Now yes, up to date: local main = origin/main, 0 commits behind.",
     "",
-    "  Deuxième paragraphe qui doit lui aussi apparaître dans l'aperçu live.",
+    "  A second paragraph that must show up in the live preview too.",
     "✽ Composing… (3s · esc to interrupt)",
     FOOTER,
   ].join("\n");
   const out = extractLiveText(screen);
-  assert.match(out, /C'est fait/);
-  assert.match(out, /Maintenant oui/);
-  assert.match(out, /Deuxième paragraphe/);
+  assert.match(out, /Done, and the answer/);
+  assert.match(out, /Now yes, up to date/);
+  assert.match(out, /A second paragraph/);
 });
 
-test("un résumé d'outil indenté après une ligne vide n'est PAS aspiré dans le texte", () => {
+test("an indented tool summary after a blank line is NOT sucked into the text", () => {
   const screen = [
-    "⏺ Un paragraphe de texte terminé.",
+    "⏺ A finished paragraph of text.",
     "",
     "  Ran 1 shell command",
     "✽ Running… (1s · esc to interrupt)",
     FOOTER,
   ].join("\n");
-  assert.equal(extractLiveText(screen), "Un paragraphe de texte terminé.");
+  assert.equal(extractLiveText(screen), "A finished paragraph of text.");
 });
 
-test('dernier ⏺ est un tool_use → ""', () => {
+test('the last ⏺ is a tool_use → ""', () => {
   const screen = [
-    "⏺ Premier paragraphe de texte.",
+    "⏺ A first paragraph of text.",
     "",
     "⏺ Bash(echo A)",
     "  ⎿  A",
@@ -101,14 +81,14 @@ test('dernier ⏺ est un tool_use → ""', () => {
   assert.equal(extractLiveText(screen), "");
 });
 
-test('aucun ⏺ → ""', () => {
-  const screen = ["❯ un prompt en attente", FOOTER].join("\n");
+test('no ⏺ at all → ""', () => {
+  const screen = ["❯ a pending prompt", FOOTER].join("\n");
   assert.equal(extractLiveText(screen), "");
 });
 
-test('dernier ⏺ est un outil en cours ("Running…") → ""', () => {
+test('the last ⏺ is a running tool ("Running…") → ""', () => {
   const screen = [
-    "⏺ Un paragraphe de texte déjà écrit.",
+    "⏺ A paragraph of text already written.",
     "",
     "⏺ Running 1 shell command",
     "✽ Running… (2s · esc to interrupt)",
@@ -117,50 +97,50 @@ test('dernier ⏺ est un outil en cours ("Running…") → ""', () => {
   assert.equal(extractLiveText(screen), "");
 });
 
-test('dernier ⏺ est un outil fini ("Ran…") → ""', () => {
+test('the last ⏺ is a finished tool ("Ran…") → ""', () => {
   const screen = ["⏺ Ran 1 shell command", FOOTER].join("\n");
   assert.equal(extractLiveText(screen), "");
 });
 
-test("continuation stoppe au résultat d'outil ⎿", () => {
+test("a continuation stops at the tool result ⎿", () => {
   const screen = [
-    "⏺ Texte avant un outil.",
-    "  ⎿  sortie d'outil qui ne doit pas être aspirée",
+    "⏺ Text before a tool.",
+    "  ⎿  tool output that must not be sucked in",
     "✽ Composing… (1s · esc to interrupt)",
     FOOTER,
   ].join("\n");
-  assert.equal(extractLiveText(screen), "Texte avant un outil.");
+  assert.equal(extractLiveText(screen), "Text before a tool.");
 });
 
-test("écran de dialog réel: le paragraphe précédant la question est retrouvé", () => {
-  // Capture réelle du pane TUI pendant qu'un AskUserQuestion était affiché —
-  // le cas que le bridge Telegram doit savoir extraire (spec du 2026-07-28).
+test("a real dialog screen: the paragraph preceding the question is recovered", () => {
+  // A real capture of the TUI pane while an AskUserQuestion was displayed — the
+  // case the Telegram bridge must be able to extract (spec of 2026-07-28).
   const screen = [
-    "⏺ Option A. Je regarde les pièces concernées avant d'écrire quoi que ce soit.",
+    "⏺ Option A. I am looking at the files involved before writing anything at all.",
     "",
     "  Searched for 1 pattern, read 1 file, ran 1 shell command",
     "",
-    "⏺ Ce paragraphe est là pour servir de texte-préface au test : une capture de l'écran TUI se",
-    "  déclenche dans 25 secondes, pendant que la question ci-dessous sera affichée. Réponds ce que tu",
-    "  veux, seule la capture m'intéresse.",
+    "⏺ This paragraph is here to act as the test's preface text: a capture of the TUI screen fires",
+    "  in 25 seconds, while the question below is displayed. Answer whatever you like, only the",
+    "  capture is of interest to me.",
     "",
     "❯ /login",
     "────────────────────────────────────────────",
     " ☐ Capture",
     "",
-    "Capture en cours — réponds n'importe quoi après ~30 s.",
+    "Capture in progress — answer anything after ~30 s.",
     "",
     "❯ 1. OK",
-    "     Laisse passer ~30 secondes avant de cliquer.",
-    "  2. Annule",
-    "     Arrête le test de capture.",
+    "     Let ~30 seconds pass before clicking.",
+    "  2. Cancel",
+    "     Stop the capture test.",
     "",
     "Enter to select · ↑/↓ to navigate · Esc to cancel",
   ].join("\n");
   assert.equal(
     extractLiveText(screen),
-    "Ce paragraphe est là pour servir de texte-préface au test : une capture de l'écran TUI se " +
-      "déclenche dans 25 secondes, pendant que la question ci-dessous sera affichée. Réponds ce que tu " +
-      "veux, seule la capture m'intéresse.",
+    "This paragraph is here to act as the test's preface text: a capture of the TUI screen fires " +
+      "in 25 seconds, while the question below is displayed. Answer whatever you like, only the " +
+      "capture is of interest to me.",
   );
 });
