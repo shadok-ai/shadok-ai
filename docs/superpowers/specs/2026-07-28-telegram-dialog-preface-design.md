@@ -1,150 +1,149 @@
-# Telegram : le texte qui précède une question doit arriver avant le clavier
+# Telegram: the text before a question must arrive before the keyboard
 
-**Date :** 2026-07-28
-**Statut :** design validé
+**Date:** 2026-07-28
+**Status:** design agreed
 
-## Le symptôme
+## The symptom
 
-Dans Telegram, quand l'agent écrit un paragraphe puis pose une question
-(`AskUserQuestion`), le **clavier inline arrive en premier**. Le paragraphe
-n'apparaît qu'*après* la réponse de l'utilisateur — qui choisit donc à
-l'aveugle.
+In Telegram, when the agent writes a paragraph then asks a question
+(`AskUserQuestion`), the **inline keyboard arrives first**. The paragraph only
+appears *after* the user has answered — so they choose blind.
 
-## La cause racine
+## The root cause
 
-Preuve relevée sur un client WebSocket passif branché sur une session vivante :
+Evidence taken from a passive WebSocket client attached to a live session:
 
 ```
-23:56:36.247  dialog      "Test d'ordre : …"      ← le clavier part tout de suite
-23:58:26.403  prompt-echo                          ← l'utilisateur répond (1 min 50 après)
-23:58:26.994  stream-text "Observateur en place…"  ← le texte n'arrive QU'ICI
+23:56:36.247  dialog      "Order test: …"          ← the keyboard goes out at once
+23:58:26.403  prompt-echo                          ← the user answers (1 min 50 later)
+23:58:26.994  stream-text "Observer in place…"     ← the text only arrives HERE
 23:58:26.994  stream-tool AskUserQuestion
 ```
 
-Deux canaux, deux latences :
+Two channels, two latencies:
 
-- **Le contenu** vient du tail du `.jsonl` (`src/tail.ts`). Claude Code n'y écrit
-  un message assistant que **terminé**, c'est-à-dire une fois son `tool_use`
-  résolu. Or `AskUserQuestion` ne se résout qu'à la réponse de l'utilisateur.
-  Le bloc `text` qui précède l'appel est donc structurellement retenu jusque-là.
-- **Le dialog** vient de l'écran TUI (`detectDialog`), disponible immédiatement.
+- **The content** comes from the `.jsonl` tail (`src/tail.ts`). Claude Code only
+  writes an assistant message there once **finished**, that is once its
+  `tool_use` is resolved. And `AskUserQuestion` only resolves when the user
+  answers. The `text` block preceding the call is therefore structurally held
+  back until then.
+- **The dialog** comes from the TUI screen (`detectDialog`), available
+  immediately.
 
-Ce n'est donc pas un bug d'ordonnancement dans le bridge : c'est une donnée que
-le tail ne peut pas fournir à temps. La même signature se lit ailleurs dans le
-log — `stream-tool` et son `stream-result` tombent à la milliseconde près,
-parce que le `tool_use` et son résultat sont flushés ensemble.
+So this is not an ordering bug in the bridge: it is data the tail cannot supply
+in time. The same signature reads elsewhere in the log — `stream-tool` and its
+`stream-result` land within a millisecond of each other, because the `tool_use`
+and its result are flushed together.
 
-Le client web ne souffre pas du problème : il a déjà un contournement,
-`extractLiveText(screen)` (`public/live-text.js`), qui affiche une bulle grise
-provisoire lue sur l'écran. Telegram n'a pas d'équivalent.
+The web client does not suffer from the problem: it already has a workaround,
+`extractLiveText(screen)` (`public/live-text.js`), which shows a provisional grey
+bubble read off the screen. Telegram has no equivalent.
 
-Vérification que l'information est bien disponible côté serveur — capture de
-l'écran TUI à l'instant précis où le dialog est affiché :
+Confirmation that the information IS available server-side — a capture of the TUI
+screen at the precise moment the dialog is displayed:
 
 ```
-⏺ Ce paragraphe est là pour servir de texte-préface au test : une capture de
-  l'écran TUI se déclenche dans 25 secondes, …
+⏺ This paragraph is here to act as the test's preface text: a capture of the
+  TUI screen fires in 25 seconds, …
 
 ❯ /login
 ────────────────────────────────
  ☐ Capture
 ```
 
-Le texte est bien le dernier bloc `⏺ ` de l'écran, donc `extractLiveText` sait
-le récupérer. Le serveur détient l'information au moment exact où il diffuse le
-`dialog` ; il ne la transmet simplement pas.
+The text is indeed the screen's last `⏺ ` block, so `extractLiveText` can
+recover it. The server holds the information at the exact moment it broadcasts
+the `dialog`; it simply does not pass it on.
 
-## Un second défaut, révélé par le premier
+## A second defect, revealed by the first
 
-Dans `src/telegram.ts`, tous les envois sont en *fire-and-forget* : `send(b, …)`
-n'est jamais attendu, et chaque appel lance son propre `fetch`. Deux envois
-rapprochés ne sont donc pas garantis d'arriver dans l'ordre d'émission — ce qui
-peut déjà entrelacer un texte et la ligne d'outil qui le suit.
+In `src/telegram.ts`, every send is fire-and-forget: `send(b, …)` is never
+awaited, and each call fires its own `fetch`. Two sends close together are
+therefore not guaranteed to arrive in the order they were issued — which can
+already interleave a text and the tool line that follows it.
 
-Conséquence pour ce fix : envoyer la préface « avant » le clavier ne suffirait
-pas. Il faut sérialiser les écritures Telegram d'un bridge.
+The consequence for this fix: sending the preface "before" the keyboard would not
+be enough. A bridge's Telegram writes have to be serialised.
 
-## La solution
+## The solution
 
-### 1. Le serveur joint la préface au `dialog`
+### 1. The server attaches the preface to the `dialog`
 
-`finishTurn` (et `sendPendingDialog`, et les rediffusions après `choose` /
-`toggle`) ajoutent au message `dialog` un champ `preface`, extrait de l'écran
-avec `extractLiveText` — la fonction que le web utilise déjà.
+`finishTurn` (and `sendPendingDialog`, and the re-broadcasts after `choose` /
+`toggle`) add a `preface` field to the `dialog` message, extracted from the
+screen with `extractLiveText` — the function the web already uses.
 
-Champ optionnel : le client web l'ignore et garde sa bulle grise. L'invariant
-« le contenu fait autorité depuis le tail » est préservé — la préface est
-explicitement **provisoire**, exactement comme la preview web.
+An optional field: the web client ignores it and keeps its grey bubble. The
+invariant "content is authoritative from the tail" is preserved — the preface is
+explicitly **provisional**, exactly like the web preview.
 
-### 2. Une file d'envoi série par bridge
+### 2. A serial send queue per bridge
 
-Toute écriture Telegram d'un bridge (texte, ligne d'outil, clavier, édition)
-passe par une chaîne de promesses propre au bridge. FIFO garanti, sans blocage
-entre bridges différents.
+Every Telegram write of a bridge (text, tool line, keyboard, edit) goes through a
+promise chain of its own. FIFO guaranteed, with no blocking between different
+bridges.
 
-Un envoi qui échoue ne doit pas casser la chaîne : la file avale les rejets.
+A failed send must not break the chain: the queue swallows rejections.
 
-### 3. Telegram envoie la préface, puis l'édite
+### 3. Telegram sends the preface, then edits it
 
-- À la **création** d'un clavier (pas à ses rafraîchissements multi-select), si
-  `preface` est non vide : on l'envoie, on retient son `message_id` et une clé
-  de déduplication, puis on envoie le clavier — dans cet ordre, via la file.
-- Quand le `stream-text` autoritatif arrive (après la réponse) et correspond à
-  la clé retenue : on **édite** le message de préface avec le vrai contenu
-  (`editMessageText`), au lieu de poster un second message. Le rendu final
-  récupère le Markdown propre. La clé est consommée.
+- On **creating** a keyboard (not on its multi-select refreshes), when `preface`
+  is non-empty: we send it, keep its `message_id` and a dedup key, then send the
+  keyboard — in that order, through the queue.
+- When the authoritative `stream-text` arrives (after the answer) and matches the
+  key we kept: we **edit** the preface message with the real content
+  (`editMessageText`), instead of posting a second message. The final rendering
+  gets the clean Markdown. The key is consumed.
 
-Si le texte autoritatif dépasse une taille de message, le premier morceau
-remplace la préface par édition et les suivants sont envoyés à la suite.
+If the authoritative text exceeds one message's size, the first part replaces the
+preface by editing and the rest are sent after it.
 
-### 4. Le matching préface ↔ texte autoritatif
+### 4. Matching preface ↔ authoritative text
 
-Fonction pure, testable indépendamment :
+A pure function, testable on its own:
 
 ```
 prefaceMatches(preface, authoritative) -> boolean
 ```
 
-L'écran dé-wrappe : les retours à la ligne du terminal *et* les vrais sauts de
-paragraphe deviennent des espaces simples. On normalise donc les deux côtés
-(toute suite d'espaces → un espace, trim) et on teste l'inclusion :
-`norm(authoritative).includes(norm(preface))`.
+The screen unwraps: the terminal's line breaks *and* real paragraph breaks both
+become single spaces. So we normalise both sides (any run of spaces → one space,
+trim) and test inclusion: `norm(authoritative).includes(norm(preface))`.
 
-L'inclusion — plutôt qu'un simple préfixe — couvre le cas où l'écran a tronqué
-le début du bloc par défilement : la préface est alors un fragment interne du
-texte autoritatif.
+Inclusion — rather than a plain prefix — covers the case where the screen has
+scrolled the start of the block away: the preface is then an inner fragment of
+the authoritative text.
 
-Garde-fou : pas de match sous 12 caractères normalisés, pour éviter qu'une
-préface trop courte ne s'apparie à tort.
+A guardrail: no match below 12 normalised characters, so too short a preface
+cannot match by accident.
 
-## Cas dégradés acceptés
+## Accepted degraded cases
 
-| Situation | Comportement |
+| Situation | Behaviour |
 |---|---|
-| Un `tool_use` s'intercale entre le texte et la question | `extractLiveText` renvoie `""` → pas de préface, comportement actuel inchangé |
-| Le bloc a défilé hors écran au point d'être méconnaissable | Le texte autoritatif est posté en second message : un doublon, jamais une perte |
-| `editMessageText` échoue | Le message de préface reste en place tel quel |
+| A `tool_use` sits between the text and the question | `extractLiveText` returns `""` → no preface, the current behaviour unchanged |
+| The block scrolled off screen far enough to be unrecognisable | The authoritative text is posted as a second message: a duplicate, never a loss |
+| `editMessageText` fails | The preface message stays in place as it is |
 
-## Hors périmètre
+## Out of scope
 
-Le texte qui précède un **outil lent** (un build de deux minutes) reste invisible
-pendant toute la durée de l'outil : c'est la même cause racine, mais son
-traitement demanderait de flusher le texte écran en continu, avec un vrai risque
-de doublons faute de remplacement 1-pour-1 dans Telegram. À traiter séparément
-si la gêne se confirme.
+Text preceding a **slow tool** (a two-minute build) stays invisible for the
+tool's whole duration: same root cause, but handling it would take flushing the
+screen text continuously, with a real risk of duplicates for want of a 1-for-1
+replacement in Telegram. To be handled separately if the annoyance is confirmed.
 
 ## Tests
 
-Tests unitaires purs, sans réseau ni Telegram :
+Pure unit tests, with no network and no Telegram:
 
-- `prefaceMatches` : cas nominal dé-wrappé, préface tronquée par défilement,
-  texte sans rapport, préface trop courte, chaînes vides.
-- La file série : des opérations dont la latence est décroissante se terminent
-  malgré tout dans l'ordre d'émission ; un rejet ne bloque pas les suivantes.
-- `extractLiveText` sur l'écran de dialog réel capturé ci-dessus (un cas de plus
-  dans `test/live-text.test.ts`) : le paragraphe est bien retrouvé alors que le
-  clavier occupe le bas de l'écran.
+- `prefaceMatches`: the nominal unwrapped case, a preface truncated by scrolling,
+  an unrelated text, too short a preface, empty strings.
+- The serial queue: operations with decreasing latency still finish in the order
+  they were issued; a rejection does not block the ones that follow.
+- `extractLiveText` against the real dialog screen captured above (one more case
+  in `test/live-text.test.ts`): the paragraph is recovered even though the
+  keyboard occupies the bottom of the screen.
 
-Vérification finale en conditions réelles : `npm run build`, redémarrage du
-serveur dans son tmux, puis une vraie question posée depuis une session pilotée
-— le paragraphe doit précéder le clavier dans Telegram.
+A final check under real conditions: `npm run build`, restart the server in its
+tmux, then a real question asked from a piloted session — the paragraph must
+precede the keyboard in Telegram.
