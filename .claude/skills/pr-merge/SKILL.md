@@ -134,21 +134,30 @@ node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add \
 ```
 
 The guard is `scripts/check-open-prs.sh` (this folder). The server runs it
-**without the LLM**: it only prints when a PR the loop can ACT on exists, and its
-output is prepended to the prompt. A quiet repo therefore costs **0 tokens** and
-leaves no trace in the thread.
+**without an LLM**, and its output is prepended to the prompt, so a quiet
+repository costs **0 tokens** and leaves nothing in the thread.
 
-So on top of drafts and bases ≠ `main`, it discards **forks and `DIRTY` PRs**: in
-both cases the loop's answer is invariably "not mine". Without that sort, a
-single stuck PR woke the agent at every slot — one LLM turn per minute to do
-nothing. The filter stays **stateless**: as soon as a PR becomes mergeable again
-it reappears on its own, so there is nothing to remember and nothing to forget.
+It sorts open PRs into two kinds, because they do not deserve the same
+treatment:
 
-What the guard discards is not what the **entry filter** discards. A PR off the
-allowlist or carrying a red flag is a decision to explain in the report; it
-therefore keeps waking the agent.
+- **ACT** — non-draft, onto `main`, not a fork, not conflicted. The loop can
+  merge it, so it is printed **every** pass. Repeated wakes are self-limiting:
+  the PR leaves the list once merged.
+- **TELL** — a **fork** (a "Tweak Shadok-AI" delivery is one, and on a public
+  repo anyone can open one) or a **conflicted** PR. The loop never merges these;
+  a human decides. They are printed **only when their state changed**, tracked in
+  `~/.shadok-ai/checks/pr-open.state`.
 
-Two traps learned in use:
+That split exists because both extremes were tried and both were wrong. Printing
+everything meant one stuck PR woke the agent every minute, forever, to answer
+"not mine". Filtering forks out entirely removed the noise *and* the signal — a
+Tweak delivery then sat unseen. Change detection keeps the news and drops the
+repetition.
+
+State is rewritten on every pass, including for PRs that left the list: a PR
+reopened later must be announced again, not swallowed because it was seen once.
+
+Two traps learned the hard way:
 
 - **The executed copy lives outside the repo**, in `~/.shadok-ai/checks/`. A
   versioned path (`.claude/skills/…`) breaks as soon as an agent changes the root
