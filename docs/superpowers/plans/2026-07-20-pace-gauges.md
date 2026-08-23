@@ -1,37 +1,37 @@
-# Jauges de quota comparées au temps restant — Implementation Plan
+# Quota gauges compared against the time remaining — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Comparer la consommation des fenêtres 5h et 7d au temps déjà écoulé, et bloquer les envois lorsque la consommation dépasse 100% de ce rythme idéal, avec forçage explicite par message.
+**Goal:** Compare the 5h and 7d windows' consumption against the time already elapsed, and block sends when consumption exceeds 100% of that ideal pace, with an explicit per-message override.
 
-**Architecture:** Un module pur `src/pace.ts` calcule le rythme et le verdict de blocage à partir des données brutes déjà fournies par `src/usage.ts`. `src/server.ts` l'applique en deux points — le `case "prompt"` et le minuteur d'auto-continue — et enrichit `GET /usage`. `public/index.html` affiche deux barres empilées par jauge et rend une bulle de confirmation réutilisant le style `.turn.dialog` existant.
+**Architecture:** A pure `src/pace.ts` module computes the pace and the blocking verdict from the raw data `src/usage.ts` already supplies. `src/server.ts` applies it at two points — `case "prompt"` and the auto-continue timer — and enriches `GET /usage`. `public/index.html` shows two stacked bars per gauge and renders a confirmation bubble reusing the existing `.turn.dialog` style.
 
 **Tech Stack:** TypeScript (ESM, `module: NodeNext`), Node 20, Express 5, `ws`, tests via `node --import tsx --test`.
 
-Spec de référence : `docs/superpowers/specs/2026-07-20-pace-gauges-design.md`
+Reference spec: `docs/superpowers/specs/2026-07-20-pace-gauges-design.md`
 
 ## Global Constraints
 
 - Seuil de blocage **100%**, en dur, non configurable. Aucune variable d'environnement.
-- `PACE_EPSILON = 5`, ajouté au rythme idéal au dénominateur.
-- Durées de fenêtre : `fiveHour = 5 * 3600` s, `sevenDay = 7 * 86400` s.
-- Absence de données (`usage` null, `resetsAt` null) ⇒ **jamais** de blocage.
-- Le forçage vaut pour **un message et un seul** — aucun état de dérogation mémorisé, ni serveur ni client.
-- L'auto-continue n'est **jamais** forcé : il attend et reprend seul.
-- `src/usage.ts` n'est **pas** modifié.
-- Node 20 n'exécute pas TypeScript nativement : toute commande de test passe par `node --import tsx --test`.
-- Les imports internes portent l'extension `.js` (NodeNext), y compris depuis `test/`.
-- Les fichiers sous `test/` sont hors de `tsconfig.json` (`include: ["src"]`) et ne sont donc pas compilés dans `dist` — c'est voulu.
+- `PACE_EPSILON = 5`, added to the ideal pace in the denominator.
+- Window lengths: `fiveHour = 5 * 3600` s, `sevenDay = 7 * 86400` s.
+- No data (`usage` null, `resetsAt` null) ⇒ **never** a block.
+- The override applies to **one message and one only** — no override state stored, server or client.
+- Auto-continue is **never** forced: it waits and resumes on its own.
+- `src/usage.ts` is **not** modified.
+- Node 20 does not run TypeScript natively: every test command goes through `node --import tsx --test`.
+- Internal imports carry the `.js` extension (NodeNext), including from `test/`.
+- The files under `test/` are outside `tsconfig.json` (`include: ["src"]`) and are therefore not compiled into `dist` — that is intended.
 
 ## File Structure
 
-| Fichier | Rôle |
+| File | Role |
 |---------|------|
-| `src/pace.ts` | **Créé.** Calcul pur du rythme idéal et du verdict de blocage. Aucune I/O, aucun état. |
-| `test/pace.test.ts` | **Créé.** Tests unitaires du module pur. |
-| `src/server.ts` | **Modifié.** Enrichit `/usage` ; applique le blocage sur `case "prompt"` ; met l'auto-continue en pause. |
-| `public/index.html` | **Modifié.** Jauges à deux barres ; bulle de forçage ; état de pause. |
-| `package.json` | **Modifié.** Le script `test` couvre `test/` en plus des tests de la skill. |
+| `src/pace.ts` | **Created.** Pure computation of the ideal pace and the blocking verdict. No I/O, no state. |
+| `test/pace.test.ts` | **Created.** Unit tests of the pure module. |
+| `src/server.ts` | **Modified.** Enriches `/usage`; applies the block in `case "prompt"`; puts auto-continue on hold. |
+| `public/index.html` | **Modified.** Two-bar gauges; the override bubble; the hold state. |
+| `package.json` | **Modified.** The `test` script covers `test/` on top of the skill's tests. |
 
 ---
 
@@ -43,7 +43,7 @@ Spec de référence : `docs/superpowers/specs/2026-07-20-pace-gauges-design.md`
 - Modify: `package.json` (script `test`)
 
 **Interfaces:**
-- Consumes: `Usage` et `Window` de `src/usage.ts` (types uniquement, import effacé à l'exécution).
+- Consumes: `Usage` and `Window` from `src/usage.ts` (types only, the import erased at runtime).
 - Produces:
   - `WINDOW_SEC: { readonly fiveHour: number; readonly sevenDay: number }`
   - `computePace(w: Window | null, durationSec: number, nowMs: number): Pace`
@@ -51,9 +51,9 @@ Spec de référence : `docs/superpowers/specs/2026-07-20-pace-gauges-design.md`
   - `interface Pace { idealPacePct: number | null; ratioPct: number | null }`
   - `interface PaceVerdict { blocked: boolean; reason: string | null }`
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
-Créer `test/pace.test.ts` :
+Create `test/pace.test.ts`:
 
 ```ts
 import assert from "node:assert/strict";
@@ -61,10 +61,10 @@ import test from "node:test";
 import { computePace, paceBlock, WINDOW_SEC } from "../src/pace.js";
 import type { Usage, Window } from "../src/usage.js";
 
-/** Horloge figée : les tests ne doivent jamais dépendre de l'heure réelle. */
+/** Frozen clock: tests must never depend on the real time. */
 const NOW = 1_700_000_000_000;
 
-/** Fenêtre dont le reset tombe dans `remainingSec` secondes. */
+/** A window whose reset falls in `remainingSec` seconds. */
 const win = (usedPercentage: number, remainingSec: number): Window => ({
   usedPercentage,
   resetsAt: NOW / 1000 + remainingSec,
@@ -78,30 +78,30 @@ const usage = (fiveHour: Window | null, sevenDay: Window | null): Usage => ({
 
 const round = (n: number | null) => (n === null ? null : Math.round(n));
 
-test("5h : 90% consommé avec 10 min restantes suit le rythme", () => {
+test("5h: 90% used with 10 min left keeps the pace", () => {
   const p = computePace(win(90, 600), WINDOW_SEC.fiveHour, NOW);
   assert.equal(round(p.idealPacePct), 97);
   assert.equal(round(p.ratioPct), 89);
 });
 
-test("5h : 3% consommé 5 min après le reset ne déclenche pas l'epsilon", () => {
+test("5h: 3% used 5 min after the reset does not trip the epsilon", () => {
   const p = computePace(win(3, 17_700), WINDOW_SEC.fiveHour, NOW);
   assert.equal(round(p.idealPacePct), 2);
   assert.equal(round(p.ratioPct), 45);
 });
 
-test("5h : 15% consommé 5 min après le reset dépasse le seuil", () => {
+test("5h: 15% used 5 min after the reset crosses the threshold", () => {
   const p = computePace(win(15, 17_700), WINDOW_SEC.fiveHour, NOW);
   assert.equal(round(p.ratioPct), 225);
 });
 
-test("7d : 55% consommé avec 6 jours restants dépasse largement", () => {
+test("7d: 55% used with 6 days left overshoots by a lot", () => {
   const p = computePace(win(55, 6 * 86_400), WINDOW_SEC.sevenDay, NOW);
   assert.equal(round(p.idealPacePct), 14);
   assert.equal(round(p.ratioPct), 285);
 });
 
-test("7d : 80% consommé avec 1 jour restant suit le rythme", () => {
+test("7d: 80% used with 1 day left keeps the pace", () => {
   const p = computePace(win(80, 86_400), WINDOW_SEC.sevenDay, NOW);
   assert.equal(round(p.idealPacePct), 86);
   assert.equal(round(p.ratioPct), 88);
@@ -113,83 +113,83 @@ test("resetsAt absent : pas de rythme calculable", () => {
   assert.equal(p.ratioPct, null);
 });
 
-test("fenêtre expirée : le rythme idéal est borné à 100%", () => {
+test("expired window: the ideal pace is clamped at 100%", () => {
   const p = computePace(win(50, -3_600), WINDOW_SEC.fiveHour, NOW);
   assert.equal(p.idealPacePct, 100);
   assert.equal(round(p.ratioPct), 48);
 });
 
-test("paceBlock : une seule fenêtre au-dessus du seuil suffit", () => {
+test("paceBlock: a single window above the threshold is enough", () => {
   const v = paceBlock(usage(win(90, 600), win(55, 6 * 86_400)), NOW);
   assert.equal(v.blocked, true);
   assert.match(v.reason ?? "", /^7d /);
 });
 
-test("paceBlock : les deux dans les clous ne bloque pas", () => {
+test("paceBlock: both within bounds does not block", () => {
   const v = paceBlock(usage(win(90, 600), win(80, 86_400)), NOW);
   assert.equal(v.blocked, false);
   assert.equal(v.reason, null);
 });
 
-test("paceBlock : la raison cite la fenêtre au ratio le plus élevé", () => {
+test("paceBlock: the reason names the window with the highest ratio", () => {
   const v = paceBlock(usage(win(15, 17_700), win(55, 6 * 86_400)), NOW);
   assert.equal(v.blocked, true);
   assert.match(v.reason ?? "", /^7d /); // 285% l'emporte sur 225%
 });
 
-test("paceBlock : la raison porte les trois chiffres", () => {
+test("paceBlock: the reason carries all three figures", () => {
   const v = paceBlock(usage(null, win(55, 6 * 86_400)), NOW);
-  assert.equal(v.reason, "7d : 55% consommé pour un rythme idéal de 14% (285% du rythme)");
+  assert.equal(v.reason, "7d: 55% used vs 14% ideal pace (285% of pace)");
 });
 
-test("paceBlock : usage absent ne bloque jamais", () => {
+test("paceBlock: missing usage never blocks", () => {
   assert.deepEqual(paceBlock(null, NOW), { blocked: false, reason: null });
 });
 
-test("paceBlock : resetsAt absent ne bloque jamais", () => {
+test("paceBlock: a missing resetsAt never blocks", () => {
   const v = paceBlock(usage(null, { usedPercentage: 99, resetsAt: null }), NOW);
   assert.equal(v.blocked, false);
 });
 ```
 
-- [ ] **Step 2: Étendre le script de test**
+- [ ] **Step 2: Extend the test script**
 
-Dans `package.json`, remplacer la ligne `"test"` :
+In `package.json`, replace the `"test"` line:
 
 ```json
     "test": "node --import tsx --test test/ .claude/skills/shadok-ai-agents/test/",
 ```
 
-- [ ] **Step 3: Lancer les tests pour vérifier qu'ils échouent**
+- [ ] **Step 3: Run the tests to check they fail**
 
 Run: `npm test 2>&1 | tail -20`
-Expected: FAIL — `Cannot find module '.../src/pace.js'`. Les 22 tests existants de la skill continuent de passer.
+Expected: FAIL — `Cannot find module '.../src/pace.js'`. The skill's 22 existing tests keep passing.
 
-- [ ] **Step 4: Écrire le module**
+- [ ] **Step 4: Write the module**
 
-Créer `src/pace.ts` :
+Create `src/pace.ts`:
 
 ```ts
 import type { Usage, Window } from "./usage.js";
 
-/** Durée totale de chaque fenêtre glissante, en secondes. */
+/** Total length of each sliding window, in seconds. */
 export const WINDOW_SEC = { fiveHour: 5 * 3600, sevenDay: 7 * 86400 } as const;
 
 /**
- * Ajouté au rythme idéal au dénominateur. Sans lui, le rythme est quasi nul
- * juste après un reset et le moindre message ferait exploser le ratio.
+ * Added to the ideal pace in the denominator. Without it the pace is near zero
+ * right after a reset, and the smallest message would blow the ratio up.
  */
 const PACE_EPSILON = 5;
 
-/** Au-delà de ce ratio (en % du rythme idéal), on bloque. En dur, par choix. */
+/** Above this ratio (as a % of the ideal pace), we block. Hardcoded, on purpose. */
 const BLOCK_RATIO = 100;
 
 const LABEL = { fiveHour: "5h", sevenDay: "7d" } as const;
 
 export interface Pace {
-  /** 0–100 : fraction de la fenêtre déjà écoulée. null si non calculable. */
+  /** 0–100: fraction of the window already elapsed. null when not computable. */
   idealPacePct: number | null;
-  /** Consommation rapportée au rythme idéal, en %. 100 = pile dans les temps. */
+  /** Usage relative to the ideal pace, in %. 100 = exactly on schedule. */
   ratioPct: number | null;
 }
 
@@ -199,23 +199,22 @@ export interface PaceVerdict {
 }
 
 /**
- * Rapporte la consommation d'une fenêtre au temps qui y est déjà passé.
- * Renvoie des null si la fenêtre est absente ou son reset inconnu — pas de
- * données ne vaut pas dépassement.
+ * Relates a window's usage to the time already spent in it. Returns nulls when
+ * the window is missing or its reset unknown — no data does not mean overrun.
  */
 export function computePace(w: Window | null, durationSec: number, nowMs: number): Pace {
   if (!w || w.resetsAt === null) return { idealPacePct: null, ratioPct: null };
   const remainingSec = w.resetsAt - nowMs / 1000;
-  // Borné : une horloge en avance sur resetsAt ne doit pas produire de rythme
-  // négatif, ni une fenêtre expirée un rythme supérieur à 100%.
+  // Clamped: a clock ahead of resetsAt must not produce a negative pace, nor
+  // an expired window a pace above 100%.
   const idealPacePct = Math.min(100, Math.max(0, ((durationSec - remainingSec) / durationSec) * 100));
   return { idealPacePct, ratioPct: (w.usedPercentage / (idealPacePct + PACE_EPSILON)) * 100 };
 }
 
 /**
- * Bloque dès qu'UNE des deux fenêtres consomme plus vite que le temps ne passe.
- * La raison cite la fenêtre au ratio le plus élevé. Sans données, ne bloque pas :
- * l'indisponibilité de l'API ne doit pas verrouiller l'outil.
+ * Blocks as soon as ONE of the two windows burns faster than time passes. The
+ * reason names the window with the highest ratio. With no data it does not
+ * block: an unavailable API must not lock the tool.
  */
 export function paceBlock(u: Usage | null, nowMs: number): PaceVerdict {
   if (!u) return { blocked: false, reason: null };
@@ -233,17 +232,17 @@ export function paceBlock(u: Usage | null, nowMs: number): PaceVerdict {
   const r = Math.round;
   return {
     blocked: true,
-    reason: `${worst.label} : ${r(worst.used)}% consommé pour un rythme idéal de ${r(worst.pace)}% (${r(worst.ratio)}% du rythme)`,
+    reason: `${worst.label}: ${r(worst.used)}% used vs ${r(worst.pace)}% ideal pace (${r(worst.ratio)}% of pace)`,
   };
 }
 ```
 
-- [ ] **Step 5: Lancer les tests pour vérifier qu'ils passent**
+- [ ] **Step 5: Run the tests to check they pass**
 
 Run: `npm test 2>&1 | tail -12`
 Expected: PASS — 35 tests (22 existants + 13 nouveaux), 0 fail.
 
-- [ ] **Step 6: Vérifier la compilation**
+- [ ] **Step 6: Check it compiles**
 
 Run: `npm run build`
 Expected: aucune sortie, aucune erreur TypeScript.
@@ -252,7 +251,7 @@ Expected: aucune sortie, aucune erreur TypeScript.
 
 ```bash
 git add src/pace.ts test/pace.test.ts package.json
-git commit -m "feat(pace): calcule le rythme idéal des fenêtres 5h et 7d"
+git commit -m "feat(pace): compute the 5h and 7d windows' ideal pace"
 ```
 
 ---
@@ -264,7 +263,7 @@ git commit -m "feat(pace): calcule le rythme idéal des fenêtres 5h et 7d"
 
 **Interfaces:**
 - Consumes: `computePace`, `paceBlock`, `WINDOW_SEC` de `src/pace.ts` (Task 1).
-- Produces: la réponse JSON de `GET /usage`, consommée par `refreshUsage()` en Task 5 :
+- Produces: `GET /usage`'s JSON response, consumed by `refreshUsage()` in Task 5:
   ```
   {
     fiveHour: { usedPercentage, resetsAt, idealPacePct, ratioPct } | null,
@@ -275,20 +274,20 @@ git commit -m "feat(pace): calcule le rythme idéal des fenêtres 5h et 7d"
   }
   ```
 
-- [ ] **Step 1: Ajouter les imports**
+- [ ] **Step 1: Add the imports**
 
-Dans `src/server.ts`, remplacer la ligne 18 (`import { getUsage } from "./usage.js";`) par :
+In `src/server.ts`, replace line 18 (`import { getUsage } from "./usage.js";`) with:
 
 ```ts
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
 import { getUsage, type Window } from "./usage.js";
 ```
 
-Le type `Window` est nécessaire au helper `enrich` de l'étape suivante.
+The `Window` type is needed by the next step's `enrich` helper.
 
-- [ ] **Step 2: Remplacer la route**
+- [ ] **Step 2: Replace the route**
 
-Remplacer les lignes 59-62 :
+Replace lines 59-62:
 
 ```ts
 // Current 5-hour and 7-day subscription usage (for the quota gauges).
@@ -318,12 +317,12 @@ app.get("/usage", async (_req, res) => {
 });
 ```
 
-- [ ] **Step 3: Vérifier la compilation**
+- [ ] **Step 3: Check it compiles**
 
 Run: `npm run build`
 Expected: aucune erreur.
 
-- [ ] **Step 4: Vérifier la route à la main**
+- [ ] **Step 4: Check the route by hand**
 
 ```bash
 node dist/server.js &
@@ -332,31 +331,31 @@ curl -s localhost:3789/usage | head -c 400; echo
 kill %1
 ```
 
-Expected: un JSON contenant `blocked` et `reason`. Si un token OAuth est disponible, `fiveHour` porte `idealPacePct` et `ratioPct` numériques ; sinon `{"fiveHour":null,"sevenDay":null,...,"blocked":false,"reason":null}` — les deux sont des succès.
+Expected: a JSON containing `blocked` and `reason`. With an OAuth token available, `fiveHour` carries numeric `idealPacePct` and `ratioPct`; otherwise `{"fiveHour":null,"sevenDay":null,...,"blocked":false,"reason":null}` — both are successes.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add src/server.ts
-git commit -m "feat(pace): expose le rythme et le verdict sur GET /usage"
+git commit -m "feat(pace): expose the pace and the verdict on GET /usage"
 ```
 
 ---
 
-### Task 3: Bloquer les prompts au-dessus du rythme
+### Task 3: Block prompts above the pace
 
 **Files:**
 - Modify: `src/server.ts:94` (type `ClientMessage`), `src/server.ts:509-527` (`case "prompt"`)
 
 **Interfaces:**
-- Consumes: `paceBlock` et `getUsage` (déjà importés en Task 2).
+- Consumes: `paceBlock` and `getUsage` (already imported in Task 2).
 - Produces:
-  - Message client accepté : `{ type: "prompt", text: string, force?: boolean }`
-  - Message serveur émis : `{ type: "pace-blocked", reason: string | null, text: string }` — envoyé au seul client émetteur, jamais diffusé. Consommé en Task 6.
+  - Client message accepted: `{ type: "prompt", text: string, force?: boolean }`
+  - Server message emitted: `{ type: "pace-blocked", reason: string | null, text: string }` — sent to the emitting client only, never broadcast. Consumed in Task 6.
 
-- [ ] **Step 1: Autoriser `force` dans le type de message**
+- [ ] **Step 1: Allow `force` in the message type**
 
-Remplacer la ligne 94 :
+Replace line 94:
 
 ```ts
   | { type: "prompt"; text: string }
@@ -365,13 +364,13 @@ Remplacer la ligne 94 :
 par :
 
 ```ts
-  /** `force`: envoyer malgré un dépassement du rythme. Vaut pour ce message seul. */
+  /** `force`: send despite a pace overrun. Applies to this message only. */
   | { type: "prompt"; text: string; force?: boolean }
 ```
 
-- [ ] **Step 2: Ajouter le contrôle dans `case "prompt"`**
+- [ ] **Step 2: Add the check in `case "prompt"`**
 
-Dans `case "prompt"` (server.ts:509), insérer juste après `if (!text) return;` (ligne 513) et avant `session.lastPrompt = text;` (ligne 514) :
+In `case "prompt"` (server.ts:509), insert right after `if (!text) return;` (line 513) and before `session.lastPrompt = text;` (line 514):
 
 ```ts
           // Above the ideal pace, a prompt needs an explicit second click. The
@@ -383,27 +382,27 @@ Dans `case "prompt"` (server.ts:509), insérer juste après `if (!text) return;`
           }
 ```
 
-- [ ] **Step 3: Vérifier la compilation**
+- [ ] **Step 3: Check it compiles**
 
 Run: `npm run build`
 Expected: aucune erreur.
 
-- [ ] **Step 4: Vérifier le blocage à la main**
+- [ ] **Step 4: Check the block by hand**
 
-`paceBlock` ne bloque que si le quota réel dépasse — impossible à provoquer à la demande. Forcer temporairement le verdict pour la vérification :
+`paceBlock` only blocks when the real quota overshoots — impossible to provoke on demand. Force the verdict temporarily for the check:
 
 ```bash
-# Dans src/pace.ts, faire renvoyer un blocage inconditionnel :
+# In src/pace.ts, make it return an unconditional block:
 #   export function paceBlock(...) { return { blocked: true, reason: "test" }; }
 npm run build && node dist/server.js &
 sleep 2
 ```
 
-Ouvrir http://localhost:3789, démarrer un canal, envoyer un prompt. Expected: aucun tour ne part ; l'onglet Network montre la trame WebSocket `pace-blocked`. (L'UI ne réagit pas encore — c'est la Task 6.)
+Open http://localhost:3789, start a channel, send a prompt. Expected: no turn goes out; the Network tab shows the `pace-blocked` WebSocket frame. (The UI does not react yet — that is Task 6.)
 
-**Rétablir `src/pace.ts` avant de committer** : `git diff src/pace.ts` doit être vide.
+**Restore `src/pace.ts` before committing**: `git diff src/pace.ts` must be empty.
 
-- [ ] **Step 5: Vérifier que les tests passent toujours**
+- [ ] **Step 5: Check the tests still pass**
 
 Run: `npm test 2>&1 | tail -8`
 Expected: 35 pass, 0 fail.
@@ -412,29 +411,29 @@ Expected: 35 pass, 0 fail.
 
 ```bash
 git add src/server.ts
-git commit -m "feat(pace): refuse les prompts au-dessus du rythme sauf forçage explicite"
+git commit -m "feat(pace): refuse prompts above the pace unless explicitly forced"
 ```
 
 ---
 
-### Task 4: Mettre l'auto-continue en pause plutôt que le laisser consommer
+### Task 4: Put auto-continue on hold rather than let it consume
 
 **Files:**
 - Modify: `src/server.ts:331-369` (`maybeScheduleRetry`)
 
 **Interfaces:**
 - Consumes: `paceBlock`, `getUsage`.
-- Produces: deux messages diffusés à tous les clients de la session, consommés en Task 6 :
-  - `{ type: "pace-hold", reason: string | null }` — émis **une seule fois** par pause, pas à chaque re-test.
-  - `{ type: "pace-resumed" }` — émis seulement si une pause avait eu lieu.
+- Produces: two messages broadcast to every client of the session, consumed in Task 6:
+  - `{ type: "pace-hold", reason: string | null }` — emitted **once** per hold, not on every re-test.
+  - `{ type: "pace-resumed" }` — emitted only when a hold had happened.
 
-- [ ] **Step 1: Faire survivre la pause à un prompt refusé**
+- [ ] **Step 1: Make the hold survive a refused prompt**
 
-La pause vit dans `s.retryTimer`. Or le bloc « user takeover » tourne avant le `switch` et annule l'auto-retry pour tout message de type `prompt` — y compris un prompt que le contrôle de rythme va refuser juste après. La pause mourrait donc silencieusement à la première tentative d'envoi, alors qu'elle doit reprendre seule dès le retour sous le seuil.
+The hold lives in `s.retryTimer`. But the "user takeover" block runs before the `switch` and cancels the auto-retry for any `prompt` message — including a prompt the pace check is about to refuse. The hold would therefore die silently on the first send attempt, when it must resume on its own as soon as we are back under the threshold.
 
-Un prompt refusé n'envoie rien : ce n'est pas une reprise en main. Un prompt réellement soumis — forcé ou non bloqué — en est une.
+A refused prompt sends nothing: it is not a takeover. A prompt actually submitted — forced or not blocked — is one.
 
-Remplacer le bloc de `src/server.ts:409-417` :
+Replace the block at `src/server.ts:409-417`:
 
 ```ts
     try {
@@ -465,7 +464,7 @@ par :
       }
 ```
 
-Puis, dans `case "prompt"`, juste après le contrôle de rythme ajouté en Task 3 (le bloc `if (!msg.force) { … }`) et avant `session.lastPrompt = text;`, insérer :
+Then, in `case "prompt"`, right after the pace check added in Task 3 (the `if (!msg.force) { … }` block) and before `session.lastPrompt = text;`, insert:
 
 ```ts
           // Getting here means the prompt is really being sent — that is the
@@ -474,21 +473,21 @@ Puis, dans `case "prompt"`, juste après le contrôle de rythme ajouté en Task 
           session.retryCount = 0;
 ```
 
-- [ ] **Step 2: Ajouter la constante de re-test**
+- [ ] **Step 2: Add the re-test constant**
 
 Juste au-dessus de `function maybeScheduleRetry` (server.ts:331), ajouter :
 
 ```ts
 /**
- * Pas de re-test du rythme pendant une pause. Aligné sur le TTL du cache de
- * usage.ts : la boucle d'attente n'émet aucune requête vers l'API.
+ * How long between pace re-checks during a hold. Aligned with usage.ts's cache
+ * TTL: the waiting loop issues no request to the API.
  */
 const PACE_RECHECK_MS = 60_000;
 ```
 
-- [ ] **Step 4: Remplacer le corps du minuteur**
+- [ ] **Step 4: Replace the timer's body**
 
-Remplacer les lignes 354-369 :
+Replace lines 354-369:
 
 ```ts
   s.retryTimer = setTimeout(async () => {
@@ -546,24 +545,24 @@ par :
   s.retryTimer = setTimeout(fire, delayMs);
 ```
 
-La pause réutilise `s.retryTimer`, donc `clearRetry()` (server.ts:319) et le nettoyage de session (server.ts:188) l'annulent sans code supplémentaire — y compris quand l'utilisateur reprend la main (server.ts:396-402).
+The hold reuses `s.retryTimer`, so `clearRetry()` (server.ts:319) and the session cleanup (server.ts:188) cancel it with no extra code — including when the user takes back control (server.ts:396-402).
 
-- [ ] **Step 5: Vérifier la compilation**
+- [ ] **Step 5: Check it compiles**
 
 Run: `npm run build`
 Expected: aucune erreur.
 
-- [ ] **Step 6: Vérifier la pause à la main**
+- [ ] **Step 6: Check the hold by hand**
 
-Même méthode qu'en Task 3 — forcer `paceBlock` à renvoyer `{ blocked: true, reason: "test" }`, puis abaisser temporairement `RETRY_DELAYS_MS` dans `src/retry.ts` à `[1000]` et `PACE_RECHECK_MS` à `2000` pour ne pas attendre.
+The same method as Task 3 — force `paceBlock` to return `{ blocked: true, reason: "test" }`, then temporarily lower `RETRY_DELAYS_MS` in `src/retry.ts` to `[1000]` and `PACE_RECHECK_MS` to `2000` so as not to wait.
 
-Provoquer une erreur transitoire est peu commode ; à défaut, vérifier par lecture que le chemin `blocked` ne comporte aucun `s.pilot.submit`.
+Provoking a transient error is awkward; failing that, verify by reading that the `blocked` path contains no `s.pilot.submit`.
 
-Expected: `pace-hold` diffusé une fois, ré-émission du minuteur toutes les 2 s, aucun `continue` envoyé.
+Expected: `pace-hold` broadcast once, the timer rearmed every 2 s, no `continue` sent.
 
-**Rétablir `src/pace.ts`, `src/retry.ts` et `PACE_RECHECK_MS` avant de committer** : `git diff src/pace.ts src/retry.ts` doit être vide.
+**Restore `src/pace.ts`, `src/retry.ts` and `PACE_RECHECK_MS` before committing**: `git diff src/pace.ts src/retry.ts` must be empty.
 
-- [ ] **Step 7: Vérifier que les tests passent toujours**
+- [ ] **Step 7: Check the tests still pass**
 
 Run: `npm test 2>&1 | tail -8`
 Expected: 35 pass, 0 fail.
@@ -572,25 +571,25 @@ Expected: 35 pass, 0 fail.
 
 ```bash
 git add src/server.ts
-git commit -m "feat(pace): met l'auto-continue en pause tant que le rythme est dépassé"
+git commit -m "feat(pace): hold auto-continue while the pace is exceeded"
 ```
 
 ---
 
-### Task 5: Jauges à deux barres
+### Task 5: Two-bar gauges
 
 **Files:**
 - Modify: `public/index.html:84-108` (CSS `.quota`), `public/index.html:748-757` (markup), `public/index.html:2078-2098` (`paintGauge` / `refreshUsage`)
 
 **Interfaces:**
-- Consumes: la réponse de `GET /usage` définie en Task 2.
-- Produces: deux variables de portée module, lues en Task 6 :
+- Consumes: the `GET /usage` response defined in Task 2.
+- Produces: two module-scoped variables, read in Task 6:
   - `let paceBlocked = false`
   - `let paceReason = null`
 
-- [ ] **Step 1: Adapter le CSS**
+- [ ] **Step 1: Adapt the CSS**
 
-Remplacer les lignes 84-102 :
+Replace lines 84-102:
 
 ```css
   /* Quota gauges (5h / 7d subscription usage) */
@@ -643,9 +642,9 @@ par :
   .quota.crit .meter.usage .fill { background: var(--err); }
 ```
 
-- [ ] **Step 2: Adapter le markup**
+- [ ] **Step 2: Adapt the markup**
 
-Remplacer les lignes 748-757 :
+Replace lines 748-757:
 
 ```html
   <div class="gauge quota" id="quota5h" title="5-hour rolling limit">
@@ -677,11 +676,11 @@ par :
   </div>
 ```
 
-- [ ] **Step 3: Réécrire `paintGauge` et `refreshUsage`**
+- [ ] **Step 3: Rewrite `paintGauge` and `refreshUsage`**
 
-Remplacer les lignes 2078-2098 (de `function paintGauge` jusqu'à `setInterval(refreshUsage, 60_000);` inclus) :
+Replace lines 2078-2098 (from `function paintGauge` through `setInterval(refreshUsage, 60_000);` inclusive):
 
-`paceBlocked` et `paceReason` sont déclarés ici mais lus par le composer, défini plus haut dans le fichier (ligne 1983). Sans effet : les deux ne sont lus qu'au moment d'un envoi ou d'un message serveur, bien après l'exécution du script.
+`paceBlocked` and `paceReason` are declared here but read by the composer, defined earlier in the file (line 1983). Harmless: both are only read when a send happens or a server message arrives, well after the script has run.
 
 ```js
   /** Last verdict from /usage — read by the composer before sending. */
@@ -728,36 +727,36 @@ Remplacer les lignes 2078-2098 (de `function paintGauge` jusqu'à `setInterval(r
   setInterval(refreshUsage, 60_000);
 ```
 
-- [ ] **Step 4: Vérifier visuellement**
+- [ ] **Step 4: Check visually**
 
 ```bash
 npm run build && node dist/server.js &
 sleep 2
 ```
 
-Ouvrir http://localhost:3789. Expected: chaque jauge affiche deux barres fines empilées ; la barre du bas (rythme) est grise. Survoler une jauge : le tooltip donne consommation, rythme idéal, ratio et reset. Sans token OAuth, les deux barres sont vides et le tooltip se réduit au libellé — c'est le comportement attendu.
+Open http://localhost:3789. Expected: each gauge shows two thin stacked bars; the bottom bar (pace) is grey. Hover a gauge: the tooltip gives consumption, ideal pace, ratio and reset. With no OAuth token both bars are empty and the tooltip reduces to the label — that is the expected behaviour.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add public/index.html
-git commit -m "feat(pace): jauges à deux barres — consommation contre temps écoulé"
+git commit -m "feat(pace): two-bar gauges — consumption against elapsed time"
 ```
 
 ---
 
-### Task 6: Bulle de forçage et état de pause
+### Task 6: The override bubble and the hold state
 
 **Files:**
-- Modify: `public/index.html:1983-1996` (soumission du composer), `public/index.html:1907-1912` (switch des messages serveur)
+- Modify: `public/index.html:1983-1996` (the composer's submit), `public/index.html:1907-1912` (the server-message switch)
 
 **Interfaces:**
-- Consumes: `paceBlocked` / `paceReason` (Task 5) ; les messages `pace-blocked` (Task 3), `pace-hold` et `pace-resumed` (Task 4).
-- Produces: rien pour les tâches suivantes — c'est la dernière.
+- Consumes: `paceBlocked` / `paceReason` (Task 5); the `pace-blocked` (Task 3), `pace-hold` and `pace-resumed` (Task 4) messages.
+- Produces: nothing for later tasks — this is the last one.
 
 - [ ] **Step 1: Extraire l'envoi du prompt**
 
-Remplacer les lignes 1983-1996 :
+Replace lines 1983-1996:
 
 ```js
   composer.addEventListener("submit", (e) => {
@@ -800,13 +799,13 @@ par :
     turn.className = "turn claude dialog";
     const label = document.createElement("span");
     label.className = "label";
-    label.textContent = "shadok-ai — rythme dépassé";
+    label.textContent = "shadok-ai — pace exceeded";
     const bubble = document.createElement("div");
     bubble.className = "bubble";
     const q = document.createElement("div");
     q.className = "question";
-    q.textContent = (reason || "Consommation au-dessus du rythme idéal")
-      + " — envoyer quand même ?";
+    q.textContent = (reason || "Consumption above the ideal pace")
+      + " — send anyway?";
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "choice";
@@ -834,11 +833,11 @@ par :
   });
 ```
 
-Le texte reste dans le composer tant que l'envoi n'est pas forcé : rien n'est perdu si l'utilisateur préfère renoncer ou reformuler.
+The text stays in the composer until the send is forced: nothing is lost if the user prefers to back out or rephrase.
 
-- [ ] **Step 2: Traiter les trois messages serveur**
+- [ ] **Step 2: Handle the three server messages**
 
-Dans le `switch` des messages serveur, juste après le `case "auto-retry-gave-up"` (public/index.html:1907-1912) et avant l'accolade fermante, ajouter :
+In the server-message `switch`, right after `case "auto-retry-gave-up"` (public/index.html:1907-1912) and before the closing brace, add:
 
 ```js
       case "pace-blocked":
@@ -855,19 +854,19 @@ Dans le `switch` des messages serveur, juste après le `case "auto-retry-gave-up
         break;
       case "pace-hold":
         addTurn(t, "system", "",
-          "Auto-continue en pause — " + (msg.reason || "rythme dépassé") +
-          ". Reprise automatique dès le retour sous le seuil.");
+          "Auto-continue on hold — " + (msg.reason || "pace exceeded") +
+          ". It resumes automatically once back under the threshold.");
         setTabState(t, "ready", "en attente du rythme");
         break;
       case "pace-resumed":
-        addTurn(t, "system", "", "Rythme revenu sous le seuil — auto-continue repris.");
+        addTurn(t, "system", "", "Pace back under the threshold — auto-continue resumed.");
         setTabState(t, "ready", "ready");
         break;
 ```
 
-- [ ] **Step 3: Vérifier le parcours de forçage**
+- [ ] **Step 3: Check the override path**
 
-Forcer `paceBlock` à bloquer comme en Task 3 :
+Force `paceBlock` to block as in Task 3:
 
 ```bash
 # src/pace.ts : export function paceBlock(...) { return { blocked: true, reason: "7d : test" }; }
@@ -875,17 +874,17 @@ npm run build && node dist/server.js &
 sleep 2
 ```
 
-Ouvrir http://localhost:3789, démarrer un canal, envoyer un prompt.
+Open http://localhost:3789, start a channel, send a prompt.
 
 Expected:
-1. Aucun tour utilisateur ne part ; une bulle encadrée d'ambre apparaît avec la raison et le bouton « Forcer l'envoi ».
-2. Le texte est toujours dans le composer.
-3. Clic sur « Forcer l'envoi » : le tour part, le composer se vide, claude répond.
-4. Envoyer un second prompt : la bulle réapparaît — le forçage n'a rien mémorisé.
+1. No user turn goes out; an amber-bordered bubble appears with the reason and the "Force send" button.
+2. The text is still in the composer.
+3. Clicking "Force send": the turn goes out, the composer clears, claude answers.
+4. Send a second prompt: the bubble reappears — the override stored nothing.
 
-**Rétablir `src/pace.ts` avant de committer** : `git diff src/pace.ts` doit être vide.
+**Restore `src/pace.ts` before committing**: `git diff src/pace.ts` must be empty.
 
-- [ ] **Step 4: Vérifier que rien n'a régressé**
+- [ ] **Step 4: Check nothing regressed**
 
 Run: `npm test 2>&1 | tail -8`
 Expected: 35 pass, 0 fail.
@@ -897,36 +896,36 @@ Expected: aucune erreur.
 
 ```bash
 git add public/index.html
-git commit -m "feat(pace): bulle de forçage par message et affichage de la pause auto-continue"
+git commit -m "feat(pace): a per-message override bubble and the auto-continue hold display"
 ```
 
 ---
 
 ## Self-Review — couverture du spec
 
-| Exigence du spec | Tâche |
+| Spec requirement | Task |
 |---|---|
 | `computePace`, `paceBlock`, epsilon 5, seuil 100 en dur | 1 |
-| Rythme borné 0–100 | 1 (test « fenêtre expirée ») |
-| Raison citant la fenêtre au ratio le plus élevé | 1 |
-| Pas de données ⇒ pas de blocage | 1 |
-| `usage.ts` non modifié | 1–6 (aucune tâche ne le touche) |
+| Pace clamped 0–100 | 1 (the "expired window" test) |
+| The reason naming the window with the highest ratio | 1 |
+| No data ⇒ no block | 1 |
+| `usage.ts` unmodified | 1–6 (no task touches it) |
 | `/usage` enrichi + `blocked`/`reason` | 2 |
-| Pace calculé par requête, pas par fetch | 2 |
+| Pace computed per request, not per fetch | 2 |
 | Gating de `case "prompt"` + `force` | 3 |
-| Forçage limité à un message | 3 (aucun état serveur), 6 (aucun état client) |
-| Auto-continue en pause + reprise, jamais forcé | 4 |
-| `pace-hold` émis une seule fois par pause | 4 |
-| Re-test à 60 s aligné sur le TTL du cache | 4 |
-| Réutilisation de `s.retryTimer` pour le nettoyage | 4 |
-| Deux barres empilées, couleur par ratio | 5 |
+| Override limited to one message | 3 (no server state), 6 (no client state) |
+| Auto-continue held + resumed, never forced | 4 |
+| `pace-hold` emitted once per hold | 4 |
+| A 60 s re-test aligned with the cache TTL | 4 |
+| Reuse of `s.retryTimer` for the cleanup | 4 |
+| Two stacked bars, colour by ratio | 5 |
 | Tooltip : usage, rythme, ratio, reset | 5 |
 | Composer actif, bulle style `.turn.dialog` | 6 |
-| Ligne d'état de pause | 6 |
-| Sondage 60 s inchangé, pas de canal de push | 5 |
-| Tests des fonctions pures | 1 |
+| A hold status line | 6 |
+| The 60 s poll unchanged, no push channel | 5 |
+| Tests of the pure functions | 1 |
 
-## Écarts assumés
+## Accepted deviations
 
-- **Le tour utilisateur optimiste reste affiché** quand c'est le serveur qui refuse (client au sondage périmé, ou prompt venu de `pilotctl`). L'état de l'onglet est bien remis à `ready`, mais la bulle du prompt reste dans le fil, suivie de la demande de confirmation. Le cas est rare — le client contrôle avant d'envoyer — et le nettoyer demanderait de tracer l'élément DOM du dernier tour.
-- **Les vérifications manuelles des tâches 3, 4 et 6 exigent de trafiquer `paceBlock` temporairement**, un dépassement réel de quota n'étant pas provocable à la demande. Chaque tâche rappelle de rétablir le fichier et de le vérifier par `git diff` avant commit.
+- **The optimistic user turn stays displayed** when it is the server that refuses (a client on a stale poll, or a prompt coming from `pilotctl`). The tab's state is properly reset to `ready`, but the prompt's bubble stays in the thread, followed by the confirmation request. The case is rare — the client checks before sending — and cleaning it up would take tracking the last turn's DOM element.
+- **The manual checks of tasks 3, 4 and 6 require tampering with `paceBlock` temporarily**, since a real quota overrun cannot be provoked on demand. Each task reminds you to restore the file and verify with `git diff` before committing.
