@@ -1,84 +1,84 @@
-# Telegram → Claude Code : pièces jointes (images & fichiers)
+# Telegram → Claude Code: attachments (images & files)
 
-**Date :** 2026-07-23
-**Statut :** validé (brainstorm avec l'utilisateur)
+**Date:** 2026-07-23
+**Status:** agreed (brainstorm with the user)
 
-## Problème
+## Problem
 
-Aujourd'hui le bridge Telegram ignore tout message sans texte
-(`handleMessage` : `if (typeof msg.text !== "string") return;`). Envoyer une
-photo ou un fichier dans un chat/topic lié à une session Claude Code ne fait
-rien. L'utilisateur veut que poser une image (ou n'importe quel fichier) dans
-Telegram équivaille à la « coller » dans la session Claude Code.
+Today the Telegram bridge ignores any message with no text (`handleMessage`:
+`if (typeof msg.text !== "string") return;`). Sending a photo or a file into a
+chat/topic bound to a Claude Code session does nothing. The user wants dropping
+an image (or any file) into Telegram to be the equivalent of "pasting" it into
+the Claude Code session.
 
-## Approche retenue
+## The approach chosen
 
-**Chemin de fichier dans le prompt** (approche A du brainstorm). Le bridge
-télécharge la pièce jointe via l'API Bot Telegram, la sauve sur disque, puis
-envoie un prompt texte normal contenant le chemin absolu. Claude Code lit le
-fichier lui-même (tool Read pour images/PDF/texte, Bash pour le reste).
+**A file path in the prompt** (approach A from the brainstorm). The bridge
+downloads the attachment through the Telegram Bot API, saves it to disk, then
+sends an ordinary text prompt containing the absolute path. Claude Code reads the
+file itself (the Read tool for images/PDF/text, Bash for the rest).
 
-Écarté :
-- **Simuler un paste TUI (Ctrl+V)** : presse-papier global machine → collisions
-  entre sessions parallèles, fragile, casse en headless.
-- **Sauver dans le cwd/worktree de la session** : pollue le diff, risque de
-  commit accidentel.
+Rejected:
+- **Simulating a TUI paste (Ctrl+V)**: a machine-global clipboard → collisions
+  between parallel sessions, fragile, breaks headless.
+- **Saving into the session's cwd/worktree**: pollutes the diff, risks an
+  accidental commit.
 
-Tout vit dans `src/telegram.ts` (+ helper éventuel). **Aucun changement du
-serveur ni du protocole WS** — on passe par le message `prompt` existant.
+Everything lives in `src/telegram.ts` (+ a possible helper). **No change to the
+server or to the WS protocol** — we go through the existing `prompt` message.
 
-## Comportement
+## Behaviour
 
-| Envoi Telegram | Résultat |
+| Sent on Telegram | Result |
 |---|---|
-| Photo avec caption | Un prompt : `[Image jointe : /chemin]` + la caption |
-| Photo sans caption | Un prompt : juste `[Image jointe : /chemin]` |
-| Document (tout type : PDF, .txt, .zip, image « en fichier »…) | Un prompt : `[Fichier joint : /chemin]` (+ caption éventuelle) |
-| Album (`media_group_id`) | **Un seul** prompt regroupant tous les chemins (+ la caption de l'album) |
-| Fichier > 20 Mo | Reply `⚠️ fichier trop gros (limite Telegram bot : 20 Mo)`, rien envoyé à Claude |
-| Échec de téléchargement | Reply `⚠️` explicite, rien envoyé à Claude |
+| A photo with a caption | One prompt: `[Attached image: /path]` + the caption |
+| A photo with no caption | One prompt: just `[Attached image: /path]` |
+| A document (any type: PDF, .txt, .zip, an image "as a file"…) | One prompt: `[Attached file: /path]` (+ any caption) |
+| An album (`media_group_id`) | **A single** prompt grouping every path (+ the album's caption) |
+| A file over 20 MB | Reply `⚠️ file too large (Telegram bot limit: 20 MB)`, nothing sent to Claude |
+| A failed download | An explicit `⚠️` reply, nothing sent to Claude |
 
-Le texte pur reste géré exactement comme aujourd'hui.
+Plain text keeps being handled exactly as today.
 
-## Détails techniques
+## Technical details
 
-- **Photo** : `msg.photo` est un tableau de tailles → prendre la dernière
-  (plus grande résolution).
-- **Document** : `msg.document` (tout `mime_type`, sans filtre).
-- **Téléchargement** : `getFile(file_id)` → GET
-  `https://api.telegram.org/file/bot<token>/<file_path>`. La limite de 20 Mo
-  est celle de `getFile` côté Telegram — la détecter via `msg.document.file_size`
-  / `photo.file_size` avant l'appel quand c'est possible, et gérer l'erreur
-  `getFile` sinon.
-- **Stockage** : `~/.shadok-ai/media/` (convention `~/.shadok-ai/` comme
-  secrets/channels). Nom : `<file_unique_id>-<nom_original>` (nom d'origine
-  conservé pour donner du contexte à Claude ; `file_unique_id` en préfixe
-  évite les collisions). Photo sans nom : `<file_unique_id>.jpg`. Le nom
-  original est nettoyé (basename, pas de `/`).
-- **Prompt généré** : chemin absolu, ex.
-  `[Fichier joint : /Users/alex/.shadok-ai/media/AQAD…-rapport.pdf]\n<caption>`.
-  Claude décide comment le lire selon le type.
-- **Albums** : les messages d'un même `media_group_id` arrivent séparément
-  (la caption souvent sur un seul). Buffer par `media_group_id` avec timer
-  ~1,5 s réarmé à chaque photo ; à expiration, un seul prompt avec tous les
-  chemins et la caption trouvée.
-- **Typing** : l'heartbeat « typing » optimiste démarre dès la réception,
-  comme pour un message texte (téléchargement inclus).
-- **Purge** : au démarrage du bridge, suppression des fichiers de
-  `~/.shadok-ai/media/` modifiés il y a plus de 30 jours.
+- **Photo**: `msg.photo` is an array of sizes → take the last one (the highest
+  resolution).
+- **Document**: `msg.document` (any `mime_type`, unfiltered).
+- **Download**: `getFile(file_id)` → GET
+  `https://api.telegram.org/file/bot<token>/<file_path>`. The 20 MB limit is
+  `getFile`'s, on Telegram's side — detect it through `msg.document.file_size` /
+  `photo.file_size` before the call when possible, and handle the `getFile` error
+  otherwise.
+- **Storage**: `~/.shadok-ai/media/` (the `~/.shadok-ai/` convention, like
+  secrets/channels). Name: `<file_unique_id>-<original_name>` (the original name
+  kept to give Claude context; the `file_unique_id` prefix avoids collisions). An
+  unnamed photo: `<file_unique_id>.jpg`. The original name is sanitised
+  (basename, no `/`).
+- **The generated prompt**: an absolute path, e.g.
+  `[Attached file: /Users/alex/.shadok-ai/media/AQAD…-report.pdf]\n<caption>`.
+  Claude decides how to read it depending on the type.
+- **Albums**: the messages of one `media_group_id` arrive separately (the caption
+  usually on only one). A buffer per `media_group_id` with a ~1.5 s timer rearmed
+  on each photo; on expiry, a single prompt with every path and the caption
+  found.
+- **Typing**: the optimistic "typing" heartbeat starts on reception, as for a
+  text message (download included).
+- **Purge**: when the bridge starts, files in `~/.shadok-ai/media/` modified more
+  than 30 days ago are deleted.
 
-## Gestion d'erreur
+## Error handling
 
-- `getFile` KO ou download HTTP non-200 → reply Telegram
-  `⚠️ je n'ai pas pu télécharger <nom> (<raison>)` ; rien n'est envoyé à la
-  session ; le typing s'arrête.
-- Un fichier en échec au sein d'un album n'empêche pas l'envoi des autres
-  (le prompt liste ce qui a réussi, le reply signale l'échec).
+- A failed `getFile` or a non-200 download → a Telegram reply
+  `⚠️ could not download <name> (<reason>)`; nothing is sent to the session; the
+  typing stops.
+- One failed file within an album does not prevent the others from being sent
+  (the prompt lists what succeeded, the reply reports the failure).
 
-## Tests / vérification
+## Tests / verification
 
-- Build (`npm run build`), restart du serveur en tmux, puis vérification
-  manuelle de bout en bout : photo avec caption, photo sans caption, document
-  PDF, image « en fichier », album de 2-3 photos, fichier > 20 Mo.
-- Vérifier que la session Claude lit bien le fichier (le tour répond sur le
-  contenu de l'image/du document).
+- Build (`npm run build`), restart the server in tmux, then a manual end-to-end
+  check: a photo with a caption, a photo without one, a PDF document, an image
+  "as a file", an album of 2–3 photos, a file over 20 MB.
+- Check that the Claude session does read the file (the turn answers about the
+  content of the image/document).

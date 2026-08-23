@@ -1,97 +1,97 @@
-# Changer le profil d'un agent en cours
+# Changing a running agent's profile
 
-Date : 2026-07-31
-Statut : validé, implémenté
+Date: 2026-07-31
+Status: agreed, implemented
 
-## Problème
+## Problem
 
-Le profil est choisi au spawn et n'est **plus jamais modifiable** ensuite. Or
-c'est ce qui définit un agent : rôle, garde-fous de permissions, secrets, modèle.
-Se tromper de profil — ou vouloir passer un agent en lecture seule après coup —
-oblige aujourd'hui à fermer le canal et à en recréer un, ce qui **perd la
+The profile is chosen at spawn and is **never changeable** afterwards. Yet it is
+what defines an agent: role, permission guardrails, secrets, model. Picking the
+wrong profile — or wanting to make an agent read-only after the fact — currently
+means closing the channel and creating another one, which **loses the
 conversation**.
 
-Le mécanisme manquant est pourtant à 90 % en place :
+The missing mechanism is nonetheless 90 % in place:
 
-- `restart` (WS) re-spawne l'agent sur place avec `s.profile`, en préservant
-  l'historique (`--resume`) et les références de tous les clients attachés ;
-- le menu contextuel d'un onglet existe et **affiche déjà** le profil courant
-  dans son entête ;
-- la grille de cartes de profil existe (box « New agent »).
+- `restart` (WS) respawns the agent in place with `s.profile`, preserving the
+  history (`--resume`) and every attached client's references;
+- a tab's context menu exists and **already shows** the current profile in its
+  header;
+- the profile card grid exists (the "New agent" box).
 
-Il ne manque que le changement lui-même, et sa confirmation.
+Only the change itself, and its confirmation, are missing.
 
-## Contrainte
+## Constraint
 
-`profile` est dans `SERVER_OWNED` (`src/channels.ts:52`) : un `PUT /channels`
-venant du navigateur ne peut ni l'écrire ni l'effacer. C'est délibéré — un client
-périmé ne doit pas pouvoir déshabiller un agent de ses garde-fous. Le changement
-passe donc par un **chemin serveur dédié**, pas par la persistance des canaux.
+`profile` is in `SERVER_OWNED` (`src/channels.ts:52`): a `PUT /channels` from the
+browser can neither write nor clear it. That is deliberate — a stale client must
+not be able to strip an agent of its guardrails. So the change goes through a
+**dedicated server path**, not through channel persistence.
 
-## Protocole
+## Protocol
 
-**client → serveur** : `{ type: "set-profile", profile: string | null, restart?: boolean }`
+**client → server**: `{ type: "set-profile", profile: string | null, restart?: boolean }`
 
-Le serveur :
-1. valide — `profile === null` ou `getProfile(profile)` existe ; sinon `error` ;
-2. persiste sur le canal (`upsertChannel`), seul chemin légitime pour ce champ ;
-3. pose `s.profile` — le profil **désiré**, celui que le prochain spawn utilisera ;
-4. diffuse `profile` à **tous** les clients (autres onglets, autres appareils) ;
-5. si `restart: true`, enchaîne sur le chemin `restart` existant, inchangé.
+The server:
+1. validates — `profile === null` or `getProfile(profile)` exists; else `error`;
+2. persists it on the channel (`upsertChannel`), the only legitimate path for
+   that field;
+3. sets `s.profile` — the **desired** profile, the one the next spawn will use;
+4. broadcasts `profile` to **every** client (other tabs, other devices);
+5. if `restart: true`, chains into the existing `restart` path, unchanged.
 
-**serveur → client** : `{ type: "profile", profile, applied }`
+**server → client**: `{ type: "profile", profile, applied }`
 
-`applied` est le profil que le **process en cours** a réellement reçu. Il est posé
-aux deux seuls endroits qui appellent `makePilot` : `createSession` et le handler
-`restart`. Sans lui, « enregistré » et « en vigueur » seraient indistinguables et
-l'UI ne pourrait pas montrer l'écart. Émis aussi juste après `ready`, pour qu'un
-client qui arrive connaisse les deux valeurs.
+`applied` is the profile the **running process** actually received. It is set at
+the only two places that call `makePilot`: `createSession` and the `restart`
+handler. Without it, "saved" and "in force" would be indistinguishable and the UI
+could not show the gap. Emitted right after `ready` too, so an arriving client
+knows both values.
 
 ## UI
 
-**Le menu contextuel de l'onglet** gagne une entrée `👤 Change profile…`, sous
-l'entête qui affiche déjà le profil. Elle n'apparaît que si l'onglet a un
-`sessionId` : un agent jamais lancé se règle dans la box de création.
+**The tab's context menu** gains a `👤 Change profile…` entry, under the header
+that already shows the profile. It only appears when the tab has a `sessionId`:
+an agent that was never launched is configured in the creation box.
 
-Quand désiré ≠ en vigueur, l'entête le dit : `👤 Shadok-dev (at next reload)`.
+When desired ≠ in force, the header says so: `👤 Shadok-dev (at next reload)`.
 
-**Le sélecteur** réutilise les cartes de la box. `renderProfileGrid` était câblée
-en dur sur `#profileGrid` et sur le `selectedProfile` global ; elle est extraite
-en `renderProfileCards(container, selected, onPick)`, utilisée par les deux
-appelants. Pas de duplication de la logique de carte.
+**The picker** reuses the box's cards. `renderProfileGrid` was hardwired to
+`#profileGrid` and to the global `selectedProfile`; it is extracted as
+`renderProfileCards(container, selected, onPick)`, used by both callers. No
+duplication of the card logic.
 
-**La confirmation** a **trois** issues, donc pas un `confirm()` natif :
+**The confirmation** has **three** outcomes, hence not a native `confirm()`:
 
-- `Redémarrer` — persiste et redémarre tout de suite ;
-- `Enregistrer seulement` — persiste, appliqué au prochain reload ;
-- `Annuler` / Échap — **ne change rien**. Fermer une popin ne doit jamais
-  modifier l'état en douce.
+- `Restart` — persists and restarts right away;
+- `Save only` — persists, applied at the next reload;
+- `Cancel` / Escape — **changes nothing**. Closing a popin must never quietly
+  change state.
 
-Si l'agent travaille, la popin ajoute « Un tour est en cours — il sera
-interrompu » et le bouton de redémarrage passe en teinte alerte. On n'interdit
-pas : couper un agent parti de travers est précisément un cas d'usage.
+If the agent is working, the popin adds "A turn is running — it will be
+interrupted" and the restart button turns alert-coloured. We do not forbid it:
+cutting an agent that went off track is precisely a use case.
 
-## Appui long (tactile)
+## Long press (touch)
 
-Le menu contextuel n'avait **aucun** support tactile — préexistant, mais il rend
-cette feature inaccessible depuis un téléphone, alors que le cockpit se pilote
-aussi comme ça. Un appui long de 500 ms sur l'onglet ouvre le même menu ; un
-déplacement du doigt l'annule (c'est un scroll, pas un appui). Bénéficie aussi à
-Rename / Mute / Mirror / Close.
+The context menu had **no** touch support — pre-existing, but it makes this
+feature unreachable from a phone, which is also how the cockpit gets driven. A
+500 ms long press on the tab opens the same menu; a finger movement cancels it
+(that is a scroll, not a press). Rename / Mute / Mirror / Close benefit too.
 
-## Hors périmètre
+## Out of scope
 
-- Commande Telegram équivalente.
-- Changer le profil d'un onglet jamais lancé (la box de création le couvre).
+- An equivalent Telegram command.
+- Changing the profile of a tab that was never launched (the creation box covers
+  it).
 
 ## Tests
 
-Le WS du serveur n'a pas de harnais de test unitaire dans ce dépôt ; les cœurs
-purs, si.
+The server's WS has no unit-test harness in this repo; the pure cores do.
 
-- `channels.test.ts` : un `PUT /channels` client ne peut pas écraser le `profile`
-  d'un canal (l'invariant que le chemin dédié protège).
-- `profile-card.test.ts` : inchangé — la logique de carte ne bouge pas.
-- Le reste (menu, popin, restart, diffusion multi-clients) est vérifié **au
-  navigateur** avec Playwright, y compris à deux onglets ouverts pour contrôler
-  que le changement se propage.
+- `channels.test.ts`: a client `PUT /channels` cannot overwrite a channel's
+  `profile` (the invariant the dedicated path protects).
+- `profile-card.test.ts`: unchanged — the card logic does not move.
+- The rest (menu, popin, restart, multi-client broadcast) is verified **in the
+  browser** with Playwright, including with two tabs open to check the change
+  propagates.
