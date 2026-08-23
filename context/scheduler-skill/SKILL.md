@@ -48,17 +48,17 @@ absent, and you find out at 6am rather than now. A name that isn't in the vault
 is skipped just as silently. Your own shell having the key proves nothing about
 the guard's.
 
-`schedule.py env` prints exactly what a guard gets here. Run it before writing a
+`schedule.mjs env` prints exactly what a guard gets here. Run it before writing a
 check that needs a secret.
 
 ## Commands
 
 ```
-python3 scripts/schedule.py add --schedule <spec> --prompt "<text>" [--check "<shell command>"] [--tz <zone>]
-python3 scripts/schedule.py list
-python3 scripts/schedule.py del <id>
-python3 scripts/schedule.py tz [<zone>|-]
-python3 scripts/schedule.py env
+node scripts/schedule.mjs add --schedule <spec> --prompt "<text>" [--check "<shell command>"] [--tz <zone>]
+node scripts/schedule.mjs list
+node scripts/schedule.mjs del <id>
+node scripts/schedule.mjs tz [<zone>|-]
+node scripts/schedule.mjs env
 ```
 
 `<spec>`: `every:30m` · `every:2h` · `daily:09:00`.
@@ -69,8 +69,8 @@ A `daily` runs at that wall-clock time **in a timezone**, and the default is
 whatever the SERVER's machine is set to. On a machine running in UTC,
 `daily:09:00` fires at 11:00 for someone in Paris — silently.
 
-- `schedule.py tz` prints the timezone `daily` schedules actually use.
-- `schedule.py tz Europe/Paris` pins it for every `daily` on this instance,
+- `schedule.mjs tz` prints the timezone `daily` schedules actually use.
+- `schedule.mjs tz Europe/Paris` pins it for every `daily` on this instance,
   including the ones already scheduled (they're realigned immediately).
 - `--tz Europe/Paris` on `add` pins one schedule only.
 
@@ -81,7 +81,7 @@ An interval (`every:30m`) is a duration, so it has no timezone.
 ### Example — guarded monitoring (near-zero tokens)
 
 ```
-python3 scripts/schedule.py add \
+node scripts/schedule.mjs add \
   --schedule daily:09:00 \
   --check "python3 $HOME/.claude/skills/google-ads/scripts/check_budget.py" \
   --prompt "Le monitoring a détecté une anomalie budget Google Ads. Rédige une alerte claire et actionnable pour l'équipe."
@@ -90,7 +90,7 @@ python3 scripts/schedule.py add \
 ### Example — plain recurring report (runs every time)
 
 ```
-python3 scripts/schedule.py add --schedule daily:18:00 \
+node scripts/schedule.mjs add --schedule daily:18:00 \
   --prompt "Fais le point de la journée sur le compte et poste un court résumé."
 ```
 

@@ -18,8 +18,8 @@ automatically). If it is missing, say so rather than improvising.
 ## Store it
 
 ```bash
-gh auth token | ~/.claude/skills/shadok-secrets/scripts/secret.py set GITHUB_TOKEN --stdin
-~/.claude/skills/shadok-secrets/scripts/secret.py list
+gh auth token | node ~/.claude/skills/shadok-secrets/scripts/secret.mjs set GITHUB_TOKEN --stdin
+node ~/.claude/skills/shadok-secrets/scripts/secret.mjs list
 ```
 
 ## The rules — these are the point

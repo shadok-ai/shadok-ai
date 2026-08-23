@@ -2690,8 +2690,14 @@ function seedSchedulerSkill(): void {
     const dst = path.join(os.homedir(), ".claude", "skills", "shadok-scheduler");
     fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
     fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
-    fs.copyFileSync(path.join(src, "scripts", "schedule.py"), path.join(dst, "scripts", "schedule.py"));
-    fs.chmodSync(path.join(dst, "scripts", "schedule.py"), 0o755);
+    fs.copyFileSync(path.join(src, "scripts", "schedule.mjs"), path.join(dst, "scripts", "schedule.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "schedule.mjs"), 0o755);
+    // Seeding copies NAMED files, so a file dropped from the source stays
+    // behind forever: an install seeded before the Node port keeps a
+    // schedule.py that nothing updates any more, next to a SKILL.md that no
+    // longer mentions it. Remove it — a "No such file" beats a stale twin that
+    // silently drifts from the API it calls.
+    fs.rmSync(path.join(dst, "scripts", "schedule.py"), { force: true });
   } catch {
     /* best effort — scheduling still works via the GUI/Telegram/API */
   }
@@ -2708,8 +2714,11 @@ function seedSecretsSkill(): void {
     const dst = path.join(os.homedir(), ".claude", "skills", "shadok-secrets");
     fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
     fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
-    fs.copyFileSync(path.join(src, "scripts", "secret.py"), path.join(dst, "scripts", "secret.py"));
-    fs.chmodSync(path.join(dst, "scripts", "secret.py"), 0o755);
+    fs.copyFileSync(path.join(src, "scripts", "secret.mjs"), path.join(dst, "scripts", "secret.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "secret.mjs"), 0o755);
+    // Same as the scheduler above: drop the Python file a pre-port install
+    // already has, since a named-file copy never prunes.
+    fs.rmSync(path.join(dst, "scripts", "secret.py"), { force: true });
   } catch {
     /* best effort — the vault still works from the GUI and Telegram */
   }

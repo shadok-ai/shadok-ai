@@ -331,7 +331,7 @@ the whole design:
 
 - **Write-only.** There is no `get`, and `GET /secrets` returns names. A value
   leaves the vault in exactly one way: injected as env into an agent at spawn.
-- **The value never touches `argv`.** `secret.py set NAME --stdin` makes the flag
+- **The value never touches `argv`.** `secret.mjs set NAME --stdin` makes the flag
   *required*, so there is structurally no argument to leak — `ps` shows a
   process's arguments to every user on the machine.
 - **No silent overwrite.** `PUT /secrets` refuses an existing name (409) unless
@@ -615,7 +615,7 @@ the default — gives its guard none, and `secretsFor` skips a name missing from
 the vault without a word. The agent that wrote the check has the key in its own
 env, so testing the command by hand proves nothing about the guard's. That
 asymmetry is why agents hardcode values into check scripts "just in case";
-`schedule.py env` (the `shadok-scheduler` skill) prints the real list so they
+`schedule.mjs env` (the `shadok-scheduler` skill) prints the real list so they
 don't have to guess.
 
 That convention has a sharp edge worth knowing (invariant #16): `grep`, `diff`
