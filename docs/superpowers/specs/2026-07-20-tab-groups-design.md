@@ -1,80 +1,78 @@
-# Onglets déplaçables et groupes d'onglets — design
+# Draggable tabs and tab groups — design
 
-Date : 2026-07-20
-Fichier concerné : `public/index.html` (toute l'UI vit là).
+Date: 2026-07-20
+File concerned: `public/index.html` (the whole UI lives there).
 
-## Objectif
+## Goal
 
-Dans la sidebar « Channels » :
-1. Réordonner les onglets (canaux) par drag & drop.
-2. Créer des groupes nommés, y glisser des onglets, les renommer, les replier.
-3. Réordonner les groupes eux-mêmes par drag & drop de leur en-tête.
+In the "Channels" sidebar:
+1. Reorder the tabs (channels) by drag & drop.
+2. Create named groups, drag tabs into them, rename them, collapse them.
+3. Reorder the groups themselves by dragging their header.
 
-Décisions utilisateur : création via bouton « + new group », groupes
-repliables, groupes réordonnables.
+User decisions: creation via a "+ new group" button, collapsible groups,
+reorderable groups.
 
-## Structure DOM
+## DOM structure
 
 ```
 nav#tabbar
-  .label.side-label            (inchangé)
-  div#ungrouped                ← onglets hors groupe
-  div#groups                   ← un div.group par groupe
+  .label.side-label            (unchanged)
+  div#ungrouped                ← tabs outside any group
+  div#groups                   ← one div.group per group
     div.group[data-gid]
-      div.group-head           (draggable, clic = repli, dblclic = renommer, × = dissoudre)
+      div.group-head           (draggable, click = collapse, dblclick = rename, × = dissolve)
         span.caret  span.gname  span.gclose
-      div.group-body           ← onglets du groupe (masqué si replié)
-  button#newTab                (inchangé)
-  button#newGroup              « + new group »
+      div.group-body           ← the group's tabs (hidden when collapsed)
+  button#newTab                (unchanged)
+  button#newGroup              "+ new group"
 ```
 
-`createTab()` ajoute l'onglet dans `#ungrouped` par défaut (ou dans le
-groupe indiqué lors d'une restauration).
+`createTab()` adds the tab to `#ungrouped` by default (or to the group named
+during a restore).
 
 ## Drag & drop
 
-HTML5 natif (`draggable`), pattern « live sort » : pendant le `dragover`,
-l'élément traîné est déplacé directement dans le DOM (pas d'indicateur
-séparé).
+Native HTML5 (`draggable`), a "live sort" pattern: during `dragover` the dragged
+element is moved directly in the DOM (no separate indicator).
 
-- Onglet traîné : au-dessus d'un autre onglet → inséré avant/après selon la
-  moitié verticale ; au-dessus d'un en-tête de groupe → ajouté au groupe
-  (le groupe replié se déplie automatiquement) ; au-dessus d'une zone vide
-  (`#ungrouped` ou `.group-body` vide) → ajouté à cette zone.
-- Groupe traîné (par son en-tête) : au-dessus d'un autre groupe → inséré
-  avant/après.
-- Pendant un drag, les zones vides deviennent visibles (pointillés,
-  min-height) via une classe sur `body`.
-- `dragend` persiste toujours (le `drop` peut ne pas être déclenché).
-- Le `draggable` est désactivé pendant le renommage inline (sinon la
-  sélection de texte déclenche un drag).
+- A dragged tab: over another tab → inserted before/after depending on the
+  vertical half; over a group header → added to the group (a collapsed group
+  expands automatically); over an empty area (`#ungrouped` or an empty
+  `.group-body`) → added to that area.
+- A dragged group (by its header): over another group → inserted before/after.
+- During a drag, empty areas become visible (dashed border, min-height) via a
+  class on `body`.
+- `dragend` always persists (the `drop` may not fire).
+- `draggable` is disabled during an inline rename (otherwise selecting text
+  starts a drag).
 
-## Persistance (localStorage, comme l'existant)
+## Persistence (localStorage, like the existing code)
 
-- `cp.groups` : `[{ id, name, collapsed }]` dans l'ordre DOM.
-- `cp.channels` : chaque entrée gagne `group: <id|null>` ; l'ordre de la
-  liste = l'ordre DOM des onglets (source de vérité relevée au moment de la
-  persistance, pas maintenue dans le tableau `tabs`).
+- `cp.groups`: `[{ id, name, collapsed }]` in DOM order.
+- `cp.channels`: each entry gains `group: <id|null>`; the list's order = the
+  tabs' DOM order (the source of truth read at persist time, not maintained in
+  the `tabs` array).
 
-Au chargement : recréer les groupes, puis les canaux dans leur groupe
-(groupe disparu → `#ungrouped`). Les groupes vides sont conservés.
+On load: recreate the groups, then the channels inside their group (a vanished
+group → `#ungrouped`). Empty groups are kept.
 
-## Comportements annexes
+## Related behaviours
 
-- Dissoudre un groupe (×) : ses onglets sont déplacés dans `#ungrouped`,
-  le groupe est supprimé (aucune session n'est fermée).
-- Replier : masque `.group-body` ; l'onglet actif peut être masqué, le
-  transcript reste affiché.
-- Renommage de groupe : même pattern inline que le renommage d'onglet.
+- Dissolving a group (×): its tabs are moved into `#ungrouped` and the group is
+  removed (no session is closed).
+- Collapsing: hides `.group-body`; the active tab may become hidden, the
+  transcript stays displayed.
+- Renaming a group: the same inline pattern as renaming a tab.
 
-## Hors périmètre
+## Out of scope
 
-Pas de couleur de groupe, pas de menu contextuel, pas de synchro
-serveur (persistance purement locale, comme les noms de canaux).
+No group colour, no context menu, no server sync (purely local persistence, like
+the channel names).
 
-## Vérification
+## Verification
 
-Pas d'infra de test dans le projet (`npm test` = placeholder). Vérification
-manuelle : `npm run build && npm run web`, puis dans le navigateur —
-réordonner, créer/renommer/replier/dissoudre/réordonner des groupes,
-recharger la page et vérifier la restauration.
+No test infrastructure in the project (`npm test` = a placeholder). Manual
+verification: `npm run build && npm run web`, then in the browser — reorder,
+create/rename/collapse/dissolve/reorder groups, reload the page and check the
+restore.

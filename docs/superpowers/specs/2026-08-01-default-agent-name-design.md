@@ -1,57 +1,57 @@
-# Un nom par défaut à la création d'un agent
+# A default name when creating an agent
 
-Date : 2026-08-01
-Statut : validé, implémenté
+Date: 2026-08-01
+Status: agreed, implemented
 
-## Problème
+## Problem
 
-Le nom par défaut d'un agent est `basename(cwd)` (`launchTab`). Tous les agents
-lancés sur le même dépôt s'appellent donc **pareil** — une colonne entière
-d'onglets « shadok-ai » qu'on ne distingue qu'en les ouvrant. Il fallait
-renommer chaque agent à la main, après coup, par un double-clic.
+An agent's default name is `basename(cwd)` (`launchTab`). Every agent launched
+on the same repo is therefore called **the same thing** — a whole column of
+"shadok-ai" tabs you can only tell apart by opening them. Each agent had to be
+renamed by hand, after the fact, with a double-click.
 
 ## Design
 
-### Un champ `Name` dans la popin de création
+### A `Name` field in the creation popin
 
-Placé entre la grille de profils et le dossier : **qui** est cet agent, **comment
-on l'appelle**, puis **où** il travaille. Pré-rempli avec le défaut calculé et
-modifiable — on nomme au moment où on sait ce que l'agent va faire.
+Placed between the profile grid and the directory: **who** this agent is, **what
+we call it**, then **where** it works. Prefilled with the computed default and
+editable — you name it at the moment you know what the agent will do.
 
-### Le défaut, c'est le nom du profil
+### The default is the profile's name
 
-`defaultAgentName(profileName, cwd)` (pur, dans `public/profile-card.js`) :
+`defaultAgentName(profileName, cwd)` (pure, in `public/profile-card.js`):
 
-1. le **profil** s'il y en a un — c'est ce qui distingue deux agents sur le même
-   dépôt ;
-2. sinon le **nom du dossier** (le comportement actuel) ;
-3. sinon `"agent"` — jamais une chaîne vide, un onglet sans nom est illisible.
+1. the **profile** when there is one — that is what tells two agents on the same
+   repo apart;
+2. otherwise the **directory's name** (the current behaviour);
+3. otherwise `"agent"` — never an empty string, an unnamed tab is unreadable.
 
-**Pas de suffixe numérique.** Deux agents du même profil porteront donc le même
-nom par défaut ; le champ étant modifiable au lancement, on les distingue sur
-place. C'est un choix explicite de simplicité, réversible si la gêne apparaît.
+**No numeric suffix.** Two agents of the same profile will therefore carry the
+same default name; since the field is editable at launch, they get told apart on
+the spot. This is an explicit choice of simplicity, reversible if it starts to
+grate.
 
-### Quand le défaut est reproposé
+### When the default is re-proposed
 
-Même règle que la mémoire du profil : **à l'ouverture** de la popin, à chaque
-**changement de carte de profil** (sinon on lancerait un « Shadok-dev » qui
-tourne en réalité sur Shadok-Support), et au **changement de dossier** (sans
-profil, le défaut EST le dossier).
+Same rule as the profile memory: **on opening** the popin, on every **profile
+card change** (otherwise you would launch a "Shadok-dev" actually running on
+Shadok-Support), and on a **directory change** (with no profile, the default IS
+the directory).
 
-Jamais si l'utilisateur a tapé le sien (`nameTouched`). **Vider le champ rend la
-main au défaut** — la façon la plus simple de revenir en arrière, sans bouton
-dédié.
+Never when the user typed their own (`nameTouched`). **Clearing the field hands
+control back to the default** — the simplest way back, with no dedicated button.
 
-### Application au lancement
+### Applying it at launch
 
-Le nom est posé sur l'onglet **avant** `launchTab`, qui sinon l'écraserait avec
-`basename(cwd)`, et `customName = true` le protège aussi du `ready` et de la
-restauration des canaux.
+The name is set on the tab **before** `launchTab`, which would otherwise
+overwrite it with `basename(cwd)`, and `customName = true` also protects it from
+`ready` and from the channel restore.
 
 ## Tests
 
-- `profile-card.test.ts` : profil prioritaire, repli sur le dossier (avec ou
-  sans slash final), repli final sur `"agent"`, espaces ignorés.
-- Au navigateur : sans profil → `shadok-ai` ; `Shadok-dev` → `Shadok-dev` ;
-  changement de carte → le défaut suit ; saisie manuelle jamais écrasée ; champ
-  vidé → le défaut revient ; et le nom saisi arrive bien sur l'onglet créé.
+- `profile-card.test.ts`: the profile wins, falls back to the directory (with or
+  without a trailing slash), final fallback to `"agent"`, whitespace ignored.
+- In the browser: no profile → `shadok-ai`; `Shadok-dev` → `Shadok-dev`; changing
+  card → the default follows; a manual entry never overwritten; a cleared field →
+  the default comes back; and the typed name does land on the created tab.

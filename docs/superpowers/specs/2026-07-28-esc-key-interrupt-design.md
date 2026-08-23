@@ -1,80 +1,80 @@
-# Design — La touche Échap envoie esc à la session (comme le bouton du terminal)
+# Design — The Escape key sends esc to the session (like the terminal's button)
 
-Date : 2026-07-28
-Statut : validé (brainstorming)
+Date: 2026-07-28
+Status: agreed (brainstorming)
 
-## Problème
+## Problem
 
-Le bouton « Esc » de l'engine room envoie l'échappement au TUI Claude
-(`active.ws.send({type:"key", key:"escape"})`, `public/index.html`), ce qui
-interrompt le tour en cours. Mais pour l'atteindre il faut ouvrir l'engine room.
+The engine room's "Esc" button sends the escape to the Claude TUI
+(`active.ws.send({type:"key", key:"escape"})`, `public/index.html`), which
+interrupts the running turn. But reaching it means opening the engine room.
 
-On veut que la **touche Échap du clavier**, quand on est dans le chat, envoie
-esc à la session active — sans passer par l'engine room. Aujourd'hui Échap dans
-le composer ne fait rien.
+We want the **keyboard's Escape key**, while in the chat, to send esc to the
+active session — without going through the engine room. Today Escape in the
+composer does nothing.
 
-## Portée
+## Scope
 
-- **Frontend uniquement** (`public/index.html`) : un `addEventListener("keydown")`
-  au niveau `document` + une petite fonction de précédence.
-- **Aucun changement serveur.** Le message `{type:"key", key:"escape"}` existe
-  déjà (émis par les boutons `.keys button[data-key]`, ligne ~2487) et est mappé
-  côté serveur vers l'octet d'échappement.
+- **Frontend only** (`public/index.html`): one document-level
+  `addEventListener("keydown")` + a small precedence function.
+- **No server change.** The `{type:"key", key:"escape"}` message already exists
+  (emitted by the `.keys button[data-key]` buttons, line ~2487) and is mapped
+  server-side to the escape byte.
 
-Hors périmètre : le protocole WS, le serveur, l'engine room, les autres touches.
+Out of scope: the WS protocol, the server, the engine room, the other keys.
 
-## Comportement (précédence)
+## Behaviour (precedence)
 
-Sur `keydown` de `Escape` au niveau document, dans l'ordre :
+On a document-level `keydown` of `Escape`, in order:
 
-1. **Overlay/panneau ouvert → le fermer, ne pas envoyer esc.**
-   - `#secretsOverlay` non `hidden` → le fermer.
-   - sinon `#profilesOverlay` non `hidden` → le fermer.
-   - sinon `#diffpanel` a la classe `.open` → le fermer.
-   - Dans ces cas : `preventDefault()`, on s'arrête (pas d'esc).
-   - *Note :* cela ajoute le comportement « Échap ferme le panneau », qui
-     n'existait pas (fermeture au ✕ / clic-fond seulement). Comportement attendu.
-2. **L'engine room (`#machine.open`) n'est PAS traité comme un panneau à
-   fermer** : c'est le terminal live. On tombe donc dans le cas esc (point 4)
-   même quand il est ouvert — Échap y envoie esc, cohérent avec le bouton Esc
-   juste à côté.
-3. **Dialogue TUI clickable en attente de réponse** (`active.dialogBubble`
-   présent) → **ne rien faire** (on laisse répondre au dialogue ; on n'interrompt
-   pas). Pas de `preventDefault`.
-4. **Sinon, session active** (`active` existe, `active.ws` ouverte
-   `readyState === OPEN`, session pas en `setup`) → envoyer
-   `active.ws.send(JSON.stringify({type:"key", key:"escape"}))` puis
+1. **An open overlay/panel → close it, do not send esc.**
+   - `#secretsOverlay` not `hidden` → close it.
+   - else `#profilesOverlay` not `hidden` → close it.
+   - else `#diffpanel` has the `.open` class → close it.
+   - In those cases: `preventDefault()`, and we stop (no esc).
+   - *Note:* this adds the "Escape closes the panel" behaviour, which did not
+     exist (closing was ✕ / backdrop-click only). Intended behaviour.
+2. **The engine room (`#machine.open`) is NOT treated as a panel to close**: it
+   is the live terminal. So we fall through to the esc case (point 4) even when
+   it is open — Escape sends esc there, consistent with the Esc button right next
+   to it.
+3. **A clickable TUI dialog awaiting an answer** (`active.dialogBubble` present)
+   → **do nothing** (let the dialog be answered; do not interrupt). No
+   `preventDefault`.
+4. **Otherwise, an active session** (`active` exists, `active.ws` open,
+   `readyState === OPEN`, session not in `setup`) → send
+   `active.ws.send(JSON.stringify({type:"key", key:"escape"}))` then
    `preventDefault()`.
-5. **Sinon** (aucune session active) → ne rien faire.
+5. **Otherwise** (no active session) → do nothing.
 
-## Interactions & garde-fous
+## Interactions & guardrails
 
-- **Inline-edit (renommage de canal/onglet)** : son input fait déjà
-  `e.stopPropagation()` sur `keydown` (avec son propre Échap = annuler). Le
-  handler document ne se déclenche donc pas pendant l'édition. Aucun conflit.
-- **Champs de saisie d'un overlay** (ex. `#secretKey` dans le secrets overlay) :
-  ne font pas `stopPropagation`. Presser Échap en y étant → point 1 ferme
-  l'overlay. Comportement souhaitable.
-- **Composer (`#promptInput`)** : pas de handler Échap aujourd'hui ; presser
-  Échap en y écrivant → esc envoyé (point 4). Le brouillon n'est pas effacé.
-- Le point 4 ne dépend d'aucun élément nouveau : réutilise `active.ws` exactement
-  comme les boutons de l'engine room.
+- **Inline edit (renaming a channel/tab)**: its input already calls
+  `e.stopPropagation()` on `keydown` (with its own Escape = cancel). The document
+  handler therefore does not fire while editing. No conflict.
+- **Input fields inside an overlay** (e.g. `#secretKey` in the secrets overlay):
+  they do not call `stopPropagation`. Pressing Escape there → point 1 closes the
+  overlay. Desirable behaviour.
+- **The composer (`#promptInput`)**: no Escape handler today; pressing Escape
+  while typing there → esc is sent (point 4). The draft is not cleared.
+- Point 4 depends on nothing new: it reuses `active.ws` exactly like the engine
+  room's buttons.
 
-## Composants touchés
+## Components touched
 
-| Élément | Changement |
+| Element | Change |
 |---|---|
-| JS de `public/index.html` | ajout d'un `document.addEventListener("keydown", …)` gérant `Escape` selon la précédence ci-dessus. Placé près des autres handlers globaux (après le bloc des `.keys button`). |
+| the JS in `public/index.html` | adds a `document.addEventListener("keydown", …)` handling `Escape` per the precedence above. Placed near the other global handlers (after the `.keys button` block). |
 
-## Critères de réussite
+## Success criteria
 
-1. Session active, aucun panneau ouvert, focus dans le composer → Échap
-   interrompt le tour (identique au bouton Esc du terminal).
-2. Session active, engine room ouvert → Échap envoie esc (n'interrompt pas
-   l'affichage, ne ferme pas l'engine room).
-3. Secrets / profils / diff ouvert → Échap ferme le panneau, n'envoie pas esc.
-4. Dialogue clickable en attente → Échap ne fait rien.
-5. Renommage inline en cours → Échap annule le renommage (comportement existant
-   inchangé), n'envoie pas esc.
-6. Aucune session active → Échap ne fait rien de perturbant.
-7. `npm run build` OK (aucun `.ts` touché), vérifié dans le navigateur.
+1. Active session, no panel open, focus in the composer → Escape interrupts the
+   turn (identical to the terminal's Esc button).
+2. Active session, engine room open → Escape sends esc (does not disturb the
+   display, does not close the engine room).
+3. Secrets / profiles / diff open → Escape closes the panel, sends no esc.
+4. A clickable dialog awaiting an answer → Escape does nothing.
+5. An inline rename in progress → Escape cancels the rename (existing behaviour
+   unchanged), sends no esc.
+6. No active session → Escape does nothing disruptive.
+7. `npm run build` OK (no `.ts` touched), verified in the browser.

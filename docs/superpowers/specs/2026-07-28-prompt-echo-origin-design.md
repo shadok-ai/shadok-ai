@@ -1,74 +1,73 @@
-# Telegram voit les prompts envoyés d'ailleurs, et sait d'où ils viennent
+# Telegram sees prompts sent from elsewhere, and knows where they came from
 
 *2026-07-28*
 
-## Le problème
+## The problem
 
-Un canal Telegram ne montrait que les **réponses** de l'agent. Un prompt envoyé
-depuis le cockpit web n'y apparaissait pas : côté téléphone, l'agent semblait
-parler tout seul, sans qu'on sache à quelle demande il répondait.
+A Telegram channel only showed the agent's **answers**. A prompt sent from the
+web cockpit did not appear there: on the phone, the agent seemed to be talking to
+itself, with no way to know which request it was answering.
 
-Depuis les crons de canal (#79), c'est pire : un cron envoie son prompt par le
-même chemin qu'un humain. Sa réponse tombait donc dans le topic sans que rien
-ne dise qu'elle venait d'un déclenchement automatique.
+Since channel crons (#79), it is worse: a cron sends its prompt down the same
+path as a human. Its answer therefore landed in the topic with nothing to say it
+came from an automatic trigger.
 
-## Ce qui existait déjà
+## What already existed
 
-`server.ts` diffuse `prompt-echo` **en excluant l'émetteur** :
+`server.ts` broadcasts `prompt-echo` **excluding the sender**:
 
 ```ts
 broadcast(session, { type: "prompt-echo", text }, ws);
 ```
 
-Le pont Telegram recevait donc déjà les prompts venus des autres clients — il
-n'avait simplement aucun `case` pour eux. Il manquait deux choses : l'afficher,
-et savoir **qui** a parlé.
+So the Telegram bridge already received prompts coming from other clients — it
+simply had no `case` for them. Two things were missing: displaying it, and
+knowing **who** spoke.
 
-## Le correctif
+## The fix
 
-### L'origine voyage avec l'écho
+### The origin travels with the echo
 
-Un client déclare son origine à la connexion : `{type:"start", origin:"web"}`.
-Le serveur la retient pour la durée de la connexion et la joint à l'écho.
+A client declares its origin on connecting: `{type:"start", origin:"web"}`. The
+server remembers it for the life of the connection and attaches it to the echo.
 
-| client | origine |
+| client | origin |
 |---|---|
 | `public/index.html` | `web` |
-| le client interne des crons (`fireCron`) | `cron` |
-| le pont Telegram lui-même | `telegram` |
-| le reste (pilotctl, CLI…) | absente |
+| the crons' internal client (`fireCron`) | `cron` |
+| the Telegram bridge itself | `telegram` |
+| everything else (pilotctl, CLI…) | absent |
 
-Déclarative et non devinée : le serveur ne peut pas inférer qui est au bout
-d'une WebSocket, et une heuristique se tromperait un jour sur le cas qui compte.
+Declarative and not guessed: the server cannot infer who is at the other end of a
+WebSocket, and a heuristic would one day be wrong on the case that matters.
 
-### Le rendu (`promptEchoLabel`, pure)
+### The rendering (`promptEchoLabel`, pure)
 
-Un en-tête, puis le texte du prompt :
+A header, then the prompt's text:
 
 ```
 👤 web
-Réponds exactement PONG et rien d'autre.
+Answer exactly PONG and nothing else.
 ```
 
 - `web` → `👤 web` · `cron` → `⏰ cron` · `cli` → `⌨️ cli`
-- origine **absente** → `👤` seul. Marquer sans mentir vaut mieux qu'un message
-  qui semblerait venir de l'agent.
-- origine inconnue → `👤 <nom>` : elle est affichée telle quelle plutôt
-  qu'effacée.
-- `auto: true` (la reprise du pace guard) → `⚙️ reprise automatique`. Ce n'est
-  personne : ça vient du serveur.
+- origin **absent** → `👤` alone. Marking without lying beats a message that
+  would look like it came from the agent.
+- unknown origin → `👤 <name>`: it is shown as is rather than erased.
+- `auto: true` (the pace guard's resume) → `⚙️ auto-resumed`. That is nobody: it
+  comes from the server.
 
-Un bot ne peut pas poster sous le nom de l'utilisateur — d'où la marque plutôt
-qu'une imitation.
+A bot cannot post under the user's name — hence the mark rather than an
+impersonation.
 
-## Pas de boucle
+## No loop
 
-Telegram ne livre jamais à un bot ses propres messages, et le serveur exclut
-déjà l'émetteur : un prompt venu de Telegram ne revient pas dans son propre
-canal.
+Telegram never delivers a bot its own messages, and the server already excludes
+the sender: a prompt coming from Telegram does not come back into its own
+channel.
 
 ## Tests
 
-`promptEchoLabel` porte les tests (chaque origine connue, une origine inconnue,
-l'absence d'origine, la reprise automatique). La chaîne complète est vérifiée en
-repro sur le banc Telegram.
+`promptEchoLabel` carries the tests (each known origin, an unknown origin, a
+missing origin, the automatic resume). The full chain is verified by
+reproduction on the Telegram bench.
