@@ -1,34 +1,34 @@
-# Auto-retry serveur des erreurs API transitoires — Implementation Plan
+# Server-side auto-retry of transient API errors — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Quand un tour meurt sur une erreur API transitoire (529 Overloaded, 5xx, timeout…), le serveur shadok-ai soumet automatiquement `continue` après 15 s / 30 s / 60 s (3 tentatives max), annulé si l'utilisateur reprend la main.
+**Goal:** When a turn dies on a transient API error (529 Overloaded, 5xx, timeout…), the shadok-ai server automatically submits `continue` after 15 s / 30 s / 60 s (3 attempts max), cancelled if the user takes back control.
 
-**Architecture:** Détection par pattern sur l'écran du TUI à la fin du tour (`finishTurn` dans `src/server.ts`), avec comparaison début/fin de tour pour ignorer une vieille erreur encore affichée. Fonctions pures de détection dans un nouveau module `src/retry.ts`. Timer et compteur portés par l'objet `Live` de la session. Le client web (`public/index.html`) affiche des lignes d'état informatives.
+**Architecture:** Pattern detection on the TUI's screen at the end of the turn (`finishTurn` in `src/server.ts`), with a start/end-of-turn comparison to ignore an old error still on display. The pure detection functions in a new `src/retry.ts` module. The timer and the counter carried by the session's `Live` object. The web client (`public/index.html`) shows informational status lines.
 
-**Tech Stack:** TypeScript (ESM, `tsc`), Node, ws. Pas de framework de test : script de vérification `debug/test-retry.mjs` exécuté avec `node` (assertions `node:assert`), sur le modèle de `debug/probe.mjs`.
+**Tech Stack:** TypeScript (ESM, `tsc`), Node, ws. No test framework: a `debug/test-retry.mjs` verification script run with `node` (`node:assert` assertions), modelled on `debug/probe.mjs`.
 
 ## Global Constraints
 
 - Spec : `docs/superpowers/specs/2026-07-20-auto-retry-transient-api-errors-design.md`.
-- Délais de retry : 15 000 ms, 30 000 ms, 60 000 ms — 3 tentatives max.
+- Retry delays: 15,000 ms, 30,000 ms, 60,000 ms — 3 attempts max.
 - Texte de relance : exactement `continue`.
-- Erreurs transitoires : `API Error` + `5xx`/`529`/`429`/`overloaded`/`timeout`/erreur de connexion. Les `400`/`401`/`403`/`invalid_request` ne déclenchent JAMAIS de retry.
-- Nouveaux événements WS serveur→client : `auto-retry`, `auto-retry-cancelled`, `auto-retry-gave-up` ; `prompt-echo` gagne un champ optionnel `auto: true`.
-- Style : commentaires en anglais, comme le reste de `src/`.
+- Transient errors: `API Error` + `5xx`/`529`/`429`/`overloaded`/`timeout`/a connection error. `400`/`401`/`403`/`invalid_request` NEVER trigger a retry.
+- New server→client WS events: `auto-retry`, `auto-retry-cancelled`, `auto-retry-gave-up`; `prompt-echo` gains an optional `auto: true` field.
+- Style: comments in English, like the rest of `src/`.
 
 ---
 
-### Task 1: Module de détection `src/retry.ts`
+### Task 1: The `src/retry.ts` detection module
 
 **Files:**
 - Create: `src/retry.ts`
-- Test: `debug/test-retry.mjs` (script d'assertions, exécuté après build)
+- Test: `debug/test-retry.mjs` (an assertion script, run after the build)
 
 **Interfaces:**
-- Produces: `findTransientErrors(screen: string): string[]` — les lignes (trimées) de l'écran qui montrent une erreur API transitoire. `newTransientErrors(before: string[], after: string[]): string[]` — les lignes de `after` en excès par rapport à `before` (diff multiset). `RETRY_DELAYS_MS: readonly number[]` = `[15_000, 30_000, 60_000]`.
+- Produces: `findTransientErrors(screen: string): string[]` — the (trimmed) screen lines showing a transient API error. `newTransientErrors(before: string[], after: string[]): string[]` — the lines of `after` in excess of `before` (a multiset diff). `RETRY_DELAYS_MS: readonly number[]` = `[15_000, 30_000, 60_000]`.
 
-- [ ] **Step 1: Écrire le script de test (qui échoue)**
+- [ ] **Step 1: Write the test script (which fails)**
 
 ```js
 // debug/test-retry.mjs — run: node debug/test-retry.mjs (after npm run build)
@@ -78,12 +78,12 @@ assert.deepEqual([...RETRY_DELAYS_MS], [15_000, 30_000, 60_000]);
 console.log("test-retry: all assertions passed");
 ```
 
-- [ ] **Step 2: Vérifier qu'il échoue**
+- [ ] **Step 2: Check that it fails**
 
 Run: `node debug/test-retry.mjs`
 Expected: FAIL — `Cannot find module '../dist/retry.js'`
 
-- [ ] **Step 3: Implémenter `src/retry.ts`**
+- [ ] **Step 3: Implement `src/retry.ts`**
 
 ```ts
 /**
@@ -129,7 +129,7 @@ export function newTransientErrors(before: string[], after: string[]): string[] 
 }
 ```
 
-- [ ] **Step 4: Builder et vérifier que le test passe**
+- [ ] **Step 4: Build and check the test passes**
 
 Run: `npm run build && node debug/test-retry.mjs`
 Expected: `test-retry: all assertions passed`
@@ -143,28 +143,28 @@ git commit -m "Add transient API error detection (retry.ts)"
 
 ---
 
-### Task 2: Câblage serveur (`src/server.ts`)
+### Task 2: Server wiring (`src/server.ts`)
 
 **Files:**
-- Modify: `src/server.ts` (imports ; interface `Live` ~l.90 ; `destroySession` ~l.138 ; `createSession` ~l.171 ; `finishTurn` ~l.225 ; handlers ws ~l.253)
+- Modify: `src/server.ts` (imports; the `Live` interface ~l.90; `destroySession` ~l.138; `createSession` ~l.171; `finishTurn` ~l.225; the ws handlers ~l.253)
 
 **Interfaces:**
 - Consumes: `findTransientErrors`, `newTransientErrors`, `RETRY_DELAYS_MS` de `./retry.js` (Task 1).
-- Produces (événements WS vers le client, consommés en Task 3) :
+- Produces (WS events to the client, consumed in Task 3):
   `{ type: "auto-retry", delayMs: number, attempt: number, max: number }`,
   `{ type: "auto-retry-cancelled" }`,
   `{ type: "auto-retry-gave-up", attempts: number }`,
   `{ type: "prompt-echo", text: "continue", auto: true }`.
 
-- [ ] **Step 1: Import + champs de `Live` + init + nettoyage**
+- [ ] **Step 1: Import + `Live` fields + init + cleanup**
 
-Ajouter l'import :
+Add the import:
 
 ```ts
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 ```
 
-Dans l'interface `Live`, après `usage`:
+In the `Live` interface, after `usage`:
 
 ```ts
   /** Pending auto-retry of a turn that died on a transient API error. */
@@ -175,7 +175,7 @@ Dans l'interface `Live`, après `usage`:
   errorsAtTurnStart: string[];
 ```
 
-Dans `createSession`, initialiser dans le littéral `s`:
+In `createSession`, initialise inside the `s` literal:
 
 ```ts
     retryTimer: null,
@@ -183,16 +183,16 @@ Dans `createSession`, initialiser dans le littéral `s`:
     errorsAtTurnStart: [],
 ```
 
-Dans `destroySession`, après le nettoyage de `idleTimer`:
+In `destroySession`, after the `idleTimer` cleanup:
 
 ```ts
   if (s.retryTimer) clearTimeout(s.retryTimer);
   s.retryTimer = null;
 ```
 
-- [ ] **Step 2: `clearRetry` + `maybeScheduleRetry` + hook dans `finishTurn`**
+- [ ] **Step 2: `clearRetry` + `maybeScheduleRetry` + a hook in `finishTurn`**
 
-Ajouter après `finishTurn`:
+Add after `finishTurn`:
 
 ```ts
 /** Cancels a pending auto-retry (user took over, or session ends). */
@@ -248,7 +248,7 @@ function maybeScheduleRetry(s: Live) {
 }
 ```
 
-Dans `finishTurn`, capturer l'état au début et déclencher à la fin :
+In `finishTurn`, capture the state at the start and fire at the end:
 
 ```ts
 async function finishTurn(s: Live) {
@@ -269,9 +269,9 @@ async function finishTurn(s: Live) {
 }
 ```
 
-- [ ] **Step 3: Annulation quand l'utilisateur reprend la main**
+- [ ] **Step 3: Cancelling when the user takes back control**
 
-Dans le handler `ws.on("message", …)`, juste avant le `switch (msg.type)` (dans le `try`) :
+In the `ws.on("message", …)` handler, right before the `switch (msg.type)` (inside the `try`):
 
 ```ts
       // Any user takeover cancels a pending auto-retry and ends the streak.
@@ -284,14 +284,14 @@ Dans le handler `ws.on("message", …)`, juste avant le `switch (msg.type)` (dan
       }
 ```
 
-(`settle` n'annule pas — c'est un simple « attendre la fin du tour ». `stop` passe par `destroySession`, qui nettoie le timer.)
+(`settle` does not cancel — it is a plain "wait for the end of the turn". `stop` goes through `destroySession`, which cleans the timer.)
 
-- [ ] **Step 4: Builder**
+- [ ] **Step 4: Build**
 
 Run: `npm run build`
-Expected: exit 0, aucune erreur TypeScript.
+Expected: exit 0, no TypeScript error.
 
-- [ ] **Step 5: Vérification manuelle de la détection**
+- [ ] **Step 5: Manual check of the detection**
 
 Run:
 
@@ -316,17 +316,17 @@ git commit -m "Auto-retry turns that die on a transient API error"
 
 ---
 
-### Task 3: Ligne d'état côté client (`public/index.html`)
+### Task 3: A status line on the client side (`public/index.html`)
 
 **Files:**
-- Modify: `public/index.html` (fonction `handleMessage`, ~l.1509 : cas `prompt-echo` ~l.1553 et nouveaux cas après `stopped` ~l.1622)
+- Modify: `public/index.html` (the `handleMessage` function, ~l.1509: the `prompt-echo` case ~l.1553 and new cases after `stopped` ~l.1622)
 
 **Interfaces:**
-- Consumes: les événements `auto-retry`, `auto-retry-cancelled`, `auto-retry-gave-up` et `prompt-echo.auto` produits en Task 2. Fonctions existantes du client : `addTurn(t, role, who, text)`, `setTabState(t, status, label)`, `setTabMood(t, mood)`, `stopTurnTimer(t)`.
+- Consumes: the `auto-retry`, `auto-retry-cancelled`, `auto-retry-gave-up` and `prompt-echo.auto` events produced in Task 2. The client's existing functions: `addTurn(t, role, who, text)`, `setTabState(t, status, label)`, `setTabMood(t, mood)`, `stopTurnTimer(t)`.
 
-- [ ] **Step 1: Étiqueter le prompt-echo automatique**
+- [ ] **Step 1: Label the automatic prompt-echo**
 
-Dans `handleMessage`, remplacer le cas `prompt-echo`:
+In `handleMessage`, replace the `prompt-echo` case:
 
 ```js
       case "prompt-echo":
@@ -336,9 +336,9 @@ Dans `handleMessage`, remplacer le cas `prompt-echo`:
         break;
 ```
 
-- [ ] **Step 2: Afficher les événements auto-retry**
+- [ ] **Step 2: Display the auto-retry events**
 
-Dans `handleMessage`, ajouter après le cas `stopped`:
+In `handleMessage`, add after the `stopped` case:
 
 ```js
       case "auto-retry":
@@ -359,9 +359,9 @@ Dans `handleMessage`, ajouter après le cas `stopped`:
         break;
 ```
 
-- [ ] **Step 3: Vérification manuelle du rendu**
+- [ ] **Step 3: Manual check of the rendering**
 
-Run: `npm run build && node dist/server.js` puis ouvrir `http://localhost:3789`, démarrer une session, et dans la console du navigateur simuler la réception :
+Run: `npm run build && node dist/server.js`, then open `http://localhost:3789`, start a session, and simulate the reception in the browser console:
 
 ```js
 // In the browser devtools console, with a channel open:
@@ -369,8 +369,8 @@ Run: `npm run build && node dist/server.js` puis ouvrir `http://localhost:3789`,
 // Simulate: error detected, retry scheduled, then gave up.
 ```
 
-Comme `handleMessage` n'est pas exposé globalement, la vérification passe par le flux réel : couper le réseau pendant un tour (ou attendre une vraie 529) N'EST PAS exigé ici — se contenter de vérifier qu'aucune erreur JS n'apparaît au chargement et que l'app fonctionne comme avant (envoyer un prompt, recevoir la réponse).
-Expected: aucune régression visible, pas d'erreur console.
+Since `handleMessage` is not exposed globally, the check goes through the real flow: cutting the network during a turn (or waiting for a real 529) is NOT required here — settle for checking that no JS error appears on load and that the app works as before (send a prompt, receive the answer).
+Expected: no visible regression, no console error.
 
 - [ ] **Step 4: Commit**
 
