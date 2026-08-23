@@ -4860,6 +4860,18 @@
         if (term && termSession && termSession.ws)
           sendTo(termSession, { type: "term-input", data: strToB64Utf8(d) });
       });
+      // Selecting text in the TUI forwards the mouse to the app, which copies
+      // and emits OSC 52 (it reports "N lines copied"). xterm ignores OSC 52 for
+      // security, so the copy never left the pane; bridge it to the browser
+      // clipboard. Payload is "<targets>;<base64>"; "?" is a read request (skip).
+      term.parser.registerOscHandler(52, (data) => {
+        const semi = data.indexOf(";");
+        const payload = semi >= 0 ? data.slice(semi + 1) : data;
+        if (!payload || payload === "?") return true;
+        try { copyText(new TextDecoder().decode(b64ToBytes(payload))); }
+        catch { /* malformed base64 → nothing to copy */ }
+        return true; // handled
+      });
     }
     if (termSession !== active) {
       // Re-point the terminal at the newly-active channel (server re-seeds).
