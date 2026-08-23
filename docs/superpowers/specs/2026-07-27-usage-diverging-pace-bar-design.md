@@ -1,106 +1,104 @@
-# Design — Barre de pace divergente (jauges d'usage 5h / 7d)
+# Design — A diverging pace bar (the 5h / 7d usage gauges)
 
-Date : 2026-07-27
-Statut : validé (brainstorming)
+Date: 2026-07-27
+Status: agreed (brainstorming)
 
-## Problème
+## Problem
 
-Les jauges d'usage dans le header affichent aujourd'hui, pour chaque fenêtre
-(5h et 7d), **deux barres empilées de 3px** : l'usage réel et le pace idéal
-(fraction de la fenêtre écoulée). L'utilisateur lit la relation entre les deux
-(barre d'usage plus longue que la barre de pace = on dépense plus vite que le
-temps) — mais c'est indirect : il faut comparer deux longueurs.
+The usage gauges in the header currently show, for each window (5h and 7d), **two
+stacked 3px bars**: actual usage and the ideal pace (the fraction of the window
+elapsed). The user reads the relation between the two (a usage bar longer than
+the pace bar = we are spending faster than time passes) — but that is indirect:
+it takes comparing two lengths.
 
-On veut remplacer, pour chaque fenêtre, ces deux barres par **une seule barre
-divergente** qui matérialise directement le ratio usage/pace.
+We want to replace, for each window, those two bars with **a single diverging
+bar** that materialises the usage/pace ratio directly.
 
-## Portée
+## Scope
 
-- **Frontend uniquement** (`public/index.html`) : le CSS des jauges `.quota` et
-  la fonction JS `paintGauge`.
-- **Aucun changement serveur.** Les données nécessaires sont déjà servies par
-  `/usage` : chaque fenêtre expose `usedPercentage`, `idealPacePct`,
-  `ratioPct`, `resetsAt`. `ratioPct` = `usedPercentage / idealPacePct * 100`.
+- **Frontend only** (`public/index.html`): the CSS of the `.quota` gauges and the
+  `paintGauge` JS function.
+- **No server change.** The data needed is already served by `/usage`: each
+  window exposes `usedPercentage`, `idealPacePct`, `ratioPct`, `resetsAt`.
+  `ratioPct` = `usedPercentage / idealPacePct * 100`.
 
-Hors périmètre : la logique de pace guard (`src/pace.ts`), le calcul du ratio,
-les endpoints, le comportement Telegram.
+Out of scope: the pace guard's logic (`src/pace.ts`), the ratio computation, the
+endpoints, Telegram's behaviour.
 
 ## Design
 
-### Concept : barre divergente centrée sur « au pace »
+### The concept: a diverging bar centred on "on pace"
 
-Pour chaque fenêtre, une barre horizontale unique.
+For each window, a single horizontal bar.
 
-- **Le centre** de la barre = ratio 100 % (usage exactement au rythme du temps
-  écoulé). Un tick discret marque ce point.
-- Le remplissage **part du centre** :
-  - vers la **gauche** quand `ratioPct < 100` (sous le pace, on a de la marge) ;
-  - vers la **droite** quand `ratioPct > 100` (au-dessus du pace, on brûle trop
-    vite).
-- **Échelle symétrique linéaire.** On mappe le ratio sur une position
-  `pos ∈ [-1, +1]` :
+- **The centre** of the bar = ratio 100 % (usage exactly at the pace of elapsed
+  time). A discreet tick marks that point.
+- The fill starts **from the centre**:
+  - to the **left** when `ratioPct < 100` (below pace, there is headroom);
+  - to the **right** when `ratioPct > 100` (above pace, burning too fast).
+- **A symmetric linear scale.** We map the ratio onto a position
+  `pos ∈ [-1, +1]`:
 
   ```
   pos = clamp((ratioPct - 100) / 100, -1, +1)
   ```
 
-  Donc : bord gauche = ratio 0 % ; centre = ratio 100 % ; bord droit =
-  ratio ≥ 200 % (épinglé). Ratio 50 % → mi-chemin à gauche ; ratio 150 % →
-  mi-chemin à droite. La longueur du remplissage = `|pos|` × demi-largeur.
+  So: the left edge = ratio 0 %; the centre = ratio 100 %; the right edge =
+  ratio ≥ 200 % (pinned). Ratio 50 % → halfway left; ratio 150 % → halfway right.
+  The fill's length = `|pos|` × half the width.
 
-### Couleur : dégradé vert → ambre → rouge
+### Colour: a green → amber → red gradient
 
-La couleur du remplissage suit le ratio de façon continue :
+The fill's colour follows the ratio continuously:
 
-- ratio bas (loin à gauche) → **vert franc** (`--ok`) : large marge ;
-- ratio approchant 100 % (près du centre, des deux côtés) → **ambre**
-  (`--amber`) : avertissement, on arrive au pace ;
-- ratio au-dessus, vers le bord droit → **rouge** (`--err`) : on dépasse.
+- a low ratio (far left) → **solid green** (`--ok`): plenty of headroom;
+- a ratio approaching 100 % (near the centre, from either side) → **amber**
+  (`--amber`): a warning, we are reaching the pace;
+- a ratio above it, towards the right edge → **red** (`--err`): overshooting.
 
-L'ambre garde ainsi le rôle d'alerte de la version actuelle (le seuil `warn`
-commençait à ratio 70), tout en restant du côté gauche/vert tant qu'on est sous
-le pace. Implémentation : interpolation entre les variables CSS existantes
-(`--ok`, `--amber`, `--err`) via `color-mix`, ou couleur calculée en JS. La
-teinte est fonction du ratio, indépendante de la longueur du remplissage.
+Amber thus keeps the alert role it has in the current version (the `warn`
+threshold started at ratio 70), while staying on the left/green side as long as
+we are below pace. Implementation: interpolation between the existing CSS
+variables (`--ok`, `--amber`, `--err`) through `color-mix`, or a colour computed
+in JS. The hue is a function of the ratio, independent of the fill's length.
 
-Le rendu doit rester lisible en thème clair **et** sombre (les variables
-`--ok/--amber/--err` sont déjà theme-aware). Vert/rouge seuls ne suffisent pas à
-distinguer l'état pour un daltonien : la **position** gauche/droite par rapport
-au centre porte l'information redondante (position + couleur), ce qui satisfait
-l'accessibilité.
+The rendering must stay readable in the light **and** dark themes (the
+`--ok/--amber/--err` variables are already theme-aware). Green/red alone is not
+enough to tell the state apart for a colour-blind viewer: the left/right
+**position** relative to the centre carries the information redundantly (position
++ colour), which satisfies accessibility.
 
-### Chiffre compact + tooltip
+### A compact figure + a tooltip
 
-- On conserve le label `5h` / `7d` et un **petit chiffre compact** à côté de la
-  barre : le `% utilisé` (comme aujourd'hui), pour le coup d'œil.
-- **Tooltip** (`title`) au survol, avec les valeurs précises — déjà produit par
-  `paintGauge` aujourd'hui, on le garde :
-  `<fenêtre> — X% utilisé · pace idéal Y% · ratio Z% · reset dans …`.
+- We keep the `5h` / `7d` label and a **small compact figure** next to the bar:
+  the `% used` (as today), for the glance.
+- A **tooltip** (`title`) on hover, with the precise values — already produced by
+  `paintGauge` today, and kept:
+  `<window> — X% used · ideal pace Y% · ratio Z% · resets in …`.
 
-### État « pas de données »
+### The "no data" state
 
-Quand la fenêtre est `null` (token absent, fetch échoué), la barre est vide
-(pos = 0, aucun remplissage), le chiffre affiche `—`, tooltip = libellé de base.
-Comportement identique à l'actuel.
+When the window is `null` (no token, a failed fetch), the bar is empty (pos = 0,
+no fill), the figure shows `—`, and the tooltip is the base label. Identical to
+the current behaviour.
 
-## Composants touchés
+## Components touched
 
-| Élément | Changement |
+| Element | Change |
 |---|---|
-| CSS `.quota .meter` (2 barres empilées) | remplacé par **une** barre divergente : track avec tick central, fill positionné en absolu depuis le centre (left/right). |
-| CSS `.quota.warn/.crit .fill` | supprimé (la couleur devient continue, calculée). |
-| HTML `#quota5h` / `#quota7d` | un seul `.meter` au lieu de deux (`usage` + `pace`). |
-| JS `paintGauge(el, w)` | calcule `pos` depuis `ratioPct`, positionne le fill depuis le centre, applique la couleur interpolée, garde le chiffre `%used` et le tooltip. |
+| CSS `.quota .meter` (two stacked bars) | replaced by **one** diverging bar: a track with a central tick, the fill positioned absolutely from the centre (left/right). |
+| CSS `.quota.warn/.crit .fill` | removed (the colour becomes continuous, computed). |
+| HTML `#quota5h` / `#quota7d` | a single `.meter` instead of two (`usage` + `pace`). |
+| JS `paintGauge(el, w)` | computes `pos` from `ratioPct`, positions the fill from the centre, applies the interpolated colour, keeps the `%used` figure and the tooltip. |
 
-## Critères de réussite
+## Success criteria
 
-1. Chaque fenêtre (5h, 7d) affiche **une** barre divergente centrée.
-2. Sous le pace → remplissage vert à gauche ; au-dessus → rouge à droite ;
-   près du pace → ambre. Transition continue.
-3. Un tick central « au pace » est visible.
-4. Le tooltip donne usage / pace idéal / ratio / reset précis.
-5. Lisible en thème clair et sombre.
-6. `null` → barre vide, `—`. Pas de régression.
-7. `npm run build` OK (aucun changement TS, mais on vérifie), rendu vérifié
-   dans le navigateur après restart.
-```
+1. Each window (5h, 7d) shows **one** centred diverging bar.
+2. Below pace → a green fill on the left; above → red on the right; near the pace
+   → amber. A continuous transition.
+3. A central "on pace" tick is visible.
+4. The tooltip gives precise usage / ideal pace / ratio / reset.
+5. Readable in the light and dark themes.
+6. `null` → an empty bar, `—`. No regression.
+7. `npm run build` OK (no TS change, but we check), the rendering verified in the
+   browser after a restart.
