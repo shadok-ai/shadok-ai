@@ -119,6 +119,17 @@ export function detectDialog(screen: string): TuiDialog | null {
   let current: TuiDialogOption | null = null;
 
   for (let i = 0; i < lines.length; i++) {
+    // A blank line ends the current option's description run — but WITHOUT
+    // closing the group, so a numbered option after it still joins. In the
+    // preview (side-by-side) layout the stripped preview box leaves blank lines,
+    // then footer chrome ("Notes: press n to add notes", "Chat about this")
+    // indented under the column; without this, that chrome was glued onto the
+    // last option's hint. Real descriptions sit flush under their option (no
+    // blank between), so this never drops a genuine hint.
+    if (lines[i].trim() === "") {
+      current = null;
+      continue;
+    }
     const m = lines[i].match(optionRe);
     if (m) {
       if (!group) {
