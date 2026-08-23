@@ -62,6 +62,11 @@ you are woken only when its state, mergeability, review decision or CI result
 actually changes. Run the guard once by hand before registering: it must print
 nothing and exit 0. A guard that writes to stderr wakes you every five minutes.
 
+Silence alone does not prove it works — an inert guard is silent too. Run it
+twice against a PR whose state you know, and check that
+`~/.shadok-ai/tweak-pr/*.state` now holds a line. No state file means it never
+reached GitHub, and the watch will never fire.
+
 When you are woken:
 
 - **CI red, or the branch behind `main`** — fix it and push. Read the failing
