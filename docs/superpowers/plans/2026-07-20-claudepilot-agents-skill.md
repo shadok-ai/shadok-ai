@@ -2,27 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Une skill de projet (`.claude/skills/shadok-ai-agents/`) qui permet à Claude Code de créer et piloter des agents shadok-ai via le serveur web, avec un thin client `pilotctl.mjs` à commandes one-shot et sortie JSON.
+**Goal:** A project skill (`.claude/skills/shadok-ai-agents/`) that lets Claude Code create and drive shadok-ai agents through the web server, with a `pilotctl.mjs` thin client offering one-shot commands and JSON output.
 
-**Architecture:** `pilotctl.mjs` parle le protocole WebSocket du serveur (`src/server.ts`) en commandes one-shot. Comme le serveur tue le process claude quand le dernier client WS se détache (`detach` → `destroySession`, src/server.ts:105-110), chaque agent est maintenu en vie par un process « holder » détaché (commande interne `hold`) qui garde une attache WS ouverte. L'état local (cwd, branch, baseSha, holderPid par session) vit dans `~/.shadok-ai/pilotctl/<id>.json`. Les tests unitaires utilisent un serveur mock (HTTP + WS) qui rejoue le protocole.
+**Architecture:** `pilotctl.mjs` speaks the server's WebSocket protocol (`src/server.ts`) in one-shot commands. Since the server kills the claude process when the last WS client detaches (`detach` → `destroySession`, src/server.ts:105-110), each agent is kept alive by a detached "holder" process (the internal `hold` command) that keeps a WS attachment open. Local state (cwd, branch, baseSha, holderPid per session) lives in `~/.shadok-ai/pilotctl/<id>.json`. The unit tests use a mock server (HTTP + WS) replaying the protocol.
 
-**Tech Stack:** Node 20 (ESM), dépendance unique `ws` (déjà dans le package.json du repo — la résolution remonte au `node_modules` racine), `node:test` pour les tests.
+**Tech Stack:** Node 20 (ESM), a single dependency `ws` (already in the repo's package.json — resolution walks up to the root `node_modules`), `node:test` for the tests.
 
 ## Global Constraints
 
 - Node 20 : pas de `WebSocket` global — importer `ws`. `fetch` global disponible.
-- Aucune nouvelle dépendance npm ; `pilotctl.mjs` n'importe que `ws` et des modules `node:`.
+- No new npm dependency; `pilotctl.mjs` imports only `ws` and `node:` modules.
 - Port serveur : `Number(process.env.SHADOK_PORT ?? 3789)` ; URLs `http://localhost:<port>` et `ws://localhost:<port>/ws`.
-- Répertoire d'état : `process.env.SHADOK_STATE_DIR ?? ~/.shadok-ai/pilotctl/` (fonction `stateDir()`, jamais une constante figée à l'import — les tests surchargent l'env).
-- Env de test/contrôle : `SHADOK_NO_HOLDER=1` (pas de process holder), `SHADOK_NO_AUTOSTART=1` (pas de démarrage auto du serveur).
-- Sortie CLI : un objet JSON sur stdout ; exit 0 en succès, 1 si `{error}` ou `status:"error"`.
-- Protocole serveur réel (src/server.ts, PAS le README qui est en retard) : contenu streamé via `stream-text`/`stream-tool`/`stream-result`, fin de tour = `turn-done`, dialog = `dialog`, plus `ready`, `screen`, `working`, `error`, `exited`, `stopped`. `settle` est ignoré silencieusement si le tour est en cours.
-- Messages français dans SKILL.md ; code et identifiants en anglais, commentaires dans le style du repo (anglais, sobres).
-- Commits : préfixes `feat:`/`test:`/`docs:`, signés `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
+- State directory: `process.env.SHADOK_STATE_DIR ?? ~/.shadok-ai/pilotctl/` (a `stateDir()` function, never a constant frozen at import time — the tests override the env).
+- Test/control env: `SHADOK_NO_HOLDER=1` (no holder process), `SHADOK_NO_AUTOSTART=1` (no automatic server start).
+- CLI output: one JSON object on stdout; exit 0 on success, 1 on `{error}` or `status:"error"`.
+- The real server protocol (src/server.ts, NOT the README, which lags): content streamed through `stream-text`/`stream-tool`/`stream-result`, end of turn = `turn-done`, dialog = `dialog`, plus `ready`, `screen`, `working`, `error`, `exited`, `stopped`. `settle` is silently ignored while a turn is running.
+- SKILL.md in English, like the rest of the repo; code, identifiers and comments in English, in the repo's sober style.
+- Commits: `feat:`/`test:`/`docs:` prefixes, signed `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>`.
 
 ---
 
-### Task 1: Squelette de pilotctl — parseArgs, état local, dispatcher
+### Task 1: The pilotctl skeleton — parseArgs, local state, dispatcher
 
 **Files:**
 - Create: `.claude/skills/shadok-ai-agents/pilotctl.mjs`
@@ -30,9 +30,9 @@
 - Modify: `package.json` (script `test`)
 
 **Interfaces:**
-- Produces: `parseArgs(argv) -> {cmd, pos, flags}` ; `stateDir() -> string` ; `readState(id) -> object|null` ; `writeState(id, obj)` ; `deleteState(id)` ; `run(argv) -> Promise<object>` (résout le résultat JSON, rejette en erreur) ; constantes `REPO_ROOT`, helpers `port()`, `httpBase()`, `wsUrl()`, `sleep(ms)`, `pidAlive(pid)`. Tout est exporté pour les tests.
+- Produces: `parseArgs(argv) -> {cmd, pos, flags}`; `stateDir() -> string`; `readState(id) -> object|null`; `writeState(id, obj)`; `deleteState(id)`; `run(argv) -> Promise<object>` (resolves with the JSON result, rejects on error); the `REPO_ROOT` constant, the `port()`, `httpBase()`, `wsUrl()`, `sleep(ms)`, `pidAlive(pid)` helpers. Everything is exported for the tests.
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
 ```js
 // .claude/skills/shadok-ai-agents/test/helpers.test.mjs
@@ -45,7 +45,7 @@ import path from "node:path";
 process.env.SHADOK_STATE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "pilotctl-test-"));
 const { parseArgs, readState, writeState, deleteState } = await import("../pilotctl.mjs");
 
-test("parseArgs sépare commande, positionnels et flags", () => {
+test("parseArgs splits command, positionals and flags", () => {
   const r = parseArgs(["prompt", "abc", "fais X", "--timeout", "30", "--worktree", "--cwd", "/tmp/y"]);
   assert.equal(r.cmd, "prompt");
   assert.deepEqual(r.pos, ["abc", "fais X"]);
@@ -54,13 +54,13 @@ test("parseArgs sépare commande, positionnels et flags", () => {
   assert.equal(r.flags.cwd, "/tmp/y");
 });
 
-test("parseArgs gère --continue et --resume", () => {
+test("parseArgs handles --continue and --resume", () => {
   const r = parseArgs(["spawn", "--continue", "--resume", "abc-123"]);
   assert.equal(r.flags.continue, true);
   assert.equal(r.flags.resume, "abc-123");
 });
 
-test("state: écriture, lecture, suppression", () => {
+test("state: write, read, delete", () => {
   assert.equal(readState("nope"), null);
   writeState("abc", { sessionId: "abc", cwd: "/tmp/x" });
   assert.deepEqual(readState("abc"), { sessionId: "abc", cwd: "/tmp/x" });
@@ -69,12 +69,12 @@ test("state: écriture, lecture, suppression", () => {
 });
 ```
 
-- [ ] **Step 2: Vérifier que le test échoue**
+- [ ] **Step 2: Check that the test fails**
 
 Run: `node --test .claude/skills/shadok-ai-agents/test/`
 Expected: FAIL (`Cannot find module '../pilotctl.mjs'`)
 
-- [ ] **Step 3: Implémenter le squelette**
+- [ ] **Step 3: Implement the skeleton**
 
 ```js
 #!/usr/bin/env node
@@ -163,15 +163,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
 }
 ```
 
-- [ ] **Step 4: Mettre le script test dans package.json**
+- [ ] **Step 4: Put the test script in package.json**
 
-Dans `package.json`, remplacer `"test": "echo \"Error: no test specified\" && exit 1"` par :
+In `package.json`, replace `"test": "echo \"Error: no test specified\" && exit 1"` with:
 
 ```json
 "test": "node --test .claude/skills/shadok-ai-agents/test/"
 ```
 
-- [ ] **Step 5: Vérifier que les tests passent**
+- [ ] **Step 5: Check the tests pass**
 
 Run: `npm test`
 Expected: PASS (3 tests)
@@ -180,7 +180,7 @@ Expected: PASS (3 tests)
 
 ```bash
 git add .claude/skills/shadok-ai-agents/ package.json
-git commit -m "feat: squelette pilotctl (args, état local, dispatcher)"
+git commit -m "feat: the pilotctl skeleton (args, local state, dispatcher)"
 ```
 
 ---
@@ -194,9 +194,9 @@ git commit -m "feat: squelette pilotctl (args, état local, dispatcher)"
 
 **Interfaces:**
 - Consumes: helpers de Task 1 (`readState`, `writeState`, `wsUrl`, `sleep`, `pidAlive`).
-- Produces: `startMockServer(script) -> Promise<{port, received, close()}>` (test uniquement) ; dans pilotctl : `openSession(startMsg) -> Promise<client>` où `client = {ws, send(msg), waitFor(types[], timeoutMs) -> Promise<msg|{type:"timeout"}>, on(l), off(l), state: {lastScreen, busy, ready}}` ; `collectTurn(client, timeoutMs) -> Promise<{status: "answer"|"dialog"|"timeout"|"error"|"exited", …}>` ; `ensureServer()` (version health-check seule, l'auto-start arrive en Task 4) ; `ensureHolder(id, cwd)` ; commandes `spawn` et `hold` branchées dans `run()`.
+- Produces: `startMockServer(script) -> Promise<{port, received, close()}>` (tests only); in pilotctl: `openSession(startMsg) -> Promise<client>` where `client = {ws, send(msg), waitFor(types[], timeoutMs) -> Promise<msg|{type:"timeout"}>, on(l), off(l), state: {lastScreen, busy, ready}}`; `collectTurn(client, timeoutMs) -> Promise<{status: "answer"|"dialog"|"timeout"|"error"|"exited", …}>`; `ensureServer()` (the health-check-only version, the auto-start lands in Task 4); `ensureHolder(id, cwd)`; the `spawn` and `hold` commands wired into `run()`.
 
-- [ ] **Step 1: Écrire le serveur mock**
+- [ ] **Step 1: Write the mock server**
 
 ```js
 // .claude/skills/shadok-ai-agents/test/mock-server.mjs
@@ -237,7 +237,7 @@ export function startMockServer(script = {}) {
 }
 ```
 
-- [ ] **Step 2: Écrire le test de spawn qui échoue**
+- [ ] **Step 2: Write the failing spawn test**
 
 ```js
 // .claude/skills/shadok-ai-agents/test/spawn.test.mjs
@@ -253,7 +253,7 @@ process.env.SHADOK_NO_HOLDER = "1";
 process.env.SHADOK_NO_AUTOSTART = "1";
 const { run, readState } = await import("../pilotctl.mjs");
 
-test("spawn démarre une session et écrit l'état local", async () => {
+test("spawn starts a session and writes the local state", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "abc-123", cwd: "/tmp/x", branch: "shadok-ai/abc123" }],
   });
@@ -285,14 +285,14 @@ test("spawn propage l'erreur du serveur", async () => {
 });
 ```
 
-- [ ] **Step 3: Vérifier que le test échoue**
+- [ ] **Step 3: Check that the test fails**
 
 Run: `npm test`
-Expected: FAIL (`usage: pilotctl …` — la commande spawn n'existe pas encore)
+Expected: FAIL (`usage: pilotctl …` — the spawn command does not exist yet)
 
-- [ ] **Step 4: Implémenter openSession, collectTurn, ensureServer (check seul), ensureHolder, spawn, hold**
+- [ ] **Step 4: Implement openSession, collectTurn, ensureServer (check only), ensureHolder, spawn, hold**
 
-Ajouter dans `pilotctl.mjs` (au-dessus de `run`) :
+Add to `pilotctl.mjs` (above `run`):
 
 ```js
 function connect() {
@@ -460,7 +460,7 @@ async function cmdHold(id, cwd) {
 }
 ```
 
-Et dans le `switch` de `run()` :
+And in `run()`'s `switch`:
 
 ```js
     case "spawn":
@@ -469,7 +469,7 @@ Et dans le `switch` de `run()` :
       return cmdHold(pos[0], pos[1]);
 ```
 
-- [ ] **Step 5: Vérifier que les tests passent**
+- [ ] **Step 5: Check the tests pass**
 
 Run: `npm test`
 Expected: PASS (5 tests)
@@ -483,7 +483,7 @@ git commit -m "feat: pilotctl spawn + holder (client WS, collecte de tour)"
 
 ---
 
-### Task 3: prompt, dialog et réponses aux dialogs (choose/toggle/confirm/freetext)
+### Task 3: prompt, dialog and dialog answers (choose/toggle/confirm/freetext)
 
 **Files:**
 - Create: `.claude/skills/shadok-ai-agents/test/turns.test.mjs`
@@ -491,9 +491,9 @@ git commit -m "feat: pilotctl spawn + holder (client WS, collecte de tour)"
 
 **Interfaces:**
 - Consumes: `openSession`, `collectTurn`, `ensureServer`, `ensureHolder`, `readState` (Tasks 1-2).
-- Produces: commandes `prompt <id> <texte> [--timeout s]`, `dialog <id>`, `choose <id> <n>`, `toggle <id> <n>`, `confirm <id>`, `freetext <id> <n> <texte>` dans `run()`. Toutes retournent le résultat de `collectTurn` + `sessionId` ; `dialog` mappe `answer` → `{status:"idle"}`.
+- Produces: the `prompt <id> <text> [--timeout s]`, `dialog <id>`, `choose <id> <n>`, `toggle <id> <n>`, `confirm <id>`, `freetext <id> <n> <text>` commands in `run()`. They all return `collectTurn`'s result + `sessionId`; `dialog` maps `answer` → `{status:"idle"}`.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
 ```js
 // .claude/skills/shadok-ai-agents/test/turns.test.mjs
@@ -516,7 +516,7 @@ function useMock(mock) {
   writeState("abc", { sessionId: "abc", cwd: "/tmp/x", holderPid: null });
 }
 
-test("prompt retourne la réponse streamée à turn-done", async () => {
+test("prompt returns the answer streamed at turn-done", async () => {
   const mock = await startMockServer({
     start: [READY],
     prompt: [
@@ -558,7 +558,7 @@ test("prompt remonte un dialog en attente", async () => {
   }
 });
 
-test("prompt sans fin de tour rend un timeout avec le screen courant", async () => {
+test("a prompt with no end of turn returns a timeout with the current screen", async () => {
   const mock = await startMockServer({
     start: [READY],
     prompt: [{ type: "working" }, { type: "screen", text: "esc to interrupt", working: true }],
@@ -573,7 +573,7 @@ test("prompt sans fin de tour rend un timeout avec le screen courant", async () 
   }
 });
 
-test("choose valide une option et attend la suite", async () => {
+test("choose commits an option and waits for what follows", async () => {
   const mock = await startMockServer({
     start: [READY],
     choose: [{ type: "working" }, { type: "stream-text", text: "ok" }, { type: "turn-done" }],
@@ -599,26 +599,26 @@ test("dialog interroge via settle et mappe answer → idle", async () => {
   }
 });
 
-test("freetext transmet n et le texte", async () => {
+test("freetext passes n and the text", async () => {
   const mock = await startMockServer({ start: [READY], freetext: [{ type: "turn-done" }] });
   useMock(mock);
   try {
-    await run(["freetext", "abc", "3", "ma réponse"]);
-    assert.deepEqual(mock.received[1], { type: "freetext", n: 3, text: "ma réponse" });
+    await run(["freetext", "abc", "3", "my answer"]);
+    assert.deepEqual(mock.received[1], { type: "freetext", n: 3, text: "my answer" });
   } finally {
     await mock.close();
   }
 });
 ```
 
-- [ ] **Step 2: Vérifier que les tests échouent**
+- [ ] **Step 2: Check that the tests fail**
 
 Run: `npm test`
 Expected: FAIL (6 nouveaux tests, `usage: pilotctl …`)
 
-- [ ] **Step 3: Implémenter les commandes de tour**
+- [ ] **Step 3: Implement the turn commands**
 
-Ajouter dans `pilotctl.mjs` :
+Add to `pilotctl.mjs`:
 
 ```js
 // Attaches to a piloted session and sends one protocol message, then waits
@@ -645,7 +645,7 @@ async function cmdDialog(id, flags) {
 }
 ```
 
-Et dans le `switch` de `run()` :
+And in `run()`'s `switch`:
 
 ```js
     case "prompt":
@@ -662,7 +662,7 @@ Et dans le `switch` de `run()` :
       return cmdTurn(pos[0], { type: "freetext", n: Number(pos[1]), text: pos[2] }, flags);
 ```
 
-- [ ] **Step 4: Vérifier que les tests passent**
+- [ ] **Step 4: Check the tests pass**
 
 Run: `npm test`
 Expected: PASS (11 tests)
@@ -683,10 +683,10 @@ git commit -m "feat: pilotctl prompt/dialog/choose/toggle/confirm/freetext"
 - Modify: `.claude/skills/shadok-ai-agents/pilotctl.mjs`
 
 **Interfaces:**
-- Consumes: tout ce qui précède.
-- Produces: `ensureServer()` complété (build + démarrage détaché + attente du port) ; commandes `list [--cwd]`, `diff <id>`, `stop <id>`, `screen <id>` dans `run()`.
+- Consumes: everything above.
+- Produces: a completed `ensureServer()` (build + detached start + waiting for the port); the `list [--cwd]`, `diff <id>`, `stop <id>`, `screen <id>` commands in `run()`.
 
-- [ ] **Step 1: Écrire les tests qui échouent**
+- [ ] **Step 1: Write the failing tests**
 
 ```js
 // .claude/skills/shadok-ai-agents/test/mgmt.test.mjs
@@ -703,12 +703,12 @@ process.env.SHADOK_NO_HOLDER = "1";
 process.env.SHADOK_NO_AUTOSTART = "1";
 const { run, writeState, readState } = await import("../pilotctl.mjs");
 
-test("serveur injoignable sans auto-start → erreur explicite", async () => {
-  process.env.SHADOK_PORT = "1"; // rien n'écoute là
+test("unreachable server with no auto-start → an explicit error", async () => {
+  process.env.SHADOK_PORT = "1"; // nothing listens there
   await assert.rejects(() => run(["list"]), /unreachable/);
 });
 
-test("list combine sessions résumables et agents locaux", async () => {
+test("list combines resumable sessions and local agents", async () => {
   const mock = await startMockServer({ sessions: [{ id: "old-1", mtime: 123 }] });
   process.env.SHADOK_PORT = String(mock.port);
   writeState("abc", { sessionId: "abc", cwd: "/tmp/x", holderPid: null });
@@ -722,7 +722,7 @@ test("list combine sessions résumables et agents locaux", async () => {
   }
 });
 
-test("diff passe par le serveur quand la session est live", async () => {
+test("diff goes through the server while the session is live", async () => {
   const mock = await startMockServer({
     diff: { status: "M x.txt", diff: "--- a/x.txt", branch: "shadok-ai/abc" },
   });
@@ -736,7 +736,7 @@ test("diff passe par le serveur quand la session est live", async () => {
   }
 });
 
-test("diff retombe sur git local quand la session n'est plus live", async () => {
+test("diff falls back to local git once the session is no longer live", async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "pilotctl-repo-"));
   const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" });
   git("init", "-q");
@@ -748,7 +748,7 @@ test("diff retombe sur git local quand la session n'est plus live", async () => 
   const baseSha = git("rev-parse", "HEAD").trim();
   fs.writeFileSync(path.join(repo, "x.txt"), "v2\n");
 
-  const mock = await startMockServer(); // /diff répond "no such session"
+  const mock = await startMockServer(); // /diff answers "no such session"
   process.env.SHADOK_PORT = String(mock.port);
   writeState("gone", { sessionId: "gone", cwd: repo, baseSha, branch: "shadok-ai/gone" });
   try {
@@ -761,7 +761,7 @@ test("diff retombe sur git local quand la session n'est plus live", async () => 
   }
 });
 
-test("stop sans holder vivant nettoie l'état sans rattacher", async () => {
+test("stop with no live holder cleans the state without reattaching", async () => {
   const mock = await startMockServer();
   process.env.SHADOK_PORT = String(mock.port);
   writeState("dead", { sessionId: "dead", cwd: "/tmp/x", holderPid: 999999 });
@@ -769,13 +769,13 @@ test("stop sans holder vivant nettoie l'état sans rattacher", async () => {
     const r = await run(["stop", "dead"]);
     assert.equal(r.stopped, false);
     assert.equal(readState("dead"), null);
-    assert.equal(mock.received.length, 0); // aucun start envoyé
+    assert.equal(mock.received.length, 0); // no start sent
   } finally {
     await mock.close();
   }
 });
 
-test("stop avec session live envoie stop et nettoie", async () => {
+test("stop with a live session sends stop and cleans up", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "abc", cwd: "/tmp/x" }],
     stop: [{ type: "stopped" }],
@@ -792,7 +792,7 @@ test("stop avec session live envoie stop et nettoie", async () => {
   }
 });
 
-test("screen retourne le dernier screen reçu", async () => {
+test("screen returns the last screen received", async () => {
   const mock = await startMockServer({
     start: [
       { type: "ready", sessionId: "abc", cwd: "/tmp/x" },
@@ -810,16 +810,16 @@ test("screen retourne le dernier screen reçu", async () => {
 });
 ```
 
-Note : le test `stop avec session live` utilise `process.pid` comme `holderPid` — le pid est vivant, donc `stop` tente le rattachement ; il ne doit PAS tuer ce pid s'il s'agit du sien (garde `pid !== process.pid` dans l'implémentation) — en réalité le holder est un autre process, la garde évite juste que le test se suicide.
+Note: the `stop with a live session` test uses `process.pid` as the `holderPid` — the pid is alive, so `stop` attempts the reattach; it must NOT kill that pid when it is its own (the `pid !== process.pid` guard in the implementation) — in reality the holder is another process, the guard merely stops the test from killing itself.
 
-- [ ] **Step 2: Vérifier que les tests échouent**
+- [ ] **Step 2: Check that the tests fail**
 
 Run: `npm test`
 Expected: FAIL (7 nouveaux tests)
 
-- [ ] **Step 3: Implémenter**
+- [ ] **Step 3: Implement**
 
-Remplacer `ensureServer` par la version complète et ajouter les commandes :
+Replace `ensureServer` with the complete version and add the commands:
 
 ```js
 export async function ensureServer() {
@@ -917,7 +917,7 @@ async function cmdScreen(id, flags) {
 }
 ```
 
-Et dans le `switch` de `run()` :
+And in `run()`'s `switch`:
 
 ```js
     case "list":
@@ -930,7 +930,7 @@ Et dans le `switch` de `run()` :
       return cmdScreen(pos[0], flags);
 ```
 
-- [ ] **Step 4: Vérifier que les tests passent**
+- [ ] **Step 4: Check the tests pass**
 
 Run: `npm test`
 Expected: PASS (18 tests)
@@ -950,86 +950,84 @@ git commit -m "feat: pilotctl auto-start serveur, list/diff/stop/screen"
 - Create: `.claude/skills/shadok-ai-agents/SKILL.md`
 
 **Interfaces:**
-- Consumes: toutes les commandes pilotctl (Tasks 2-4).
+- Consumes: every pilotctl command (Tasks 2-4).
 
-- [ ] **Step 1: Écrire SKILL.md**
+- [ ] **Step 1: Write SKILL.md**
 
 ````markdown
 ---
 name: shadok-ai-agents
-description: Créer et piloter des agents Claude Code isolés via le serveur shadok-ai (worktrees git, prompts, dialogs, diff). Utiliser quand l'utilisateur veut déléguer une tâche à un agent shadok-ai, lancer des agents en parallèle, ou inspecter/piloter des sessions shadok-ai existantes.
+description: Create and drive isolated Claude Code agents through the shadok-ai server (git worktrees, prompts, dialogs, diff). Use when the user wants to delegate a task to a shadok-ai agent, launch agents in parallel, or inspect/drive existing shadok-ai sessions.
 ---
 
-# Piloter des agents shadok-ai
+# Driving shadok-ai agents
 
-Toutes les opérations passent par le thin client livré avec cette skill :
+Every operation goes through the thin client shipped with this skill:
 
 ```bash
-node .claude/skills/shadok-ai-agents/pilotctl.mjs <commande> …
+node .claude/skills/shadok-ai-agents/pilotctl.mjs <command> …
 ```
 
-Chaque commande imprime UN objet JSON sur stdout (exit 1 + `{error}` en
-échec) et démarre automatiquement le serveur shadok-ai s'il ne tourne pas
-(port 3789, ou `$SHADOK_PORT`). Les sessions restent visibles dans
-l'UI web (http://localhost:3789) — l'utilisateur peut suivre et intervenir.
+Each command prints ONE JSON object on stdout (exit 1 + `{error}` on failure)
+and automatically starts the shadok-ai server when it is not running (port
+3789, or `$SHADOK_PORT`). Sessions stay visible in the web UI
+(http://localhost:3789) — the user can follow along and step in.
 
-## Commandes
+## Commands
 
-| Commande | Effet |
+| Command | Effect |
 |---|---|
-| `spawn [--cwd DIR] [--worktree] [--resume ID] [--continue]` | crée un agent → `{sessionId, cwd, branch}`. `--worktree` isole l'agent dans un worktree git (`~/.shadok-ai/worktrees/`, branche `shadok-ai/<tag>`) |
-| `prompt <id> "texte" [--timeout s]` | envoie un prompt, attend la fin du tour → `{status:"answer", text, tools}` ou `{status:"dialog", question, options, multi}` ou `{status:"timeout", screen}` |
-| `dialog <id>` | interroge l'état → `{status:"idle"}` ou le dialog en attente |
-| `choose <id> <n>` | dialog single-select : choisit et valide l'option n |
-| `toggle <id> <n>` puis `confirm <id>` | dialog multi-select : coche/décoche puis soumet |
-| `freetext <id> <n> "texte"` | option « Type something » : réponse libre |
-| `list [--cwd DIR]` | agents pilotés (état local + vivant/mort) et sessions résumables |
-| `diff <id>` | changements de l'agent (git status + diff vs la base du worktree) |
-| `stop <id>` | termine la session (pour TOUS ses clients) |
-| `screen <id>` | screen TUI brut (debug) |
+| `spawn [--cwd DIR] [--worktree] [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`) |
+| `prompt <id> "text" [--timeout s]` | sends a prompt, waits for the end of the turn → `{status:"answer", text, tools}` or `{status:"dialog", question, options, multi}` or `{status:"timeout", screen}` |
+| `dialog <id>` | queries the state → `{status:"idle"}` or the pending dialog |
+| `choose <id> <n>` | single-select dialog: picks and commits option n |
+| `toggle <id> <n>` then `confirm <id>` | multi-select dialog: check/uncheck then submit |
+| `freetext <id> <n> "text"` | the "Type something" option: a free answer |
+| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions |
+| `diff <id>` | the agent's changes (git status + diff against the worktree's base) |
+| `stop <id>` | ends the session (for ALL its clients) |
+| `screen <id>` | raw TUI screen (debug) |
 
-## Flux type : déléguer une tâche à un agent
+## Typical flow: delegating a task to an agent
 
-1. `spawn --worktree --cwd <repo>` → noter `sessionId` et `branch` ;
-2. `prompt <id> "<tâche>"` — lancer via Bash en **run_in_background**
-   (un tour peut durer plusieurs minutes) et lire le JSON à la fin ;
-3. si `status:"dialog"` : répondre avec `choose` (single) ou
-   `toggle`+`confirm` (multi) ou `freetext`, qui rendent à leur tour
-   `answer` ou un nouveau `dialog` ;
-4. si `status:"timeout"` : le tour CONTINUE côté serveur — ne pas renvoyer
-   le prompt ; re-vérifier plus tard avec `dialog <id>` ;
-5. tâche finie : `diff <id>` et présenter les changements à l'utilisateur.
-   La branche `shadok-ai/<tag>` et son worktree ne sont JAMAIS mergés ni
-   supprimés automatiquement — c'est l'utilisateur qui merge.
+1. `spawn --worktree --cwd <repo>` → note the `sessionId` and `branch`;
+2. `prompt <id> "<task>"` — launch it through Bash with **run_in_background**
+   (a turn can take several minutes) and read the JSON at the end;
+3. if `status:"dialog"`: answer with `choose` (single) or `toggle`+`confirm`
+   (multi) or `freetext`, which in turn return `answer` or a new `dialog`;
+4. if `status:"timeout"`: the turn CONTINUES server-side — do not resend the
+   prompt; check back later with `dialog <id>`;
+5. task finished: `diff <id>` and present the changes to the user. The
+   `shadok-ai/<tag>` branch and its worktree are NEVER merged or deleted
+   automatically — the user is the one who merges.
 
-Agents parallèles : répéter `spawn` (un id par agent), lancer les `prompt`
-en arrière-plan simultanément.
+Parallel agents: repeat `spawn` (one id per agent), and launch the `prompt`
+calls in the background simultaneously.
 
-## Garde-fous
+## Guardrails
 
-- Ne JAMAIS `stop` une session que cette conversation n'a pas créée : elle
-  appartient peut-être à l'utilisateur dans l'UI web. `stop` termine la
-  session pour tous ses clients.
-- Chaque agent consomme le quota Claude comme une session normale. Ne pas
-  multiplier les agents sans demande explicite de l'utilisateur.
-- `prompt` sur une session dont le tour est déjà en cours → erreur « a
-  response is already in progress » : attendre avec `dialog <id>`.
-- Si un agent semble bloqué sur un état que les dialogs ne couvrent pas,
-  regarder `screen <id>` (équivalent de l'« engine room » de l'UI).
+- NEVER `stop` a session this conversation did not create: it may belong to
+  the user in the web UI. `stop` ends the session for all its clients.
+- Every agent consumes the Claude quota like an ordinary session. Do not
+  multiply agents without an explicit request from the user.
+- `prompt` on a session whose turn is already running → the error "a
+  response is already in progress": wait with `dialog <id>`.
+- If an agent seems stuck in a state the dialogs do not cover, look at
+  `screen <id>` (the equivalent of the UI's "engine room").
 
-## Mécanique (pour le debug)
+## Mechanics (for debugging)
 
-Le serveur tue le process claude quand son dernier client WS se détache ;
-`pilotctl` maintient donc un petit process « holder » détaché par agent
-(commande interne `hold`), relancé au besoin par chaque commande. État
-local : `~/.shadok-ai/pilotctl/<id>.json` (cwd, branch, baseSha,
-holderPid). Log du serveur auto-démarré : `~/.shadok-ai/pilotctl/server.log`.
+The server kills the claude process when its last WS client detaches; so
+`pilotctl` keeps a small detached "holder" process per agent (the internal
+`hold` command), restarted as needed by every command. Local state:
+`~/.shadok-ai/pilotctl/<id>.json` (cwd, branch, baseSha, holderPid). Log of
+the auto-started server: `~/.shadok-ai/pilotctl/server.log`.
 ````
 
-- [ ] **Step 2: Vérifier la découverte de la skill**
+- [ ] **Step 2: Check the skill is discovered**
 
 Run: `ls .claude/skills/shadok-ai-agents/ && head -5 .claude/skills/shadok-ai-agents/SKILL.md`
-Expected: `SKILL.md`, `pilotctl.mjs`, `test/` ; le frontmatter s'affiche.
+Expected: `SKILL.md`, `pilotctl.mjs`, `test/`; the frontmatter shows.
 
 - [ ] **Step 3: Commit**
 
@@ -1042,11 +1040,11 @@ git commit -m "docs: SKILL.md de shadok-ai-agents"
 
 ### Task 6: Validation de bout en bout (manuelle, consomme du quota)
 
-Réel serveur + réel claude. À exécuter tel quel, en signalant tout écart.
+A real server + a real claude. To be run as is, reporting any discrepancy.
 
 **Files:** aucun (validation).
 
-- [ ] **Step 1: Préparer un repo jouet**
+- [ ] **Step 1: Prepare a toy repo**
 
 ```bash
 TOY=$(mktemp -d /tmp/pilotctl-e2e-XXXXXX)
@@ -1056,25 +1054,25 @@ git -C "$TOY" init -q && git -C "$TOY" commit -q --allow-empty -m init
 - [ ] **Step 2: spawn --worktree**
 
 Run: `node .claude/skills/shadok-ai-agents/pilotctl.mjs spawn --worktree --cwd "$TOY"`
-Expected: `{sessionId, cwd:~/.shadok-ai/worktrees/…, branch:"shadok-ai/…"}` ; le serveur a démarré tout seul si besoin ; la session apparaît dans l'UI web ; `list` montre l'agent `live:true`.
+Expected: `{sessionId, cwd:~/.shadok-ai/worktrees/…, branch:"shadok-ai/…"}`; the server started on its own if needed; the session appears in the web UI; `list` shows the agent as `live:true`.
 
 - [ ] **Step 3: prompt simple**
 
-Run: `node .claude/skills/shadok-ai-agents/pilotctl.mjs prompt <id> "Crée un fichier hello.txt contenant exactement: hello world" --timeout 300`
-Expected: `{status:"answer", …}` — ou `{status:"dialog"}` (permission d'écriture) auquel cas répondre `choose <id> 1` et vérifier que la suite arrive.
+Run: `node .claude/skills/shadok-ai-agents/pilotctl.mjs prompt <id> "Create a hello.txt file containing exactly: hello world" --timeout 300`
+Expected: `{status:"answer", …}` — or `{status:"dialog"}` (a write permission), in which case answer `choose <id> 1` and check that what follows arrives.
 
 - [ ] **Step 4: diff**
 
 Run: `node .claude/skills/shadok-ai-agents/pilotctl.mjs diff <id>`
-Expected: le diff contient `+hello world` (hello.txt).
+Expected: the diff contains `+hello world` (hello.txt).
 
 - [ ] **Step 5: stop et conservation du worktree sale**
 
 Run: `node .claude/skills/shadok-ai-agents/pilotctl.mjs stop <id>` puis `ls ~/.shadok-ai/worktrees/`
-Expected: `{stopped:true}` ; le worktree contenant hello.txt est TOUJOURS là (sale → conservé) ; l'état local `~/.shadok-ai/pilotctl/<id>.json` a disparu ; `diff <id>` fonctionne encore via le fallback local si on ne l'a pas nettoyé — (facultatif) re-tester avant de supprimer.
+Expected: `{stopped:true}`; the worktree containing hello.txt is STILL there (dirty → kept); the local state `~/.shadok-ai/pilotctl/<id>.json` is gone; `diff <id>` still works through the local fallback if it was not cleaned — (optionally) re-test before deleting.
 
-- [ ] **Step 6: Commit final (fixes éventuels découverts en e2e)**
+- [ ] **Step 6: Final commit (any fixes discovered end to end)**
 
 ```bash
-git add -A && git commit -m "fix: ajustements post-validation e2e de pilotctl" # seulement si des fixes ont été nécessaires
+git add -A && git commit -m "fix: pilotctl adjustments after end-to-end validation" # only if fixes were needed
 ```
