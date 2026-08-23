@@ -1,150 +1,147 @@
-# Clignotement des notifications + mute par canal
+# Blinking notifications + per-channel mute
 
-**Date :** 2026-07-29
-**État :** validé, à implémenter
+**Date:** 2026-07-29
+**State:** agreed, to be implemented
 
-## Le problème
+## The problem
 
-Depuis `666a62b` le cockpit signale déjà qu'un canal réclame l'attention : un pip
-coloré sur le favicon, un préfixe `●` dans le titre, et un son quand un agent se
-bloque sur une question. Le signal est **statique**. Dans une fenêtre chargée de
-vingt onglets, un pip immobile de 7 px sur une icône de 16 px passe inaperçu :
-l'agent attend, et personne ne vient.
+Since `666a62b` the cockpit already signals that a channel wants attention: a
+coloured pip on the favicon, a `●` prefix in the title, and a sound when an agent
+blocks on a question. The signal is **static**. In a window loaded with twenty
+tabs, a motionless 7 px pip on a 16 px icon goes unnoticed: the agent waits, and
+nobody comes.
 
-Symétriquement, il n'y a aucun moyen de faire taire **un** canal. Un agent qui
-pose des questions en boucle, ou un cron bavard, pollue le signal global — et le
-seul recours aujourd'hui est le bouton 🔔 du header, qui coupe le son de tout le
-monde et ne touche ni le pip ni le titre.
+Symmetrically, there is no way to silence **one** channel. An agent asking
+questions in a loop, or a chatty cron, pollutes the global signal — and the only
+recourse today is the header's 🔔 button, which mutes the sound for everyone and
+touches neither the pip nor the title.
 
-## Ce qu'on construit
+## What we build
 
-1. Le badge d'attention **clignote** quand quelque chose demande vraiment une
-   action, et seulement dans ce cas.
-2. Chaque canal peut être **muté** individuellement, de façon persistante.
-3. Un **menu contextuel** sur l'onglet, qui héberge le mute et deux actions déjà
-   existantes.
+1. The attention badge **blinks** when something really demands an action, and
+   only then.
+2. Each channel can be **muted** individually, persistently.
+3. A **context menu** on the tab, hosting the mute and two already existing
+   actions.
 
-## A. Le clignotement
+## A. The blinking
 
-### Condition de déclenchement
+### Trigger condition
 
-> **Corrigé le 2026-07-30.** La v1 lisait `document.hidden` seul, et ne
-> clignotait donc **jamais** dans l'usage réel : `document.hidden` reste faux
-> tant que la fenêtre est affichée, même si une autre application a le focus —
-> or c'est exactement le mode d'usage du cockpit (fenêtre ouverte sur un écran,
-> utilisateur dans son terminal). Le déclencheur est désormais `away =
-> document.hidden || !document.hasFocus()`, un sur-ensemble. Vérifié au
-> navigateur, pas seulement en tests unitaires.
+> **Fixed on 2026-07-30.** v1 read `document.hidden` alone, and therefore
+> **never** blinked in real use: `document.hidden` stays false as long as the
+> window is displayed, even when another application has focus — and that is
+> exactly how the cockpit is used (a window open on a screen, the user in their
+> terminal). The trigger is now `away = document.hidden || !document.hasFocus()`,
+> a superset. Verified in the browser, not only in unit tests.
 
-Le badge clignote si et seulement si :
+The badge blinks if and only if:
 
-- **tu n'es pas sur la page** — onglet caché, fenêtre minimisée, ou fenêtre
-  visible mais sans le focus ;
-- **et** au moins un canal **non muté** est en `needs-answer`.
+- **you are not on the page** — hidden tab, minimised window, or a visible window
+  without focus;
+- **and** at least one **unmuted** channel is in `needs-answer`.
 
-Une réponse non lue (`unread`) ne clignote pas : elle garde le pip ambre fixe.
-Le clignotement veut dire « il faut faire quelque chose », pas « il s'est passé
-quelque chose ».
+An unread answer (`unread`) does not blink: it keeps the steady amber pip.
+Blinking means "something must be done", not "something happened".
 
-### Ce qui clignote
+### What blinks
 
-Le pip du favicon **et** le préfixe du titre, sur le même tick (~900 ms). Le
-favicon compte au moins autant que le titre : un onglet en arrière-plan dans une
-fenêtre chargée est réduit à son icône, le titre n'est plus lisible.
+The favicon's pip **and** the title's prefix, on the same tick (~900 ms). The
+favicon counts at least as much as the title: a background tab in a loaded window
+is reduced to its icon, and the title is no longer readable.
 
-### Les deux phases restent visibles
+### Both phases stay visible
 
-L'alternance ne va **pas** de « badge » à « rien ». Elle va d'un état visible à
-un autre :
+The alternation does **not** go from "badge" to "nothing". It goes from one
+visible state to another:
 
-| Phase | Pip favicon | Titre |
+| Phase | Favicon pip | Title |
 |---|---|---|
-| haute | `#e07a6a` (rouge vif) | `● ` |
-| basse | `#8a4034` (rouge sombre) | `◉ ` |
+| high | `#e07a6a` (bright red) | `● ` |
+| low | `#8a4034` (dark red) | `◉ ` |
 
-**Pourquoi :** Chrome étrangle les timers d'un onglet caché — clamp à 1 s, puis
-*intensive throttling* jusqu'à un réveil par minute après ~5 min. Avec un on/off,
-un timer gelé sur la phase « off » laisserait la page parfaitement calme alors
-qu'un agent attend : le signal disparaîtrait exactement dans le cas où on en a le
-plus besoin. Avec deux phases visibles, le pire cas est un clignotement lent.
-Cette dégradation doit être vérifiée dans un vrai navigateur, pas déduite.
+**Why:** Chrome throttles a hidden tab's timers — clamped to 1 s, then *intensive
+throttling* down to one wake per minute after ~5 min. With an on/off, a timer
+frozen on the "off" phase would leave the page perfectly calm while an agent
+waits: the signal would disappear exactly when it is needed most. With two
+visible phases, the worst case is a slow blink. That degradation must be checked
+in a real browser, not inferred.
 
-### Cycle de vie du timer
+### The timer's life cycle
 
-Aucun timer ne tourne quand rien ne clignote. `refreshBadge()` démarre ou arrête
-la boucle selon la condition ci-dessus ; un écouteur `visibilitychange` la
-réévalue. Le retour sur l'onglet arrête le clignotement immédiatement et
-restaure le badge statique — pas au prochain tick.
+No timer runs when nothing blinks. `refreshBadge()` starts or stops the loop
+depending on the condition above; a `visibilitychange` listener re-evaluates it.
+Coming back to the tab stops the blinking immediately and restores the static
+badge — not on the next tick.
 
-## B. Le mute par canal
+## B. Per-channel mute
 
-### État et persistance
+### State and persistence
 
-Un booléen `muted` porté par l'onglet côté client, persisté dans le registre
-serveur via le champ `Channel.muted` (`src/channels.ts`). C'est un champ **piloté
-par le client**, comme `name` et `group` : il ne rejoint donc **pas**
-`SERVER_OWNED`, et un PUT du navigateur fait autorité dessus. Conséquence
-voulue : le mute survit au reload et suit les autres appareils.
+A `muted` boolean carried by the tab on the client side, persisted in the server
+registry through the `Channel.muted` field (`src/channels.ts`). It is a
+**client-driven** field, like `name` and `group`: it therefore does **not** join
+`SERVER_OWNED`, and a PUT from the browser is authoritative over it. The intended
+consequence: the mute survives a reload and follows the other devices.
 
-### Effet
+### Effect
 
-- `attentionColor()` ignore les canaux mutés → ni pip, ni `●`, ni clignotement.
-- Le `ding()` déclenché depuis `setTabMood` est sauté pour un canal muté.
-- L'onglet **garde** sa propre couleur d'état (`working` / `needs-answer` /
-  `unread`) : muter coupe les signaux globaux, ça ne rend pas le canal invisible.
-- Un 🔕 discret s'affiche à côté du nom d'un canal muté, pour que le silence soit
-  explicable plutôt que suspect.
+- `attentionColor()` ignores muted channels → no pip, no `●`, no blinking.
+- The `ding()` triggered from `setTabMood` is skipped for a muted channel.
+- The tab **keeps** its own state colour (`working` / `needs-answer` / `unread`):
+  muting cuts the global signals, it does not make the channel invisible.
+- A discreet 🔕 shows next to a muted channel's name, so the silence is
+  explainable rather than suspicious.
 
-## C. Le menu contextuel
+## C. The context menu
 
-Clic droit sur un onglet → petit menu flottant positionné au curseur, calqué sur
-`#verMenu` : même style, même logique de fermeture (clic ailleurs, Échap, ou
-choix d'une entrée). Le menu natif du navigateur est supprimé sur l'onglet
-uniquement.
+Right-click on a tab → a small floating menu positioned at the cursor, modelled
+on `#verMenu`: same style, same closing logic (a click elsewhere, Escape, or
+choosing an entry). The browser's native menu is suppressed on the tab only.
 
-Entrées de la v1 :
+v1's entries:
 
-| Entrée | Comportement |
+| Entry | Behaviour |
 |---|---|
-| 🔕 Muter / 🔔 Réactiver | bascule `muted`, persiste, rafraîchit le badge |
-| Renommer | réutilise `inlineRename` (le double-clic existant reste) |
-| Fermer l'agent | l'action du ✕ existant ; absente sur `general` |
+| 🔕 Mute / 🔔 Unmute | toggles `muted`, persists, refreshes the badge |
+| Rename | reuses `inlineRename` (the existing double-click stays) |
+| Close agent | the existing ✕'s action; absent on `general` |
 
-Le menu est l'endroit où rangeront les prochaines actions par canal — c'est la
-moitié de sa valeur.
+The menu is where the next per-channel actions will go — that is half its value.
 
-## D. Découpage et tests
+## D. Split and tests
 
-La décision de notification est extraite en module pur `public/notify.js` :
+The notification decision is extracted into the pure module `public/notify.js`:
 
 ```js
 notifyState(channels, { hidden, phase }) → { color, badge, blink }
 ```
 
-`channels` est une liste de `{ mood, muted }` — le module ne connaît ni le DOM ni
-les onglets. Il est chargé par le navigateur **et** importé par
-`test/notify.test.ts`, exactement comme `live-text.js` et `profile-card.js`.
+`channels` is a list of `{ mood, muted }` — the module knows nothing of the DOM
+or of tabs. It is loaded by the browser **and** imported by
+`test/notify.test.ts`, exactly like `live-text.js` and `profile-card.js`.
 
-Cas couverts par les tests :
+Cases covered by the tests:
 
-- un canal `needs-answer` non muté, onglet caché → `blink: true`, rouge ;
-- le même, onglet visible → `blink: false`, rouge fixe ;
-- le même, **muté** → pas de couleur, pas de clignotement ;
-- `unread` seul → ambre, jamais de clignotement ;
-- `needs-answer` muté + `unread` non muté → ambre fixe (le muté ne remonte pas) ;
-- tous mutés → `color: null` ;
-- les deux phases renvoient une couleur non nulle quand `blink` est vrai (c'est
-  l'invariant qui protège du timer étranglé).
+- an unmuted `needs-answer` channel, tab hidden → `blink: true`, red;
+- the same, tab visible → `blink: false`, steady red;
+- the same, **muted** → no colour, no blinking;
+- `unread` alone → amber, never blinking;
+- a muted `needs-answer` + an unmuted `unread` → steady amber (the muted one does
+  not surface);
+- all muted → `color: null`;
+- both phases return a non-null colour when `blink` is true (that is the
+  invariant protecting against a throttled timer).
 
-**Gotcha #10 du CLAUDE.md :** le `<script type="module">` qui expose la fonction
-sur `window` s'exécute après le parse du document, alors que le script classique
-tourne pendant. Tout appel au chargement doit attendre `DOMContentLoaded` ou se
-garder sur `window.notifyState` — sinon l'échec est silencieux.
+**Gotcha #10 of CLAUDE.md:** the `<script type="module">` that exposes the
+function on `window` runs after the document is parsed, while the classic script
+runs during it. Any call at load time must wait for `DOMContentLoaded` or guard
+on `window.notifyState` — otherwise the failure is silent.
 
-## Hors périmètre
+## Out of scope
 
-- Les notifications système (`Notification` API) : le badge + le son suffisent
-  pour l'instant, et la permission navigateur est un sujet à part.
-- Le mute côté Telegram : le bridge a ses propres règles de silence.
-- Un mute temporaire (« pendant 1 h ») : à envisager seulement si le mute
-  permanent se révèle trop grossier à l'usage.
+- System notifications (the `Notification` API): the badge + the sound are enough
+  for now, and the browser permission is a subject of its own.
+- Muting on the Telegram side: the bridge has its own silence rules.
+- A temporary mute ("for 1 h"): to be considered only if the permanent mute turns
+  out to be too coarse in use.

@@ -1,55 +1,55 @@
 # Agent creation box — profile-first
 
-Date : 2026-07-29
-Statut : validé, prêt pour plan d'implémentation
+Date: 2026-07-29
+Status: agreed, ready for an implementation plan
 
-## Problème
+## Problem
 
-La box de création (`#setup`, `public/index.html`) est un formulaire à plat de
-six blocs. Trois défauts concrets :
+The creation box (`#setup`, `public/index.html`) is a flat form of six blocks.
+Three concrete defects:
 
-1. **Le profil est invisible.** C'est pourtant *le* choix structurant (rôle,
-   garde-fous, secrets, modèle), et il est réduit à un `<select>` maigre placé
-   en avant-dernier, après le worktree.
-2. **La box déborde.** `#liveField` (« Agents running now ») et `#recoverField`
-   (« Reopen an unfinished session ») sont dépliés dès qu'ils ont un élément et
-   poussent le bouton Start hors de l'écran. Sur mobile c'est illisible.
-3. **Le vocabulaire ment.** L'UI parle de « channel » / « new link » alors que
-   l'objet mental de l'utilisateur est un **agent**.
+1. **The profile is invisible.** Yet it is *the* structuring choice (role,
+   guardrails, secrets, model), and it is reduced to a thin `<select>` placed
+   second to last, after the worktree.
+2. **The box overflows.** `#liveField` ("Agents running now") and `#recoverField`
+   ("Reopen an unfinished session") are unfolded as soon as they have one item
+   and push the Start button off screen. On mobile it is unreadable.
+3. **The vocabulary lies.** The UI says "channel" / "new link" while the user's
+   mental object is an **agent**.
 
-Et deux pièges plus discrets :
+And two more discreet traps:
 
-- Aucun raccourci depuis la box vers l'édition des profils : il faut viser le
-  bouton `Profiles` de la barre du haut, hors du flux de création.
-- En mode `continue` / `resume`, le profil et le worktree restent actifs à
-  l'écran mais sont **silencieusement ignorés** (`startActiveTab`, ligne ~2288 :
-  les deux ne sont posés que `if (mode === "new")`).
+- No shortcut from the box to editing profiles: you have to aim for the top bar's
+  `Profiles` button, outside the creation flow.
+- In `continue` / `resume` mode, the profile and the worktree stay active on
+  screen but are **silently ignored** (`startActiveTab`, line ~2288: both are
+  only set `if (mode === "new")`).
 
-## Portée
+## Scope
 
-Uniquement la copie visible et la box de création. Le protocole WS, les
-endpoints, `src/channels.ts` et la persistance (`~/.shadok-ai/channels/`) ne
-changent pas. Le message `start` garde son champ `profile`.
+Only the visible copy and the creation box. The WS protocol, the endpoints,
+`src/channels.ts` and the persistence (`~/.shadok-ai/channels/`) do not change.
+The `start` message keeps its `profile` field.
 
-## 1. Renommage — copie UI seulement
+## 1. Renaming — UI copy only
 
-| Où | Avant | Après |
+| Where | Before | After |
 |---|---|---|
 | `nav .side-label` | `Channels` | `Agents` |
 | `#newTab` | `＋ new channel` | `＋ new agent` |
 | `#newTab[title]` | `New channel` | `New agent` |
 | `#newGroup[title]` | `New tab group` | `New agent group` |
 | `#setup h1` | `New link` | `New agent` |
-| `#setup p.hint` | texte « channel » | réécrit en « agent » |
+| `#setup p.hint` | the "channel" text | rewritten around "agent" |
 | `#startBtn` | `Start session` | `Start agent` |
-| `src/telegram.ts` (aide `/tools`, `/cron`) | « this channel » | « this agent » |
+| `src/telegram.ts` (`/tools`, `/cron` help) | "this channel" | "this agent" |
 
-Identifiants de code, noms de fichiers, endpoints `/channels` `/groups`, clés de
-`localStorage` et nom forcé `general` du canal principal : **inchangés**. Le
-renommage est cosmétique par construction, donc sans risque de régression sur la
-persistance (invariant 6 de `CLAUDE.md`).
+Code identifiers, file names, the `/channels` `/groups` endpoints,
+`localStorage` keys and the main channel's forced `general` name: **unchanged**.
+The renaming is cosmetic by construction, hence carries no risk of a persistence
+regression (invariant 6 of `CLAUDE.md`).
 
-## 2. Structure de la box
+## 2. The box's structure
 
 ```
 New agent
@@ -77,112 +77,110 @@ Working directory  [/path/to/project                ]
                               [ Start agent ]
 ```
 
-Ordre : **qui** (profil) → **où** (dossier, worktree) → le rare, replié → action.
+The order: **who** (profile) → **where** (directory, worktree) → the rare stuff,
+folded → the action.
 
-### Les trois `<details>`
+### The three `<details>`
 
-`#advancedField`, `#recoverField`, `#liveField` deviennent des `<details>`
-**fermés par défaut**, une règle unique et prévisible. Le `<summary>` porte un
-compteur (`(3)`) rendu en ambre quand il est non nul, pour que l'information
-« il y a des choses ici » survive au repli. Les listes gardent leur rendu et
-leur `max-height` actuels.
+`#advancedField`, `#recoverField` and `#liveField` become `<details>` **closed by
+default**, a single, predictable rule. The `<summary>` carries a counter (`(3)`)
+rendered in amber when non-zero, so the "there is something here" information
+survives the folding. The lists keep their current rendering and `max-height`.
 
-`#advancedField` contient le bloc Resume existant tel quel : la `radio-row`
-(`new session` / `latest in directory` / `by id`), `#resumeInput` et
-`#sessionList`. Le mode par défaut reste `new`.
+`#advancedField` contains the existing Resume block as is: the `radio-row`
+(`new session` / `latest in directory` / `by id`), `#resumeInput` and
+`#sessionList`. The default mode stays `new`.
 
-Corollaire : `refreshLiveList` / `refreshRecoverList` ne pilotent plus
-`field.hidden` mais le compteur du `<summary>` et la présence du `<details>` —
-un `<details>` sans élément reste masqué comme aujourd'hui.
+A corollary: `refreshLiveList` / `refreshRecoverList` no longer drive
+`field.hidden` but the `<summary>`'s counter and the `<details>`'s presence — a
+`<details>` with no item stays hidden as it does today.
 
 ### Mode ≠ `new`
 
-Quand le mode passe à `continue` ou `resume`, la grille de profils et la case
-worktree prennent une classe `.na` (`opacity:.45; pointer-events:none`) et une
-note d'une ligne « applies to new sessions only ». `startActiveTab` garde sa
-logique actuelle — l'UI cesse simplement de mentir.
+When the mode switches to `continue` or `resume`, the profile grid and the
+worktree checkbox take a `.na` class (`opacity:.45; pointer-events:none`) and a
+one-line note "applies to new sessions only". `startActiveTab` keeps its current
+logic — the UI simply stops lying.
 
-## 3. Cartes de profil
+## 3. Profile cards
 
-Grille CSS `repeat(auto-fill, minmax(150px, 1fr))`, gap 8px. Chaque carte est un
-`<button role="radio">` dans un conteneur `role="radiogroup"` : sélection au
-clic, navigation aux flèches, activation Espace/Entrée, `aria-checked` tenu à
-jour. Sélection = bordure et nom en ambre (`--amber`), comme le reste du thème.
+A CSS grid `repeat(auto-fill, minmax(150px, 1fr))`, gap 8px. Each card is a
+`<button role="radio">` inside a `role="radiogroup"` container: selection on
+click, arrow-key navigation, Space/Enter activation, `aria-checked` kept up to
+date. Selected = border and name in amber (`--amber`), like the rest of the
+theme.
 
-Contenu, **entièrement dérivé du type `Profile` existant** (aucun champ ajouté à
-`src/profiles.ts`) :
+The content, **entirely derived from the existing `Profile` type** (no field
+added to `src/profiles.ts`):
 
-- **Nom** : `profile.name`, police mono.
-- **Blurb** : première phrase de `systemPrompt`, débarrassée du préfixe
-  `You are <name>, ` / `You are <name> — `, tronquée à ~90 caractères avec `…`,
-  clampée à 2 lignes en CSS. Vide si pas de `systemPrompt`.
-- **Badges** : `read-only` si `deny?.length` (sinon `full access`), le nom du
-  modèle si `model` est fixé, `N secrets` si `secrets?.length`.
+- **Name**: `profile.name`, mono font.
+- **Blurb**: the first sentence of `systemPrompt`, stripped of the
+  `You are <name>, ` / `You are <name> — ` prefix, truncated at ~90 characters
+  with `…`, clamped to 2 lines in CSS. Empty when there is no `systemPrompt`.
+- **Badges**: `read-only` when `deny?.length` (else `full access`), the model's
+  name when `model` is set, `N secrets` when `secrets?.length`.
 
-Une carte `∅ No profile` (sous-titre « plain Claude ») termine toujours la
-grille ; c'est la valeur par défaut au premier usage, équivalente à l'actuel
-`<option value="">`.
+An `∅ No profile` card (subtitle "plain Claude") always closes the grid; it is
+the default on first use, equivalent to today's `<option value="">`.
 
-### Module pur testable
+### A pure, testable module
 
-`profileBlurb(profile)` et `profileBadges(profile)` vont dans
-`public/profile-card.js` — même pattern que `public/live-text.js` : ESM importé
-par le navigateur *et* par `test/profile-card.test.ts`. Le rendu DOM reste dans
-`index.html`.
+`profileBlurb(profile)` and `profileBadges(profile)` go into
+`public/profile-card.js` — the same pattern as `public/live-text.js`: an ESM
+imported by the browser *and* by `test/profile-card.test.ts`. The DOM rendering
+stays in `index.html`.
 
-Cas couverts par les tests : préfixe `You are X,` retiré ; pas de
-`systemPrompt` → blurb vide ; phrase très longue → troncature avec `…` sans
-couper au milieu d'un mot ; `deny` vide → `full access` ; `deny` non vide →
-`read-only` ; `secrets` de 1 → `1 secret` (singulier) ; `model` absent → pas de
-badge modèle.
+Cases covered by the tests: the `You are X,` prefix removed; no `systemPrompt` →
+an empty blurb; a very long sentence → truncation with `…` without cutting
+mid-word; empty `deny` → `full access`; non-empty `deny` → `read-only`; a
+`secrets` of 1 → `1 secret` (singular); no `model` → no model badge.
 
-## 4. Raccourcis d'édition
+## 4. Editing shortcuts
 
-- **`✎ edit profiles`**, aligné à droite du titre « Which agent? », ouvre
-  l'overlay existant `#profilesOverlay` (même chemin que `#profilesBtn`).
-- **`✎` par carte**, visible au survol/focus, ouvre l'overlay **prérempli** sur
-  ce profil via `fillProfileForm(p)`. `stopPropagation` pour ne pas sélectionner
-  la carte au passage.
-- À la **fermeture** de l'overlay (✕, Échap, clic sur le fond), la grille se
-  re-rend depuis `profileCache` : un profil créé apparaît immédiatement, la
-  sélection courante est conservée si le profil existe encore, sinon elle
-  retombe sur `No profile`.
-- **Zéro profil** : une seule carte pleine largeur
-  « Create your first profile → » qui ouvre l'overlay vide. Aujourd'hui on
-  tombe sur un `(none)` muet.
+- **`✎ edit profiles`**, right-aligned with the "Which agent?" title, opens the
+  existing `#profilesOverlay` (the same path as `#profilesBtn`).
+- **A `✎` per card**, visible on hover/focus, opens the overlay **prefilled** on
+  that profile through `fillProfileForm(p)`. `stopPropagation` so the card is not
+  selected on the way.
+- On **closing** the overlay (✕, Escape, a click on the backdrop), the grid
+  re-renders from `profileCache`: a created profile appears immediately, the
+  current selection is kept when the profile still exists, otherwise it falls
+  back to `No profile`.
+- **Zero profiles**: a single full-width card "Create your first profile →" that
+  opens the empty overlay. Today you land on a mute `(none)`.
 
-## 5. Mémoire du dernier profil
+## 5. Remembering the last profile
 
-Au démarrage d'un agent, le profil retenu est écrit dans
-`localStorage["cp.profile:" + cwd]`. À l'ouverture de la box (et à chaque
-changement de `#cwdInput`, qui rafraîchit déjà la liste recover), la carte
-correspondante est présélectionnée ; à défaut, `cp.profile` (dernier profil
-utilisé, tous dossiers confondus) ; à défaut, `No profile`. Un profil mémorisé
-qui n'existe plus est ignoré silencieusement.
+When an agent starts, the chosen profile is written to
+`localStorage["cp.profile:" + cwd]`. When the box opens (and on every change of
+`#cwdInput`, which already refreshes the recover list), the matching card is
+preselected; failing that, `cp.profile` (the last profile used, across all
+directories); failing that, `No profile`. A remembered profile that no longer
+exists is ignored silently.
 
-Effet visé : le cas courant devient **un clic + Start**.
+The intended effect: the common case becomes **one click + Start**.
 
-## 6. Erreurs
+## 6. Errors
 
-`GET /profiles` en échec ou réponse non-tableau → la grille affiche une ligne
-`couldn't load profiles` et **la carte `No profile` reste présente et
-sélectionnable**, donc on peut toujours démarrer un agent. C'est déjà le
-comportement défensif de `loadProfilesInto` (`catch { profileCache = [] }`), on
-le rend visible.
+A failed `GET /profiles`, or a non-array response → the grid shows a
+`couldn't load profiles` line and **the `No profile` card stays present and
+selectable**, so an agent can still be started. That is already
+`loadProfilesInto`'s defensive behaviour (`catch { profileCache = [] }`); we make
+it visible.
 
-## 7. Hors périmètre
+## 7. Out of scope
 
-Écartés volontairement, à rouvrir si le besoin se confirme :
+Deliberately set aside, to be reopened if the need is confirmed:
 
-- Menu de spawn rapide au survol de `＋ new agent` (choisir un profil sans
-  ouvrir la box).
-- Couleurs / emoji par profil — demanderait de nouveaux champs sur `Profile` et
-  un formulaire à remplir pour les profils existants.
+- A quick-spawn menu on hovering `＋ new agent` (choosing a profile without
+  opening the box).
+- Colours / emoji per profile — that would take new fields on `Profile` and a
+  form to fill in for the existing profiles.
 
-## Vérification
+## Verification
 
-`npm run build`, `npm test`, puis vérification dans le navigateur sur un build
-local (voir « Running YOUR build » dans `CLAUDE.md` — ne pas démarrer un second
-serveur). À contrôler à l'œil : box entière visible sans scroll sur une fenêtre
-courte, sélection au clavier, ouverture de l'overlay depuis les deux raccourcis,
-profil mémorisé au deuxième agent lancé dans le même dossier.
+`npm run build`, `npm test`, then a check in the browser on a local build (see
+"Running YOUR build" in `CLAUDE.md` — do not start a second server). To check by
+eye: the whole box visible without scrolling on a short window, keyboard
+selection, the overlay opening from both shortcuts, the remembered profile on the
+second agent launched in the same directory.
