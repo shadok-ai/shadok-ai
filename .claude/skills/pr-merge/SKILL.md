@@ -133,9 +133,20 @@ node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add \
 ```
 
 La garde est `scripts/check-open-prs.sh` (ce dossier). Le serveur l'exécute
-**sans LLM** : elle n'imprime que s'il existe une PR ouverte non-draft basée sur
-`main`, et sa sortie est préfixée au prompt. Un dépôt calme coûte donc **0 token**
+**sans LLM** : elle n'imprime que s'il existe une PR sur laquelle la boucle peut
+AGIR, et sa sortie est préfixée au prompt. Un dépôt calme coûte donc **0 token**
 et ne laisse aucune trace dans le fil.
+
+Elle écarte donc, en plus des drafts et des bases ≠ `main`, **les forks et les
+PR `DIRTY`** : dans les deux cas la réponse de la boucle est invariablement « pas
+la mienne ». Sans ce tri, une seule PR bloquée réveillait l'agent à chaque
+créneau — un tour de LLM par minute pour ne rien faire. Le filtre reste **sans
+état** : dès qu'une PR redevient mergeable elle réapparaît d'elle-même, donc rien
+à mémoriser et rien à oublier.
+
+Ce que la garde écarte n'est pas ce que le **filtre d'entrée** écarte. Une PR
+hors liste blanche ou portant un red flag est une décision à expliquer dans le
+rapport ; elle continue donc de réveiller l'agent.
 
 Deux pièges appris à l'usage :
 
