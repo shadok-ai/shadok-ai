@@ -1,114 +1,114 @@
-# Agent de gestion des PR — design
+# The PR-handling agent — design
 
-**Date :** 2026-07-28
-**But :** un agent qui amène les PR de `shadok-ai/shadok-ai` jusqu'au merge, tout seul,
-sans jamais casser `main` ni marcher sur les pieds d'un agent vivant.
+**Date:** 2026-07-28
+**Goal:** an agent that brings `shadok-ai/shadok-ai`'s PRs to a merge on its own,
+without ever breaking `main` or stepping on a live agent.
 
-## Contexte
+## Context
 
-- `main` est protégée : check `verify` requis, mode **strict** (la branche doit être
-  à jour avec `main` avant merge), 0 review requise.
-- Beaucoup d'agents shadok-ai travaillent en parallèle dans des worktrees durables.
-  Une branche de PR peut donc être **encore tenue par une session vivante**.
-- L'historique de `main` est en squash-merge, titre `Titre (#N)`.
-- Le gotcha #8 du CLAUDE.md (merges à l'aveugle, marqueurs de conflit dans `main`)
-  est la source #1 de casse passée. Ce design existe pour ne pas la reproduire.
+- `main` is protected: the `verify` check is required, in **strict** mode (the
+  branch must be up to date with `main` before merging), 0 reviews required.
+- Many shadok-ai agents work in parallel in durable worktrees. So a PR's branch
+  may **still be held by a live session**.
+- `main`'s history is squash-merged, with the title `Title (#N)`.
+- Gotcha #8 of CLAUDE.md (blind merges, conflict markers in `main`) is the #1
+  source of past breakage. This design exists so as not to repeat it.
 
-## Forme
+## Shape
 
-Une **boucle dans la session** du cockpit, toutes les **5 minutes**. Pas de cron, pas
-de skill : l'humain voit passer chaque tour et peut interrompre.
+A **loop inside the cockpit's session**, every **5 minutes**. No cron, no skill:
+the human sees every turn go by and can interrupt.
 
-## Approche : côté serveur d'abord, local seulement si nécessaire
+## Approach: server-side first, local only when necessary
 
-Le cas le plus courant est « verte mais en retard sur `main` » (conséquence directe du
-mode strict). On le traite avec `gh pr update-branch`, qui **merge `main` dans la
-branche côté GitHub, sans réécrire l'historique**.
+The most common case is "green but behind `main`" (a direct consequence of strict
+mode). We handle it with `gh pr update-branch`, which **merges `main` into the
+branch on GitHub's side, without rewriting history**.
 
-On ne rebase pas en force-push : cela casserait le checkout local des agents qui
-tiennent encore ces branches. On ne descend en local — dans un worktree **dédié**,
-`~/.shadok-ai/worktrees/pr-bot`, jamais celui d'un autre — que pour un vrai conflit
-ou une réparation de CI.
+We do not rebase and force-push: that would break the local checkout of agents
+still holding those branches. We only go local — in a **dedicated** worktree,
+`~/.shadok-ai/worktrees/pr-bot`, never somebody else's — for a real conflict or a
+CI repair.
 
-Alternatives écartées :
+Rejected alternatives:
 
-- **Tout rebaser en local + force-push.** Uniforme, mais réécrit l'historique sous
-  les agents vivants.
-- **Auto-merge natif GitHub.** Léger, mais il ne sait ni résoudre un conflit ni
-  réparer un rouge, et il court-circuite la relecture rapide.
+- **Rebase everything locally + force-push.** Uniform, but it rewrites history
+  under live agents.
+- **GitHub's native auto-merge.** Lightweight, but it can neither resolve a
+  conflict nor repair a red run, and it short-circuits the quick review.
 
-## Filtre d'entrée
+## Entry filter
 
-Une PR n'est candidate que si **toutes** ces conditions tiennent :
+A PR is a candidate only when **all** these hold:
 
-1. ce n'est pas un brouillon ;
-2. la base est `main` ;
-3. l'auteur est dans la liste blanche : `shadok-ai-dev`, plus les bots
-   (`dependabot[bot]`, `github-actions[bot]`, bots d'app) ;
-4. elle ne porte pas le label `hold`.
+1. it is not a draft;
+2. its base is `main`;
+3. its author is on the allowlist: `shadok-ai-dev`, plus the bots
+   (`dependabot[bot]`, `github-actions[bot]`, app bots);
+4. it does not carry the `hold` label.
 
-Tout le reste — au premier chef **les PR venant d'un fork** — est signalé et jamais
-touché.
+Everything else — first and foremost **PRs coming from a fork** — is reported and
+never touched.
 
-## Décision, par PR
+## The decision, per PR
 
-| État | Action |
+| State | Action |
 |---|---|
-| Verte + à jour | Relecture rapide → squash-merge |
-| Verte, en retard sur `main` | `gh pr update-branch` → la CI est vérifiée au tour suivant |
-| Conflit **simple** | Résolution dans le worktree dédié → push → CI verte → merge |
-| Conflit **gros** | Arrêt, le conflit est montré à l'humain |
-| Rouge **simple** | Correctif → push → CI verte → merge |
-| Rouge **gros** | Arrêt, diagnostic montré à l'humain |
+| Green + up to date | Quick review → squash-merge |
+| Green, behind `main` | `gh pr update-branch` → the CI is checked on the next pass |
+| A **simple** conflict | Resolve in the dedicated worktree → push → green CI → merge |
+| A **large** conflict | Stop, show the conflict to the human |
+| A **simple** red run | Fix → push → green CI → merge |
+| A **large** red run | Stop, show the diagnosis to the human |
 
-### Simple vs gros
+### Simple vs large
 
-C'est **gros** dès que l'une de ces conditions tient :
+It is **large** as soon as one of these holds:
 
-- les deux côtés du conflit modifient la même logique ;
-- plus de 2 fichiers sont touchés par la résolution ;
-- le test rouge révèle un vrai problème de conception, pas un oubli mécanique ;
-- la résolution ne tient pas en une phrase explicable.
+- both sides of the conflict change the same logic;
+- more than 2 files are touched by the resolution;
+- the failing test reveals a real design problem, not a mechanical oversight;
+- the resolution does not fit in one explainable sentence.
 
-**Le doute compte comme gros.** Un conflit *simple* ressemble à : deux ajouts dans
-une même liste, des blocs d'imports, des fonctions indépendantes adjacentes, un
-CHANGELOG. Un rouge *simple* ressemble à : erreur de type, import manquant, coquille,
-assertion de test que la PR a oublié de mettre à jour.
+**Doubt counts as large.** A *simple* conflict looks like: two additions to the
+same list, import blocks, adjacent independent functions, a CHANGELOG. A *simple*
+red run looks like: a type error, a missing import, a typo, a test assertion the
+PR forgot to update.
 
-## Garde-fou « session vivante »
+## The "live session" guardrail
 
-Avant **tout push** sur une branche de PR, interroger `localhost:3789/live` et
-comparer la branche des worktrees actifs à la tête de la PR. Si une session tourne
-sur cette branche : **ne pas pousser**, signaler à l'humain.
+Before **any push** to a PR's branch, query `localhost:3789/live` and compare the
+active worktrees' branches to the PR's head. If a session is running on that
+branch: **do not push**, report it to the human.
 
-Merger reste autorisé dans ce cas — un merge ne modifie pas la branche source.
+Merging stays allowed in that case — a merge does not change the source branch.
 
-## Relecture rapide avant merge
+## Quick review before merging
 
-Scan du diff, ~30 s, à la recherche de :
+A scan of the diff, ~30 s, looking for:
 
-- secrets ou tokens en dur ;
-- fichiers hors du sujet annoncé par la PR ;
-- suppressions massives non justifiées ;
-- marqueurs de conflit résiduels ;
-- traces de debug oubliées ;
-- `package.json` dont la `version` est modifiée — interdit, la CI la calcule ;
-- toute modification de `.github/workflows/` → **toujours demander à l'humain**,
-  même si le reste est propre.
+- hardcoded secrets or tokens;
+- files outside the subject the PR announced;
+- unjustified mass deletions;
+- leftover conflict markers;
+- forgotten debug traces;
+- a `package.json` with a changed `version` — forbidden, the CI computes it;
+- any change to `.github/workflows/` → **always ask the human**, even when the
+  rest is clean.
 
-Si quelque chose cloche, on ne merge pas : on le signale.
+If something looks off, we do not merge: we report it.
 
-## Merge
+## The merge
 
-Squash, titre `Titre (#N)`. La branche distante **n'est pas supprimée** : les
-worktrees sont durables (invariant #5), leur nettoyage reste un geste explicite.
+Squash, title `Title (#N)`. The remote branch is **not deleted**: worktrees are
+durable (invariant #5), and cleaning them up stays an explicit gesture.
 
-## Interdits absolus (sans accord explicite de l'humain)
+## Absolute prohibitions (without the human's explicit agreement)
 
-Merger un fork ou un auteur hors liste blanche ; force-push sur `main` ; modifier les
-workflows ; supprimer une branche ou un worktree ; redémarrer le serveur shadok-ai.
+Merging a fork or an author off the allowlist; force-pushing to `main`; changing
+the workflows; deleting a branch or a worktree; restarting the shadok-ai server.
 
-## Rapport
+## Report
 
-Une ligne par PR traitée à chaque tour. Si rien n'a bougé depuis le tour précédent,
-la boucle reste silencieuse.
+One line per PR handled on each pass. If nothing moved since the previous pass,
+the loop stays silent.

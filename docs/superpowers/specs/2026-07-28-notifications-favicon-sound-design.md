@@ -1,84 +1,80 @@
-# Design — Notifications : badge favicon + badge titre + son
+# Design — Notifications: favicon badge + title badge + sound
 
-Date : 2026-07-28
-Statut : validé (brainstorming)
+Date: 2026-07-28
+Status: agreed (brainstorming)
 
-## Problème
+## Problem
 
-Quand un agent en arrière-plan réclame l'attention (il est **bloqué** sur une
-question/permission) ou a produit une réponse non lue, rien ne le signale au
-niveau du navigateur : l'onglet cockpit peut être caché ou sur un autre canal.
-On veut un signal passif (favicon + titre) et un signal actif (son) pour les cas
-urgents.
+When a background agent asks for attention (it is **blocked** on a
+question/permission) or has produced an unread answer, nothing signals it at the
+browser level: the cockpit tab may be hidden or on another channel. We want a
+passive signal (favicon + title) and an active one (sound) for the urgent cases.
 
-## Portée
+## Scope
 
-Frontend uniquement (`public/index.html`). Aucun changement serveur. Tout se
-branche sur `setTabMood(tab, mood)` — le point de passage unique par lequel tous
-les changements d'état de canal transitent déjà ("working" | "needs-answer" |
-"unread" | null).
+Frontend only (`public/index.html`). No server change. Everything hangs off
+`setTabMood(tab, mood)` — the single crossing point every channel state change
+already goes through ("working" | "needs-answer" | "unread" | null).
 
-## Déclencheurs
+## Triggers
 
-- **needs-answer** = un agent est **bloqué** en attente d'une décision (dialogue
-  TUI : choix, permission, « continuer ? »). Urgent.
-- **unread** = un canal en arrière-plan a **fini** un tour (réponse non lue). Info.
+- **needs-answer** = an agent is **blocked** waiting for a decision (a TUI
+  dialog: a choice, a permission, "continue?"). Urgent.
+- **unread** = a background channel **finished** a turn (an unread answer). Info.
 
-Traitement différencié (choix utilisateur) :
+Differentiated handling (the user's choice):
 
 | Signal | needs-answer | unread |
 |---|---|---|
-| Badge favicon | ✅ point **rouge** | ✅ point **ambre** (si pas de needs-answer) |
-| Badge titre (`● `) | ✅ | ✅ |
-| Son (carillon) | ✅ **si tu ne regardes pas déjà** ce canal | ❌ |
+| Favicon badge | ✅ **red** dot | ✅ **amber** dot (when no needs-answer) |
+| Title badge (`● `) | ✅ | ✅ |
+| Sound (chime) | ✅ **when you are not already watching** that channel | ❌ |
 
-« Tu ne regardes pas déjà » = `document.hidden` (onglet navigateur caché) **ou**
-le canal concerné n'est pas le canal actif (`tab !== active`). Le son ne joue
-qu'à la **transition** vers needs-answer (pas à chaque re-render).
+"You are not already watching" = `document.hidden` (browser tab hidden) **or**
+the channel concerned is not the active one (`tab !== active`). The sound only
+plays on the **transition** into needs-answer (not on every re-render).
 
-## Composants (module `notify`, auto-contenu dans index.html)
+## Components (a `notify` module, self-contained in index.html)
 
-- `faviconSVG(dot)` → data-URI SVG : marque de base (chevron `›` ambre sur fond
-  sombre `#14161d`, coins arrondis) + pastille de couleur `dot` en angle si
-  fournie. Aucun asset binaire.
-- `attentionColor()` → parcourt `tabs` : rouge (`--err` #e07a6a) si un canal est
-  en needs-answer ; sinon ambre (`--amber` #f0a848) si un canal est unread ;
-  sinon `null`. (needs-answer prioritaire.)
-- `refreshBadge()` → pose `favicon.href = faviconSVG(color)` et
-  `document.title = (color ? "● " : "") + titleBase`. `titleBase` est le titre
-  courant hors badge (maintenu par le compteur de tokens existant).
-- Son : Web Audio API, carillon 2 notes (880 Hz → 1320 Hz, enveloppe ~160 ms),
-  pas de fichier. `ding()` respecte le mute. L'AudioContext est **débloqué** au
-  premier geste utilisateur (pointerdown/keydown) — contrainte autoplay des
-  navigateurs.
-- Mute : bouton `🔔`/`🔕` dans le header, préférence persistée
+- `faviconSVG(dot)` → an SVG data-URI: the base mark (an amber `›` chevron on a
+  dark `#14161d` background, rounded corners) + a coloured `dot` in the corner
+  when given. No binary asset.
+- `attentionColor()` → walks `tabs`: red (`--err` #e07a6a) when a channel is in
+  needs-answer; else amber (`--amber` #f0a848) when a channel is unread; else
+  `null`. (needs-answer wins.)
+- `refreshBadge()` → sets `favicon.href = faviconSVG(color)` and
+  `document.title = (color ? "● " : "") + titleBase`. `titleBase` is the current
+  title without the badge (maintained by the existing token counter).
+- Sound: the Web Audio API, a 2-note chime (880 Hz → 1320 Hz, ~160 ms envelope),
+  no file. `ding()` honours the mute. The AudioContext is **unlocked** on the
+  first user gesture (pointerdown/keydown) — the browsers' autoplay constraint.
+- Mute: a `🔔`/`🔕` button in the header, the preference persisted
   (`localStorage["cp.muteNotif"]`).
 
-## Points d'intégration
+## Integration points
 
-- `<head>` : ajout de `<link rel="icon" id="favicon">`.
-- `setTabMood` : mémorise l'état needs-answer précédent, applique les classes,
-  puis (transition vers needs-answer + non regardé) → `ding()`, et dans tous les
-  cas → `refreshBadge()`.
-- Compteur de tokens (met déjà `document.title` à jour) : écrit désormais dans
-  `titleBase` puis appelle `refreshBadge()` (le badge survit aux updates de
-  tokens).
-- Header : bouton mute + handler.
+- `<head>`: add `<link rel="icon" id="favicon">`.
+- `setTabMood`: remembers the previous needs-answer state, applies the classes,
+  then (transition into needs-answer + not being watched) → `ding()`, and in all
+  cases → `refreshBadge()`.
+- The token counter (which already updates `document.title`): now writes into
+  `titleBase` and calls `refreshBadge()` (the badge survives token updates).
+- Header: the mute button + its handler.
 
-## Critères de réussite
+## Success criteria
 
-1. Un canal passe en needs-answer alors que l'onglet est caché / un autre canal
-   est actif → favicon pastille rouge, `● ` dans le titre, **un** carillon.
-2. Un canal passe en unread en arrière-plan → favicon pastille ambre + `● `
-   titre, **pas** de son.
-3. Regarder le canal (le rendre actif / revenir sur l'onglet) efface son état →
-   `refreshBadge()` retire la pastille/titre quand plus rien n'attend.
-4. Mute `🔕` → plus de son ; préférence conservée au reload.
-5. Pas de son si on est déjà en train de regarder le canal qui pose la question.
-6. Le badge coexiste avec le compteur de tokens dans le titre.
-7. Frontend seul ; favicon en SVG data-URI (aucun asset ajouté).
+1. A channel goes needs-answer while the tab is hidden / another channel is
+   active → red dot on the favicon, `● ` in the title, **one** chime.
+2. A channel goes unread in the background → amber dot on the favicon + `● ` in
+   the title, **no** sound.
+3. Watching the channel (making it active / coming back to the tab) clears its
+   state → `refreshBadge()` removes the dot/title once nothing is waiting.
+4. Mute `🔕` → no more sound; the preference survives a reload.
+5. No sound when you are already watching the channel that is asking.
+6. The badge coexists with the token counter in the title.
+7. Frontend only; the favicon as an SVG data-URI (no asset added).
 
-## Hors périmètre (YAGNI)
+## Out of scope (YAGNI)
 
-Notifications natives OS (Notification API), compteur numérique dans le badge,
-sons personnalisables. On garde favicon + titre + un carillon + mute.
+Native OS notifications (the Notification API), a numeric counter in the badge,
+customisable sounds. We keep favicon + title + one chime + mute.

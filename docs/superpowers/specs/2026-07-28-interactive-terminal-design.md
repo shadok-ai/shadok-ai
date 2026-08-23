@@ -1,90 +1,92 @@
-# Design — Terminal TUI interactif dans le web (expérimental)
+# Design — An interactive TUI terminal in the web UI (experimental)
 
-Date : 2026-07-28
-Statut : validé (brainstorming)
+Date: 2026-07-28
+Status: agreed (brainstorming)
 
-## Idée
+## Idea
 
-Aujourd'hui l'engine room montre l'écran TUI **en lecture seule** (`#screen`,
-snapshot `capture-pane` pollé) + quelques boutons de touches. On veut un **vrai
-terminal interactif** : le flux ANSI complet du TUI rendu par xterm.js, et la
-possibilité de **taper dedans** (passthrough clavier complet : flèches, Ctrl,
-Échap, tout). Feature **expérimentale**, derrière un **toggle global**.
+Today the engine room shows the TUI screen **read-only** (`#screen`, a polled
+`capture-pane` snapshot) + a few key buttons. We want a **real interactive
+terminal**: the TUI's complete ANSI stream rendered by xterm.js, and the ability
+to **type into it** (full keyboard passthrough: arrows, Ctrl, Escape,
+everything). An **experimental** feature, behind a **global toggle**.
 
-## Cible
+## Target
 
-Transport **tmux** (le défaut, survit aux restarts) — pour que ce soit utilisable
-dans le vrai cockpit. Data plane dé-risqué en shell : `pipe-pane` streame bien la
-sortie brute, `send-keys -H` injecte l'entrée.
+The **tmux** transport (the default, survives restarts) — so it is usable in the
+real cockpit. The data plane was de-risked in the shell: `pipe-pane` streams the
+raw output fine, `send-keys -H` injects the input.
 
 ## Architecture
 
-### Serveur — `TmuxPilot` (nouvelles méthodes)
+### Server — `TmuxPilot` (new methods)
 
-- `seed(): string` — `tmux capture-pane -e -p` : écran courant AVEC séquences
-  d'échappement (couleurs), pour amorcer le terminal à l'attache (pipe-pane ne
-  capture que le **nouveau** flux).
-- `sendRaw(data: Buffer)` — `tmux send-keys -H <hex…>` : injecte des octets bruts.
+- `seed(): string` — `tmux capture-pane -e -p`: the current screen WITH escape
+  sequences (colours), to prime the terminal on attach (pipe-pane only captures
+  the **new** stream).
+- `sendRaw(data: Buffer)` — `tmux send-keys -H <hex…>`: injects raw bytes.
 - `attachRaw(onData): () => void` — `tmux pipe-pane -O -t <name> 'cat >> <tmpfile>'`
-  puis tail du fichier (poll ~40 ms, offset) → `onData(chunk)`. Retourne un
-  détach (ferme le pipe, supprime le fichier). Un seul consommateur par pilote ;
-  le serveur fan-out vers les clients WS.
-- **Pas de resize de tmux** : le plan de contrôle scrute cet écran (dialogues,
-  fin de tour) — le redimensionner casserait la détection. xterm affiche la
-  taille native du pane.
+  then tails the file (poll ~40 ms, offset) → `onData(chunk)`. Returns a detach
+  (closes the pipe, removes the file). One consumer per pilot; the server fans
+  out to the WS clients.
+- **No tmux resize**: the control plane scrapes that screen (dialogs, end of
+  turn) — resizing it would break the detection. xterm displays the pane's native
+  size.
 
-Réservé au `TmuxPilot` (le transport live). `PtyPilot` : non couvert par le MVP.
+Reserved to `TmuxPilot` (the live transport). `PtyPilot`: not covered by the MVP.
 
-### Serveur — `server.ts` (WS)
+### Server — `server.ts` (WS)
 
-- `term-attach` → si pas déjà attaché : `broadcast(term-data seed)` puis
-  `attachRaw` qui `broadcast(term-data, base64(chunk))`. Refcompte par session.
+- `term-attach` → when not already attached: `broadcast(term-data seed)` then
+  `attachRaw`, which does `broadcast(term-data, base64(chunk))`. Refcounted per
+  session.
 - `term-input {data:base64}` → `sendRaw(Buffer.from(data,'base64'))`.
-- `term-detach` → stoppe `attachRaw` s'il ne reste plus de client attaché.
-- `term-data {data:base64}` (serveur→client).
-- base64 partout : les octets de contrôle ne passent pas en JSON brut.
+- `term-detach` → stops `attachRaw` once no client remains attached.
+- `term-data {data:base64}` (server→client).
+- base64 throughout: control bytes do not survive raw JSON.
 
 ### Client — `public/index.html`
 
-- **Vendoring** `@xterm/xterm` (JS + CSS) servi en `/vendor/xterm.js` /
-  `/vendor/xterm.css` (même mécanisme que `/vendor/marked.js`).
-- **Toggle global expérimental** : case dans le menu ⋯ (« ⚡ Terminal interactif
-  (exp.) »), persistée `localStorage["cp.expTerminal"]`.
-- Quand le toggle est ON et l'engine room ouverte : on instancie un
-  `Terminal` xterm.js dans un conteneur (à la place / au-dessus du `#screen`
-  read-only), on envoie `term-attach`, on `term.write(atob(data))` sur
-  `term-data`, et `term.onData(d => ws.send(term-input, btoa(d)))`. À la
-  fermeture / toggle OFF → `term-detach` + `term.dispose()`.
-- Toggle OFF → comportement actuel inchangé (`#screen` en lecture seule).
+- **Vendoring** `@xterm/xterm` (JS + CSS) served as `/vendor/xterm.js` /
+  `/vendor/xterm.css` (the same mechanism as `/vendor/marked.js`).
+- **A global experimental toggle**: a checkbox in the ⋯ menu ("⚡ Interactive
+  terminal (exp.)"), persisted as `localStorage["cp.expTerminal"]`.
+- When the toggle is ON and the engine room is open: we instantiate an xterm.js
+  `Terminal` in a container (in place of / above the read-only `#screen`), send
+  `term-attach`, `term.write(atob(data))` on `term-data`, and
+  `term.onData(d => ws.send(term-input, btoa(d)))`. On close / toggle OFF →
+  `term-detach` + `term.dispose()`.
+- Toggle OFF → the current behaviour unchanged (read-only `#screen`).
 
-## Sécurité / risques
+## Security / risks
 
-- Écrire en brut dans le pane interfère avec le plan de contrôle du cockpit
-  (détection de tour) — assumé, c'est le mode expérimental.
-- pipe-pane vers un fichier temp (poll 40 ms) : latence de sortie ~40 ms,
-  acceptable pour de la frappe. Fichier supprimé au détach.
-- Le seed (capture-pane -e) peut légèrement décaler le curseur vs le flux ;
-  acceptable pour un proto.
+- Writing raw into the pane interferes with the cockpit's control plane (turn
+  detection) — accepted, that is what the experimental mode is.
+- pipe-pane into a temp file (40 ms poll): ~40 ms output latency, acceptable for
+  typing. The file is removed on detach.
+- The seed (capture-pane -e) can put the cursor slightly out of step with the
+  stream; acceptable for a prototype.
 
-## Vérification
+## Verification
 
-- **Headless (sans navigateur)** : sur un serveur de test **port 3899**, prouver
-  le data plane bout-en-bout — attacher via un client WS de test, vérifier que le
-  seed + le flux arrivent et que `term-input` écrit dans le pane (relu via
-  `capture-pane`). Le rendu xterm.js lui-même : à valider à l'œil (navigateur MCP
-  déconnecté).
-- `npm run build` (TS touché : tmux.ts, server.ts).
+- **Headless (no browser)**: on a test server at **port 3899**, prove the data
+  plane end to end — attach through a test WS client, check the seed + the stream
+  arrive and that `term-input` writes into the pane (read back with
+  `capture-pane`). The xterm.js rendering itself: to be checked by eye (the MCP
+  browser is disconnected).
+- `npm run build` (TS touched: tmux.ts, server.ts).
 
-## Critères de réussite
+## Success criteria
 
-1. Toggle ON → l'engine room affiche un terminal xterm.js vivant, coloré.
-2. La sortie du TUI (frappe, dialogues) s'affiche en continu.
-3. Taper dans le terminal (flèches, lettres, Entrée, Ctrl-C, Échap) agit sur le
+1. Toggle ON → the engine room shows a live, coloured xterm.js terminal.
+2. The TUI's output (typing, dialogs) streams continuously.
+3. Typing in the terminal (arrows, letters, Enter, Ctrl-C, Escape) acts on the
    TUI.
-4. Toggle OFF → écran read-only actuel, aucun flux résiduel (détach propre).
-5. Aucune régression du cockpit toggle OFF.
+4. Toggle OFF → the current read-only screen, with no residual stream (a clean
+   detach).
+5. No regression of the cockpit with the toggle OFF.
 
-## Hors MVP (YAGNI)
+## Out of the MVP (YAGNI)
 
-Resize tmux↔xterm, scrollback, souris, support PtyPilot, multi-onglets simultanés
-en flux brut.
+tmux↔xterm resize, scrollback, mouse, PtyPilot support, several tabs streaming
+raw at once.
