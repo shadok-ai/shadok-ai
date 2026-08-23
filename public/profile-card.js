@@ -107,3 +107,16 @@ export function applyReadonlyPreset(deny, on, preset) {
   for (const x of p) if (!have.has(x)) list.push(x);
   return list;
 }
+
+/**
+ * Rôles pilotés par le SERVEUR, qui n'ont rien à faire dans une liste où l'on
+ * choisit un profil. `Shadok-Tweak` reprend son prompt de
+ * `context/tweak-prompt.md` à chaque boot et possède son propre CTA : l'offrir
+ * comme un rôle ordinaire promet une personnalisation que le prochain
+ * redémarrage effacera.
+ */
+export const MANAGED_PROFILES = ["Shadok-Tweak"];
+
+export function isManagedProfile(name) {
+  return MANAGED_PROFILES.includes(String(name ?? "").trim());
+}
