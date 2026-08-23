@@ -265,9 +265,9 @@ a malformed file. `parseAuthStatus` — logged in, logged out, garbage.
 `parseLoginUrl` — the real OSC 8 fixture captured on 2026-08-08, and a plain
 unwrapped line. `parseLoginOutcome` — the three cases.
 
-**End to end, on a clean vps1 container.** The image auto-updates from npm and is
+**End to end, on a clean container.** The image auto-updates from npm and is
 pinned, so the container must run *this branch*: build here, rsync `dist/` to
-vps1, run a **new** container with empty volumes on a free port (3793) with
+the host, run a **new** container with empty volumes on a free port (3793) with
 `SHADOK_HOST=0.0.0.0` (the only value that works in Docker),
 `SHADOK_VERSION_CHECK_MIN=0` (otherwise the version poll installs the published
 release and exits, and the build under test vanishes without a word), and the

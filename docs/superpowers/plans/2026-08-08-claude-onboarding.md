@@ -1178,7 +1178,7 @@ git commit -m "docs: onboarding and login — architecture map, README, containe
 
 ---
 
-### Task 9: End-to-end on a clean vps1 container
+### Task 9: End-to-end on a clean container
 
 **Files:** none — this is the acceptance gate.
 
@@ -1188,7 +1188,7 @@ The published image auto-updates from npm and is pinned, so the container must r
 
 ```bash
 npm run build
-rsync -a --delete dist/ public/ context/ ubuntu@vps1.alfredclaw.com:/tmp/shadok-onboarding/
+rsync -a --delete dist/ public/ context/ ubuntu@your-host.example.com:/tmp/shadok-onboarding/
 ```
 
 (Adjust the layout so `dist/`, `public/` and `context/` land where the container expects them; read the production `docker run` recorded in the *claudepilot* project memory, file `vps-shadok-ai-container.md`, before inventing one.)
@@ -1198,7 +1198,7 @@ rsync -a --delete dist/ public/ context/ ubuntu@vps1.alfredclaw.com:/tmp/shadok-
 Fresh volumes, a free port, and the three settings that make it safe:
 
 ```bash
-ssh ubuntu@vps1.alfredclaw.com \
+ssh ubuntu@your-host.example.com \
   'docker run -d --name shadok-onboarding-test -p 3793:3793 \
      -e PORT=3793 -e SHADOK_HOST=0.0.0.0 -e SHADOK_VERSION_CHECK_MIN=0 \
      -v shadok-onboarding-data:/root/.shadok-ai \
@@ -1210,7 +1210,7 @@ ssh ubuntu@vps1.alfredclaw.com \
 
 - [ ] **Step 3: The onboarding path**
 
-1. Open `http://vps1.alfredclaw.com:3793` → **the card appears unprompted**.
+1. Open `http://your-host.example.com:3793` → **the card appears unprompted**.
 2. Follow the link, authorise, paste the code → the card closes and names the account.
 3. Create an agent → **it reaches a prompt**, not the first-run screen.
 4. Confirm: **no `docker cp` of `.claude.json` anywhere in the sequence.** Step 4 is the point of the whole feature.
@@ -1227,7 +1227,7 @@ ssh ubuntu@vps1.alfredclaw.com \
 - [ ] **Step 5: Tear down and record**
 
 ```bash
-ssh ubuntu@vps1.alfredclaw.com \
+ssh ubuntu@your-host.example.com \
   'docker rm -f shadok-onboarding-test && docker volume rm shadok-onboarding-data'
 ```
 
