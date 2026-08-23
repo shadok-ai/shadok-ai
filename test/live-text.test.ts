@@ -11,6 +11,26 @@ const FOOTER = [
   "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
 ].join("\n");
 
+test("nouveau bullet ● (Claude Code 2.1): reconnu comme un bloc de texte", () => {
+  // Claude Code 2.1 rend le bloc assistant avec "●" (U+25CF) au lieu de "⏺"
+  // (U+23FA). Sans le reconnaître, extractLiveText renvoyait "" → aperçu live et
+  // préface de question morts sur les versions récentes.
+  const screen = [
+    "● Une réponse en cours d'écriture qui s'étale sur plusieurs",
+    "  lignes enroulées par le terminal.",
+    "✻ Crunched for 2s",
+    FOOTER,
+  ].join("\n");
+  assert.equal(
+    extractLiveText(screen),
+    "Une réponse en cours d'écriture qui s'étale sur plusieurs lignes enroulées par le terminal.",
+  );
+});
+
+test("● tool_use n'est pas du texte (comme ⏺)", () => {
+  assert.equal(extractLiveText(["● Bash(ls -la)", FOOTER].join("\n")), "");
+});
+
 test("bloc unique en cours: dé-wrappe les continuations", () => {
   const screen = [
     "⏺ Voici une introduction en cours d'écriture qui s'étale sur plusieurs",
