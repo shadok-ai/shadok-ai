@@ -11,6 +11,29 @@ const FOOTER = [
   "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
 ].join("\n");
 
+// Claude Code renders the assistant block with "⏺" (U+23FA) up to 2.0 and with
+// "●" (U+25CF) from 2.1. Both must be recognised: matching only one makes
+// extractLiveText return "" on every screen of that version — the web live
+// preview and a question's preface simply go dark, with nothing in the DOM and
+// nothing in the log. These two tests were deleted by a translation pass, which
+// is why CI stayed green while the support was removed.
+test("the ● bullet (Claude Code 2.1+) is recognised as a text block", () => {
+  const screen = [
+    "● An answer being written that wraps across several",
+    "  lines folded by the terminal.",
+    "✻ Crunched for 2s",
+    FOOTER,
+  ].join("\n");
+  assert.equal(
+    extractLiveText(screen),
+    "An answer being written that wraps across several lines folded by the terminal.",
+  );
+});
+
+test("a ● tool_use is not text either (same rule as ⏺)", () => {
+  assert.equal(extractLiveText(["● Bash(ls -la)", FOOTER].join("\n")), "");
+});
+
 test("single in-flight block: unwraps the continuations", () => {
   const screen = [
     "⏺ Here is an introduction being written that spreads over several",
