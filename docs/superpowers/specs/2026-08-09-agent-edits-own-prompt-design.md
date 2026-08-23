@@ -1,106 +1,105 @@
-# Un agent façonne son rôle — jamais ses garde-fous
+# An agent shapes its role — never its guardrails
 
-Date : 2026-08-09
-Statut : validé, implémenté
+Date: 2026-08-09
+Status: agreed, implemented
 
-## La demande, et ce qu'elle a révélé
+## The request, and what it revealed
 
-« Un agent devrait pouvoir modifier le prompt d'un profil — le sien seulement ;
-Shadok-Boss pourrait modifier n'importe lequel, voire en fabriquer. »
+"An agent should be able to change a profile's prompt — its own only;
+Shadok-Boss could change any of them, and even mint new ones."
 
-En instruisant la question, un trou est apparu : **c'était déjà possible, sans
-aucune limite**. `PUT /profiles` accepte `deny`, `allow`, `secrets` et `model` ;
-`requestAuthed` renvoie `true` d'office quand aucun mot de passe GUI n'est
-configuré ; et le garde d'origine laisse délibérément passer les appelants sans
-`Origin` (invariant 11, pour Telegram et pilotctl). Un agent read-only pouvait
-donc faire :
+While investigating the question, a hole appeared: **it was already possible,
+with no limit whatsoever**. `PUT /profiles` accepts `deny`, `allow`, `secrets`
+and `model`; `requestAuthed` returns `true` outright when no GUI password is
+configured; and the origin guard deliberately lets `Origin`-less callers through
+(invariant 11, for Telegram and pilotctl). So a read-only agent could do:
 
 ```bash
 curl -X PUT localhost:3789/profiles -d '{"name":"Shadok-Content","deny":[]}'
 ```
 
-et s'accorder les écritures git. La feature demandée devient donc surtout
-l'occasion de **fermer** cette porte en ouvrant, à sa place, une lucarne.
+and grant itself git writes. So the requested feature is above all the occasion
+to **close** that door while opening a small window in its place.
 
-## Ce qui est réellement garanti — et ce qui ne l'est pas
+## What is actually guaranteed — and what is not
 
-Fermé : le chemin API. Un agent ne peut plus écrire de garde-fou, et la capacité
-disparaît de la surface documentée.
+Closed: the API path. An agent can no longer write a guardrail, and the
+capability disappears from the documented surface.
 
-**Pas** fermé, et il faut le dire : les agents tournent sous le **même
-utilisateur Unix**, avec un shell. `~/.shadok-ai/profiles.json` est en 600 —
-donc écrivable par eux. Un agent déterminé réécrit le fichier et le prochain
-spawn le relit. C'est le modèle que `CLAUDE.md` annonce déjà : « SOFT (same OS
-user, not a sandbox) ». Une vraie frontière demanderait un utilisateur système
-ou un conteneur par agent. Ce design supprime l'accident, pas l'intention.
+**Not** closed, and it has to be said: agents run under the **same Unix user**,
+with a shell. `~/.shadok-ai/profiles.json` is 600 — hence writable by them. A
+determined agent rewrites the file and the next spawn re-reads it. This is the
+model `CLAUDE.md` already announces: "SOFT (same OS user, not a sandbox)". A real
+boundary would take a system user or a container per agent. This design removes
+the accident, not the intent.
 
-## Le partage
+## The split
 
-| | prompt de son profil | prompt d'un autre | créer un rôle | deny/allow/secrets/model |
+| | its profile's prompt | another's prompt | mint a role | deny/allow/secrets/model |
 |---|---|---|---|---|
-| Agent | ✅ | ❌ | ❌ | ❌ |
-| Profil de tête | ✅ | ✅ | ✅ | ❌ |
-| Humain (UI web) | ✅ | ✅ | ✅ | ✅ |
+| An agent | ✅ | ❌ | ❌ | ❌ |
+| The lead profile | ✅ | ✅ | ✅ | ❌ |
+| The human (web UI) | ✅ | ✅ | ✅ | ✅ |
 
-Le profil de tête peut fabriquer un rôle en accès complet : ça ne lui donne rien
-de neuf, il peut déjà spawner un `Shadok-dev`. Ce qu'il ne peut pas, c'est
-**attacher un secret** — la seule capacité qui serait inédite (un rôle qui
-injecte le coffre, donné à n'importe quel agent). Un rôle créé reçoit donc
-`secrets: []` quoi que demande la requête, pas seulement un refus.
+The lead profile can mint a full-access role: that gives it nothing new, it can
+already spawn a `Shadok-dev`. What it cannot do is **attach a secret** — the one
+capability that would be unprecedented (a role injecting the vault, handed to any
+agent). So a created role gets `secrets: []` whatever the request asked for, not
+merely a refusal.
 
-## Le mécanisme
+## The mechanism
 
-**`browserOrigin`** (`src/net.ts`, pur, testé) : vrai uniquement si un `Origin`
-est présent ET same-origin. Volontairement plus strict qu'`originAllowed`, qui
-laisse passer les clients sans `Origin`. Garde le `PUT /profiles`. Vérifié
-qu'aucun appelant non-navigateur n'en avait besoin : seule `index.html` y écrit,
-Telegram et les skills ne font que lire.
+**`browserOrigin`** (`src/net.ts`, pure, tested): true only when an `Origin` is
+present AND same-origin. Deliberately stricter than `originAllowed`, which lets
+`Origin`-less clients through. It guards `PUT /profiles`. Checked that no
+non-browser caller needed it: only `index.html` writes there, Telegram and the
+skills only read.
 
-**`promptEditVerdict`** (`src/profiles.ts`, pur, testé) : toute la politique en
-un seul endroit — nom vide, prompt managé, appelant sans profil, cible d'un
-autre, profil de tête, création.
+**`promptEditVerdict`** (`src/profiles.ts`, pure, tested): the whole policy in
+one place — an empty name, a managed prompt, a caller with no profile, someone
+else's target, the lead profile, creation.
 
-**`PUT /profiles/prompt`** : n'écrit que `systemPrompt`. Une mise à jour repart
-de la valeur stockée (`{ ...existing, systemPrompt }`), donc les garde-fous
-survivent **par construction** et non par vigilance.
+**`PUT /profiles/prompt`**: writes `systemPrompt` only. An update starts from the
+stored value (`{ ...existing, systemPrompt }`), so guardrails survive **by
+construction** rather than by vigilance.
 
-**`SHADOK_SESSION_KEY`** : une clé par session, injectée dans l'env de l'agent.
-L'id de session ne pouvait pas servir d'authentifiant — `/live` publie tous les
-ids, n'importe quel agent pouvait donc se faire passer pour un autre. Sans cette
-clé, « son propre profil » n'aurait été qu'un commentaire.
+**`SHADOK_SESSION_KEY`**: one key per session, injected into the agent's env. The
+session id could not serve as an authenticator — `/live` publishes every id, so
+any agent could pass for another. Without that key, "its own profile" would have
+been just a comment.
 
-**Prompt managé refusé, pas avalé** : `Shadok-Tweak` reprend son prompt de
-`context/tweak-prompt.md` à chaque boot. Accepter l'édition l'aurait fait
-disparaître au prochain redémarrage, sans un mot ; l'erreur renvoie le chemin du
-fichier à éditer.
+**A managed prompt is refused, not swallowed**: `Shadok-Tweak` takes its prompt
+from `context/tweak-prompt.md` at every boot. Accepting the edit would have made
+it vanish at the next restart, without a word; the error returns the path of the
+file to edit instead.
 
-## Surface pour l'agent
+## The surface for the agent
 
-`pilotctl.mjs profile-prompt "<texte>" [--name NOM] [--readonly]`, documentée
-dans la skill avec ses limites, et annoncée dans le prompt du profil de tête —
-sans quoi il ne saurait pas qu'il peut façonner les rôles.
+`pilotctl.mjs profile-prompt "<text>" [--name NAME] [--readonly]`, documented in
+the skill with its limits, and announced in the lead profile's prompt — without
+which it would not know it can shape the roles.
 
-Le prompt est passé à `claude` **au spawn** : un changement prend effet au
-**prochain redémarrage** de l'agent visé, pas en cours de session. La réponse le
-dit explicitement.
+The prompt is passed to `claude` **at spawn**: a change takes effect at the
+target agent's **next restart**, not mid-session. The response says so
+explicitly.
 
-## Vérification
+## Verification
 
-Cœurs purs : 12 assertions (`browserOrigin`, `promptEditVerdict`).
+Pure cores: 12 assertions (`browserOrigin`, `promptEditVerdict`).
 
-Bout en bout contre un serveur réel, avec de **vrais** agents et leurs vraies
-clés — un agent `Shadok-Content` et un `Shadok-Boss` :
+End to end against a real server, with **real** agents and their real keys — a
+`Shadok-Content` agent and a `Shadok-Boss`:
 
-- la clé est bien dans l'env de l'agent ;
-- il réécrit son prompt (200), le changement est en base, `deny` et `secrets`
-  intacts ;
-- refus d'éditer un autre profil, de créer, avec une clé inconnue, ou de toucher
-  un prompt managé — chacun avec son message ;
-- le boss réécrit `Shadok-Support` (garde-fous préservés) et crée un rôle ;
-- le rôle créé est read-only comme demandé et porte `secrets: []` **alors que la
-  requête réclamait `GOOGLE_ADWORDS`** ;
-- un `curl` sans `Origin` sur `PUT /profiles` est refusé, le même avec `Origin`
-  passe.
+- the key is indeed in the agent's env;
+- it rewrites its prompt (200), the change is in the store, `deny` and `secrets`
+  intact;
+- refused when editing another profile, when creating, with an unknown key, or
+  when touching a managed prompt — each with its own message;
+- the boss rewrites `Shadok-Support` (guardrails preserved) and mints a role;
+- the created role is read-only as asked and carries `secrets: []` **although the
+  request demanded `GOOGLE_ADWORDS`**;
+- a `curl` with no `Origin` on `PUT /profiles` is refused, the same one with an
+  `Origin` gets through.
 
-Le vault étant global, il a été sauvegardé avant et restauré à l'identique après
-(vérifié par comparaison octet à octet).
+The vault being global, it was backed up beforehand and restored identically
+afterwards (verified by a byte-for-byte comparison).

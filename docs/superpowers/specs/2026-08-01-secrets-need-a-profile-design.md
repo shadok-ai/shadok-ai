@@ -1,81 +1,79 @@
-# Un secret n'atteint un agent que via un profil
+# A secret only reaches an agent through a profile
 
-Date : 2026-08-01
-Statut : validé, implémenté
+Date: 2026-08-01
+Status: agreed, implemented
 
-## Le symptôme
+## The symptom
 
-« Les agents ont du mal à trouver les variables d'environnement. »
+"Agents struggle to find the environment variables."
 
-## Ce que le diagnostic a montré
+## What the diagnosis showed
 
-Mesuré sur l'installation réelle, pas déduit :
+Measured on the real installation, not inferred:
 
-1. **Le mécanisme d'injection fonctionne.** `TmuxPilot` préfixe la commande par
-   `env KEY=VALUE …` ; sur un agent de prod vivant, `SHADOK_PORT` et
-   `SHADOK_SESSION_ID` sont bien présents dans l'environnement du process.
-2. **Mais rien de réel n'est injecté.** Le vault contenait 5 secrets et
-   **aucun profil n'en référençait un seul** (`secrets: []` partout).
-   `secretsFor(profile?.secrets)` n'injecte que ce qu'un profil référence : les
-   agents n'avaient donc, littéralement, aucun secret. Rien dans l'UI ne disait
-   qu'un secret défini ne sert à rien tant qu'il n'est pas accroché.
-3. **Et le preprompt mentait.** `makePilot` appelait
-   `envVarsNote(Object.keys(env))` **après** avoir ajouté la tuyauterie interne.
-   La note reçue par un agent de prod était donc :
+1. **The injection mechanism works.** `TmuxPilot` prefixes the command with
+   `env KEY=VALUE …`; on a live production agent, `SHADOK_PORT` and
+   `SHADOK_SESSION_ID` are indeed present in the process's environment.
+2. **But nothing real is injected.** The vault held 5 secrets and **no profile
+   referenced a single one** (`secrets: []` everywhere).
+   `secretsFor(profile?.secrets)` only injects what a profile references: so the
+   agents had, literally, no secrets. Nothing in the UI said that a defined
+   secret is useless until it is attached.
+3. **And the preprompt lied.** `makePilot` called
+   `envVarsNote(Object.keys(env))` **after** adding the internal plumbing. So the
+   note a production agent received was:
 
    > `Secrets available to you as environment variables: SHADOK_SESSION_ID, SHADOK_PORT`
 
-   La plomberie était annoncée comme des secrets à ne jamais afficher, et un
-   vrai secret s'y serait retrouvé noyé.
+   The plumbing was announced as secrets never to be displayed, and a real secret
+   would have drowned in there.
 
-4. **Le reload fonctionne** (question posée en même temps) : le pid du process
-   claude change à chaque redémarrage — vérifié trois fois de suite. Une
-   première sonde disait le contraire : c'était un artefact, `ps` tronque les
-   arguments à 120 caractères sur macOS. La commande de démarrage du pane tmux
-   (`#{pane_start_command}`) donne la ligne complète.
+4. **The reload works** (a question asked at the same time): the claude process's
+   pid changes on every restart — verified three times in a row. A first probe
+   said otherwise: that was an artefact, `ps` truncates arguments at 120
+   characters on macOS. The tmux pane's start command
+   (`#{pane_start_command}`) gives the full line.
 
-## Les correctifs
+## The fixes
 
-### 1. La note ne parle que des vrais secrets
+### 1. The note only speaks of real secrets
 
-`makePilot` sépare `secretEnv` (les secrets du vault résolus) de l'env complet,
-et n'annonce que le premier. Les noms sont ceux **résolus** : un profil qui
-référence un secret absent du vault ne fait plus promettre à l'agent une
-variable qui n'existe pas. Aucun secret attaché → **aucune note**, plutôt qu'une
-note trompeuse. Rien ne dépendait de l'annonce des `SHADOK_*` : les skills lisent
-`process.env.SHADOK_PORT` dans leur code.
+`makePilot` separates `secretEnv` (the resolved vault secrets) from the full env,
+and announces only the former. The names are the **resolved** ones: a profile
+referencing a secret absent from the vault no longer makes the agent promise a
+variable that does not exist. No secret attached → **no note**, rather than a
+misleading one. Nothing depended on the `SHADOK_*` announcement: the skills read
+`process.env.SHADOK_PORT` in their own code.
 
-### 2. Une note actionnable
+### 2. An actionable note
 
-L'ancienne formulation (« Read them from the environment ») laissait l'agent
-partir chercher un fichier à charger, puis conclure que le secret manquait. La
-nouvelle coupe court : les variables sont **déjà posées** dans chaque commande
-du Bash tool, il n'y a **pas de `.env`** à charger ni rien à sourcer ; un exemple
-d'usage ; et le test de présence qui ne révèle pas la valeur
-(`[ -n "$NAME" ] && echo set`).
+The old wording ("Read them from the environment") let the agent go hunting for a
+file to load, then conclude the secret was missing. The new one heads that off:
+the variables are **already set** in every Bash tool command, there is **no
+`.env`** to load and nothing to source; one usage example; and the presence test
+that does not reveal the value (`[ -n "$NAME" ] && echo set`).
 
-### 3. La popin Secrets dit à quoi ça sert
+### 3. The Secrets popin says what it is for
 
-Un paragraphe en teinte alerte : un secret n'atteint aucun agent tout seul, il
-faut le cocher dans un profil. Plus un bouton **« Manage profiles → »** qui
-ferme les secrets et ouvre le panneau Profiles — le chaînon manquait.
+A paragraph in the alert tint: a secret reaches no agent on its own, it has to be
+ticked in a profile. Plus a **"Manage profiles →"** button that closes the
+secrets and opens the Profiles panel — the link that was missing.
 
-### 4. Chaque secret orphelin le dit lui-même
+### 4. Every orphan secret says so itself
 
-Un blurb se lit une fois puis devient du décor. Chaque ligne de secret que
-**aucun** profil ne référence porte donc `⚠ no profile uses it`. Sur
-l'installation de référence, les cinq s'allument — c'est exactement le problème.
-`profileCache` est rechargé à l'ouverture de la popin pour que le diagnostic ne
-soit jamais périmé.
+A blurb is read once and then becomes scenery. So every secret row that **no**
+profile references carries `⚠ no profile uses it`. On the reference installation
+all five light up — which is exactly the problem. `profileCache` is reloaded when
+the popin opens so the diagnosis is never stale.
 
 ## Tests
 
-- `profiles.test.ts` : la note dit « already set », cite le Bash tool, mentionne
-  `.env`, et fournit le test de présence.
-- Bout en bout au navigateur : un secret et un profil de test créés, un agent
-  réel lancé, la note lue dans la commande de démarrage du pane tmux — elle ne
-  contient que le secret, pas les `SHADOK_*` — et la valeur du secret est bien
-  dans l'environnement du process. Secret et profil de test supprimés ensuite,
-  vault et profils revérifiés identiques.
-- Popin vérifiée au navigateur : blurb, lien qui ouvre bien les profils, et les
-  cinq avertissements d'orphelin.
+- `profiles.test.ts`: the note says "already set", mentions the Bash tool,
+  mentions `.env`, and supplies the presence test.
+- End to end in the browser: a test secret and a test profile created, a real
+  agent launched, the note read from the tmux pane's start command — it contains
+  only the secret, not the `SHADOK_*` — and the secret's value is indeed in the
+  process's environment. The test secret and profile deleted afterwards, vault
+  and profiles re-checked identical.
+- The popin verified in the browser: the blurb, the link that does open the
+  profiles, and the five orphan warnings.
