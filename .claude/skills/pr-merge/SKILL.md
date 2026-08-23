@@ -25,7 +25,8 @@ A PR is a candidate only when **all four** hold:
 3. author ∈ {`shadok-ai-dev`, bots (`dependabot[bot]`, `github-actions[bot]`, app bots)};
 4. no `hold` label.
 
-`isCrossRepository: true` (a fork) → **never touched**, reported.
+`isCrossRepository: true` (a fork) → **never merged**, reported. One thing the
+loop may do for it: unblock its CI — see "Approving a fork's workflows" below.
 
 ```bash
 gh pr list --state open --limit 50 --json \
@@ -166,10 +167,39 @@ Two traps learned the hard way:
 - **A session loop (`/loop`) is not enough**: it dies with the session, expires
   after 7 days, and wakes the LLM at every slot even with no PR.
 
+## Approving a fork's workflows
+
+A fork PR arrives with **no checks at all**: GitHub holds its workflows until a
+maintainer clicks *Approve workflows to run*. `statusCheckRollup` is empty, and
+`mergeStateStatus` reads `UNSTABLE` — which looks exactly like "CI is running"
+and is not. Left alone the PR sits forever, neither green nor red, so nobody can
+tell a sound delivery from a broken one. Both happened on the same day: one Tweak
+delivery was fine, the next failed its own test.
+
+The loop approves the run when — and only when — **the PR touches no file under
+`.github/`**:
+
+```bash
+sha=$(gh pr view N --json headRefOid --template '{{.headRefOid}}')
+gh api "repos/shadok-ai/shadok-ai/actions/runs?head_sha=$sha" \
+  --jq '.workflow_runs[] | select(.conclusion=="action_required") | .id'
+gh api -X POST repos/shadok-ai/shadok-ai/actions/runs/<id>/approve
+```
+
+That condition is the whole safety of it. Approving runs the fork's code in our
+CI, with the repository's own permissions; a fork that also **edits a workflow**
+could run anything it likes there. A fork that only changes application code is
+confined to what the existing workflows already do — install, build, test.
+
+Approving is not merging. It buys a verdict, nothing else: the PR still comes
+from a fork, so it still waits for a human.
+
 ## Red flags — stop and ask the human
 
 - The PR touches `.github/workflows/` — **always**, even if the rest is clean.
-- The author is off the allowlist, or the PR comes from a fork.
+- The author is off the allowlist, or the PR comes from a fork. (Unblocking a
+  fork's CI is the one exception, and it is bounded — see "Approving a fork's
+  workflows". Merging it never is.)
 - It would take a force-push, deleting a branch or a worktree, or restarting the
   shadok-ai server.
 - The conflict resolution does not explain itself in one sentence.
