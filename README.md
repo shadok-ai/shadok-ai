@@ -392,9 +392,11 @@ An instance follows one of two release streams, picked in the version menu
 - **alpha** — moves on every merge to `main`. Newest work, freshest bugs.
 
 Promoting is deliberate: someone bumps the minor in `package.json` and merges,
-and that merge becomes the new beta for everyone. Nothing else changes — the
-auto-update switch, the reload behaviour and the version numbering are the same
-on both channels.
+and that merge becomes the new beta for everyone.
+
+The numbers tell you which channel a version came from. An alpha carries the
+commit count (`0.3.78`); a promotion is a round `0.4.0`. The auto-update switch
+and the reload behaviour are identical on both.
 
 ```bash
 ```

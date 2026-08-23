@@ -21,9 +21,16 @@ Two channels, chosen per instance:
 | `alpha` | every merge to `main` | instances that want the newest work at once |
 | `beta` (default) | a promotion only | everyone else |
 
-A promotion is a **minor bump**: `0.2.x` → `0.3.y`. The minor number is the
-generation; the patch stays the commit count, so versions remain monotonic and
-a promotion needs no separate release commit.
+A promotion is a **minor bump**: `0.2.x` → `0.3.0`. The minor is the generation,
+and it needs no separate release commit.
+
+The patch differs by channel, and deliberately so. An alpha keeps the commit
+count (`0.3.78`) — that stream moves every merge, so a version that points at a
+commit is exactly what you want. A promotion is `.0`: it is a milestone, and
+numbering it by commit count produces something like `0.3.77`, which reads as
+the 77th patch of a 0.3 series whose earlier patches never existed. The first
+promotion shipped that way before the rule was corrected. Nothing can collide —
+an alpha's patch is a commit count, never 0.
 
 ## Why dist-tags, and why only `npm publish`
 
