@@ -2,40 +2,40 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Afficher un aperçu live (best-effort) du bloc de texte assistant en cours de génération, extrait de l'écran TUI, puis le remplacer par la version markdown autoritative dès que le bloc `.jsonl` arrive.
+**Goal:** Show a best-effort live preview of the assistant text block being generated, extracted from the TUI screen, then replace it with the authoritative markdown version as soon as the `.jsonl` block arrives.
 
-**Architecture:** 100 % client. Une fonction pure `extractLiveText(screen)` (fichier `public/live-text.js`, importable en test node ET chargée par le navigateur) extrait le dernier bloc de texte `⏺` de l'écran. Le client (`public/index.html`), sur chaque message `screen` d'un tour actif, affiche/rafraîchit une bulle provisoire grisée ; sur `stream-text` il la remplace par le rendu markdown ; sur `turn-done`/`dialog` il la jette. Zéro changement serveur.
+**Architecture:** 100 % client-side. A pure `extractLiveText(screen)` function (the `public/live-text.js` file, importable in a node test AND loaded by the browser) extracts the screen's last `⏺` text block. The client (`public/index.html`), on every `screen` message of an active turn, shows/refreshes a greyed provisional bubble; on `stream-text` it replaces it with the markdown rendering; on `turn-done`/`dialog` it drops it. Zero server change.
 
-**Tech Stack:** JavaScript ESM (pas de build côté client), `node:test` via `tsx` (`npm test`), DOM natif (le client n'a aucun framework).
+**Tech Stack:** JavaScript ESM (no client-side build), `node:test` through `tsx` (`npm test`), the native DOM (the client has no framework).
 
 ## Global Constraints
 
-- Pas de build pour le client : `public/*.js` est servi tel quel par `express.static`. Le fichier partagé DOIT être du JS ESM valide (`export function …`) chargeable par le navigateur ET par node/tsx.
-- Tests exécutés par `npm test` = `node --import tsx --test test/*.ts …`. Un test dans `test/*.ts` peut importer un `.js` ESM via `import { x } from "../public/live-text.js"`.
-- Le provisoire est **éphémère** : jamais persisté, jamais compté comme historique. Toujours remplacé (`stream-text`) ou jeté (`turn-done`/`dialog`).
-- Dégradation gracieuse : si l'extraction renvoie `""`, aucune bulle provisoire → comportement actuel inchangé.
-- Le marqueur de bloc de texte assistant dans le TUI est `⏺ ` (U+23FA + espace) en colonne 0 ; les continuations sont indentées de 2 espaces ; un `tool_use` rend `⏺ Nom(args)` ; un résultat d'outil rend `  ⎿ …`.
+- No build for the client: `public/*.js` is served as is by `express.static`. The shared file MUST be valid ESM JS (`export function …`) loadable by the browser AND by node/tsx.
+- Tests run by `npm test` = `node --import tsx --test test/*.ts …`. A test in `test/*.ts` can import an ESM `.js` through `import { x } from "../public/live-text.js"`.
+- The provisional bubble is **ephemeral**: never persisted, never counted as history. Always replaced (`stream-text`) or dropped (`turn-done`/`dialog`).
+- Graceful degradation: when the extraction returns `""`, no provisional bubble → the current behaviour unchanged.
+- The assistant text block's marker in the TUI is `⏺ ` (U+23FA + space) at column 0; continuations are indented by 2 spaces; a `tool_use` renders as `⏺ Name(args)`; a tool result renders as `  ⎿ …`.
 
 ---
 
 ## File Structure
 
-- **Create** `public/live-text.js` — la fonction pure `extractLiveText(screen)`. Une seule responsabilité : parser un écran TUI → dernier bloc de texte assistant dé-wrappé (ou `""`).
-- **Create** `test/live-text.test.ts` — tests unitaires de `extractLiveText` sur fixtures d'écran réelles.
-- **Modify** `public/index.html` — pont module vers `window.extractLiveText`, CSS `.live-preview`, helpers `updateLivePreview`/`clearLivePreview`, et branchements dans les handlers `working`/`screen`/`stream-text`/`turn-done`/`dialog`.
+- **Create** `public/live-text.js` — the pure `extractLiveText(screen)` function. A single responsibility: parse a TUI screen → the last unwrapped assistant text block (or `""`).
+- **Create** `test/live-text.test.ts` — unit tests of `extractLiveText` against real screen fixtures.
+- **Modify** `public/index.html` — the module bridge to `window.extractLiveText`, the `.live-preview` CSS, the `updateLivePreview`/`clearLivePreview` helpers, and the wiring in the `working`/`screen`/`stream-text`/`turn-done`/`dialog` handlers.
 
 ---
 
-## Task 1: Fonction pure `extractLiveText` + tests
+## Task 1: The pure `extractLiveText` function + tests
 
 **Files:**
 - Create: `public/live-text.js`
 - Test: `test/live-text.test.ts`
 
 **Interfaces:**
-- Produces: `export function extractLiveText(screen: string): string` — renvoie le **dernier** bloc de texte assistant visible sur l'écran, dé-wrappé (continuations rejointes par un espace). Renvoie `""` si aucun bloc `⏺ ` de texte, ou si le dernier `⏺ ` est un `tool_use` (`⏺ Nom(…)`).
+- Produces: `export function extractLiveText(screen: string): string` — returns the **last** assistant text block visible on screen, unwrapped (continuations joined by a space). Returns `""` when there is no `⏺ ` text block, or when the last `⏺ ` is a `tool_use` (`⏺ Name(…)`).
 
-- [ ] **Step 1: Écrire le test qui échoue**
+- [ ] **Step 1: Write the failing test**
 
 Create `test/live-text.test.ts`:
 
@@ -44,7 +44,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { extractLiveText } from "../public/live-text.js";
 
-// Bas d'écran commun (séparateurs + box de saisie + footer).
+// Shared bottom of screen (separators + input box + footer).
 const FOOTER = [
   "────────────────────────────────────────────",
   "❯ ",
@@ -53,36 +53,36 @@ const FOOTER = [
   "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents",
 ].join("\n");
 
-test("bloc unique en cours: dé-wrappe les continuations", () => {
+test("single in-flight block: unwraps the continuations", () => {
   const screen = [
-    "⏺ Voici une introduction en cours d'écriture qui s'étale sur plusieurs",
-    "  lignes parce que le terminal les enroule à la largeur, et le texte",
-    "  continue encore un peu ici.",
+    "⏺ Here is an introduction being written that spreads over several",
+    "  lines because the terminal wraps them to the width, and the text",
+    "  carries on a little further here.",
     "✽ Composing… (4s · esc to interrupt)",
     FOOTER,
   ].join("\n");
   assert.equal(
     extractLiveText(screen),
-    "Voici une introduction en cours d'écriture qui s'étale sur plusieurs lignes parce que le terminal les enroule à la largeur, et le texte continue encore un peu ici.",
+    "Here is an introduction being written that spreads over several lines because the terminal wraps them to the width, and the text carries on a little further here.",
   );
 });
 
-test("multi-bloc: renvoie le dernier bloc de texte, pas le premier", () => {
+test("multi-block: returns the last text block, not the first", () => {
   const screen = [
-    "⏺ Premier paragraphe déjà terminé.",
+    "⏺ First paragraph, already finished.",
     "",
     "  Ran 1 shell command",
     "",
-    "⏺ Deuxième paragraphe en cours d'écriture maintenant.",
+    "⏺ Second paragraph being written right now.",
     "✽ Composing… (2s · esc to interrupt)",
     FOOTER,
   ].join("\n");
-  assert.equal(extractLiveText(screen), "Deuxième paragraphe en cours d'écriture maintenant.");
+  assert.equal(extractLiveText(screen), "Second paragraph being written right now.");
 });
 
-test("dernier ⏺ est un tool_use → \"\"", () => {
+test("the last ⏺ is a tool_use → \"\"", () => {
   const screen = [
-    "⏺ Premier paragraphe de texte.",
+    "⏺ A first paragraph of text.",
     "",
     "⏺ Bash(echo A)",
     "  ⎿  A",
@@ -92,51 +92,52 @@ test("dernier ⏺ est un tool_use → \"\"", () => {
   assert.equal(extractLiveText(screen), "");
 });
 
-test("aucun ⏺ → \"\"", () => {
-  const screen = ["❯ un prompt en attente", FOOTER].join("\n");
+test("no ⏺ at all → \"\"", () => {
+  const screen = ["❯ a pending prompt", FOOTER].join("\n");
   assert.equal(extractLiveText(screen), "");
 });
 
-test("continuation stoppe au résultat d'outil ⎿", () => {
+test("a continuation stops at the tool result ⎿", () => {
   const screen = [
-    "⏺ Texte avant un outil.",
-    "  ⎿  sortie d'outil qui ne doit pas être aspirée",
+    "⏺ Text before a tool.",
+    "  ⎿  tool output that must not be sucked in",
     "✽ Composing… (1s · esc to interrupt)",
     FOOTER,
   ].join("\n");
-  assert.equal(extractLiveText(screen), "Texte avant un outil.");
+  assert.equal(extractLiveText(screen), "Text before a tool.");
 });
 ```
 
-- [ ] **Step 2: Lancer le test → échec attendu**
+- [ ] **Step 2: Run the test → failure expected**
 
 Run: `cd .claude/worktrees/live-text-preview && npx tsx --test test/live-text.test.ts`
 Expected: FAIL — `Cannot find module '../public/live-text.js'`.
 
-- [ ] **Step 3: Implémenter `public/live-text.js`**
+- [ ] **Step 3: Implement `public/live-text.js`**
 
 Create `public/live-text.js`:
 
 ```js
-// Extraction best-effort du bloc de texte assistant en cours, depuis l'écran
-// TUI (@xterm/headless) — voir docs/superpowers/specs/2026-07-28-live-text-preview-design.md.
+// Best-effort extraction of the in-flight assistant text block from the TUI
+// screen (@xterm/headless) — see
+// docs/superpowers/specs/2026-07-28-live-text-preview-design.md.
 //
-// Chargé tel quel par le navigateur (ESM) et importé par les tests node/tsx.
-// Le transcript .jsonl n'écrit un bloc de texte que TERMINÉ ; l'écran, lui, le
-// montre au fil de la frappe → seule source token-granulaire.
+// Loaded as is by the browser (ESM) and imported by the node/tsx tests. The
+// .jsonl transcript only writes a text block once FINISHED; the screen shows it
+// as it is typed → the only token-granular source.
 //
-// Un bloc de texte assistant = une ligne "⏺ <prose>" (U+23FA + espace) en
-// colonne 0, suivie de continuations indentées de 2 espaces. Un tool_use rend
-// "⏺ Nom(args)" ; un résultat d'outil rend "  ⎿ …".
+// An assistant text block = a "⏺ <prose>" line (U+23FA + space) at column 0,
+// followed by continuations indented by 2 spaces. A tool_use renders as
+// "⏺ Name(args)"; a tool result renders as "  ⎿ …".
 
 const MARKER = "⏺ "; // "⏺ "
 
-/** Le dernier bloc de texte assistant visible, dé-wrappé ; "" sinon. */
+/** The last visible assistant text block, unwrapped; "" otherwise. */
 export function extractLiveText(screen) {
   if (typeof screen !== "string" || !screen) return "";
   const lines = screen.split("\n");
 
-  // Trouver le dernier marqueur de bloc "⏺ " en colonne 0.
+  // Find the last "⏺ " block marker at column 0.
   let start = -1;
   for (let i = lines.length - 1; i >= 0; i--) {
     if (lines[i].startsWith(MARKER)) { start = i; break; }
@@ -144,53 +145,53 @@ export function extractLiveText(screen) {
   if (start < 0) return "";
 
   const head = lines[start].slice(MARKER.length).trim();
-  // tool_use : "⏺ Nom(...)" — identifiant collé à une parenthèse.
+  // tool_use: "⏺ Name(...)" — an identifier glued to a parenthesis.
   if (/^[\w.-]+\(/.test(head)) return "";
 
   const parts = [head];
   for (let i = start + 1; i < lines.length; i++) {
     const l = lines[i];
-    if (!l.startsWith("  ") || l.trim() === "") break; // spinner/blanc/séparateur/fin
+    if (!l.startsWith("  ") || l.trim() === "") break; // spinner/blank/separator/end
     const t = l.trim();
-    if (t.startsWith("⎿") || /^Ran\b/.test(t)) break; // sous-ligne d'outil
+    if (t.startsWith("⎿") || /^Ran\b/.test(t)) break; // a tool's sub-line
     parts.push(t);
   }
   return parts.join(" ");
 }
 ```
 
-- [ ] **Step 4: Lancer le test → succès attendu**
+- [ ] **Step 4: Run the test → success expected**
 
 Run: `cd .claude/worktrees/live-text-preview && npx tsx --test test/live-text.test.ts`
 Expected: PASS — 5 tests.
 
-- [ ] **Step 5: Vérifier la suite complète**
+- [ ] **Step 5: Check the whole suite**
 
 Run: `cd .claude/worktrees/live-text-preview && npm test`
-Expected: tous les tests passent (les précédents + les 5 nouveaux).
+Expected: every test passes (the previous ones + the 5 new).
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add public/live-text.js test/live-text.test.ts
-git commit -m "Live-text: fonction pure extractLiveText + tests"
+git commit -m "Live-text: the pure extractLiveText function + tests"
 ```
 
 ---
 
-## Task 2: Branchement client (pont, CSS, helpers, handlers)
+## Task 2: Client wiring (bridge, CSS, helpers, handlers)
 
 **Files:**
 - Modify: `public/index.html`
 
 **Interfaces:**
-- Consumes: `window.extractLiveText(screen)` (Task 1, via le pont module).
-- Consumes (existant): `addTurn(tab, role, who, text, extraClass)` ; `tab.transcriptEl` ; `active` ; messages WS `working` / `screen` (avec `msg.working`, `msg.text`) / `stream-text` (`msg.text`) / `turn-done` / `dialog` ; `tab.screenText`.
-- Produces (état sur `tab`) : `tab.livePreviewEl` (élément DOM ou null), `tab.livePreviewBubble` (div.bubble ou null), `tab.lastFinalizedScreenText` (string ou null).
+- Consumes: `window.extractLiveText(screen)` (Task 1, through the module bridge).
+- Consumes (existing): `addTurn(tab, role, who, text, extraClass)`; `tab.transcriptEl`; `active`; the WS messages `working` / `screen` (with `msg.working`, `msg.text`) / `stream-text` (`msg.text`) / `turn-done` / `dialog`; `tab.screenText`.
+- Produces (state on `tab`): `tab.livePreviewEl` (a DOM element or null), `tab.livePreviewBubble` (a div.bubble or null), `tab.lastFinalizedScreenText` (a string or null).
 
-- [ ] **Step 1: Pont module → `window.extractLiveText`**
+- [ ] **Step 1: The module bridge → `window.extractLiveText`**
 
-Dans `public/index.html`, juste après la ligne `<script src="/vendor/marked.js"></script>`, ajouter :
+In `public/index.html`, right after the `<script src="/vendor/marked.js"></script>` line, add:
 
 ```html
 <script type="module">
@@ -199,14 +200,14 @@ Dans `public/index.html`, juste après la ligne `<script src="/vendor/marked.js"
 </script>
 ```
 
-- [ ] **Step 2: CSS de la bulle provisoire**
+- [ ] **Step 2: CSS for the provisional bubble**
 
-Dans le bloc `<style>`, à la suite de la règle `.turn.hist { opacity: 0.8; }`, ajouter :
+In the `<style>` block, after the `.turn.hist { opacity: 0.8; }` rule, add:
 
 ```css
-  /* Aperçu live du bloc en cours, extrait de l'écran TUI (brut, non-markdown).
-     Grisé + pré-formaté pour signaler que c'est provisoire ; remplacé par le
-     bloc .jsonl (stream-text) dès qu'il arrive. */
+  /* Live preview of the in-flight block, extracted from the TUI screen (raw,
+     not markdown). Greyed + pre-formatted to signal it is provisional; replaced
+     by the .jsonl block (stream-text) as soon as that arrives. */
   .turn.claude.live-preview .bubble {
     opacity: 0.55;
     white-space: pre-wrap;
@@ -218,24 +219,25 @@ Dans le bloc `<style>`, à la suite de la règle `.turn.hist { opacity: 0.8; }`,
   }
 ```
 
-- [ ] **Step 3: Helpers `updateLivePreview` / `clearLivePreview`**
+- [ ] **Step 3: The `updateLivePreview` / `clearLivePreview` helpers**
 
-Juste après la fonction `addTurn` (elle se termine par `return bubble; }`), ajouter :
+Right after the `addTurn` function (it ends with `return bubble; }`), add:
 
 ```js
-  /* ── Aperçu live du texte en cours ───────────────────────
-     Le .jsonl n'écrit un bloc de texte que TERMINÉ, donc rien ne s'affiche
-     pendant sa génération. On comble avec le dernier bloc lu sur l'écran TUI
-     (window.extractLiveText), dans une bulle provisoire, remplacée par le rendu
-     markdown autoritatif dès que `stream-text` livre le bloc complet.
+  /* ── Live preview of the in-flight text ──────────────────
+     The .jsonl only writes a text block once FINISHED, so nothing shows while
+     it is generated. We fill the gap with the last block read off the TUI
+     screen (window.extractLiveText), in a provisional bubble, replaced by the
+     authoritative markdown rendering as soon as `stream-text` delivers the
+     complete block.
 
-     Déduplication : après un `stream-text`, l'écran continue de montrer le même
-     bloc `⏺` ; on mémorise sa forme-écran (`lastFinalizedScreenText`) pour ne
-     pas recréer un provisoire qui doublonnerait la bulle déjà finalisée. */
+     Deduplication: after a `stream-text` the screen keeps showing the same `⏺`
+     block; we remember its screen form (`lastFinalizedScreenText`) so as not to
+     recreate a provisional one duplicating the already finalised bubble. */
   function updateLivePreview(tab, screen) {
     if (!window.extractLiveText) return;
     const txt = extractLiveText(screen);
-    if (!txt) return; // trou d'extraction : garder l'existant tel quel
+    if (!txt) return; // an extraction gap: keep the existing one as is
     if (txt === tab.lastFinalizedScreenText) { clearLivePreview(tab); return; }
     if (!tab.livePreviewEl) {
       const turn = document.createElement("div");
@@ -258,18 +260,18 @@ Juste après la fonction `addTurn` (elle se termine par `return bubble; }`), ajo
   }
 ```
 
-- [ ] **Step 4: `working` — réarmer pour le nouveau tour**
+- [ ] **Step 4: `working` — rearm for the new turn**
 
-Dans `case "working":`, à la fin du bloc (après `setTabState(t, "busy", "responding…");`), ajouter :
+In `case "working":`, at the end of the block (after `setTabState(t, "busy", "responding…");`), add:
 
 ```js
         clearLivePreview(t);
         t.lastFinalizedScreenText = null;
 ```
 
-- [ ] **Step 5: `screen` — rafraîchir le provisoire pendant le travail**
+- [ ] **Step 5: `screen` — refresh the provisional bubble while working**
 
-Dans `case "screen":`, la version actuelle est :
+In `case "screen":`, the current version is:
 
 ```js
       case "screen":
@@ -278,7 +280,7 @@ Dans `case "screen":`, la version actuelle est :
         break;
 ```
 
-La remplacer par :
+Replace it with:
 
 ```js
       case "screen":
@@ -288,9 +290,9 @@ La remplacer par :
         break;
 ```
 
-- [ ] **Step 6: `stream-text` — snapshot puis remplacement**
+- [ ] **Step 6: `stream-text` — snapshot then replacement**
 
-Dans `case "stream-text":`, remplacer le corps actuel :
+In `case "stream-text":`, replace the current body:
 
 ```js
         retireChoices(t);
@@ -299,46 +301,46 @@ Dans `case "stream-text":`, remplacer le corps actuel :
         break;
 ```
 
-par :
+with:
 
 ```js
         retireChoices(t);
         closeActivity(t);
-        // Mémoriser la forme-écran du bloc qu'on finalise, pour empêcher un
-        // provisoire doublon tant que l'écran le montre encore, puis remplacer.
+        // Remember the screen form of the block being finalised, to prevent a
+        // duplicate provisional while the screen still shows it, then replace.
         if (window.extractLiveText) t.lastFinalizedScreenText = extractLiveText(t.screenText);
         clearLivePreview(t);
         addTurn(t, "claude", "claude", msg.text, "live");
         break;
 ```
 
-- [ ] **Step 7: `turn-done` et `dialog` — jeter tout provisoire résiduel**
+- [ ] **Step 7: `turn-done` and `dialog` — drop any leftover provisional bubble**
 
-Dans `case "turn-done":`, après `retireChoices(t);`, ajouter `clearLivePreview(t);`.
+In `case "turn-done":`, after `retireChoices(t);`, add `clearLivePreview(t);`.
 
-Dans `case "dialog":`, après `closeActivity(t);`, ajouter `clearLivePreview(t);`.
+In `case "dialog":`, after `closeActivity(t);`, add `clearLivePreview(t);`.
 
 - [ ] **Step 8: `git add` + commit**
 
 ```bash
 git add public/index.html
-git commit -m "Live-text: bulle provisoire côté client (screen → remplacée par .jsonl)"
+git commit -m "Live-text: the client-side provisional bubble (screen → replaced by .jsonl)"
 ```
 
 ---
 
-## Task 3: Vérification manuelle en conditions réelles
+## Task 3: Manual verification under real conditions
 
-**Files:** aucun (vérification).
+**Files:** none (verification).
 
-- [ ] **Step 1: Build (serveur) depuis le worktree**
+- [ ] **Step 1: Build (the server) from the worktree**
 
 Run: `cd .claude/worktrees/live-text-preview && npm run build`
-Expected: `tsc` sans erreur (aucun `.ts` modifié, mais valide que le worktree build).
+Expected: `tsc` with no error (no `.ts` modified, but it validates that the worktree builds).
 
-- [ ] **Step 2: Lancer un serveur de dev depuis le worktree sur un port dédié**
+- [ ] **Step 2: Start a dev server from the worktree on a dedicated port**
 
-Run (token injecté dans le shell, jamais par node) :
+Run (the token injected in the shell, never through node):
 
 ```bash
 cd .claude/worktrees/live-text-preview && \
@@ -347,18 +349,18 @@ PORT=3899 node dist/server.js > /tmp/livetext-dev.log 2>&1 &
 ```
 Expected: `curl -s -o /dev/null -w '%{http_code}' localhost:3899/` → `200` ; `curl -s -o /dev/null -w '%{http_code}' localhost:3899/live-text.js` → `200`.
 
-- [ ] **Step 3: Ouvrir http://localhost:3899, créer un canal, envoyer un prompt**
+- [ ] **Step 3: Open http://localhost:3899, create a channel, send a prompt**
 
-Prompt de test : « écris un paragraphe d'intro de 5-6 phrases, puis lance `echo A`, puis un paragraphe de conclusion de 5-6 phrases ».
+The test prompt: "write a 5-6 sentence intro paragraph, then run `echo A`, then a 5-6 sentence closing paragraph".
 
-Observer : pendant la génération du paragraphe, une **bulle grisée se remplit en direct** (curseur ▍) ; quand le bloc atterrit, elle est **remplacée** par la bulle markdown nette. Aucun doublon ne subsiste après le tour.
+Observe: while the paragraph is generated, a **greyed bubble fills in live** (a ▍ cursor); when the block lands, it is **replaced** by the clean markdown bubble. No duplicate remains after the turn.
 
-- [ ] **Step 4: Arrêter le serveur de dev**
+- [ ] **Step 4: Stop the dev server**
 
 Run: `pkill -f 'PORT=3899' 2>/dev/null; pkill -f 'dist/server.js.*3899' 2>/dev/null || true`
-(Ne PAS toucher au serveur de prod sur 3789.)
+(Do NOT touch the production server on 3789.)
 
-- [ ] **Step 5 (si OK): finaliser la branche**
+- [ ] **Step 5 (if OK): finalise the branch**
 
-La branche `worktree-live-text-preview` est prête à être revue puis landée (build vérifié, tests verts, vérif navigateur OK). Utiliser `superpowers:finishing-a-development-branch` pour décider merge/PR.
+The `worktree-live-text-preview` branch is ready to be reviewed and landed (build verified, tests green, browser check OK). Use `superpowers:finishing-a-development-branch` to decide merge/PR.
 ```
