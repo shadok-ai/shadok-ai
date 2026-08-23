@@ -1,84 +1,83 @@
-# Shadok-Content — le contenu organique, distinct du payant
+# Shadok-Content — organic content, distinct from paid
 
-Date : 2026-08-08
-Statut : validé, implémenté
+Date: 2026-08-08
+Status: agreed, implemented
 
-## La question posée
+## The question asked
 
-« Un profil de création de contenu, orienté SEO — ou est-ce que Shadok-Marketing
-couvre déjà le sujet ? »
+"A content-creation profile, SEO-oriented — or does Shadok-Marketing already
+cover the ground?"
 
-## Pourquoi il ne le couvre pas
+## Why it does not
 
-`Shadok-Marketing` est explicitement **payant** : « paid-marketing & growth »,
-« ad copy », « campaign plans », « conversion-focused ». Le seul recouvrement est
-« audience/keyword research » — et dans ce contexte, ce sont des mots-clés sur
-lesquels **enchérir**.
+`Shadok-Marketing` is explicitly **paid**: "paid-marketing & growth", "ad copy",
+"campaign plans", "conversion-focused". The only overlap is "audience/keyword
+research" — and in that context those are keywords to **bid on**.
 
-Le SEO éditorial est un autre métier : intention de recherche, cluster autour
-d'une requête primaire, structure Hn, title/meta, maillage interne. Et surtout un
-livrable différent : un **article**, pas une campagne.
+Editorial SEO is another job: search intent, a cluster around a primary query, Hn
+structure, title/meta, internal linking. And above all a different deliverable:
+an **article**, not a campaign.
 
-Élargir `Shadok-Marketing` pour couvrir les deux donnerait un profil obèse dont
-le prompt essaie d'être à la fois rédacteur publicitaire et éditeur SEO —
-mauvais aux deux bouts. Et le boss, qui choisit un rôle au moment de déléguer,
-n'aurait plus de frontière nette. D'où deux profils frères : **Marketing achète
-l'audience, Content la gagne**, et chaque prompt nomme l'autre pour que la
-frontière soit lisible depuis l'intérieur.
+Widening `Shadok-Marketing` to cover both would give one bloated profile whose
+prompt tries to be an ad copywriter and an SEO editor at once — bad at both ends.
+And the boss, which picks a role at the moment of delegating, would no longer
+have a clean boundary. Hence two sibling profiles: **Marketing buys the audience,
+Content earns it**, and each prompt names the other so the boundary is legible
+from the inside.
 
-## Le profil
+## The profile
 
-Inséré après `Shadok-Marketing` — ce sont des frères, ils se lisent ensemble.
+Inserted after `Shadok-Marketing` — they are siblings, they read together.
 
-- `deny: READONLY_DENY`, comme Marketing et Support.
-- `secrets: []`, pas de `model` forcé — cohérent avec les autres ; l'utilisateur
-  attache ce qu'il veut depuis le panneau Profiles.
+- `deny: READONLY_DENY`, like Marketing and Support.
+- `secrets: []`, no forced `model` — consistent with the others; the user
+  attaches what they want from the Profiles panel.
 
-Le prompt tient en cinq blocs : partir du produit et pas du mot-clé ; travailler
-l'intention (qui cherche, ce qu'il sait déjà, ce qu'il doit pouvoir faire
-ensuite) ; livrer un fichier Markdown avec front matter ; ce qu'il a le droit de
-faire ; et l'interdiction du remplissage.
+The prompt fits in five blocks: start from the product and not from the keyword;
+work the intent (who is searching, what they already know, what they must be able
+to do next); deliver a Markdown file with front matter; what it is allowed to do;
+and the ban on filler.
 
-### Le piège corrigé : read-only ≠ ne rien écrire
+### The trap fixed: read-only ≠ write nothing
 
-`READONLY_DENY` ne bloque que les écritures **git**, jamais `Write`/`Edit`. Or la
-formulation de `Shadok-Marketing` — « You have READ-ONLY access to the code —
-git writes are blocked, never modify or commit it » — suffit à faire refuser à un
-agent la création du moindre fichier. Pour un profil dont le **livrable est un
-fichier**, ce serait fatal. Le prompt dit donc explicitement : *You MAY write and
-edit files: your drafts are the deliverable* ; ce qui est interdit, c'est de
-toucher au code du produit, et git reste bloqué pour que la revue reste humaine.
+`READONLY_DENY` blocks **git** writes only, never `Write`/`Edit`. But
+`Shadok-Marketing`'s wording — "You have READ-ONLY access to the code — git
+writes are blocked, never modify or commit it" — is enough to make an agent
+refuse to create any file at all. For a profile whose **deliverable is a file**,
+that would be fatal. So the prompt says explicitly: *You MAY write and edit
+files: your drafts are the deliverable*; what is forbidden is touching the
+product's code, and git stays blocked so the review stays human.
 
-### Les secrets, sans les coder en dur
+### Secrets, without hardcoding them
 
-Une phrase conditionnelle : si des identifiants Search Console / analytics sont
-disponibles **en variables d'environnement**, s'en servir pour choisir les sujets
-sur des requêtes réelles plutôt qu'au jugé. Rien n'est codé en dur — le profil
-est global et réutilisable sur n'importe quel dépôt, et c'est `envVarsNote` qui
-annonce dynamiquement ce qui est réellement injecté.
+One conditional sentence: if Search Console / analytics credentials are available
+**as environment variables**, use them to choose topics from real queries rather
+than by guesswork. Nothing is hardcoded — the profile is global and reusable on
+any repo, and it is `envVarsNote` that dynamically announces what is actually
+injected.
 
-## Le boss doit connaître le nouveau rôle
+## The boss must know the new role
 
-`Shadok-Boss` énumère les rôles délégables ; sans mise à jour, il n'aurait jamais
-délégué à `Shadok-Content`. La ligne devient : dev pour le code, Marketing pour
-l'acquisition payante et l'ad copy, Content pour les articles et l'organique,
-Support pour le user-facing. Un test verrouille le fait que tout rôle cité par le
-boss existe bien dans `DEFAULT_PROFILES`.
+`Shadok-Boss` enumerates the delegable roles; without an update it would never
+have delegated to `Shadok-Content`. The line becomes: dev for code, Marketing for
+paid acquisition and ad copy, Content for articles and organic work, Support for
+user-facing answers. A test locks down that every role the boss names does exist
+in `DEFAULT_PROFILES`.
 
-## Livraison
+## Delivery
 
-`seedDefaultProfiles` ne sème que si le fichier est vide : le profil est donc
-aussi créé dans le vault en service via `PUT /profiles`, et le prompt du boss y
-est rafraîchi. Vérifié au préalable que le boss en service n'avait **aucune**
-personnalisation (prompt identique à celui du code, pas de secret ni de modèle
-attaché) — sinon il aurait fallu demander avant d'écraser.
+`seedDefaultProfiles` only seeds when the file is empty: so the profile is also
+created in the running vault through `PUT /profiles`, and the boss's prompt is
+refreshed there. Checked beforehand that the running boss had **no**
+customisation (a prompt identical to the code's, no secret or model attached) —
+otherwise it would have needed asking before overwriting.
 
 ## Tests
 
-- `profiles.test.ts` : Content est read-only ; son prompt dit qu'il **peut**
-  écrire des fichiers, que git est bloqué, nomme la frontière avec Marketing, et
-  décrit le livrable (Markdown + front matter). Le boss cite les quatre rôles, et
-  chacun existe.
-- Au navigateur : la carte apparaît entre Marketing et Support, blurb
-  « the organic-content & SEO agent. », badge `🔒 read-only`, et le nom par défaut
-  du nouvel agent suit la carte (`Shadok-Content`). Zéro erreur console.
+- `profiles.test.ts`: Content is read-only; its prompt says it **may** write
+  files, that git is blocked, names the boundary with Marketing, and describes the
+  deliverable (Markdown + front matter). The boss names the four roles, and each
+  one exists.
+- In the browser: the card appears between Marketing and Support, blurb "the
+  organic-content & SEO agent.", badge `🔒 read-only`, and the new agent's default
+  name follows the card (`Shadok-Content`). Zero console errors.
