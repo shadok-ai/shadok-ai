@@ -2,44 +2,44 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Remplacer, pour chaque fenêtre d'usage (5h / 7d), les deux barres empilées (usage + pace) par une seule barre divergente centrée sur « au pace », vert à gauche (sous le pace) → ambre au centre → rouge à droite (au-dessus).
+**Goal:** For each usage window (5h / 7d), replace the two stacked bars (usage + pace) with a single diverging bar centred on "on pace": green to the left (below pace) → amber in the centre → red to the right (above).
 
-**Architecture:** Changement purement frontend dans `public/index.html`. On touche le CSS des jauges `.quota`, le markup des deux gauges, et la fonction JS `paintGauge`. Aucune donnée nouvelle : `/usage` sert déjà `usedPercentage`, `idealPacePct`, `ratioPct`, `resetsAt` par fenêtre. La position du remplissage est dérivée de `ratioPct` (centre = ratio 100), la couleur interpolée via `color-mix`.
+**Architecture:** A purely frontend change in `public/index.html`. We touch the `.quota` gauges' CSS, the markup of the two gauges, and the `paintGauge` JS function. No new data: `/usage` already serves `usedPercentage`, `idealPacePct`, `ratioPct` and `resetsAt` per window. The fill's position derives from `ratioPct` (centre = ratio 100), the colour is interpolated through `color-mix`.
 
-**Tech Stack:** HTML/CSS/JS vanilla (pas de build front, pas de framework de test JS). Serveur TypeScript ESM (non touché). Vérification = navigateur.
+**Tech Stack:** Vanilla HTML/CSS/JS (no front-end build, no JS test framework). A TypeScript ESM server (untouched). Verification = the browser.
 
 ## Global Constraints
 
-- Frontend uniquement : ne modifier que `public/index.html`. Aucun changement serveur (`src/*.ts`), ni du protocole `/usage`.
-- Réutiliser les variables CSS de thème existantes `--ok` (vert), `--amber`, `--err` (rouge), `--bg-inset`, `--line`, `--text-dim` — theme-aware (clair + sombre).
-- Le centre de chaque barre = ratio 100 % (au pace). Échelle symétrique linéaire : `pos = clamp((ratioPct - 100) / 100, -1, +1)`. Bord gauche = ratio 0, bord droit = ratio ≥ 200.
-- Information redondante position + couleur (accessibilité daltonien) : sous le pace = gauche, au-dessus = droite, indépendamment de la couleur.
-- `w === null` (pas de données) → barre vide, chiffre `—`, tooltip = libellé de base. Pas de régression sur cet état.
-- Ne PAS redémarrer le serveur soi-même (invariant #7 du CLAUDE.md) : la vérification navigateur se fait après un restart déclenché par l'humain.
+- Frontend only: modify `public/index.html` and nothing else. No server change (`src/*.ts`), and none to the `/usage` protocol.
+- Reuse the existing theme CSS variables `--ok` (green), `--amber`, `--err` (red), `--bg-inset`, `--line`, `--text-dim` — theme-aware (light + dark).
+- The centre of each bar = ratio 100 % (on pace). A symmetric linear scale: `pos = clamp((ratioPct - 100) / 100, -1, +1)`. The left edge = ratio 0, the right edge = ratio ≥ 200.
+- Redundant information, position + colour (colour-blind accessibility): below pace = left, above = right, independently of the colour.
+- `w === null` (no data) → an empty bar, the figure `—`, tooltip = the base label. No regression on that state.
+- Do NOT restart the server yourself (invariant #7 of CLAUDE.md): the browser check happens after a restart triggered by the human.
 
 ---
 
 ### Task 1: Barre divergente (CSS + markup + rendu JS)
 
-Tout tient dans `public/index.html` et change ensemble (structure, style, rendu). Une seule tâche cohérente.
+Everything lives in `public/index.html` and changes together (structure, style, rendering). A single coherent task.
 
 **Files:**
 - Modify: `public/index.html` — bloc CSS `.quota` (~lignes 84-113), markup `#quota5h`/`#quota7d` (~lignes 803-814), fonction `paintGauge` (~lignes 2631-2660).
 
 **Interfaces:**
-- Consomme : l'objet fenêtre servi par `/usage` — `{ usedPercentage:number, idealPacePct:number|null, ratioPct:number|null, resetsAt:number|null }`. Helper existant `fmtReset(resetsAt)` (retourne "" si null).
-- Produit : `paintGauge(el, w)` (signature inchangée, appelée par `refreshUsage`) + nouveau helper `paceColor(ratio:number): string`.
+- Consumes: the window object served by `/usage` — `{ usedPercentage:number, idealPacePct:number|null, ratioPct:number|null, resetsAt:number|null }`. The existing `fmtReset(resetsAt)` helper (returns "" when null).
+- Produces: `paintGauge(el, w)` (signature unchanged, called by `refreshUsage`) + a new `paceColor(ratio:number): string` helper.
 
-- [ ] **Step 1 : Remplacer le CSS des jauges `.quota`**
+- [ ] **Step 1: Replace the `.quota` gauges' CSS**
 
-Dans `public/index.html`, remplacer le bloc CSS actuel (le commentaire « Quota gauges … » jusqu'à la fin de `.quota .qpct`, ~lignes 84-113) par :
+In `public/index.html`, replace the current CSS block (the "Quota gauges …" comment through the end of `.quota .qpct`, ~lines 84-113) with:
 
 ```css
   /* Quota gauges (5h / 7d subscription usage).
-     Une barre divergente par fenêtre : le remplissage part du centre
-     (= « au pace », ratio 100 %), vert vers la gauche quand on est SOUS le
-     pace, rouge vers la droite quand on est AU-DESSUS. Position ET couleur
-     portent l'info (accessibilité). */
+     One diverging bar per window: the fill starts from the centre (= "on
+     pace", ratio 100 %), green towards the left when we are BELOW pace, red
+     towards the right when we are ABOVE. Position AND colour carry the
+     information (accessibility). */
   .quota { min-width: 92px; }
   .quota .meter {
     position: relative;
@@ -50,7 +50,7 @@ Dans `public/index.html`, remplacer le bloc CSS actuel (le commentaire « Quota 
     overflow: hidden;
     margin: 2px 0;
   }
-  /* Tick central « au pace ». */
+  /* The central "on pace" tick. */
   .quota .meter::before {
     content: "";
     position: absolute;
@@ -62,7 +62,7 @@ Dans `public/index.html`, remplacer le bloc CSS actuel (le commentaire « Quota 
     opacity: 0.55;
     z-index: 1;
   }
-  /* Remplissage : left + width + background-color posés en inline par paintGauge. */
+  /* The fill: left + width + background-color set inline by paintGauge. */
   .quota .fill {
     position: absolute;
     top: 0; bottom: 0;
@@ -79,11 +79,11 @@ Dans `public/index.html`, remplacer le bloc CSS actuel (le commentaire « Quota 
   }
 ```
 
-Note : on supprime les règles `.quota .meter.pace .fill`, `.quota.warn .meter.usage .fill`, `.quota.crit .meter.usage .fill` (la couleur devient continue, calculée en JS).
+Note: we remove the `.quota .meter.pace .fill`, `.quota.warn .meter.usage .fill` and `.quota.crit .meter.usage .fill` rules (the colour becomes continuous, computed in JS).
 
-- [ ] **Step 2 : Remplacer le markup des deux gauges**
+- [ ] **Step 2: Replace the two gauges' markup**
 
-Remplacer (~lignes 803-814) les deux blocs à deux `.meter` par un seul `.meter` chacun :
+Replace (~lines 803-814) the two blocks with two `.meter` each by a single `.meter` each:
 
 ```html
   <div class="gauge quota" id="quota5h" title="5-hour rolling limit">
@@ -98,19 +98,19 @@ Remplacer (~lignes 803-814) les deux blocs à deux `.meter` par un seul `.meter`
   </div>
 ```
 
-- [ ] **Step 3 : Réécrire `paintGauge` + ajouter `paceColor`**
+- [ ] **Step 3: Rewrite `paintGauge` + add `paceColor`**
 
-Remplacer la fonction `paintGauge` actuelle (~lignes 2631-2660) par :
+Replace the current `paintGauge` function (~lines 2631-2660) with:
 
 ```js
-  /** Couleur du remplissage : dégradé continu vert → ambre → rouge selon le
-   *  ratio usage/pace (0 → 100 → 200). L'ambre entoure le centre « au pace ». */
+  /** The fill's colour: a continuous green → amber → red gradient following the
+   *  usage/pace ratio (0 → 100 → 200). Amber surrounds the "on pace" centre. */
   function paceColor(ratio) {
     if (ratio <= 100) {
-      const t = Math.round(Math.max(0, ratio));            // 0 → vert, 100 → ambre
+      const t = Math.round(Math.max(0, ratio));            // 0 → green, 100 → amber
       return "color-mix(in oklab, var(--ok), var(--amber) " + t + "%)";
     }
-    const t = Math.round(Math.min(100, ratio - 100));      // 100 → ambre, 200 → rouge
+    const t = Math.round(Math.min(100, ratio - 100));      // 100 → amber, 200 → red
     return "color-mix(in oklab, var(--amber), var(--err) " + t + "%)";
   }
 
@@ -129,16 +129,16 @@ Remplacer la fonction `paintGauge` actuelle (~lignes 2631-2660) par :
     const used = Math.round(w.usedPercentage);
     const pace = w.idealPacePct == null ? null : Math.round(w.idealPacePct);
     const ratio = w.ratioPct == null ? null : Math.round(w.ratioPct);
-    // Sans ratio (pas de pace calculable), on centre : barre vide + tick seul.
+    // With no ratio (no computable pace) we centre: an empty bar + the tick alone.
     const r = ratio == null ? 100 : ratio;
-    // Ratio → position [-1, +1] ; 50 % (centre) = au pace (ratio 100).
+    // Ratio → position [-1, +1]; 50 % (the centre) = on pace (ratio 100).
     const pos = Math.max(-1, Math.min(1, (r - 100) / 100));
-    const half = Math.abs(pos) * 50;                       // % de la demi-largeur
+    const half = Math.abs(pos) * 50;                       // % of the half width
     fill.style.left = (pos < 0 ? 50 - half : 50) + "%";
     fill.style.width = half + "%";
     fill.style.background = paceColor(r);
     pct.textContent = used + "%";
-    // fmtReset renvoie "" si resetsAt est null (le séparateur part avec).
+    // fmtReset returns "" when resetsAt is null (the separator goes with it).
     const reset = fmtReset(w.resetsAt);
     el.title = base + " — " + used + "% used"
       + (pace === null ? "" : ", ideal pace " + pace + "% (" + ratio + "% of pace)")
@@ -146,44 +146,44 @@ Remplacer la fonction `paintGauge` actuelle (~lignes 2631-2660) par :
   }
 ```
 
-- [ ] **Step 4 : Build (vérifie qu'on n'a rien cassé)**
+- [ ] **Step 4: Build (checks we broke nothing)**
 
 Run : `cd ~/projects/shadok-ai && npm run build`
-Expected : compile sans erreur (aucun `.ts` touché, mais on confirme que le repo build toujours).
+Expected: compiles with no error (no `.ts` touched, but we confirm the repo still builds).
 
 - [ ] **Step 5 : Commit**
 
 ```bash
 cd ~/projects/shadok-ai
 git add public/index.html
-git commit -m "Jauges d'usage : barre de pace divergente (vert/ambre/rouge, centrée au pace)"
+git commit -m "Usage gauges: a diverging pace bar (green/amber/red, centred on pace)"
 ```
 
-- [ ] **Step 6 : Vérification navigateur (après restart déclenché par l'humain)**
+- [ ] **Step 6: Browser check (after a restart triggered by the human)**
 
-Demander à l'humain de redémarrer le serveur (commande du CLAUDE.md), puis ouvrir http://localhost:3789 et vérifier :
+Ask the human to restart the server (the CLAUDE.md command), then open http://localhost:3789 and check:
 
-1. Deux barres (5h, 7d), chacune **une seule** barre avec un tick central.
-2. Avec les valeurs actuelles (5h ratio ~21 %, 7d ratio ~27 %) : remplissage **vert à gauche** du centre dans les deux cas (bien sous le pace).
+1. Two gauges (5h, 7d), each **a single** bar with a central tick.
+2. With the current values (5h ratio ~21 %, 7d ratio ~27 %): a **green fill to the left** of the centre in both cases (well below pace).
 3. Survol → tooltip `… — X% used, ideal pace Y% (Z% of pace) · resets in …`.
-4. Chiffre compact = `% utilisé` à droite de la barre.
-5. Bascule thème clair/sombre : couleurs et tick restent lisibles.
-6. (Optionnel, sanity du côté droit) : dans la console, `paceColor(150)` → mix ambre→rouge à 50 %, `paceColor(30)` → mix vert→ambre à 30 %.
+4. The compact figure = `% used` to the right of the bar.
+5. Switching light/dark theme: colours and tick stay readable.
+6. (Optional, a sanity check of the right-hand side): in the console, `paceColor(150)` → an amber→red mix at 50 %, `paceColor(30)` → a green→amber mix at 30 %.
 
 ---
 
 ## Self-Review
 
 **1. Spec coverage :**
-- Barre divergente unique par fenêtre → Steps 1-3 ✓
-- Centre = ratio 100, échelle symétrique `clamp((ratio-100)/100)` → Step 3 (`pos`) ✓
-- Dégradé vert→ambre→rouge fonction du ratio → Step 3 (`paceColor`) ✓
+- A single diverging bar per window → Steps 1-3 ✓
+- Centre = ratio 100, a symmetric scale `clamp((ratio-100)/100)` → Step 3 (`pos`) ✓
+- A green→amber→red gradient as a function of the ratio → Step 3 (`paceColor`) ✓
 - Tick central → Step 1 (`.meter::before`) ✓
-- Chiffre compact `%used` + tooltip précis → Step 3 ✓
-- Theme-aware → variables CSS, Step 1 ✓ ; vérifié Step 6 ✓
-- État `null` → Step 3 (branche `if (!w)`) ✓
-- Build OK + vérif navigateur → Steps 4, 6 ✓
+- The compact `%used` figure + a precise tooltip → Step 3 ✓
+- Theme-aware → CSS variables, Step 1 ✓; verified in Step 6 ✓
+- The `null` state → Step 3 (the `if (!w)` branch) ✓
+- Build OK + browser check → Steps 4, 6 ✓
 
-**2. Placeholder scan :** aucun TBD/TODO ; tout le code est fourni intégralement.
+**2. Placeholder scan:** no TBD/TODO; all the code is supplied in full.
 
-**3. Type consistency :** `paintGauge(el, w)` signature inchangée (appelée par `refreshUsage`, lignes 2665-2666, non modifiées) ; `paceColor(ratio)` défini et utilisé dans `paintGauge` avec le même nom ; `fmtReset` réutilisé tel quel.
+**3. Type consistency:** `paintGauge(el, w)`'s signature is unchanged (called by `refreshUsage`, lines 2665-2666, not modified); `paceColor(ratio)` is defined and used in `paintGauge` under the same name; `fmtReset` is reused as is.

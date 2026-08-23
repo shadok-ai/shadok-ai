@@ -1,36 +1,36 @@
-# Touche Échap → esc à la session — Implementation Plan
+# Escape key → esc to the session — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** La touche Échap du clavier, dans le chat, envoie esc à la session active (comme le bouton Esc de l'engine room), avec des garde-fous pour les overlays/panneaux et les dialogues.
+**Goal:** The keyboard's Escape key, while in the chat, sends esc to the active session (like the engine room's Esc button), with guardrails for the overlays/panels and for dialogs.
 
-**Architecture:** Un unique `document.addEventListener("keydown", …)` dans `public/index.html`, avec une précédence : fermer un overlay/panneau ouvert, sinon ignorer si un dialogue clickable est en attente, sinon envoyer `{type:"key", key:"escape"}` sur `active.ws`. Réutilise le message WS déjà émis par les boutons de l'engine room.
+**Architecture:** A single `document.addEventListener("keydown", …)` in `public/index.html`, with a precedence: close an open overlay/panel, else do nothing when a clickable dialog is pending, else send `{type:"key", key:"escape"}` on `active.ws`. Reuses the WS message the engine room's buttons already emit.
 
-**Tech Stack:** HTML/CSS/JS vanilla (pas de build front, pas de framework de test JS). Vérification = navigateur.
+**Tech Stack:** Vanilla HTML/CSS/JS (no front-end build, no JS test framework). Verification = the browser.
 
 ## Global Constraints
 
-- Frontend uniquement : ne modifier que `public/index.html`. Aucun changement serveur ni de protocole.
-- Réutiliser le message existant `active.ws.send(JSON.stringify({ type: "key", key: "escape" }))` (identique aux boutons `.keys button[data-key]`, ~ligne 2517).
-- `active` = onglet courant, avec `.ws` (WebSocket), `.status` ("setup"|"ready"|"busy"|"connecting"|"dead"), `.dialogBubble` (non-null ⇒ dialogue clickable en attente ; remis à null par `retireChoices`).
-- Ids existants : `#secretsOverlay` (modal, prop `hidden`), `#profilesOverlay` (modal, `hidden`), `#diffpanel` (aside, classe `.open`), `#machine` (engine room, `.open`).
-- L'engine room (`#machine.open`) n'est **pas** fermé par Échap : Échap y envoie esc.
-- L'inline-edit fait déjà `e.stopPropagation()` ⇒ ne pas le gérer, il n'atteint pas le handler document.
+- Frontend only: modify `public/index.html` and nothing else. No server or protocol change.
+- Reuse the existing message `active.ws.send(JSON.stringify({ type: "key", key: "escape" }))` (identical to the `.keys button[data-key]` buttons, ~line 2517).
+- `active` = the current tab, with `.ws` (WebSocket), `.status` ("setup"|"ready"|"busy"|"connecting"|"dead"), `.dialogBubble` (non-null ⇒ a clickable dialog is pending; reset to null by `retireChoices`).
+- Existing ids: `#secretsOverlay` (modal, `hidden` prop), `#profilesOverlay` (modal, `hidden`), `#diffpanel` (aside, `.open` class), `#machine` (engine room, `.open`).
+- The engine room (`#machine.open`) is **not** closed by Escape: Escape sends esc there.
+- The inline edit already calls `e.stopPropagation()` ⇒ do not handle it, it never reaches the document handler.
 
 ---
 
-### Task 1: Handler Échap au niveau document
+### Task 1: A document-level Escape handler
 
 **Files:**
-- Modify: `public/index.html` — insérer après le bloc `.keys button[data-key]` forEach (après la ligne `);` ~2519, avant `$("settleBtn")…`).
+- Modify: `public/index.html` — insert after the `.keys button[data-key]` forEach block (after the `);` line ~2519, before `$("settleBtn")…`).
 
 **Interfaces:**
-- Consomme : `$()` (helper `document.getElementById`), `active` (onglet courant global), `active.ws/.status/.dialogBubble`.
-- Produit : aucun symbole nouveau (un listener anonyme).
+- Consumes: `$()` (the `document.getElementById` helper), `active` (the global current tab), `active.ws/.status/.dialogBubble`.
+- Produces: no new symbol (an anonymous listener).
 
-- [ ] **Step 1 : Insérer le handler**
+- [ ] **Step 1: Insert the handler**
 
-Dans `public/index.html`, juste après :
+In `public/index.html`, right after:
 
 ```js
   document.querySelectorAll(".keys button[data-key]").forEach((b) =>
@@ -40,24 +40,24 @@ Dans `public/index.html`, juste après :
   );
 ```
 
-ajouter :
+add:
 
 ```js
-  // La touche Échap envoie esc à la session active (comme le bouton Esc de
-  // l'engine room). Précédence : un overlay/panneau ouvert est fermé d'abord
-  // (Échap ne descend pas jusqu'à la session) ; un dialogue clickable en
-  // attente est laissé intact ; sinon on envoie esc. L'engine room ouvert n'est
-  // PAS un panneau à fermer — c'est le terminal, Échap y envoie esc.
-  // L'inline-edit fait stopPropagation, donc ce handler ne le voit pas.
+  // The Escape key sends esc to the active session (like the engine room's Esc
+  // button). Precedence: an open overlay/panel is closed first (Escape does not
+  // reach down to the session); a pending clickable dialog is left intact;
+  // otherwise we send esc. An open engine room is NOT a panel to close — it is
+  // the terminal, and Escape sends esc there.
+  // The inline edit calls stopPropagation, so this handler never sees it.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
-    // 1. Overlays / panneaux ouverts → fermer, pas d'esc.
+    // 1. Open overlays / panels → close, no esc.
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { $("profilesOverlay").hidden = true; e.preventDefault(); return; }
     if ($("diffpanel").classList.contains("open")) { $("diffpanel").classList.remove("open"); e.preventDefault(); return; }
-    // 2. Dialogue clickable en attente de réponse → ne rien faire.
+    // 2. A clickable dialog awaiting an answer → do nothing.
     if (active && active.dialogBubble) return;
-    // 3. Session active (engine room ouvert inclus) → envoyer esc.
+    // 3. An active session (an open engine room included) → send esc.
     if (active && active.ws && active.status !== "setup") {
       active.ws.send(JSON.stringify({ type: "key", key: "escape" }));
       e.preventDefault();
@@ -65,41 +65,41 @@ ajouter :
   });
 ```
 
-- [ ] **Step 2 : Build**
+- [ ] **Step 2: Build**
 
-Run : `cd ~/projects/shadok-ai/.claude/worktrees/esc-key-interrupt && npm run build`
-Expected : compile sans erreur (aucun `.ts` touché).
+Run: `cd ~/projects/shadok-ai/.claude/worktrees/esc-key-interrupt && npm run build`
+Expected: compiles with no error (no `.ts` touched).
 
-- [ ] **Step 3 : Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add public/index.html
-git commit -m "Chat : la touche Échap envoie esc à la session (comme le bouton du terminal)"
+git commit -m "Chat: the Escape key sends esc to the session (like the terminal's button)"
 ```
 
-- [ ] **Step 4 : Vérification navigateur (après restart déclenché par l'humain)**
+- [ ] **Step 4: Browser check (after a restart triggered by the human)**
 
-Ouvrir une session active dans http://localhost:3789 et vérifier :
-1. Focus dans le composer, Claude en train de bosser → Échap interrompt le tour (comme le bouton Esc de l'engine room).
-2. Engine room ouvert → Échap envoie esc (ne ferme pas l'engine room).
-3. Ouvrir le panneau Diff → Échap le ferme (n'envoie pas esc). Idem overlays Secrets et Profils.
-4. Dialogue clickable affiché (question TUI) → Échap ne fait rien ; les boutons restent cliquables.
-5. Renommer un onglet inline, presser Échap → annule le renommage (inchangé), pas d'esc.
-6. Aucune session (écran setup) → Échap ne perturbe rien.
+Open an active session at http://localhost:3789 and check:
+1. Focus in the composer, Claude working → Escape interrupts the turn (like the engine room's Esc button).
+2. Engine room open → Escape sends esc (does not close the engine room).
+3. Open the Diff panel → Escape closes it (sends no esc). Same for the Secrets and Profiles overlays.
+4. A clickable dialog displayed (a TUI question) → Escape does nothing; the buttons stay clickable.
+5. Rename a tab inline, press Escape → the rename is cancelled (unchanged), no esc.
+6. No session (the setup screen) → Escape disturbs nothing.
 
 ---
 
 ## Self-Review
 
-**1. Spec coverage :**
-- Overlays/panneaux fermés en priorité (secrets → profils → diff) → Step 1, points 1 ✓
-- Engine room ouvert → esc (non fermé) → Step 1, tombe au point 3 car `#machine` non testé ✓
-- Dialogue en attente → rien → Step 1, point 2 ✓
-- Session active → esc → Step 1, point 3 ✓
-- Inline-edit inchangé (stopPropagation) → non géré volontairement ✓
-- Aucune session → rien → point 3 faux (pas de `active.ws`) ✓
-- Build + vérif navigateur → Steps 2, 4 ✓
+**1. Spec coverage:**
+- Overlays/panels closed first (secrets → profiles → diff) → Step 1, point 1 ✓
+- Engine room open → esc (not closed) → Step 1, falls to point 3 since `#machine` is not tested ✓
+- A pending dialog → nothing → Step 1, point 2 ✓
+- An active session → esc → Step 1, point 3 ✓
+- The inline edit unchanged (stopPropagation) → deliberately unhandled ✓
+- No session → nothing → point 3 is false (no `active.ws`) ✓
+- Build + browser check → Steps 2, 4 ✓
 
-**2. Placeholder scan :** aucun ; code complet fourni.
+**2. Placeholder scan:** none; complete code supplied.
 
-**3. Type consistency :** `active`, `active.ws`, `active.status`, `active.dialogBubble` utilisés conformément au reste du fichier (lignes 2517, 2521, 1826). `$()` helper existant. Ids `#secretsOverlay`/`#profilesOverlay`/`#diffpanel` existants.
+**3. Type consistency:** `active`, `active.ws`, `active.status`, `active.dialogBubble` used consistently with the rest of the file (lines 2517, 2521, 1826). The existing `$()` helper. The `#secretsOverlay`/`#profilesOverlay`/`#diffpanel` ids exist.
