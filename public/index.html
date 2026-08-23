@@ -1655,6 +1655,7 @@
       <button id="profSwitchClose" title="Close">✕</button>
     </div>
     <p class="sec-note">Applying re-spawns the agent in place. Its history is kept and the conversation continues.</p>
+    <p class="sec-note warn" id="profSwitchManaged" hidden></p>
     <div id="profSwitchGrid" role="radiogroup" aria-label="Agent profile"></div>
   </div>
 </div>
@@ -1904,8 +1905,7 @@
     profileBadges,
     defaultAgentName,
     hasReadonlyPreset,
-    applyReadonlyPreset,
-  } from "/profile-card.js";
+    applyReadonlyPreset, isManagedProfile } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
   import { echoAuthor } from "/echo-author.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
@@ -1918,6 +1918,7 @@
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
+  window.isManagedProfile = isManagedProfile;
   window.hasReadonlyPreset = hasReadonlyPreset;
   window.applyReadonlyPreset = applyReadonlyPreset;
   window.echoAuthor = echoAuthor;
@@ -2294,12 +2295,18 @@
     profSwitchTab = tab;
     $("profSwitchWho").textContent = tab.nameEl ? tab.nameEl.textContent : "agent";
     await loadProfilesInto();     // la liste a pu changer depuis le dernier passage
+    const onManaged = managedProfile(tab.profile);
     renderProfileCards(
       $("profSwitchGrid"),
-      tab.profile || "",
+      onManaged ? null : tab.profile || "",   // null : aucune carte ne ment
       (name) => askProfileSwitch(tab, name),
       false,
     );
+    // Un agent qui TOURNE sous un rôle managé n'a plus de carte : sans ce mot,
+    // rien n'indiquerait ce qui tourne réellement.
+    const note = $("profSwitchManaged");
+    note.hidden = !onManaged;
+    if (onManaged) note.textContent = "Currently running " + tab.profile + " — a managed role, not offered as a choice. Picking another one replaces it.";
     $("profSwitchOverlay").hidden = false;
   }
 
@@ -5284,13 +5291,18 @@
     // carte ici serait une deuxième porte, subtilement différente, vers le même
     // agent. Il reste listé dans le panneau Profils, pour qu'on puisse tout de
     // même lui attacher un secret ou un modèle.
-    renderProfileCards(grid, selectedProfile, (n) => selectProfile(n, true), failed, "Shadok-Tweak");
+    renderProfileCards(grid, selectedProfile, (n) => selectProfile(n, true), failed);
   }
+
+  /** Garde alignée sur invariant 10 : le pont ESM s'exécute après le parsing.
+   *  S'il n'est pas encore là, on ne filtre pas — un rôle de trop est moins
+   *  grave qu'une exception qui viderait la liste en silence. */
+  const managedProfile = (name) => (window.isManagedProfile ? window.isManagedProfile(name) : false);
 
   /** Peint les cartes de profil dans `container`. Générique : la box de création
    *  ET le sélecteur du menu d'onglet s'en servent — la logique de carte (blurb,
    *  badges, crayon, clavier) ne vit qu'ici, en un seul exemplaire. */
-  function renderProfileCards(container, selected, onPick, failed, exclude) {
+  function renderProfileCards(container, selected, onPick, failed) {
     container.innerHTML = "";
     if (failed) {
       const note = document.createElement("div");
@@ -5298,11 +5310,13 @@
       note.textContent = "couldn't load profiles";
       container.appendChild(note);
     }
-    // `exclude` sert à la box de création, qui masque le rôle « tweak » (il a
-    // son propre CTA). Surtout PAS ici pour tout le monde : le sélecteur du menu
-    // d'onglet montre le profil COURANT comme sélectionné, et un agent tweak n'y
-    // trouverait plus son propre rôle.
-    const list = profileCache.filter((p) => p && p.name !== exclude);
+    // Les rôles pilotés par le serveur ne sont JAMAIS un choix : leur prompt est
+    // réécrit à chaque boot, les proposer promet une personnalisation qui
+    // s'effacera. Filtré ici pour toutes les listes, plutôt que par un paramètre
+    // qu'un futur appelant oublierait — c'est ce qui était arrivé au sélecteur
+    // du menu d'onglet. L'agent qui TOURNE sous un tel rôle est annoncé à part
+    // (voir openProfileSwitcher), sinon la grille mentirait sur ce qui tourne.
+    const list = profileCache.filter((p) => p && !managedProfile(p.name));
     // Zéro profil : on montre la porte d'entrée plutôt qu'un « (none) » muet.
     // Pas de role="radio" → ignorée par la sélection et par les flèches.
     if (!failed && !list.length) {
@@ -5383,6 +5397,19 @@
    *  nom réellement retenu — "" si le profil visé n'existe plus. */
   function markProfileSelection(container, selected) {
     const cards = [...container.querySelectorAll('.profile-card[role="radio"]')];
+    // `null` = ne rien cocher, délibérément. Un agent qui tourne sous un rôle
+    // managé n'a pas de carte : retomber sur "" cocherait « No profile » et la
+    // grille affirmerait qu'il tourne sans profil. Une chaîne, elle, garde le
+    // repli sur « No profile » — c'est le défaut légitime de la box.
+    if (selected === null) {
+      for (const c of cards) {
+        c.classList.remove("selected");
+        c.setAttribute("aria-checked", "false");
+        c.tabIndex = -1;
+      }
+      if (cards.length) cards[0].tabIndex = 0;   // le groupe reste atteignable au clavier
+      return null;
+    }
     let on = selected || "";
     if (!cards.some((c) => c.dataset.profile === on)) on = "";
     for (const c of cards) {
@@ -5441,8 +5468,12 @@
   function renderProfilesList() {
     const ul = $("profilesList");
     ul.innerHTML = "";
-    if (!profileCache.length) ul.innerHTML = '<li><span style="opacity:.6">no profiles yet</span></li>';
-    for (const p of profileCache) {
+    // Masqués ici aussi : leur prompt est repris du dépôt à chaque boot, donc
+    // « edit » y perdrait la saisie sans un mot, et « delete » ne tiendrait pas
+    // le redémarrage.
+    const listed = profileCache.filter((p) => p && !managedProfile(p.name));
+    if (!listed.length) ul.innerHTML = '<li><span style="opacity:.6">no profiles yet</span></li>';
+    for (const p of listed) {
       const li = document.createElement("li");
       const meta = document.createElement("div");
       // Nom et modèle en textContent : un profil peut être créé par un agent

@@ -6,6 +6,7 @@ import {
   profileBlurb,
   profileBadges,
   defaultAgentName,
+  isManagedProfile,
   hasReadonlyPreset,
   applyReadonlyPreset,
 } from "../public/profile-card.js";
@@ -141,4 +142,16 @@ test("le preset du client ne doit pas dériver de celui du serveur", () => {
   const m = html.match(/const READONLY_DENY = (\[[^\]]*\]);/);
   assert.ok(m, "READONLY_DENY introuvable dans index.html");
   assert.deepEqual(JSON.parse(m![1]), READONLY_DENY);
+});
+
+test("isManagedProfile: le rôle piloté par le serveur est reconnu", () => {
+  // Shadok-Tweak reprend son prompt de context/tweak-prompt.md à chaque boot et
+  // a son propre CTA : il n'a rien à faire dans une liste où l'on CHOISIT un rôle.
+  assert.equal(isManagedProfile("Shadok-Tweak"), true);
+  assert.equal(isManagedProfile("  Shadok-Tweak  "), true);
+});
+
+test("isManagedProfile: tout le reste est choisissable", () => {
+  for (const n of ["Shadok-Boss", "Shadok-dev", "shadok-tweak", "", null, undefined])
+    assert.equal(isManagedProfile(n), false, String(n));
 });
