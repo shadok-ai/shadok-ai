@@ -2,40 +2,40 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Une image ou un fichier posé dans un chat/topic Telegram est téléchargé et « collé » dans la session Claude Code liée (chemin absolu dans le prompt).
+**Goal:** An image or a file dropped into a Telegram chat/topic is downloaded and "pasted" into the bound Claude Code session (an absolute path in the prompt).
 
-**Architecture:** Tout vit dans `src/telegram.ts` : des helpers purs (extraction de la pièce jointe du message, nom de fichier de stockage, construction du prompt, buffer d'albums) testés unitairement, et le runtime (téléchargement via l'API Bot, purge, branchement dans `handleMessage`) dans la closure `startTelegram`. Aucun changement du serveur ni du protocole WS — on passe par le message `prompt` existant. Spec : `docs/superpowers/specs/2026-07-23-telegram-file-attachments-design.md`.
+**Architecture:** Everything lives in `src/telegram.ts`: pure helpers (extracting the message's attachment, the storage file name, building the prompt, an album buffer) unit-tested, and the runtime (downloading through the Bot API, the purge, the wiring in `handleMessage`) inside the `startTelegram` closure. No server or WS protocol change — we go through the existing `prompt` message. Spec: `docs/superpowers/specs/2026-07-23-telegram-file-attachments-design.md`.
 
 **Tech Stack:** TypeScript ESM (NodeNext, imports en `.js`), Node ≥ 20, tests `node:test` + `assert/strict` via tsx.
 
 ## Global Constraints
 
-- Imports relatifs avec extension `.js` (NodeNext) ; ex. `import { SHADOK_DIR } from "./config.js"`.
+- Relative imports with a `.js` extension (NodeNext); e.g. `import { SHADOK_DIR } from "./config.js"`.
 - Stockage : `~/.shadok-ai/media/` (`path.join(SHADOK_DIR, "media")`).
 - Limite Telegram Bot API `getFile` : 20 Mo (`20 * 1024 * 1024`).
-- Purge : fichiers de `media/` plus vieux que 30 jours, au démarrage du bridge.
-- Commentaires : expliquer le **pourquoi** (FR/EN mélangés acceptés, suivre le fichier).
-- Tests : `npm test` (toute la suite) ou ciblé `node --import tsx --test test/telegram.test.ts`.
-- Le code runtime (fetch réseau, fs) n'est PAS testé unitairement dans ce repo — seuls les helpers purs le sont (convention existante de `telegram.ts`).
+- Purge: files in `media/` older than 30 days, when the bridge starts.
+- Comments: explain the **why**, in English (the repo's convention).
+- Tests: `npm test` (the whole suite) or targeted, `node --import tsx --test test/telegram.test.ts`.
+- The runtime code (network fetch, fs) is NOT unit-tested in this repo — only the pure helpers are (`telegram.ts`'s existing convention).
 
 ---
 
-### Task 1: Extraction de la pièce jointe (`attachmentOf`, `mediaFileName`)
+### Task 1: Extracting the attachment (`attachmentOf`, `mediaFileName`)
 
 **Files:**
-- Modify: `src/telegram.ts` (section « Pure helpers », après `parseCommand`, ~ligne 52)
+- Modify: `src/telegram.ts` (the "Pure helpers" section, after `parseCommand`, ~line 52)
 - Test: `test/telegram.test.ts`
 
 **Interfaces:**
 - Consumes: rien (helpers purs).
-- Produces: `interface TgAttachment { fileId: string; fileUniqueId: string; kind: "image" | "file"; fileName?: string; fileSize?: number }`, `attachmentOf(msg: any): TgAttachment | null`, `mediaFileName(att: TgAttachment): string`. Utilisés par les Tasks 3 et 4.
+- Produces: `interface TgAttachment { fileId: string; fileUniqueId: string; kind: "image" | "file"; fileName?: string; fileSize?: number }`, `attachmentOf(msg: any): TgAttachment | null`, `mediaFileName(att: TgAttachment): string`. Used by Tasks 3 and 4.
 
 - [ ] **Step 1: Write the failing tests**
 
-Dans `test/telegram.test.ts`, ajouter à l'import existant `attachmentOf, mediaFileName` puis, en fin de fichier :
+In `test/telegram.test.ts`, add `attachmentOf, mediaFileName` to the existing import then, at the end of the file:
 
 ```ts
-test("attachmentOf: photo → la plus grande taille, kind image", () => {
+test("attachmentOf: photo → the largest size, kind image", () => {
   const att = attachmentOf({
     photo: [
       { file_id: "small", file_unique_id: "u1", file_size: 100 },
@@ -45,7 +45,7 @@ test("attachmentOf: photo → la plus grande taille, kind image", () => {
   assert.deepEqual(att, { fileId: "big", fileUniqueId: "u2", kind: "image", fileSize: 5000 });
 });
 
-test("attachmentOf: document image/* → kind image, garde le nom", () => {
+test("attachmentOf: document image/* → kind image, keeps the name", () => {
   const att = attachmentOf({
     document: { file_id: "f", file_unique_id: "u", file_name: "shot.png", mime_type: "image/png", file_size: 42 },
   });
@@ -64,35 +64,35 @@ test("attachmentOf: message texte pur → null", () => {
   assert.equal(attachmentOf({ text: "hello" }), null);
 });
 
-test("mediaFileName: nom original préfixé par l'id unique, nettoyé", () => {
+test("mediaFileName: original name prefixed by the unique id, sanitised", () => {
   assert.equal(
-    mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "file", fileName: "../é vil/rapport final.pdf" }),
+    mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "file", fileName: "../é vil/final report.pdf" }),
     "AQAD-rapport final.pdf",
   );
 });
 
-test("mediaFileName: photo sans nom → .jpg ; fichier sans nom → id nu", () => {
+test("mediaFileName: an unnamed photo → .jpg; an unnamed file → the bare id", () => {
   assert.equal(mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "image" }), "AQAD.jpg");
   assert.equal(mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "file" }), "AQAD");
 });
 ```
 
-Note : `"../é vil/rapport final.pdf"` → `path.basename` donne `"rapport final.pdf"` (l'espace et les lettres accentuées sont gardés par `\w` unicode ? Non — voir Step 3 : la regex de nettoyage remplace tout caractère hors `[\w.\- ]` par `_`, et `é` n'est pas dans `\w` ASCII. Le basename ici est `rapport final.pdf` qui ne contient que des caractères sûrs, donc inchangé).
+Note: `"../é vil/final report.pdf"` → `path.basename` gives `"final report.pdf"` (are the space and accented letters kept by a unicode `\w`? No — see Step 3: the sanitising regex replaces every character outside `[\w.\- ]` with `_`, and `é` is not in ASCII `\w`. The basename here is `final report.pdf`, which contains only safe characters, so it is unchanged).
 
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `node --import tsx --test test/telegram.test.ts`
-Expected: FAIL — `attachmentOf` / `mediaFileName` ne sont pas exportés (`SyntaxError: The requested module ... does not provide an export named 'attachmentOf'`).
+Expected: FAIL — `attachmentOf` / `mediaFileName` are not exported (`SyntaxError: The requested module ... does not provide an export named 'attachmentOf'`).
 
 - [ ] **Step 3: Write the implementation**
 
-Dans `src/telegram.ts`, ajouter en tête de fichier (avec les imports existants) :
+In `src/telegram.ts`, add at the top of the file (with the existing imports):
 
 ```ts
 import path from "node:path";
 ```
 
-Puis dans la section « Pure helpers », après `parseCommand` :
+Then in the "Pure helpers" section, after `parseCommand`:
 
 ```ts
 /** A downloadable attachment found in a Telegram message. */
@@ -135,12 +135,12 @@ export function mediaFileName(att: TgAttachment): string {
 }
 ```
 
-Attention au test `attachmentOf: photo → …` : l'implémentation avec spreads conditionnels ne met PAS `fileName` sur une photo, et `deepEqual` compare aussi l'absence de clé — c'est voulu. Pour la photo, écrire l'objet littéral sans spread (comme montré) pour que `fileSize` soit toujours présent (même `undefined` serait absent avec `deepEqual` strict — ici `file_size: 5000` est fourni par le test).
+Mind the `attachmentOf: photo → …` test: the implementation with conditional spreads does NOT put `fileName` on a photo, and `deepEqual` also compares the absence of a key — that is intended. For the photo, write the object literal without a spread (as shown) so `fileSize` is always present (even `undefined` would be absent under strict `deepEqual` — here `file_size: 5000` is supplied by the test).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import tsx --test test/telegram.test.ts`
-Expected: PASS (tous, y compris les tests préexistants).
+Expected: PASS (all of them, including the pre-existing tests).
 
 - [ ] **Step 5: Commit**
 
@@ -154,16 +154,16 @@ git commit -m "Telegram: extract attachments from incoming messages (pure helper
 ### Task 2: Construction du prompt (`attachmentPrompt`)
 
 **Files:**
-- Modify: `src/telegram.ts` (section « Pure helpers », après `mediaFileName`)
+- Modify: `src/telegram.ts` (the "Pure helpers" section, after `mediaFileName`)
 - Test: `test/telegram.test.ts`
 
 **Interfaces:**
 - Consumes: rien.
-- Produces: `attachmentPrompt(items: { path: string; kind: "image" | "file" }[], caption?: string): string`. Utilisé par la Task 4.
+- Produces: `attachmentPrompt(items: { path: string; kind: "image" | "file" }[], caption?: string): string`. Used by Task 4.
 
 - [ ] **Step 1: Write the failing tests**
 
-Ajouter `attachmentPrompt` à l'import de `test/telegram.test.ts`, puis :
+Add `attachmentPrompt` to `test/telegram.test.ts`'s import, then:
 
 ```ts
 test("attachmentPrompt: image seule", () => {
@@ -172,12 +172,12 @@ test("attachmentPrompt: image seule", () => {
 
 test("attachmentPrompt: fichier + caption", () => {
   assert.equal(
-    attachmentPrompt([{ path: "/m/r.pdf", kind: "file" }], "résume ce doc"),
-    "[Fichier joint : /m/r.pdf]\nrésume ce doc",
+    attachmentPrompt([{ path: "/m/r.pdf", kind: "file" }], "summarise this doc"),
+    "[Attached file: /m/r.pdf]\nsummarise this doc",
   );
 });
 
-test("attachmentPrompt: plusieurs pièces, caption vide ignorée", () => {
+test("attachmentPrompt: several attachments, an empty caption ignored", () => {
   assert.equal(
     attachmentPrompt(
       [
@@ -198,7 +198,7 @@ Expected: FAIL — export `attachmentPrompt` manquant.
 
 - [ ] **Step 3: Write the implementation**
 
-Dans `src/telegram.ts`, après `mediaFileName` :
+In `src/telegram.ts`, after `mediaFileName`:
 
 ```ts
 /** The prompt sent to the session for downloaded attachments: one absolute
@@ -227,19 +227,19 @@ git commit -m "Telegram: build the session prompt for downloaded attachments"
 ### Task 3: Buffer d'albums (`makeAlbumBuffer`)
 
 **Files:**
-- Modify: `src/telegram.ts` (section « Pure helpers », après `makeTyping`)
+- Modify: `src/telegram.ts` (the "Pure helpers" section, after `makeTyping`)
 - Test: `test/telegram.test.ts`
 
 **Interfaces:**
 - Consumes: rien.
-- Produces: `makeAlbumBuffer<T>(flush: (groupId: string, items: T[]) => void, delayMs?: number): { add: (groupId: string, item: T) => void }` (délai par défaut 1500 ms). Utilisé par la Task 4.
+- Produces: `makeAlbumBuffer<T>(flush: (groupId: string, items: T[]) => void, delayMs?: number): { add: (groupId: string, item: T) => void }` (default delay 1500 ms). Used by Task 4.
 
 - [ ] **Step 1: Write the failing tests**
 
-Ajouter `makeAlbumBuffer` à l'import, puis (tests asynchrones avec un délai court — pas de mock de timers, cohérent avec le style du fichier) :
+Add `makeAlbumBuffer` to the import, then (async tests with a short delay — no timer mocking, consistent with the file's style):
 
 ```ts
-test("makeAlbumBuffer: regroupe les items d'un même album en un seul flush", async () => {
+test("makeAlbumBuffer: groups one album's items into a single flush", async () => {
   const flushed: [string, number[]][] = [];
   const buf = makeAlbumBuffer<number>((gid, items) => flushed.push([gid, items]), 30);
   buf.add("g1", 1);
@@ -249,19 +249,19 @@ test("makeAlbumBuffer: regroupe les items d'un même album en un seul flush", as
   assert.deepEqual(flushed, [["g1", [1, 2, 3]]]);
 });
 
-test("makeAlbumBuffer: chaque add réarme le timer (pas de flush partiel)", async () => {
+test("makeAlbumBuffer: every add rearms the timer (no partial flush)", async () => {
   const flushed: number[][] = [];
   const buf = makeAlbumBuffer<number>((_gid, items) => flushed.push(items), 40);
   buf.add("g", 1);
-  await new Promise((r) => setTimeout(r, 25)); // < délai : pas encore flushé
-  buf.add("g", 2); // réarme
+  await new Promise((r) => setTimeout(r, 25)); // < the delay: not flushed yet
+  buf.add("g", 2); // rearms
   await new Promise((r) => setTimeout(r, 25));
-  assert.equal(flushed.length, 0); // 50 ms après le 1er add mais 25 ms après le 2e
+  assert.equal(flushed.length, 0); // 50 ms after the 1st add but 25 ms after the 2nd
   await new Promise((r) => setTimeout(r, 40));
   assert.deepEqual(flushed, [[1, 2]]);
 });
 
-test("makeAlbumBuffer: deux albums indépendants", async () => {
+test("makeAlbumBuffer: two independent albums", async () => {
   const flushed = new Map<string, string[]>();
   const buf = makeAlbumBuffer<string>((gid, items) => flushed.set(gid, items), 20);
   buf.add("a", "x");
@@ -279,7 +279,7 @@ Expected: FAIL — export `makeAlbumBuffer` manquant.
 
 - [ ] **Step 3: Write the implementation**
 
-Dans `src/telegram.ts`, après `makeTyping` :
+In `src/telegram.ts`, after `makeTyping`:
 
 ```ts
 /** Telegram delivers an album (media_group_id) as separate messages, the
@@ -304,7 +304,7 @@ export function makeAlbumBuffer<T>(
         groups.delete(groupId);
         flush(groupId, items);
       }, delayMs);
-      timer.unref?.(); // ne jamais retenir le process pour un buffer
+      timer.unref?.(); // never hold the process open for a buffer
       groups.set(groupId, { items, timer });
     },
   };
@@ -325,20 +325,20 @@ git commit -m "Telegram: album buffer — one flush (one turn) per media group"
 
 ---
 
-### Task 4: Runtime — téléchargement, purge, branchement dans handleMessage
+### Task 4: Runtime — download, purge, wiring into handleMessage
 
-Pas de test unitaire ici (réseau + fs, convention du repo) : la vérification est `npm run build` + le test de bout en bout de la Task 5.
+No unit test here (network + fs, the repo's convention): the verification is `npm run build` + Task 5's end-to-end test.
 
 **Files:**
 - Modify: `src/telegram.ts` — imports, constantes module, closure `startTelegram` (purge + `downloadAttachment` + buffer d'albums), `handleMessage` (~ligne 391).
 
 **Interfaces:**
 - Consumes: `TgAttachment`, `attachmentOf`, `mediaFileName`, `attachmentPrompt`, `makeAlbumBuffer` (Tasks 1-3) ; `SHADOK_DIR` de `./config.js` ; `tg`, `reply`, `bridgeFor`, `promptTo`, `Bridge` existants.
-- Produces: comportement final ; rien d'exporté en plus.
+- Produces: the final behaviour; nothing extra exported.
 
 - [ ] **Step 1: Imports et constantes**
 
-En tête de `src/telegram.ts`, compléter les imports (l'import `path` existe depuis la Task 1) :
+At the top of `src/telegram.ts`, complete the imports (the `path` import exists since Task 1):
 
 ```ts
 import fs from "node:fs";
@@ -355,9 +355,9 @@ const TG_FILE_LIMIT = 20 * 1024 * 1024; // Bot API getFile hard limit
 const MEDIA_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // purge after 30 days
 ```
 
-- [ ] **Step 2: Purge au démarrage + downloadAttachment dans startTelegram**
+- [ ] **Step 2: The startup purge + downloadAttachment inside startTelegram**
 
-Dans `startTelegram`, juste après la déclaration de `const tg = …` (≈ ligne 197), ajouter :
+In `startTelegram`, right after the `const tg = …` declaration (≈ line 197), add:
 
 ```ts
   // Purge old attachments at startup — media/ only grows otherwise.
@@ -368,18 +368,18 @@ Dans `startTelegram`, juste après la déclaration de `const tg = …` (≈ lign
       if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
     }
   } catch {
-    // dossier absent : rien à purger
+    // folder missing: nothing to purge
   }
 
   /** Download one attachment to MEDIA_DIR; returns the absolute path.
-   *  Throws with a user-facing (French) reason on any failure. */
+   *  Throws with a user-facing reason on any failure. */
   const downloadAttachment = async (att: TgAttachment): Promise<string> => {
     if (att.fileSize && att.fileSize > TG_FILE_LIMIT)
       throw new Error("fichier trop gros (limite Telegram bot : 20 Mo)");
     const f = await tg("getFile", { file_id: att.fileId });
-    if (!f?.ok) throw new Error(f?.description ?? "getFile a échoué");
+    if (!f?.ok) throw new Error(f?.description ?? "getFile failed");
     const r = await fetch(`https://api.telegram.org/file/bot${token}/${f.result.file_path}`);
-    if (!r.ok) throw new Error(`téléchargement HTTP ${r.status}`);
+    if (!r.ok) throw new Error(`download HTTP ${r.status}`);
     fs.mkdirSync(MEDIA_DIR, { recursive: true });
     const dest = path.join(MEDIA_DIR, mediaFileName(att));
     fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
@@ -389,7 +389,7 @@ Dans `startTelegram`, juste après la déclaration de `const tg = …` (≈ lign
 
 - [ ] **Step 3: Flush d'album**
 
-Toujours dans `startTelegram`, après la déclaration de `promptTo` (≈ ligne 367) — il utilise `reply` déclaré juste après, donc placer le buffer **après `reply`** (≈ ligne 377) :
+Still in `startTelegram`, after the `promptTo` declaration (≈ line 367) — it uses `reply`, declared right after, so place the buffer **after `reply`** (≈ line 377):
 
 ```ts
   // A flushed album: download everything, then ONE prompt with all the paths.
@@ -406,15 +406,15 @@ Toujours dans `startTelegram`, après la déclaration de `promptTo` (≈ ligne 3
         failed.push(`${i.att.fileName ?? i.att.fileUniqueId} (${e?.message ?? e})`);
       }
     }
-    if (failed.length) reply(b.chatId, b.threadId, "⚠️ téléchargement raté : " + failed.join(", "));
+    if (failed.length) reply(b.chatId, b.threadId, "⚠️ download failed: " + failed.join(", "));
     if (ok.length) promptTo(b, attachmentPrompt(ok, caption));
-    else b.typing.stop(); // rien à envoyer : ne pas laisser « typing » tourner
+    else b.typing.stop(); // nothing to send: do not leave "typing" running
   });
 ```
 
 - [ ] **Step 4: Brancher handleMessage**
 
-Dans `handleMessage` (≈ ligne 391), remplacer :
+In `handleMessage` (≈ line 391), replace:
 
 ```ts
   const handleMessage = async (msg: any) => {
@@ -429,14 +429,14 @@ par :
     if (typeof msg.text !== "string" && !att) return;
 ```
 
-Remplacer la ligne `const cmd = parseCommand(msg.text);` (≈ ligne 400) par :
+Replace the `const cmd = parseCommand(msg.text);` line (≈ line 400) with:
 
 ```ts
     // Commands only exist in text messages — a caption is never a command.
     const cmd = typeof msg.text === "string" ? parseCommand(msg.text) : null;
 ```
 
-Puis remplacer la fin de la fonction (≈ lignes 534-541) :
+Then replace the end of the function (≈ lines 534-541):
 
 ```ts
     // Optimistic typing: start the heartbeat now, before the server confirms
@@ -474,7 +474,7 @@ par :
         await reply(
           chat.id,
           threadId,
-          `⚠️ je n'ai pas pu télécharger ${att.fileName ?? "la pièce jointe"} (${e?.message ?? e})`,
+          `⚠️ could not download ${att.fileName ?? "the attachment"} (${e?.message ?? e})`,
         );
       }
       return;
@@ -483,10 +483,10 @@ par :
   };
 ```
 
-- [ ] **Step 5: Build + suite complète**
+- [ ] **Step 5: Build + the whole suite**
 
 Run: `npm run build && npm test`
-Expected: build OK (0 erreur tsc), tous les tests PASS.
+Expected: build OK (0 tsc errors), every test PASSes.
 
 - [ ] **Step 6: Commit**
 
@@ -497,11 +497,11 @@ git commit -m "Telegram: photos & files are downloaded and pasted into the sessi
 
 ---
 
-### Task 5: Vérification de bout en bout + restart serveur
+### Task 5: End-to-end verification + a server restart
 
-**Files:** aucun (vérification manuelle, spec § Tests).
+**Files:** none (manual verification, the spec's Tests section).
 
-- [ ] **Step 1: Rebuild + restart du serveur dans sa session tmux dédiée**
+- [ ] **Step 1: Rebuild + restart the server in its dedicated tmux session**
 
 ```bash
 npm run build
@@ -513,16 +513,16 @@ sleep 3; curl -s -o /dev/null -w '%{http_code}\n' localhost:3789/
 
 Expected: `200`. Sinon, lire `/tmp/cp.log`.
 
-⚠️ Ce restart tue les sessions PTY en cours (invariant n°7 du CLAUDE.md) — c'est l'humain/top-level qui décide du moment, pas un sous-agent.
+⚠️ This restart kills the running PTY sessions (invariant #7 of CLAUDE.md) — the human/top level decides when, not a subagent.
 
-- [ ] **Step 2: Tests manuels dans Telegram** (l'utilisateur, guidé)
+- [ ] **Step 2: Manual tests in Telegram** (the user, guided)
 
-1. Photo avec caption « décris cette image » → la session lit l'image et répond sur son contenu.
-2. Photo sans caption → prompt `[Image jointe : …]` seul, la session réagit.
-3. Un PDF en document avec caption → la session lit le PDF.
-4. Une image envoyée « en fichier » (sans compression) → traitée comme image.
-5. Album de 2-3 photos avec une caption → **un seul** tour avec tous les chemins.
-6. Fichier > 20 Mo → reply `⚠️ … (fichier trop gros (limite Telegram bot : 20 Mo))`, rien envoyé à Claude.
-7. Vérifier `ls ~/.shadok-ai/media/` : fichiers présents, nommés `<uid>-<nom>`.
+1. A photo with the caption "describe this image" → the session reads the image and answers about its content.
+2. A photo with no caption → the `[Attached image: …]` prompt alone, the session reacts.
+3. A PDF as a document with a caption → the session reads the PDF.
+4. An image sent "as a file" (uncompressed) → handled as an image.
+5. An album of 2-3 photos with a caption → **a single** turn with every path.
+6. A file over 20 MB → the reply `⚠️ … (file too large (Telegram bot limit: 20 MB))`, nothing sent to Claude.
+7. Check `ls ~/.shadok-ai/media/`: the files are there, named `<uid>-<name>`.
 
-- [ ] **Step 3: Vérifier `/tmp/cp.log`** — pas d'erreur non gérée pendant les tests.
+- [ ] **Step 3: Check `/tmp/cp.log`** — no unhandled error during the tests.
