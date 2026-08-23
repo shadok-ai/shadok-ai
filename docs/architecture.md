@@ -514,7 +514,15 @@ persisted as `updateChannel` (absent = `beta`):
 
 **Promoting is one edit**: bump the minor in `package.json` and merge. CI
 compares that minor with the one `latest` currently points at; different means
-this merge is the promotion. The decision is read from the registry, not from
+this merge is the promotion.
+
+The channel also decides the NUMBER. An alpha is `<major>.<minor>.<commit
+count>` — the version says which commit it is. A promotion is
+`<major>.<minor>.0`: a milestone, not a commit pointer. The first promotion
+shipped as `0.3.77` under the older rule and read as the 77th patch of a 0.3
+series whose 0.3.0–0.3.76 never existed, which is a version number that lies to
+the person reading it. No collision is possible either way — an alpha's patch is
+a commit count, never 0. The decision is read from the registry, not from
 git history, so a re-run or a replay reaches the same verdict instead of
 promoting twice.
 

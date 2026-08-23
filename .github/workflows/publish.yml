@@ -1,18 +1,23 @@
 name: Publish
 
-# Auto-publish on every merge to main (pre-stable mode): the version is
-# <major>.<minor> from package.json + the commit count as patch, e.g. 0.1.42.
-# Bumped in-CI only (never committed/pushed).
+# Auto-publish on every merge to main (pre-stable mode). The version is bumped
+# in-CI only, never committed or pushed — the repo's package.json keeps its
+# <major>.<minor> and a 0 patch.
 #
 # TWO CHANNELS (docs/superpowers/specs/2026-08-23-update-channels-design.md):
-# an ordinary merge publishes under the `alpha` dist-tag; a MINOR BUMP in
-# package.json publishes with no tag, which is what moves `latest` — the beta
-# channel. Only `npm publish` is used, never `npm dist-tag add`: OIDC trusted
+#
+#   ordinary merge → <major>.<minor>.<commit count>, published `--tag alpha`
+#   minor bump     → <major>.<minor>.0, published with NO tag, which moves
+#                    `latest` — the beta channel
+#
+# Only `npm publish` is ever used, never `npm dist-tag add`: OIDC trusted
 # publishing authenticates publish and nothing else, so moving a tag afterwards
-# would mean storing a long-lived npm token as a repository secret. Auth is npm Trusted Publishing via
-# GitHub OIDC — NO token. One-time setup on npmjs.com: package `shadok-ai` →
-# Settings → Trusted Publisher → GitHub Actions, repo shadok-ai/shadok-ai,
-# workflow `publish.yml`.
+# would mean storing a long-lived npm token as a repository secret.
+#
+# Auth is npm Trusted Publishing via GitHub OIDC — NO token. One-time setup on
+# npmjs.com: package `shadok-ai` → Settings → Trusted Publisher → GitHub
+# Actions, repo shadok-ai/shadok-ai, workflow `publish.yml`.
+
 on:
   push:
     branches: [main]
@@ -36,12 +41,38 @@ jobs:
       - run: npm install -g npm@latest # OIDC needs npm >= 11.5.1
       - run: npm ci
       - run: npm test
-      - name: Compute version (major.minor.commitcount)
+      - name: Decide channel and version
         id: ver
         run: |
+          # The channel decides the NUMBER, so both are settled here.
+          #
+          # An ordinary merge is `<major>.<minor>.<commit count>`: the version
+          # says which commit it is, which is what you want from a stream that
+          # moves every merge.
+          #
+          # A promotion is `<major>.<minor>.0`. It could carry the commit count
+          # too — that was the first cut, and it published 0.3.77, a number that
+          # LIES: it reads as the 77th patch of a 0.3 series where 0.3.0 through
+          # 0.3.76 never existed. A beta user seeing 0.2.73 → 0.3.77 reasonably
+          # wonders what they missed. Promotions are milestones, so they get
+          # milestone numbers: 0.3.0, 0.4.0, 0.5.0.
+          #
+          # No collision is possible: an alpha's patch is a commit count, which
+          # is never 0.
           BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
-          COUNT=$(git rev-list --count HEAD)
-          echo "version=${BASE}.${COUNT}" >> "$GITHUB_OUTPUT"
+          LATEST=$(npm view shadok-ai@latest version 2>/dev/null || echo "")
+          LATEST_BASE=$(echo "$LATEST" | cut -d. -f1,2)
+          # Promotion is read from the REGISTRY, never from git history, so a
+          # workflow re-run or a replay reaches the same verdict instead of
+          # promoting twice.
+          if [ -n "$LATEST" ] && [ "$BASE" = "$LATEST_BASE" ]; then
+            echo "promote=0" >> "$GITHUB_OUTPUT"
+            echo "version=${BASE}.$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "promote=1" >> "$GITHUB_OUTPUT"
+            echo "version=${BASE}.0" >> "$GITHUB_OUTPUT"
+          fi
+          echo "latest is ${LATEST:-none}, package.json is $BASE"
       - name: Publish if new
         run: |
           V="${{ steps.ver.outputs.version }}"
@@ -49,18 +80,12 @@ jobs:
             echo "shadok-ai@$V already published — skipping"
             exit 0
           fi
-          # Promotion is decided from the REGISTRY, not from git history: if the
-          # minor we are about to publish differs from the one `latest` points
-          # at, this merge is the promotion. Stateless, so a re-run or a replay
-          # reaches the same verdict instead of promoting twice.
-          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
-          LATEST=$(npm view shadok-ai@latest version 2>/dev/null || echo "")
-          LATEST_BASE=$(echo "$LATEST" | cut -d. -f1,2)
           npm version "$V" --no-git-tag-version --allow-same-version
-          if [ -n "$LATEST" ] && [ "$BASE" = "$LATEST_BASE" ]; then
-            echo "publishing $V to the alpha channel (latest stays at $LATEST)"
-            npm publish --access public --tag alpha
-          else
-            echo "minor bump ${LATEST_BASE:-none} → $BASE: promoting $V to latest (beta channel)"
+          if [ "${{ steps.ver.outputs.promote }}" = "1" ]; then
+            # No --tag: that is what moves `latest`, i.e. the beta channel.
+            echo "promoting $V to latest (beta channel)"
             npm publish --access public
+          else
+            echo "publishing $V to the alpha channel (latest is untouched)"
+            npm publish --access public --tag alpha
           fi

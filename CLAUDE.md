@@ -588,7 +588,11 @@ Auth section of `docs/architecture.md`).
     instance that downgrades itself is worse than the window it closes.
     Promotion is decided from the REGISTRY (`package.json` minor vs the minor
     `latest` points at), never from git history, so a workflow re-run or a replay
-    cannot promote twice.
+    cannot promote twice. The channel also picks the NUMBER: an alpha is
+    `<major>.<minor>.<commit count>`, a promotion is `<major>.<minor>.0`. The
+    first promotion went out as `0.3.77` under the older rule — a number that
+    reads as the 77th patch of a 0.3 series that never had one, which is worse
+    than useless to whoever is trying to tell two releases apart.
 
 ## Conventions
 
