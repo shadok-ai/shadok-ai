@@ -1505,6 +1505,13 @@
   <div class="vm-row"><span class="vm-label">Latest</span><span id="vmLatest">—</span></div>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
+  <div class="vm-row"><span class="vm-label">Channel</span>
+    <select id="updChannelSel">
+      <option value="beta">beta — promoted releases</option>
+      <option value="alpha">alpha — every merge</option>
+    </select>
+  </div>
+  <div class="vm-hint" id="vmChannelHint"></div>
   <label class="vm-check"><input type="checkbox" id="acceptEditsChk"><span>Auto mode</span></label>
   <div class="vm-hint" id="vmModeHint"></div>
 </div>
@@ -4033,6 +4040,7 @@
   const verView = document.getElementById("verView");
   const verMenu = document.getElementById("verMenu");
   const autoUpdateChk = document.getElementById("autoUpdateChk");
+  const updChannelSel = document.getElementById("updChannelSel");
   const acceptEditsChk = document.getElementById("acceptEditsChk");
 
   function verIsNewer(cand, cur) {
@@ -4074,6 +4082,11 @@
       ? "New releases install automatically; the page reloads."
       : (ahead ? "A newer version is available. Tick to update now and going forward."
                : "Off — this instance stays on its current version.");
+    const ch = m.updateChannel === "alpha" ? "alpha" : "beta";
+    updChannelSel.value = ch;
+    document.getElementById("vmChannelHint").textContent = ch === "alpha"
+      ? "Every merge, as soon as it ships — newest work, freshest bugs."
+      : "Only promoted releases. Quieter, and what a fresh install gets.";
     const autoOn = m.permissionMode === "auto";
     acceptEditsChk.checked = autoOn;
     document.getElementById("vmModeHint").textContent = autoOn
@@ -4164,6 +4177,20 @@
       // hint updates then. If it's turning on while behind, a reload follows.
     } catch {
       autoUpdateChk.checked = !enabled; // revert on failure
+    }
+  });
+  updChannelSel.addEventListener("change", async () => {
+    const channel = updChannelSel.value;
+    try {
+      // The server re-polls the registry immediately and echoes the new state
+      // over WS, so `Latest` repaints without waiting for the next check.
+      await fetch("/update-channel", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channel }),
+      });
+    } catch {
+      updChannelSel.value = channel === "alpha" ? "beta" : "alpha"; // revert on failure
     }
   });
   acceptEditsChk.addEventListener("change", async () => {

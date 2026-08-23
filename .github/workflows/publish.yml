@@ -2,7 +2,14 @@ name: Publish
 
 # Auto-publish on every merge to main (pre-stable mode): the version is
 # <major>.<minor> from package.json + the commit count as patch, e.g. 0.1.42.
-# Bumped in-CI only (never committed/pushed). Auth is npm Trusted Publishing via
+# Bumped in-CI only (never committed/pushed).
+#
+# TWO CHANNELS (docs/superpowers/specs/2026-08-23-update-channels-design.md):
+# an ordinary merge publishes under the `alpha` dist-tag; a MINOR BUMP in
+# package.json publishes with no tag, which is what moves `latest` — the beta
+# channel. Only `npm publish` is used, never `npm dist-tag add`: OIDC trusted
+# publishing authenticates publish and nothing else, so moving a tag afterwards
+# would mean storing a long-lived npm token as a repository secret. Auth is npm Trusted Publishing via
 # GitHub OIDC — NO token. One-time setup on npmjs.com: package `shadok-ai` →
 # Settings → Trusted Publisher → GitHub Actions, repo shadok-ai/shadok-ai,
 # workflow `publish.yml`.
@@ -42,5 +49,18 @@ jobs:
             echo "shadok-ai@$V already published — skipping"
             exit 0
           fi
+          # Promotion is decided from the REGISTRY, not from git history: if the
+          # minor we are about to publish differs from the one `latest` points
+          # at, this merge is the promotion. Stateless, so a re-run or a replay
+          # reaches the same verdict instead of promoting twice.
+          BASE=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          LATEST=$(npm view shadok-ai@latest version 2>/dev/null || echo "")
+          LATEST_BASE=$(echo "$LATEST" | cut -d. -f1,2)
           npm version "$V" --no-git-tag-version --allow-same-version
-          npm publish --access public
+          if [ -n "$LATEST" ] && [ "$BASE" = "$LATEST_BASE" ]; then
+            echo "publishing $V to the alpha channel (latest stays at $LATEST)"
+            npm publish --access public --tag alpha
+          else
+            echo "minor bump ${LATEST_BASE:-none} → $BASE: promoting $V to latest (beta channel)"
+            npm publish --access public
+          fi
