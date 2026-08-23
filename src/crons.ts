@@ -13,7 +13,7 @@ import { loadConfig } from "./config.js";
 
 export type CronSchedule =
   | { kind: "interval"; everyMin: number } // every N minutes
-  | { kind: "daily"; hour: number; minute: number }; // daily at HH:MM, dans le fuseau du cron
+  | { kind: "daily"; hour: number; minute: number }; // daily at HH:MM, in the cron's time zone
 
 export interface Cron {
   id: string;
@@ -31,11 +31,11 @@ export interface Cron {
    */
   check?: string;
   /**
-   * Fuseau IANA (« Europe/Paris ») dans lequel lire un horaire `daily`. Sans
-   * lui, l'heure suit le fuseau de la MACHINE : le même `daily:09:00` tire à 9h
-   * à Paris et à 9h UTC sur un serveur en UTC, soit 11h vécues. Résolu par
-   * `cronTimeZone` : ce champ, sinon le défaut global (config `timezone`),
-   * sinon le fuseau système — donc rien ne bouge tant que personne ne configure.
+   * IANA time zone ("Europe/Paris") a `daily` schedule is read in. Without it
+   * the hour follows the MACHINE's zone: the same `daily:09:00` fires at 09:00
+   * in Paris and at 09:00 UTC on a server running UTC, i.e. 11:00 as lived.
+   * Resolved by `cronTimeZone`: this field, else the global default (config
+   * `timezone`), else the system zone — so nothing moves until it is set.
    */
   tz?: string;
   /** ms epoch of the last fire, and the next scheduled fire. */
@@ -95,31 +95,31 @@ export function resolveCronTarget(
 }
 
 /**
- * Marque portée par le TEXTE d'un prompt envoyé par un cron.
+ * Mark carried by the TEXT of a prompt sent by a cron.
  *
- * Pourquoi dans le contenu et pas seulement dans le protocole (`origin: "cron"`)
- * : le prompt part dans la TUI, donc Claude Code l'écrit dans le transcript
- * comme n'importe quel message utilisateur. Ne masquer que l'écho direct
- * laissait le mur de texte — le prompt PLUS la sortie de la garde, des
- * kilo-octets — revenir au rechargement de la page et dans le backfill d'un
- * topic Telegram, qui relisent tous deux `loadHistory`.
+ * Why in the content and not only in the protocol (`origin: "cron"`): the
+ * prompt goes through the TUI, so Claude Code writes it into the transcript
+ * like any other user message. Hiding only the direct echo left the wall of
+ * text — the prompt PLUS the guard's output, kilobytes of it — coming back on
+ * a page reload and in a Telegram topic's backfill, both of which re-read
+ * `loadHistory`.
  *
- * Même parti pris que la sentinelle `NOTHING TO SHOW` : une marque dans le
- * contenu, filtrée partout où l'on rend. Elle a un second effet utile — l'agent
- * apprend que ce tour vient d'une programmation, ce que rien ne lui disait.
+ * Same choice as the `NOTHING TO SHOW` sentinel: a mark in the content,
+ * filtered wherever we render. It has a useful side effect — the agent learns
+ * this turn comes from a schedule, which nothing else told it.
  */
 export const CRON_PROMPT_MARK = "⏰ [cron]";
 
-/** Préfixe le prompt d'un cron. Idempotent : re-marquer ne double pas la marque. */
+/** Prefix a cron's prompt. Idempotent: re-marking does not double the mark. */
 export function markCronPrompt(text: string): string {
   return isCronPrompt(text) ? text : `${CRON_PROMPT_MARK} ${text}`;
 }
 
 /**
- * Ce texte est-il un prompt de cron ? Volontairement STRICT — la marque doit
- * OUVRIR le message. Un agent (ou un humain) qui cite « ⏰ [cron] » au milieu
- * d'une phrase ne doit pas voir son message disparaître : c'est le coût d'une
- * heuristique trop large que rappelle l'invariant 2.
+ * Is this text a cron prompt? Deliberately STRICT — the mark must OPEN the
+ * message. An agent (or a human) quoting "⏰ [cron]" mid-sentence must not see
+ * its message vanish: that is the cost of an over-broad heuristic, the one
+ * invariant 2 is about.
  */
 export function isCronPrompt(text: string): boolean {
   return typeof text === "string" && text.trimStart().startsWith(CRON_PROMPT_MARK);
@@ -176,8 +176,8 @@ export function nextRunAfterFailure(
 
 /**
  * Next fire time (ms epoch) for a schedule, strictly after `fromMs`.
- * `tz` (IANA) ne concerne que les `daily` — un intervalle est une durée, il n'a
- * pas de fuseau. Absent → heure locale de la machine (comportement historique).
+ * `tz` (IANA) only applies to `daily` — an interval is a duration, it has no
+ * time zone. Absent → the machine's local time (historical behaviour).
  */
 export function nextRunFor(s: CronSchedule, fromMs: number, tz?: string | null): number {
   if (s.kind === "interval") {
@@ -185,8 +185,8 @@ export function nextRunFor(s: CronSchedule, fromMs: number, tz?: string | null):
     return fromMs + step;
   }
   if (!tz || !isValidTimeZone(tz)) {
-    // Fuseau machine. `setHours` sur une Date locale suit les bascules d'heure
-    // d'été toute seule (9h reste 9h), d'où ce chemin conservé tel quel.
+    // Machine zone. `setHours` on a local Date follows daylight-saving shifts
+    // on its own (09:00 stays 09:00), which is why this path is kept as is.
     const next = new Date(fromMs);
     next.setHours(s.hour, s.minute, 0, 0);
     if (next.getTime() <= fromMs) next.setDate(next.getDate() + 1);
@@ -195,15 +195,15 @@ export function nextRunFor(s: CronSchedule, fromMs: number, tz?: string | null):
   const today = calendarDayIn(tz, fromMs);
   let t = instantOfWallClock(tz, today.y, today.mo, today.d, s.hour, s.minute);
   if (t <= fromMs) {
-    // Jour suivant du CALENDRIER (pas +24h : un jour de bascule d'heure d'été
-    // dure 23 ou 25h, et l'horaire doit rester à HH:MM).
+    // Next CALENDAR day (not +24h: a daylight-saving switch day lasts 23 or
+    // 25 hours, and the schedule must stay at HH:MM).
     const nd = new Date(Date.UTC(today.y, today.mo - 1, today.d) + 86_400_000);
     t = instantOfWallClock(tz, nd.getUTCFullYear(), nd.getUTCMonth() + 1, nd.getUTCDate(), s.hour, s.minute);
   }
   return t;
 }
 
-/** Le fuseau est-il un identifiant IANA que l'ICU embarqué connaît ? */
+/** Is this an IANA zone identifier the bundled ICU knows? */
 export function isValidTimeZone(tz: string): boolean {
   if (!tz || typeof tz !== "string") return false;
   try {
@@ -214,7 +214,7 @@ export function isValidTimeZone(tz: string): boolean {
   }
 }
 
-/** Champs horloge-murale d'un instant, lus dans `tz`. */
+/** Wall-clock fields of an instant, read in `tz`. */
 function wallClockIn(tz: string, atMs: number): Record<string, number> {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: tz,
@@ -228,24 +228,25 @@ function wallClockIn(tz: string, atMs: number): Record<string, number> {
   }).formatToParts(new Date(atMs));
   const out: Record<string, number> = {};
   for (const p of parts) if (p.type !== "literal") out[p.type] = Number(p.value);
-  // Certaines versions d'ICU rendent l'heure « 24 » à minuit en cycle h23.
+  // Some ICU versions render hour "24" at midnight in the h23 cycle.
   out.hour = out.hour % 24;
   return out;
 }
 
-/** Date du calendrier (y/mo/d) telle qu'on la vit dans `tz` à cet instant. */
+/** Calendar date (y/mo/d) as lived in `tz` at that instant. */
 function calendarDayIn(tz: string, atMs: number): { y: number; mo: number; d: number } {
   const w = wallClockIn(tz, atMs);
   return { y: w.year, mo: w.month, d: w.day };
 }
 
 /**
- * Instant (ms epoch) auquel l'horloge murale de `tz` affiche cette date/heure.
+ * Instant (ms epoch) at which `tz`'s wall clock reads that date/time.
  *
- * Deux passes : l'écart au UTC dépend de l'instant cherché, qu'on ne connaît
- * qu'une fois l'écart appliqué. La première passe donne un candidat, la seconde
- * relit l'écart RÉEL à ce candidat — ce qui corrige les bascules d'heure d'été
- * (une seule passe se trompait d'une heure les deux jours de changement).
+ * Two passes: the offset from UTC depends on the very instant we are looking
+ * for, which we only know once the offset is applied. The first pass gives a
+ * candidate, the second re-reads the REAL offset at that candidate — which
+ * fixes daylight-saving switches (a single pass was an hour off on both
+ * changeover days).
  */
 function instantOfWallClock(tz: string, y: number, mo: number, d: number, h: number, mi: number): number {
   const naive = Date.UTC(y, mo - 1, d, h, mi, 0, 0);
@@ -273,7 +274,7 @@ export function normalizeSchedule(raw: any): CronSchedule | null {
   return null;
 }
 
-/** Fuseau de la machine — le repli quand rien n'est configuré. */
+/** The machine's zone — the fallback when nothing is configured. */
 export function systemTimeZone(): string {
   try {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -282,7 +283,7 @@ export function systemTimeZone(): string {
   }
 }
 
-/** Défaut global (config `timezone`), ignoré s'il n'est pas un fuseau valide. */
+/** Global default (config `timezone`), ignored unless it is a valid zone. */
 export function defaultTimeZone(): string | undefined {
   const raw = loadConfig().timezone;
   const tz = typeof raw === "string" ? raw.trim() : "";
@@ -290,9 +291,9 @@ export function defaultTimeZone(): string | undefined {
 }
 
 /**
- * Fuseau effectif d'un cron : le sien, sinon le défaut global, sinon celui de
- * la machine. Un `tz` posé sur la config répare donc d'un coup tous les crons
- * existants — c'est exactement ce qu'on veut d'un serveur qui tourne en UTC.
+ * A cron's effective zone: its own, else the global default, else the
+ * machine's. Setting `tz` on the config therefore fixes every existing cron at
+ * once — exactly what you want on a server running UTC.
  */
 export function cronTimeZone(c: Pick<Cron, "tz">): string {
   if (c.tz && isValidTimeZone(c.tz)) return c.tz;
@@ -300,9 +301,9 @@ export function cronTimeZone(c: Pick<Cron, "tz">): string {
 }
 
 /**
- * Human label for a schedule (UI/Telegram). Le fuseau est TOUJOURS affiché pour
- * un `daily` : c'est la seule façon de repérer un serveur qui n'est pas dans le
- * fuseau qu'on croit (un « daily at 09:00 » nu ne dit pas 9h où).
+ * Human label for a schedule (UI/Telegram). The zone is ALWAYS shown for a
+ * `daily`: it is the only way to spot a server that is not in the zone you
+ * assume (a bare "daily at 09:00" does not say 09:00 where).
  */
 export function scheduleLabel(s: CronSchedule, tz?: string): string {
   if (s.kind === "interval") {
@@ -353,18 +354,18 @@ export type CronLookup =
   | { ok: false; error: "empty" | "not-found" | "ambiguous"; matches: number };
 
 /**
- * Résout ce que l'utilisateur a tapé en un id de cron complet.
+ * Resolve what the user typed into a full cron id.
  *
- * Toutes les surfaces n'affichent QUE les 8 premiers caractères de l'id
- * (`list` du web, de la skill, de Telegram) : accepter un préfixe n'est donc
- * pas un confort, c'est la seule façon de désigner un cron avec ce qu'on a sous
- * les yeux. Et un préfixe vide ne doit surtout pas « matcher le premier » —
- * `/cron del` sans argument supprimerait un cron au hasard.
+ * Every surface shows ONLY the first 8 characters of the id (the web, skill
+ * and Telegram `list`), so accepting a prefix is not a convenience: it is the
+ * only way to name a cron with what is on screen. And an empty prefix must
+ * never "match the first one" — a bare `/cron del` would delete a cron at
+ * random.
  */
 export function resolveCronId(list: Cron[], needle: string): CronLookup {
   const n = (needle ?? "").trim();
   if (!n) return { ok: false, error: "empty", matches: 0 };
-  // Un id complet gagne toujours, même s'il est aussi le préfixe d'un autre.
+  // A full id always wins, even when it is also the prefix of another.
   if (list.some((c) => c.id === n)) return { ok: true, id: n };
   const hits = list.filter((c) => c.id.startsWith(n));
   if (hits.length === 0) return { ok: false, error: "not-found", matches: 0 };

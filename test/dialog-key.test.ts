@@ -13,16 +13,16 @@ import { detectDialog, dialogKey, isResumeSummaryDialog } from "../src/extract.j
  * shape that actually shipped.
  */
 const SCREEN = [
-  "● Bonne occasion : j'ai justement une vraie question en suspens sur la PR.",
+  "● Good timing: I happen to have a real open question about the PR.",
   "",
   "────────────────────────────────────────────────────────────",
-  "←  ☐ Filtres  ☐ PR #334  ✔ Submit  →",
+  "←  ☐ Filters  ☐ PR #334  ✔ Submit  →",
   "",
-  "Sur mobile, comment veux-tu les 3 filtres de la page Ressources ?",
+  "On mobile, how do you want the 3 filters on the Resources page?",
   "",
-  "❯ 1. Empilés (actuel)             ┌──────────────────────────┐",
-  "  2. Grille 2 colonnes            │ ┌───────────────────┐    │",
-  "  3. Filtres repliables           │ │ 🔍 Rechercher…    │    │",
+  "❯ 1. Stacked (current)            ┌──────────────────────────┐",
+  "  2. 2-column grid                │ ┌───────────────────┐    │",
+  "  3. Collapsible filters          │ │ 🔍 Search…        │    │",
   "                                  │ └───────────────────┘    │",
   "                                  └──────────────────────────┘",
 ].join("\n");
@@ -30,10 +30,10 @@ const SCREEN = [
 test("the shipped stuck screen does parse — the parser was never the bug", () => {
   const d = detectDialog(SCREEN);
   assert.ok(d);
-  assert.equal(d.question, "Sur mobile, comment veux-tu les 3 filtres de la page Ressources ?");
+  assert.equal(d.question, "On mobile, how do you want the 3 filters on the Resources page?");
   assert.deepEqual(
     d.options.map((o) => o.label),
-    ["Empilés (actuel)", "Grille 2 colonnes", "Filtres repliables"],
+    ["Stacked (current)", "2-column grid", "Collapsible filters"],
   );
   assert.equal(d.multi, false);
 });
@@ -48,13 +48,13 @@ test("the key ignores the ❯ cursor moving between options", () => {
 
 test("a different question is a different key", () => {
   const a = detectDialog(SCREEN)!;
-  const b = detectDialog(SCREEN.replace("les 3 filtres", "les 4 filtres"))!;
+  const b = detectDialog(SCREEN.replace("the 3 filters", "the 4 filters"))!;
   assert.notEqual(dialogKey(a), dialogKey(b));
 });
 
 test("changing an option label is a different key", () => {
   const a = detectDialog(SCREEN)!;
-  const b = detectDialog(SCREEN.replace("Grille 2 colonnes", "Grille 3 colonnes"))!;
+  const b = detectDialog(SCREEN.replace("2-column grid", "3-column grid"))!;
   assert.notEqual(dialogKey(a), dialogKey(b));
 });
 

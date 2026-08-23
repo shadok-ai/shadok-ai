@@ -10,18 +10,18 @@ import {
   browserOrigin,
 } from "../src/net.js";
 
-// ── Interface d'écoute ───────────────────────────────────────────────────
+// ── Listening interface ──────────────────────────────────────────────────
 
-test("sans SHADOK_HOST, on n'écoute que la machine elle-même", () => {
+test("with no SHADOK_HOST we listen to this machine only", () => {
   assert.equal(resolveHost({}), DEFAULT_HOST);
   assert.equal(resolveHost({ SHADOK_HOST: "   " }), DEFAULT_HOST);
 });
 
-test("SHADOK_HOST impose l'interface (le cas conteneur)", () => {
+test("SHADOK_HOST forces the interface (the container case)", () => {
   assert.equal(resolveHost({ SHADOK_HOST: "0.0.0.0" }), "0.0.0.0");
 });
 
-test("les formes locales sont reconnues, y compris IPv6 entre crochets", () => {
+test("local forms are recognised, bracketed IPv6 included", () => {
   for (const h of ["127.0.0.1", "::1", "[::1]", "localhost", "LOCALHOST"])
     assert.equal(isLoopbackHost(h), true, h);
   for (const h of ["0.0.0.0", "192.168.1.20", "::", "example.com"])
@@ -30,24 +30,24 @@ test("les formes locales sont reconnues, y compris IPv6 entre crochets", () => {
 
 // ── Refus fail-closed ────────────────────────────────────────────────────
 
-test("bind local : jamais de refus, mot de passe ou pas", () => {
+test("local bind: never refused, password or not", () => {
   assert.equal(bindRefusal("127.0.0.1", false), null);
   assert.equal(bindRefusal("127.0.0.1", true), null);
 });
 
-test("bind réseau AVEC mot de passe : autorisé (le cas Docker légitime)", () => {
+test("network bind WITH a password: allowed (the legitimate Docker case)", () => {
   assert.equal(bindRefusal("0.0.0.0", true), null);
 });
 
-test("bind réseau SANS mot de passe : refusé, et le message dit quoi faire", () => {
+test("network bind WITHOUT a password: refused, and the message says what to do", () => {
   const r = bindRefusal("0.0.0.0", false);
-  assert.ok(r, "un bind réseau sans mot de passe doit être refusé");
+  assert.ok(r, "a network bind with no password must be refused");
   assert.match(r!, /--password|SHADOK_GUI_PASSWORD/);
 });
 
 // ── Allowlist d'origines ─────────────────────────────────────────────────
 
-test("SHADOK_ORIGINS : normalisé (casse, espaces, slash final), vides ignorés", () => {
+test("SHADOK_ORIGINS: normalised (case, spaces, trailing slash), empties ignored", () => {
   assert.deepEqual(parseOrigins(" https://Cockpit.Example.com/ , ,http://a.b "), [
     "https://cockpit.example.com",
     "http://a.b",
@@ -55,58 +55,58 @@ test("SHADOK_ORIGINS : normalisé (casse, espaces, slash final), vides ignorés"
   assert.deepEqual(parseOrigins(undefined), []);
 });
 
-// ── Le garde same-origin ─────────────────────────────────────────────────
+// ── The same-origin guard ────────────────────────────────────────────────
 
-test("pas d'Origin → autorisé : c'est un client non navigateur", () => {
-  // Le pont Telegram ouvre un WS sur notre propre serveur sans Origin ; le
-  // refuser couperait Telegram de ses sessions.
+test("no Origin → allowed: this is a non-browser client", () => {
+  // The Telegram bridge opens a WS to our own server with no Origin; refusing
+  // it would cut Telegram off from its sessions.
   assert.equal(originAllowed(undefined, "127.0.0.1:3789"), true);
   assert.equal(originAllowed("", "127.0.0.1:3789"), true);
 });
 
-test("même origine → autorisé, port compris", () => {
+test("same origin → allowed, port included", () => {
   assert.equal(originAllowed("http://localhost:3789", "localhost:3789"), true);
   assert.equal(originAllowed("http://192.168.1.20:3789", "192.168.1.20:3789"), true);
   assert.equal(originAllowed("https://cockpit.example.com", "cockpit.example.com"), true);
 });
 
-test("une page tierce est refusée — l'attaque WebSocket depuis un site visité", () => {
+test("a third-party page is refused — the WebSocket attack from a visited site", () => {
   assert.equal(originAllowed("https://evil.com", "localhost:3789"), false);
 });
 
-test("un port différent est une autre origine", () => {
-  // evil.com peut faire écouter n'importe quoi sur un autre port local ;
-  // l'origine se compare en entier, hôte ET port.
+test("a different port is a different origin", () => {
+  // evil.com can have anything listening on another local port; the origin is
+  // compared whole, host AND port.
   assert.equal(originAllowed("http://localhost:1234", "localhost:3789"), false);
 });
 
-test("un hôte qui commence pareil ne passe pas", () => {
+test("a host that merely starts the same does not get through", () => {
   assert.equal(originAllowed("http://localhost:3789.evil.com", "localhost:3789"), false);
   assert.equal(originAllowed("http://notlocalhost:3789", "localhost:3789"), false);
 });
 
-test("une origine opaque ou illisible est refusée", () => {
-  // `Origin: null` — iframe sandboxée, page file://.
+test("an opaque or unreadable origin is refused", () => {
+  // `Origin: null` — sandboxed iframe, file:// page.
   assert.equal(originAllowed("null", "localhost:3789"), false);
-  assert.equal(originAllowed("pas une url", "localhost:3789"), false);
+  assert.equal(originAllowed("not a url", "localhost:3789"), false);
 });
 
-test("sans Host on ne peut rien comparer : refus", () => {
+test("with no Host there is nothing to compare: refused", () => {
   assert.equal(originAllowed("https://evil.com", undefined), false);
 });
 
-test("SHADOK_ORIGINS ouvre une origine précise (reverse proxy)", () => {
+test("SHADOK_ORIGINS opens one specific origin (reverse proxy)", () => {
   const allow = ["https://cockpit.example.com"];
-  // Le Host vu par le serveur derrière le proxy n'est pas celui du navigateur.
+  // The Host the server sees behind the proxy is not the browser's.
   assert.equal(originAllowed("https://cockpit.example.com", "127.0.0.1:3789", allow), true);
   assert.equal(originAllowed("https://Cockpit.Example.com/", "127.0.0.1:3789", allow), true);
   assert.equal(originAllowed("https://evil.com", "127.0.0.1:3789", allow), false);
 });
 
 test("browserOrigin: seul un navigateur same-origin passe", () => {
-  // Utilisé UNIQUEMENT pour garder les routes qui changent les garde-fous d'un
-  // profil. originAllowed laisse passer les clients sans Origin (invariant 11 :
-  // Telegram, pilotctl, la CLI) — ici c'est précisément ce qu'on refuse.
+  // Used ONLY to guard the routes that change a profile's guardrails.
+  // originAllowed lets Origin-less clients through (invariant 11: Telegram,
+  // pilotctl, the CLI) — here that is precisely what we refuse.
   assert.equal(browserOrigin("http://localhost:3789", "localhost:3789"), true);
   assert.equal(browserOrigin(undefined, "localhost:3789"), false, "un shell d'agent n'envoie pas d'Origin");
   assert.equal(browserOrigin("", "localhost:3789"), false);

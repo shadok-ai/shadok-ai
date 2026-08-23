@@ -21,7 +21,7 @@ import {
 test("single-select dialog: question + options, ❯ selector required", () => {
   const screen = [
     " □ Test",
-    "Quelle option préfères-tu ?",
+    "Which option do you prefer?",
     "❯ 1. Option A",
     "    First option, nothing special.",
     "  2. Option B",
@@ -31,7 +31,7 @@ test("single-select dialog: question + options, ❯ selector required", () => {
   const d = detectDialog(screen);
   assert.ok(d, "should detect");
   assert.equal(d!.multi, false);
-  assert.equal(d!.question, "Quelle option préfères-tu ?");
+  assert.equal(d!.question, "Which option do you prefer?");
   assert.deepEqual(d!.options.map((o) => o.n), [1, 2, 3]);
   assert.equal(d!.options[0].label, "Option A");
   assert.equal(d!.options[0].hint, "First option, nothing special.");
@@ -39,19 +39,19 @@ test("single-select dialog: question + options, ❯ selector required", () => {
 
 test("two-column dialog: the right-hand preview chart is stripped from labels", () => {
   const screen = [
-    "Quel style de visualisation veux-tu ?",
-    "❯ 1. Barres horizontales          ┌─────────────────────────────────────┐",
-    "    (Recommandé)                  │ JAUGES — barres horizontales         │",
-    "  2. Sparklines temporelles       │   Session   ████████░░░░  67%         │",
-    "  3. Cadrans / arcs               │   Semaine   ██████░░░░░░  42%         │",
+    "Which visualisation style do you want?",
+    "❯ 1. Horizontal bars              ┌─────────────────────────────────────┐",
+    "    (Recommended)                 │ GAUGES — horizontal bars             │",
+    "  2. Time sparklines              │   Session   ████████░░░░  67%         │",
+    "  3. Dials / arcs                 │   Week      ██████░░░░░░  42%         │",
     "Enter to select · ↑/↓ to navigate",
   ].join("\n");
   const d = detectDialog(screen);
   assert.ok(d);
-  assert.equal(d!.options[0].label, "Barres horizontales");
-  assert.equal(d!.options[1].label, "Sparklines temporelles");
-  assert.equal(d!.options[2].label, "Cadrans / arcs");
-  assert.equal(d!.question, "Quel style de visualisation veux-tu ?");
+  assert.equal(d!.options[0].label, "Horizontal bars");
+  assert.equal(d!.options[1].label, "Time sparklines");
+  assert.equal(d!.options[2].label, "Dials / arcs");
+  assert.equal(d!.question, "Which visualisation style do you want?");
 });
 
 test("preview dialog: footer chrome under the stripped column is not glued onto an option's hint", () => {
@@ -63,7 +63,7 @@ test("preview dialog: footer chrome under the stripped column is not glued onto 
     "────────────────────────────────────────────────────────────",
     " ☐ Naming",
     "",
-    "Quel style de nommage préférez-vous ?",
+    "Which naming style do you prefer?",
     "",
     "❯ 1. camelCase                    ┌──────────────────────────┐",
     "  2. snake_case                   │ const myVar = 1;         │",
@@ -79,7 +79,7 @@ test("preview dialog: footer chrome under the stripped column is not glued onto 
   const d = detectDialog(screen);
   assert.ok(d, "should detect");
   assert.equal(d!.multi, false);
-  assert.equal(d!.question, "Quel style de nommage préférez-vous ?");
+  assert.equal(d!.question, "Which naming style do you prefer?");
   assert.deepEqual(d!.options.map((o) => o.label), ["camelCase", "snake_case"]);
   // The bug: option 2's hint carried the footer chrome. It must be empty now.
   assert.equal(d!.options[1].hint, "");
@@ -90,8 +90,8 @@ test("preview dialog: footer chrome under the stripped column is not glued onto 
 
 test("multi-select dialog: checkboxes parsed with their state", () => {
   const screen = [
-    "Quelles garnitures ?",
-    "❯ 1. [✔] Champignons",
+    "Which toppings?",
+    "❯ 1. [✔] Mushrooms",
     "  2. [ ] Pepperoni",
     "  3. [✔] Mozzarella",
     "Enter to select · ↑/↓ to navigate",
@@ -115,7 +115,7 @@ test("fewer than 2 options → not a dialog", () => {
 });
 
 test("plain transcript text → not a dialog", () => {
-  assert.equal(detectDialog("⏺ Voici la réponse.\n\nUn paragraphe normal."), null);
+  assert.equal(detectDialog("⏺ Here is the answer.\n\nAn ordinary paragraph."), null);
 });
 
 test("stacked dialogs: a previous dialog left in the scrollback is ignored — only the one carrying the ❯ cursor is parsed", () => {
@@ -126,16 +126,16 @@ test("stacked dialogs: a previous dialog left in the scrollback is ignored — o
   // question).
   const screen = [
     "Previous question — what to configure?",
-    "  1. [✔] Token du bot",
-    "  2. [ ] Activer / désactiver",
-    "  3. [✔] État / diagnostic",
+    "  1. [✔] Bot token",
+    "  2. [ ] Enable / disable",
+    "  3. [✔] Status / diagnostics",
     "← ☐ ☐ ✔ Submit →",
     "",
-    "Comment gérer l'affichage du token ?",
+    "How should the token be displayed?",
     "❯ 1. Write-only",
-    "    Le token n'est jamais réaffiché.",
-    "  2. Révélable",
-    "    Masqué par défaut, révélable.",
+    "    The token is never shown again.",
+    "  2. Revealable",
+    "    Hidden by default, revealable.",
     "Enter to confirm · Esc to cancel",
   ].join("\n");
   const d = detectDialog(screen);
@@ -144,25 +144,25 @@ test("stacked dialogs: a previous dialog left in the scrollback is ignored — o
   assert.equal(d!.multi, false);
   assert.deepEqual(
     d!.options.map((o) => o.label),
-    ["Write-only", "Révélable"],
+    ["Write-only", "Revealable"],
   );
-  assert.match(d!.question, /Comment gérer/);
+  assert.match(d!.question, /How should the token/);
 });
 
 // ── extractResponse ──────────────────────────────────────────────────────
 
 test("extractResponse takes the ⏺ answer after the prompt echo, dropping status", () => {
   const buffer = [
-    "❯ Explique X",
-    "⏺ Voici l'explication de X.",
-    "  suite sur deux lignes.",
+    "❯ Explain X",
+    "⏺ Here is the explanation of X.",
+    "  continued over two lines.",
     "✻ Cooked for 3s",
     "────────────────────────────────────────────",
     "❯ ",
   ].join("\n");
-  const out = extractResponse(buffer, "Explique X");
-  assert.match(out, /Voici l'explication de X/);
-  assert.match(out, /suite sur deux lignes/);
+  const out = extractResponse(buffer, "Explain X");
+  assert.match(out, /Here is the explanation of X/);
+  assert.match(out, /continued over two lines/);
   assert.doesNotMatch(out, /Cooked for/);
   assert.doesNotMatch(out, /^❯/m);
 });
@@ -185,34 +185,34 @@ function withTempHome(fn: (cwd: string, sid: string) => void) {
       JSON.stringify({
         type: "user",
         timestamp: "2026-07-28T21:57:55.938Z",
-        message: { content: "Première demande" },
+        message: { content: "First request" },
       }),
       JSON.stringify({
         type: "assistant",
         timestamp: "2026-07-28T21:58:10.000Z",
-        message: { content: [{ type: "text", text: "Réponse une." }] },
+        message: { content: [{ type: "text", text: "Answer one." }] },
       }),
       JSON.stringify({
         type: "assistant",
         timestamp: "2026-07-28T21:59:30.000Z",
-        message: { content: [{ type: "text", text: "Suite de la réponse une." }] },
+        message: { content: [{ type: "text", text: "Answer one, continued." }] },
       }),
       JSON.stringify({
         type: "assistant",
         message: { content: [{ type: "text", text: "NOTHING TO SHOW" }] },
       }),
       JSON.stringify({ type: "user", message: { content: "[Request interrupted…" } }),
-      // Un tour déclenché par un cron : le prompt est écrit dans le transcript
-      // comme n'importe quel message utilisateur, mais ne doit jamais être rendu.
+      // A turn fired by a cron: the prompt is written into the transcript like
+      // any other user message, but must never be rendered.
       JSON.stringify({
         type: "user",
         timestamp: "2026-07-28T22:10:00.000Z",
-        message: { content: "⏰ [cron] Résultat du monitoring :\n3 kB de dump\n\nRédige l'état des lieux." },
+        message: { content: "⏰ [cron] Monitoring output:\n3 kB of dump\n\nWrite the morning report." },
       }),
       JSON.stringify({
         type: "assistant",
         timestamp: "2026-07-28T22:10:30.000Z",
-        message: { content: [{ type: "text", text: "Rapport du matin." }] },
+        message: { content: [{ type: "text", text: "Morning report." }] },
       }),
     ].join("\n");
     fs.writeFileSync(path.join(dir, sid + ".jsonl"), lines);
@@ -231,15 +231,15 @@ test("loadHistory: real turns only, consecutive assistant blocks merged, meta/in
       turns.map((t) => t.role),
       ["user", "assistant"],
     );
-    assert.equal(turns[0].text, "Première demande");
-    assert.match(turns[1].text, /Réponse une\.\n\nSuite de la réponse une\./);
+    assert.equal(turns[0].text, "First request");
+    assert.match(turns[1].text, /Answer one\.\n\nAnswer one, continued\./);
   });
 });
 
 test("loadHistory: a NOTHING TO SHOW block leaves no trace in the replayed history", () => {
   withTempHome((cwd, sid) => {
     const turns = loadHistory(cwd, sid);
-    assert.equal(turns.length, 2); // pas de troisième tour né de la sentinelle
+    assert.equal(turns.length, 2); // no third turn born of the sentinel
     assert.doesNotMatch(turns[1].text, /NOTHING TO SHOW/);
   });
 });
@@ -250,21 +250,21 @@ test("findSessionId returns the session's id; listSessions previews the first pr
     const list = listSessions(cwd);
     assert.equal(list.length, 1);
     assert.equal(list[0].id, sid);
-    assert.equal(list[0].preview, "Première demande");
+    assert.equal(list[0].preview, "First request");
   });
 });
 
-test("loadHistory: chaque tour porte l'heure du .jsonl, le tour fusionné garde la première", () => {
+test("loadHistory: every turn carries the .jsonl time, a merged turn keeps the first", () => {
   withTempHome((cwd, sid) => {
     const turns = loadHistory(cwd, sid);
     assert.equal(turns[0].at, Date.parse("2026-07-28T21:57:55.938Z"));
-    // Deux blocs assistant fusionnés : l'heure est celle du DÉBUT de la prise de
-    // parole, pas celle du dernier bloc.
+    // Two merged assistant blocks: the time is that of the START of the
+    // speaking turn, not that of the last block.
     assert.equal(turns[1].at, Date.parse("2026-07-28T21:58:10.000Z"));
   });
 });
 
-test("loadHistory: un transcript sans timestamp ne fabrique pas d'heure", () => {
+test("loadHistory: a transcript with no timestamp does not invent a time", () => {
   const prevHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
   process.env.HOME = tmp;
@@ -275,7 +275,7 @@ test("loadHistory: un transcript sans timestamp ne fabrique pas d'heure", () => 
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, sid + ".jsonl"),
-      JSON.stringify({ type: "user", message: { content: "sans horodatage" } }),
+      JSON.stringify({ type: "user", message: { content: "no timestamp" } }),
     );
     assert.equal(loadHistory(cwd, sid)[0].at, undefined);
   } finally {
@@ -289,16 +289,16 @@ test("loadHistory on a missing transcript is empty, never throws", () => {
   assert.deepEqual(loadHistory("/nope/nowhere", "missing"), []);
 });
 
-// ── Origine d'un tour retrouvé en cours (après un redémarrage) ─────────────
+// ── Origin of a turn found already running (after a restart) ─────────────
 
-test("userPromptText : un vrai prompt oui, une ligne technique non", () => {
+test("userPromptText: a real prompt yes, a technical line no", () => {
   assert.equal(userPromptText({ type: "user", message: { content: "salut" } }), "salut");
   assert.equal(
     userPromptText({ type: "user", message: { content: [{ type: "text", text: "  salut  " }] } }),
     "salut",
   );
-  // Un résultat d'outil arrive EN COURS de tour : le prendre pour un prompt
-  // daterait l'origine du tour quelques secondes avant maintenant.
+  // A tool result arrives MID-turn: taking it for a prompt would date the
+  // turn's origin a few seconds before now.
   assert.equal(userPromptText({ type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } }), null);
   assert.equal(userPromptText({ type: "user", isMeta: true, message: { content: "salut" } }), null);
   assert.equal(userPromptText({ type: "user", message: { content: "<system-reminder>" } }), null);
@@ -307,7 +307,7 @@ test("userPromptText : un vrai prompt oui, une ligne technique non", () => {
   assert.equal(userPromptText(null), null);
 });
 
-test("lastPromptAt : l'heure du DERNIER vrai prompt, pas celle d'un résultat d'outil", () => {
+test("lastPromptAt: the time of the LAST real prompt, not of a tool result", () => {
   const prevHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
   process.env.HOME = tmp;
@@ -320,8 +320,8 @@ test("lastPromptAt : l'heure du DERNIER vrai prompt, pas celle d'un résultat d'
       path.join(dir, sid + ".jsonl"),
       [
         JSON.stringify({ type: "user", timestamp: "2026-07-30T08:00:00.000Z", message: { content: "vieux prompt" } }),
-        JSON.stringify({ type: "user", timestamp: "2026-07-30T09:00:00.000Z", message: { content: "le prompt du tour" } }),
-        // Écrits APRÈS, pendant le tour : ils ne doivent pas devenir l'origine.
+        JSON.stringify({ type: "user", timestamp: "2026-07-30T09:00:00.000Z", message: { content: "the turn's prompt" } }),
+        // Written AFTER, during the turn: they must not become the origin.
         JSON.stringify({
           type: "assistant",
           timestamp: "2026-07-30T09:00:05.000Z",
@@ -343,30 +343,30 @@ test("lastPromptAt : l'heure du DERNIER vrai prompt, pas celle d'un résultat d'
   }
 });
 
-test("resumedTurnStart : reprend le transcript, sauf quand il n'est pas croyable", () => {
+test("resumedTurnStart: trusts the transcript, except when it is not believable", () => {
   const now = Date.parse("2026-07-30T09:10:00.000Z");
   const tenMinAgo = Date.parse("2026-07-30T09:00:00.000Z");
-  // Le cas utile : l'agent réfléchit depuis 10 min, le chrono doit le dire.
+  // The useful case: the agent has been thinking for 10 min, the clock must say so.
   assert.equal(resumedTurnStart(now, tenMinAgo), tenMinAgo);
   // Pas de transcript exploitable → on repart de maintenant (0 s), pas de NaN.
   assert.equal(resumedTurnStart(now, null), now);
-  // Horodatage dans le futur (horloge de la machine changée) : refusé, sinon la
-  // durée affichée serait négative.
+  // A timestamp in the future (the machine's clock changed): refused, otherwise
+  // the displayed duration would be negative.
   assert.equal(resumedTurnStart(now, now + 60_000), now);
-  // Trop vieux : ce prompt appartient à un tour déjà fini, on afficherait son ÂGE
-  // et pas une durée de réflexion.
+  // Too old: that prompt belongs to an already finished turn, we would display
+  // its AGE and not a thinking duration.
   assert.equal(resumedTurnStart(now, now - MAX_RESUMED_TURN_MS - 1), now);
   assert.equal(resumedTurnStart(now, now - MAX_RESUMED_TURN_MS + 1), now - MAX_RESUMED_TURN_MS + 1);
 });
 
-test("loadHistory : le prompt d'un cron n'est jamais rejoué, sa réponse si", () => {
+test("loadHistory: a cron's prompt is never replayed, its answer is", () => {
   withTempHome((cwd, sid) => {
     const turns = loadHistory(cwd, sid);
-    // Aucun tour utilisateur ne porte le prompt programmé…
+    // No user turn carries the scheduled prompt…
     assert.equal(turns.some((t) => t.role === "user" && /\[cron\]/.test(t.text)), false);
     assert.equal(turns.some((t) => /dump/.test(t.text)), false);
-    // …mais ce que l'agent en a répondu reste, c'est tout l'intérêt du cron.
-    assert.equal(turns.some((t) => t.role === "assistant" && /Rapport du matin/.test(t.text)), true);
+    // …but what the agent answered stays, which is the whole point of the cron.
+    assert.equal(turns.some((t) => t.role === "assistant" && /Morning report/.test(t.text)), true);
   });
 });
 

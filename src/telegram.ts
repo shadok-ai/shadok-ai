@@ -53,8 +53,8 @@ const MSG_LIMIT = 4000; // Telegram hard limit is 4096; leave headroom.
 
 // Downloaded Telegram attachments live OUTSIDE any repo/worktree (never in a
 // diff, never committed by accident). Claude reads them by absolute path.
-// Exporté : le cockpit web y dépose aussi les images collées, pour que les
-// deux surfaces partagent un seul dossier (et une seule purge).
+// Exported: the web cockpit drops pasted images there too, so both surfaces
+// share a single folder (and a single purge).
 export const MEDIA_DIR = path.join(SHADOK_DIR, "media");
 const TG_FILE_LIMIT = 20 * 1024 * 1024; // Bot API getFile hard limit
 const MEDIA_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // purge after 30 days
@@ -88,10 +88,10 @@ export function parseCommand(text: string): { cmd: string; arg: string } | null 
 }
 
 /**
- * L'état visé par `/tools [on|off]` : `on`/`off` forcent, tout le reste — y
- * compris l'absence d'argument — bascule. Une commande de confort ne doit pas
- * devenir une énigme de syntaxe : `/tools yes` bascule plutôt que d'échouer.
- * Pure — testée unitairement.
+ * The state `/tools [on|off]` aims at: `on`/`off` force it, anything else —
+ * including no argument at all — toggles. A convenience command must not turn
+ * into a syntax puzzle: `/tools yes` toggles rather than failing.
+ * Pure — unit tested.
  */
 /**
  * May we (re)open a Telegram bridge for this channel right now?
@@ -144,16 +144,15 @@ export function nextToolsState(arg: string, current: boolean): boolean {
 }
 
 /**
- * Qui a le droit d'écrire au bot en privé ?
+ * Who may write to the bot in private?
  *
- * Un groupe est déjà borné au groupe lié ; un DM ne l'était pas : sans
- * allowlist configurée, n'importe qui trouvant le bot obtenait une session
- * Claude sur la machine. Le premier à écrire s'approprie donc les DM, et les
- * autres sont refusés.
+ * A group is already bounded to the bound group; a DM was not: with no
+ * allowlist configured, anyone who found the bot got a Claude session on the
+ * machine. So the first to write claims DMs, and everyone else is refused.
  *
- * Un expéditeur sans id est refusé même quand personne n'a encore revendiqué :
- * il n'y a rien à mémoriser, donc rien qui empêcherait le suivant d'entrer.
- * Pure — testée unitairement.
+ * A sender with no id is refused even when nobody has claimed yet: there is
+ * nothing to store, hence nothing that would keep the next one out.
+ * Pure — unit tested.
  */
 export function dmGate(owner: number | null, from: number | undefined): "claim" | "allow" | "deny" {
   if (typeof from !== "number") return "deny";
@@ -161,19 +160,19 @@ export function dmGate(owner: number | null, from: number | undefined): "claim" 
   return owner === from ? "allow" : "deny";
 }
 
-/** Les origines connues et leur marque. Une origine inconnue garde son nom :
- *  mieux vaut « quelqu'un a parlé » qu'un message qui semble venir de l'agent. */
+/** The known origins and their mark. An unknown origin keeps its name: better
+ *  "someone spoke" than a message that looks like it came from the agent. */
 const ORIGIN_MARKS: Record<string, string> = { web: "👤 web", cron: "⏰ cron", cli: "⌨️ cli", telegram: "👤 telegram" };
 
 /**
- * L'en-tête d'un prompt venu d'AILLEURS — le web, un cron, la CLI. Sans lui, un
- * canal Telegram ne voyait que les réponses : l'agent semblait parler tout seul,
- * et un cron qui se déclenche était indiscernable d'un message humain.
- * Pure — testée unitairement.
+ * The header of a prompt coming from ELSEWHERE — the web, a cron, the CLI.
+ * Without it a Telegram channel only saw the answers: the agent looked like it
+ * was talking to itself, and a cron firing was indistinguishable from a human
+ * message. Pure — unit tested.
  */
 export function promptEchoLabel(origin: string | undefined, auto = false): string {
-  // La reprise du pace guard n'est pas quelqu'un : elle vient du serveur.
-  if (auto) return "⚙️ reprise automatique";
+  // The pace guard's resume is not someone: it comes from the server.
+  if (auto) return "⚙️ auto-resumed";
   if (!origin) return "👤";
   return ORIGIN_MARKS[origin] ?? "👤 " + origin;
 }
@@ -279,7 +278,7 @@ export function mediaFileName(att: TgAttachment): string {
  *  path per line (Claude reads them itself — Read for images/PDF/text,
  *  Bash for the rest), then the user's caption if any. */
 export function attachmentPrompt(items: { path: string; kind: "image" | "file" }[], caption?: string): string {
-  const lines = items.map((i) => (i.kind === "image" ? `[Image jointe : ${i.path}]` : `[Fichier joint : ${i.path}]`));
+  const lines = items.map((i) => (i.kind === "image" ? `[Attached image: ${i.path}]` : `[Attached file: ${i.path}]`));
   return caption?.trim() ? lines.join("\n") + "\n" + caption : lines.join("\n");
 }
 
@@ -358,23 +357,23 @@ export function makeAlbumBuffer<T>(
         groups.delete(groupId);
         flush(groupId, items);
       }, delayMs);
-      timer.unref?.(); // ne jamais retenir le process pour un buffer
+      timer.unref?.(); // never hold the process open for a buffer
       groups.set(groupId, { items, timer });
     },
   };
 }
 
 /**
- * File d'envoi série. Chaque `send`/`edit` d'un bridge lançait son propre
- * `fetch` sans être attendu : deux appels rapprochés n'arrivaient donc pas
- * forcément dans l'ordre d'émission (c'est ce qui pouvait faire passer le
- * clavier devant la préface). Ici les opérations s'enchaînent en FIFO, et un
- * rejet ne casse pas la file — l'appelant récupère quand même son erreur.
+ * Serial send queue. Each `send`/`edit` of a bridge fired its own `fetch`
+ * unawaited, so two calls close together did not necessarily arrive in the
+ * order they were issued (that is what could put the keyboard ahead of the
+ * preface). Here operations chain FIFO, and a rejection does not break the
+ * queue — the caller still gets its error.
  */
 export function makeSendQueue(): <T>(op: () => Promise<T>) => Promise<T> {
   let tail: Promise<unknown> = Promise.resolve();
   return <T>(op: () => Promise<T>): Promise<T> => {
-    // `then(op, op)` : la suite part que la précédente ait réussi ou échoué.
+    // `then(op, op)`: the next one goes whether the previous succeeded or not.
     const next = tail.then(op, op) as Promise<T>;
     tail = next.then(
       () => {},
@@ -384,47 +383,46 @@ export function makeSendQueue(): <T>(op: () => Promise<T>) => Promise<T> {
   };
 }
 
-/** Nombre de lettres/chiffres en deçà duquel une préface ne peut pas
- *  s'apparier : un fragment trop court s'apparierait à tort à n'importe quoi. */
+/** Below this many letters/digits a preface cannot match: too short a fragment
+ *  would wrongly match anything. */
 const PREFACE_MIN = 24;
 
 /**
- * Réduit un texte à ses lettres et chiffres, en minuscules.
+ * Reduce a text to its letters and digits, lowercased.
  *
- * Les deux côtés décrivent le même bloc mais dans deux formes différentes :
- * l'écran montre le Markdown **rendu** (le gras est de l'ANSI, les `**` ont
- * disparu, une puce devient un bullet) alors que le transcript en garde la
- * **source**. Comparer la ponctuation ferait donc échouer tout paragraphe
- * contenant du gras, un backtick ou un lien — c'est exactement ce qui produisait
- * un doublon en v0.1.144. Seul le squelette alphanumérique est commun aux deux.
+ * Both sides describe the same block but in two different forms: the screen
+ * shows **rendered** Markdown (bold is ANSI, the `**` are gone, a dash becomes
+ * a bullet) while the transcript keeps the **source**. Comparing punctuation
+ * would therefore fail on any paragraph containing bold, a backtick or a link —
+ * which is exactly what produced a duplicate in v0.1.144. Only the
+ * alphanumeric skeleton is common to both.
  */
 function skeleton(s: string): string {
   return (s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
 }
 
-/** Longueur de l'empreinte comparée. Assez pour identifier un bloc sans
- *  ambiguïté, assez courte pour qu'une divergence plus loin soit sans effet. */
+/** Length of the compared fingerprint. Long enough to identify a block
+ *  unambiguously, short enough that a later divergence has no effect. */
 const PREFACE_FINGERPRINT = 60;
 
 /**
- * La préface lue à l'écran et le texte autoritatif du transcript sont-ils le
- * même bloc ?
+ * Are the preface read off the screen and the transcript's authoritative text
+ * the same block?
  *
- * On n'exige pas que le bloc entier coïncide : certaines constructions ne
- * peuvent pas coïncider. Un lien Markdown garde son URL dans la source alors
- * que l'écran n'en montre que le libellé — selon le rendu, c'est un côté ou
- * l'autre qui porte du texte en plus, donc aucune inclusion stricte ne tient
- * dans les deux sens. On compare donc l'**empreinte d'ouverture** : les
- * premiers caractères alphanumériques de la préface doivent se retrouver dans
- * le texte autoritatif. Une divergence plus loin dans le paragraphe devient
- * sans conséquence.
+ * We do not require the whole block to coincide: some constructs cannot. A
+ * Markdown link keeps its URL in the source while the screen shows only the
+ * label — depending on the rendering, it is one side or the other that carries
+ * extra text, so no strict inclusion holds both ways. So we compare the
+ * **opening fingerprint**: the preface's first alphanumeric characters must be
+ * found in the authoritative text. A divergence further into the paragraph
+ * becomes inconsequential.
  *
- * L'inclusion (et non le préfixe) couvre le cas où le début du bloc a défilé
- * hors de l'écran : la préface n'en est alors qu'un fragment interne.
+ * Inclusion (rather than prefix) covers the case where the block's start has
+ * scrolled off the screen: the preface is then only an inner fragment of it.
  *
- * Volontairement tolérant ; ce qui borne les faux positifs, c'est qu'une seule
- * préface est armée à la fois, consommée par le premier `stream-text` qui suit
- * sa question et désarmée à la fin du tour.
+ * Deliberately tolerant; what bounds false positives is that only one preface
+ * is armed at a time, consumed by the first `stream-text` following its
+ * question and disarmed at the end of the turn.
  */
 export function prefaceMatches(preface: string, authoritative: string): boolean {
   const a = skeleton(preface);
@@ -434,29 +432,29 @@ export function prefaceMatches(preface: string, authoritative: string): boolean 
 }
 
 /**
- * La préface décrit-elle un bloc **déjà diffusé** ?
+ * Does the preface describe a block that was **already broadcast**?
  *
- * Une préface est lue à l'écran, et l'écran garde la réponse du tour précédent
- * tant que le nouveau tour n'a rien écrit. Sans ce garde, chaque question était
- * précédée d'une copie de la réponse d'avant — et le doublon ne se réparait
- * jamais : `prefaceMatches` attend un jumeau autoritatif qui, lui, est arrivé
- * au tour précédent et ne reviendra pas.
+ * A preface is read off the screen, and the screen keeps the previous turn's
+ * answer until the new turn writes anything. Without this guard, every question
+ * was preceded by a copy of the previous answer — and the duplicate never
+ * repaired itself: `prefaceMatches` waits for an authoritative twin which, in
+ * that case, arrived on the previous turn and will not come back.
  *
- * Même comparateur que `prefaceMatches` : une seule définition de « c'est le
- * même bloc » dans tout le projet, garde-fous compris (un fragment trop court
- * ne s'apparie à rien).
+ * Same comparator as `prefaceMatches`: one definition of "this is the same
+ * block" across the project, safety rails included (too short a fragment
+ * matches nothing).
  */
 export function isStalePreface(preface: string, recent: string[]): boolean {
   const a = skeleton(preface);
   if (!a) return false;
-  // Volontairement PLUS large que `prefaceMatches`, dont le plancher
-  // (PREFACE_MIN) laissait passer les réponses courtes — « OK » se reposait à
-  // chaque question. Les deux fonctions n'ont pas le même coût d'erreur :
-  //   · faux positif ici → la préface n'est pas montrée en avance, mais le bloc
-  //     arrive quand même par le tail. Presque rien.
-  //   · faux positif dans `prefaceMatches` → on ÉDITE le mauvais message.
-  // D'où l'inclusion nue, sans longueur minimale : elle couvre aussi la préface
-  // tronquée par le défilement, qui n'est qu'un fragment interne du bloc.
+  // Deliberately BROADER than `prefaceMatches`, whose floor (PREFACE_MIN) let
+  // short answers through — an "OK" was re-posted at every question. The two
+  // functions do not carry the same cost of error:
+  //   · a false positive here → the preface is not shown early, but the block
+  //     still arrives through the tail. Almost nothing.
+  //   · a false positive in `prefaceMatches` → we EDIT the wrong message.
+  // Hence the bare inclusion, with no minimum length: it also covers a preface
+  // truncated by scrolling, which is only an inner fragment of the block.
   return recent.some((t) => {
     const b = skeleton(t);
     return b.length > 0 && b.includes(a);
@@ -478,10 +476,10 @@ interface Dialog {
 /** Inline keyboard for a TUI dialog. Single-select → one button per option
  *  (choose); multi-select → toggle buttons (with ☑/☐) + a Submit row. */
 /**
- * L'option « texte libre » d'AskUserQuestion. **Exactement la règle du web**
- * (`public/index.html`, la `freetext-row`) : les deux clients doivent s'accorder
- * sur ce qu'est une option libre, sinon le même dialogue se comporte
- * différemment selon l'écran.
+ * AskUserQuestion's "free text" option. **Exactly the web's rule**
+ * (`public/index.html`, the `freetext-row`): both clients must agree on what a
+ * free-text option is, otherwise the same dialog behaves differently depending
+ * on the screen.
  */
 export function isFreetextOption(label: string): boolean {
   return /^type something/i.test(label.trim());
@@ -491,9 +489,9 @@ export function dialogKeyboard(d: Dialog): { inline_keyboard: { text: string; ca
   const rows = d.options.map((o) => [
     {
       text: (d.multi ? (o.checked ? "☑ " : "☐ ") : "") + `${o.n}. ${o.label}`.slice(0, 60),
-      // `f:` = réponse libre : le bouton ouvre une saisie au lieu de valider un
-      // choix. Sans ça, l'option partait en `choose` → Entrée à vide dans le TUI
-      // → outil rejeté et tour mort, sans un mot dans le canal.
+      // `f:` = free answer: the button opens an input instead of committing a
+      // choice. Without it the option went out as `choose` → empty Enter in the
+      // TUI → tool rejected and turn dead, without a word in the channel.
       callback_data: (isFreetextOption(o.label) ? "f:" : d.multi ? "t:" : "d:") + o.n,
     },
   ]);
@@ -524,13 +522,14 @@ interface Bridge {
   pending: string[]; // prompts queued until the WS is ready
   pendingActions: object[]; // dialog actions (choose/toggle/confirm) queued until ready
   dialogMsgId?: number; // Telegram message showing the current dialog keyboard
-  // Option « texte libre » choisie : on attend le prochain message du canal
-  // pour le renvoyer en `freetext` plutôt qu'en nouveau prompt. Désarmé à la
-  // fin du tour — une attente orpheline détournerait un prompt ordinaire.
+  // A "free text" option was chosen: we wait for the channel's next message to
+  // send it back as `freetext` rather than as a new prompt. Disarmed at the end
+  // of the turn — an orphan wait would hijack an ordinary prompt.
   awaitingFreetext?: { n: number };
-  // Préface d'un dialog en attente de son jumeau autoritatif (cf. la spec du
-  // 2026-07-28) : le texte lu à l'écran, et le message qui le porte — édité en
-  // place quand le tail livre enfin le vrai bloc, au lieu d'un doublon.
+  // A dialog's preface waiting for its authoritative twin (see the 2026-07-28
+  // spec): the text read off the screen, and the message carrying it — edited
+  // in place when the tail finally delivers the real block, instead of a
+  // duplicate.
   prefaceText?: string;
   prefaceMsgId?: number;
   worktree?: boolean; // spawn the session in an isolated worktree
@@ -538,13 +537,13 @@ interface Bridge {
   // is freshly created for an existing channel, so a fresh mirror isn't empty.
   // Cleared after the first `history` so a reconnect/reboot never re-spams.
   backfill?: boolean;
-  // Poster (ou non) les appels d'outils dans ce canal — réglage du topic, lu
-  // une fois à l'ouverture du pont pour ne pas toucher le disque à chaque
-  // événement d'un tour. Basculé par /tools.
+  // Whether to post tool calls in this channel — a topic setting, read once
+  // when the bridge opens so we do not touch the disk on every event of a turn.
+  // Toggled by /tools.
   showTools: boolean;
   name?: string; // channel name (a /spawn topic name), stored in the registry
   typing: { start: () => void; stop: () => void }; // "typing…" heartbeat for the running turn
-  send: <T>(op: () => Promise<T>) => Promise<T>; // file série des écritures Telegram
+  send: <T>(op: () => Promise<T>) => Promise<T>; // serial queue of Telegram writes
 }
 
 /**
@@ -661,18 +660,18 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
     }
   } catch {
-    // dossier absent : rien à purger
+    // folder missing: nothing to purge
   }
 
   /** Download one attachment to MEDIA_DIR; returns the absolute path.
-   *  Throws with a user-facing (French) reason on any failure. */
+   *  Throws with a user-facing reason on any failure. */
   const downloadAttachment = async (att: TgAttachment): Promise<string> => {
     if (att.fileSize && att.fileSize > TG_FILE_LIMIT)
-      throw new Error("fichier trop gros (limite Telegram bot : 20 Mo)");
+      throw new Error("file too large (Telegram bot limit: 20 MB)");
     const f = await tg("getFile", { file_id: att.fileId });
-    if (!f?.ok) throw new Error(f?.description ?? "getFile a échoué");
+    if (!f?.ok) throw new Error(f?.description ?? "getFile failed");
     const r = await fetch(`https://api.telegram.org/file/bot${token}/${f.result.file_path}`);
-    if (!r.ok) throw new Error(`téléchargement HTTP ${r.status}`);
+    if (!r.ok) throw new Error(`download HTTP ${r.status}`);
     fs.mkdirSync(MEDIA_DIR, { recursive: true });
     const dest = path.join(MEDIA_DIR, mediaFileName(att));
     fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
@@ -689,7 +688,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     tg("deleteForumTopic", { chat_id: chatId, message_thread_id: threadId });
   };
 
-  /** Un morceau déjà découpé → un message Telegram ; renvoie son id, ou null. */
+  /** One already-split part → one Telegram message; returns its id, or null. */
   const sendPart = async (b: Bridge, part: string): Promise<number | null> => {
     const to = { chat_id: b.chatId, ...(b.threadId ? { message_thread_id: b.threadId } : {}) };
     // Render the agent's Markdown as Telegram HTML; if Telegram rejects it
@@ -705,9 +704,9 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     return raw?.ok ? raw.result.message_id : null;
   };
 
-  /** Envoie un texte (découpé si besoin). Passe par la file du bridge : deux
-   *  `fetch` concurrents n'arriveraient pas forcément dans l'ordre d'émission.
-   *  Renvoie l'id du PREMIER message — celui qu'on éditera pour une préface. */
+  /** Send a text (split if needed). Goes through the bridge's queue: two
+   *  concurrent `fetch` calls would not necessarily arrive in the order they
+   *  were issued. Returns the FIRST message's id — the one a preface edits. */
   const send = (b: Bridge, text: string): Promise<number | null> =>
     b.send(async () => {
       let first: number | null = null;
@@ -718,9 +717,9 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       return first;
     });
 
-  /** Remplace le contenu d'un message déjà envoyé (la préface → le vrai bloc).
-   *  Un texte trop long pour un message : le 1er morceau remplace, le reste
-   *  suit. Échec d'édition → on laisse la préface en place, elle reste juste. */
+  /** Replace the content of an already sent message (the preface → the real
+   *  block). Text too long for one message: the 1st part replaces, the rest
+   *  follows. A failed edit → the preface stays in place, still accurate. */
   const editText = (b: Bridge, msgId: number, text: string): Promise<void> =>
     b.send(async () => {
       const parts = chunk(text);
@@ -820,7 +819,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           b.backfill = false;
           const turns = (Array.isArray(m.turns) ? m.turns : []).slice(-15);
           if (!turns.length) break;
-          send(b, `— historique repris (${turns.length} derniers échanges) —`);
+          send(b, `— history resumed (last ${turns.length} exchanges) —`);
           for (const t of turns) {
             const txt = String(t?.text ?? "").trim();
             if (txt) send(b, t.role === "user" ? "👤 " + txt : txt);
@@ -841,10 +840,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           break;
         case "stream-text": {
           if (!m.text?.trim()) break;
-          // Ce bloc est-il le jumeau autoritatif d'une préface déjà affichée ?
-          // (le tail ne le livre qu'une fois la question répondue). Si oui, on
-          // ÉDITE le message existant — le Markdown propre remplace le texte
-          // dé-wrappé de l'écran — au lieu de poster un doublon.
+          // Is this block the authoritative twin of a preface already shown?
+          // (the tail only delivers it once the question is answered). If so we
+          // EDIT the existing message — clean Markdown replaces the screen's
+          // unwrapped text — instead of posting a duplicate.
           if (b.prefaceText && prefaceMatches(b.prefaceText, m.text)) {
             const id = b.prefaceMsgId;
             b.prefaceText = undefined;
@@ -856,14 +855,15 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           break;
         }
         case "prompt-echo":
-          // Le serveur exclut déjà l'émetteur : ce qui arrive ici vient
-          // forcément d'un AUTRE client. On le montre, marqué — un bot ne peut
-          // pas poster sous le nom de l'utilisateur.
+          // The server already excludes the sender: what arrives here
+          // necessarily comes from ANOTHER client. We show it, marked — a bot
+          // cannot post under the user's name.
           if (m.text?.trim()) send(b, promptEchoLabel(m.origin, m.auto) + "\n" + m.text);
           break;
         case "stream-tool":
-          // Masqués par défaut : sur un tour un peu long, la réponse de l'agent
-          // se noie sous les « → Read … ». /tools les rallume par canal.
+          // Hidden by default: on a slightly long turn the agent's answer
+          // drowns under "→ Read …" lines. /tools turns them back on per
+          // channel.
           if (b.showTools) send(b, "→ " + m.name + (m.summary ? "  " + m.summary : ""));
           break;
         case "dialog":
@@ -881,10 +881,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
               }),
             );
           } else {
-            // Le texte écrit juste avant la question : le serveur l'a lu à
-            // l'écran, car le transcript ne le livrera qu'APRÈS la réponse.
-            // Sans lui, l'utilisateur choisit à l'aveugle. La file garantit
-            // qu'il précède réellement le clavier.
+            // The text written just before the question: the server read it
+            // off the screen, because the transcript only delivers it AFTER the
+            // answer. Without it the user chooses blind. The queue guarantees
+            // it really precedes the keyboard.
             if (m.preface?.trim()) {
               b.prefaceText = m.preface;
               b.prefaceMsgId = undefined;
@@ -892,21 +892,21 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
                 if (id !== null) b.prefaceMsgId = id;
               });
             }
-            b.awaitingFreetext = undefined; // nouvelle question : l'attente précédente est caduque
+            b.awaitingFreetext = undefined; // new question: the previous wait is void
             b.send(() =>
               tg("sendMessage", {
                 chat_id: b.chatId,
                 ...(b.threadId ? { message_thread_id: b.threadId } : {}),
-                // Tronqué : ce message ne passe pas par `chunk()` (il porte le
-                // clavier, qu'on ne peut pas couper en deux). Au-delà de la
-                // limite Telegram, l'envoi échouait — donc AUCUN clavier, et le
-                // tour restait suspendu sur une question inatteignable.
-                text: (m.question || "Choisis :").slice(0, MSG_LIMIT),
+                // Truncated: this message does not go through `chunk()` (it
+                // carries the keyboard, which cannot be cut in two). Past
+                // Telegram's limit the send failed — so NO keyboard at all, and
+                // the turn stayed suspended on an unreachable question.
+                text: (m.question || "Choose:").slice(0, MSG_LIMIT),
                 reply_markup: dialogKeyboard(m),
               }).then((r) => {
                 if (r?.ok) b.dialogMsgId = r.result.message_id;
-                // Le dire plutôt que de laisser le canal muet : sans clavier,
-                // la seule issue est le web ou /stop.
+                // Say it rather than leaving the channel silent: with no
+                // keyboard, the only way out is the web UI or /stop.
                 else send(b, `⚠️ Telegram refused the question's keyboard (${r?.description ?? "unknown reason"}). Answer from the web UI, or /stop.`);
               }),
             );
@@ -915,10 +915,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         case "turn-done":
           b.typing.stop();
           b.dialogMsgId = undefined; // any dialog is resolved once the turn ends
-          b.awaitingFreetext = undefined; // plus de question en attente de texte
-          // Le jumeau autoritatif d'une préface arrive DANS le tour qui suit la
-          // réponse ; passé la fin du tour il ne viendra plus. On désarme, sinon
-          // un texte ultérieur pourrait s'y apparier et éditer un vieux message.
+          b.awaitingFreetext = undefined; // no question waiting for text any more
+          // A preface's authoritative twin arrives WITHIN the turn that follows
+          // the answer; past the end of the turn it will not come. So disarm,
+          // otherwise a later text could match it and edit an old message.
           b.prefaceText = undefined;
           b.prefaceMsgId = undefined;
           break;
@@ -1012,9 +1012,9 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         failed.push(`${i.att.fileName ?? i.att.fileUniqueId} (${e?.message ?? e})`);
       }
     }
-    if (failed.length) reply(b.chatId, b.threadId, "⚠️ téléchargement raté : " + failed.join(", "));
+    if (failed.length) reply(b.chatId, b.threadId, "⚠️ download failed: " + failed.join(", "));
     if (ok.length) promptTo(b, attachmentPrompt(ok, caption), items.find((i) => i.from)?.from);
-    else b.typing.stop(); // rien à envoyer : ne pas laisser « typing » tourner
+    else b.typing.stop(); // nothing to send: do not leave "typing" running
   });
 
   const endBinding = (key: string, chatId: number, threadId?: number) => {
@@ -1030,7 +1030,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     if (ch) removeChannel(ch.sessionId);
   };
 
-  /** Applique `dmGate` à un message privé. Renvoie false si on doit s'arrêter. */
+  /** Apply `dmGate` to a private message. Returns false when we must stop. */
   const guardDm = async (msg: any): Promise<boolean> => {
     const from = msg.from?.id as number | undefined;
     const verdict = dmGate(loadTgOwner(), from);
@@ -1053,9 +1053,9 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       await reply(chat.id, msg.message_thread_id, "⛔ this bot is restricted.");
       return;
     }
-    // Les DM appartiennent au premier qui a écrit. Une allowlist explicite
-    // reste prioritaire (elle a déjà filtré plus haut) : ceci est le garde par
-    // défaut, pour l'installation qui n'en configure aucune.
+    // DMs belong to whoever wrote first. An explicit allowlist still wins (it
+    // has already filtered above): this is the default guard, for an install
+    // that configures none.
     if (chat.type === "private" && !(await guardDm(msg))) return;
     const threadId = msg.message_thread_id as number | undefined;
     const isGroup = chat.type === "group" || chat.type === "supergroup";
@@ -1132,26 +1132,26 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           return;
         case "stop":
         case "esc": {
-          // Interrompre le tour en cours = la touche Échap du web (bouton Esc de
-          // l'engine room). Ça ne tue PAS la session : c'est /end qui fait ça.
-          // `bridges.get` et pas `bridgeFor` : /stop ne doit jamais faire naître
-          // une session juste parce qu'on a tapé la commande.
+          // Interrupting the running turn = the web's Escape key (the engine
+          // room's Esc button). It does NOT kill the session: /end does that.
+          // `bridges.get` and not `bridgeFor`: /stop must never bring a session
+          // into being just because the command was typed.
           const sb = bridges.get(key);
           if (!sb || sb.ws.readyState !== WebSocket.OPEN) {
-            await reply(chat.id, threadId, "aucune session ici.");
+            await reply(chat.id, threadId, "no session here.");
             return;
           }
           sb.ws.send(JSON.stringify({ type: "key", key: "escape" }));
-          // Couper « typing… » tout de suite : si l'agent était déjà au repos,
-          // aucun événement terminal n'arrivera pour l'éteindre.
+          // Stop "typing…" right away: if the agent was already idle, no
+          // terminal event will come to turn it off.
           sb.typing.stop();
-          await reply(chat.id, threadId, "⏹ interrompu.");
+          await reply(chat.id, threadId, "⏹ interrupted.");
           return;
         }
         case "tools": {
-          // `bridges.get` et pas `bridgeFor` : régler l'affichage ne doit pas
-          // faire naître une session (même précaution que /stop). Le store est
-          // la source de vérité — un pont ouvert plus tard le relira.
+          // `bridges.get` and not `bridgeFor`: changing a display setting must
+          // not bring a session into being (same precaution as /stop). The
+          // store is the source of truth — a bridge opened later re-reads it.
           const next = nextToolsState(cmd.arg, tgToolsEnabled(key));
           setTgTools(key, next);
           const tb = bridges.get(key);
@@ -1179,9 +1179,9 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           const parts = cmd.arg.trim().split(/\s+/);
           const sub = (parts.shift() || "list").toLowerCase();
           const mineOf = (sid: string) => loadCrons().filter((c) => c.sessionId === sid);
-          // Résolution partagée avec l'API HTTP : un préfixe vide ne matche
-          // plus « le premier » (un `/cron del` nu supprimait un cron au
-          // hasard), et un préfixe ambigu est refusé plutôt que tranché.
+          // Resolution shared with the HTTP API: an empty prefix no longer
+          // matches "the first one" (a bare `/cron del` deleted a cron at
+          // random), and an ambiguous prefix is refused rather than guessed.
           const findById = (pfx: string): Cron | { miss: string } => {
             const list = loadCrons();
             const r = resolveCronId(list, pfx);
@@ -1240,8 +1240,8 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             prompt,
             schedule: sched,
             enabled: true,
-            // Pas de `tz` propre : le cron suit le défaut global (config
-            // `timezone`), donc le régler répare aussi ceux créés d'ici.
+            // No `tz` of its own: the cron follows the global default (config
+            // `timezone`), so setting it also fixes the ones created here.
             nextRun: nextRunFor(sched, Date.now(), cronTimeZone({})),
           };
           upsertCron(cron);
@@ -1378,14 +1378,14 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         await reply(
           chat.id,
           threadId,
-          `⚠️ je n'ai pas pu télécharger ${att.fileName ?? "la pièce jointe"} (${e?.message ?? e})`,
+          `⚠️ could not download ${att.fileName ?? "the attachment"} (${e?.message ?? e})`,
         );
       }
       return;
     }
-    // Réponse à une option « texte libre » : ce message va à la question en
-    // cours, pas au prompt. Désarmé avant l'envoi, quoi qu'il advienne : une
-    // attente qui survit détournerait le message suivant.
+    // Answer to a "free text" option: this message goes to the pending
+    // question, not to the prompt. Disarmed before sending, whatever happens: a
+    // wait that survives would hijack the next message.
     if (b.awaitingFreetext) {
       const { n } = b.awaitingFreetext;
       b.awaitingFreetext = undefined;
@@ -1401,10 +1401,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     const action = parseCallback(cq.data ?? "");
     const msg = cq.message;
     if (!action || !msg) return;
-    // Un clavier ne peut apparaître qu'après un message accepté, donc ce chemin
-    // n'est en principe pas atteignable par un inconnu — on le ferme quand même
-    // plutôt que de dépendre de cette supposition. Jamais de "claim" ici : on ne
-    // s'approprie les DM qu'en écrivant, pas en cliquant.
+    // A keyboard can only appear after an accepted message, so in principle a
+    // stranger cannot reach this path — we close it anyway rather than depend
+    // on that assumption. Never a "claim" here: DMs are claimed by writing, not
+    // by clicking.
     if (msg.chat?.type === "private" && dmGate(loadTgOwner(), cq.from?.id) !== "allow") {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ This bot is private." });
       return;
@@ -1413,8 +1413,8 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     // Resume the bridge if the server was restarted since the dialog was shown
     // (otherwise a click on an orphaned keyboard would silently do nothing).
     const b = bridgeFor(bindKey(msg.chat, msg.message_thread_id), msg.chat.id, msg.message_thread_id);
-    // Réponse libre : rien à envoyer au serveur pour l'instant — on réclame le
-    // texte. `force_reply` ouvre le clavier du téléphone tout seul.
+    // Free answer: nothing to send to the server yet — we ask for the text.
+    // `force_reply` opens the phone's keyboard on its own.
     if (action.kind === "freetext") {
       b.awaitingFreetext = { n: action.n! };
       await tg("sendMessage", {
@@ -1584,7 +1584,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         const key = bindKey({ id: group, type: "supergroup" }, th);
         const b = bridges.get(key);
         if (b) {
-          try { b.ws.close(); } catch { /* déjà fermé */ }
+          try { b.ws.close(); } catch { /* already closed */ }
           bridges.delete(key);
         }
         console.log(`telegram: unmirroring channel ${c.sessionId.slice(0, 8)} — deleting topic ${th}`);
@@ -1652,11 +1652,11 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
    * web ⟷ Telegram from drifting across reboots. Runs once at connect.
    */
   /**
-   * Adopter le propriétaire d'une installation DÉJÀ en service. Sans ça, la
-   * mise à jour ouvrirait une fenêtre : le premier à écrire après le
-   * déploiement s'approprie les DM — un inconnu pourrait verrouiller dehors
-   * l'utilisateur légitime. Un chat privé a un id positif (les groupes sont
-   * négatifs) et pas de topic : la liaison existante suffit à le désigner.
+   * Adopt the owner of an installation ALREADY in service. Without this, the
+   * update would open a window: the first to write after the deployment claims
+   * DMs — a stranger could lock the legitimate user out. A private chat has a
+   * positive id (groups are negative) and no topic: the existing binding is
+   * enough to name it.
    */
   const adoptOwnerFromBindings = async () => {
     if (loadTgOwner() !== null) return;
@@ -1668,10 +1668,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         return;
       }
     }
-    // Aucune liaison DM — le cas d'une installation pilotée uniquement depuis le
-    // groupe. Le CRÉATEUR du groupe lié est celui qui a monté ce tableau : c'est
-    // lui le propriétaire légitime. Sans ça, le premier inconnu à écrire au bot
-    // après la mise à jour revendiquerait les DM à sa place.
+    // No DM binding — the case of an installation driven only from the group.
+    // The bound group's CREATOR is whoever set that board up: they are the
+    // legitimate owner. Without this, the first stranger to write to the bot
+    // after the update would claim DMs in their place.
     const group = loadTgGroup();
     if (group === null) return;
     const admins = await tg("getChatAdministrators", { chat_id: group });
@@ -1700,12 +1700,12 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       }
       // "unknown" (transient check failure) → leave the channel untouched.
     }
-    // Rattacher les agents ENCORE VIVANTS. Un pont ne naissait jusqu'ici qu'au
-    // prochain message du canal : après un redémarrage — donc à chaque
-    // auto-update — personne n'écoutait, et tout ce que l'agent écrivait
-    // pendant ce temps n'arrivait jamais dans Telegram (le web, lui, recharge
-    // son historique). On se limite aux sessions dont le tmux tourne encore :
-    // rouvrir un canal dormant ferait renaître un `claude` pour rien.
+    // Reattach the agents that are STILL ALIVE. Until now a bridge was only
+    // born at the channel's next message: after a restart — hence on every
+    // auto-update — nobody was listening, and everything the agent wrote in the
+    // meantime never reached Telegram (the web, for its part, reloads its
+    // history). We limit this to sessions whose tmux is still running:
+    // reopening a dormant channel would respawn a `claude` for nothing.
     for (const c of loadChannels()) {
       // `bound` = the topic still exists on Telegram's side, checked just above.
       // The rest of the rule (live session, no bridge yet) is shared with the 5s

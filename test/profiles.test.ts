@@ -104,14 +104,14 @@ test("envVarsNote: lists names, empty for none", () => {
   assert.match(n, /never print, log or commit/i);
 });
 
-test("envVarsNote: dit qu'elles sont DÉJÀ posées, et qu'il n'y a pas de .env", () => {
-  // Ce qui bloquait les agents : ils partaient chercher un fichier à sourcer.
-  // La note doit couper court, sinon elle ne sert à rien.
+test("envVarsNote: says they are ALREADY set, and that there is no .env", () => {
+  // What blocked agents: they went hunting for a file to source. The note has
+  // to head that off, otherwise it serves no purpose.
   const n = envVarsNote(["GITHUB_TOKEN"]);
   assert.match(n, /already set/i);
   assert.match(n, /Bash/);
   assert.match(n, /\.env/);
-  // Et donner de quoi vérifier la présence SANS révéler la valeur.
+  // And give a way to check presence WITHOUT revealing the value.
   assert.match(n, /-n "\$GITHUB_TOKEN"/);
 });
 
@@ -125,17 +125,17 @@ test("DEFAULT_PROFILES: dev is unguarded, boss/marketing/content/support are rea
   for (const p of DEFAULT_PROFILES) assert.ok(p.systemPrompt && p.systemPrompt.length > 40);
 });
 
-test("DEFAULT_PROFILES: le boss est en tête et sait déléguer avec un profil", () => {
-  // En tête parce que c'est la porte d'entrée : première carte de la box.
+test("DEFAULT_PROFILES: the boss comes first and knows how to delegate with a profile", () => {
+  // First because it is the way in: the first card in the box.
   assert.equal(DEFAULT_PROFILES[0].name, "Shadok-Boss");
   const boss = DEFAULT_PROFILES[0].systemPrompt!;
-  // Un boss qui ne sait pas nommer l'outil de délégation bricole tout seul.
+  // A boss that cannot name the delegation tool ends up doing it all itself.
   assert.match(boss, /shadok-ai-agents/);
   assert.match(boss, /--profile/);
-  // Les rôles qu'il peut confier doivent exister dans la liste.
+  // The roles it can hand work to must exist in the list.
   const names = DEFAULT_PROFILES.map((p) => p.name);
   for (const role of ["Shadok-dev", "Shadok-Marketing", "Shadok-Content", "Shadok-Support"]) {
-    assert.ok(boss.includes(role), `le boss doit citer ${role}`);
+    assert.ok(boss.includes(role), `the boss must mention ${role}`);
     assert.ok(names.includes(role), `${role} doit exister`);
   }
 });
@@ -170,15 +170,15 @@ test("withManagedPrompt does not mutate the profile it was given", () => {
   assert.equal(existing.systemPrompt, "stale");
 });
 
-test("Shadok-Content: sait qu'il PEUT écrire des fichiers, et se distingue de Marketing", () => {
+test("Shadok-Content: knows it MAY write files, and is distinct from Marketing", () => {
   const c = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Content")!.systemPrompt!;
-  // READONLY_DENY ne bloque que git : sans cette phrase, un agent dont le
-  // livrable est un fichier refuse de le créer (cf. la formulation de Marketing).
+  // READONLY_DENY blocks git only: without this sentence, an agent whose
+  // deliverable is a file refuses to create it (see Marketing's wording).
   assert.match(c, /may write and edit files/i);
   assert.match(c, /git writes are blocked/i);
-  // La frontière avec Marketing doit être écrite, sinon le boss choisit au hasard.
+  // The boundary with Marketing must be written down, or the boss picks at random.
   assert.match(c, /Shadok-Marketing owns paid/i);
-  // Le livrable est un fichier Markdown avec de quoi le publier.
+  // The deliverable is a Markdown file with what it takes to publish it.
   assert.match(c, /Markdown file/i);
   assert.match(c, /front matter/i);
 });
@@ -205,10 +205,10 @@ test("secretWriteVerdict: an existing name needs an explicit overwrite", () => {
   assert.equal(secretWriteVerdict(true, true), "updated");
 });
 
-// ── Qui peut réécrire le prompt de quel profil ───────────────────────────
+// ── Who may rewrite which profile's prompt ───────────────────────────────
 const edit = (o: Parameters<typeof promptEditVerdict>[0]) => promptEditVerdict(o);
 
-test("promptEdit: un agent réécrit SON prompt, et seulement le sien", () => {
+test("promptEdit: an agent rewrites ITS prompt, and only its own", () => {
   assert.deepEqual(
     edit({ caller: "Shadok-Content", target: "Shadok-Content", targetExists: true, managed: false }),
     { ok: true, create: false },
@@ -218,7 +218,7 @@ test("promptEdit: un agent réécrit SON prompt, et seulement le sien", () => {
   assert.match((other as { error: string }).error, /own profile/i);
 });
 
-test("promptEdit: le boss réécrit n'importe quel prompt et peut en créer un", () => {
+test("promptEdit: the boss rewrites any prompt and may create one", () => {
   assert.deepEqual(
     edit({ caller: BOSS_PROFILE_NAME, target: "Shadok-dev", targetExists: true, managed: false }),
     { ok: true, create: false },
@@ -229,29 +229,29 @@ test("promptEdit: le boss réécrit n'importe quel prompt et peut en créer un",
   );
 });
 
-test("promptEdit: créer est réservé au boss", () => {
+test("promptEdit: creating is reserved to the boss", () => {
   const v = edit({ caller: "Shadok-dev", target: "Shadok-Nouveau", targetExists: false, managed: false });
   assert.equal(v.ok, false);
   assert.match((v as { error: string }).error, /own profile/i);
 });
 
-test("promptEdit: un agent sans profil n'a rien à éditer", () => {
+test("promptEdit: an agent with no profile has nothing to edit", () => {
   const v = edit({ caller: null, target: "Shadok-dev", targetExists: true, managed: false });
   assert.equal(v.ok, false);
   assert.match((v as { error: string }).error, /no profile/i);
 });
 
-test("promptEdit: un prompt managé par le serveur est refusé, pas avalé", () => {
-  // Shadok-Tweak est rafraîchi depuis context/tweak-prompt.md à chaque boot :
-  // accepter l'édition la ferait disparaître au prochain redémarrage, sans un mot.
+test("promptEdit: a server-managed prompt is refused, not swallowed", () => {
+  // Shadok-Tweak is refreshed from context/tweak-prompt.md at every boot:
+  // accepting the edit would make it vanish at the next restart, without a word.
   for (const caller of [BOSS_PROFILE_NAME, TWEAK_PROFILE_NAME]) {
     const v = edit({ caller, target: TWEAK_PROFILE_NAME, targetExists: true, managed: true });
-    assert.equal(v.ok, false, `${caller} ne doit pas pouvoir éditer un prompt managé`);
+    assert.equal(v.ok, false, `${caller} must not be able to edit a managed prompt`);
     assert.match((v as { error: string }).error, /tweak-prompt\.md/);
   }
 });
 
-test("promptEdit: un nom de profil vide est refusé", () => {
+test("promptEdit: an empty profile name is refused", () => {
   const v = edit({ caller: BOSS_PROFILE_NAME, target: "  ", targetExists: false, managed: false });
   assert.equal(v.ok, false);
   assert.match((v as { error: string }).error, /name required/i);

@@ -14,10 +14,10 @@ export interface TokenUsage {
  * A streamed piece of an assistant turn, read from the session .jsonl.
  *
  * `at` is the moment Claude Code WROTE the block (the line's `timestamp`), not
- * the moment we read it. La distinction compte : le tail reprend à son offset
- * persisté après un redémarrage (invariant #7), donc une rafale de blocs écrits
- * pendant l'arrêt arrive d'un coup — les horodater à la lecture les daterait
- * tous « maintenant ». Absent si la ligne n'en porte pas (fixtures, vieux
+ * the moment we read it. The distinction matters: the tail resumes at its
+ * persisted offset after a restart (invariant #7), so a burst of blocks written
+ * while it was down arrives at once — timestamping them at read time would date
+ * them all "now". Absent when the line carries none (fixtures, old
  * transcripts).
  */
 export type TailEvent =
@@ -96,29 +96,28 @@ function toolSummary(input: any): string {
  * Starts from the current end of file, so only NEW turns are streamed
  * (existing history is replayed separately via loadHistory).
  */
-/** Au-delà de ce retard, on renonce à rattraper : un agent tmux qui a travaillé
- *  des heures sans serveur déverserait un mur de texte d'un coup. */
+/** Beyond this backlog we give up catching up: a tmux agent that worked for
+ *  hours with no server would dump a wall of text in one go. */
 export const MAX_CATCHUP = 1024 * 1024;
 
 /**
- * Où commencer à lire le transcript. Pure — c'est elle qui porte les tests.
+ * Where to start reading the transcript. Pure — this is what the tests pin.
  *
- * Démarrer à la fin (l'ancien comportement inconditionnel) faisait perdre en
- * SILENCE tout ce qu'un agent écrivait pendant qu'un serveur n'était pas là —
- * ce qui arrive à chaque auto-update, donc à chaque merge sur main. Le web s'en
- * remettait (il recharge l'historique) ; Telegram, non : le message n'existait
- * simplement jamais.
+ * Starting at the end (the old unconditional behaviour) SILENTLY lost
+ * everything an agent wrote while no server was up — which happens on every
+ * auto-update, hence on every merge to main. The web recovered (it reloads
+ * history); Telegram did not: the message simply never existed.
  */
 export function startOffset(size: number, stored: number | null, maxCatchUp = MAX_CATCHUP): number {
-  if (stored === null) return size; // session neuve : ne pas rejouer un transcript repris
-  if (stored > size) return 0; // fichier tronqué ou remplacé : la position n'a plus de sens
-  if (size - stored > maxCatchUp) return size; // trop de retard (cf. MAX_CATCHUP)
+  if (stored === null) return size; // brand-new session: do not replay a resumed transcript
+  if (stored > size) return 0; // file truncated or replaced: the position is meaningless
+  if (size - stored > maxCatchUp) return size; // too far behind (see MAX_CATCHUP)
   return stored;
 }
 
-/** Position atteinte par le tail, une par session. L'id de session est un UUID :
- *  nom court et sans collision, là où encoder le chemin du transcript
- *  dépasserait la longueur maximale d'un composant de nom de fichier. */
+/** How far the tail got, one per session. The session id is a UUID: a short,
+ *  collision-free name, where encoding the transcript's path would exceed the
+ *  maximum length of a filename component. */
 const TAIL_POS_DIR = path.join(os.homedir(), ".shadok-ai", "tail");
 const posFile = (file: string) => path.join(TAIL_POS_DIR, path.basename(file, ".jsonl") + ".pos");
 
@@ -127,7 +126,7 @@ function readPos(file: string): number | null {
     const n = Number(fs.readFileSync(posFile(file), "utf8").trim());
     return Number.isFinite(n) && n >= 0 ? n : null;
   } catch {
-    return null; // jamais mémorisé, ou illisible : on repart de la fin
+    return null; // never stored, or unreadable: start from the end
   }
 }
 
@@ -136,16 +135,16 @@ function writePos(file: string, pos: number): void {
     fs.mkdirSync(TAIL_POS_DIR, { recursive: true });
     fs.writeFileSync(posFile(file), String(pos));
   } catch {
-    // Perdre la reprise est un désagrément ; jamais de quoi casser le tail.
+    // Losing the resume point is an annoyance; never a reason to break the tail.
   }
 }
 
-/** Oublie la position d'une session terminée — elle n'a plus rien à reprendre. */
+/** Forget a finished session's position — it has nothing left to resume. */
 export function clearTailPos(file: string): void {
   try {
     fs.unlinkSync(posFile(file));
   } catch {
-    // absente : rien à faire
+    // missing: nothing to do
   }
 }
 
@@ -202,8 +201,8 @@ export function tailSession(
         const n = fs.readSync(fd, b, 0, b.length, pos);
         chunk = b.toString("utf8", 0, n);
         pos += n;
-        // Mémorisé à chaque lecture (donc seulement quand du contenu a été
-        // consommé) : c'est ce qui permet de reprendre après un redémarrage.
+        // Stored on every read (so only once content has been consumed):
+        // that is what makes resuming after a restart possible.
         writePos(file, pos);
       } finally {
         fs.closeSync(fd);
@@ -232,15 +231,15 @@ function emitLine(line: string, onEvent: (e: TailEvent) => void) {
 }
 
 /**
- * Un agent DOIT répondre quelque chose : un cron qui n'a rien détecté n'a donc
- * aucun moyen de se taire. La convention `NOTHING TO SHOW` lui en donne un —
- * ce bloc n'est ni streamé ni rejoué (cf. `loadHistory`), donc rien n'apparaît
- * ni dans le web ni dans Telegram. Documentée dans `context/pilot-prompt.md`.
+ * An agent MUST answer something, so a cron that detected nothing has no way to
+ * stay silent. The `NOTHING TO SHOW` convention gives it one — that block is
+ * neither streamed nor replayed (see `loadHistory`), so nothing shows up in the
+ * web or in Telegram. Documented in `context/pilot-prompt.md`.
  *
- * Volontairement STRICT : la sentinelle doit constituer TOUT le bloc (emphase
- * et point final tolérés). Un agent qui explique la convention dans une phrase
- * ne se fait pas museler — l'invariant 2 rappelle ce qu'une heuristique trop
- * large a déjà coûté ici.
+ * Deliberately STRICT: the sentinel must be the WHOLE block (emphasis and a
+ * trailing period tolerated). An agent explaining the convention in a sentence
+ * does not get muzzled — invariant 2 is the reminder of what an over-broad
+ * heuristic has already cost here.
  */
 const NOTHING_TO_SHOW = /^[*_`\s]*nothing to show[*_`\s.!]*$/i;
 export function isNothingToShow(text: string): boolean {
@@ -262,8 +261,8 @@ export function parseLine(line: string): TailEvent[] {
   }
   if (e.isMeta || !Array.isArray(e.message?.content)) return [];
   const out: TailEvent[] = [];
-  // Spread : la clé reste ABSENTE quand la ligne n'a pas d'horodatage, plutôt
-  // que présente à `undefined` (un consommateur ne peut pas confondre les deux).
+  // Spread: the key stays ABSENT when the line has no timestamp, rather than
+  // present as `undefined` (a consumer cannot confuse the two).
   const at = parseTimestamp(e.timestamp);
   const when = at === null ? {} : { at };
 
@@ -272,7 +271,7 @@ export function parseLine(line: string): TailEvent[] {
     if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage });
     for (const block of e.message.content) {
       if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
-        if (isNothingToShow(block.text)) continue; // rien à signaler : on n'affiche rien
+        if (isNothingToShow(block.text)) continue; // nothing to report: show nothing
         out.push({ kind: "text", text: block.text, ...when });
       } else if (block?.type === "tool_use" && typeof block.name === "string") {
         out.push({
@@ -306,9 +305,9 @@ export function parseLine(line: string): TailEvent[] {
 }
 
 /**
- * ISO timestamp d'une ligne de transcript → ms epoch, ou null si absent /
- * illisible. Partagé avec `loadHistory` (extract.ts) pour que l'heure affichée
- * soit la même qu'on rejoue l'historique ou qu'on suive le direct.
+ * ISO timestamp of a transcript line → ms epoch, or null when missing /
+ * unreadable. Shared with `loadHistory` (extract.ts) so the displayed time is
+ * the same whether history is replayed or the live stream is followed.
  */
 export function parseTimestamp(v: any): number | null {
   if (typeof v !== "string") return null;

@@ -1,23 +1,23 @@
 import type { Usage, Window } from "./usage.js";
 
-/** Durée totale de chaque fenêtre glissante, en secondes. */
+/** Total length of each sliding window, in seconds. */
 export const WINDOW_SEC = { fiveHour: 5 * 3600, sevenDay: 7 * 86400 } as const;
 
 /**
- * Ajouté au rythme idéal au dénominateur. Sans lui, le rythme est quasi nul
- * juste après un reset et le moindre message ferait exploser le ratio.
+ * Added to the ideal pace in the denominator. Without it the pace is near zero
+ * right after a reset, and the smallest message would blow the ratio up.
  */
 export const PACE_EPSILON = 2;
 
-/** Au-delà de ce ratio (en % du rythme idéal), on bloque. En dur, par choix. */
+/** Above this ratio (as a % of the ideal pace), we block. Hardcoded, on purpose. */
 const BLOCK_RATIO = 100;
 
 const LABEL = { fiveHour: "5h", sevenDay: "7d" } as const;
 
 export interface Pace {
-  /** 0–100 : fraction de la fenêtre déjà écoulée. null si non calculable. */
+  /** 0–100: fraction of the window already elapsed. null when not computable. */
   idealPacePct: number | null;
-  /** Consommation rapportée au rythme idéal, en %. 100 = pile dans les temps. */
+  /** Usage relative to the ideal pace, in %. 100 = exactly on schedule. */
   ratioPct: number | null;
 }
 
@@ -27,23 +27,22 @@ export interface PaceVerdict {
 }
 
 /**
- * Rapporte la consommation d'une fenêtre au temps qui y est déjà passé.
- * Renvoie des null si la fenêtre est absente ou son reset inconnu — pas de
- * données ne vaut pas dépassement.
+ * Relates a window's usage to the time already spent in it. Returns nulls when
+ * the window is missing or its reset unknown — no data does not mean overrun.
  */
 export function computePace(w: Window | null, durationSec: number, nowMs: number): Pace {
   if (!w || w.resetsAt === null) return { idealPacePct: null, ratioPct: null };
   const remainingSec = w.resetsAt - nowMs / 1000;
-  // Borné : une horloge en avance sur resetsAt ne doit pas produire de rythme
-  // négatif, ni une fenêtre expirée un rythme supérieur à 100%.
+  // Clamped: a clock ahead of resetsAt must not produce a negative pace, nor
+  // an expired window a pace above 100%.
   const idealPacePct = Math.min(100, Math.max(0, ((durationSec - remainingSec) / durationSec) * 100));
   return { idealPacePct, ratioPct: (w.usedPercentage / (idealPacePct + PACE_EPSILON)) * 100 };
 }
 
 /**
- * Bloque dès qu'UNE des deux fenêtres consomme plus vite que le temps ne passe.
- * La raison cite la fenêtre au ratio le plus élevé. Sans données, ne bloque pas :
- * l'indisponibilité de l'API ne doit pas verrouiller l'outil.
+ * Blocks as soon as ONE of the two windows burns faster than time passes. The
+ * reason names the window with the highest ratio. With no data it does not
+ * block: an unavailable API must not lock the tool.
  */
 export function paceBlock(u: Usage | null, nowMs: number): PaceVerdict {
   if (!u) return { blocked: false, reason: null };

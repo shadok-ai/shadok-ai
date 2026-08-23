@@ -12,7 +12,7 @@ test("parseLine: assistant text block → one text event", () => {
   assert.deepEqual(ev, [{ kind: "text", text: "hello" }]);
 });
 
-test("parseLine: le timestamp de la ligne devient `at` (heure d'écriture, pas de lecture)", () => {
+test("parseLine: the line's timestamp becomes `at` (write time, not read time)", () => {
   const ev = parseLine(
     JSON.stringify({
       type: "assistant",
@@ -25,11 +25,11 @@ test("parseLine: le timestamp de la ligne devient `at` (heure d'écriture, pas d
   ]);
 });
 
-test("parseLine: sans timestamp, la clé `at` reste absente (pas d'heure inventée)", () => {
+test("parseLine: with no timestamp the `at` key stays absent (no invented time)", () => {
   const [ev] = parseLine(
     JSON.stringify({
       type: "assistant",
-      timestamp: "pas une date",
+      timestamp: "not a date",
       message: { content: [{ type: "text", text: "hello" }] },
     }),
   );
@@ -73,8 +73,8 @@ test("isNothingToShow: the sentinel alone, whatever its casing, emphasis or fina
 });
 
 test("isNothingToShow: the phrase inside a real sentence is NOT the sentinel", () => {
-  // Un agent qui EXPLIQUE la convention ne doit pas se faire museler
-  // (cf. l'invariant 2 : une heuristique trop large a déjà coûté cher ici).
+  // An agent that EXPLAINS the convention must not get muzzled (see invariant
+  // 2: an over-broad heuristic has already cost dearly here).
   assert.equal(isNothingToShow("I replied NOTHING TO SHOW because the cron was quiet."), false);
   assert.equal(isNothingToShow("NOTHING TO SHOW yet — still running."), false);
   assert.equal(isNothingToShow("nothing"), false);
@@ -100,14 +100,14 @@ test("parseLine: a sentinel-only text block is dropped, the rest of the message 
 });
 
 test("startOffset: a session with nothing stored starts at EOF", () => {
-  // Sinon reprendre une vieille session rejouerait tout son transcript.
+  // Otherwise resuming an old session would replay its whole transcript.
   assert.equal(startOffset(5000, null), 5000);
 });
 
 test("startOffset: a stored position resumes exactly there", () => {
-  // Le cas visé : le serveur a redémarré, l'agent a écrit pendant ce temps.
+  // The case in view: the server restarted, and the agent wrote meanwhile.
   assert.equal(startOffset(5000, 4000), 4000);
-  assert.equal(startOffset(5000, 5000), 5000); // rien de neuf
+  assert.equal(startOffset(5000, 5000), 5000); // nothing new
 });
 
 test("startOffset: a position past the end means the file was replaced", () => {
@@ -116,7 +116,7 @@ test("startOffset: a position past the end means the file was replaced", () => {
 
 test("startOffset: too far behind → EOF rather than a wall of text", () => {
   assert.equal(startOffset(3_000_000, 10, 1024 * 1024), 3_000_000);
-  // juste sous le plafond : on rattrape
+  // just under the cap: we catch up
   assert.equal(startOffset(1000 + 1024 * 1024, 1000, 1024 * 1024), 1000);
 });
 

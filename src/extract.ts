@@ -23,11 +23,10 @@ export function extractResponse(buffer: string, prompt: string): string {
     }
   }
   if (start === -1) return buffer.trim();
-  // A long prompt echo spans several lines: the response starts at the first
-  // assistant-block marker that follows, when there is one. "⏺" (U+23FA) up to
-  // Claude Code 2.0, "●" (U+25CF) since 2.1 — accept both.
+  // A long prompt echo spans several lines: the response starts at the
+  // first "⏺" marker that follows, when there is one.
   for (let i = start; i < lines.length; i++) {
-    if (/^\s*[⏺●]/.test(lines[i])) {
+    if (/^\s*⏺/.test(lines[i])) {
       start = i;
       break;
     }
@@ -171,7 +170,7 @@ export function detectDialog(screen: string): TuiDialog | null {
   const questionLines: string[] = [];
   for (let i = firstOptionLine - 1; i >= 0; i--) {
     const t = lines[i].trim();
-    if (t === "" || /^[─═╭╮╰╯│□⏺●←→]/.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
+    if (t === "" || /^[─═╭╮╰╯│□⏺←→]/.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
       if (questionLines.length) break;
       continue;
     }
@@ -181,13 +180,13 @@ export function detectDialog(screen: string): TuiDialog | null {
 }
 
 /**
- * Le texte d'une ligne de transcript SI c'est un vrai prompt humain, sinon null.
+ * The text of a transcript line IF it is a real human prompt, else null.
  *
- * Une ligne `type: "user"` n'est pas forcément quelqu'un qui parle : Claude Code
- * y écrit aussi les résultats d'outils, les rappels système (`<…>`) et les
- * interruptions. La règle était recopiée à l'identique dans `loadHistory` et
- * `sessionPreview` ; elle vit ici pour qu'un troisième appelant ne la redérive
- * pas de travers (l'un d'eux compte les tours, l'autre datait les tours).
+ * A `type: "user"` line is not necessarily someone speaking: Claude Code also
+ * writes tool results, system reminders (`<…>`) and interruptions there. The
+ * rule was copied verbatim into `loadHistory` and `sessionPreview`; it lives
+ * here so a third caller cannot re-derive it slightly wrong (one of them counts
+ * turns, the other dated turns).
  */
 export function userPromptText(e: any): string | null {
   if (!e || e.isMeta || e.type !== "user" || !e.message) return null;
@@ -208,9 +207,9 @@ export interface HistoryTurn {
   role: "user" | "assistant";
   text: string;
   /**
-   * Moment où le tour a été écrit (ms epoch), repris du `timestamp` de la ligne
-   * .jsonl. Même source que `TailEvent.at`, donc un tour rejoué et le même tour
-   * vu en direct affichent la MÊME heure. Absent sur les vieux transcripts.
+   * When the turn was written (ms epoch), taken from the .jsonl line's
+   * `timestamp`. Same source as `TailEvent.at`, so a replayed turn and the same
+   * turn seen live show the SAME time. Absent on older transcripts.
    */
   at?: number;
 }
@@ -247,7 +246,7 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
     const when = at === null ? {} : { at };
     if (e.type === "user") {
       const text = userPromptText(e);
-      if (text === null) continue; // résultat d'outil, rappel système, interruption
+      if (text === null) continue; // tool result, system reminder, interruption
       // Machine-written user messages: a scheduled prompt and a notification
       // about a child agent. Neither is shown live, so neither may come back on
       // a reload or a topic backfill.
@@ -257,16 +256,16 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
       const text = e.message.content
         .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)
-        // Même filtre bloc à bloc que le tail, sinon la sentinelle réapparaît
-        // au rechargement de la page alors qu'elle n'a jamais été streamée.
+        // Same block-by-block filter as the tail, otherwise the sentinel
+        // reappears on a page reload though it was never streamed.
         .filter((t: any) => typeof t === "string" && !isNothingToShow(t))
         .join("\n")
         .trim();
       if (!text) continue;
       const last = turns[turns.length - 1];
-      // Blocs consécutifs fusionnés en un seul tour : on GARDE l'heure du
-      // premier, c'est celle du début de la prise de parole (et c'est là que le
-      // client affiche le label du groupe).
+      // Consecutive blocks merged into one turn: we KEEP the first one's time,
+      // which is when the speaking started (and that is where the client shows
+      // the group label).
       if (last && last.role === "assistant") last.text += "\n\n" + text;
       else turns.push({ role: "assistant", text, ...when });
     }
@@ -346,12 +345,12 @@ function firstUserPrompt(file: string): string {
 }
 
 /**
- * Quand le dernier VRAI prompt de la session a été écrit (ms epoch), ou null.
+ * When the session's last REAL prompt was written (ms epoch), or null.
  *
- * C'est l'origine du tour en cours : un tour commence par un prompt (humain,
- * cron, ou pilotage d'un autre client) et se termine quand l'agent se tait. On
- * ignore donc les lignes `user` techniques — un résultat d'outil arrive EN COURS
- * de tour et daterait l'origine quelques secondes avant maintenant.
+ * That is the current turn's origin: a turn starts with a prompt (human, cron,
+ * or another client driving it) and ends when the agent falls silent. So we
+ * ignore technical `user` lines — a tool result arrives MID-turn and would date
+ * the origin a few seconds before now.
  */
 export function lastPromptAt(cwd: string, sessionId: string): number | null {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
@@ -365,7 +364,7 @@ export function lastPromptAt(cwd: string, sessionId: string): number | null {
     return null;
   }
   const lines = raw.split("\n");
-  // À rebours : le dernier prompt est proche de la fin, inutile de tout relire.
+  // Backwards: the last prompt is near the end, no need to re-read it all.
   for (let i = lines.length - 1; i >= 0; i--) {
     if (!lines[i].trim()) continue;
     let e: any;
@@ -380,21 +379,21 @@ export function lastPromptAt(cwd: string, sessionId: string): number | null {
   return null;
 }
 
-/** Au-delà, on refuse de croire le transcript (cf. `resumedTurnStart`). */
+/** Beyond this, we refuse to believe the transcript (see `resumedTurnStart`). */
 export const MAX_RESUMED_TURN_MS = 6 * 60 * 60_000;
 
 /**
- * Origine à afficher pour un tour que le serveur retrouve DÉJÀ EN COURS — après
- * un redémarrage (chaque auto-update), l'agent tmux ayant continué sans lui.
+ * The origin to display for a turn the server finds ALREADY RUNNING — after a
+ * restart (i.e. every auto-update), the tmux agent having carried on without it.
  *
- * `turnStartedAt` vit en mémoire : repartir de `now` remettait le chrono à zéro
- * alors que l'agent réfléchissait depuis dix minutes. Le transcript, lui, a
- * survécu — on reprend l'heure de son dernier prompt.
+ * `turnStartedAt` lives in memory: restarting from `now` reset the stopwatch
+ * while the agent had been thinking for ten minutes. The transcript, though,
+ * survived — so we take its last prompt's time.
  *
- * Deux refus délibérés, parce qu'une durée fausse est pire qu'une durée remise à
- * zéro : un horodatage dans le FUTUR (horloge de la machine changée entre-temps)
- * et un prompt trop VIEUX — ce dernier cas signant un tour déjà terminé dont on
- * afficherait sinon l'âge, pas la durée.
+ * Two deliberate refusals, because a wrong duration is worse than a reset one:
+ * a timestamp in the FUTURE (the machine's clock changed in between) and a
+ * prompt that is too OLD — the latter marking an already finished turn, whose
+ * age we would otherwise display as a duration.
  */
 export function resumedTurnStart(
   nowMs: number,

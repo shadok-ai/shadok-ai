@@ -43,11 +43,11 @@ test("genuine unquoted 'esc to interrupt' status is working", () => {
 test("a QUOTED 'esc to interrupt' in prose is NOT working (the self-reference bug)", () => {
   // Claude explaining shadok-ai's own detection must not trip it.
   assert.equal(
-    screenShowsWork('la fin de tour est détectée (plus de "esc to interrupt" + écran stable).'),
+    screenShowsWork('the end of a turn is detected (no more "esc to interrupt" + a stable screen).'),
     false,
   );
   assert.equal(screenShowsWork("uses the “esc to interrupt” marker"), false);
-  assert.equal(screenShowsWork("le marqueur « esc to interrupt » a disparu"), false);
+  assert.equal(screenShowsWork("the 'esc to interrupt' marker is gone"), false);
 });
 
 test("the ctx:/cost footer alone is not working", () => {

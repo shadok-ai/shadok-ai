@@ -50,43 +50,43 @@ test("normalizeSchedule: accepts valid, rejects invalid", () => {
 test("scheduleLabel: readable", () => {
   assert.equal(scheduleLabel({ kind: "interval", everyMin: 30 }), "every 30m");
   assert.equal(scheduleLabel({ kind: "interval", everyMin: 120 }), "every 2h");
-  // Le fuseau fait partie du libellé : un « daily at 09:05 » nu ne dit pas 9h où.
+  // The zone is part of the label: a bare "daily at 09:05" does not say 09:05 where.
   assert.equal(scheduleLabel({ kind: "daily", hour: 9, minute: 5 }, "Europe/Paris"), "daily at 09:05 (Europe/Paris)");
 });
 
 // ── Fuseau explicite ─────────────────────────────────────────────────────
-// Ces tests n'assertent QUE sur l'instant UTC produit : ils valident donc le
-// calcul quelle que soit la machine qui les exécute (CI en UTC, poste à Paris).
+// These tests only assert on the UTC instant produced: they therefore validate
+// the computation whatever machine runs them (CI in UTC, a laptop in Paris).
 
-test("nextRunFor: un daily dans un fuseau explicite ignore celui de la machine", () => {
-  // 09:00 à Paris en été (UTC+2) = 07:00 UTC.
+test("nextRunFor: a daily in an explicit zone ignores the machine's", () => {
+  // 09:00 in Paris in summer (UTC+2) = 07:00 UTC.
   const from = Date.parse("2026-07-15T03:00:00Z");
   const t = nextRunFor({ kind: "daily", hour: 9, minute: 0 }, from, "Europe/Paris");
   assert.equal(new Date(t).toISOString(), "2026-07-15T07:00:00.000Z");
 });
 
-test("nextRunFor: heure d'hiver — le même 09:00 local tombe une heure plus tard en UTC", () => {
-  // 09:00 à Paris en hiver (UTC+1) = 08:00 UTC. Un offset figé se tromperait ici.
+test("nextRunFor: winter time — the same local 09:00 falls an hour later in UTC", () => {
+  // 09:00 in Paris in winter (UTC+1) = 08:00 UTC. A frozen offset gets this wrong.
   const from = Date.parse("2026-01-15T03:00:00Z");
   const t = nextRunFor({ kind: "daily", hour: 9, minute: 0 }, from, "Europe/Paris");
   assert.equal(new Date(t).toISOString(), "2026-01-15T08:00:00.000Z");
 });
 
-test("nextRunFor: l'heure du jour étant passée, on vise le lendemain (même heure locale)", () => {
-  const from = Date.parse("2026-07-15T09:00:00Z"); // 11h à Paris, 9h est passé
+test("nextRunFor: today's time having passed, we aim at tomorrow (same local time)", () => {
+  const from = Date.parse("2026-07-15T09:00:00Z"); // 11:00 in Paris, 09:00 is past
   const t = nextRunFor({ kind: "daily", hour: 9, minute: 0 }, from, "Europe/Paris");
   assert.equal(new Date(t).toISOString(), "2026-07-16T07:00:00.000Z");
 });
 
-test("nextRunFor: la veille d'une bascule d'heure d'été, l'échéance reste à 09:00 local", () => {
-  // 2026-10-25 : Paris repasse à UTC+1. Depuis la veille, le prochain 09:00
-  // local est à 08:00 UTC — et non 07:00 (ce que donnerait un simple +24h).
+test("nextRunFor: the day before a DST switch, the deadline stays at 09:00 local", () => {
+  // 2026-10-25: Paris goes back to UTC+1. From the day before, the next local
+  // 09:00 is at 08:00 UTC — not 07:00 (which a plain +24h would give).
   const from = Date.parse("2026-10-24T09:00:00Z");
   const t = nextRunFor({ kind: "daily", hour: 9, minute: 0 }, from, "Europe/Paris");
   assert.equal(new Date(t).toISOString(), "2026-10-25T08:00:00.000Z");
 });
 
-test("nextRunFor: un fuseau inconnu retombe sur la machine au lieu de planter", () => {
+test("nextRunFor: an unknown zone falls back to the machine instead of throwing", () => {
   const from = Date.now();
   const t = nextRunFor({ kind: "daily", hour: 9, minute: 30 }, from, "Europe/Pariss");
   const d = new Date(t);
@@ -94,12 +94,12 @@ test("nextRunFor: un fuseau inconnu retombe sur la machine au lieu de planter", 
   assert.equal(d.getMinutes(), 30);
 });
 
-test("nextRunFor: un intervalle n'a pas de fuseau (c'est une durée)", () => {
+test("nextRunFor: an interval has no zone (it is a duration)", () => {
   const from = Date.parse("2026-07-15T09:00:00Z");
   assert.equal(nextRunFor({ kind: "interval", everyMin: 30 }, from, "Asia/Tokyo"), from + 30 * 60_000);
 });
 
-test("isValidTimeZone: accepte l'IANA, refuse le reste", () => {
+test("isValidTimeZone: accepts IANA, refuses the rest", () => {
   assert.equal(isValidTimeZone("Europe/Paris"), true);
   assert.equal(isValidTimeZone("UTC"), true);
   assert.equal(isValidTimeZone("Europe/Pariss"), false);
@@ -206,58 +206,58 @@ test("resolveCronTarget: matches on sessionId, not on cwd", () => {
   assert.equal(resolveCronTarget(list, "b", "/x").profile, "pb");
 });
 
-// ── Désigner un cron ──────────────────────────────────────────────────────
-// Tous les `list` (web, skill, Telegram) n'affichent que 8 caractères de l'id :
-// si le préfixe ne résout pas, on ne peut désigner aucun cron.
+// ── Naming a cron ────────────────────────────────────────────────────────
+// Every `list` (web, skill, Telegram) shows only 8 characters of the id: if the
+// prefix does not resolve, no cron can be named at all.
 
 const cron = (id: string): Cron =>
   ({ id, sessionId: "s", prompt: "p", schedule: { kind: "interval", everyMin: 5 }, enabled: true });
 const LIST = [cron("27db3cb3-f26a-460c-8f95-cc130fedfbaf"), cron("27db9999-0000-4000-8000-000000000000")];
 
-test("resolveCronId: un id complet résout", () => {
+test("resolveCronId: a full id resolves", () => {
   assert.deepEqual(resolveCronId(LIST, LIST[0].id), { ok: true, id: LIST[0].id });
 });
 
-test("resolveCronId: un préfixe non ambigu résout — c'est ce que `list` affiche", () => {
+test("resolveCronId: an unambiguous prefix resolves — that is what `list` shows", () => {
   assert.deepEqual(resolveCronId(LIST, "27db3cb3"), { ok: true, id: LIST[0].id });
   assert.deepEqual(resolveCronId(LIST, "27db9"), { ok: true, id: LIST[1].id });
 });
 
-test("resolveCronId: un préfixe ambigu est refusé, pas tranché au hasard", () => {
+test("resolveCronId: an ambiguous prefix is refused, not guessed at random", () => {
   assert.deepEqual(resolveCronId(LIST, "27db"), { ok: false, error: "ambiguous", matches: 2 });
 });
 
-test("resolveCronId: un préfixe vide ne matche PAS le premier", () => {
-  // `/cron del` sans argument supprimait un cron au hasard.
+test("resolveCronId: an empty prefix does NOT match the first one", () => {
+  // A bare `/cron del` used to delete a cron at random.
   assert.deepEqual(resolveCronId(LIST, ""), { ok: false, error: "empty", matches: 0 });
   assert.deepEqual(resolveCronId(LIST, "   "), { ok: false, error: "empty", matches: 0 });
 });
 
-test("resolveCronId: rien ne matche → not-found (et non un faux succès)", () => {
+test("resolveCronId: nothing matches → not-found (and not a false success)", () => {
   assert.deepEqual(resolveCronId(LIST, "deadbeef"), { ok: false, error: "not-found", matches: 0 });
   assert.deepEqual(resolveCronId([], "27db3cb3"), { ok: false, error: "not-found", matches: 0 });
 });
 
-test("resolveCronId: un id complet gagne même s'il préfixe un autre id", () => {
+test("resolveCronId: a full id wins even when it prefixes another id", () => {
   const nested = [cron("abc"), cron("abcdef")];
   assert.deepEqual(resolveCronId(nested, "abc"), { ok: true, id: "abc" });
 });
 
-test("markCronPrompt : marque, et ne double pas la marque", () => {
-  const marked = markCronPrompt("Rédige l'état des lieux.");
+test("markCronPrompt: marks, and does not double the mark", () => {
+  const marked = markCronPrompt("Write the morning report.");
   assert.ok(marked.startsWith(CRON_PROMPT_MARK));
-  assert.ok(marked.endsWith("Rédige l'état des lieux."));
-  // Idempotent : un cron rejoué (retry après échec de livraison) ne doit pas
-  // accumuler les marques dans le texte que lit l'agent.
+  assert.ok(marked.endsWith("Write the morning report."));
+  // Idempotent: a replayed cron (a retry after a failed delivery) must not
+  // stack marks in the text the agent reads.
   assert.equal(markCronPrompt(marked), marked);
 });
 
-test("isCronPrompt : strict — la marque doit OUVRIR le message", () => {
+test("isCronPrompt: strict — the mark must OPEN the message", () => {
   assert.equal(isCronPrompt(markCronPrompt("x")), true);
   assert.equal(isCronPrompt("  " + CRON_PROMPT_MARK + " x"), true);
-  // Quelqu'un qui PARLE de la marque ne se fait pas museler (cf. invariant 2 :
-  // une heuristique trop large a déjà coûté cher ici).
-  assert.equal(isCronPrompt("comment marche le " + CRON_PROMPT_MARK + " ?"), false);
-  assert.equal(isCronPrompt("Rédige l'état des lieux."), false);
+  // Someone TALKING about the mark does not get muzzled (see invariant 2: an
+  // over-broad heuristic has already cost dearly here).
+  assert.equal(isCronPrompt("how does " + CRON_PROMPT_MARK + " work?"), false);
+  assert.equal(isCronPrompt("Write the morning report."), false);
   assert.equal(isCronPrompt(""), false);
 });

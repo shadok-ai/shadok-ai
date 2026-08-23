@@ -46,9 +46,9 @@ export interface Config {
    */
   permissionMode?: string;
   /**
-   * Fuseau IANA par défaut des crons `daily` (« Europe/Paris »). Sans lui,
-   * l'heure suit le fuseau de la machine — un serveur en UTC décale donc tous
-   * les horaires sans rien dire. Un cron peut le surcharger via son `tz`.
+   * Default IANA time zone for `daily` crons ("Europe/Paris"). Without it the
+   * hour follows the machine's zone — so a server running UTC shifts every
+   * schedule silently. A cron can override it through its own `tz`.
    */
   timezone?: string;
   /**
