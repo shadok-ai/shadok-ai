@@ -23,10 +23,11 @@ export function extractResponse(buffer: string, prompt: string): string {
     }
   }
   if (start === -1) return buffer.trim();
-  // A long prompt echo spans several lines: the response starts at the
-  // first "⏺" marker that follows, when there is one.
+  // A long prompt echo spans several lines: the response starts at the first
+  // assistant-block marker that follows, when there is one. "⏺" (U+23FA) up to
+  // Claude Code 2.0, "●" (U+25CF) since 2.1 — accept both.
   for (let i = start; i < lines.length; i++) {
-    if (/^\s*⏺/.test(lines[i])) {
+    if (/^\s*[⏺●]/.test(lines[i])) {
       start = i;
       break;
     }
@@ -170,7 +171,7 @@ export function detectDialog(screen: string): TuiDialog | null {
   const questionLines: string[] = [];
   for (let i = firstOptionLine - 1; i >= 0; i--) {
     const t = lines[i].trim();
-    if (t === "" || /^[─═╭╮╰╯│□⏺←→]/.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
+    if (t === "" || /^[─═╭╮╰╯│□⏺●←→]/.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
       if (questionLines.length) break;
       continue;
     }

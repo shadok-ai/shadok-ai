@@ -3471,6 +3471,14 @@
     if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
     const nT = normPreview(txt);
     if (nT && isFinalizedBlock(tab, nT)) { clearLivePreview(tab); return; }
+    setLivePreview(tab, txt);
+  }
+
+  /** Ensure the provisional grey bubble exists and carries `txt`. Shared by the
+   *  screen-driven preview and the dialog preface (the text that precedes a
+   *  question — see the "dialog" handler). The tail's authoritative block
+   *  replaces it 1-for-1 on stream-text. */
+  function setLivePreview(tab, txt) {
     if (!tab.livePreviewEl) {
       const turn = document.createElement("div");
       turn.className = "turn claude live-preview";
@@ -4385,7 +4393,17 @@
       case "dialog":
         // Re-rendered in place when a dialog is already shown (multi toggle).
         closeActivity(t);
-        clearLivePreview(t);
+        // The text that PRECEDES the question shares the assistant message with
+        // the AskUserQuestion tool call, so the transcript only writes it once
+        // the turn resumes — i.e. AFTER you answer. The server extracts it from
+        // the screen as `preface`; show it now (provisional grey bubble, above
+        // the question) so the question reads in context. The tail's real block
+        // replaces it 1-for-1 later. No preface → clear as before.
+        {
+          const pre = (msg.preface || "").trim();
+          if (pre && !isFinalizedBlock(t, normPreview(pre))) setLivePreview(t, pre);
+          else clearLivePreview(t);
+        }
         renderDialog(t, msg);
         stopTurnTimer(t);
         setTabMood(t, "needs-answer");

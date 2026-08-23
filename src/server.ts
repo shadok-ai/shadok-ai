@@ -1995,8 +1995,9 @@ const SUBMIT_PAGE = /ready to submit|submit answers/i;
  * précède la question arriverait donc APRÈS elle. L'écran, lui, l'a déjà.
  *
  * Provisoire par construction (dé-wrappé, tronqué si l'écran a défilé) : le
- * client la remplace par le bloc autoritatif du tail. Le web l'ignore, il a
- * déjà sa bulle grise ; c'est le bridge Telegram qui s'en sert.
+ * client la remplace par le bloc autoritatif du tail. Le web l'affiche comme
+ * bulle grise au-dessus de la question (son propre aperçu est effacé quand la
+ * question apparaît) ; le bridge Telegram s'en sert aussi.
  */
 function dialogMessage(s: Live, d: TuiDialog): object {
   const preface = extractLiveText(s.pilot.screen());
