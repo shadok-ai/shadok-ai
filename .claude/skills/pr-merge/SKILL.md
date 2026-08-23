@@ -126,7 +126,7 @@ hundreds of lines off — confidently wrong, and read as current.
 Un cron de canal shadok, **avec garde déterministe** — pas une boucle de session :
 
 ```bash
-python3 ~/.claude/skills/shadok-scheduler/scripts/schedule.py add \
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add \
   --schedule every:5m \
   --check "sh $HOME/.shadok-ai/checks/pr-open.sh" \
   --prompt "Des PR sont ouvertes sur shadok-ai/shadok-ai (liste ci-dessus). Applique la procédure du skill pr-merge. Si finalement rien n'est à faire, écris exactement NOTHING TO SHOW."
