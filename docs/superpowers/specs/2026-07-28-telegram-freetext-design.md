@@ -1,94 +1,92 @@
-# Telegram : répondre en texte libre à une question (`freetext`)
+# Telegram: answering a question in free text (`freetext`)
 
 *2026-07-28*
 
-## Le problème (reproduit, pas supposé)
+## The problem (reproduced, not assumed)
 
-`AskUserQuestion` ajoute toujours une option **« Type something »** : une réponse
-en texte libre. Le web la gère (`public/index.html`, la `freetext-row` : un champ
-de saisie qui envoie `{type:"freetext", n, text}`). Le serveur la gère aussi
-(`server.ts`, `case "freetext"` : chiffre → coller le texte → Entrée).
+`AskUserQuestion` always adds a **"Type something"** option: a free-text answer.
+The web handles it (`public/index.html`, the `freetext-row`: an input that sends
+`{type:"freetext", n, text}`). The server handles it too (`server.ts`,
+`case "freetext"`: digit → paste the text → Enter).
 
-**Le pont Telegram, non.** `parseCallback` ne produit que `choose` / `toggle` /
-`confirm`, donc le bouton « 4. Type something » envoie un `choose 4` : le TUI
-ouvre sa zone de saisie, reçoit une Entrée à vide, et **rejette l'outil**.
+**The Telegram bridge did not.** `parseCallback` only produced `choose` /
+`toggle` / `confirm`, so the "4. Type something" button sent a `choose 4`: the
+TUI opened its input area, received an empty Enter, and **rejected the tool**.
 
-Repro sur le serveur de debug (port 3799, bot `@shadokaitest_bot`), résultat de
-l'outil :
+Reproduced on the debug server (port 3799, bot `@shadokaitest_bot`), the tool's
+result:
 
 ```
 The user doesn't want to proceed with this tool use. The tool use was rejected
 ```
 
-Et côté Telegram : **rien**. Aucun message d'erreur, le clavier reste affiché
-comme s'il attendait encore. L'utilisateur clique dans le vide et le tour est
-mort.
+And on the Telegram side: **nothing**. No error message, the keyboard still
+showing as if it were waiting. The user clicks into the void and the turn is
+dead.
 
-## Le comportement visé
+## The intended behaviour
 
-Appuyer sur « Type something » ouvre une saisie : le bot demande la réponse
-(avec `force_reply`, donc le clavier du téléphone s'ouvre tout seul), et le
-message suivant du canal est renvoyé au serveur en `freetext` — pas en nouveau
-prompt.
+Pressing "Type something" opens an input: the bot asks for the answer (with
+`force_reply`, so the phone's keyboard opens on its own), and the channel's next
+message is sent back to the server as `freetext` — not as a new prompt.
 
-Le reste ne bouge pas : les options normales restent des `choose`/`toggle`.
+Nothing else moves: ordinary options stay `choose`/`toggle`.
 
 ## Architecture
 
-### Reconnaître l'option (`src/telegram.ts`)
+### Recognising the option (`src/telegram.ts`)
 
 ```ts
 export function isFreetextOption(label: string): boolean; // /^type something/i
 ```
 
-**Exactement la règle du web** (`index.html:2002`) : les deux clients doivent
-s'accorder sur ce qu'est une option libre, sinon le même dialogue se comporte
-différemment selon l'écran. Un seul endroit à changer si la règle évolue.
+**Exactly the web's rule** (`index.html:2002`): both clients must agree on what a
+free-text option is, otherwise the same dialog behaves differently depending on
+the screen. One place to change should the rule evolve.
 
-### Le clavier et le callback
+### The keyboard and the callback
 
-`dialogKeyboard` émet `f:<n>` au lieu de `d:<n>` pour ces options ;
-`parseCallback` reconnaît `^f:(\d+)$` → `{kind:"freetext", n}`.
+`dialogKeyboard` emits `f:<n>` instead of `d:<n>` for those options;
+`parseCallback` recognises `^f:(\d+)$` → `{kind:"freetext", n}`.
 
-Le préfixe reste à un caractère : `callback_data` est plafonné à 64 octets par
-Telegram, et un label long ne doit jamais s'en approcher.
+The prefix stays one character: `callback_data` is capped at 64 bytes by
+Telegram, and a long label must never come close to it.
 
-### L'attente de la réponse
+### Waiting for the answer
 
-`Bridge` gagne `awaitingFreetext?: { n: number }`.
+`Bridge` gains `awaitingFreetext?: { n: number }`.
 
-- **callback `f:n`** → ne rien envoyer au serveur ; armer `awaitingFreetext` et
-  poster une invite avec `reply_markup: { force_reply: true }`.
-- **message texte suivant** (dans `handleMessage`, avant l'envoi du prompt) →
-  `{type:"freetext", n, text}`, puis désarmer.
-- **une commande reste une commande** : `/stop` doit fonctionner même en
-  attente de texte. L'interception ne se fait donc que pour un message qui
-  n'est pas une commande.
-- **désarmement** sur `turn-done`, `dialog` et `exited` : une attente orpheline
-  transformerait un prompt ordinaire en réponse à une question morte.
+- **callback `f:n`** → send nothing to the server; arm `awaitingFreetext` and
+  post a prompt with `reply_markup: { force_reply: true }`.
+- **the next text message** (in `handleMessage`, before the prompt is sent) →
+  `{type:"freetext", n, text}`, then disarm.
+- **a command stays a command**: `/stop` must work even while waiting for text.
+  So the interception only applies to a message that is not a command.
+- **disarming** on `turn-done`, `dialog` and `exited`: an orphan wait would turn
+  an ordinary prompt into an answer to a dead question.
 
-### Le garde sur l'envoi du clavier
+### The guard on sending the keyboard
 
-Le `sendMessage` du dialogue ne passait ni par `chunk()` ni par un repli, là où
-`sendPart` réessaie en texte brut. Vérifié auprès de l'API : au-delà de 4096
-caractères, Telegram répond `Bad Request: message is too long` → **aucun
-clavier et aucune erreur visible**. On tronque le texte de la question, et un
-échec d'envoi est **dit** dans le canal au lieu de laisser le tour muet.
+The dialog's `sendMessage` went through neither `chunk()` nor a fallback, where
+`sendPart` retries as plain text. Checked against the API: beyond 4096
+characters Telegram answers `Bad Request: message is too long` → **no keyboard
+and no visible error**. So we truncate the question's text, and a failed send is
+**said** in the channel instead of leaving the turn mute.
 
-## Hors scope
+## Out of scope
 
-- **« Chat about this »** : le web ne la traite pas non plus comme une option
-  libre — la traiter à part ici désaccorderait les deux clients. À trancher
-  séparément, pour les deux en même temps.
-- Presser un bouton depuis un test automatisé : l'API Bot ne le permet pas
-  (seul un vrai client peut émettre un `callback_query`). Les tests couvrent
-  les fonctions pures, et la repro de bout en bout passe par le `/ws`.
+- **"Chat about this"**: the web does not treat it as a free-text option either —
+  handling it specially here would put the two clients out of step. To be settled
+  separately, for both at once.
+- Pressing a button from an automated test: the Bot API does not allow it (only a
+  real client can emit a `callback_query`). The tests cover the pure functions,
+  and the end-to-end reproduction goes through `/ws`.
 
 ## Tests
 
-- `isFreetextOption` : « Type something », « Type something else », casse
-  indifférente ; une option normale n'est pas libre.
-- `dialogKeyboard` : l'option libre porte `f:`, les autres `d:`/`t:`, et le
-  bouton Submit du multi-select reste `s`.
-- `parseCallback` : `f:4` → `{kind:"freetext", n:4}`, et les formes invalides
-  restent `null`.
+- `isFreetextOption`: "Type something", "Type something else", case-insensitive;
+  an ordinary option is not free text.
+- `dialogKeyboard`: the free-text option carries `f:`, the others `d:`/`t:`, and
+  the multi-select's Submit button stays `s`.
+- `parseCallback`: `f:4` → `{kind:"freetext", n:4}`, and invalid forms stay
+  `null`.
