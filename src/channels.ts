@@ -270,13 +270,13 @@ export function saveTgGroup(groupId: number | null): void {
 }
 
 /**
- * Les canaux Telegram (`bindKey`) où les appels d'outils sont AFFICHÉS. Une
- * allowlist et pas une map clé → booléen : le défaut (masqué) ne coûte aucune
- * entrée, et un fichier absent ou illisible se dégrade exactement en « tout est
- * masqué » — le défaut voulu.
+ * The Telegram channels (`bindKey`) where tool calls are SHOWN. An allowlist
+ * rather than a key → boolean map: the default (hidden) costs no entry, and a
+ * missing or unreadable file degrades to exactly "everything hidden" — the
+ * intended default.
  *
- * Le réglage appartient au topic, pas à la session : `/new` recrée une session
- * dans le même topic et doit garder le choix de l'utilisateur.
+ * The setting belongs to the topic, not to the session: `/new` recreates a
+ * session in the same topic and must keep the user's choice.
  */
 export function loadTgToolKeys(): string[] {
   return readJson("telegram-tools").filter((k) => typeof k === "string");
@@ -297,10 +297,10 @@ export function setTgTools(key: string, on: boolean): void {
 }
 
 /**
- * Le propriétaire des messages privés : l'id Telegram du premier utilisateur à
- * avoir écrit au bot en DM. Sans lui, un inconnu qui trouve le bot obtient une
- * session Claude sur la machine — les groupes sont déjà bornés au groupe lié,
- * les DM ne l'étaient pas.
+ * The owner of direct messages: the Telegram id of the first user to write to
+ * the bot in a DM. Without it, a stranger who finds the bot gets a Claude
+ * session on the machine — groups were already bounded to the bound group,
+ * DMs were not.
  */
 export function loadTgOwner(): number | null {
   const v = readJson("telegram-owner")[0];

@@ -1,56 +1,56 @@
 /**
- * Où le serveur écoute, et qui a le droit de lui parler depuis un navigateur.
+ * Where the server listens, and who may talk to it from a browser.
  *
- * Le cockpit exécute des commandes arbitraires sur la machine (spawn d'agents,
- * `sh -c` des gardes de cron) : sa seule vraie frontière de sécurité est « qui
- * peut ouvrir une connexion ». Ce module tient les deux moitiés de cette
- * frontière, en fonctions pures — donc testables sans serveur.
+ * The cockpit runs arbitrary commands on the machine (spawning agents, `sh -c`
+ * for cron guards): its only real security boundary is "who can open a
+ * connection". This module holds both halves of that boundary, as pure
+ * functions — so they are testable without a server.
  *
- * Tout est pur ici ; le câblage vit dans server.ts.
+ * Everything here is pure; the wiring lives in server.ts.
  */
 
-/** Bind par défaut : la machine seule. Une exposition réseau est un choix. */
+/** Default bind: this machine only. Exposing it to a network is a choice. */
 export const DEFAULT_HOST = "127.0.0.1";
 
 /**
- * Une adresse de bind qui ne sort pas de la machine.
+ * A bind address that does not leave the machine.
  *
- * `localhost` en fait partie : il résout vers une loopback, et refuser un
- * serveur qui l'utilise n'apporterait rien qu'une surprise.
+ * `localhost` counts: it resolves to a loopback, and refusing a server that
+ * uses it would buy nothing but surprise.
  */
 export function isLoopbackHost(host: string): boolean {
-  // `[::1]` : forme entre crochets telle qu'on l'écrit dans une URL.
+  // `[::1]`: the bracketed form, as written in a URL.
   const h = host.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   return h === "127.0.0.1" || h === "::1" || h === "localhost";
 }
 
-/** L'interface d'écoute : `SHADOK_HOST`, sinon la loopback. */
+/** The listening interface: `SHADOK_HOST`, else the loopback. */
 export function resolveHost(env: NodeJS.ProcessEnv = process.env): string {
   const h = (env.SHADOK_HOST ?? "").trim();
   return h || DEFAULT_HOST;
 }
 
 /**
- * Pourquoi refuser de démarrer, ou null si la configuration est sûre.
+ * Why to refuse to start, or null when the configuration is safe.
  *
- * Écouter au-delà de la loopback SANS mot de passe donne à tout le réseau le
- * droit de lancer des commandes sur cette machine. Le refus est délibérément
- * fail-closed : documenter la bonne pratique ne suffit pas quand l'erreur coûte
- * la machine. Un `0.0.0.0` reste parfaitement légitime — en conteneur c'est même
- * la seule valeur qui marche — il demande juste un mot de passe.
+ * Listening beyond the loopback WITHOUT a password hands the whole network the
+ * right to run commands on this machine. The refusal is deliberately
+ * fail-closed: documenting the good practice is not enough when the mistake
+ * costs the machine. A `0.0.0.0` stays perfectly legitimate — in a container it
+ * is the only value that works — it just requires a password.
  */
 export function bindRefusal(host: string, hasPassword: boolean): string | null {
   if (isLoopbackHost(host) || hasPassword) return null;
   return (
-    `refus de démarrer : SHADOK_HOST=${host} expose le cockpit hors de cette machine, sans mot de passe.\n` +
-    `  Le cockpit lance des commandes arbitraires : n'importe qui pouvant l'atteindre les lance aussi.\n` +
-    `  → ajoutez --password <p> (ou SHADOK_GUI_PASSWORD), ou retirez SHADOK_HOST pour n'écouter qu'en local.\n` +
-    `  En conteneur, SHADOK_HOST=0.0.0.0 est normal : publiez le port sur la loopback de l'hôte\n` +
-    `  (-p 127.0.0.1:PORT:PORT), car -p PORT:PORT contourne ufw/firewalld via les règles iptables de Docker.`
+    `refusing to start: SHADOK_HOST=${host} exposes the cockpit beyond this machine, with no password.\n` +
+    `  The cockpit runs arbitrary commands: anyone who can reach it runs them too.\n` +
+    `  → add --password <p> (or SHADOK_GUI_PASSWORD), or drop SHADOK_HOST to listen locally only.\n` +
+    `  In a container, SHADOK_HOST=0.0.0.0 is normal: publish the port on the host's loopback\n` +
+    `  (-p 127.0.0.1:PORT:PORT), because -p PORT:PORT bypasses ufw/firewalld through Docker's iptables rules.`
   );
 }
 
-/** L'allowlist d'origines supplémentaires (`SHADOK_ORIGINS`, séparées par des virgules). */
+/** The extra origin allowlist (`SHADOK_ORIGINS`, comma-separated). */
 export function parseOrigins(raw: string | undefined): string[] {
   return (raw ?? "")
     .split(",")
@@ -59,39 +59,38 @@ export function parseOrigins(raw: string | undefined): string[] {
 }
 
 /**
- * Ce navigateur a-t-il le droit de parler à ce serveur ?
+ * May this browser talk to this server?
  *
- * Les WebSockets **ne sont pas soumis à la same-origin policy** : sans ce
- * contrôle, n'importe quelle page ouverte par l'utilisateur peut faire
- * `new WebSocket("ws://localhost:3789/ws")`, démarrer un agent et lui donner des
- * ordres. Le cookie `SameSite=Strict` ne couvre que les instances protégées par
- * un mot de passe ; le mode par défaut n'a rien.
+ * WebSockets are **not subject to the same-origin policy**: without this check,
+ * any page the user has open can do `new WebSocket("ws://localhost:3789/ws")`,
+ * start an agent and give it orders. The `SameSite=Strict` cookie only covers
+ * password-protected instances; the default mode has nothing.
  *
- * La règle est le **same-origin**, pas une liste de `localhost` en dur : le
- * cockpit se consulte aussi sur une IP de LAN ou un domaine derrière un proxy,
- * et une allowlist figée les fermerait tous. Comparer l'`Origin` au `Host` de la
- * requête marche partout et refuse quand même `evil.com`.
+ * The rule is **same-origin**, not a hardcoded `localhost` list: the cockpit is
+ * also reached on a LAN IP or a domain behind a proxy, and a frozen allowlist
+ * would close all of those. Comparing `Origin` to the request's `Host` works
+ * everywhere and still refuses `evil.com`.
  *
- * **Absence d'`Origin` → autorisé**, et ce n'est pas un oubli : les clients non
- * navigateur n'en envoient pas — le pont Telegram, qui ouvre un WS sur
- * 127.0.0.1 vers notre propre serveur, `pilotctl`, la CLI, le skill scheduler.
- * Les fermer casserait le produit sans rien gagner : un attaquant capable de
- * forger cet en-tête a déjà un accès réseau direct, et c'est le bind + le mot de
- * passe qui l'arrêtent, pas celui-ci. Ce garde ne vise que le navigateur, seul
- * agent à envoyer un `Origin` qu'il ne contrôle pas.
+ * **No `Origin` → allowed**, and that is not an oversight: non-browser clients
+ * send none — the Telegram bridge, which opens a WS on 127.0.0.1 to our own
+ * server, `pilotctl`, the CLI, the scheduler skill. Closing them would break
+ * the product for nothing: an attacker able to forge that header already has
+ * direct network access, and it is the bind + the password that stop them, not
+ * this. This guard only ever addresses browsers, the one client that sends an
+ * `Origin` it does not control.
  */
 export function originAllowed(
   origin: string | undefined,
   host: string | undefined,
   extraAllowed: string[] = [],
 ): boolean {
-  if (!origin) return true; // client non-navigateur
+  if (!origin) return true; // non-browser client
   const o = origin.trim().toLowerCase().replace(/\/+$/, "");
   if (extraAllowed.includes(o)) return true;
   if (!host) return false;
   try {
-    // `new URL("null")` lève : une origine opaque (iframe sandbox, file://)
-    // tombe donc en refus, ce qui est le bon défaut.
+    // `new URL("null")` throws: an opaque origin (sandboxed iframe, file://)
+    // therefore falls through to a refusal, which is the right default.
     return new URL(o).host === host.trim().toLowerCase();
   } catch {
     return false;

@@ -3,10 +3,10 @@ import test from "node:test";
 import { computePace, paceBlock, PACE_EPSILON, WINDOW_SEC } from "../src/pace.js";
 import type { Usage, Window } from "../src/usage.js";
 
-/** Horloge figée : les tests ne doivent jamais dépendre de l'heure réelle. */
+/** Frozen clock: tests must never depend on the real time. */
 const NOW = 1_700_000_000_000;
 
-/** Fenêtre dont le reset tombe dans `remainingSec` secondes. */
+/** A window whose reset falls in `remainingSec` seconds. */
 const win = (usedPercentage: number, remainingSec: number): Window => ({
   usedPercentage,
   resetsAt: NOW / 1000 + remainingSec,
@@ -28,32 +28,32 @@ const idealOf = (remainingSec: number, windowSec: number) =>
 const ratioOf = (used: number, remainingSec: number, windowSec: number) =>
   (used / (idealOf(remainingSec, windowSec) + PACE_EPSILON)) * 100;
 
-test("5h : 90% consommé avec 10 min restantes suit le rythme", () => {
+test("5h: 90% used with 10 min left keeps the pace", () => {
   const p = computePace(win(90, 600), WINDOW_SEC.fiveHour, NOW);
   assert.equal(round(p.idealPacePct), 97);
   assert.equal(round(p.ratioPct), round(ratioOf(90, 600, WINDOW_SEC.fiveHour)));
 });
 
-test("5h : 3% consommé 5 min après le reset ne déclenche pas l'epsilon", () => {
+test("5h: 3% used 5 min after the reset does not trip the epsilon", () => {
   const p = computePace(win(3, 17_700), WINDOW_SEC.fiveHour, NOW);
   assert.equal(round(p.idealPacePct), 2);
   assert.equal(round(p.ratioPct), round(ratioOf(3, 17_700, WINDOW_SEC.fiveHour)));
 });
 
-test("5h : 15% consommé 5 min après le reset dépasse le seuil", () => {
+test("5h: 15% used 5 min after the reset crosses the threshold", () => {
   const p = computePace(win(15, 17_700), WINDOW_SEC.fiveHour, NOW);
   assert.ok(p.ratioPct! > 100);
   assert.equal(round(p.ratioPct), round(ratioOf(15, 17_700, WINDOW_SEC.fiveHour)));
 });
 
-test("7d : 55% consommé avec 6 jours restants dépasse largement", () => {
+test("7d: 55% used with 6 days left overshoots by a lot", () => {
   const p = computePace(win(55, 6 * 86_400), WINDOW_SEC.sevenDay, NOW);
   assert.equal(round(p.idealPacePct), 14);
   assert.ok(p.ratioPct! > 100);
   assert.equal(round(p.ratioPct), round(ratioOf(55, 6 * 86_400, WINDOW_SEC.sevenDay)));
 });
 
-test("7d : 80% consommé avec 1 jour restant suit le rythme", () => {
+test("7d: 80% used with 1 day left keeps the pace", () => {
   const p = computePace(win(80, 86_400), WINDOW_SEC.sevenDay, NOW);
   assert.equal(round(p.idealPacePct), 86);
   assert.equal(round(p.ratioPct), round(ratioOf(80, 86_400, WINDOW_SEC.sevenDay)));
@@ -65,32 +65,32 @@ test("resetsAt absent : pas de rythme calculable", () => {
   assert.equal(p.ratioPct, null);
 });
 
-test("fenêtre expirée : le rythme idéal est borné à 100%", () => {
+test("expired window: the ideal pace is clamped at 100%", () => {
   const p = computePace(win(50, -3_600), WINDOW_SEC.fiveHour, NOW);
   assert.equal(p.idealPacePct, 100);
   assert.equal(round(p.ratioPct), round(ratioOf(50, -3_600, WINDOW_SEC.fiveHour)));
 });
 
-// Borne basse : un resetsAt plus lointain que la durée de la fenêtre (dérive
-// d'horloge) donne un temps écoulé négatif, borné à 0. Sans le clamp, le
-// dénominateur (0 + epsilon) resterait sain mais idealPacePct serait négatif.
-test("resetsAt au-delà de la durée de la fenêtre : le rythme idéal est borné à 0%", () => {
+// Lower bound: a resetsAt further out than the window's length (clock drift)
+// gives a negative elapsed time, clamped to 0. Without the clamp the
+// denominator (0 + epsilon) would stay sane but idealPacePct would go negative.
+test("resetsAt beyond the window's length: the ideal pace is clamped at 0%", () => {
   const p = computePace(win(50, WINDOW_SEC.fiveHour + 3_600), WINDOW_SEC.fiveHour, NOW);
   assert.equal(p.idealPacePct, 0);
   assert.equal(round(p.ratioPct), round((50 / PACE_EPSILON) * 100)); // ideal=0
 });
 
-// Frontière exacte du seuil unique (BLOCK_RATIO = 100), posée par arithmétique.
-// À mi-fenêtre idealPacePct = 50 (exact en binaire). ratio = 100 ⟺
-// used = 50 + PACE_EPSILON. Pile sur la limite ne bloque pas ; un cran au-dessus
+// Exact boundary of the single threshold (BLOCK_RATIO = 100), set by
+// arithmetic. Mid-window idealPacePct = 50 (exact in binary). ratio = 100 ⟺
+// used = 50 + PACE_EPSILON. Right on the limit does not block; one notch above
 // bloque.
 const MID = WINDOW_SEC.fiveHour / 2;
 const BOUNDARY_USED = 50 + PACE_EPSILON; // ratio exactement 100
 
-test("computePace : used = ideal + epsilon à mi-fenêtre donne un ratio de 100 pile", () => {
+test("computePace: used = ideal + epsilon mid-window gives a ratio of exactly 100", () => {
   const p = computePace(win(BOUNDARY_USED, MID), WINDOW_SEC.fiveHour, NOW);
   assert.equal(p.idealPacePct, 50);
-  assert.equal(p.ratioPct, 100); // égalité stricte, pas d'arrondi
+  assert.equal(p.ratioPct, 100); // strict equality, no rounding
 });
 
 test("paceBlock : un ratio de 100 pile ne bloque pas", () => {
@@ -99,7 +99,7 @@ test("paceBlock : un ratio de 100 pile ne bloque pas", () => {
   assert.equal(v.reason, null);
 });
 
-test("paceBlock : juste au-dessus de 100 bloque", () => {
+test("paceBlock: just above 100 blocks", () => {
   const w = win(BOUNDARY_USED + 1, MID);
   assert.ok(computePace(w, WINDOW_SEC.fiveHour, NOW).ratioPct! > 100);
   const v = paceBlock(usage(w, null), NOW);
@@ -107,20 +107,20 @@ test("paceBlock : juste au-dessus de 100 bloque", () => {
   assert.match(v.reason ?? "", /^5h:/);
 });
 
-test("paceBlock : une seule fenêtre au-dessus du seuil suffit", () => {
+test("paceBlock: a single window above the threshold is enough", () => {
   const v = paceBlock(usage(win(90, 600), win(55, 6 * 86_400)), NOW);
   assert.equal(v.blocked, true);
   assert.match(v.reason ?? "", /^7d:/);
 });
 
-test("paceBlock : les deux dans les clous ne bloque pas", () => {
+test("paceBlock: both within bounds does not block", () => {
   const v = paceBlock(usage(win(90, 600), win(80, 86_400)), NOW);
   assert.equal(v.blocked, false);
   assert.equal(v.reason, null);
 });
 
-test("paceBlock : la raison cite la fenêtre au ratio le plus élevé", () => {
-  // 7d à 55%/6j reste bien au-dessus de 5h à 15%/5min quel que soit epsilon.
+test("paceBlock: the reason names the window with the highest ratio", () => {
+  // 7d at 55%/6d stays well above 5h at 15%/5min whatever epsilon is.
   const v = paceBlock(usage(win(15, 17_700), win(55, 6 * 86_400)), NOW);
   assert.equal(v.blocked, true);
   const r5 = ratioOf(15, 17_700, WINDOW_SEC.fiveHour);
@@ -128,18 +128,18 @@ test("paceBlock : la raison cite la fenêtre au ratio le plus élevé", () => {
   assert.match(v.reason ?? "", r7 > r5 ? /^7d:/ : /^5h:/);
 });
 
-test("paceBlock : la raison porte les trois chiffres (used, ideal, ratio)", () => {
+test("paceBlock: the reason carries all three figures (used, ideal, ratio)", () => {
   const v = paceBlock(usage(null, win(55, 6 * 86_400)), NOW);
   const ideal = round(idealOf(6 * 86_400, WINDOW_SEC.sevenDay));
   const ratio = round(ratioOf(55, 6 * 86_400, WINDOW_SEC.sevenDay));
   assert.equal(v.reason, `7d: 55% used vs ${ideal}% ideal pace (${ratio}% of pace)`);
 });
 
-test("paceBlock : usage absent ne bloque jamais", () => {
+test("paceBlock: missing usage never blocks", () => {
   assert.deepEqual(paceBlock(null, NOW), { blocked: false, reason: null });
 });
 
-test("paceBlock : resetsAt absent ne bloque jamais", () => {
+test("paceBlock: a missing resetsAt never blocks", () => {
   const v = paceBlock(usage(null, { usedPercentage: 99, resetsAt: null }), NOW);
   assert.equal(v.blocked, false);
 });

@@ -88,7 +88,7 @@ test("nextToolsState: on/off force the state, whatever the current one", () => {
 });
 
 test("nextToolsState: an argument that is neither on nor off just toggles", () => {
-  // La commande ne doit pas devenir une énigme de syntaxe : /tools yes bascule.
+  // The command must not become a syntax puzzle: /tools yes toggles.
   assert.equal(nextToolsState("yes", false), true);
   assert.equal(nextToolsState("wat", true), false);
 });
@@ -99,28 +99,28 @@ test("promptEchoLabel: chaque origine a sa marque", () => {
   assert.equal(promptEchoLabel("cli"), "⌨️ cli");
 });
 
-test("promptEchoLabel: une origine inconnue reste marquée, sans mentir", () => {
-  // Mieux vaut « quelqu'un a parlé » qu'un message qui semble venir de l'agent.
+test("promptEchoLabel: an unknown origin stays marked, without lying", () => {
+  // Better "someone spoke" than a message that looks like it came from the agent.
   assert.equal(promptEchoLabel(undefined), "👤");
   assert.equal(promptEchoLabel("pilotctl"), "👤 pilotctl");
 });
 
-test("promptEchoLabel: la reprise automatique du pace guard n'est pas un humain", () => {
-  assert.equal(promptEchoLabel("web", true), "⚙️ reprise automatique");
-  assert.equal(promptEchoLabel(undefined, true), "⚙️ reprise automatique");
+test("promptEchoLabel: the pace guard's auto-resume is not a human", () => {
+  assert.equal(promptEchoLabel("web", true), "⚙️ auto-resumed");
+  assert.equal(promptEchoLabel(undefined, true), "⚙️ auto-resumed");
 });
 
-test("dmGate: le premier à écrire en DM devient le propriétaire", () => {
+test("dmGate: the first to write in a DM becomes the owner", () => {
   assert.equal(dmGate(null, 4242), "claim");
 });
 
-test("dmGate: le propriétaire passe, les autres sont refusés", () => {
+test("dmGate: the owner gets through, everyone else is refused", () => {
   assert.equal(dmGate(4242, 4242), "allow");
   assert.equal(dmGate(4242, 9999), "deny");
 });
 
-test("dmGate: un expéditeur inconnu est refusé, même sans propriétaire", () => {
-  // Pas d'id = rien à revendiquer et personne à reconnaître : on n'ouvre pas.
+test("dmGate: a sender with no id is refused, even with no owner set", () => {
+  // No id = nothing to claim and nobody to recognise: we do not open up.
   assert.equal(dmGate(null, undefined), "deny");
   assert.equal(dmGate(4242, undefined), "deny");
 });
@@ -145,12 +145,12 @@ test("dialogKeyboard: single-select → one 'choose' button per option, no submi
 });
 
 test("isFreetextOption: only the AskUserQuestion free-form entry", () => {
-  // Même règle que le web (index.html) : les deux clients doivent s'accorder.
+  // Same rule as the web (index.html): both clients must agree.
   assert.equal(isFreetextOption("Type something"), true);
   assert.equal(isFreetextOption("Type something else"), true);
   assert.equal(isFreetextOption("type something."), true);
   assert.equal(isFreetextOption("Chat about this"), false);
-  assert.equal(isFreetextOption("Finir le toggle /tools"), false);
+  assert.equal(isFreetextOption("Finish the /tools toggle"), false);
 });
 
 test("dialogKeyboard: the free-form option gets its own 'f:' callback", () => {
@@ -275,7 +275,7 @@ test("mdToTelegramHtml: a lone marker stays literal (no unbalanced tag)", () => 
   assert.equal(mdToTelegramHtml("2 * 3 = 6"), "2 * 3 = 6");
 });
 
-test("attachmentOf: photo → la plus grande taille, kind image", () => {
+test("attachmentOf: photo → the largest size, kind image", () => {
   const att = attachmentOf({
     photo: [
       { file_id: "small", file_unique_id: "u1", file_size: 100 },
@@ -285,49 +285,49 @@ test("attachmentOf: photo → la plus grande taille, kind image", () => {
   assert.deepEqual(att, { fileId: "big", fileUniqueId: "u2", kind: "image", fileSize: 5000 });
 });
 
-test("attachmentOf: document image/* → kind image, garde le nom", () => {
+test("attachmentOf: document image/* → kind image, keeps the name", () => {
   const att = attachmentOf({
     document: { file_id: "f", file_unique_id: "u", file_name: "shot.png", mime_type: "image/png", file_size: 42 },
   });
   assert.deepEqual(att, { fileId: "f", fileUniqueId: "u", kind: "image", fileName: "shot.png", fileSize: 42 });
 });
 
-test("attachmentOf: document quelconque → kind file", () => {
+test("attachmentOf: any other document → kind file", () => {
   const att = attachmentOf({
-    document: { file_id: "f", file_unique_id: "u", file_name: "rapport.pdf", mime_type: "application/pdf" },
+    document: { file_id: "f", file_unique_id: "u", file_name: "report.pdf", mime_type: "application/pdf" },
   });
   assert.equal(att?.kind, "file");
-  assert.equal(att?.fileName, "rapport.pdf");
+  assert.equal(att?.fileName, "report.pdf");
 });
 
-test("attachmentOf: message texte pur → null", () => {
+test("attachmentOf: a plain text message → null", () => {
   assert.equal(attachmentOf({ text: "hello" }), null);
 });
 
-test("mediaFileName: nom original préfixé par l'id unique, nettoyé", () => {
+test("mediaFileName: original name prefixed by the unique id, sanitised", () => {
   assert.equal(
-    mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "file", fileName: "../é vil/rapport final.pdf" }),
-    "AQAD-rapport final.pdf",
+    mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "file", fileName: "../é vil/final report.pdf" }),
+    "AQAD-final report.pdf",
   );
 });
 
-test("mediaFileName: photo sans nom → .jpg ; fichier sans nom → id nu", () => {
+test("mediaFileName: an unnamed photo → .jpg; an unnamed file → the bare id", () => {
   assert.equal(mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "image" }), "AQAD.jpg");
   assert.equal(mediaFileName({ fileId: "f", fileUniqueId: "AQAD", kind: "file" }), "AQAD");
 });
 
-test("attachmentPrompt: image seule", () => {
-  assert.equal(attachmentPrompt([{ path: "/m/a.jpg", kind: "image" }]), "[Image jointe : /m/a.jpg]");
+test("attachmentPrompt: a lone image", () => {
+  assert.equal(attachmentPrompt([{ path: "/m/a.jpg", kind: "image" }]), "[Attached image: /m/a.jpg]");
 });
 
-test("attachmentPrompt: fichier + caption", () => {
+test("attachmentPrompt: file + caption", () => {
   assert.equal(
-    attachmentPrompt([{ path: "/m/r.pdf", kind: "file" }], "résume ce doc"),
-    "[Fichier joint : /m/r.pdf]\nrésume ce doc",
+    attachmentPrompt([{ path: "/m/r.pdf", kind: "file" }], "summarise this doc"),
+    "[Attached file: /m/r.pdf]\nsummarise this doc",
   );
 });
 
-test("attachmentPrompt: plusieurs pièces, caption vide ignorée", () => {
+test("attachmentPrompt: several attachments, an empty caption ignored", () => {
   assert.equal(
     attachmentPrompt(
       [
@@ -336,11 +336,11 @@ test("attachmentPrompt: plusieurs pièces, caption vide ignorée", () => {
       ],
       "  ",
     ),
-    "[Image jointe : /m/a.jpg]\n[Fichier joint : /m/b.zip]",
+    "[Attached image: /m/a.jpg]\n[Attached file: /m/b.zip]",
   );
 });
 
-test("makeAlbumBuffer: regroupe les items d'un même album en un seul flush", async () => {
+test("makeAlbumBuffer: groups one album's items into a single flush", async () => {
   const flushed: [string, number[]][] = [];
   const buf = makeAlbumBuffer<number>((gid, items) => flushed.push([gid, items]), 30);
   buf.add("g1", 1);
@@ -350,19 +350,19 @@ test("makeAlbumBuffer: regroupe les items d'un même album en un seul flush", as
   assert.deepEqual(flushed, [["g1", [1, 2, 3]]]);
 });
 
-test("makeAlbumBuffer: chaque add réarme le timer (pas de flush partiel)", async () => {
+test("makeAlbumBuffer: every add rearms the timer (no partial flush)", async () => {
   const flushed: number[][] = [];
   const buf = makeAlbumBuffer<number>((_gid, items) => flushed.push(items), 40);
   buf.add("g", 1);
-  await new Promise((r) => setTimeout(r, 25)); // < délai : pas encore flushé
-  buf.add("g", 2); // réarme
+  await new Promise((r) => setTimeout(r, 25)); // < the delay: not flushed yet
+  buf.add("g", 2); // rearms
   await new Promise((r) => setTimeout(r, 25));
-  assert.equal(flushed.length, 0); // 50 ms après le 1er add mais 25 ms après le 2e
+  assert.equal(flushed.length, 0); // 50 ms after the 1st add but 25 ms after the 2nd
   await new Promise((r) => setTimeout(r, 40));
   assert.deepEqual(flushed, [[1, 2]]);
 });
 
-test("makeAlbumBuffer: deux albums indépendants", async () => {
+test("makeAlbumBuffer: two independent albums", async () => {
   const flushed = new Map<string, string[]>();
   const buf = makeAlbumBuffer<string>((gid, items) => flushed.set(gid, items), 20);
   buf.add("a", "x");
@@ -372,78 +372,78 @@ test("makeAlbumBuffer: deux albums indépendants", async () => {
   assert.deepEqual(flushed.get("b"), ["y"]);
 });
 
-// ── Préface d'un dialog (voir docs/superpowers/specs/2026-07-28-telegram-dialog-preface-design.md)
+// ── A dialog's preface (see docs/superpowers/specs/2026-07-28-telegram-dialog-preface-design.md)
 
-test("prefaceMatches: le texte autoritatif redonde la préface dé-wrappée", () => {
-  // L'écran a replié le paragraphe sur 3 lignes ; extractLiveText les a
-  // rejointes par des espaces. Le .jsonl, lui, garde les vrais sauts de ligne.
-  const preface = "Voici une introduction assez longue qui explique le contexte avant la question.";
-  const authoritative = "Voici une introduction assez longue\nqui explique le contexte\navant la question.";
+test("prefaceMatches: the authoritative text contains the unwrapped preface", () => {
+  // The screen wrapped the paragraph over 3 lines; extractLiveText joined them
+  // with spaces. The .jsonl keeps the real line breaks.
+  const preface = "Here is a fairly long introduction that explains the context before the question.";
+  const authoritative = "Here is a fairly long introduction\nthat explains the context\nbefore the question.";
   assert.equal(prefaceMatches(preface, authoritative), true);
 });
 
-test("prefaceMatches: préface tronquée par le défilement = fragment interne", () => {
-  const authoritative = "Un préambule qui a défilé hors de l'écran.\n\nPuis la partie encore visible en bas.";
-  assert.equal(prefaceMatches("Puis la partie encore visible en bas.", authoritative), true);
+test("prefaceMatches: a preface truncated by scrolling = an inner fragment", () => {
+  const authoritative = "A preamble that scrolled off the screen.\n\nThen the part still visible at the bottom.";
+  assert.equal(prefaceMatches("Then the part still visible at the bottom.", authoritative), true);
 });
 
-test("isStalePreface: une préface déjà diffusée est périmée", () => {
-  // Le cas reproduit : l'écran montre encore la réponse du tour précédent quand
-  // la question suivante s'affiche. La reposter ferait un doublon définitif.
-  const recent = ["Un premier bloc sans rapport particulier.", "MARQUEUR-UNIQUE-42 est la réponse attendue ici."];
-  assert.equal(isStalePreface("MARQUEUR-UNIQUE-42 est la réponse attendue ici.", recent), true);
+test("isStalePreface: an already broadcast preface is stale", () => {
+  // The reproduced case: the screen still shows the previous turn's answer when
+  // the next question appears. Re-posting it would make a permanent duplicate.
+  const recent = ["A first, unrelated block.", "UNIQUE-MARKER-42 is the answer expected here."];
+  assert.equal(isStalePreface("UNIQUE-MARKER-42 is the answer expected here.", recent), true);
 });
 
-test("isStalePreface: la forme rendue à l'écran est reconnue comme le même bloc", () => {
-  // L'écran aplatit le Markdown et replie les lignes ; seul le squelette
-  // alphanumérique est commun aux deux formes (cf. prefaceMatches).
-  const authoritative = "Voici une **introduction** assez longue\nqui explique le contexte.";
-  assert.equal(isStalePreface("Voici une introduction assez longue qui explique le contexte.", [authoritative]), true);
+test("isStalePreface: the screen-rendered form is recognised as the same block", () => {
+  // The screen flattens Markdown and wraps lines; only the alphanumeric
+  // skeleton is common to both forms (see prefaceMatches).
+  const authoritative = "Here is a fairly **long** introduction\nthat explains the context.";
+  assert.equal(isStalePreface("Here is a fairly long introduction that explains the context.", [authoritative]), true);
 });
 
-test("isStalePreface: une préface inédite passe", () => {
-  const recent = ["Un bloc déjà diffusé, suffisamment long pour s'apparier."];
-  assert.equal(isStalePreface("Je vais te poser une question sur la suite du travail.", recent), false);
+test("isStalePreface: a brand-new preface gets through", () => {
+  const recent = ["An already broadcast block, long enough to match."];
+  assert.equal(isStalePreface("I am about to ask you a question about the next step.", recent), false);
 });
 
-test("isStalePreface: sans bloc connu, rien n'est périmé", () => {
-  assert.equal(isStalePreface("Une préface parfaitement légitime et assez longue.", []), false);
+test("isStalePreface: with no known block, nothing is stale", () => {
+  assert.equal(isStalePreface("A perfectly legitimate and fairly long preface.", []), false);
 });
 
-test("isStalePreface: une réponse COURTE déjà diffusée est périmée elle aussi", () => {
-  // Le plancher de prefaceMatches (PREFACE_MIN) laissait repasser « OK » et
-  // « SENTINELLE-PREFACE-77 » : trop courts pour s'apparier, donc reposés à
-  // chaque question. Ici on ne l'applique pas — cf. le commentaire du code.
+test("isStalePreface: a SHORT answer already broadcast is stale too", () => {
+  // prefaceMatches's floor (PREFACE_MIN) let "OK" and "PREFACE-SENTINEL-77"
+  // back through: too short to match, hence re-posted at every question. Here
+  // we do not apply it — see the comment in the code.
   assert.equal(isStalePreface("OK", ["OK"]), true);
   assert.equal(isStalePreface("SENTINELLE-PREFACE-77", ["SENTINELLE-PREFACE-77"]), true);
 });
 
-test("isStalePreface: un fragment interne d'un bloc déjà diffusé est périmé", () => {
-  // La préface tronquée par le défilement n'est qu'un morceau du bloc.
-  assert.equal(isStalePreface("encore visible en bas.", ["Un préambule.\n\nPuis la partie encore visible en bas."]), true);
+test("isStalePreface: an inner fragment of an already broadcast block is stale", () => {
+  // A preface truncated by scrolling is only a piece of the block.
+  assert.equal(isStalePreface("still visible at the bottom.", ["A preamble.\n\nThen the part still visible at the bottom."]), true);
 });
 
-test("isStalePreface: une préface vide ne périme rien", () => {
-  assert.equal(isStalePreface("", ["un bloc déjà diffusé"]), false);
-  assert.equal(isStalePreface("   ", ["un bloc déjà diffusé"]), false);
+test("isStalePreface: an empty preface stales nothing", () => {
+  assert.equal(isStalePreface("", ["an already broadcast block"]), false);
+  assert.equal(isStalePreface("   ", ["an already broadcast block"]), false);
 });
 
-test("prefaceMatches: un texte sans rapport ne matche pas", () => {
-  assert.equal(prefaceMatches("Je regarde les pièces concernées.", "Rien à voir avec la préface ici."), false);
+test("prefaceMatches: an unrelated text does not match", () => {
+  assert.equal(prefaceMatches("I am looking at the files involved.", "Nothing to do with the preface here."), false);
 });
 
-test("prefaceMatches: une préface trop courte ne matche jamais", () => {
-  // Sinon "Bien." s'apparierait à n'importe quel texte le contenant.
-  assert.equal(prefaceMatches("Bien.", "Bien. Et voici une longue suite sans rapport."), false);
+test("prefaceMatches: too short a preface never matches", () => {
+  // Otherwise "Fine." would match any text containing it.
+  assert.equal(prefaceMatches("Fine.", "Fine. And here is a long, unrelated continuation."), false);
 });
 
-test("prefaceMatches: chaînes vides ou blanches → false", () => {
+test("prefaceMatches: empty or blank strings → false", () => {
   assert.equal(prefaceMatches("", "un texte quelconque et suffisamment long"), false);
   assert.equal(prefaceMatches("   \n  ", "un texte quelconque et suffisamment long"), false);
-  assert.equal(prefaceMatches("une préface parfaitement valide ici", ""), false);
+  assert.equal(prefaceMatches("a perfectly valid preface right here", ""), false);
 });
 
-test("makeSendQueue: sérialise malgré des latences décroissantes", async () => {
+test("makeSendQueue: serialises despite decreasing latencies", async () => {
   const q = makeSendQueue();
   const done: number[] = [];
   const slow = (n: number, ms: number) =>
@@ -451,28 +451,28 @@ test("makeSendQueue: sérialise malgré des latences décroissantes", async () =
       await new Promise((r) => setTimeout(r, ms));
       done.push(n);
     });
-  // Sans file, le 3e (1 ms) finirait avant le 1er (40 ms) : c'est exactement
-  // ce qui faisait arriver le clavier avant la préface.
+  // With no queue, the 3rd (1 ms) would finish before the 1st (40 ms): exactly
+  // what made the keyboard arrive before the preface.
   const all = [slow(1, 40), slow(2, 20), slow(3, 1)];
   await Promise.all(all);
   assert.deepEqual(done, [1, 2, 3]);
 });
 
-test("makeSendQueue: un rejet ne bloque pas la suite de la file", async () => {
+test("makeSendQueue: a rejection does not block the rest of the queue", async () => {
   const q = makeSendQueue();
   const done: string[] = [];
   const failing = q(async () => {
     throw new Error("Telegram 400");
   });
   const after = q(async () => {
-    done.push("après");
+    done.push("after");
   });
   await assert.rejects(failing, /Telegram 400/);
   await after;
-  assert.deepEqual(done, ["après"]);
+  assert.deepEqual(done, ["after"]);
 });
 
-test("makeSendQueue: deux files sont indépendantes", async () => {
+test("makeSendQueue: two queues are independent", async () => {
   const a = makeSendQueue();
   const b = makeSendQueue();
   const order: string[] = [];
@@ -481,40 +481,40 @@ test("makeSendQueue: deux files sont indépendantes", async () => {
     order.push("a");
   });
   const pb = b(async () => {
-    order.push("b"); // ne doit pas attendre la file a
+    order.push("b"); // must not wait for queue a
   });
   await Promise.all([pa, pb]);
   assert.deepEqual(order, ["b", "a"]);
 });
 
-test("prefaceMatches: l'écran rend le Markdown, le transcript le garde en source", () => {
-  // LA cause du doublon observé en prod (v0.1.144) : le .jsonl contient les
-  // marqueurs Markdown, l'écran ne montre que le rendu (gras en ANSI). Comparer
-  // les deux littéralement échouait, donc la préface n'était jamais éditée et
-  // le texte autoritatif repartait en second message, après la question.
+test("prefaceMatches: the screen renders the Markdown, the transcript keeps the source", () => {
+  // THE cause of the duplicate seen in production (v0.1.144): the .jsonl holds
+  // the Markdown markers, the screen only shows the rendering (bold as ANSI).
+  // Comparing the two literally failed, so the preface was never edited and the
+  // authoritative text went out as a second message, after the question.
   const auth =
-    "Voici le test grandeur nature. Ce paragraphe est le texte-préface : si le correctif " +
-    "fonctionne, tu dois le lire **avant** de voir apparaître le clavier de la question " +
-    "ci-dessous — et non après y avoir répondu.";
-  const preface = auth.replace(/\*\*/g, ""); // ce que l'écran donne
+    "Here is the full-scale test. This paragraph is the preface text: if the fix " +
+    "works, you must read it **before** the question's keyboard appears " +
+    "below — and not after answering it.";
+  const preface = auth.replace(/\*\*/g, ""); // what the screen gives
   assert.equal(prefaceMatches(preface, auth), true);
 });
 
-test("prefaceMatches: une divergence tardive (lien, puces) n'empêche pas l'appariement", () => {
+test("prefaceMatches: a late divergence (link, bullets) does not prevent a match", () => {
   const auth =
-    "Le serveur joint la préface au message `dialog`, lue avec la même fonction que la " +
-    "preview web ([live-text.js](public/live-text.js)) :\n\n- pas de copie\n- une seule source";
+    "The server attaches the preface to the `dialog` message, read with the same function as the " +
+    "web preview ([live-text.js](public/live-text.js)):\n\n- no copy\n- a single source";
   const preface =
-    "Le serveur joint la préface au message dialog, lue avec la même fonction que la " +
-    "preview web (live-text.js) : • pas de copie • une seule source";
+    "The server attaches the preface to the dialog message, read with the same function as the " +
+    "web preview (live-text.js): • no copy • a single source";
   assert.equal(prefaceMatches(preface, auth), true);
 });
 
-test("prefaceMatches: deux blocs qui divergent dès l'ouverture ne s'apparient pas", () => {
-  // Contrepartie de l'empreinte : elle doit rester discriminante. Deux textes
-  // qui ne partagent que quelques mots d'amorce ne sont PAS le même bloc.
-  const preface = "Voici le résultat de l'analyse du bridge Telegram et de sa file d'envoi.";
-  const auth = "Voici le plan de migration de la base de données vers le nouveau schéma.";
+test("prefaceMatches: two blocks that diverge from the opening do not match", () => {
+  // The flip side of the fingerprint: it must stay discriminating. Two texts
+  // sharing only a few opening words are NOT the same block.
+  const preface = "Here is the result of the analysis of the Telegram bridge and its send queue.";
+  const auth = "Here is the plan for migrating the database to the new schema.";
   assert.equal(prefaceMatches(preface, auth), false);
 });
 

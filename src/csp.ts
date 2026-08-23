@@ -1,46 +1,46 @@
 /**
- * La Content-Security-Policy du cockpit, et l'injection du nonce dans la page.
+ * The cockpit's Content-Security-Policy, and the nonce injection into the page.
  *
- * Pourquoi une CSP ici : le transcript rend du **Markdown produit par l'agent**,
- * donc du contenu dérivé de ce que l'agent a lu (un fichier d'un repo cloné, une
- * page web, un message Telegram). `marked` laisse passer le HTML brut. Sans
- * garde, un `<img onerror=…>` planté dans un README s'exécute dans le cockpit —
- * qui peut créer un cron, donc lancer une commande shell. L'assainissement
- * (DOMPurify, côté client) est la première barrière ; la CSP est celle qui tient
- * encore quand l'assainisseur a un trou.
+ * Why a CSP here: the transcript renders **Markdown produced by the agent**,
+ * i.e. content derived from what the agent read (a file in a cloned repo, a web
+ * page, a Telegram message). `marked` lets raw HTML through. With no guard, an
+ * `<img onerror=…>` planted in a README runs inside the cockpit — which can
+ * create a cron, hence run a shell command. Sanitising (DOMPurify, client-side)
+ * is the first barrier; the CSP is the one that still holds when the sanitiser
+ * has a hole.
  *
- * Tout est pur ici ; le câblage vit dans server.ts.
+ * Everything here is pure; the wiring lives in server.ts.
  */
 
 /**
- * Marqueur écrit en dur dans `public/index.html`, remplacé par le vrai nonce à
- * chaque requête.
+ * Marker hardcoded in `public/index.html`, replaced by the real nonce on every
+ * request.
  *
- * Un remplacement de chaîne littérale, pas une réécriture de balises : on ne
- * veut ni parser du HTML ni risquer de « nonce-er » un `<script` qui traînerait
- * dans une chaîne JavaScript. En prime, le marqueur rend l'exigence visible dans
- * la source — un futur bloc de script sans lui ne s'exécutera pas, ce qui se
- * remarque tout de suite.
+ * A literal string replacement, not a tag rewrite: we want neither to parse
+ * HTML nor to risk "nonce-ing" a `<script` that happens to sit inside a
+ * JavaScript string. As a bonus the marker makes the requirement visible in the
+ * source — a future script block without it will not run, which shows up
+ * immediately.
  */
 export const NONCE_PLACEHOLDER = "__CSP_NONCE__";
 
 /**
- * La politique servie avec chaque page.
+ * The policy served with every page.
  *
- * - `script-src` : **aucun `unsafe-inline`**. C'est la directive qui compte —
- *   elle neutralise `<img onerror>`, `<script>` injecté et `javascript:`. Les
- *   deux blocs inline de la page portent le nonce ; le HTML injecté, lui, ne
- *   peut pas le deviner (il est tiré au sort à chaque requête).
- * - `style-src` garde `unsafe-inline` : la page a une grosse feuille inline et
- *   des attributs `style=` un peu partout. Le nonce ne couvre pas les attributs,
- *   donc l'exiger reviendrait à réécrire le client entier pour un gain faible —
- *   l'injection de style seule ne donne pas l'exécution de code.
- * - `img-src` autorise `data:` : le favicon est un SVG en data-URI, et le pip de
- *   notification le réécrit à la volée.
- * - `connect-src 'self'` couvre le WebSocket : `'self'` s'applique aussi au
- *   `ws://` de même hôte et même port.
- * - `base-uri`/`object-src`/`frame-ancestors` à `none` : rien à réécrire, rien à
- *   embarquer, et pas de clickjacking sur une UI qui pilote des agents.
+ * - `script-src`: **no `unsafe-inline`**. That is the directive that matters —
+ *   it neutralises `<img onerror>`, injected `<script>` and `javascript:`. The
+ *   page's two inline blocks carry the nonce; injected HTML cannot guess it (it
+ *   is drawn afresh on every request).
+ * - `style-src` keeps `unsafe-inline`: the page has one large inline stylesheet
+ *   and `style=` attributes all over. The nonce does not cover attributes, so
+ *   requiring it would mean rewriting the whole client for little gain — style
+ *   injection alone does not give code execution.
+ * - `img-src` allows `data:`: the favicon is an SVG data-URI, and the
+ *   notification pip rewrites it on the fly.
+ * - `connect-src 'self'` covers the WebSocket: `'self'` also applies to a
+ *   `ws://` on the same host and port.
+ * - `base-uri`/`object-src`/`frame-ancestors` at `none`: nothing to rewrite,
+ *   nothing to embed, and no clickjacking on a UI that drives agents.
  */
 export function cspHeader(nonce: string): string {
   return [
@@ -56,7 +56,7 @@ export function cspHeader(nonce: string): string {
   ].join("; ");
 }
 
-/** Remplace chaque marqueur par le nonce de cette requête. */
+/** Replace every marker with this request's nonce. */
 export function injectNonce(html: string, nonce: string): string {
   return html.split(NONCE_PLACEHOLDER).join(nonce);
 }

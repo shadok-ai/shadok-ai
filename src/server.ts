@@ -19,8 +19,8 @@ import {
   resumedTurnStart,
   type TuiDialog,
 } from "./extract.js";
-// Même implémentation que la preview du client web (JS pur, chargé tel quel par
-// le navigateur) : une seule source pour lire le texte en vol à l'écran.
+// Same implementation as the web client's preview (plain JS, loaded as is by
+// the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 import { screenShowsWork } from "./detect.js";
@@ -143,12 +143,12 @@ import { cspHeader, injectNonce, NONCE_PLACEHOLDER } from "./csp.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const START_PORT = Number(process.env.PORT ?? 3789);
 const MAX_PORT_TRIES = 20;
-// Interface d'écoute : la loopback par défaut (le cockpit lance des commandes,
-// il ne s'expose pas au réseau sans qu'on le demande). SHADOK_HOST=0.0.0.0 pour
-// un conteneur — voir bindRefusal, qui exige alors un mot de passe.
+// Listening interface: the loopback by default (the cockpit runs commands, it
+// does not expose itself to a network unasked). SHADOK_HOST=0.0.0.0 for a
+// container — see bindRefusal, which then requires a password.
 const HOST = resolveHost(process.env);
-// Origines navigateur acceptées en plus du same-origin (un reverse proxy qui
-// réécrit le Host, typiquement).
+// Browser origins accepted on top of same-origin (typically a reverse proxy
+// that rewrites the Host).
 const EXTRA_ORIGINS = parseOrigins(process.env.SHADOK_ORIGINS);
 
 // Single instance per launch directory. A second server sharing this dir's
@@ -323,15 +323,15 @@ async function fireCron(c: Cron): Promise<{ outcome: string; reason?: DriveReaso
   let promptText: string;
   let checkNote = "";
   if (check.kind === "news") {
-    promptText = `Résultat du monitoring (traite-le, alerte si nécessaire) :\n${check.out}\n\n${c.prompt}`;
+    promptText = `Monitoring output (act on it, raise the alarm if needed):\n${check.out}\n\n${c.prompt}`;
     checkNote = ` (check: ${(Buffer.byteLength(check.out) / 1000).toFixed(1)} kB)`;
   } else if (check.kind === "failed") {
     // A broken guard used to disable the cron in silence. Wake the agent so it
     // can raise the alarm — a monitoring job that dies quietly is the bug we're
     // fixing. It costs tokens every slot until the guard is repaired.
     promptText =
-      `La commande de garde de ce cron a échoué (${check.detail}). Aucune donnée de monitoring n'a pu être collectée. ` +
-      `Signale-le, et si tu peux, diagnostique la commande :\n\`\`\`\n${c.check}\n\`\`\`\n\n${c.prompt}`;
+      `This cron's guard command failed (${check.detail}). No monitoring data could be collected. ` +
+      `Report it, and diagnose the command if you can:\n\`\`\`\n${c.check}\n\`\`\`\n\n${c.prompt}`;
     console.log(`${cronTag(c)} check failed (${check.detail}) — waking the agent`);
   } else {
     promptText = c.prompt; // no guard at all: the agent always runs
@@ -551,10 +551,10 @@ function cronTick(): void {
  * Recompute the schedule of enabled crons — at boot, and whenever the default
  * timezone changes.
  *
- * Un `nextRun` déjà stocké est RECALCULÉ s'il est dans le futur : sinon, poser
- * `timezone` sur un serveur en UTC ne prendrait effet qu'après un dernier tir à
- * la mauvaise heure. Un `nextRun` dans le PASSÉ est laissé tel quel — il est dû
- * (tir manqué pendant l'arrêt) et `cronTick` doit encore le rattraper.
+ * An already stored `nextRun` is RECOMPUTED when it is in the future:
+ * otherwise setting `timezone` on a UTC server would only take effect after one
+ * last fire at the wrong hour. A `nextRun` in the PAST is left alone — it is due
+ * (a fire missed while down) and `cronTick` still has to catch it up.
  */
 function primeCrons(): void {
   const now = Date.now();
@@ -562,10 +562,10 @@ function primeCrons(): void {
   let changed = false;
   for (const c of list) {
     if (!c.enabled) continue;
-    if (c.nextRun != null && c.nextRun <= now) continue; // dû : on ne l'escamote pas
-    // Un `interval` n'est recalculé que s'il MANQUE : le recalculer repousserait
-    // l'échéance à chaque démarrage, et le serveur redémarre à chaque
-    // auto-update — un cron de 30 min pourrait alors ne jamais tirer.
+    if (c.nextRun != null && c.nextRun <= now) continue; // due: do not skip it
+    // An `interval` is only recomputed when it is MISSING: recomputing would
+    // push the deadline back at every start, and the server restarts on every
+    // auto-update — a 30 min cron could then never fire at all.
     if (c.schedule.kind === "interval" && c.nextRun != null) continue;
     const next = nextRunFor(c.schedule, now, cronTimeZone(c));
     if (c.nextRun !== next) { c.nextRun = next; changed = true; }
@@ -588,10 +588,10 @@ function passwordMatches(input: string): boolean {
   const b = Buffer.from(GUI_PASSWORD);
   return a.length === b.length && timingSafeEqual(a, b);
 }
-// Le handler de soumission est un bloc <script> nonce-é, plus un `onsubmit=`
-// inline : la CSP interdit les attributs de gestionnaire (c'est précisément ce
-// qui neutralise un `<img onerror>` injecté ailleurs), et une page de login qui
-// s'exempterait de sa propre politique serait un drôle de message.
+// The submit handler is a nonce-d <script> block, not an inline `onsubmit=`:
+// the CSP forbids handler attributes (that is exactly what neutralises an
+// `<img onerror>` injected elsewhere), and a login page exempting itself from
+// its own policy would send an odd message.
 const LOGIN_HTML = `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>shadok-ai — login</title><style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#14161a;color:#e8e8ea;font-family:system-ui}
 form{background:#1b1d22;padding:28px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5);width:min(320px,90vw)}
@@ -610,15 +610,15 @@ document.getElementById("f").addEventListener("submit", (e) => {
 });
 </script>`;
 
-/** Sert la page de login avec sa CSP et son nonce (elle sort du gate, donc elle
- *  ne passe pas par la route de l'index). */
+/** Serves the login page with its CSP and nonce (it sits outside the gate, so
+ *  it does not go through the index route). */
 function sendLogin(res: express.Response): void {
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
   res.status(401).type("html").send(injectNonce(LOGIN_HTML, nonce));
 }
 
-/** Le garde same-origin de ce serveur (cf. `originAllowed`). */
+/** This server's same-origin guard (see `originAllowed`). */
 /**
  * Per-session capability key, injected into the agent's env as
  * SHADOK_SESSION_KEY. The session id is PUBLIC (`/live` lists every id), so it
@@ -656,8 +656,8 @@ function requestOriginOk(req: { headers: Record<string, unknown> }): boolean {
   );
 }
 
-// Un navigateur d'une autre origine n'a rien à faire ici — /login compris, sinon
-// une page tierce peut essayer des mots de passe. Placé AVANT tout le reste.
+// A browser from another origin has no business here — /login included, or a
+// third-party page could try passwords. Placed BEFORE everything else.
 app.use((req, res, next) => {
   if (requestOriginOk(req)) return next();
   res.status(403).json({ error: "cross-origin request refused" });
@@ -683,21 +683,21 @@ app.use((req, res, next) => {
   return res.status(401).json({ error: "unauthorized" });
 });
 
-// La page passe par ici AVANT express.static : elle doit recevoir le nonce de
-// sa CSP, ce qu'un fichier servi tel quel ne peut pas faire.
+// The page goes through here BEFORE express.static: it must receive its CSP's
+// nonce, which a file served as is cannot do.
 //
-// Relue à CHAQUE requête, comme le ferait express.static. La version d'avant la
-// gardait en mémoire — « elle ne change pas en cours d'exécution » — et servait
-// donc une page périmée dès qu'on éditait index.html : on recharge, rien ne
-// bouge, on cherche le bug ailleurs. Un fichier de 170 Ko lu une fois par
-// ouverture d'onglet ne se mesure pas ; le piège, si.
+// Re-read on EVERY request, as express.static would. The earlier version kept
+// it in memory — "it does not change at runtime" — and therefore served a stale
+// page as soon as index.html was edited: you reload, nothing moves, you go hunt
+// the bug elsewhere. A 170 KB file read once per tab opening does not register;
+// the trap does.
 const INDEX_PATH = path.join(__dirname, "..", "public", "index.html");
 app.get(["/", "/index.html"], (_req, res) => {
   let html: string;
   try {
     html = fs.readFileSync(INDEX_PATH, "utf8");
   } catch {
-    return res.status(500).type("text").send("index.html introuvable");
+    return res.status(500).type("text").send("index.html not found");
   }
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
@@ -743,30 +743,30 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
 
 app.use(express.static(path.join(__dirname, "..", "public")));
 // Markdown parser served locally (history rendering on the client).
-// Résolu via require.resolve, pas un chemin en dur : dans l'install npm
-// (~/.shadok-ai/app), marked est hoisté au-dessus de node_modules/shadok-ai
-// et le chemin relatif à __dirname 404ait — le client retombait en texte brut.
+// Resolved through require.resolve, not a hardcoded path: in the npm install
+// (~/.shadok-ai/app) marked is hoisted above node_modules/shadok-ai and the
+// path relative to __dirname 404'd — the client fell back to plain text.
 const require = createRequire(import.meta.url);
 const markedUmd = path.join(
   path.dirname(require.resolve("marked/package.json")),
   "lib",
   "marked.umd.js",
 );
-// `dotfiles: "allow"` est OBLIGATOIRE : l'app est installée sous ~/.shadok-ai/,
-// donc le chemin absolu de marked contient un segment `.shadok-ai`. Express 5 /
-// `send` traite tout segment commençant par `.` comme un dotfile et, avec le
-// défaut `ignore`, renvoie 404 SANS jamais stat le fichier — le client retombait
-// alors en texte brut (Markdown non rendu). (express.static plus haut n'est pas
-// touché : quand un `root` est fixé, send ne teste que les segments RELATIFS.)
+// `dotfiles: "allow"` is MANDATORY: the app is installed under ~/.shadok-ai/,
+// so marked's absolute path contains a `.shadok-ai` segment. Express 5 / `send`
+// treats any segment starting with `.` as a dotfile and, with the `ignore`
+// default, returns 404 WITHOUT ever stat-ing the file — the client then fell
+// back to plain text (unrendered Markdown). (express.static above is unaffected:
+// once a `root` is set, send only tests the RELATIVE segments.)
 app.get("/vendor/marked.js", (_req, res) =>
   res.sendFile(markedUmd, { dotfiles: "allow" }),
 );
-// Sanitiseur HTML — le transcript rend du Markdown écrit par l'agent, donc
-// dérivé de contenu non fiable (un README cloné, une page web, un message
-// Telegram). On résout le build navigateur DIRECTEMENT : contrairement à
-// marked, dompurify ne publie pas `./package.json` dans ses `exports`, donc le
-// détour par le dossier du paquet lève ERR_PACKAGE_PATH_NOT_EXPORTED. Ce
-// sous-chemin-ci, lui, est exporté.
+// HTML sanitiser — the transcript renders Markdown written by the agent, hence
+// derived from untrusted content (a cloned README, a web page, a Telegram
+// message). We resolve the browser build DIRECTLY: unlike marked, dompurify
+// does not publish `./package.json` in its `exports`, so going through the
+// package folder throws ERR_PACKAGE_PATH_NOT_EXPORTED. This subpath is
+// exported.
 const purifyDist = require.resolve("dompurify/purify.min.js");
 app.get("/vendor/purify.js", (_req, res) =>
   res.sendFile(purifyDist, { dotfiles: "allow" }),
@@ -908,12 +908,12 @@ app.get("/stars", async (_req, res) => res.json({ count: await starCount() }));
 // Channel list, persisted server-side per launch directory — survives a wiped
 // browser, another device, a restart or a reboot.
 /**
- * Le registre, enrichi de ce que le client ne peut pas déduire seul : les
- * horaires programmés de chaque canal (l'onglet en montre une ⏰).
+ * The registry, enriched with what the client cannot derive on its own: each
+ * channel's schedules (the tab shows a ⏰ for them).
  *
- * Dérivé à la lecture, jamais stocké : la browser PUT ne renvoie qu'une forme
- * fixe (cf. invariant 6), donc ce champ ne peut pas polluer le registre. Et
- * c'est ce qui évite un second poll — `/channels` est déjà relu toutes les 4 s.
+ * Derived on read, never stored: the browser PUT only sends back a fixed shape
+ * (see invariant 6), so this field cannot pollute the registry. And it is what
+ * avoids a second poll — `/channels` is already re-read every 4 s.
  */
 app.get("/channels", (_req, res) => {
   const active = loadCrons().filter((c) => c.enabled);
@@ -938,9 +938,9 @@ app.post("/crons", (req, res) => {
   const existing = b.id ? loadCrons().find((c) => c.id === b.id) : undefined;
   const enabled = typeof b.enabled === "boolean" ? b.enabled : (existing?.enabled ?? true);
   const check = typeof b.check === "string" && b.check.trim() ? String(b.check).trim() : undefined;
-  // Fuseau explicite : refusé s'il est invalide plutôt que silencieusement
-  // ignoré — un « Europe/Pariss » qui retomberait sur le fuseau machine ferait
-  // exactement le décalage muet qu'on cherche à supprimer.
+  // Explicit zone: refused when invalid rather than silently ignored — a
+  // "Europe/Pariss" falling back to the machine's zone would produce exactly
+  // the silent shift this is meant to remove.
   const rawTz = typeof b.tz === "string" ? b.tz.trim() : "";
   if (rawTz && !isValidTimeZone(rawTz)) return res.status(400).json({ error: `unknown timezone '${rawTz}'` });
   const tz = rawTz || existing?.tz;
@@ -958,8 +958,8 @@ app.post("/crons", (req, res) => {
   upsertCron(cron);
   res.json({ ...cron, timezone: cronTimeZone(cron) });
 });
-// Fuseau par défaut des crons `daily`. GET renvoie aussi le fuseau machine, pour
-// que l'appelant puisse montrer ce qui s'applique réellement s'il n'y a rien.
+// Default zone for `daily` crons. GET also returns the machine's zone, so the
+// caller can show what actually applies when nothing is set.
 app.get("/timezone", (_req, res) =>
   res.json({ timezone: defaultTimeZone() ?? null, system: systemTimeZone() }),
 );
@@ -968,18 +968,18 @@ app.post("/timezone", (req, res) => {
   if (raw && !isValidTimeZone(raw)) return res.status(400).json({ error: `unknown timezone '${raw}'` });
   const cfg = loadConfig();
   if (raw) cfg.timezone = raw;
-  else delete cfg.timezone; // vide = revenir au fuseau de la machine
+  else delete cfg.timezone; // empty = back to the machine's zone
   saveConfig(cfg);
-  // Les crons déjà programmés visent encore l'ancienne heure : on les réaligne
-  // tout de suite, sinon le changement n'a l'air de rien faire jusqu'au premier
-  // tir (à la mauvaise heure).
+  // Crons already scheduled still aim at the old hour: realign them right
+  // away, otherwise the change looks like it did nothing until the first fire
+  // (at the wrong hour).
   primeCrons();
   res.json({ timezone: defaultTimeZone() ?? null, system: systemTimeZone() });
 });
 app.delete("/crons", (req, res) => {
-  // Accepte un préfixe (c'est tout ce que les `list` affichent) et dit la
-  // vérité : un `{ok:true}` inconditionnel faisait passer une suppression qui
-  // n'avait rien supprimé pour un succès — le cron restait, et rien ne le disait.
+  // Accepts a prefix (that is all the `list` views show) and tells the truth:
+  // an unconditional `{ok:true}` made a deletion that deleted nothing look like
+  // a success — the cron stayed, and nothing said so.
   const r = resolveCronId(loadCrons(), String(req.query.id ?? ""));
   if (!r.ok) {
     const status = r.error === "empty" ? 400 : r.error === "ambiguous" ? 409 : 404;
@@ -1103,8 +1103,8 @@ app.put("/profiles/prompt", (req, res) => {
   if (!verdict.ok) return res.status(403).json({ error: verdict.error });
   const systemPrompt = typeof b.systemPrompt === "string" ? b.systemPrompt : "";
   if (!systemPrompt.trim()) return res.status(400).json({ error: "systemPrompt required" });
-  // Mise à jour : on repart de l'existant, donc deny/allow/secrets/model
-  // survivent. Création : jamais de secret, et l'accès est un choix explicite.
+  // Update: we start from the stored profile, so deny/allow/secrets/model
+  // survive. Creation: never a secret, and access is an explicit choice.
   const next: Profile = verdict.create
     ? { name: target, systemPrompt, deny: b.readOnly ? [...READONLY_DENY] : undefined, secrets: [] }
     : { ...existing!, systemPrompt };
@@ -1177,9 +1177,9 @@ const wss = new WebSocketServer({
   path: "/ws",
   // Require the auth cookie on the upgrade when a password is set (the browser
   // sends it automatically; the Telegram bridge sends the internal token).
-  // Le contrôle d'origine compte AUTANT que le cookie : un WebSocket ignore la
-  // same-origin policy, donc sans lui n'importe quelle page visitée par
-  // l'utilisateur peut ouvrir une session et piloter un agent.
+  // The origin check matters AS MUCH as the cookie: a WebSocket ignores the
+  // same-origin policy, so without it any page the user visits could open a
+  // session and drive an agent.
   verifyClient: (info, cb) => cb(requestOriginOk(info.req) && requestAuthed(info.req)),
 });
 // The ws server re-emits the http server's listen error; let the http server's
@@ -1356,14 +1356,14 @@ type ClientMessage =
        *  SHADOK_SESSION_ID here, so the link needs no configuring. Refused on a
        *  cycle / unknown parent / cap, exactly like `set-parent`. */
       parent?: string | null;
-      /** Qui pilote ce client : "web", "cron", "telegram", "cli"… Voyage avec
-       *  l'écho de prompt pour que les autres clients puissent dire qui a parlé. */
+      /** Who drives this client: "web", "cron", "telegram", "cli"… Travels with
+       *  the prompt echo so other clients can say who spoke. */
       origin?: string;
       /** Should this channel be mirrored into Telegram? Chosen at creation
        *  (the form's checkbox); afterwards the channel menu decides. */
       mirror?: boolean;
     }
-  /** `force`: envoyer malgré un dépassement du rythme. Vaut pour ce message seul. */
+  /** `force`: send despite a pace overrun. Applies to this message only. */
   /** `from`: display name of whoever typed it, when a client knows it (the
    *  Telegram bridge does). Echoed to the OTHER clients so the web can name the
    *  author instead of an anonymous "pilot (elsewhere)". */
@@ -1475,14 +1475,14 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   env.SHADOK_SESSION_ID = id;
   env.SHADOK_PORT = String(boundPort || START_PORT);
   if (GUI_PASSWORD) env.SHADOK_AUTH = `sk_auth=${AUTH_TOKEN}`;
-  // Prouve QUI appelle /profiles/prompt : sans elle, « mon propre profil » ne
-  // veut rien dire, l'id de session étant public.
+  // Proves WHO calls /profiles/prompt: without it "my own profile" means
+  // nothing, since the session id is public.
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
-  // Les noms RÉSOLUS : un profil qui référence un secret absent du vault ne doit
-  // pas faire promettre à l'agent une variable qui n'existe pas.
+  // The RESOLVED names: a profile referencing a secret missing from the vault
+  // must not promise the agent a variable that does not exist.
   const note = envVarsNote(Object.keys(secretEnv));
   const sp = pilotPrompt();
   const fullArgs = [
@@ -1515,10 +1515,10 @@ interface Live {
   contextWindow: number;
   /** Stops the .jsonl tail loop (content streaming). */
   stopTail: (() => void) | null;
-  /** Les derniers blocs de texte DÉJÀ diffusés, pour ne pas les reproposer en
-   *  préface d'une question (cf. `isStalePreface`). Borné : une préface ne peut
-   *  décrire qu'un bloc encore visible à l'écran, donc récent — en garder plus
-   *  ne ferait qu'augmenter le risque d'appariement à tort. */
+  /** The last text blocks ALREADY broadcast, so they are not offered again as
+   *  a question's preface (see `isStalePreface`). Bounded: a preface can only
+   *  describe a block still visible on screen, hence recent — keeping more
+   *  would only raise the risk of a wrong match. */
   recentTexts: string[];
   /** Unsubscribes the current pilot's exit handler (so a restart can swap the
    *  pilot without the old handler tearing the session down). */
@@ -1632,11 +1632,11 @@ async function restartSession(s: Live): Promise<void> {
   // nothing to resume (claude --resume would exit) — re-create it.
   const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id));
   s.pilot = makePilot(s.id, s.cwd, hasTranscript ? ["--resume", s.id] : ["--session-id", s.id], s.profile);
-  s.appliedProfile = s.profile;   // le nouveau process porte le profil désiré
+  s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
   s.restarting = false;
   broadcast(s, { type: "ready", sessionId: s.id, cwd: s.cwd, branch: s.worktree?.branch ?? null });
-  broadcastProfile(s);            // l'écart « au prochain reload » vient de se refermer
+  broadcastProfile(s);            // the "at next reload" gap has just closed
   broadcast(s, { type: "screen", text: s.pilot.screen(), working: s.pilot.isWorking() });
 }
 
@@ -1656,7 +1656,7 @@ function destroySession(s: Live) {
   s.retryTimer = null;
   s.stopTail?.();
   s.stopTail = null;
-  // La session est finie : sa position de tail n'a plus rien à reprendre.
+  // The session is over: its tail position has nothing left to resume.
   clearTailPos(sessionFilePath(s.cwd, s.id));
   s.pilot.kill();
   // Worktrees are durable: never auto-removed. They persist (with their
@@ -1733,7 +1733,7 @@ async function createSession(
     cwd,
     pilot,
     profile,
-    appliedProfile: profile,   // le process qu'on vient de lancer l'a bien reçu
+    appliedProfile: profile,   // the process we just spawned did receive it
     clients: new Set(),
     busy: false,
     lastPrompt: "",
@@ -1783,12 +1783,13 @@ async function attachPilot(s: Live): Promise<void> {
   // never truncated, at message granularity.
   s.stopTail = tailSession(sessionFilePath(cwd, id), (e) => {
     if (e.kind === "text") {
-      // Mémoriser AVANT de diffuser : une question peut suivre immédiatement,
-      // et sa préface ne doit pas répéter ce bloc.
+      // Remember BEFORE broadcasting: a question can follow immediately, and
+      // its preface must not repeat this block.
       s.recentTexts.push(e.text);
       if (s.recentTexts.length > 8) s.recentTexts.shift();
-      // `at` = heure d'ÉCRITURE du bloc, pas de sa lecture (cf. TailEvent) : le
-      // client l'affiche telle quelle au lieu de dater tout à la réception.
+      // `at` = when the block was WRITTEN, not when it was read (see
+      // TailEvent): the client shows it as is instead of dating everything on
+      // reception.
       broadcast(s, { type: "stream-text", text: e.text, at: e.at });
     }
     else if (e.kind === "tool")
@@ -1870,14 +1871,14 @@ async function attachPilot(s: Live): Promise<void> {
 }
 
 /**
- * Le message « working ».
+ * The "working" message.
  *
- * Il porte `elapsedMs` — depuis COMBIEN DE TEMPS le tour tourne — en plus de
- * `startedAt`. Le client s'ancre sur la durée, jamais sur l'instant : comparer un
- * horodatage SERVEUR à un `Date.now()` de NAVIGATEUR décalait l'affichage de tout
- * l'écart entre les deux horloges, et le cockpit se regarde souvent depuis un
- * autre appareil que celui qui héberge le serveur (téléphone, second portable).
- * Un navigateur en retard pouvait même afficher une durée négative.
+ * It carries `elapsedMs` — HOW LONG the turn has been running — on top of
+ * `startedAt`. The client anchors on the duration, never on the instant:
+ * comparing a SERVER timestamp to a BROWSER `Date.now()` shifted the display by
+ * the whole gap between the two clocks, and the cockpit is often watched from a
+ * device other than the one hosting the server (a phone, a second laptop). A
+ * browser running behind could even show a negative duration.
  */
 function workingMessage(s: Live): { type: "working"; startedAt: number | null; elapsedMs: number } {
   const startedAt = s.turnStartedAt;
@@ -1891,10 +1892,10 @@ function workingMessage(s: Live): { type: "working"; startedAt: number | null; e
  */
 async function finishTurn(s: Live) {
   s.busy = true;
-  // Tour retrouvé en cours (pas lancé par nous) : typiquement après un
-  // redémarrage du serveur, l'agent tmux ayant continué sans lui. `turnStartedAt`
-  // vit en mémoire, donc repartir de `now` remettait le chrono à zéro alors que
-  // l'agent réfléchissait depuis dix minutes ; le transcript a survécu, lui.
+  // Turn found already running (not started by us): typically after a server
+  // restart, the tmux agent having carried on without it. `turnStartedAt` lives
+  // in memory, so restarting from `now` reset the stopwatch while the agent had
+  // been thinking for ten minutes; the transcript, though, survived.
   if (!s.turnStartedAt) s.turnStartedAt = resumedTurnStart(Date.now(), lastPromptAt(s.cwd, s.id));
   s.errorsAtTurnStart = findTransientErrors(s.pilot.screen());
   broadcast(s, workingMessage(s));
@@ -1952,7 +1953,7 @@ function selectedOptionN(screen: string): number | null {
 async function moveToOption(pilot: Pilot, n: number): Promise<boolean> {
   for (let i = 0; i < 12; i++) {
     const cur = selectedOptionN(pilot.screen());
-    if (cur === null) return false; // curseur illisible : à l'appelant de gérer
+    if (cur === null) return false; // unreadable cursor: the caller deals with it
     if (cur === n) return true;
     pilot.press(cur < n ? "down" : "up");
     await new Promise((r) => setTimeout(r, 160));
@@ -1969,41 +1970,42 @@ async function selectOption(pilot: Pilot, n: number): Promise<void> {
 }
 
 /**
- * Coche/décoche l'option `n` d'un dialog multi-select.
+ * Check/uncheck option `n` of a multi-select dialog.
  *
- * On NE tape PAS le chiffre : ces dialogs l'ignorent complètement (vérifié à
- * l'écran — la case restait `[ ]` et le curseur ne bougeait pas). Leur pied de
- * page annonce « Enter to select · ↑/↓ to navigate », mais Enter ne coche rien
- * non plus : c'est l'ESPACE qui bascule la case, une fois le curseur amené
- * dessus aux flèches. Un `toggle` par chiffre ne faisait donc rien, et le
- * Submit qui suivait partait avec zéro case cochée — d'où un « aucune réponse ».
+ * We do NOT type the digit: these dialogs ignore it entirely (verified on
+ * screen — the box stayed `[ ]` and the cursor did not move). Their footer says
+ * "Enter to select · ↑/↓ to navigate", but Enter checks nothing either: SPACE
+ * is what toggles the box, once the arrows have brought the cursor onto it. So
+ * a digit-based `toggle` did nothing, and the Submit that followed went out
+ * with zero boxes checked — hence an "empty answer".
  */
 async function toggleOption(pilot: Pilot, n: number): Promise<void> {
   if (await moveToOption(pilot, n)) pilot.write(" ");
 }
 
-/** Motif de la page de récapitulatif atteinte par Tab depuis un multi-select. */
+/** Pattern of the summary page reached with Tab from a multi-select. */
 const SUBMIT_PAGE = /ready to submit|submit answers/i;
 
 /**
- * Le message `dialog` diffusé aux clients, avec sa **préface** : le texte que
- * l'agent a écrit juste avant de poser sa question.
+ * The `dialog` message broadcast to clients, with its **preface**: the text the
+ * agent wrote just before asking its question.
  *
- * Pourquoi le lire à l'écran plutôt que dans le transcript : le .jsonl n'écrit
- * un message assistant que TERMINÉ, donc son `tool_use` résolu — et
- * `AskUserQuestion` ne se résout qu'à la réponse de l'utilisateur. Le texte qui
- * précède la question arriverait donc APRÈS elle. L'écran, lui, l'a déjà.
+ * Why read it off the screen rather than from the transcript: the .jsonl only
+ * writes an assistant message once FINISHED, hence with its `tool_use`
+ * resolved — and `AskUserQuestion` only resolves when the user answers. The
+ * text preceding the question would therefore arrive AFTER it. The screen
+ * already has it.
  *
- * Provisoire par construction (dé-wrappé, tronqué si l'écran a défilé) : le
- * client la remplace par le bloc autoritatif du tail. Le web l'affiche comme
- * bulle grise au-dessus de la question (son propre aperçu est effacé quand la
- * question apparaît) ; le bridge Telegram s'en sert aussi.
+ * Provisional by construction (unwrapped, truncated if the screen scrolled):
+ * the client replaces it with the authoritative block from the tail. The web
+ * ignores it, it already has its grey bubble; the Telegram bridge is what uses
+ * it.
  */
 function dialogMessage(s: Live, d: TuiDialog): object {
   const preface = extractLiveText(s.pilot.screen());
-  // L'écran garde la réponse du tour précédent tant que le nouveau tour n'a
-  // rien écrit : sans ce filtre, chaque question était précédée d'un doublon
-  // de la réponse d'avant, que rien ne venait ensuite réparer.
+  // The screen keeps the previous turn's answer until the new turn writes
+  // anything: without this filter, every question was preceded by a duplicate
+  // of the previous answer, which nothing ever came to repair.
   const fresh = preface && !isStalePreface(preface, s.recentTexts) ? preface : "";
   return { type: "dialog", ...d, ...(fresh ? { preface: fresh } : {}) };
 }
@@ -2065,8 +2067,8 @@ function clearRetry(s: Live, notify = false) {
 }
 
 /**
- * Pas de re-test du rythme pendant une pause. Aligné sur le TTL du cache de
- * usage.ts : la boucle d'attente n'émet aucune requête vers l'API.
+ * How long between pace re-checks during a hold. Aligned with usage.ts's cache
+ * TTL: the waiting loop issues no request to the API.
  */
 const PACE_RECHECK_MS = 60_000;
 
@@ -2160,9 +2162,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 wss.on("connection", (ws: WebSocket) => {
   let session: Live | null = null;
-  // D'où vient ce client ? Déclaré au `start` (web, cron, telegram, cli…), il
-  // voyage avec l'écho de prompt : les autres clients doivent pouvoir DIRE qui
-  // a parlé. Sans ça, un cron qui se déclenche ressemble à un message humain.
+  // Where does this client come from? Declared at `start` (web, cron, telegram,
+  // cli…), it travels with the prompt echo: other clients must be able to SAY
+  // who spoke. Without it, a cron firing looks like a human message.
   let origin: string | undefined;
 
   const send = (msg: object) => {
@@ -2434,10 +2436,10 @@ wss.on("connection", (ws: WebSocket) => {
           clearRetry(session, true);
           session.retryCount = 0;
           session.lastPrompt = text;
-          // The session's other clients see the prompt arrive — sauf un cron :
-          // ce n'est pas quelqu'un qui parle, et son texte (le prompt PLUS le
-          // dump de sa garde) noyait la réponse dans les deux interfaces. La
-          // marque dans le contenu assure le même masquage à la relecture.
+          // The session's other clients see the prompt arrive — except a cron:
+          // that is not someone speaking, and its text (the prompt PLUS its
+          // guard's dump) drowned the answer in both interfaces. The mark in
+          // the content gives the same hiding on replay.
           if (origin !== "cron")
             broadcast(
               session,
@@ -2629,7 +2631,7 @@ wss.on("connection", (ws: WebSocket) => {
           if (name !== null && !getProfile(name)) return fail(`unknown profile: ${name}`);
           s.profile = name;
           upsertChannel({ sessionId: s.id, profile: name });
-          broadcastProfile(s);            // même sans restart : l'écart est visible partout
+          broadcastProfile(s);            // even without a restart: the gap shows everywhere
           if (msg.restart) await restartSession(s);
           break;
         }
@@ -2726,9 +2728,9 @@ function seedSecretsSkill(): void {
 }
 seedSecretsSkill();
 
-// Fail-closed AVANT d'écouter : exposer le cockpit au réseau sans mot de passe
-// donne l'exécution de commandes à quiconque l'atteint. Mieux vaut ne pas
-// démarrer que démarrer grand ouvert.
+// Fail-closed BEFORE listening: exposing the cockpit to a network with no
+// password hands command execution to whoever reaches it. Better not to start
+// than to start wide open.
 const refusal = bindRefusal(HOST, Boolean(GUI_PASSWORD));
 if (refusal) {
   console.error(`[shadok-ai] ${refusal}`);

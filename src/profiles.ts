@@ -48,9 +48,9 @@ export const READONLY_DENY = [
  */
 export const DEFAULT_PROFILES: Profile[] = [
   {
-    // En tête : c'est la porte d'entrée, donc la première carte de la box.
-    // Read-only DÉLIBÉRÉMENT — un boss qui a les mains dans le code arrête
-    // de déléguer. Les écritures git bloquées le forcent à passer par un agent.
+    // First: this is the way in, so the first card in the box. Read-only ON
+    // PURPOSE — a boss with their hands in the code stops delegating. Blocked
+    // git writes force them to go through an agent.
     name: "Shadok-Boss",
     systemPrompt:
       "You are Shadok-Boss, the lead agent of this environment. You run on the `general` channel — the user talks to you first. You have two jobs, in this order.\n\n" +
@@ -79,14 +79,15 @@ export const DEFAULT_PROFILES: Profile[] = [
     secrets: [],
   },
   {
-    // Frère de Shadok-Marketing, pas doublon : Marketing achète l'audience
-    // (ads, campagnes, conversion), celui-ci la gagne (recherche organique).
-    // Fusionner les deux donnerait un profil obèse, mauvais aux deux bouts.
+    // Sibling of Shadok-Marketing, not a duplicate: Marketing BUYS the
+    // audience (ads, campaigns, conversion), this one EARNS it (organic
+    // search). Merging the two would give one bloated profile, bad at both
+    // ends.
     //
-    // READONLY_DENY ne bloque que les écritures GIT, jamais Write/Edit — et
-    // c'est vital ici : le livrable de ce profil EST un fichier. Le prompt le
-    // dit explicitement, parce que la formulation de Marketing (« never modify
-    // or commit it ») suffit à faire refuser la création d'un brouillon.
+    // READONLY_DENY blocks GIT writes only, never Write/Edit — and that is
+    // vital here: this profile's deliverable IS a file. The prompt says so
+    // explicitly, because Marketing's wording ("never modify or commit it") is
+    // enough to make an agent refuse to create a draft.
     name: "Shadok-Content",
     systemPrompt:
       "You are Shadok-Content, the organic-content & SEO agent. Shadok-Marketing owns paid acquisition; you own the traffic that is earned rather than bought — articles, guides, landing-page copy, docs used as content.\n\n" +
@@ -113,10 +114,10 @@ const FILE = path.join(os.homedir(), ".shadok-ai", "profiles.json");
  *  so it knows what's available without hunting. "" when there are none. */
 export function envVarsNote(names: string[]): string {
   if (!names.length) return "";
-  // Formulée pour couper court au réflexe qui faisait échouer les agents :
-  // partir chercher un .env à charger, puis conclure que le secret manque.
-  // On dit donc explicitement que c'est DÉJÀ posé, et on donne le test de
-  // présence qui ne révèle pas la valeur.
+  // Worded to head off the reflex that kept failing agents: going hunting for
+  // a .env to load, then concluding the secret is missing. So we say
+  // explicitly that it is ALREADY set, and give the presence test that does
+  // not reveal the value.
   return (
     `Credentials available to you: ${names.join(", ")}. ` +
     `They are already set as environment variables in every command you run with the Bash tool — ` +
@@ -270,8 +271,8 @@ export function promptEditVerdict(opts: {
 }): PromptEdit {
   const target = opts.target.trim();
   if (!target) return { ok: false, error: "profile name required" };
-  // Refuser plutôt qu'avaler : un prompt managé serait réécrit au prochain boot
-  // et l'édition disparaîtrait sans un mot.
+  // Refuse rather than swallow: a managed prompt would be rewritten at the
+  // next boot and the edit would vanish without a word.
   if (opts.managed)
     return {
       ok: false,
