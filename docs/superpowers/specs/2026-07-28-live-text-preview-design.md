@@ -1,152 +1,156 @@
-# Live-preview du texte assistant (streaming token-par-token côté web)
+# Live preview of the assistant's text (token-by-token streaming, web side)
 
-## Problème
+## Problem
 
-Le client web affiche le texte assistant en le lisant depuis le transcript
-`.jsonl` (via le tail — source fiable, non tronquée). Or **Claude Code n'écrit
-un bloc de texte dans le `.jsonl` que lorsqu'il est entièrement terminé** — jamais
-token par token (vérifié : 0 enregistrement de texte incrémental ; un bloc de
-1155 caractères apparaît en un seul saut après ~11 s de génération invisible).
+The web client shows the assistant's text by reading it from the `.jsonl`
+transcript (through the tail — a reliable, untruncated source). But **Claude Code
+only writes a text block into the `.jsonl` once it is entirely finished** — never
+token by token (verified: 0 incremental text records; a 1155-character block
+appears in a single jump after ~11 s of invisible generation).
 
-Conséquence : un long paragraphe reste invisible pendant toute sa génération,
-puis surgit d'un coup. Les outils *semblent* streamer parce que (a) ce sont de
-petits blocs fréquents et surtout (b) l'engine-room affiche l'écran TUI brut du
-PTY, mis à jour en direct — indépendamment du fichier. D'où le ressenti « tout
-ce que tu écris, on le voit qu'à la fin ».
+The consequence: a long paragraph stays invisible for its whole generation, then
+surges out at once. Tools *seem* to stream because (a) they are small, frequent
+blocks and above all (b) the engine room shows the PTY's raw TUI screen, updated
+live — independently of the file. Hence the feeling that "everything you write,
+we only see at the end".
 
-Ce n'est pas une régression du code shadok-ai (le handler de streaming est
-inchangé depuis le commit initial) : c'est inhérent au fait de sourcer le texte
-depuis un transcript écrit au bloc.
+This is not a regression in shadok-ai's code (the streaming handler is unchanged
+since the initial commit): it is inherent to sourcing the text from a transcript
+written block by block.
 
-## Objectif
+## Goal
 
-Donner un **aperçu live best-effort** du bloc de texte en cours de génération,
-puis le **remplacer** par la version faisant autorité (markdown propre) dès que
-le bloc complet atterrit dans le `.jsonl`. On garde le live *et* la correction :
-aucune troncature durable.
+Give a **best-effort live preview** of the text block being generated, then
+**replace** it with the authoritative version (clean markdown) as soon as the
+complete block lands in the `.jsonl`. We keep the live view *and* the correction:
+no lasting truncation.
 
-Non-objectifs : reconstituer le markdown source depuis l'écran ; toucher au
-serveur ou au protocole ; garantir un rendu parfait du provisoire.
+Non-goals: reconstructing the source markdown from the screen; touching the
+server or the protocol; guaranteeing a perfect rendering of the provisional text.
 
-## Contraintes / décisions
+## Constraints / decisions
 
-- **100 % client** (`public/index.html`). Zéro changement serveur, aucun risque
-  sur les invariants fragiles. La seule source token-granulaire est l'écran PTY,
-  déjà diffusé via les messages `screen` (~3×/s, sur changement) et déjà stocké
-  dans `t.screenText`.
-- **Fidélité best-effort assumée** : le provisoire est le texte brut de l'écran
-  (wrappé, pseudo-ASCII, potentiellement tronqué), affiché grisé, sans markdown.
-  Il n'est jamais persistant.
-- **Dégradation gracieuse** : si l'extraction échoue (nouveau TUI, marqueur
-  changé), on n'affiche pas de provisoire → on retombe exactement sur le
-  comportement actuel (texte au bloc). Jamais pire qu'aujourd'hui.
+- **100 % client-side** (`public/index.html`). Zero server change, no risk to the
+  fragile invariants. The only token-granular source is the PTY screen, already
+  broadcast through the `screen` messages (~3×/s, on change) and already stored in
+  `t.screenText`.
+- **Best-effort fidelity, accepted**: the provisional text is the screen's raw
+  text (wrapped, pseudo-ASCII, potentially truncated), displayed greyed, without
+  markdown. It is never persisted.
+- **Graceful degradation**: if the extraction fails (a new TUI, a changed
+  marker), we show no provisional text → we fall back exactly onto the current
+  behaviour (block-level text). Never worse than today.
 
-## Architecture (flux)
+## Architecture (the flow)
 
-Rien ne change côté serveur. Tout vit dans le client :
+Nothing changes server-side. Everything lives in the client:
 
-1. Le serveur diffuse déjà `screen` (texte de l'écran TUI complet) sur chaque
-   changement, ~toutes les 300 ms pendant un tour.
-2. Le client, pendant un tour actif, extrait de l'écran le bloc de texte en
-   cours et l'affiche dans une **bulle provisoire** qui se met à jour en place.
-3. Quand `stream-text` (bloc autoritatif complet) arrive, la bulle provisoire
-   est **remplacée** par le rendu markdown habituel (`addTurn(..., "live")`).
-4. À `turn-done`, toute bulle provisoire résiduelle est jetée.
+1. The server already broadcasts `screen` (the full TUI screen's text) on every
+   change, ~every 300 ms during a turn.
+2. The client, during an active turn, extracts the in-flight text block from the
+   screen and shows it in a **provisional bubble** that updates in place.
+3. When `stream-text` (the complete authoritative block) arrives, the provisional
+   bubble is **replaced** by the usual markdown rendering
+   (`addTurn(..., "live")`).
+4. On `turn-done`, any leftover provisional bubble is dropped.
 
-## Composants
+## Components
 
 ### 1. `extractLiveText(screen) -> string` (pure, testable)
 
-Structure régulière du TUI observée :
-- Un bloc de texte assistant = une ligne `⏺ <texte>` (marqueur U+23FA en
-  colonne 0) + lignes de continuation indentées de 2 espaces.
-- Les outils rendent `  Ran … command` / des boîtes ; le prompt echo est `❯ …`.
-- Fin de la sortie assistant = la ligne spinner : en cours
-  `✽ … (Xs · esc to interrupt)` ou variantes, fini `✻ Brewed for 10s`.
-  On réutilise la logique de détection existante (`SPINNER_STATUS` /
-  `ESC_TO_INTERRUPT` de `detect.ts`, portée en JS dans le client).
-- Puis séparateur `────`, box de saisie `❯`, footer (`… ctx:NN% …`).
+The regular structure observed in the TUI:
+- An assistant text block = a `⏺ <text>` line (the U+23FA marker at column 0) +
+  continuation lines indented by 2 spaces.
+- Tools render `  Ran … command` / boxes; the prompt echo is `❯ …`.
+- The end of the assistant's output = the spinner line: running
+  `✽ … (Xs · esc to interrupt)` or variants, finished `✻ Brewed for 10s`. We
+  reuse the existing detection logic (`SPINNER_STATUS` / `ESC_TO_INTERRUPT` from
+  `detect.ts`, ported to JS in the client).
+- Then the `────` separator, the `❯` input box, the footer (`… ctx:NN% …`).
 
-Algorithme :
-1. Tronquer le bas de l'écran : couper à partir du dernier bloc
-   séparateur/box-de-saisie/footer (tout ce qui suit la sortie assistant).
-2. Localiser la ligne spinner → borne de fin de la sortie assistant.
-3. Remonter jusqu'au **dernier** marqueur `⏺ ` au-dessus du spinner ; prendre
-   cette ligne + ses lignes de continuation indentées.
-4. Dé-wrapper : rejoindre le marqueur et les continuations en retirant
-   l'indentation, produire un texte lisible.
-5. Renvoyer `""` si : pas de `⏺` trouvé, ou le dernier `⏺` est manifestement un
-   outil (heuristique simple), ou résultat vide → pas de preview.
+The algorithm:
+1. Cut the bottom of the screen off: truncate from the last
+   separator/input-box/footer block (everything after the assistant's output).
+2. Locate the spinner line → the upper bound of the assistant's output.
+3. Walk back to the **last** `⏺ ` marker above the spinner; take that line + its
+   indented continuation lines.
+4. Unwrap: join the marker and the continuations, dropping the indentation, to
+   produce readable text.
+5. Return `""` when: no `⏺` was found, or the last `⏺` is obviously a tool (a
+   simple heuristic), or the result is empty → no preview.
 
-Cette fonction est le seul point fragile ; elle est isolée et testée
-unitairement contre des fixtures d'écran.
+That function is the single fragile point; it is isolated and unit-tested against
+screen fixtures.
 
-### 2. Cycle de vie de la bulle provisoire (par onglet `tab`)
+### 2. Life cycle of the provisional bubble (per `tab`)
 
-État ajouté sur `tab` : `tab.livePreviewEl` (l'élément DOM provisoire ou null).
+State added on `tab`: `tab.livePreviewEl` (the provisional DOM element or null).
 
-- **`working`** : `tab.livePreviewEl = null` (nouveau tour, rien encore).
-- **`screen`** (pendant busy) : `const txt = extractLiveText(msg.text)`.
-  Si `txt` non vide : créer (si absent) une bulle
-  `.turn.claude.live-preview` (grisée, `textContent = txt`, pas de markdown),
-  la garder en bas du transcript et scroller ; sinon mettre à jour son texte.
-  Si `txt` vide et une bulle existe : la laisser telle quelle (ne pas effacer un
-  provisoire déjà affiché sur un simple trou d'extraction).
-- **`stream-text`** : retirer `tab.livePreviewEl` (s'il existe), le mettre à
-  null, puis exécuter le `addTurn(t, "claude", "claude", msg.text, "live")`
-  markdown habituel. Le bloc autoritatif prend la place 1-pour-1.
-- **`turn-done`** : retirer toute `tab.livePreviewEl` résiduelle et la mettre à
-  null (cas où le tour se termine sans stream-text final — ex. dialog).
+- **`working`**: `tab.livePreviewEl = null` (a new turn, nothing yet).
+- **`screen`** (while busy): `const txt = extractLiveText(msg.text)`. If `txt` is
+  non-empty: create (if absent) a `.turn.claude.live-preview` bubble (greyed,
+  `textContent = txt`, no markdown), keep it at the bottom of the transcript and
+  scroll; otherwise update its text. If `txt` is empty and a bubble exists: leave
+  it as is (do not clear an already displayed provisional over a mere extraction
+  gap).
+- **`stream-text`**: remove `tab.livePreviewEl` (when present), set it to null,
+  then run the usual markdown `addTurn(t, "claude", "claude", msg.text, "live")`.
+  The authoritative block takes its place 1 for 1.
+- **`turn-done`**: remove any leftover `tab.livePreviewEl` and set it to null
+  (the case where the turn ends with no final stream-text — e.g. a dialog).
 
-### 3. Style
+### 3. Styling
 
-`.turn.claude.live-preview .bubble` : même gabarit qu'une bulle claude, mais
-grisée (opacity ~0.6) et en police mono/`white-space: pre-wrap` pour refléter
-que c'est du brut d'écran, non du markdown. Marqueur visuel discret (curseur
-clignotant optionnel) — à ajuster au goût, cosmétique.
+`.turn.claude.live-preview .bubble`: the same shape as a claude bubble, but
+greyed (opacity ~0.6) and in a mono font / `white-space: pre-wrap` to reflect
+that it is raw screen text, not markdown. A discreet visual marker (an optional
+blinking cursor) — to be tuned to taste, cosmetic.
 
-## Réconciliation & garanties
+## Reconciliation & guarantees
 
-Le provisoire est purement transitoire. La garantie clé qui lève le risque du
-scraping d'écran : **toute bulle provisoire est soit remplacée par le bloc
-`.jsonl` (stream-text), soit jetée (turn-done)** — elle ne survit jamais au
-tour. Une extraction fausse ou tronquée est donc corrigée en <1 s.
+The provisional text is purely transient. The key guarantee that removes the risk
+of screen scraping: **every provisional bubble is either replaced by the `.jsonl`
+block (stream-text) or dropped (turn-done)** — it never survives the turn. A
+wrong or truncated extraction is therefore corrected in <1 s.
 
-## Cas limites
+## Edge cases
 
-- Écran sans texte assistant (que des outils) → `extractLiveText` renvoie `""` →
-  pas de provisoire, les outils streament comme aujourd'hui.
-- Plusieurs blocs de texte dans un tour → chaque `stream-text` remplace le
-  provisoire courant ; le provisoire suivant se recrée sur les `screen` d'après.
-- Tour terminé par un dialog (pas de stream-text final) → `turn-done`/`dialog`
-  nettoie le provisoire.
-- Nouveau TUI / marqueur `⏺` changé → `""` → dégradation vers l'actuel.
-- Le provisoire ne doit jamais être compté comme historique ni persisté
-  (`persistChannels` / `loadHistory` ne le voient pas — c'est du DOM éphémère).
+- A screen with no assistant text (tools only) → `extractLiveText` returns `""` →
+  no provisional text, and tools stream as they do today.
+- Several text blocks in one turn → each `stream-text` replaces the current
+  provisional one; the next provisional is recreated on the following `screen`s.
+- A turn ended by a dialog (no final stream-text) → `turn-done`/`dialog` cleans
+  the provisional bubble.
+- A new TUI / a changed `⏺` marker → `""` → degradation to the current
+  behaviour.
+- The provisional text must never be counted as history nor persisted
+  (`persistChannels` / `loadHistory` never see it — it is ephemeral DOM).
 
 ## Tests
 
-`extractLiveText` étant pure, tests unitaires (node:test) sur des fixtures
-d'écran capturées :
-- génération mono-bloc en cours (spinner actif) → renvoie le paragraphe courant ;
-- multi-bloc avec un `Ran … command` intercalé → renvoie le dernier bloc texte ;
-- spinner fini (`✻ Brewed for Xs`) → renvoie le dernier bloc (ou `""`, à figer) ;
-- écran sans `⏺` → `""` ;
-- écran avec box de saisie remplie + footer → borne basse correctement coupée.
+`extractLiveText` being pure, unit tests (node:test) against captured screen
+fixtures:
+- a single-block generation in progress (spinner active) → returns the current
+  paragraph;
+- multi-block with an interleaved `Ran … command` → returns the last text block;
+- a finished spinner (`✻ Brewed for Xs`) → returns the last block (or `""`, to be
+  pinned down);
+- a screen with no `⏺` → `""`;
+- a screen with a filled input box + footer → the lower bound correctly cut.
 
-Pas de test d'intégration navigateur : le cycle de vie DOM est simple et la
-dégradation garantit qu'un bug d'extraction ne casse rien.
+No browser integration test: the DOM life cycle is simple and the degradation
+guarantees an extraction bug breaks nothing.
 
-## Portée
+## Scope
 
-Un seul fichier de code (`public/index.html`) + un module/fonction pure testable
-(soit inline + un petit test qui l'importe, soit un mini `public/live-text.js`
-partagé pour pouvoir l'`import` en test node). Décision d'implémentation : mettre
-`extractLiveText` dans un fichier séparé importable pour la testabilité.
+A single code file (`public/index.html`) + a testable pure module/function
+(either inline plus a small test importing it, or a tiny shared
+`public/live-text.js` so it can be `import`ed in a node test). Implementation
+decision: put `extractLiveText` in a separate, importable file for testability.
 
 ## Coordination
 
-⚠️ Un autre canal (`0e330518`) discutait le même sujet et croyait l'agent
-`43b478e9` déjà dessus. Vérifier qu'aucun travail parallèle sur `public/index.html`
-n'entre en conflit avant de lander (invariant #8). Ce travail se fait dans le
-worktree isolé `worktree-live-text-preview`.
+⚠️ Another channel (`0e330518`) was discussing the same subject and believed agent
+`43b478e9` was already on it. Check that no parallel work on `public/index.html`
+conflicts before landing (invariant #8). This work happens in the isolated
+worktree `worktree-live-text-preview`.
