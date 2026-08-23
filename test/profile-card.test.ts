@@ -11,7 +11,7 @@ import {
   applyReadonlyPreset,
 } from "../public/profile-card.js";
 
-test("blurb: garde la 1re phrase et retire l'amorce « You are <nom>, »", () => {
+test("blurb: keeps the 1st sentence and drops the 'You are <name>,' opener", () => {
   const p = {
     name: "Shadok-Marketing",
     systemPrompt:
@@ -20,7 +20,7 @@ test("blurb: garde la 1re phrase et retire l'amorce « You are <nom>, »", () =>
   assert.equal(profileBlurb(p), "the paid-marketing & growth agent.");
 });
 
-test("blurb: un nom à tiret n'est pas coupé en deux", () => {
+test("blurb: a hyphenated name is not cut in two", () => {
   const p = {
     name: "Shadok-dev",
     systemPrompt:
@@ -29,45 +29,45 @@ test("blurb: un nom à tiret n'est pas coupé en deux", () => {
   assert.equal(profileBlurb(p), "a senior software engineer on this project.");
 });
 
-test("blurb: pas de systemPrompt → chaîne vide", () => {
+test("blurb: no systemPrompt → empty string", () => {
   assert.equal(profileBlurb({ name: "x" }), "");
   assert.equal(profileBlurb({ name: "x", systemPrompt: "   " }), "");
   assert.equal(profileBlurb(null), "");
 });
 
-test("blurb: prompt sans point final → tout le texte, tronqué si besoin", () => {
+test("blurb: a prompt with no full stop → the whole text, truncated if needed", () => {
   assert.equal(profileBlurb({ name: "x", systemPrompt: "just a role" }), "just a role");
 });
 
-test("blurb: phrase trop longue → troncature sur une frontière de mot", () => {
+test("blurb: too long a sentence → truncation on a word boundary", () => {
   const long = "You are Bob, " + "alpha ".repeat(30).trim() + ".";
   const out = profileBlurb({ name: "Bob", systemPrompt: long });
-  assert.ok(out.endsWith("…"), "doit finir par une ellipse");
-  assert.ok(out.length <= 91, "90 caractères + l'ellipse");
+  assert.ok(out.endsWith("…"), "must end with an ellipsis");
+  assert.ok(out.length <= 91, "90 characters + the ellipsis");
   assert.ok(!out.slice(0, -1).endsWith(" "), "pas d'espace avant l'ellipse");
-  assert.ok(out.startsWith("alpha alpha"), "l'amorce est retirée");
+  assert.ok(out.startsWith("alpha alpha"), "the opener is dropped");
 });
 
-test("badges: accès — full access (✏️) vs read-only (🔒), chacun avec une explication", () => {
+test("badges: access — full access (✏️) vs read-only (🔒), each with an explanation", () => {
   const full = profileBadges({ name: "x" });
   assert.equal(full[0].label, "full access");
   assert.equal(full[0].icon, "✏️");
-  assert.match(full[0].title, /committer|modifier/i);
+  assert.match(full[0].title, /commit|change/i);
   assert.deepEqual(profileBadges({ name: "x", deny: [] })[0].label, "full access");
   const ro = profileBadges({ name: "x", deny: ["Bash(git commit:*)"] });
   assert.equal(ro[0].label, "read-only");
   assert.equal(ro[0].icon, "🔒");
-  assert.match(ro[0].title, /bloqu/i);
+  assert.match(ro[0].title, /blocked/i);
 });
 
-test("badges: modèle et secrets, dans l'ordre accès → modèle → secrets", () => {
+test("badges: model and secrets, in the order access → model → secrets", () => {
   const b = profileBadges({ name: "x", deny: ["Bash(git push:*)"], model: "opus", secrets: ["A", "B"] });
   assert.deepEqual(b.map((x) => x.label), ["read-only", "opus", "2 secrets"]);
   assert.equal(b[2].icon, "🔑");
   assert.match(b[2].title, /secret/i);
 });
 
-test("badges: un seul secret est au singulier", () => {
+test("badges: a single secret is singular", () => {
   assert.deepEqual(profileBadges({ name: "x", secrets: ["A"] }).map((x) => x.label), ["full access", "1 secret"]);
 });
 
@@ -75,83 +75,83 @@ test("badges: profil vide ne casse pas", () => {
   assert.equal(profileBadges(null)[0].label, "full access");
 });
 
-test("defaultAgentName: un profil choisi donne son nom à l'agent", () => {
+test("defaultAgentName: a chosen profile gives the agent its name", () => {
   assert.equal(defaultAgentName("Shadok-dev", "/Users/a/projects/shadok-ai"), "Shadok-dev");
   assert.equal(defaultAgentName("Shadok-Boss", ""), "Shadok-Boss");
 });
 
-test("defaultAgentName: sans profil, on retombe sur le dossier", () => {
+test("defaultAgentName: with no profile, we fall back to the directory", () => {
   assert.equal(defaultAgentName("", "/Users/a/projects/shadok-ai"), "shadok-ai");
   assert.equal(defaultAgentName(null, "/Users/a/projects/biosense/"), "biosense");
 });
 
-test("defaultAgentName: ni profil ni dossier → un nom quand même", () => {
-  // Un onglet sans nom est illisible dans la colonne : jamais de chaîne vide.
+test("defaultAgentName: neither profile nor directory → a name all the same", () => {
+  // An unnamed tab is unreadable in the column: never an empty string.
   assert.equal(defaultAgentName("", ""), "agent");
   assert.equal(defaultAgentName(null, null), "agent");
   assert.equal(defaultAgentName(undefined, undefined), "agent");
 });
 
-test("defaultAgentName: les espaces autour ne comptent pas", () => {
+test("defaultAgentName: surrounding whitespace does not count", () => {
   assert.equal(defaultAgentName("  Shadok-dev  ", "/x/y"), "Shadok-dev");
   assert.equal(defaultAgentName("   ", "/x/y"), "y");
 });
 
-// ── La case « read-only » du formulaire de profil ────────────────────────
+// ── The profile form's "read-only" checkbox ──────────────────────────────
 const PRESET = [
   "Bash(git commit:*)", "Bash(git push:*)", "Bash(git add:*)", "Bash(git reset:*)",
   "Bash(git rebase:*)", "Bash(git merge:*)", "Bash(git checkout:*)",
 ];
 
-test("hasReadonlyPreset: cochée seulement si TOUT le preset est là", () => {
+test("hasReadonlyPreset: ticked only when the WHOLE preset is there", () => {
   assert.equal(hasReadonlyPreset(PRESET, PRESET), true);
-  assert.equal(hasReadonlyPreset([...PRESET, "Bash(rm:*)"], PRESET), true, "un motif perso en plus ne décoche pas");
+  assert.equal(hasReadonlyPreset([...PRESET, "Bash(rm:*)"], PRESET), true, "an extra custom pattern does not untick it");
   assert.equal(hasReadonlyPreset(PRESET.slice(0, 3), PRESET), false, "preset partiel");
   assert.equal(hasReadonlyPreset([], PRESET), false);
-  assert.equal(hasReadonlyPreset(["Bash(rm:*)"], PRESET), false, "des garde-fous, mais pas CE preset");
+  assert.equal(hasReadonlyPreset(["Bash(rm:*)"], PRESET), false, "guardrails, but not THIS preset");
 });
 
-test("applyReadonlyPreset: décocher n'enlève que le preset, jamais le perso", () => {
+test("applyReadonlyPreset: unticking removes the preset only, never custom patterns", () => {
   const before = [...PRESET, "Bash(rm:*)", "Read(/etc/**)"];
   assert.deepEqual(applyReadonlyPreset(before, false, PRESET), ["Bash(rm:*)", "Read(/etc/**)"]);
 });
 
-test("applyReadonlyPreset: cocher ajoute ce qui manque et garde l'ordre existant", () => {
+test("applyReadonlyPreset: ticking adds what is missing and keeps the existing order", () => {
   const before = ["Bash(rm:*)", "Bash(git commit:*)"];
   const after = applyReadonlyPreset(before, true, PRESET);
-  assert.equal(after[0], "Bash(rm:*)", "le perso reste en tête");
-  for (const p of PRESET) assert.ok(after.includes(p), `${p} doit être présent`);
+  assert.equal(after[0], "Bash(rm:*)", "the custom pattern stays first");
+  for (const p of PRESET) assert.ok(after.includes(p), `${p} must be present`);
   assert.equal(after.filter((x) => x === "Bash(git commit:*)").length, 1, "pas de doublon");
 });
 
-test("applyReadonlyPreset: cocher deux fois ne change rien la seconde", () => {
+test("applyReadonlyPreset: ticking twice changes nothing the second time", () => {
   const once = applyReadonlyPreset(["Bash(rm:*)"], true, PRESET);
   assert.deepEqual(applyReadonlyPreset(once, true, PRESET), once);
 });
 
-test("applyReadonlyPreset: décocher un profil sans preset ne casse rien", () => {
+test("applyReadonlyPreset: unticking a profile with no preset breaks nothing", () => {
   assert.deepEqual(applyReadonlyPreset([], false, PRESET), []);
   assert.deepEqual(applyReadonlyPreset(["Bash(rm:*)"], false, PRESET), ["Bash(rm:*)"]);
 });
 
-test("le preset du client ne doit pas dériver de celui du serveur", () => {
-  // Il est dupliqué dans index.html (le navigateur ne peut pas importer le TS).
-  // Sans ce garde, une modif de READONLY_DENY côté serveur laisserait la case du
-  // formulaire poser des garde-fous périmés, en silence.
+test("the client's preset must not drift from the server's", () => {
+  // It is duplicated in index.html (the browser cannot import the TS). Without
+  // this guard, a change to READONLY_DENY server-side would leave the form's
+  // checkbox setting stale guardrails, silently.
   const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const m = html.match(/const READONLY_DENY = (\[[^\]]*\]);/);
-  assert.ok(m, "READONLY_DENY introuvable dans index.html");
+  assert.ok(m, "READONLY_DENY not found in index.html");
   assert.deepEqual(JSON.parse(m![1]), READONLY_DENY);
 });
 
-test("isManagedProfile: le rôle piloté par le serveur est reconnu", () => {
-  // Shadok-Tweak reprend son prompt de context/tweak-prompt.md à chaque boot et
-  // a son propre CTA : il n'a rien à faire dans une liste où l'on CHOISIT un rôle.
+test("isManagedProfile: the server-driven role is recognised", () => {
+  // Shadok-Tweak takes its prompt from context/tweak-prompt.md at every boot and
+  // has its own CTA: it has no business in a list where one PICKS a role.
   assert.equal(isManagedProfile("Shadok-Tweak"), true);
   assert.equal(isManagedProfile("  Shadok-Tweak  "), true);
 });
 
-test("isManagedProfile: tout le reste est choisissable", () => {
+test("isManagedProfile: everything else is pickable", () => {
   for (const n of ["Shadok-Boss", "Shadok-dev", "shadok-tweak", "", null, undefined])
     assert.equal(isManagedProfile(n), false, String(n));
 });

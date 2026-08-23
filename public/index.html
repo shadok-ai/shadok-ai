@@ -49,8 +49,8 @@
     font-size: 15px;
     display: flex;
     flex-direction: column;
-    /* Châssis fixe : la page ne scrolle jamais — seuls les panneaux internes
-       (liste des canaux, transcript, pickers) ont leur propre overflow.
+    /* Fixed chassis: the page never scrolls — only the inner panels (channel
+       list, transcript, pickers) have their own overflow.
        `position: fixed` pins the chassis TO the viewport: on a phone
        `overflow: hidden` alone does not stop the browser from dragging the page
        around — that is what let the whole interface slide left and right as soon
@@ -82,8 +82,8 @@
     text-transform: uppercase;
     color: var(--text-dim);
   }
-  /* Heure du message, accrochée au label du locuteur. Plus pâle et moins
-     espacée que le label : présente pour qui la cherche, muette sinon. */
+  /* Message time, hooked onto the speaker's label. Paler and less spaced out
+     than the label: there for whoever looks for it, quiet otherwise. */
   .label .time {
     letter-spacing: 0.06em;
     opacity: 0.6;
@@ -204,20 +204,20 @@
   #tabMenu .tm-item:hover { background: #26261c; }
   /* A muted channel says so on its own tab: silence must be explainable. */
   .tab .mute { font-size: 10px; opacity: 0.75; flex: 0 0 auto; }
-  /* Idem pour l'inverse : un agent qui a des prompts programmés peut parler
-     sans qu'on lui ait rien demandé. */
+  /* Same for the opposite: an agent with scheduled prompts can speak without
+     anyone having asked it anything. */
   .tab .cron, .tab .tg { font-size: 9px; opacity: 0.75; flex: 0 0 auto; }
-  /* Entête du menu clic droit : l'identité de l'agent, pas une action. */
+  /* Right-click menu header: the agent's identity, not an action. */
   #tabMenu .tm-head {
     padding: 5px 9px 6px; color: var(--text-dim); font-size: 11px;
     border-bottom: 1px solid #2c2c22; margin-bottom: 4px;
-    /* Le nom du profil ne coupe pas le menu en deux : une seule ligne, tronquée
-       proprement s'il est long. */
+    /* The profile name does not cut the menu in two: one line, cleanly
+       truncated when it is long. */
     max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #tabMenu .tm-head b { color: var(--text); font-weight: normal; }
-  /* Les horaires, eux, passent à la ligne : tronqués ils ne servaient à rien
-     (« daily at 09:00 (Europe/Pa… » ne dit plus l'heure du second cron). */
+  /* The schedules, on the other hand, do wrap: truncated they were useless
+     ("daily at 09:00 (Europe/Pa…" no longer tells the second cron's time). */
   #tabMenu .tm-head .tm-sub {
     display: block; margin-top: 3px; opacity: 0.8;
     white-space: normal; line-height: 1.45;
@@ -373,7 +373,7 @@
   .tab {
     position: relative;
     display: flex;
-    flex-direction: column;   /* ligne 1 (led+nom+icônes) puis ligne 2 (infos) */
+    flex-direction: column;   /* row 1 (led+name+icons) then row 2 (info) */
     gap: 1px;
     font-family: var(--mono);
     font-size: 12px;
@@ -387,7 +387,7 @@
   .tab-row1 { display: flex; align-items: center; gap: 8px; }
   /* Context-window usage: tiny number + thin bar at the bottom of the tab. */
   .tab .ctxnum { font-size: 9px; color: var(--text-dim); flex: none; }
-  /* Heure du dernier message, discrète (le nom en flex:1 la pousse à droite). */
+  /* Time of the last message, discreet (the flex:1 name pushes it right). */
   .tab .lastat { font-size: 9px; color: var(--text-dim); flex: none; line-height: 1.1; font-variant-numeric: tabular-nums; }
   .tab .ctxbar {
     position: absolute;
@@ -409,12 +409,12 @@
   .tab .ctxfill.warn { background: var(--amber); }
   .tab .ctxfill.crit { background: var(--err); }
   .tab:hover { color: var(--text); background: var(--bg-inset); }
-  /* Onglet actif (sélectionné). Volontairement SANS fond : le fond est réservé
-     à l'état de la session (.working/.needs-answer/.unread), sinon un canal
-     juste sélectionné a l'air d'attendre une réponse, et un canal sélectionné
-     ET en attente perd son signal. La sélection passe donc par des canaux
-     qu'AUCUN état ne touche — barre gauche vive (box-shadow), graisse et texte
-     plein — donc lisible quel que soit l'état. */
+  /* Active (selected) tab. Deliberately WITHOUT a background: the background is
+     reserved for the session's state (.working/.needs-answer/.unread), or a
+     merely selected channel looks like it is waiting for an answer, and a
+     channel both selected AND waiting loses its signal. Selection therefore uses
+     channels NO state touches — a bright left bar (box-shadow), weight and
+     full-strength text — so it reads whatever the state. */
   .tab.active {
     color: var(--text);
     font-weight: 600;
@@ -422,9 +422,9 @@
     border-radius: 0 4px 4px 0;
     box-shadow: inset 3px 0 0 var(--phosphor);
   }
-  /* Ligne 2 pleine largeur : « xxx ago » à gauche, % de contexte tout à droite. */
-  /* Hauteur RÉSERVÉE même vide : « xxx ago » / % arrivent après le reload — sans
-     ça l'onglet grandit d'une ligne au moment où ils apparaissent (jump / clip). */
+  /* Full-width row 2: "xxx ago" on the left, context % hard right. */
+  /* Height RESERVED even when empty: "xxx ago" / % arrive after the reload —
+     without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
   .tab .name {
@@ -485,25 +485,25 @@
   }
   #newTab:hover, #newGroup:hover { color: var(--amber); border-color: var(--amber); }
   #newGroup { margin-top: 4px; }
-  /* Le seul élément coloré de la colonne : les onglets sont des lignes sans
-     bordure et les ＋ des boutons fantômes, donc une carte pleine se lit comme
-     une action et non comme une session. Épinglée en bas (margin-top:auto +
-     sticky) pour rester atteignable quand la liste des agents défile. */
-  /* L'emplacement réservé au canal « tweak », épinglé en bas de la colonne. Il
-     porte tantôt le CTA (aucune session), tantôt l'ONGLET du canal lui-même —
-     qui est un `.tab` ordinaire déplacé ici, donc états, menu contextuel et
-     rattachement Telegram marchent sans code en double. */
+  /* The column's only coloured element: tabs are borderless rows and the ＋ are
+     ghost buttons, so a solid card reads as an action rather than as a session.
+     Pinned to the bottom (margin-top:auto + sticky) so it stays reachable while
+     the agent list scrolls. */
+  /* The slot reserved for the "tweak" channel, pinned at the bottom of the
+     column. It carries either the CTA (no session) or the channel's own TAB — an
+     ordinary `.tab` moved here, so states, context menu and Telegram attachment
+     all work with no duplicated code. */
   #tweakSlot {
     margin-top: auto;
     position: sticky;
     bottom: 0;
     padding-top: 8px;
     background: var(--bg-raised);
-    /* Sépare de la liste qui défile dessous, sans ajouter de filet. */
+    /* Separates it from the list scrolling underneath, with no extra rule. */
     box-shadow: 0 -8px 10px -8px rgba(0, 0, 0, 0.6);
   }
-  /* L'onglet du canal tweak garde la teinte de son emplacement, pour qu'on le
-     reconnaisse au même endroit qu'avant de l'avoir démarré. */
+  /* The tweak channel's tab keeps its slot's tint, so it is recognisable in the
+     same place as before it was started. */
   #tweakSlot .tab {
     border: 1px solid var(--amber);
     background: linear-gradient(var(--amber-soft), var(--amber-soft)), var(--bg-raised);
@@ -528,9 +528,8 @@
   }
   #tweakCta .tweak-sub { font-size: 10px; color: var(--text-dim); }
   #tweakCta .tweak-arrow { display: inline-block; transition: transform 0.15s ease; }
-  /* Aucune animation permanente : un élément qui clignote ici entrerait en
-     concurrence avec les vrais signaux (onglet en attente, jauges) et
-     deviendrait du bruit. */
+  /* No permanent animation: an element blinking here would compete with the
+     real signals (a waiting tab, the gauges) and would turn into noise. */
   #tweakCta:hover { border-color: var(--amber); box-shadow: 0 0 12px color-mix(in srgb, var(--amber) 18%, transparent); }
   #tweakCta:hover .tweak-arrow { transform: translateX(2px); }
   #tweakCta.busy { opacity: 0.7; cursor: default; }
@@ -591,9 +590,9 @@
 
   /* ── Body ────────────────────────────────────────────── */
   main { flex: 1; display: flex; min-height: 0; }
-  /* min-height:0 pour que le transcript (flex:1) borne la hauteur au lieu de
-     pousser le châssis ; overflow-y:auto garde l'écran de setup atteignable s'il
-     dépasse (quand une session tourne, le transcript remplit exactement → inerte). */
+  /* min-height:0 so the transcript (flex:1) bounds the height instead of pushing
+     the chassis; overflow-y:auto keeps the setup screen reachable when it
+     overflows (with a session running the transcript fits exactly → inert). */
   .chat-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow-y: auto; position: relative; }
   /* File drag-and-drop target: a dashed accent overlay while a file hovers.
      pointer-events:none so the drop still lands on the pane underneath. */
@@ -622,8 +621,8 @@
   .radio-row label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
   input[type="radio"] { accent-color: var(--amber); }
 
-  /* Cartes de profil — le profil est LE choix structurant d'un agent (rôle,
-     garde-fous, secrets, modèle), donc en tête de la box et cliquable. */
+  /* Profile cards — the profile is THE structuring choice of an agent (role,
+     guardrails, secrets, model), hence at the top of the box and clickable. */
   .field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .linkish {
     background: none; border: none; padding: 0;
@@ -657,22 +656,22 @@
     font-size: 10.5px; color: var(--text-dim);
     border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
   }
-  /* Le crayon n'apparaît qu'au survol : il ne doit pas concurrencer le nom. */
+  /* The pencil only appears on hover: it must not compete with the name. */
   .pc-edit { position: absolute; top: 6px; right: 7px; font-size: 11px; color: var(--text-dim); opacity: 0; }
   .profile-card:hover .pc-edit, .profile-card:focus-within .pc-edit { opacity: 1; }
   .pc-edit:hover { color: var(--amber); }
   .grid-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 12px; font-style: italic; }
-  /* Un secret que personne ne référence n'atteindra jamais un agent : on le dit
-     sur la ligne du secret, pas seulement dans un paragraphe d'entête. */
+  /* A secret nobody references will never reach an agent: say so on the
+     secret's own row, not only in a header paragraph. */
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
-  /* Sélecteur de profil d'un agent en cours (menu contextuel de l'onglet). */
+  /* Profile picker for a running agent (the tab's context menu). */
   #profSwitchGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 18px 18px; }
   .sec-note.warn { color: var(--amber); }
-  /* Redémarrer coupe un tour en cours : le bouton doit le dire. */
+  /* Restarting cuts a running turn short: the button must say so. */
   #profConfirmRestart.danger { background: #e2564a; border-color: #e2564a; color: #fff; }
 
-  /* Sections rares repliées : c'est ce qui empêchait le bouton Start de tenir
-     à l'écran (les listes s'ouvraient d'office dès qu'elles avaient un élément). */
+  /* Rare sections folded away: this is what kept the Start button from fitting
+     on screen (the lists opened by default as soon as they had one item). */
   .fold > summary {
     cursor: pointer; list-style: none;
     display: flex; align-items: center; gap: 6px;
@@ -684,7 +683,7 @@
   .fold > summary:hover { color: var(--text); }
   .fold > *:not(summary) { margin-top: 8px; }
   .fold-count { color: var(--amber); }
-  /* Champ sans effet dans le mode courant (resume/continue) — visible mais inerte. */
+  /* A field with no effect in the current mode (resume/continue) — visible but inert. */
   .na { opacity: .45; pointer-events: none; }
 
   /* Session picker (resume by id) */
@@ -735,8 +734,8 @@
   }
   .turn { display: flex; flex-direction: column; gap: 3px; max-width: 82%; margin-top: 8px; }
   .turn:first-child { margin-top: 0; }
-  /* Copier : toujours visible, jamais au survol — sur un téléphone il n'y a pas
-     de survol, et un bouton qu'on ne peut pas révéler n'existe pas. */
+  /* Copy: always visible, never on hover — a phone has no hover, and a button
+     you cannot reveal does not exist. */
   .turn .copy {
     align-self: flex-end; margin-top: 2px; padding: 3px 8px;
     font-size: 11px; line-height: 1.4; cursor: pointer;
@@ -749,12 +748,12 @@
   .turn.activity { margin-top: 5px; }
   .turn.activity + .turn.claude { margin-top: 5px; }
   .turn.system + .turn.system { margin-top: 4px; }
-  /* One speaker label per run of turns, not one per bubble — mais seul un tour
-     qui AFFICHE un label ouvre une telle suite. Un bloc d'activité et l'aperçu
-     provisoire sont des `.turn.claude` sans label : les compter revenait à faire
-     absorber le label de la réponse par un tour qui n'en montre aucun. Comme
-     l'agent utilise presque toujours un outil avant d'écrire, sa réponse perdait
-     ainsi label ET heure, alors que les messages du pilote gardaient les leurs. */
+  /* One speaker label per run of turns, not one per bubble — but only a turn
+     that DISPLAYS a label opens such a run. An activity block and the provisional
+     preview are `.turn.claude` with no label: counting them made a turn that
+     shows none absorb the answer's label. Since the agent almost always uses a
+     tool before writing, its answer lost label AND time that way, while the
+     pilot's messages kept theirs. */
   .turn.claude:not(.activity):not(.live-preview) + .turn.claude:not(.dialog) > .label,
   .turn.user + .turn.user > .label { display: none; }
   .turn.user { align-self: flex-end; align-items: flex-end; }
@@ -784,9 +783,9 @@
   }
   /* History replayed from the .jsonl: raw markdown → HTML rendering. */
   .turn.hist { opacity: 0.8; }
-  /* Aperçu live du bloc en cours, extrait de l'écran TUI (brut, non-markdown).
-     Grisé + pré-formaté pour signaler que c'est provisoire ; remplacé par le
-     bloc .jsonl (stream-text) dès qu'il arrive. */
+  /* Live preview of the in-flight block, extracted from the TUI screen (raw,
+     not markdown). Greyed + pre-formatted to signal it is provisional; replaced
+     by the .jsonl block (stream-text) as soon as that arrives. */
   .turn.claude.live-preview .bubble {
     opacity: 0.55;
     white-space: pre-wrap;
@@ -980,7 +979,7 @@
   .freetext-row input { flex: 1; }
   #thinking { display: none; align-self: flex-start; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; padding: 0 22px 6px; }
   #thinking.visible { display: flex; align-items: center; gap: 6px; }
-  /* Texte qui scintille (balayage ambre) + trois points qui rebondissent. */
+  /* Shimmering text (an amber sweep) + three bouncing dots. */
   #thinking .tw-text {
     background: linear-gradient(90deg, var(--text-dim) 30%, var(--phosphor) 50%, var(--text-dim) 70%);
     background-size: 220% 100%;
@@ -1067,10 +1066,10 @@
   .chat-pane.terminal-mode #thinking,
   .chat-pane.terminal-mode #composer { display: none !important; }
   .chat-pane.terminal-mode #terminalView { display: flex; }
-  /* Barre du canal actif. Elle vivait DANS #terminalView, donc les actions du
-     canal n'existaient qu'en mode terminal ; elle est maintenant au-dessus des
-     deux vues, et `hidden` ne la retire que le temps du formulaire « New agent »
-     (pas encore de canal sur quoi agir). */
+  /* The active channel's bar. It used to live INSIDE #terminalView, so the
+     channel's actions only existed in terminal mode; it now sits above both
+     views, and `hidden` only removes it while the "New agent" form is up (no
+     channel to act on yet). */
   #chanBar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg-raised); font-family: var(--mono); font-size: 12px; }
   #chanBar[hidden] { display: none; }
   #chanBar .label { color: var(--text-dim); }
@@ -1085,7 +1084,7 @@
   #chanBar .gauge { flex-direction: row; align-items: baseline; gap: 4px; }
   #chanBar .gauge .label { font-size: 10px; }
   #chanBar #cwdView { display: inline-block; max-width: 200px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
-  /* Sélecteur de canal : masqué sur desktop (la sidebar est la navigation). */
+  /* Channel selector: hidden on desktop (the sidebar is the navigation). */
   #chanSelect {
     display: none;
     font-family: var(--mono); font-size: 13px;
@@ -1093,14 +1092,14 @@
     border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
     max-width: 55vw;
   }
-  /* ── Mobile : sidebar cachée, navigation par le sélecteur du header canal ── */
+  /* ── Mobile: sidebar hidden, navigation via the channel header's selector ── */
   @media (max-width: 640px) {
     #tabbar { display: none; }
     #chanSelect { display: inline-block; min-width: 0; }
     #chanBar #chanBarName { display: none; }
-    /* Bandeau canal condensé : on garde Status + Session, on cache le reste. */
+    /* Condensed channel bar: keep Status + Session, hide the rest. */
     #chanBar #dirGauge, #chanBar #branchGauge { display: none !important; }
-    #chanBar .gauge .label { display: none; }   /* valeurs seules, plus compact */
+    #chanBar .gauge .label { display: none; }   /* values only, more compact */
     #chanBar { gap: 6px; padding: 6px 10px; }
     header { flex-wrap: wrap; row-gap: 6px; gap: 8px; padding: 8px 12px; }
     /* One header row: brand + dials + ⋯. reflowHeaderTools (JS) moves ALL tool
@@ -1141,8 +1140,8 @@
   }
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
   #xtermHost .xterm { height: 100%; }
-  /* Aucun agent ouvert. Le panneau central n'affiche plus un formulaire à demi
-     rempli d'avance : il invite à agir, et rien d'autre. */
+  /* No agent open. The central panel no longer shows a half-filled form up
+     front: it invites you to act, and nothing else. */
   #emptyState {
     flex: 1; min-height: 0; display: none;
     flex-direction: column; align-items: center; justify-content: center;
@@ -1261,11 +1260,11 @@
     #machine, #diffpanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
   }
   /* ── Popins ───────────────────────────────────────────────
-     UNE CLASSE, pas une liste d'ids. La règle nommait
-     #secretsOverlay/#profilesOverlay/#telegramOverlay ; le panneau des crons,
-     ajouté après, n'y figurait pas — il s'affichait donc dans le flux de la page
-     au lieu de se centrer. Toute popin hérite maintenant du comportement en
-     portant `.overlay`, il n'y a plus de liste à ne pas oublier. */
+     ONE CLASS, not a list of ids. The rule used to name
+     #secretsOverlay/#profilesOverlay/#telegramOverlay; the cron panel, added
+     later, was not in it — so it rendered in the page flow instead of centring.
+     Any popin now inherits the behaviour by carrying `.overlay`, and there is no
+     list left to forget. */
   .overlay {
     position: fixed; inset: 0; z-index: 50;
     /* Same trap as the chassis: `inset: 0` spans the LAYOUT viewport, so with the
@@ -1327,11 +1326,11 @@
     padding: 8px 10px;
   }
   #authLink:hover { border-color: var(--amber); text-decoration: underline; }
-  /* Le panneau était hors palette : #1b1d22 au lieu de --bg-raised, #e8e8ea au
-     lieu de --text, des bordures rgba(255,255,255,.15) et un rayon de 10px quand
-     tout le cockpit est à 6 — soit un gris et un blanc qui n'existaient nulle
-     part ailleurs. Le filet ambre en haut reprend la grammaire des instruments
-     (bord de l'onglet actif, ⌨️ allumé) : ce panneau est au premier plan. */
+  /* The panel was off-palette: #1b1d22 instead of --bg-raised, #e8e8ea instead
+     of --text, rgba(255,255,255,.15) borders and a 10px radius where the whole
+     cockpit uses 6 — i.e. a grey and a white that existed nowhere else. The amber
+     rule on top follows the instruments' grammar (active tab edge, lit ⌨️): this
+     panel is in the foreground. */
   #secretsPanel, .sec-panel {
     background: var(--bg-raised); color: var(--text);
     width: min(560px, 100%); max-height: min(80vh, 760px); overflow: auto;
@@ -1348,18 +1347,17 @@
     .overlay { padding: 10px; }
     #secretsPanel, .sec-panel { width: 100%; max-height: 100%; }
   }
-  /* Squelette entête / corps / pied. Seul le CORPS défile, donc l'action
-     principale reste atteignable : le formulaire de création dépasse l'écran sur
-     un portable, et son bouton « Start » se trouvait en bas d'une page à
-     dérouler. Réservé aux popins qui ont un pied — les autres gardent leur
-     rembourrage simple. */
+  /* Header / body / footer skeleton. Only the BODY scrolls, so the main action
+     stays reachable: the creation form overflows the screen on a laptop, and its
+     "Start" button ended up at the bottom of a page you had to scroll. Reserved
+     for popins that have a footer — the others keep their simple padding. */
   .sec-panel.modal { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
   .modal > .sec-head {
     flex: 0 0 auto; margin: 0; padding: 11px 16px;
     border-bottom: 1px solid var(--line);
   }
-  /* Même traitement que les libellés du cockpit (.label, barre du canal) : la
-     popin appartient visiblement à la même famille. */
+  /* Same treatment as the cockpit's labels (.label, channel bar): the popin
+     visibly belongs to the same family. */
   .modal > .sec-head strong {
     font-family: var(--mono); font-size: 11px; font-weight: normal;
     letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-dim);
@@ -1371,13 +1369,13 @@
     gap: 8px; padding: 11px 16px;
     border-top: 1px solid var(--line); background: rgba(0, 0, 0, 0.18);
   }
-  /* Pousse ce qui suit à droite : un pied peut porter une note à gauche. */
+  /* Pushes what follows to the right: a footer may carry a note on the left. */
   .modal-foot .foot-note { margin-right: auto; font-size: 11px; color: var(--text-dim); }
-  /* Popins sans pied dont le contenu peut s'allonger (listes de secrets, de
-     profils…). Sans ça, TOUT le panneau défilait et le ✕ partait avec l'entête.
-     Ici l'entête — titre, ✕ et description — reste épinglée, seul le corps
-     défile. Même intention que `.modal`, mais on garde le titre en gras (pas le
-     libellé mono des modales) et on ne réclame pas de pied. */
+  /* Footer-less popins whose content can grow (lists of secrets, of profiles…).
+     Without this, the WHOLE panel scrolled and the ✕ went with the header. Here
+     the header — title, ✕ and description — stays pinned, and only the body
+     scrolls. Same intent as `.modal`, but the title stays bold (not the modals'
+     mono label) and no footer is required. */
   .sec-panel.pinned { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
   .sec-panel.pinned > .pin-head {
     flex: 0 0 auto; padding: 14px 16px 10px;
@@ -1387,15 +1385,14 @@
   .sec-panel.pinned > .pin-head > .sec-note:last-child { margin-bottom: 0; }
   .sec-panel.pinned > .pin-body { flex: 1 1 auto; overflow: auto; padding: 12px 16px 14px; }
   .sec-panel :focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
-  /* Les <select> et les champs numériques n'étaient couverts par aucune règle :
-     ils tombaient sur le rendu par défaut du navigateur — clair — au milieu d'un
-     panneau sombre. */
+  /* <select> and number fields were covered by no rule at all: they fell back to
+     the browser's default rendering — light — in the middle of a dark panel. */
   .sec-panel select, .sec-panel input[type=number], .sec-panel input[type=time] {
     padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
     background: rgba(0, 0, 0, 0.25); color: inherit; font-family: inherit; font-size: inherit;
   }
-  /* Une précision dans un libellé ne SE CRIE PAS : `.label` met en majuscules et
-     espace les lettres, ce qui rendait une phrase entière illisible. */
+  /* A clarification inside a label is NOT SHOUTED: `.label` uppercases and
+     letterspaces, which made a whole sentence unreadable. */
   .label .check-hint { text-transform: none; letter-spacing: normal; font-weight: normal; }
   #cronList { list-style: none; padding: 0; margin: 0 0 14px; }
   #cronList li { padding: 6px 8px; border-radius: 6px; }
@@ -1403,8 +1400,8 @@
   .cron-form { border-top: 1px solid var(--line); padding-top: 12px; }
   .cron-form .field { margin: 12px 0; }
   .cron-form .field:last-child { margin-bottom: 0; }
-  /* `.field` est en colonne : sans redresser la direction ici, les trois champs
-     s'empilaient — et `align-items: center` les centrait au lieu de les aligner. */
+  /* `.field` is a column: without straightening the direction here, the three
+     fields stacked — and `align-items: center` centred them instead of aligning. */
   .cron-when { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
   .cron-when input[type=number] { width: 76px; }
   .sec-panel .field { margin: 8px 0; }
@@ -1539,8 +1536,8 @@
 </div>
 
 <div id="cronOverlay" class="overlay" hidden>
-  <!-- Le panneau portait id="secretsPanel" — un id en DOUBLON de la vraie popin
-       des secrets, donc $("secretsPanel") pouvait tomber sur le mauvais. -->
+  <!-- The panel used to carry id="secretsPanel" — a DUPLICATE of the real
+       secrets popin's id, so $("secretsPanel") could land on the wrong one. -->
   <div id="cronPanel" class="sec-panel modal">
     <div class="sec-head">
       <strong>⏰ Schedule — <span class="obj" id="cronChanName">this agent</span></strong>
@@ -1645,9 +1642,9 @@
   </div>
 </div>
 
-<!-- Changer le profil d'un agent EN COURS. Deux popins : le choix, puis la
-     confirmation — parce qu'appliquer redémarre le process, ce qui ne doit
-     jamais arriver sur un simple clic. -->
+<!-- Change a RUNNING agent's profile. Two popins: the choice, then the
+     confirmation — because applying restarts the process, which must never
+     happen on a single click. -->
 <div id="profSwitchOverlay" class="overlay" hidden>
   <div class="sec-panel modal">
     <div class="sec-head">
@@ -1796,12 +1793,12 @@
 
   <section class="chat-pane">
 
-    <!-- Barre du canal actif : qui il est, et ses actions. Visible dans les DEUX
-         modes — le terminal n'est qu'une autre vue du même canal, pas un endroit
-         séparé, donc ses actions n'ont pas de raison d'apparaître avec lui. -->
+    <!-- The active channel's bar: who it is, and its actions. Visible in BOTH
+         modes — the terminal is just another view of the same channel, not a
+         separate place, so its actions have no reason to appear with it. -->
     <div id="chanBar" hidden>
       <span class="label" id="chanBarName"></span>
-      <!-- Mobile: sidebar cachée → ce sélecteur change de canal / en crée un. -->
+      <!-- Mobile: sidebar hidden → this selector switches channel / creates one. -->
       <select id="chanSelect" title="Agent"></select>
       <div class="gauge">
         <span class="label">Status</span>
@@ -1831,9 +1828,9 @@
       </span>
     </div>
 
-    <!-- Aucun agent : une invitation, pas un formulaire pré-rempli. La création
-         se fait dans une popin (#setupOverlay) et ne crée le canal qu'à la
-         validation — ouvrir puis renoncer ne laisse plus d'onglet mort-né. -->
+    <!-- No agent: an invitation, not a pre-filled form. Creation happens in a
+         popin (#setupOverlay) and only creates the channel on submit — opening it
+         then backing out no longer leaves a stillborn tab. -->
     <div id="emptyState">
       <span class="es-title">No agent open</span>
       <p class="es-hint">Every agent is a real Claude Code session with its own directory and its own branch. Start one and it takes the controls.</p>
@@ -1850,7 +1847,7 @@
     </form>
 
     <!-- Interactive terminal, per channel, filling the main area (toggled by ⌨️
-         dans la barre du canal ci-dessus). -->
+         in the channel bar above). -->
     <div id="terminalView">
       <div id="xtermHost"></div>
     </div>
@@ -1895,9 +1892,9 @@
 <script src="/vendor/addon-fit.js"></script>
 <script src="/vendor/marked.js"></script>
 <script src="/vendor/purify.js"></script>
-<!-- Les blocs inline portent le nonce de la CSP, injecté par le serveur à
-     chaque requête (src/csp.ts). Un bloc sans lui ne s'exécute pas — c'est ce
-     qui rend inoffensif le HTML qu'un agent pourrait écrire dans le transcript. -->
+<!-- The inline blocks carry the CSP nonce, injected by the server on every
+     request (src/csp.ts). A block without it does not run — which is what makes
+     HTML an agent might write into the transcript harmless. -->
 <script type="module" nonce="__CSP_NONCE__">
   import { extractLiveText } from "/live-text.js";
   import {
@@ -1986,9 +1983,9 @@
     el.className = "transcript";
     el.hidden = true;
     transcripts.appendChild(el);
-    // "Collé en bas" : vrai tant que l'utilisateur est proche du bas. Piloté par
-    // SES propres événements scroll — dès qu'il remonte, on cesse de le suivre
-    // (plus de scroll volé pendant le streaming live). Voir pinBottom().
+    // "Stuck to the bottom": true while the user is near the bottom. Driven by
+    // THEIR own scroll events — as soon as they scroll up we stop following them
+    // (no more stolen scroll during live streaming). See pinBottom().
     el._stickBottom = true;
     el.addEventListener("scroll", () => {
       el._stickBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
@@ -2003,10 +2000,10 @@
     name.className = "name";
     name.textContent = "agent " + seq;
     name.title = "Double-click to rename";
-    // Heure du dernier message, en tout petit dans la liste des canaux.
+    // Time of the last message, tiny, in the channel list.
     const lastAt = document.createElement("span");
     lastAt.className = "lastat";
-    lastAt.title = "Dernier message";
+    lastAt.title = "Last message";
     const timer = document.createElement("span");
     timer.className = "timer";
     timer.title = "Thinking time for the current turn";
@@ -2021,9 +2018,8 @@
     mute.hidden = true;
     mute.textContent = "🔕";
     mute.title = "Notifications muted for this agent";
-    // Un agent peut parler tout seul (prompt programmé) : l'onglet doit le dire,
-    // sinon un message qui arrive sans que personne n'ait rien demandé n'a pas
-    // d'explication visible.
+    // An agent can speak on its own (a scheduled prompt): the tab must say so,
+    // or a message arriving with nobody asking has no visible explanation.
     const cron = document.createElement("span");
     cron.className = "cron";
     cron.hidden = true;
@@ -2033,12 +2029,12 @@
     const tg = document.createElement("span");
     tg.className = "tg";
     tg.hidden = true;
-    // Vrai logo Telegram (comme dans le header) plutôt qu'un avion générique.
+    // The real Telegram logo (as in the header) rather than a generic plane.
     tg.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" style="vertical-align:-1px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>';
     tg.title = "Mirrored to Telegram";
-    // Nom + heure empilés (l'heure SOUS le titre, pour ne pas le tronquer).
-    // Deux lignes : ligne 1 = led + nom + icônes ; ligne 2 PLEINE LARGEUR =
-    // « xxx ago » à gauche, % de contexte tout à droite (plus caché par les icônes).
+    // Name + time stacked (the time UNDER the title, so as not to truncate it).
+    // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
+    // left, context % hard right (no longer hidden behind the icons).
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
     row1.append(led, name, timer, mute, cron, tg, close);
@@ -2070,16 +2066,16 @@
       contextPct: null,
       muted: false,      // no favicon pip, no title badge/blink, no chime
       transcriptEl: el,
-      profile: null,     // « type » de l'agent : le profil appliqué au spawn
-      crons: [],         // libellés des prompts programmés (⏰ sur l'onglet)
+      profile: null,     // the agent's "type": the profile applied at spawn
+      crons: [],         // labels of the scheduled prompts (the ⏰ on the tab)
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
       ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
     btn._tab = tab;
-    // Un touchend synthétise un click : après un appui long, il ne doit pas
-    // activer l'onglet par-dessus le menu qu'on vient d'ouvrir.
+    // A touchend synthesises a click: after a long press it must not activate
+    // the tab on top of the menu we just opened.
     let longPressed = 0;
     btn.addEventListener("click", (e) => {
       if (Date.now() - longPressed < 500) return;
@@ -2095,9 +2091,9 @@
       e.stopPropagation();
       openTabMenu(tab, e.clientX, e.clientY);
     });
-    // Appui long = clic droit du tactile. Sans ça le menu — et donc tout ce
-    // qu'il contient (profil, rename, mute, mirror, close) — est inatteignable
-    // depuis un téléphone, alors que le cockpit se pilote aussi comme ça.
+    // Long press = the touch equivalent of a right click. Without it the menu —
+    // and therefore everything in it (profile, rename, mute, mirror, close) — is
+    // unreachable from a phone, which is also how the cockpit gets driven.
     let pressTimer = null, pressAt = null;
     const cancelPress = () => { clearTimeout(pressTimer); pressTimer = null; pressAt = null; };
     btn.addEventListener("touchstart", (e) => {
@@ -2105,11 +2101,11 @@
       pressAt = { x: t0.clientX, y: t0.clientY };
       pressTimer = setTimeout(() => {
         pressTimer = null;
-        longPressed = Date.now();   // le click qui suit n'est pas une activation
+        longPressed = Date.now();   // the click that follows is not an activation
         openTabMenu(tab, pressAt.x, pressAt.y);
       }, 500);
     }, { passive: true });
-    // Un doigt qui bouge, c'est un scroll ou un drag, pas un appui long.
+    // A finger that moves is a scroll or a drag, not a long press.
     btn.addEventListener("touchmove", (e) => {
       if (!pressAt) return;
       const t0 = e.touches[0];
@@ -2140,7 +2136,7 @@
 
   // Composer drafts, one per channel, remembered by session id.
   const savedDrafts = JSON.parse(localStorage.getItem("cp.drafts") || "{}");
-  /** Écrit MAINTENANT le brouillon de cet onglet, sans attendre le débounce. */
+  /** Write this tab's draft NOW, without waiting for the debounce. */
   function writeDraft(tab) {
     if (!tab.sessionId) return;
     clearTimeout(tab.draftTimer);
@@ -2154,19 +2150,19 @@
     tab.draftTimer = setTimeout(() => writeDraft(tab), 300);
   }
   /**
-   * Vide les écritures en attente de TOUS les onglets.
+   * Flush the pending writes of ALL tabs.
    *
-   * Le débounce se réarme à chaque frappe : tant qu'on écrit sans marquer 300 ms
-   * de pause, rien n'était jamais écrit — un rechargement en plein élan (typique
-   * de l'auto-update, qui tombe quand il tombe) emportait tout le message. On
-   * force donc l'écriture au moment où la page s'en va.
+   * The debounce rearms on every keystroke: as long as you type without a 300 ms
+   * pause, nothing was ever written — a reload mid-flow (typical of the
+   * auto-update, which lands when it lands) took the whole message with it. So we
+   * force the write at the moment the page goes away.
    */
   function flushDrafts() {
     for (const t of tabs) writeDraft(t);
   }
-  // `pagehide` couvre le rechargement, la navigation et la mise en bfcache ;
-  // `visibilitychange` rattrape le mobile, où l'onglet peut être tué sans que
-  // `pagehide` ne parte. localStorage étant synchrone, l'écriture aboutit.
+  // `pagehide` covers a reload, a navigation and going into the bfcache;
+  // `visibilitychange` catches mobile, where the tab can be killed without
+  // `pagehide` firing. localStorage being synchronous, the write completes.
   window.addEventListener("pagehide", flushDrafts);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") flushDrafts();
@@ -2220,7 +2216,7 @@
       tab.nameEl.textContent = v;
       saveName(tab, v);
       persistChannels();
-      rebuildChanSelect();   // le nom change → mettre à jour le sélecteur mobile
+      rebuildChanSelect();   // the name changed → update the mobile selector
     });
   }
 
@@ -2238,10 +2234,10 @@
   }
 
   /**
-   * Montre sur l'onglet qu'un agent a des prompts programmés, et lesquels.
-   * Les libellés viennent du serveur (`/channels`), qui seul connaît le fuseau
-   * appliqué — un « daily at 09:00 » calculé côté navigateur mentirait dès que
-   * le serveur n'est pas dans le même fuseau que le navigateur.
+   * Show on the tab that an agent has scheduled prompts, and which ones.
+   * The labels come from the server (`/channels`), which alone knows the zone
+   * applied — a "daily at 09:00" computed in the browser would lie as soon as the
+   * server is not in the same zone as the browser.
    */
   /** Is this channel mirrored into Telegram? `persist` false when the value
    *  already comes from the registry (restore), so we don't push it back. */
@@ -2260,13 +2256,12 @@
   }
 
   /**
-   * Relance le process `claude` de cet agent.
+   * Respawn this agent's `claude` process.
    *
-   * Session vivante → `restart` serveur : il respawn en reprenant le MÊME id de
-   * session, donc l'historique est conservé et le profil/les secrets sont
-   * ré-appliqués (c'est la façon de faire prendre un secret ajouté depuis).
-   * Session morte → le `restart` échouerait (« no session started ») : on
-   * ré-ouvre le lien avec les paramètres de lancement mémorisés.
+   * Live session → server-side `restart`: it respawns keeping the SAME session
+   * id, so history is kept and the profile/secrets are re-applied (this is how a
+   * secret added since gets picked up). Dead session → `restart` would fail ("no
+   * session started"): we reopen the link with the remembered launch parameters.
    */
   function reloadTab(tab) {
     if (tab.ws && tab.ws.readyState === WebSocket.OPEN) {
@@ -2282,45 +2277,45 @@
     addTurn(tab, "system", "", "Nothing to reload: this agent has never been launched.", null, Date.now());
   }
 
-  // ── Changer le profil d'un agent en cours ────────────────────────────────
-  let profSwitchTab = null;   // l'onglet dont on règle le profil
-  let profPending = null;     // le profil choisi, en attente de confirmation
+  // ── Changing a running agent's profile ───────────────────────────────────
+  let profSwitchTab = null;   // the tab whose profile we are setting
+  let profPending = null;     // the chosen profile, awaiting confirmation
 
   function closeProfSwitch() { $("profSwitchOverlay").hidden = true; profSwitchTab = null; }
   function closeProfConfirm() { $("profConfirmOverlay").hidden = true; profPending = null; }
 
-  /** Le sélecteur : les mêmes cartes que la box, avec le profil courant coché. */
+  /** The picker: the same cards as the box, with the current profile ticked. */
   async function openProfileSwitcher(tab) {
-    if (!tab.sessionId) return;   // jamais lancé : la box de création s'en charge
+    if (!tab.sessionId) return;   // never launched: the creation box handles it
     profSwitchTab = tab;
     $("profSwitchWho").textContent = tab.nameEl ? tab.nameEl.textContent : "agent";
-    await loadProfilesInto();     // la liste a pu changer depuis le dernier passage
+    await loadProfilesInto();     // the list may have changed since last time
     const onManaged = managedProfile(tab.profile);
     renderProfileCards(
       $("profSwitchGrid"),
-      onManaged ? null : tab.profile || "",   // null : aucune carte ne ment
+      onManaged ? null : tab.profile || "",   // null: no card tells a lie
       (name) => askProfileSwitch(tab, name),
       false,
     );
-    // Un agent qui TOURNE sous un rôle managé n'a plus de carte : sans ce mot,
-    // rien n'indiquerait ce qui tourne réellement.
+    // An agent RUNNING under a managed role no longer has a card: without this
+    // note, nothing would say what is actually running.
     const note = $("profSwitchManaged");
     note.hidden = !onManaged;
     if (onManaged) note.textContent = "Currently running " + tab.profile + " — a managed role, not offered as a choice. Picking another one replaces it.";
     $("profSwitchOverlay").hidden = false;
   }
 
-  /** La confirmation. Trois issues : redémarrer, enregistrer seulement, annuler
-   *  — d'où une popin maison plutôt qu'un confirm() natif, qui n'en offre que deux. */
+  /** The confirmation. Three outcomes: restart, save only, cancel — hence a
+   *  hand-rolled popin rather than a native confirm(), which offers only two. */
   function askProfileSwitch(tab, name) {
     const target = name || "";
-    if (target === (tab.profile || "")) { closeProfSwitch(); return; }  // déjà celui-là
+    if (target === (tab.profile || "")) { closeProfSwitch(); return; }  // already that one
     profPending = { tab, name: target || null };
     $("profConfirmTitle").textContent = "Switch to " + (target || "No profile") + "?";
     $("profConfirmBody").textContent =
       "The agent re-spawns in place. Its history is kept (--resume) and the conversation continues.";
-    // Un tour en cours sera coupé — on le dit, on ne l'interdit pas : rattraper
-    // un agent parti de travers est précisément un cas d'usage.
+    // A running turn will be cut short — we say so, we do not forbid it:
+    // catching an agent that went off track is precisely a use case.
     const busy = tab.status === "busy";
     $("profConfirmBusy").hidden = !busy;
     $("profConfirmRestart").classList.toggle("danger", busy);
@@ -2345,8 +2340,8 @@
   $("profSwitchOverlay").addEventListener("click", (e) => { if (e.target === $("profSwitchOverlay")) closeProfSwitch(); });
   $("profConfirmClose").addEventListener("click", closeProfConfirm);
   $("profConfirmCancel").addEventListener("click", closeProfConfirm);
-  // Fermer sans choisir ne doit RIEN changer — d'où un vrai Cancel distinct de
-  // « enregistrer seulement ».
+  // Closing without choosing must change NOTHING — hence a real Cancel, distinct
+  // from "save only".
   $("profConfirmOverlay").addEventListener("click", (e) => { if (e.target === $("profConfirmOverlay")) closeProfConfirm(); });
   $("profConfirmSave").addEventListener("click", () => {
     const p = profPending; closeProfConfirm(); closeProfSwitch();
@@ -2412,16 +2407,16 @@
 
   function openTabMenu(tab, x, y) {
     tabMenu.replaceChildren();
-    // Entête : QUI est cet agent. Le profil est ce qui le qualifie (rôle,
-    // garde-fous, secrets), il est choisi au spawn puis devenait invisible.
+    // Header: WHO this agent is. The profile is what qualifies it (role,
+    // guardrails, secrets); it is chosen at spawn and then became invisible.
     const head = document.createElement("div");
     head.className = "tm-head";
     const who = document.createElement("b");
     who.textContent = tab.profile || "No profile";
     head.append("👤 ", who);
     if (!tab.profile) head.title = "Spawned without a profile — no role, no extra guardrails";
-    // Profil changé mais pas encore appliqué : le dire, sinon l'entête mentirait
-    // sur ce qui tourne réellement.
+    // Profile changed but not applied yet: say so, or the header would lie about
+    // what is actually running.
     if (tab.sessionId && (tab.appliedProfile ?? null) !== (tab.profile ?? null)) {
       const pend = document.createElement("span");
       pend.className = "tm-sub";
@@ -2441,8 +2436,8 @@
       ["↻ Reload agent", () => reloadTab(tab)],
       ["✎ Rename", () => startRename(tab)],
     ];
-    // Le profil ne se règle ici que pour un agent lancé : sinon c'est la box de
-    // création qui le porte, et il n'y a pas de session à redémarrer.
+    // The profile is only set here for a launched agent: otherwise the creation
+    // box carries it, and there is no session to restart.
     if (tab.sessionId) items.push(["👤 Change profile…", () => openProfileSwitcher(tab)]);
     // The Telegram mirror. The label states the action AND its cost: turning it
     // off deletes the topic, hence the conversation on the phone — so we confirm.
@@ -2530,11 +2525,11 @@
         cwd: t.cwd && t.cwd.startsWith("/") ? t.cwd : "",
         name: t.nameEl.textContent,
         branch: t.branch || null,
-        // Surtout PAS de `repo` ici : c'est un champ appartenant au serveur, et
-        // le déduire du répertoire de lancement était faux dès qu'un agent vit
-        // dans le worktree d'un AUTRE dépôt (le canal « tweak »). Omettre la
-        // clé laisse la valeur stockée intacte (mergeChannels), et le serveur
-        // l'affirme depuis le worktree réel de la session.
+        // Definitely NO `repo` here: it is a server-owned field, and deriving
+        // it from the launch directory was wrong as soon as an agent lives in
+        // ANOTHER repo's worktree (the "tweak" channel). Omitting the key leaves
+        // the stored value untouched (mergeChannels), and the server asserts it
+        // from the session's real worktree.
         group: groupIdOf(t.btnEl),
         muted: !!t.muted,
         mirror: !!t.mirror,
@@ -2678,8 +2673,8 @@
     e.dataTransfer.dropEffect = "move";
     if (dragTabEl) {
       const overTab = e.target.closest(".tab");
-      // L'emplacement du bas n'accueille QUE le canal tweak : sans ce garde, un
-      // onglet traîné au-dessus s'y insérerait et se retrouverait épinglé là.
+      // The bottom slot ONLY hosts the tweak channel: without this guard, a tab
+      // dragged over it would be inserted there and end up pinned in place.
       if (overTab && overTab !== dragTabEl && !overTab.classList.contains("tweak")) {
         const r = overTab.getBoundingClientRect();
         const after = e.clientY > r.top + r.height / 2;
@@ -2740,9 +2735,9 @@
     // A NEW "agent is blocked" in a channel you're not already looking at →
     // chime once. (Not on unread, not on re-renders of an existing question,
     // never for a muted channel.)
-    // Même correction que pour le clignotement : « pas devant » inclut la
-    // fenêtre affichée mais sans focus, sinon un agent qui se bloque dans le
-    // canal actif pendant que tu es dans ton terminal ne fait aucun bruit.
+    // Same fix as for the blinking: "not in front of it" includes a window that
+    // is displayed but unfocused, or an agent blocking in the active channel
+    // while you are in your terminal makes no sound at all.
     const away = document.hidden || !document.hasFocus();
     if (mood === "needs-answer" && !wasNeeds && !tab.muted && (away || tab !== active)) ding();
     refreshBadge();
@@ -2755,16 +2750,16 @@
     return Math.floor(s / 60) + "m" + String(s % 60).padStart(2, "0");
   }
   /**
-   * (Re)starts the timer — called when a prompt leaves for this channel, et au
-   * rattachement d'un tour déjà en cours (rechargement de page, tour lancé par un
-   * autre client ou par un cron).
+   * (Re)starts the timer — called when a prompt leaves for this channel, and when
+   * reattaching to an already running turn (a page reload, a turn started by
+   * another client or by a cron).
    *
-   * `elapsedMs` = depuis combien de temps le serveur travaille déjà. On le
-   * convertit en origine LOCALE : tout le compte se fait alors sur l'horloge du
-   * navigateur. Avant, on gardait l'instant de départ du SERVEUR et on le
-   * soustrayait à `Date.now()` du navigateur — l'affichage était donc faux de tout
-   * l'écart entre les deux horloges, ce qui se voit dès qu'on regarde le cockpit
-   * depuis un autre appareil, et pouvait même donner une durée négative.
+   * `elapsedMs` = how long the server has already been working. We convert it
+   * into a LOCAL origin: the whole count then runs on the browser's clock.
+   * Before, we kept the SERVER's start instant and subtracted it from the
+   * browser's `Date.now()` — so the display was off by the whole gap between the
+   * two clocks, which shows as soon as you watch the cockpit from another device,
+   * and could even produce a negative duration.
    */
   function startTurnTimer(tab, elapsedMs) {
     const already = Number.isFinite(elapsedMs) && elapsedMs > 0 ? elapsedMs : 0;
@@ -2801,8 +2796,9 @@
     if (tab.reconnectTimer) clearTimeout(tab.reconnectTimer);
     if (tab.ws && tab.ws.readyState === WebSocket.OPEN) tab.ws.close();
     dropDraft(tab);
-    // Le canal tweak fermé, son emplacement redevient le CTA — sinon le bas de
-    // la colonne resterait vide et la fonctionnalité disparaîtrait sans retour.
+    // Once the tweak channel is closed its slot becomes the CTA again — otherwise
+    // the bottom of the column would stay empty and the feature would vanish with
+    // no way back.
     if (tab.isTweak) document.getElementById("tweakCta").hidden = false;
     tab.btnEl.remove();
     tab.transcriptEl.remove();
@@ -2810,7 +2806,7 @@
     refreshTitle();
     if (active === tab) {
       if (tabs.length) activate(tabs[tabs.length - 1]);
-      // Plus aucun agent : l'invitation, pas un onglet « setup » fantôme.
+      // No agent left: the invitation, not a phantom "setup" tab.
       else { active = null; refreshChrome(); }
     }
   }
@@ -2837,9 +2833,9 @@
       const t = tabById.get(c.sessionId);
       if (t) {
         if (isMain(c)) markMainTab(t);
-        // Identité + horaires : le serveur en est la source (le profil est
-        // server-owned, les crons ne vivent que chez lui). Ré-appliqué à chaque
-        // passage, donc un cron créé depuis Telegram allume l'⏰ ici en 4 s.
+        // Identity + schedules: the server is their source (the profile is
+        // server-owned, the crons only live there). Re-applied on every pass, so
+        // a cron created from Telegram lights the ⏰ here within 4 s.
         t.profile = c.profile || null;
         // Server-owned like `profile`: who this agent reports to must survive a
         // reload, or the menu would offer to attach an agent that already is.
@@ -2864,8 +2860,8 @@
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
         nt.parent = c.parent || null;
-        // Un canal tweak né ailleurs (autre appareil, Telegram) reprend sa place
-        // en bas plutôt que d'apparaître comme un agent ordinaire de la liste.
+        // A tweak channel born elsewhere (another device, Telegram) takes its
+        // place at the bottom rather than showing up as an ordinary agent.
         if (nt.profile === "Shadok-Tweak" && !tweakTab()) markTweakTab(nt);
         setCrons(nt, c.crons);
         if (c.muted) setMuted(nt, true, false);
@@ -2900,8 +2896,8 @@
       persistDraft(active);
     }
     active = tab;
-    // Un reload doit revenir sur le canal qu'on regardait : on mémorise son
-    // sessionId (hors restauration initiale, qui rejoue les activate elle-même).
+    // A reload must come back to the channel you were watching: remember its
+    // sessionId (outside the initial restore, which replays the activates itself).
     if (!restoring && tab.sessionId) localStorage.setItem("cp.activeSession", tab.sessionId);
     // Viewing the channel clears its "unread response" highlight.
     if (tab.btnEl.classList.contains("unread")) setTabMood(tab, null);
@@ -3020,9 +3016,9 @@
     return v || fallback;
   }
   /** SVG data-URI favicon: the base mark, plus a coloured corner pip if given. */
-  /** L'indicateur remplit TOUT le favicon : au repos, fond sombre + chevron
-   *  accent ; pour un état (rouge = à faire, ambre = à lire) tout le carré prend
-   *  la couleur, chevron sombre par-dessus. Bien plus visible qu'une pastille. */
+  /** The indicator fills the WHOLE favicon: at rest, a dark background + an
+   *  accent chevron; for a state (red = to do, amber = to read) the whole square
+   *  takes the colour, dark chevron on top. Far more visible than a small pip. */
   function faviconSVG(bg) {
     const base = themeColor("--bg", "#14161d");
     const accent = themeColor("--amber", "#f0a848");
@@ -3033,8 +3029,8 @@
       `</svg>`;
     return "data:image/svg+xml," + encodeURIComponent(svg);
   }
-  /** Favicon « en train de bosser » : un GROS spinner centré qui remplit le
-   *  favicon (piste faible + arc accent qui tourne). */
+  /** The "working" favicon: one BIG centred spinner filling the favicon (a faint
+   *  track + a rotating accent arc). */
   function faviconWorkingSVG(angle) {
     const base = themeColor("--bg", "#14161d");
     const accent = themeColor("--amber", "#f0a848");
@@ -3061,7 +3057,7 @@
   // costs no timer at all.
   let blinkTimer = null;
   let blinkPhase = 0;
-  let workTimer = null;   // anime le favicon « working » (spinner)
+  let workTimer = null;   // animates the "working" favicon (spinner)
   let workAngle = 0;
   function stopWork() { if (workTimer) { clearInterval(workTimer); workTimer = null; } }
   function paint() {
@@ -3073,18 +3069,18 @@
       document.title = titleBase;
       return;
     }
-    // "Ailleurs" = onglet caché OU fenêtre sans focus. document.hidden seul ne
-    // suffit pas : il reste faux tant que la fenêtre est affichée, même si tu
-    // travailles dans une autre application — l'usage normal du cockpit. Avec
-    // lui seul, le clignotement ne se déclenchait jamais quand il servait.
+    // "Away" = hidden tab OR unfocused window. document.hidden alone is not
+    // enough: it stays false as long as the window is displayed, even while you
+    // work in another application — the cockpit's normal use. With it alone, the
+    // blinking never fired when it was useful.
     const s = window.notifyState(attentionInput(), {
       away: document.hidden || !document.hasFocus(),
       phase: blinkPhase,
     });
     document.title = s.badge + titleBase;
-    // « working » = favicon animé (spinner). Le module ne renvoie ce mode que si
-    // RIEN de plus prioritaire (bloqué / non-lu) n'attend — la priorité est donc
-    // gérée en amont : un agent qui attend gagne toujours sur un agent qui bosse.
+    // "working" = animated favicon (spinner). The module only returns that mode
+    // when NOTHING of higher priority (blocked / unread) is waiting — priority is
+    // therefore handled upstream: a waiting agent always beats a busy one.
     if (s.mode === "working") {
       if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; blinkPhase = 0; }
       if (!workTimer) {
@@ -3179,14 +3175,14 @@
 
   /**
    * Keeps header, composer, channel bar and engine room in sync with the active
-   * channel — ou avec l'ABSENCE de canal.
+   * channel — or with the ABSENCE of a channel.
    *
-   * `active` peut désormais être nul : la création vit dans une popin et ne crée
-   * plus d'onglet « setup » d'avance, donc fermer le dernier agent ne laisse plus
-   * un formulaire à la place. Tout ce qui décrit un canal retombe alors sur « — »
-   * et le panneau central montre l'invitation.
+   * `active` can now be null: creation lives in a popin and no longer creates a
+   * "setup" tab up front, so closing the last agent no longer leaves a form in
+   * its place. Everything that describes a channel then falls back to "—" and the
+   * central panel shows the invitation.
    */
-  /** (Re)construit le sélecteur mobile : une option par canal + « ＋ New agent ». */
+  /** (Re)builds the mobile selector: one option per channel + "＋ New agent". */
   function rebuildChanSelect() {
     const sel = $("chanSelect");
     if (!sel) return;
@@ -3212,7 +3208,7 @@
   });
 
   function refreshChrome() {
-    rebuildChanSelect();   // garde le sélecteur mobile en phase (liste + actif)
+    rebuildChanSelect();   // keeps the mobile selector in step (list + active)
     const t = active;
     if (!t) {
       $("led").className = "led ";
@@ -3225,8 +3221,8 @@
       $("chanBar").hidden = true;
       thinking.classList.remove("visible");
       screenEl.textContent = "";
-      // Programmer ou arrêter n'a pas de cible : mieux vaut des boutons éteints
-      // qu'une popin qui parle d'un agent inexistant.
+      // Scheduling or stopping has no target: better dimmed buttons than a popin
+      // talking about an agent that does not exist.
       $("chanCron").disabled = true;
       $("chanStop").disabled = true;
       $("emptyState").classList.add("visible");
@@ -3246,15 +3242,15 @@
     $("branchGauge").hidden = !t.branch;
     $("branchView").textContent = t.branch || "—";
     composer.hidden = false;
-    // La barre du canal accompagne les deux vues du canal.
+    // The channel bar accompanies both views of the channel.
     $("chanBar").hidden = false;
     $("chanBarName").textContent = t.nameEl ? t.nameEl.textContent : "";
     $("chanBarName").title = t.cwd || "";
     sendBtn.disabled = t.status !== "ready" || !!t.pendingChoices;
     thinking.classList.toggle("visible", t.status === "busy");
-    // Afficher/masquer « Shadok is working… » change la hauteur de la zone de
-    // transcript : sans re-coller en bas, le dernier message passe sous le pli
-    // (typiquement « coupé » juste après l'envoi d'un prompt).
+    // Showing/hiding "Shadok is working…" changes the transcript area's height:
+    // without re-pinning to the bottom, the last message slips below the fold
+    // (typically "cut off" right after sending a prompt).
     pinBottom(t);
     screenEl.textContent = t.screenText;
   }
@@ -3273,20 +3269,20 @@
     tab.ctxFillEl.classList.toggle("crit", p >= 85);
   }
 
-  // Recolle la vue en bas UNIQUEMENT si l'utilisateur y est déjà (flag piloté
-  // par ses scrolls). Sinon on ne touche pas à sa position — fini le scroll qui
-  // part dans tous les sens pendant que le texte live se remplit.
+  // Re-pins the view to the bottom ONLY when the user is already there (a flag
+  // driven by their own scrolls). Otherwise we leave their position alone — no
+  // more scroll flying around while the live text fills in.
   function pinBottom(tab) {
     const el = tab.transcriptEl;
     if (tab === active && el._stickBottom !== false) el.scrollTop = el.scrollHeight;
   }
 
-  /* Date/heure d'un message. Aujourd'hui → heure seule (« 21:57 »). Un autre
-     jour → date + heure (« 3 août, 21:57 »), avec l'année si elle diffère —
-     sinon un historique repris de plusieurs jours affichait juste « 21:57 », ce
-     qui induit en erreur. Date complète en title=. `at` vient du .jsonl (même
-     valeur en direct et au rechargement) ; absent sur les vieux transcripts →
-     on n'affiche rien plutôt qu'une heure inventée. */
+  /* A message's date/time. Today → the time alone ("21:57"). Another day → date
+     + time ("3 August, 21:57"), with the year when it differs — otherwise a
+     resumed history spanning several days just showed "21:57", which misleads.
+     Full date in title=. `at` comes from the .jsonl (same value live and on
+     reload); absent on old transcripts → we show nothing rather than an invented
+     time. */
   function fmtTime(at) {
     if (!Number.isFinite(at)) return null;
     const d = new Date(at);
@@ -3316,21 +3312,21 @@
     if (h < 24) return h + "h ago";
     return Math.round(h / 24) + "d ago";
   }
-  /** (Re)pose l'heure relative du dernier message sur l'onglet. */
+  /** (Re)paints the last message's relative time on the tab. */
   function renderLastAt(tab) {
     if (!tab.lastAtEl) return;
     if (!Number.isFinite(tab.lastMsgAt)) { tab.lastAtEl.textContent = ""; return; }
     tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
     tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
   }
-  // Le relatif vieillit tout seul : on rafraîchit tous les onglets périodiquement.
+  // The relative time ages on its own: refresh every tab periodically.
   setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
 
   /**
-   * Copie un texte, avec repli. `navigator.clipboard` n'existe QUE dans un
-   * contexte sécurisé : servi en http sur une IP de LAN — le cas d'un téléphone
-   * sur le réseau — il est absent, et sans repli le bouton ne ferait rien sans
-   * rien dire. Renvoie true si la copie a eu lieu.
+   * Copy a text, with a fallback. `navigator.clipboard` exists ONLY in a secure
+   * context: served over http on a LAN IP — the case of a phone on the network —
+   * it is absent, and with no fallback the button would do nothing without
+   * saying anything. Returns true when the copy happened.
    */
   async function copyText(text) {
     try {
@@ -3338,7 +3334,7 @@
         await navigator.clipboard.writeText(text);
         return true;
       }
-    } catch { /* refusé (permission, focus perdu) : on tente le repli */ }
+    } catch { /* refused (permission, lost focus): try the fallback */ }
     try {
       const ta = document.createElement("textarea");
       ta.value = text;
@@ -3355,8 +3351,8 @@
     }
   }
 
-  /** Le bouton « copier » d'un message. Le texte copié est la SOURCE (markdown
-   *  brut), pas le rendu : c'est ce qu'on veut recoller ailleurs. */
+  /** A message's "copy" button. The copied text is the SOURCE (raw markdown),
+   *  not the rendering: that is what you want to paste elsewhere. */
   function addCopyButton(turn, text) {
     const b = document.createElement("button");
     b.type = "button";
@@ -3376,16 +3372,16 @@
     turn.appendChild(b);
   }
 
-  /** Étiquette d'auteur d'un prompt venu d'ailleurs — la décision vit dans
-   *  /echo-author.js (pure, testée). Garde sur `window` : le pont ESM tourne
-   *  APRÈS l'analyse du document (invariant 10). */
+  /** The author label of a prompt that came from elsewhere — the decision lives
+   *  in /echo-author.js (pure, tested). Guarded on `window`: the ESM bridge runs
+   *  AFTER the document is parsed (invariant 10). */
   function echoAuthorLabel(msg) {
     return window.echoAuthor ? window.echoAuthor(msg) : "pilot (elsewhere)";
   }
 
   function addTurn(tab, role, who, text, extraClass, at) {
-    // Heure du dernier message dans la liste des canaux, en relatif (« 3m ago »).
-    // Chaque message (historique rejoué ou live) porte `at` ; le dernier gagne.
+    // Time of the last message in the channel list, relative ("3m ago"). Every
+    // message (replayed history or live) carries `at`; the last one wins.
     if (Number.isFinite(at)) {
       tab.lastMsgAt = at;
       renderLastAt(tab);
@@ -3396,9 +3392,9 @@
       const label = document.createElement("span");
       label.className = "label";
       label.textContent = who;
-      // L'heure vit DANS le label : une suite de bulles du même locuteur n'a
-      // qu'un label (règle CSS `.turn.claude + .turn.claude > .label`), donc
-      // l'heure se groupe pareil au lieu de se répéter à chaque bloc.
+      // The time lives INSIDE the label: a run of bubbles from the same speaker
+      // has only one label (CSS rule `.turn.claude + .turn.claude > .label`), so
+      // the time groups the same way instead of repeating on every block.
       const time = fmtTime(at);
       if (time) label.appendChild(time);
       turn.appendChild(label);
@@ -3408,12 +3404,12 @@
     // Claude content (streamed live or replayed history) is raw markdown from
     // the .jsonl → render to HTML (tables, code, wrapping).
     //
-    // TOUJOURS assaini : ce Markdown vient de l'agent, donc de ce que l'agent a
-    // lu — un README cloné, une page web, un message Telegram. `marked` laisse
-    // passer le HTML brut, donc un `<img onerror=…>` planté là s'exécuterait
-    // dans le cockpit, qui sait créer un cron (donc lancer un shell). Pas de
-    // DOMPurify chargé → on retombe en texte brut plutôt que d'injecter du HTML
-    // non filtré : perdre la mise en forme est moins grave que l'inverse.
+    // ALWAYS sanitised: this Markdown comes from the agent, hence from what the
+    // agent read — a cloned README, a web page, a Telegram message. `marked` lets
+    // raw HTML through, so an `<img onerror=…>` planted there would run in the
+    // cockpit, which can create a cron (hence launch a shell). No DOMPurify
+    // loaded → we fall back to plain text rather than inject unfiltered HTML:
+    // losing the formatting is less bad than the reverse.
     if (role === "claude" && (extraClass === "hist" || extraClass === "live") && window.marked && window.DOMPurify) {
       bubble.classList.add("md");
       bubble.innerHTML = DOMPurify.sanitize(marked.parse(text));
@@ -3421,64 +3417,57 @@
       bubble.textContent = text;
     }
     turn.appendChild(bubble);
-    // Pas sur les lignes de service (« session ended », activité) : il n'y a
-    // rien à recoller ailleurs.
+    // Not on service lines ("session ended", activity): there is nothing to
+    // paste elsewhere.
     if (role !== "system" && text) addCopyButton(turn, text);
     tab.transcriptEl.appendChild(turn);
     pinBottom(tab);
     return bubble;
   }
 
-  /* ── Aperçu live du texte en cours ───────────────────────
-     Le .jsonl n'écrit un bloc de texte que TERMINÉ, donc rien ne s'affiche
-     pendant sa génération. On comble avec le dernier bloc lu sur l'écran TUI
-     (window.extractLiveText), dans une bulle provisoire, remplacée par le rendu
-     markdown autoritatif dès que `stream-text` livre le bloc complet.
+  /* ── Live preview of the in-flight text ──────────────────
+     The .jsonl only writes a text block once FINISHED, so nothing shows while it
+     is generated. We fill the gap with the last block read off the TUI screen
+     (window.extractLiveText), in a provisional bubble, replaced by the
+     authoritative markdown rendering as soon as `stream-text` delivers the
+     complete block.
 
-     Déduplication : après un `stream-text`, l'écran continue de montrer le même
-     bloc `⏺` ; on mémorise la forme-écran de chaque bloc finalisé (`finalizedNorms`) pour ne
-     pas recréer un provisoire qui doublonnerait la bulle déjà finalisée. La
-     comparaison est par INCLUSION normalisée, pas par égalité stricte : le rendu
-     écran d'un même bloc vacille (scroll, wrapping, curseur, lignes qui sortent
-     du viewport pendant qu'un outil tourne), donc une égalité stricte re-matchait
-     puis ne-matchait plus en alternance → le bloc finalisé réapparaissait en
-     aperçu puis disparaissait (clignotement). L'inclusion absorbe ce vacillement. */
-  // Normalise + retire les marqueurs markdown (`*_`#>`) : l'écran TUI montre le
-  // texte RENDU (gras/italique/code en clair), le .jsonl le montre en source ;
-  // on les compare dans la même forme.
+     Deduplication: after a `stream-text` the screen keeps showing the same `⏺`
+     block; we remember each finalised block's screen form (`finalizedNorms`) so
+     as not to recreate a provisional one duplicating the already finalised
+     bubble. The comparison is by normalised INCLUSION, not strict equality: the
+     screen rendering of one block flickers (scroll, wrapping, cursor, lines
+     leaving the viewport while a tool runs), so strict equality matched then
+     stopped matching in turn → the finalised block reappeared as a preview then
+     vanished (flicker). Inclusion absorbs that wobble. */
+  // Normalise + strip the markdown markers (`*_`#>`): the TUI screen shows the
+  // RENDERED text (bold/italic/code in plain form), the .jsonl shows the source;
+  // we compare them in the same shape.
   const normPreview = (s) => (s || "").replace(/[*_`#>]/g, "").replace(/\s+/g, " ").trim();
-  /** Un aperçu correspond-il à un bloc DÉJÀ finalisé ce tour ? On accumule le
-      texte AUTORITATIF complet de chaque bloc (msg.text du stream-text). Toute
-      fenêtre d'écran d'un bloc — même défilée / re-wrappée — en est une
-      sous-chaîne, donc `finalisé.includes(aperçu)` la reconnaît sans dépendre du
-      viewport (une comparaison sur des fenêtres qui se chevauchaient échouait et
-      le bloc réapparaissait → clignotement). */
+  /** Does a preview correspond to a block ALREADY finalised this turn? We
+      accumulate each block's complete AUTHORITATIVE text (stream-text's
+      msg.text). Any screen window of a block — even scrolled / re-wrapped — is a
+      substring of it, so `finalised.includes(preview)` recognises it without
+      depending on the viewport (a comparison over overlapping windows failed and
+      the block reappeared → flicker). */
   function isFinalizedBlock(tab, nT) {
     return (tab.finalizedNorms || []).some((f) => f && f.includes(nT));
   }
   function updateLivePreview(tab, screen) {
     if (!window.extractLiveText) return;
     const txt = extractLiveText(screen);
-    // Extraction vide (outil en cours, spinner, ou frame transitoire pendant que
-    // le bloc défile) → GARDER l'aperçu existant tel quel. L'effacer ici faisait
-    // clignoter le bloc en cours (vide fugace → clear → re-show). Le bloc est de
-    // toute façon effacé à sa finalisation (stream-text) ou en fin de tour.
+    // Empty extraction (a running tool, the spinner, or a transient frame while
+    // the block scrolls) → KEEP the existing preview as is. Clearing it here made
+    // the in-flight block flicker (a fleeting empty → clear → re-show). The block
+    // is cleared anyway on finalisation (stream-text) or at the end of the turn.
     if (!txt) return;
-    // « NOTHING TO SHOW » : le serveur ne streamera JAMAIS ce bloc (jumeau de
-    // isNothingToShow, src/tail.ts — pas de bundler ici, d'où la duplication).
-    // Sans ce garde, l'aperçu gris resterait affiché tout le tour à attendre un
-    // stream-text qui ne vient pas.
+    // "NOTHING TO SHOW": the server will NEVER stream that block (twin of
+    // isNothingToShow, src/tail.ts — no bundler here, hence the duplication).
+    // Without this guard the grey preview would stay up the whole turn waiting
+    // for a stream-text that never comes.
     if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
     const nT = normPreview(txt);
     if (nT && isFinalizedBlock(tab, nT)) { clearLivePreview(tab); return; }
-    setLivePreview(tab, txt);
-  }
-
-  /** Ensure the provisional grey bubble exists and carries `txt`. Shared by the
-   *  screen-driven preview and the dialog preface (the text that precedes a
-   *  question — see the "dialog" handler). The tail's authoritative block
-   *  replaces it 1-for-1 on stream-text. */
-  function setLivePreview(tab, txt) {
     if (!tab.livePreviewEl) {
       const turn = document.createElement("div");
       turn.className = "turn claude live-preview";
@@ -3489,8 +3478,8 @@
       tab.livePreviewEl = turn;
       tab.livePreviewBubble = bubble;
     }
-    // N'écrire que si le texte a changé : évite reflows et scintillement quand
-    // deux écrans successifs portent le même bloc.
+    // Only write when the text changed: avoids reflows and flicker when two
+    // successive screens carry the same block.
     if (tab.livePreviewBubble.textContent !== txt) tab.livePreviewBubble.textContent = txt;
     pinBottom(tab);
   }
@@ -3712,8 +3701,8 @@
       label.textContent = msg.multi
         ? "claude — multi-select (check then submit)"
         : "claude — choice requested";
-      // Une question posée pendant qu'on n'était pas devant : savoir DEPUIS QUAND
-      // elle attend est justement ce qu'on veut voir en revenant.
+      // A question asked while you were away: HOW LONG it has been waiting is
+      // exactly what you want to see on coming back.
       const time = fmtTime(Date.now());
       if (time) label.appendChild(time);
       bubble = document.createElement("div");
@@ -3824,12 +3813,12 @@
     t.cwd = msg.cwd || "(server directory)";
     if (!t.customName) t.nameEl.textContent = basename(msg.cwd || "") || "agent " + t.id;
     t.launchMsg = msg;      // remembered so a dropped link can reconnect
-    // Le choix « miroir » voyage dans le message de lancement : le serveur
-    // l'enregistre au `ready`. L'ONGLET doit le savoir aussi, sinon le premier
-    // `persistChannels` repousse sa valeur par défaut (false) et écrase ce que
-    // le serveur vient d'écrire — l'agent n'était alors jamais mirorré, et
-    // seule la bascule du menu marchait. Ici plutôt que chez l'appelant :
-    // launchTab est l'entonnoir de TOUS les chemins de création.
+    // The "mirror" choice travels in the launch message: the server records it
+    // at `ready`. The TAB must know it too, otherwise the first
+    // `persistChannels` pushes its default (false) back and overwrites what the
+    // server has just written — the agent was then never mirrored, and only the
+    // menu's toggle worked. Here rather than at the call site: launchTab is the
+    // funnel for ALL creation paths.
     if (typeof msg.mirror === "boolean") setMirror(t, msg.mirror, false);
     t.closing = false;      // set when the user closes the tab (no reconnect then)
     t.reconnectAttempts = 0;
@@ -3980,43 +3969,43 @@
   }
 
   /**
-   * Ouvre la popin de création. Elle ne crée RIEN : l'onglet naît au « Start
-   * agent » (cf. startNewAgent). Ouvrir puis renoncer ne laissait auparavant pas
-   * seulement un onglet mort-né — il devenait le canal actif, avec son formulaire
-   * à la place de la conversation qu'on regardait.
+   * Open the creation popin. It creates NOTHING: the tab is born at "Start
+   * agent" (see startNewAgent). Opening it then backing out used to leave more
+   * than a stillborn tab — it became the active channel, with its form in place
+   * of the conversation you were watching.
    */
   function openSetup() {
-    // Défauts PRÉVISIBLES à chaque ouverture. Le navigateur restaure l'état des
-    // champs de formulaire (un mode "continue"/"resume" choisi une fois, une case
-    // worktree décochée, un cwd de worktree) — c'est ce qui faisait retomber
-    // « créer un agent » dans le répertoire de base, en silence. On réaffirme le
-    // défaut : session NEUVE, worktree isolé, depuis la base.
+    // PREDICTABLE defaults on every opening. The browser restores form-field
+    // state (a "continue"/"resume" mode chosen once, an unticked worktree box, a
+    // worktree cwd) — which is what silently made "create an agent" fall back
+    // into the base directory. So we reassert the default: a NEW session, an
+    // isolated worktree, from the base.
     const newRadio = document.querySelector('input[name="mode"][value="new"]');
     newRadio.checked = true;
-    newRadio.dispatchEvent(new Event("change")); // réactive worktree/profil, cache le resume
+    newRadio.dispatchEvent(new Event("change")); // re-enables worktree/profile, hides resume
     $("worktreeInput").checked = true;
     $("cwdInput").value = serverCwd || "";
     const last = localStorage.getItem("cp.session");
     if (last && !$("resumeInput").value) $("resumeInput").value = last;
     $("startBtn").disabled = false;
-    // Le profil retenu n'est rappelé qu'à l'OUVERTURE : rappelé en continu, il
-    // écraserait le choix en cours de saisie.
+    // The remembered profile is only recalled on OPENING: recalled continuously,
+    // it would overwrite the choice being made.
     profileTouched = false;
     applyRememberedProfile();
-    // Même règle que le profil : on ne repropose le défaut qu'à l'OUVERTURE,
-    // pour ne pas écraser un nom en cours de frappe.
+    // Same rule as the profile: we only re-propose the default on OPENING, so as
+    // not to overwrite a name being typed.
     nameTouched = false;
     refreshDefaultName();
     refreshRecoverList();
     refreshLiveList();
     $("setupOverlay").hidden = false;
-    // Le cwd est désormais dans le fold « Advanced » (replié) : on focus le nom,
-    // premier champ du flux principal.
+    // The cwd now lives in the folded "Advanced" section: focus the name, the
+    // first field of the main flow.
     $("nameInput").focus();
   }
   function closeSetup() { $("setupOverlay").hidden = true; }
 
-  /** Valide le formulaire → C'EST ICI que le canal est créé, et pas avant. */
+  /** Submits the form → THIS is where the channel is created, and not before. */
   function startNewAgent() {
     const cwd = $("cwdInput").value.trim();
     const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -4036,10 +4025,11 @@
     }
     $("startBtn").disabled = true;
     closeSetup();
-    // createTab active l'onglet créé ; launchTab ouvre le lien.
+    // createTab activates the created tab; launchTab opens the link.
     const t = createTab();
-    // Le nom est posé AVANT launchTab, qui sinon écrase avec basename(cwd).
-    // customName le protège aussi du `ready` et de la restauration des canaux.
+    // The name is set BEFORE launchTab, which would otherwise overwrite it with
+    // basename(cwd). customName also protects it from `ready` and from the
+    // channel restore.
     const wanted = $("nameInput").value.trim() || defaultAgentNameNow();
     t.customName = true;
     t.nameEl.textContent = wanted;
@@ -4068,9 +4058,9 @@
   function handleVersion(msg) {
     if (bootVersion === null) bootVersion = msg.current;
     else if (msg.current && msg.current !== bootVersion) {
-      // Mise à jour : la page part maintenant. On écrit d'abord — c'est LE cas
-      // où l'on perdait un message en cours de frappe, puisque le rechargement
-      // n'est pas déclenché par l'utilisateur.
+      // An update: the page is leaving now. We write first — this is THE case
+      // where a message being typed got lost, since the reload is not triggered
+      // by the user.
       flushDrafts();
       location.reload();
       return;
@@ -4276,8 +4266,8 @@
               autosizePrompt();
             }
           } else if (t.draft) {
-            // Tapé AVANT que la session ne soit connue : `persistDraft` refuse
-            // d'écrire sans id, ce texte n'était donc dans aucun stockage.
+            // Typed BEFORE the session was known: `persistDraft` refuses to
+            // write with no id, so this text was in no storage at all.
             writeDraft(t);
           }
         }
@@ -4303,16 +4293,16 @@
         // Another client may have resolved the pending dialog.
         retireChoices(t);
         // Covers turns started elsewhere (other client, dialog answer, cron) and
-        // the reattach after a page reload — d'où la durée déjà écoulée.
+        // the reattach after a page reload — hence the already elapsed duration.
         if (!t.turnStart) startTurnTimer(t, msg.elapsedMs);
         setTabMood(t, "working");
         setTabState(t, "busy", "responding…");
         clearLivePreview(t);
         t.finalizedNorms = [];
-        // Aucun texte visible produit pour l'instant ce tour. Sert au turn-done à
-        // décider s'il y a vraiment « à lire » : un tour qui ne sort que
-        // NOTHING TO SHOW (filtré par le tail → aucun stream-text) ne doit pas
-        // marquer le canal comme non-lu.
+        // No visible text produced yet this turn. Used by turn-done to decide
+        // whether there is really something "to read": a turn that only outputs
+        // NOTHING TO SHOW (filtered by the tail → no stream-text) must not mark
+        // the channel unread.
         t.turnHadText = false;
         break;
       case "prompt-echo":
@@ -4325,8 +4315,8 @@
         addTurn(t, "user", echoAuthorLabel(msg), msg.text, null, Date.now());
         break;
       case "profile":
-        // Le couple désiré / en vigueur. Diffusé à TOUS les clients : changer le
-        // profil depuis un onglet met les autres à jour sans reload.
+        // The desired / in-force pair. Broadcast to EVERY client: changing the
+        // profile from one tab updates the others with no reload.
         t.profile = msg.profile;
         t.appliedProfile = msg.applied;
         break;
@@ -4349,20 +4339,20 @@
         // one, so the transcript keeps the real text/tools interleaving.
         retireChoices(t);
         closeActivity(t);
-        // Accumuler le texte AUTORITATIF complet du bloc (msg.text) pour la dédup
-        // de l'aperçu : toute fenêtre d'écran de ce bloc en est une sous-chaîne,
-        // donc il ne se re-provisoirisera plus tant que l'écran le montre (typique
-        // quand un outil tourne juste après et que l'écran ré-affiche le bloc).
+        // Accumulate the block's complete AUTHORITATIVE text (msg.text) for the
+        // preview dedup: any screen window of this block is a substring of it, so
+        // it will not go provisional again while the screen shows it (typical
+        // when a tool runs right after and the screen redisplays the block).
         {
           const fin = normPreview(msg.text);
           if (fin) (t.finalizedNorms ||= []).push(fin);
         }
         clearLivePreview(t);
-        // Du texte visible est arrivé (NOTHING TO SHOW est filtré par le tail
-        // avant d'arriver ici) → il y a vraiment quelque chose à lire.
+        // Visible text arrived (NOTHING TO SHOW is filtered by the tail before
+        // reaching here) → there really is something to read.
         t.turnHadText = true;
-        // Repli sur l'heure locale si le serveur n'a pas envoyé `at` (transcript
-        // sans timestamp) : un bloc en direct vient d'être écrit, l'écart est nul.
+        // Fall back to the local time when the server sent no `at` (a transcript
+        // with no timestamp): a live block was just written, the gap is nil.
         addTurn(t, "claude", "claude", msg.text, "live", msg.at ?? Date.now());
         break;
       case "stream-tool":
@@ -4384,26 +4374,16 @@
           persistChannels();
         }
         stopTurnTimer(t);
-        // « unread » seulement si le tour a produit du texte visible. Un tour
-        // vide (ex. cron qui conclut NOTHING TO SHOW) ne réclame aucune lecture,
-        // ni sur l'onglet ni sur le favicon.
+        // "unread" only when the turn produced visible text. An empty turn (e.g.
+        // a cron concluding NOTHING TO SHOW) asks for no reading at all, neither
+        // on the tab nor on the favicon.
         setTabMood(t, (t === active || !t.turnHadText) ? null : "unread");
         setTabState(t, "ready", "ready");
         break;
       case "dialog":
         // Re-rendered in place when a dialog is already shown (multi toggle).
         closeActivity(t);
-        // The text that PRECEDES the question shares the assistant message with
-        // the AskUserQuestion tool call, so the transcript only writes it once
-        // the turn resumes — i.e. AFTER you answer. The server extracts it from
-        // the screen as `preface`; show it now (provisional grey bubble, above
-        // the question) so the question reads in context. The tail's real block
-        // replaces it 1-for-1 later. No preface → clear as before.
-        {
-          const pre = (msg.preface || "").trim();
-          if (pre && !isFinalizedBlock(t, normPreview(pre))) setLivePreview(t, pre);
-          else clearLivePreview(t);
-        }
+        clearLivePreview(t);
         renderDialog(t, msg);
         stopTurnTimer(t);
         setTabMood(t, "needs-answer");
@@ -4580,8 +4560,8 @@
       const mode = document.querySelector('input[name="mode"]:checked').value;
       const isNew = mode === "new";
       $("resumeField").hidden = mode !== "resume";
-      // Profil et worktree ne valent que pour une session neuve : startNewAgent
-      // les ignore déjà en resume/continue, l'UI cesse simplement de le cacher.
+      // Profile and worktree only apply to a new session: startNewAgent already
+      // ignores them on resume/continue, the UI simply stops hiding that.
       $("profileField").classList.toggle("na", !isNew);
       $("profileNaNote").hidden = isNew;
       $("worktreeField").classList.toggle("na", !isNew);
@@ -4595,9 +4575,9 @@
   $("cwdInput").addEventListener("change", () => {
     if (!$("resumeField").hidden) refreshSessionList();
     refreshRecoverList();
-    // Un autre dossier a peut-être son propre habitué — sauf si on a déjà choisi.
+    // Another directory may have its own regular — unless one was already picked.
     if (!profileTouched) applyRememberedProfile();
-    // Sans profil, le défaut EST le dossier : il doit suivre la saisie.
+    // With no profile the default IS the directory: it must follow the input.
     refreshDefaultName();
   });
   // Agents can appear while the setup screen sits open (pilotctl spawns one,
@@ -4619,14 +4599,14 @@
     // being sent — whether by clicking its own button or by a fresh submit.
     retirePaceConfirm(t);
     closeActivity(t);
-    // Envoyer = revenir en bas, quoi qu'il arrive (même si on avait scrollé plus
-    // haut) : on veut voir son message et la réponse qui suit.
+    // Sending = going back to the bottom, whatever happens (even after scrolling
+    // up): you want to see your message and the answer that follows.
     t.transcriptEl._stickBottom = true;
     addTurn(t, "user", "pilot", text, null, Date.now());
     startTurnTimer(t);
     setTabMood(t, "working");
-    // Mémorise le dernier prompt envoyé de ce canal, pour qu'Échap (interruption)
-    // puisse le remettre dans le composer et le laisser ré-éditer/renvoyer.
+    // Remember this channel's last sent prompt, so Escape (an interruption) can
+    // put it back in the composer and let it be re-edited/resent.
     t.lastSent = text;
     // The composer is shared and shows the active channel's draft. A forced send
     // can come from a bubble in a channel the user has since left, and clearing
@@ -4712,17 +4692,17 @@
     submitPrompt(t, text);
   });
   /**
-   * Coller N'IMPORTE QUEL fichier dans le composeur — image, PDF, CSV, etc.
+   * Paste ANY file into the composer — an image, a PDF, a CSV, etc.
    *
-   * Le cockpit n'avait AUCUN moyen de passer un fichier à un agent — seul
-   * Telegram savait le faire : une capture d'écran (ou un document) obligeait à
-   * l'enregistrer quelque part puis à taper son chemin à la main.
+   * The cockpit had NO way to hand a file to an agent — only Telegram could do
+   * it: a screenshot (or a document) meant saving it somewhere and then typing
+   * its path by hand.
    *
-   * Le fichier part au serveur, qui le dépose là où atterrissent déjà les pièces
-   * jointes Telegram, et renvoie la ligne toute faite (`[Image jointe : …]` ou
-   * `[Fichier joint : …]`) : un seul format pour l'agent, quelle que soit la
-   * surface. On l'INSÈRE dans le composeur au lieu d'envoyer tout de suite —
-   * l'utilisateur voit ce qui part et peut encore écrire sa consigne.
+   * The file goes to the server, which drops it where Telegram attachments
+   * already land, and returns the ready-made line (`[Attached image: …]` or
+   * `[Attached file: …]`): one format for the agent, whatever the surface. We
+   * INSERT it into the composer instead of sending right away — the user sees
+   * what is going out and can still write their instruction.
    */
   let pasteSeq = 0; // makes each placeholder unique so N attachments don't collide
   // Upload ONE file to /paste and swap its placeholder for the ready-made line.
@@ -4731,7 +4711,7 @@
     if (!file) return;
     const isImg = (file.type || "").startsWith("image/");
     const name = file.name || "";
-    const label = name || (isImg ? "image" : "fichier");
+    const label = name || (isImg ? "image" : "file");
     // Zero-width spaces keep the visible label clean while making the marker
     // unique — replace() only hits the first match, so identical labels
     // (two screenshots are both "image.png") must not share a placeholder.
@@ -4750,11 +4730,11 @@
       if (!r.ok || !j.line) throw new Error(j.error || `HTTP ${r.status}`);
       promptInput.value = promptInput.value.replace(mark, j.line);
     } catch (err) {
-      // Le dire dans le composeur : un marqueur qui reste sans explication
-      // laisserait croire à un envoi en cours qui n'arrivera jamais.
-      promptInput.value = promptInput.value.replace(mark, `⚠️ ${label} non envoyé (${err.message})`);
+      // Say it in the composer: a marker left with no explanation would look
+      // like an upload in progress that will never arrive.
+      promptInput.value = promptInput.value.replace(mark, `⚠️ ${label} not sent (${err.message})`);
     }
-    promptInput.dispatchEvent(new Event("input")); // hauteur + brouillon
+    promptInput.dispatchEvent(new Event("input")); // height + draft
   }
 
   promptInput.addEventListener("paste", async (e) => {
@@ -4800,7 +4780,7 @@
     });
   }
 
-  /** Insère du texte à la position du curseur, sans écraser la saisie en cours. */
+  /** Inserts text at the cursor, without overwriting what is being typed. */
   function insertAtCursor(el, text) {
     const start = el.selectionStart ?? el.value.length;
     const end = el.selectionEnd ?? el.value.length;
@@ -4821,7 +4801,7 @@
   }
   promptInput.addEventListener("input", () => {
     autosizePrompt();
-    if (!active) return; // aucun agent : le composer est masqué, mais pas de crash gratuit
+    if (!active) return; // no agent: the composer is hidden, but no free crash
     active.draft = promptInput.value;
     persistDraft(active);
   });
@@ -4889,8 +4869,8 @@
     const on = !!(active && active.termOn);
     const b = $("chanTerm");
     b.classList.toggle("on", on);
-    // Le bouton est le SEUL indice du mode maintenant que le bandeau ne dit plus
-    // « Terminal — … » : allumé, il doit annoncer qu'il refermera.
+    // The button is the ONLY hint of the mode now that the bar no longer says
+    // "Terminal — …": lit, it must announce that it will close.
     b.title = on ? "Close terminal (⌨️ toggle)" : "Terminal (toggle, par canal)";
   }
   function syncTerm() {
@@ -4953,9 +4933,9 @@
     if (term) { term.dispose(); term = null; }
     fitAddon = null;
   }
-  // Actions du canal, dans sa barre. Le ⌨️ ouvre ET referme le terminal (il n'y
-  // a plus de bouton dans le header) ; cron/stop réutilisent les handlers des
-  // boutons du header, qui agissent déjà sur le canal actif — celui de la barre.
+  // The channel's actions, in its bar. The ⌨️ opens AND closes the terminal
+  // (there is no header button any more); cron/stop reuse the header buttons'
+  // handlers, which already act on the active channel — the bar's own.
   $("chanTerm").addEventListener("click", () => {
     if (!active) return;
     active.termOn = !active.termOn;
@@ -5059,20 +5039,20 @@
       sendTo(active, { type: "key", key: b.dataset.key });
     })
   );
-  // La touche Échap envoie esc à la session active (comme le bouton Esc de
-  // l'engine room). Précédence : un overlay/panneau ouvert est fermé d'abord
-  // (Échap ne descend pas jusqu'à la session) ; un dialogue clickable en
-  // attente est laissé intact ; sinon on envoie esc. L'engine room ouvert n'est
-  // PAS un panneau à fermer — c'est le terminal, Échap y envoie esc.
-  // L'inline-edit fait stopPropagation, donc ce handler ne le voit pas.
+  // The Escape key sends esc to the active session (like the engine room's Esc
+  // button). Precedence: an open overlay/panel is closed first (Escape does not
+  // reach down to the session); a pending clickable dialog is left intact;
+  // otherwise we send esc. An open engine room is NOT a panel to close — it is
+  // the terminal, and Escape sends esc there.
+  // The inline edit calls stopPropagation, so this handler never sees it.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
     // In the interactive terminal, xterm owns every key (incl. Esc) — the raw
     // keystroke already flows to the pane via term.onData; don't double-handle.
     if (active && active.termOn) return;
     // 1. Overlays / panneaux ouverts → fermer, pas d'esc.
-    // La confirmation d'abord : elle est empilée AU-DESSUS du sélecteur, et
-    // Échap ne doit rien changer (ni enregistrer, ni redémarrer).
+    // The confirmation first: it is stacked ON TOP of the picker, and Escape
+    // must change nothing (neither save nor restart).
     if (!$("profConfirmOverlay").hidden) { closeProfConfirm(); e.preventDefault(); return; }
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
@@ -5081,14 +5061,14 @@
     if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("telegramOverlay").hidden) { $("telegramOverlay").hidden = true; e.preventDefault(); return; }
     if ($("diffpanel").classList.contains("open")) { $("diffpanel").classList.remove("open"); e.preventDefault(); return; }
-    // 2. Dialogue clickable en attente de réponse → ne rien faire.
+    // 2. A clickable dialog awaiting an answer → do nothing.
     if (active && active.dialogBubble) return;
     // 3. Session active (engine room ouvert inclus) → envoyer esc.
     if (active && active.ws && active.status !== "setup") {
       sendTo(active, { type: "key", key: "escape" });
       e.preventDefault();
-      // Interrompre remet le dernier prompt envoyé dans le composer pour pouvoir
-      // le ré-éditer/renvoyer — sans écraser un brouillon déjà en cours de frappe.
+      // Interrupting puts the last sent prompt back into the composer so it can
+      // be re-edited/resent — without overwriting a draft already being typed.
       if (active.lastSent && !promptInput.value) {
         promptInput.value = active.lastSent;
         active.draft = promptInput.value;
@@ -5114,8 +5094,8 @@
     const ul = $("secretsList");
     ul.innerHTML = "";
     if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
-    // Combien de profils référencent chaque secret. Un blurb se lit une fois ;
-    // un secret marqué « inutilisé » montre le problème là où il est.
+    // How many profiles reference each secret. A blurb is read once; a secret
+    // marked "unused" shows the problem where the problem is.
     const usage = {};
     for (const p of profileCache) for (const n of p.secrets || []) usage[n] = (usage[n] || 0) + 1;
     for (const k of vaultNames) {
@@ -5138,15 +5118,15 @@
       ul.appendChild(li);
     }
   }
-  // profileCache alimente l'avertissement « aucun profil ne l'utilise » : il doit
-  // être frais à l'ouverture, sinon on afficherait un diagnostic périmé.
+  // profileCache feeds the "no profile uses it" warning: it must be fresh when
+  // the panel opens, or we would show a stale diagnosis.
   $("secretsBtn").addEventListener("click", async () => {
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
   });
-  // Le chaînon manquant : depuis les secrets, aller les accrocher à un profil.
+  // The missing link: from the secrets, go and attach them to a profile.
   $("secretsToProfiles").addEventListener("click", () => {
     $("secretsOverlay").hidden = true;
     openProfilesPanel();
@@ -5158,19 +5138,18 @@
     const name = $("secretKey").value.trim();
     const value = $("secretVal").value;
     if (!name) return;
-    // `overwrite` parce qu'une personne qui lit la liste du coffre et clique
-    // Save agit délibérément. Le drapeau existe pour empêcher un AGENT de
-    // remplacer un identifiant en silence — pas pour ralentir l'humain.
+    // `overwrite` because a person reading the vault's list and clicking Save is
+    // acting deliberately. The flag exists to stop an AGENT from replacing a
+    // credential silently — not to slow the human down.
     await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
     $("secretKey").value = ""; $("secretVal").value = "";
     await loadVault(); renderSecrets();
     $("secretKey").focus();
   });
-  // Parse un bloc collé façon .env → [{name, value}]. Gère `export KEY=VALUE`,
-  // les guillemets simples/doubles englobants, les commentaires (#) et les
-  // lignes vides. Une ligne sans nom d'env valide avant `=` est ignorée — donc
-  // un collage sans aucune paire valide (ex. un simple nom) laisse le collage
-  // normal remplir le champ NAME.
+  // Parse a pasted .env-style block → [{name, value}]. Handles `export
+  // KEY=VALUE`, surrounding single/double quotes, comments (#) and blank lines. A
+  // line with no valid env name before `=` is ignored — so a paste with no valid
+  // pair at all (e.g. a bare name) lets the normal paste fill the NAME field.
   function parseEnvSecrets(text) {
     const out = [];
     for (const raw of String(text).split(/\r?\n/)) {
@@ -5190,14 +5169,14 @@
     }
     return out;
   }
-  // Coller une liste .env dans le champ NAME ajoute tous les secrets d'un coup.
+  // Pasting an .env list into the NAME field adds every secret at once.
   $("secretKey").addEventListener("paste", async (e) => {
     const text = (e.clipboardData || window.clipboardData).getData("text");
     const pairs = parseEnvSecrets(text);
     if (!pairs.length) return; // rien de parsable → collage normal (remplit NAME)
     e.preventDefault();
-    // Séquentiel : chaque PUT fait un read-modify-write de secrets.json côté
-    // serveur ; les awaits évitent une course sur le fichier.
+    // Sequential: each PUT does a read-modify-write of secrets.json on the
+    // server; the awaits avoid a race on the file.
     for (const { name, value } of pairs) {
       await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
     }
@@ -5212,9 +5191,9 @@
     return "daily at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
   }
   /**
-   * Fuseau réellement appliqué aux horaires quotidiens, dans le pied de la popin.
-   * Le panneau annonçait « Times are server-local », ce qui ne dit pas 9h OÙ —
-   * or le serveur peut tourner dans un autre fuseau que le navigateur.
+   * The zone actually applied to daily schedules, in the popin's footer.
+   * The panel used to say "Times are server-local", which does not say 09:00
+   * WHERE — and the server can run in a different zone from the browser.
    */
   async function showCronTz() {
     const el = $("cronTzNote");
@@ -5223,7 +5202,7 @@
       const tz = await (await fetch("/timezone")).json();
       const zone = tz.timezone || tz.system;
       if (zone) el.textContent = "Daily times run in " + zone;
-    } catch { /* la popin marche très bien sans cette note */ }
+    } catch { /* the popin works perfectly well without this note */ }
   }
   async function renderCrons() {
     const ul = $("cronList"); ul.innerHTML = "";
@@ -5289,8 +5268,8 @@
   let profileCache = [];       // profiles from the server
   let editSecretRefs = [];     // secret NAMES the profile being edited injects
 
-  let profileTouched = false;  // l'utilisateur a choisi à la main → on n'écrase plus
-  let selectedProfile = "";    // nom du profil choisi dans la box, "" = aucun
+  let profileTouched = false;  // the user picked by hand → stop overwriting
+  let selectedProfile = "";    // name of the profile chosen in the box, "" = none
 
   async function loadProfilesInto() {
     let failed = false;
@@ -5300,26 +5279,26 @@
     renderProfileGrid(failed);
   }
 
-  /** Peint la grille de la box. La carte « No profile » est toujours présente :
-   *  c'est le défaut, et le seul recours si /profiles est tombé. */
+  /** Paints the box's grid. The "No profile" card is always there: it is the
+   *  default, and the only fallback when /profiles is down. */
   function renderProfileGrid(failed) {
     const grid = $("profileGrid");
     if (!grid) return;
-    // Le rôle « tweak » a son propre CTA en bas de la colonne des agents : une
-    // carte ici serait une deuxième porte, subtilement différente, vers le même
-    // agent. Il reste listé dans le panneau Profils, pour qu'on puisse tout de
-    // même lui attacher un secret ou un modèle.
+    // The "tweak" role has its own CTA at the bottom of the agent column: a card
+    // here would be a second, subtly different door to the same agent. It stays
+    // listed in the Profiles panel, so a secret or a model can still be attached
+    // to it.
     renderProfileCards(grid, selectedProfile, (n) => selectProfile(n, true), failed);
   }
 
-  /** Garde alignée sur invariant 10 : le pont ESM s'exécute après le parsing.
-   *  S'il n'est pas encore là, on ne filtre pas — un rôle de trop est moins
-   *  grave qu'une exception qui viderait la liste en silence. */
+  /** Guard aligned with invariant 10: the ESM bridge runs after parsing. When it
+   *  is not there yet we do not filter — one role too many is less bad than an
+   *  exception that would empty the list in silence. */
   const managedProfile = (name) => (window.isManagedProfile ? window.isManagedProfile(name) : false);
 
-  /** Peint les cartes de profil dans `container`. Générique : la box de création
-   *  ET le sélecteur du menu d'onglet s'en servent — la logique de carte (blurb,
-   *  badges, crayon, clavier) ne vit qu'ici, en un seul exemplaire. */
+  /** Paints the profile cards into `container`. Generic: the creation box AND
+   *  the tab menu's picker both use it — the card logic (blurb, badges, pencil,
+   *  keyboard) lives here only, in a single copy. */
   function renderProfileCards(container, selected, onPick, failed) {
     container.innerHTML = "";
     if (failed) {
@@ -5328,15 +5307,15 @@
       note.textContent = "couldn't load profiles";
       container.appendChild(note);
     }
-    // Les rôles pilotés par le serveur ne sont JAMAIS un choix : leur prompt est
-    // réécrit à chaque boot, les proposer promet une personnalisation qui
-    // s'effacera. Filtré ici pour toutes les listes, plutôt que par un paramètre
-    // qu'un futur appelant oublierait — c'est ce qui était arrivé au sélecteur
-    // du menu d'onglet. L'agent qui TOURNE sous un tel rôle est annoncé à part
-    // (voir openProfileSwitcher), sinon la grille mentirait sur ce qui tourne.
+    // Server-driven roles are NEVER a choice: their prompt is rewritten at every
+    // boot, so offering them promises a customisation that will be erased.
+    // Filtered here for every list, rather than through a parameter a future
+    // caller would forget — which is exactly what happened to the tab menu's
+    // picker. An agent RUNNING under such a role is announced separately (see
+    // openProfileSwitcher), otherwise the grid would lie about what is running.
     const list = profileCache.filter((p) => p && !managedProfile(p.name));
-    // Zéro profil : on montre la porte d'entrée plutôt qu'un « (none) » muet.
-    // Pas de role="radio" → ignorée par la sélection et par les flèches.
+    // Zero profiles: show the way in rather than a mute "(none)".
+    // No role="radio" → ignored by the selection and by the arrow keys.
     if (!failed && !list.length) {
       const b = document.createElement("button");
       b.type = "button";
@@ -5351,7 +5330,7 @@
     markProfileSelection(container, selected);
   }
 
-  /** Une carte = un <button role="radio">. p === null → la carte « No profile ». */
+  /** One card = one <button role="radio">. p === null → the "No profile" card. */
   function profileCardEl(p, onPick) {
     const card = document.createElement("button");
     card.type = "button";
@@ -5363,8 +5342,8 @@
     title.textContent = p ? p.name : "∅ No profile";
     const blurb = document.createElement("div");
     blurb.className = "pc-blurb";
-    // Garde alignée sur window.extractLiveText : si le module ESM n'est pas
-    // encore là, on dégrade en carte sans blurb plutôt que de tout perdre.
+    // Guard aligned with window.extractLiveText: when the ESM module is not there
+    // yet, degrade to a card with no blurb rather than lose everything.
     blurb.textContent = p ? (window.profileBlurb ? window.profileBlurb(p) : "") : "plain Claude";
     card.append(title, blurb);
     if (p) {
@@ -5373,19 +5352,19 @@
       for (const b of window.profileBadges(p)) {
         const s = document.createElement("span");
         s.className = "pc-badge";
-        // Chaque badge = icône + libellé, avec une explication au survol (title).
+        // Each badge = icon + label, with an explanation on hover (title).
         s.textContent = (b.icon ? b.icon + " " : "") + b.label;
         if (b.title) s.title = b.title;
         badges.appendChild(s);
       }
       card.appendChild(badges);
-      // Raccourci : éditer CE profil sans passer par la barre du haut.
+      // Shortcut: edit THIS profile without going through the top bar.
       const pen = document.createElement("span");
       pen.className = "pc-edit";
       pen.textContent = "✎";
       pen.title = "Edit " + p.name;
       pen.addEventListener("click", (e) => {
-        e.stopPropagation();          // éditer, pas sélectionner la carte
+        e.stopPropagation();          // edit, do not select the card
         openProfilesPanel(p);
       });
       card.appendChild(pen);
@@ -5399,8 +5378,8 @@
     selectedProfile = name || "";
     if (byUser) profileTouched = true;
     syncProfileSelection();
-    // Le nom par défaut DÉRIVE du profil : changer de carte doit le reproposer,
-    // sinon on lance un « Shadok-dev » qui tourne en fait sur Shadok-Support.
+    // The default name DERIVES from the profile: switching card must re-propose
+    // it, or you launch a "Shadok-dev" actually running on Shadok-Support.
     refreshDefaultName();
   }
 
@@ -5410,22 +5389,22 @@
     selectedProfile = markProfileSelection(grid, selectedProfile);
   }
 
-  /** Reflète la sélection sur les cartes d'un conteneur. Un seul tabindex=0 :
-   *  c'est la convention radiogroup (Tab entre, flèches naviguent). Renvoie le
-   *  nom réellement retenu — "" si le profil visé n'existe plus. */
+  /** Reflects the selection on a container's cards. A single tabindex=0: that is
+   *  the radiogroup convention (Tab enters, arrows navigate). Returns the name
+   *  actually kept — "" when the intended profile no longer exists. */
   function markProfileSelection(container, selected) {
     const cards = [...container.querySelectorAll('.profile-card[role="radio"]')];
-    // `null` = ne rien cocher, délibérément. Un agent qui tourne sous un rôle
-    // managé n'a pas de carte : retomber sur "" cocherait « No profile » et la
-    // grille affirmerait qu'il tourne sans profil. Une chaîne, elle, garde le
-    // repli sur « No profile » — c'est le défaut légitime de la box.
+    // `null` = tick nothing, deliberately. An agent running under a managed role
+    // has no card: falling back to "" would tick "No profile" and the grid would
+    // assert it runs with none. A string, on the other hand, keeps the fallback
+    // to "No profile" — the box's legitimate default.
     if (selected === null) {
       for (const c of cards) {
         c.classList.remove("selected");
         c.setAttribute("aria-checked", "false");
         c.tabIndex = -1;
       }
-      if (cards.length) cards[0].tabIndex = 0;   // le groupe reste atteignable au clavier
+      if (cards.length) cards[0].tabIndex = 0;   // the group stays keyboard-reachable
       return null;
     }
     let on = selected || "";
@@ -5439,12 +5418,12 @@
     return on;
   }
 
-  let profileTab = null;   // onglet pour lequel la mémoire a déjà été appliquée
+  let profileTab = null;   // tab for which the memory has already been applied
 
-  /** Présélectionne le dernier profil utilisé DANS CE DOSSIER (à défaut, le
-   *  dernier utilisé tout court) : le cas courant devient un clic + Start.
-   *  Une clé vide est une valeur légitime — « No profile » choisi exprès — d'où
-   *  le test sur null et non sur la vérité de la chaîne. */
+  /** Preselects the last profile used IN THIS DIRECTORY (failing that, the last
+   *  used at all): the common case becomes one click + Start. An empty key is a
+   *  legitimate value — "No profile" chosen on purpose — hence the test on null
+   *  and not on the string's truthiness. */
   function applyRememberedProfile() {
     const cwd = $("cwdInput").value.trim();
     const perDir = cwd ? localStorage.getItem("cp.profile:" + cwd) : null;
@@ -5452,31 +5431,31 @@
     selectProfile(remembered);   // syncProfileSelection retombe sur "" s'il n'existe plus
   }
 
-  // ── Nom par défaut d'un nouvel agent ─────────────────────────────────────
-  let nameTouched = false;   // l'utilisateur a tapé le sien → on n'écrase plus
+  // ── Default name of a new agent ──────────────────────────────────────────
+  let nameTouched = false;   // the user typed their own → stop overwriting
 
-  /** Le défaut courant, d'après le profil sélectionné et le dossier saisi. */
+  /** The current default, from the selected profile and the typed directory. */
   function defaultAgentNameNow() {
-    // Garde alignée sur les autres usages du pont ESM (cf. invariant 10) : si le
-    // module n'est pas encore là, un nom vide vaut mieux qu'une exception.
+    // Guard aligned with the other uses of the ESM bridge (see invariant 10): if
+    // the module is not there yet, an empty name beats an exception.
     return window.defaultAgentName ? window.defaultAgentName(selectedProfile, $("cwdInput").value) : "";
   }
 
-  /** Repose le défaut dans le champ, sauf si l'utilisateur l'a déjà écrit. */
+  /** Puts the default back in the field, unless the user already wrote one. */
   function refreshDefaultName() {
     if (nameTouched) return;
     const el = $("nameInput");
     if (el) el.value = defaultAgentNameNow();
   }
 
-  /** Flèches = déplacer la sélection (convention radiogroup). Espace/Entrée
-   *  sont déjà le clic natif du <button>. */
+  /** Arrows = move the selection (radiogroup convention). Space/Enter are
+   *  already the <button>'s native click. */
   function onProfileKey(e, onPick) {
     const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
     if (!dir) return;
     e.preventDefault();
-    // Les voisines viennent du conteneur de la carte, pas d'un id en dur : la
-    // même logique sert la box de création et le sélecteur du menu d'onglet.
+    // The neighbours come from the card's container, not from a hardcoded id:
+    // the same logic serves the creation box and the tab menu's picker.
     const cards = [...e.currentTarget.parentElement.querySelectorAll('.profile-card[role="radio"]')];
     const i = cards.indexOf(e.currentTarget);
     const next = cards[(i + dir + cards.length) % cards.length];
@@ -5486,21 +5465,21 @@
   function renderProfilesList() {
     const ul = $("profilesList");
     ul.innerHTML = "";
-    // Masqués ici aussi : leur prompt est repris du dépôt à chaque boot, donc
-    // « edit » y perdrait la saisie sans un mot, et « delete » ne tiendrait pas
-    // le redémarrage.
+    // Hidden here too: their prompt is taken from the repo at every boot, so
+    // "edit" would lose the input without a word, and "delete" would not survive
+    // the restart.
     const listed = profileCache.filter((p) => p && !managedProfile(p.name));
     if (!listed.length) ul.innerHTML = '<li><span style="opacity:.6">no profiles yet</span></li>';
     for (const p of listed) {
       const li = document.createElement("li");
       const meta = document.createElement("div");
-      // Nom et modèle en textContent : un profil peut être créé par un agent
-      // (PUT /profiles), donc son nom n'est pas de la donnée de confiance.
+      // Name and model as textContent: a profile can be created by an agent
+      // (PUT /profiles), so its name is not trusted data.
       const strong = document.createElement("b");
       strong.textContent = p.name;
-      // Badge d'accès SYMÉTRIQUE (🔒 read-only / ✏️ full access) + explication au
-      // survol — même source que les cartes New agent (profileBadges, testé), pour
-      // qu'un profil non bridé ne soit plus « sans icône » (l'ambiguïté du cadenas).
+      // SYMMETRIC access badge (🔒 read-only / ✏️ full access) + explanation on
+      // hover — same source as the New agent cards (profileBadges, tested), so an
+      // unrestricted profile is no longer "icon-less" (the padlock ambiguity).
       const access = (window.profileBadges ? window.profileBadges(p) : [])[0];
       const guard = document.createElement("span");
       if (access && access.icon) {
@@ -5527,14 +5506,14 @@
     $("profRole").value = p.systemPrompt || "";
     $("profDeny").value = (p.deny || []).join("\n");
     $("profModel").value = p.model || "";
-    syncReadonlyBox();   // la case suit le deny réel, elle n'est plus figée à false
+    syncReadonlyBox();   // the box follows the real deny, no longer stuck at false
     editSecretRefs = [...(p.secrets || [])];
     renderProfSecrets();
   }
   function clearProfileForm() {
     $("profEditTitle").textContent = "New profile";
     $("profName").value = ""; $("profRole").value = ""; $("profDeny").value = ""; $("profModel").value = "";
-    $("profReadonly").checked = false; editSecretRefs = [];   // zone deny vidée juste au-dessus
+    $("profReadonly").checked = false; editSecretRefs = [];   // deny area cleared just above
     renderProfSecrets();
   }
   // The profile's secrets are checkboxes over the vault: pick which named
@@ -5556,23 +5535,23 @@
     }
   }
   const READONLY_DENY = ["Bash(git commit:*)","Bash(git push:*)","Bash(git add:*)","Bash(git reset:*)","Bash(git rebase:*)","Bash(git merge:*)","Bash(git checkout:*)"];
-  /** Les motifs saisis, un par ligne, sans les vides. */
+  /** The typed patterns, one per line, without the empty ones. */
   function denyLines() {
     return $("profDeny").value.split("\n").map((x) => x.trim()).filter(Boolean);
   }
-  /** La case reflète la zone de texte, qui reste la source de vérité. */
+  /** The box reflects the textarea, which stays the source of truth. */
   function syncReadonlyBox() {
     $("profReadonly").checked = window.hasReadonlyPreset
       ? window.hasReadonlyPreset(denyLines(), READONLY_DENY)
       : false;
   }
-  // Interrupteur à DOUBLE SENS. L'ancien ne réagissait qu'au cochage et écrasait
-  // toute la zone : décocher ne faisait rien, et un motif perso disparaissait.
+  // A TWO-WAY switch. The old one only reacted to ticking and overwrote the whole
+  // area: unticking did nothing, and a custom pattern vanished.
   $("profReadonly").addEventListener("change", (e) => {
     $("profDeny").value = window.applyReadonlyPreset(denyLines(), e.target.checked, READONLY_DENY).join("\n");
   });
-  // Éditer les motifs à la main doit remettre la case d'accord avec eux, sinon
-  // elle se remet à mentir dès la première ligne tapée.
+  // Editing the patterns by hand must bring the box back in agreement with them,
+  // or it starts lying again on the first line typed.
   $("profDeny").addEventListener("input", syncReadonlyBox);
   $("profSave").addEventListener("click", async () => {
     const name = $("profName").value.trim(); if (!name) return alert("Name required.");
@@ -5587,16 +5566,16 @@
     await loadProfilesInto(); renderProfilesList(); clearProfileForm();
   });
   $("profReset").addEventListener("click", clearProfileForm);
-  /** Ouvre le panneau Profiles, prérempli sur `p` si on vient du crayon d'une carte. */
+  /** Opens the Profiles panel, prefilled on `p` when coming from a card's pencil. */
   async function openProfilesPanel(p) {
     await loadProfilesInto();
     renderProfilesList();
     if (p) fillProfileForm(p); else clearProfileForm();
     $("profilesOverlay").hidden = false;
   }
-  /** Fermer repeint la grille : un profil créé apparaît tout de suite, et la
-   *  sélection retombe sur « No profile » si le profil choisi a été supprimé
-   *  (syncProfileSelection s'en charge). */
+  /** Closing repaints the grid: a created profile appears at once, and the
+   *  selection falls back to "No profile" when the chosen one was deleted
+   *  (syncProfileSelection takes care of that). */
   async function closeProfilesPanel() {
     $("profilesOverlay").hidden = true;
     await loadProfilesInto();
@@ -5605,10 +5584,10 @@
   $("editProfilesLink").addEventListener("click", () => openProfilesPanel());
   $("profilesClose").addEventListener("click", closeProfilesPanel);
   $("profilesOverlay").addEventListener("click", (e) => { if (e.target === $("profilesOverlay")) closeProfilesPanel(); });
-  // Le pont ESM (window.profileBlurb / profileBadges) s'exécute APRÈS le
-  // parsing, alors que ce script-ci tourne pendant : peindre tout de suite
-  // lèverait sur la 1re carte et laisserait la grille vide, en silence
-  // (promesse non attendue). DOMContentLoaded arrive après le module.
+  // The ESM bridge (window.profileBlurb / profileBadges) runs AFTER parsing,
+  // while this script runs during it: painting right away would throw on the 1st
+  // card and leave the grid empty, silently (an unawaited promise).
+  // DOMContentLoaded lands after the module.
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", () => loadProfilesInto());
   } else {
@@ -5856,15 +5835,15 @@
 
   newTabBtn.addEventListener("click", openSetup);
 
-  // Un clic démarre un agent sur le code source de shadok-ai lui-même : le
-  // dossier, le worktree et le rôle sont tous déjà décidés, donc un formulaire
-  // ne ferait que demander d'approuver des choix qu'on ne peut pas juger.
+  // One click starts an agent on shadok-ai's own source: the directory, the
+  // worktree and the role are all decided already, so a form would only ask you
+  // to approve choices you cannot judge.
   //
-  // Le canal tweak est UNIQUE et vit dans son emplacement en bas de colonne : le
-  // CTA n'est visible que tant qu'il n'existe pas. Une fois lancé, son onglet
-  // prend la place du CTA — un `.tab` ordinaire simplement déplacé là, donc il
-  // hérite sans code en double des états, du menu contextuel, du rattachement
-  // Telegram, du renommage et de la fermeture.
+  // The tweak channel is UNIQUE and lives in its slot at the bottom of the
+  // column: the CTA is only visible while it does not exist. Once launched, its
+  // tab takes the CTA's place — an ordinary `.tab` simply moved there, so it
+  // inherits states, context menu, Telegram attachment, renaming and closing with
+  // no duplicated code.
   const tweakSlot = $("tweakSlot");
   const tweakCta = $("tweakCta");
   const tweakTitle = tweakCta.querySelector(".tweak-title");
@@ -5881,30 +5860,30 @@
       tweakTitle.textContent = "⚠ " + reason;
       tweakSub.textContent = "click to retry";
     } else {
-      // Littéral fixe de ce fichier, jamais du texte écrit par un agent.
+      // A fixed literal of this file, never text written by an agent.
       tweakTitle.innerHTML = '🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span>';
       tweakSub.textContent = "change the cockpit itself";
     }
   }
 
-  /** L'onglet du canal tweak, s'il existe. */
+  /** The tweak channel's tab, when it exists. */
   function tweakTab() { return tabs.find((t) => t.isTweak); }
 
-  /** Déplace l'onglet dans l'emplacement du bas et masque le CTA : à partir de
-   *  là, c'est LUI qu'on voit et qu'on clique. `appendChild` déplace le nœud,
-   *  donc l'onglet quitte la liste de gauche sans être recréé. */
+  /** Moves the tab into the bottom slot and hides the CTA: from then on it is IT
+   *  that is seen and clicked. `appendChild` moves the node, so the tab leaves
+   *  the left-hand list without being recreated. */
   function markTweakTab(t) {
     t.isTweak = true;
     t.btnEl.classList.add("tweak");
-    t.btnEl.draggable = false;       // il n'a pas à finir dans un groupe
+    t.btnEl.draggable = false;       // it has no business ending up in a group
     tweakSlot.appendChild(t.btnEl);
     tweakCta.hidden = true;
   }
 
   tweakCta.addEventListener("click", async () => {
     if (tweakBusy) return;
-    // Ceinture : le CTA est masqué dès qu'un canal tweak existe, mais s'il
-    // réapparaissait on active l'existant plutôt que d'en ouvrir un second.
+    // Belt and braces: the CTA is hidden as soon as a tweak channel exists, but
+    // should it reappear we activate the existing one rather than open a second.
     const already = tweakTab();
     if (already) return activate(already);
     tweakBusy = true;
@@ -5920,7 +5899,7 @@
     if (!data || !data.cwd) return setTweakCta("failed", (data && data.error) || "failed");
     setTweakCta("idle");
     const t = createTab();
-    t.customName = true;             // launchTab ne nomme qu'un onglet qui n'a pas de nom
+    t.customName = true;             // launchTab only names a tab that has none
     t.nameEl.textContent = "tweak";
     t.profile = "Shadok-Tweak";
     markTweakTab(t);
@@ -6066,14 +6045,14 @@
         // Know the session id from the start, so a slow or failed reattach never
         // drops the channel from a persist (which eroded the list to one).
         t.sessionId = s.sessionId;
-        // Le brouillon revient DÈS la création de l'onglet, sans attendre le
-        // `ready` : après une mise à jour le serveur redémarre, la reconnexion
-        // prend plusieurs secondes, et l'utilisateur retrouvait un champ vide —
-        // de quoi croire que son message était perdu et le retaper.
+        // The draft comes back AS SOON AS the tab is created, without waiting
+        // for `ready`: after an update the server restarts, reconnecting takes
+        // several seconds, and the user found an empty field — enough to believe
+        // their message was lost and retype it.
         t.draft = savedDrafts[s.sessionId] || "";
         if (s.branch) t.branch = s.branch;
         t.profile = s.profile || null;
-        // Au rechargement, le canal tweak retrouve son emplacement du bas.
+        // On reload, the tweak channel finds its bottom slot again.
         if (t.profile === "Shadok-Tweak" && !tweakTab()) markTweakTab(t);
         setCrons(t, s.crons);
         if (s.muted) setMuted(t, true, false); // restoring: don't push back
@@ -6090,7 +6069,7 @@
           msg: { cwd: s.cwd, resume: s.sessionId, branch: s.branch || undefined, repo: s.repo || serverCwd || undefined },
         });
       }
-      // Revenir sur le canal actif d'avant le reload (fallback : le premier).
+      // Come back to the channel active before the reload (fallback: the first).
       const savedActive = localStorage.getItem("cp.activeSession");
       let targetIdx = pending.findIndex((p) => p.t.sessionId === savedActive);
       if (targetIdx < 0) targetIdx = 0;
@@ -6109,8 +6088,8 @@
         if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
       }
     } else {
-      // Rien à restaurer : l'invitation. Le formulaire ne s'ouvre pas de force —
-      // on peut aussi arriver là pour regarder, ou lancer depuis Telegram.
+      // Nothing to restore: the invitation. The form does not open by force —
+      // you may also land here to watch, or to launch from Telegram.
       refreshChrome();
       // Nothing to restore: enable persistence for user actions, but do NOT
       // push a blank list (a failed /channels fetch must never wipe the store).
