@@ -6,25 +6,35 @@
 // .jsonl transcript only writes a text block once FINISHED; the screen shows it
 // as it is typed → the only token-granular source.
 //
-// An assistant text block = a "⏺ <prose>" line (U+23FA + space) at column 0,
-// followed by continuations indented by 2 spaces. A tool_use renders as
-// "⏺ Name(args)"; a tool result renders as "  ⎿ …".
+// An assistant text block = a "<bullet> <prose>" line at column 0, followed by
+// continuations indented by 2 spaces. A tool_use renders as
+// "<bullet> Name(args)"; a tool result renders as "  ⎿ …".
+//
+// TWO bullets, and both are load-bearing: Claude Code used "⏺" (U+23FA) and
+// switched to "●" (U+25CF) in 2.1. Matching only one makes `extractLiveText`
+// find nothing at all — the web live preview goes dark with no error anywhere,
+// on every session running that version. Support for "●" was added once,
+// removed by a translation pass that also deleted its tests (so CI stayed
+// green), and restored here. Do not "simplify" this back to a single marker.
 
-const MARKER = "⏺ "; // "⏺ "
+const MARKERS = ["⏺ ", "● "];
+const markerOf = (line) => MARKERS.find((m) => line.startsWith(m)) ?? null;
 
 /** The last visible assistant text block, unwrapped; "" otherwise. */
 export function extractLiveText(screen) {
   if (typeof screen !== "string" || !screen) return "";
   const lines = screen.split("\n");
 
-  // Find the last "⏺ " block marker at column 0.
+  // Find the last block marker at column 0, whichever bullet it uses.
   let start = -1;
+  let marker = null;
   for (let i = lines.length - 1; i >= 0; i--) {
-    if (lines[i].startsWith(MARKER)) { start = i; break; }
+    const m = markerOf(lines[i]);
+    if (m) { start = i; marker = m; break; }
   }
   if (start < 0) return "";
 
-  const head = lines[start].slice(MARKER.length).trim();
+  const head = lines[start].slice(marker.length).trim();
   // Exclude TOOL lines (not assistant text):
   //  - tool_use    : "⏺ Name(...)" — an identifier glued to a parenthesis;
   //  - running tool: "⏺ Running 1 shell command" / "⏺ Ran 1 shell command".
