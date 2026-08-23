@@ -1,118 +1,114 @@
-# Skill `shadok-ai-agents` — design
+# The `shadok-ai-agents` skill — design
 
-Date : 2026-07-20
-Statut : validé (brainstorming avec l'utilisateur)
+Date: 2026-07-20
+Status: agreed (brainstorming with the user)
 
-## Objectif
+## Goal
 
-Permettre à Claude Code de créer et piloter des agents shadok-ai via le
-serveur web (protocole WebSocket documenté dans le README) : lancer un agent
-dans un worktree git isolé, lui envoyer des prompts, lire ses réponses,
-répondre à ses dialogs interactifs, récupérer son diff, le stopper. Les
-sessions restent visibles et pilotables en parallèle dans l'UI web
-(sessions partagées côté serveur).
+Let Claude Code create and drive shadok-ai agents through the web server (the
+WebSocket protocol documented in the README): launch an agent in an isolated git
+worktree, send it prompts, read its answers, answer its interactive dialogs, get
+its diff, stop it. The sessions stay visible and drivable in parallel in the web
+UI (sessions are shared server-side).
 
-## Décisions actées
+## Decisions taken
 
-- **Interface** : serveur web / WebSocket (`ws://localhost:3789/ws`) + les
-  endpoints HTTP (`/sessions`, `/diff`). Pas de pilotage direct par CLI ni
-  par la librairie.
-- **Périmètre** : complet — spawn (avec ou sans worktree), prompt/réponse,
-  dialogs (choose/toggle/confirm/freetext), rattachement à une session
-  existante, diff, stop, screen (debug). Pas d'orchestration multi-agents
-  intégrée (les agents parallèles se pilotent en lançant plusieurs
-  commandes).
-- **Emplacement** : skill de projet, versionnée dans ce repo sous
+- **Interface**: the web server / WebSocket (`ws://localhost:3789/ws`) + the HTTP
+  endpoints (`/sessions`, `/diff`). No direct driving through the CLI or the
+  library.
+- **Coverage**: complete — spawn (with or without a worktree), prompt/answer,
+  dialogs (choose/toggle/confirm/freetext), attaching to an existing session,
+  diff, stop, screen (debug). No built-in multi-agent orchestration (parallel
+  agents are driven by issuing several commands).
+- **Location**: a project skill, versioned in this repo under
   `.claude/skills/shadok-ai-agents/`.
-- **Serveur absent** : démarrage automatique en arrière-plan (build si
-  nécessaire), attente du port, puis poursuite.
-- **Architecture** : approche « thin client » — un helper `pilotctl.mjs`
-  livré avec la skill encapsule le protocole en commandes one-shot à sortie
-  JSON. Pas de daemon persistant : le serveur shadok-ai est la source de
-  vérité (état des sessions, resumabilité), chaque commande se connecte,
-  agit, se détache.
+- **Server absent**: automatic background start (building if necessary), waiting
+  for the port, then carrying on.
+- **Architecture**: a "thin client" approach — a `pilotctl.mjs` helper shipped
+  with the skill wraps the protocol in one-shot commands with JSON output. No
+  persistent daemon: the shadok-ai server is the source of truth (session state,
+  resumability), and each command connects, acts, detaches.
 
 ## Structure
 
 ```
 .claude/skills/shadok-ai-agents/
-  SKILL.md        # instructions : quand utiliser, commandes, flux types, pièges
-  pilotctl.mjs    # thin client WS/HTTP ; seule dépendance : "ws" (déjà dans le repo)
+  SKILL.md        # instructions: when to use, commands, typical flows, traps
+  pilotctl.mjs    # thin WS/HTTP client; single dependency: "ws" (already in the repo)
 ```
 
-`pilotctl.mjs` est un module ESM situé dans le repo : `import WebSocket from
-"ws"` se résout en remontant vers le `node_modules` du repo (Node 20 n'a pas
-de client WebSocket global stable). Le script s'exécute avec
-`node .claude/skills/shadok-ai-agents/pilotctl.mjs <commande> …`.
+`pilotctl.mjs` is an ESM module inside the repo: `import WebSocket from "ws"`
+resolves by walking up to the repo's `node_modules` (Node 20 has no stable global
+WebSocket client). The script runs with
+`node .claude/skills/shadok-ai-agents/pilotctl.mjs <command> …`.
 
-## Commandes de `pilotctl.mjs`
+## `pilotctl.mjs`'s commands
 
-Sortie : un objet JSON sur stdout ; exit code 0 en succès, ≠ 0 en erreur
-(avec `{error: …}` sur stdout).
+Output: one JSON object on stdout; exit code 0 on success, ≠ 0 on error (with
+`{error: …}` on stdout).
 
-| Commande | Effet |
+| Command | Effect |
 |---|---|
-| `spawn [--cwd DIR] [--worktree] [--resume ID] [--continue]` | ouvre un WS, envoie `start`, attend `ready`, imprime `{sessionId, cwd, branch}` puis se détache |
-| `prompt <id> "texte" [--timeout s]` | se rattache (`start` + `resume: id`), envoie `prompt`, reste connecté jusqu'à `answer` **ou** `dialog`, imprime `{status:"answer", text}` ou `{status:"dialog", question, options, multi}` |
-| `dialog <id>` | se rattache et imprime le dialog en attente s'il y en a un, sinon `{status:"idle"}` |
-| `choose <id> <n>` | single-select : choisit et valide l'option n, attend la suite (`answer` ou nouveau `dialog`) |
-| `toggle <id> <n>` | multi-select : bascule l'option n, imprime l'état re-lu du dialog |
-| `confirm <id>` | multi-select : soumet la sélection, attend la suite |
-| `freetext <id> <n> "texte"` | option « Type something » : envoie la réponse libre, attend la suite |
+| `spawn [--cwd DIR] [--worktree] [--resume ID] [--continue]` | opens a WS, sends `start`, waits for `ready`, prints `{sessionId, cwd, branch}` then detaches |
+| `prompt <id> "text" [--timeout s]` | reattaches (`start` + `resume: id`), sends `prompt`, stays connected until `answer` **or** `dialog`, prints `{status:"answer", text}` or `{status:"dialog", question, options, multi}` |
+| `dialog <id>` | reattaches and prints the pending dialog when there is one, else `{status:"idle"}` |
+| `choose <id> <n>` | single-select: picks and commits option n, waits for what follows (`answer` or a new `dialog`) |
+| `toggle <id> <n>` | multi-select: toggles option n, prints the dialog's re-read state |
+| `confirm <id>` | multi-select: submits the selection, waits for what follows |
+| `freetext <id> <n> "text"` | the "Type something" option: sends the free answer, waits for what follows |
 | `list [--cwd DIR]` | GET `/sessions` |
-| `diff <id>` | GET `/diff?session=…` → `{status, diff, branch}` du worktree |
-| `stop <id>` | envoie `stop` (termine la session pour tous les clients) |
-| `screen <id>` | imprime le screen TUI courant (debug / engine room) |
+| `diff <id>` | GET `/diff?session=…` → the worktree's `{status, diff, branch}` |
+| `stop <id>` | sends `stop` (ends the session for every client) |
+| `screen <id>` | prints the current TUI screen (debug / engine room) |
 
-### Démarrage automatique du serveur
+### Automatic server start
 
-Chaque commande commence par un health-check HTTP sur
-`http://localhost:${SHADOK_PORT ?? 3789}`. Si le serveur ne répond
-pas :
+Every command begins with an HTTP health check on
+`http://localhost:${SHADOK_PORT ?? 3789}`. If the server does not answer:
 
-1. `npm run build` dans le repo si `dist/server.js` est absent ;
-2. lancement détaché de `node dist/server.js` (stdout/stderr vers un log
-   sous `~/.shadok-ai/`) ;
-3. attente active du port (timeout ~15 s), puis poursuite de la commande ;
-4. échec persistant → `{error}` explicite, exit ≠ 0.
+1. `npm run build` in the repo when `dist/server.js` is missing;
+2. a detached launch of `node dist/server.js` (stdout/stderr into a log under
+   `~/.shadok-ai/`);
+3. actively waiting for the port (~15 s timeout), then carrying on with the
+   command;
+4. a persistent failure → an explicit `{error}`, exit ≠ 0.
 
-Le serveur lancé reste up ensuite (il sert aussi l'UI web).
+The server thus launched stays up afterwards (it also serves the web UI).
 
-## Contenu de SKILL.md
+## SKILL.md's content
 
-- **Quand utiliser** : déléguer une tâche à un agent Claude isolé dans un
-  worktree, piloter/inspecter des sessions shadok-ai existantes.
-- **Flux type « créer un agent »** : `spawn --worktree --cwd <repo>` →
-  `prompt <id> "<tâche>"` lancé via Bash en `run_in_background` (les tours
-  peuvent durer plusieurs minutes) → à la notification, lire le JSON ; si
-  `dialog`, répondre (`choose`/`toggle`+`confirm`/`freetext`) ; en fin de
-  tâche, `diff <id>` pour présenter les changements à l'utilisateur.
-- **Garde-fous** :
-  - ne jamais `stop` une session que la conversation courante n'a pas
-    créée (elle appartient peut-être à l'utilisateur dans l'UI web) ;
-  - la branche `shadok-ai/<tag>` et son worktree ne sont jamais mergés ni
-    supprimés automatiquement — c'est l'utilisateur qui merge ;
-  - chaque agent consomme le quota Claude comme une session normale : ne
-    pas multiplier les agents sans demande explicite ;
-  - un `timeout` de `prompt` n'interrompt pas le tour côté serveur — se
-    rattacher plus tard plutôt que relancer le prompt.
+- **When to use it**: delegating a task to an isolated Claude agent in a
+  worktree, driving/inspecting existing shadok-ai sessions.
+- **The typical "create an agent" flow**: `spawn --worktree --cwd <repo>` →
+  `prompt <id> "<task>"` launched through Bash with `run_in_background` (turns can
+  take several minutes) → on the notification, read the JSON; if it is a `dialog`,
+  answer (`choose`/`toggle`+`confirm`/`freetext`); at the end of the task,
+  `diff <id>` to present the changes to the user.
+- **Guardrails**:
+  - never `stop` a session the current conversation did not create (it may belong
+    to the user in the web UI);
+  - the `shadok-ai/<tag>` branch and its worktree are never merged or deleted
+    automatically — the user is the one who merges;
+  - each agent consumes the Claude quota like an ordinary session: do not
+    multiply agents without an explicit request;
+  - a `prompt` timeout does not interrupt the turn server-side — reattach later
+    rather than resending the prompt.
 
-## Gestion des erreurs
+## Error handling
 
-- `prompt`/`choose`/… en timeout → `{status:"timeout", screen}` (le screen
-  courant aide au diagnostic), détachement propre, session intacte.
-- Session inconnue → le serveur répond `error` ; pilotctl imprime
-  `{error}` et sort ≠ 0.
-- `exited`/`stopped` inattendus pendant l'attente → `{status:"exited",
-  code}`.
-- Serveur injoignable après tentative d'auto-start → `{error}` explicite.
+- `prompt`/`choose`/… timing out → `{status:"timeout", screen}` (the current
+  screen helps the diagnosis), a clean detach, the session intact.
+- An unknown session → the server answers `error`; pilotctl prints `{error}` and
+  exits ≠ 0.
+- An unexpected `exited`/`stopped` while waiting → `{status:"exited", code}`.
+- An unreachable server after the auto-start attempt → an explicit `{error}`.
 
-## Test de validation (manuel, de bout en bout)
+## Validation test (manual, end to end)
 
-1. `spawn --worktree` sur un repo jouet → `sessionId` + `branch` retournés,
-   worktree créé sous `~/.shadok-ai/worktrees/` ;
-2. `prompt` simple (« crée un fichier hello.txt ») → `answer` reçu (en
-   répondant aux éventuels dialogs de permission via `choose`) ;
-3. `diff` → le fichier apparaît dans le diff ;
-4. `stop` → session terminée, le worktree sale est **conservé** ;
-5. la session est visible dans l'UI web pendant les étapes 1–3.
+1. `spawn --worktree` on a toy repo → a `sessionId` + `branch` returned, a
+   worktree created under `~/.shadok-ai/worktrees/`;
+2. a simple `prompt` ("create a hello.txt file") → an `answer` received
+   (answering any permission dialogs through `choose`);
+3. `diff` → the file appears in the diff;
+4. `stop` → the session is over, the dirty worktree is **kept**;
+5. the session is visible in the web UI during steps 1–3.
