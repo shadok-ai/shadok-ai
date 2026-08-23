@@ -18,7 +18,7 @@ process.env.SHADOK_NO_AUTOSTART = "1";
 delete process.env.SHADOK_SESSION_ID;
 const { run, readState, writeState } = await import("../pilotctl.mjs");
 
-test("spawn démarre une session et écrit l'état local", async () => {
+test("spawn starts a session and writes the local state", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "abc-123", cwd: "/tmp/x", branch: "shadok-ai/abc123" }],
   });
@@ -37,15 +37,15 @@ test("spawn démarre une session et écrit l'état local", async () => {
   }
 });
 
-test("spawn --profile transmet le profil au serveur", async () => {
+test("spawn --profile passes the profile to the server", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "prof-1", cwd: "/tmp/x", branch: "shadok-ai/prof1" }],
   });
   process.env.SHADOK_PORT = String(mock.port);
   try {
     await run(["spawn", "--cwd", "/tmp/x", "--worktree", "--profile", "Shadok-dev"]);
-    // Sans ça, un agent délégué démarre en Claude nu : pas de rôle, pas de
-    // garde-fou, pas de secrets — le profil est le cœur de la délégation.
+    // Without it a delegated agent starts as bare Claude: no role, no guardrail,
+    // no secrets — the profile is the heart of delegation.
     assert.deepEqual(mock.received[0], {
       type: "start",
       cwd: "/tmp/x",
@@ -57,7 +57,7 @@ test("spawn --profile transmet le profil au serveur", async () => {
   }
 });
 
-test("spawn --resume conserve branch/baseSha existants quand le serveur n'en renvoie pas", async () => {
+test("spawn --resume keeps the existing branch/baseSha when the server sends none", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "abc-123", cwd: "/tmp/x" }],
   });
@@ -79,7 +79,7 @@ test("spawn --resume conserve branch/baseSha existants quand le serveur n'en ren
   }
 });
 
-test("spawn propage l'erreur du serveur", async () => {
+test("spawn propagates the server's error", async () => {
   const mock = await startMockServer({
     start: [{ type: "error", message: "worktree creation failed: boom" }],
   });

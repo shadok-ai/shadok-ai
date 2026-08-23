@@ -240,8 +240,9 @@ export function buildStartMsg(flags, env = process.env) {
   if (flags.worktree) startMsg.worktree = true;
   if (flags.resume) startMsg.resume = flags.resume;
   if (flags.continue) startMsg.continue = true;
-  // Sans profil, l'agent délégué démarre en Claude nu : ni rôle, ni garde-fou,
-  // ni secrets. Le serveur ne l'applique qu'aux sessions neuves (pas de resume).
+  // With no profile the delegated agent starts as bare Claude: no role, no
+  // guardrail, no secrets. The server only applies it to new sessions (not on a
+  // resume).
   if (flags.profile) startMsg.profile = flags.profile;
   // "none" is the escape hatch: spawn something deliberately unlinked.
   if (flags.parent === "none") startMsg.parent = null;

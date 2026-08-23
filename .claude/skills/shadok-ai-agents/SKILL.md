@@ -1,140 +1,137 @@
 ---
 name: shadok-ai-agents
-description: Créer et piloter des agents Claude Code isolés via le serveur shadok-ai (worktrees git, prompts, dialogs, diff). Utiliser quand l'utilisateur veut déléguer une tâche à un agent shadok-ai, lancer des agents en parallèle, ou inspecter/piloter des sessions shadok-ai existantes.
+description: Create and drive isolated Claude Code agents through the shadok-ai server (git worktrees, prompts, dialogs, diff). Use when the user wants to delegate a task to a shadok-ai agent, launch agents in parallel, or inspect/drive existing shadok-ai sessions.
 ---
 
-# Piloter des agents shadok-ai
+# Driving shadok-ai agents
 
-Toutes les opérations passent par le thin client livré avec cette skill :
+Every operation goes through the thin client shipped with this skill:
 
 ```bash
-node .claude/skills/shadok-ai-agents/pilotctl.mjs <commande> …
+node .claude/skills/shadok-ai-agents/pilotctl.mjs <command> …
 ```
 
-Chaque commande imprime UN objet JSON sur stdout (exit 1 + `{error}` en
-échec) et démarre automatiquement le serveur shadok-ai s'il ne tourne pas
-(port 3789, ou `$SHADOK_PORT`). Les sessions restent visibles dans
-l'UI web (http://localhost:3789) — l'utilisateur peut suivre et intervenir.
+Each command prints ONE JSON object on stdout (exit 1 + `{error}` on failure)
+and automatically starts the shadok-ai server when it is not running (port
+3789, or `$SHADOK_PORT`). Sessions stay visible in the web UI
+(http://localhost:3789) — the user can follow along and step in.
 
-## Commandes
+## Commands
 
-| Commande | Effet |
+| Command | Effect |
 |---|---|
-| `spawn [--cwd DIR] [--worktree] [--profile NOM] [--resume ID] [--continue]` | crée un agent → `{sessionId, cwd, branch}`. `--worktree` isole l'agent dans un worktree git (`~/.shadok-ai/worktrees/`, branche `shadok-ai/<tag>`). `--profile` lui donne un rôle + ses garde-fous + ses secrets (voir ci-dessous) |
-| `prompt <id> "texte" [--timeout s]` | envoie un prompt, attend la fin du tour → `{status:"answer", text, tools}` ou `{status:"dialog", question, options, multi}` ou `{status:"timeout", screen}` ou `{status:"pace-blocked", reason}` |
-| `dialog <id>` | interroge l'état → `{status:"idle"}` ou le dialog en attente |
-| `choose <id> <n>` | dialog single-select : choisit et valide l'option n |
-| `toggle <id> <n>` puis `confirm <id>` | dialog multi-select : coche/décoche puis soumet |
-| `freetext <id> <n> "texte"` | option « Type something » : réponse libre |
-| `list [--cwd DIR]` | agents pilotés (état local + vivant/mort) et sessions résumables |
-| `diff <id>` | changements de l'agent (git status + diff vs la base du worktree) |
-| `stop <id>` | termine la session (pour TOUS ses clients) |
-| `screen <id>` | screen TUI brut (debug) |
-| `profile-prompt "<texte>" [--name NOM] [--readonly]` | réécrit le **prompt système** d'un profil : le tien par défaut ; n'importe lequel (et création avec `--name`) sous le profil de tête |
+| `spawn [--cwd DIR] [--worktree] [--profile NAME] [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`). `--profile` gives it a role + its guardrails + its secrets (see below) |
+| `prompt <id> "text" [--timeout s]` | sends a prompt, waits for the end of the turn → `{status:"answer", text, tools}` or `{status:"dialog", question, options, multi}` or `{status:"timeout", screen}` or `{status:"pace-blocked", reason}` |
+| `dialog <id>` | queries the state → `{status:"idle"}` or the pending dialog |
+| `choose <id> <n>` | single-select dialog: picks and commits option n |
+| `toggle <id> <n>` then `confirm <id>` | multi-select dialog: check/uncheck then submit |
+| `freetext <id> <n> "text"` | the "Type something" option: a free answer |
+| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions |
+| `diff <id>` | the agent's changes (git status + diff against the worktree's base) |
+| `stop <id>` | ends the session (for ALL its clients) |
+| `screen <id>` | raw TUI screen (debug) |
+| `profile-prompt "<text>" [--name NAME] [--readonly]` | rewrites a profile's **system prompt**: your own by default; any of them (and creation with `--name`) under the lead profile |
 
-## Choisir un profil (`--profile`)
+## Choosing a profile (`--profile`)
 
-Un profil est un rôle appliqué au démarrage : prompt système, garde-fous de
-permissions natifs (ex. écritures git bloquées), secrets injectés, modèle
-éventuel. **Sans `--profile`, l'agent démarre en Claude nu** — ni rôle, ni
-garde-fou, ni secrets.
+A profile is a role applied at startup: system prompt, native permission
+guardrails (e.g. git writes blocked), injected secrets, an optional model.
+**Without `--profile` the agent starts as bare Claude** — no role, no guardrail,
+no secrets.
 
-Les profils livrés : `Shadok-Boss` (lit tout, délègue, read-only),
-`Shadok-dev` (code, accès complet), `Shadok-Marketing` et `Shadok-Support`
-(read-only). `pilotctl.mjs list` ne les énumère pas — la liste vit dans le
-panneau Profiles de l'UI, ou via `GET /profiles`.
+The shipped profiles: `Shadok-Boss` (reads everything, delegates, read-only),
+`Shadok-dev` (code, full access), `Shadok-Marketing` and `Shadok-Support`
+(read-only). `pilotctl.mjs list` does not enumerate them — the list lives in the
+UI's Profiles panel, or behind `GET /profiles`.
 
-Le profil n'est appliqué qu'aux sessions **neuves** : avec `--resume` ou
-`--continue`, la session reprend celui qu'elle avait déjà.
+The profile is only applied to **new** sessions: with `--resume` or
+`--continue`, the session keeps the one it already had.
 
-## Faire évoluer ton propre rôle (`profile-prompt`)
+## Growing your own role (`profile-prompt`)
 
-Tu peux réécrire le **prompt système** de ton profil — pour y consigner ce que
-tu as appris sur ce dépôt, une convention à ne plus redécouvrir, un piège à
-éviter. Sous le profil de tête, tu peux réécrire n'importe quel prompt et
-**fabriquer** un rôle (`--name`, plus `--readonly` pour qu'il naisse avec les
-écritures git bloquées).
+You can rewrite your profile's **system prompt** — to record what you learned
+about this repo, a convention nobody should rediscover, a trap to avoid. Under
+the lead profile you can rewrite any prompt and **mint** a role (`--name`, plus
+`--readonly` so it is born with git writes blocked).
 
-Ce que tu ne peux **pas** toucher : `deny`, `allow`, `secrets`, `model`. Ce sont
-les garde-fous, ils appartiennent à l'humain et s'éditent depuis l'UI web — un
-agent read-only ne doit pas pouvoir s'accorder les écritures git, ni un rôle
-fabriqué s'attribuer les secrets du coffre. Ces champs sont ignorés ici, pas
-seulement refusés.
+What you **cannot** touch: `deny`, `allow`, `secrets`, `model`. Those are the
+guardrails, they belong to the human and are edited from the web UI — a
+read-only agent must not be able to grant itself git writes, nor a minted role
+hand itself the vault's secrets. These fields are ignored here, not merely
+refused.
 
-L'autorisation repose sur `$SHADOK_SESSION_KEY`, injectée dans ton env au
-démarrage — l'id de session ne conviendrait pas, `/live` le publie.
+Authorisation rests on `$SHADOK_SESSION_KEY`, injected into your env at startup
+— the session id would not do, `/live` publishes it.
 
-Le prompt est passé à `claude` **au spawn** : une modification prend effet au
-prochain redémarrage de l'agent, pas en cours de session.
+The prompt is passed to `claude` **at spawn**: a change takes effect at the
+agent's next restart, not mid-session.
 
 ```bash
 node .claude/skills/shadok-ai-agents/pilotctl.mjs profile-prompt "$(cat <<'TXT'
-… le nouveau prompt complet …
+… the complete new prompt …
 TXT
 )"
 ```
 
-Écris le prompt **entier** : il remplace l'ancien, il ne s'y ajoute pas.
+Write the **whole** prompt: it replaces the old one, it does not add to it.
 
-## Flux type : déléguer une tâche à un agent
+## Typical flow: delegating a task to an agent
 
-1. `spawn --worktree --profile <rôle> --cwd <repo>` → noter `sessionId` et `branch` ;
-2. `prompt <id> "<tâche>"` — lancer via Bash en **run_in_background**
-   (un tour peut durer plusieurs minutes) et lire le JSON à la fin ;
-3. si `status:"dialog"` : répondre avec `choose` (single) ou
-   `toggle`+`confirm` (multi) ou `freetext`, qui rendent à leur tour
-   `answer` ou un nouveau `dialog` ;
-4. si `status:"timeout"` : le tour CONTINUE côté serveur — ne pas renvoyer
-   le prompt ; re-vérifier plus tard avec `dialog <id>` ;
-4bis. si `status:"pace-blocked"` : RIEN n'a été envoyé — la consommation
-   dépasse le rythme idéal du quota (`reason` le détaille). Ne pas insister
-   en boucle ; en parler à l'utilisateur ;
-5. tâche finie : `diff <id>` et présenter les changements à l'utilisateur.
-   La branche `shadok-ai/<tag>` et son worktree ne sont JAMAIS mergés ni
-   supprimés automatiquement — c'est l'utilisateur qui merge.
+1. `spawn --worktree --profile <role> --cwd <repo>` → note `sessionId` and `branch`;
+2. `prompt <id> "<task>"` — launch it through Bash with **run_in_background**
+   (a turn can take several minutes) and read the JSON at the end;
+3. if `status:"dialog"`: answer with `choose` (single) or `toggle`+`confirm`
+   (multi) or `freetext`, which in turn return `answer` or a new `dialog`;
+4. if `status:"timeout"`: the turn CONTINUES server-side — do not resend the
+   prompt; check back later with `dialog <id>`;
+4bis. if `status:"pace-blocked"`: NOTHING was sent — usage is above the quota's
+   ideal pace (`reason` spells it out). Do not insist in a loop; tell the user;
+5. task finished: `diff <id>` and present the changes to the user. The
+   `shadok-ai/<tag>` branch and its worktree are NEVER merged or deleted
+   automatically — the user is the one who merges.
 
-Agents parallèles : répéter `spawn` (un id par agent), lancer les `prompt`
-en arrière-plan simultanément.
+Parallel agents: repeat `spawn` (one id per agent), and launch the `prompt`
+calls in the background simultaneously.
 
-## On te prévient : tes agents te répondent
+## You get told: your agents report back
 
-Un agent que tu spawnes est enregistré comme ton **enfant**, automatiquement —
-rien à passer. Tu reçois alors un message quand il :
+An agent you spawn is registered as your **child**, automatically — nothing to
+pass. You then receive a message when it:
 
-- **termine son tour** (avec son propre résumé et un lien vers son `diff`) ;
-- **bloque sur une question** (la question, ses options, et comment y répondre) ;
-- **meurt ou expire** — sinon tu attendrais indéfiniment un agent déjà parti.
+- **finishes its turn** (with its own summary and a pointer to its `diff`);
+- **blocks on a question** (the question, its options, and how to answer);
+- **dies or times out** — otherwise you would wait forever for an agent that is
+  already gone.
 
-Ces messages arrivent préfixés `🤖 [agent]`. Tu es prévenu de **tes** enfants et
-d'aucun autre canal.
+These messages arrive prefixed `🤖 [agent]`. You are told about **your** children
+and about no other channel.
 
-Conséquence pratique : **ne boucle plus pour surveiller un agent**. Lance le
-`prompt` en arrière-plan et passe à autre chose — le sondage répété coûte un tour
-à chaque fois, et l'information vient à toi.
+Practical consequence: **do not loop to watch an agent any more.** Launch the
+`prompt` in the background and move on — repeated polling costs a turn every
+time, and the information comes to you.
 
-`--parent none` spawne un agent délibérément non rattaché ; `--parent <id>` le
-rattache ailleurs.
+`--parent none` spawns an agent deliberately unattached; `--parent <id>`
+attaches it elsewhere.
 
-## Garde-fous
+## Guardrails
 
-- Ne JAMAIS `stop` une session que cette conversation n'a pas créée : elle
-  appartient peut-être à l'utilisateur dans l'UI web. `stop` termine la
-  session pour tous ses clients.
-- Chaque agent consomme le quota Claude comme une session normale. Ne pas
-  multiplier les agents sans demande explicite de l'utilisateur.
-- `prompt` sur une session dont le tour est déjà en cours → erreur « a
-  response is already in progress » : attendre avec `dialog <id>`.
-- Si un agent semble bloqué sur un état que les dialogs ne couvrent pas,
-  regarder `screen <id>` (équivalent de l'« engine room » de l'UI).
-- Pour reprendre une session existante (`spawn --resume <id>`), toujours passer
-  `--cwd` avec le répertoire de la session (le serveur retomberait sinon sur
-  son propre cwd) ; pour un agent déjà piloté, l'état local fournit ce cwd
-  automatiquement.
+- NEVER `stop` a session this conversation did not create: it may belong to the
+  user in the web UI. `stop` ends the session for all its clients.
+- Every agent consumes the Claude quota like an ordinary session. Do not
+  multiply agents without an explicit request from the user.
+- `prompt` on a session whose turn is already running → the error "a response is
+  already in progress": wait with `dialog <id>`.
+- If an agent seems stuck in a state the dialogs do not cover, look at
+  `screen <id>` (the equivalent of the UI's "engine room").
+- To resume an existing session (`spawn --resume <id>`), always pass `--cwd`
+  with the session's directory (the server would otherwise fall back to its own
+  cwd); for an agent already being driven, the local state supplies that cwd
+  automatically.
 
-## Mécanique (pour le debug)
+## Mechanics (for debugging)
 
-Le serveur tue le process claude quand son dernier client WS se détache ;
-`pilotctl` maintient donc un petit process « holder » détaché par agent
-(commande interne `hold`), relancé au besoin par chaque commande. État
-local : `~/.shadok-ai/pilotctl/<id>.json` (cwd, branch, baseSha,
-holderPid). Log du serveur auto-démarré : `~/.shadok-ai/pilotctl/server.log`.
+The server kills the claude process when its last WS client detaches; so
+`pilotctl` keeps a small detached "holder" process per agent (the internal
+`hold` command), restarted as needed by every command. Local state:
+`~/.shadok-ai/pilotctl/<id>.json` (cwd, branch, baseSha, holderPid). Log of the
+auto-started server: `~/.shadok-ai/pilotctl/server.log`.

@@ -5,8 +5,8 @@ description: Schedule recurring prompts (monitoring, reporting, watching) for th
 
 # shadok-scheduler
 
-Turn a natural-language request like *"surveille le budget Google Ads chaque matin
-et alerte-moi si un plafond est dépassé"* into a token-efficient scheduled job on
+Turn a natural-language request like *"watch the Google Ads budget every morning
+and alert me when a cap is exceeded"* into a token-efficient scheduled job on
 **this channel**.
 
 Only works inside a shadok-ai channel — it needs `SHADOK_SESSION_ID` and
@@ -84,14 +84,14 @@ An interval (`every:30m`) is a duration, so it has no timezone.
 node scripts/schedule.mjs add \
   --schedule daily:09:00 \
   --check "python3 $HOME/.claude/skills/google-ads/scripts/check_budget.py" \
-  --prompt "Le monitoring a détecté une anomalie budget Google Ads. Rédige une alerte claire et actionnable pour l'équipe."
+  --prompt "The monitoring detected a Google Ads budget anomaly. Write a clear, actionable alert for the team."
 ```
 
 ### Example — plain recurring report (runs every time)
 
 ```
 node scripts/schedule.mjs add --schedule daily:18:00 \
-  --prompt "Fais le point de la journée sur le compte et poste un court résumé."
+  --prompt "Review the day on the account and post a short summary."
 ```
 
 After creating a schedule, confirm to the user in plain language: what it watches,
