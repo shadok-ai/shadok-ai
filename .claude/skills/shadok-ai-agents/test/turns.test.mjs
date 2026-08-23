@@ -17,7 +17,7 @@ function useMock(mock) {
   writeState("abc", { sessionId: "abc", cwd: "/tmp/x", holderPid: null });
 }
 
-test("prompt retourne la réponse streamée à turn-done", async () => {
+test("prompt returns the answer streamed at turn-done", async () => {
   const mock = await startMockServer({
     start: [READY],
     prompt: [
@@ -59,7 +59,7 @@ test("prompt remonte un dialog en attente", async () => {
   }
 });
 
-test("prompt sans fin de tour rend un timeout avec le screen courant", async () => {
+test("a prompt with no end of turn returns a timeout with the current screen", async () => {
   const mock = await startMockServer({
     start: [READY],
     prompt: [{ type: "working" }, { type: "screen", text: "esc to interrupt", working: true }],
@@ -74,11 +74,11 @@ test("prompt sans fin de tour rend un timeout avec le screen courant", async () 
   }
 });
 
-// Le serveur refuse au-dessus du rythme idéal : il envoie "pace-blocked" et
-// n'écrit RIEN dans le TUI, donc aucun "turn-done" ne suivra jamais. Le tour
-// doit se terminer tout de suite avec la raison, et surtout pas épuiser le
-// timeout (600 s par défaut) pour rendre un {status:"timeout"} muet.
-test("prompt refusé au rythme se termine tout de suite avec la raison", async () => {
+// The server refuses above the ideal pace: it sends "pace-blocked" and writes
+// NOTHING into the TUI, so no "turn-done" will ever follow. The turn must end
+// right away with the reason, and above all must not burn the timeout (600 s by
+// default) only to return a mute {status:"timeout"}.
+test("a prompt refused on pace ends immediately with the reason", async () => {
   const mock = await startMockServer({
     start: [READY],
     prompt: [
@@ -88,13 +88,13 @@ test("prompt refusé au rythme se termine tout de suite avec la raison", async (
   useMock(mock);
   try {
     const t0 = Date.now();
-    // Timeout large : s'il était atteint, le test durerait 30 s et le status
-    // serait "timeout" — les deux assertions ci-dessous le détecteraient.
+    // A generous timeout: were it reached, the test would take 30 s and the
+    // status would be "timeout" — the two assertions below would catch it.
     const r = await run(["prompt", "abc", "fais un truc", "--timeout", "30"]);
     assert.equal(r.status, "pace-blocked");
     assert.equal(r.reason, "7d: 55% used vs 14% ideal pace (285% of pace)");
-    assert.ok(Date.now() - t0 < 5_000, "doit rendre la main sans attendre le timeout");
-    // Rien n'a été forcé : pilotctl envoie le prompt tel quel, une seule fois.
+    assert.ok(Date.now() - t0 < 5_000, "must hand back control without waiting for the timeout");
+    // Nothing was forced: pilotctl sends the prompt as is, exactly once.
     assert.deepEqual(mock.received[1], { type: "prompt", text: "fais un truc" });
     assert.equal(mock.received.length, 2);
   } finally {
@@ -102,9 +102,9 @@ test("prompt refusé au rythme se termine tout de suite avec la raison", async (
   }
 });
 
-// Non-régression : ajouter "pace-blocked" à la liste des fins de tour ne doit
-// rien changer à un prompt normal.
-test("prompt normal reste inchangé par la fin de tour pace-blocked", async () => {
+// Non-regression: adding "pace-blocked" to the list of turn endings must change
+// nothing for an ordinary prompt.
+test("an ordinary prompt is unchanged by the pace-blocked turn ending", async () => {
   const mock = await startMockServer({
     start: [READY],
     prompt: [
@@ -124,7 +124,7 @@ test("prompt normal reste inchangé par la fin de tour pace-blocked", async () =
   }
 });
 
-test("choose valide une option et attend la suite", async () => {
+test("choose commits an option and waits for what follows", async () => {
   const mock = await startMockServer({
     start: [READY],
     choose: [{ type: "working" }, { type: "stream-text", text: "ok" }, { type: "turn-done" }],
@@ -150,12 +150,12 @@ test("dialog interroge via settle et mappe answer → idle", async () => {
   }
 });
 
-test("freetext transmet n et le texte", async () => {
+test("freetext passes n and the text", async () => {
   const mock = await startMockServer({ start: [READY], freetext: [{ type: "turn-done" }] });
   useMock(mock);
   try {
-    await run(["freetext", "abc", "3", "ma réponse"]);
-    assert.deepEqual(mock.received[1], { type: "freetext", n: 3, text: "ma réponse" });
+    await run(["freetext", "abc", "3", "my answer"]);
+    assert.deepEqual(mock.received[1], { type: "freetext", n: 3, text: "my answer" });
   } finally {
     await mock.close();
   }

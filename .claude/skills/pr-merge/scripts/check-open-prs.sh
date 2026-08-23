@@ -1,29 +1,29 @@
 #!/bin/sh
-# Garde déterministe du cron pr-merge : silence tant qu'il n'y a rien à merger.
+# Deterministic guard of the pr-merge cron: silent while there is nothing to merge.
 #
-# Le serveur exécute ce script SANS LLM. Il n'imprime quelque chose que s'il
-# existe au moins une PR sur laquelle la boucle peut AGIR — c'est ce qui réveille
-# l'agent, et sa sortie est préfixée au prompt. Un dépôt calme coûte donc 0 token.
+# The server runs this script WITHOUT the LLM. It only prints something when at
+# least one PR the loop can ACT on exists — that is what wakes the agent, and its
+# output is prepended to the prompt. A quiet repo therefore costs 0 tokens.
 #
-# La cible est NOMMÉE explicitement (--repo), pas déduite d'un `cd` : une version
-# précédente faisait `cd "$HOME/projects/shadok-ai" || exit 0`, et le jour où
-# $HOME est passé de /Users/alexandrecognard à /root, le cd a échoué — donc
-# sortie vide, rc=0, garde d'apparence saine qui ne surveillait plus rien. Une
-# garde muette et un dépôt calme doivent rester distinguables.
+# The target is NAMED explicitly (--repo), not derived from a `cd`: an earlier
+# version did `cd "$HOME/projects/shadok-ai" || exit 0`, and the day $HOME went
+# from /Users/alexandrecognard to /root the cd failed — so empty output, rc=0, a
+# healthy-looking guard that watched nothing any more. A mute guard and a quiet
+# repo must stay distinguishable.
 #
-# Ce qui est ÉCARTÉ ici, en plus des drafts et des bases != main :
+# What is DISCARDED here, on top of drafts and bases != main:
 #
-#   - les PR de fork  : la boucle ne les merge jamais (une livraison « Tweak »
-#     en est une, et sur un dépôt public n'importe qui peut en ouvrir) ;
-#   - les PR DIRTY    : un conflit se résout par son auteur ou par l'humain.
+#   - fork PRs   : the loop never merges them (a "Tweak" delivery is one, and on
+#     a public repo anyone can open one);
+#   - DIRTY PRs  : a conflict is resolved by its author or by the human.
 #
-# Sans ce tri, une seule PR bloquée réveillait l'agent à CHAQUE créneau — un tour
-# de LLM par minute pour répondre « pas la mienne ». Le filtre reste sans état :
-# dès que la PR redevient mergeable, elle réapparaît d'elle-même et la boucle la
-# reprend. Rien à mémoriser, donc rien à oublier.
+# Without that sort, a single stuck PR woke the agent at EVERY slot — one LLM
+# turn per minute to answer "not mine". The filter stays stateless: as soon as
+# the PR becomes mergeable again it reappears on its own and the loop picks it
+# up. Nothing to remember, hence nothing to forget.
 #
-# Le filtre d'entrée COMPLET (auteur, label hold) reste dans le skill : une PR
-# écartée là-bas est une décision à expliquer, pas un réveil à supprimer.
+# The COMPLETE entry filter (author, hold label) stays in the skill: a PR
+# discarded there is a decision to explain, not a wake-up to suppress.
 gh pr list --repo shadok-ai/shadok-ai --state open --limit 50 \
     --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository \
     --template '{{range .}}{{if and (not .isDraft) (and (eq .baseRefName "main") (and (not .isCrossRepository) (ne .mergeStateStatus "DIRTY")))}}#{{.number}} {{.mergeStateStatus}} — {{.title}}

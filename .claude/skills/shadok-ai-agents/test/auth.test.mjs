@@ -16,14 +16,14 @@ delete process.env.SHADOK_SESSION_ID;
 delete process.env.SHADOK_AUTH;
 const { authHeaders, run } = await import("../pilotctl.mjs");
 
-test("authHeaders: SHADOK_AUTH présent → cookie ; absent → {}", () => {
+test("authHeaders: SHADOK_AUTH present → cookie; absent → {}", () => {
   process.env.SHADOK_AUTH = "sk_auth=tok123";
   assert.deepEqual(authHeaders(), { cookie: "sk_auth=tok123" });
   delete process.env.SHADOK_AUTH;
   assert.deepEqual(authHeaders(), {});
 });
 
-test("spawn (WS) présente le cookie SHADOK_AUTH sur l'upgrade", async () => {
+test("spawn (WS) presents the SHADOK_AUTH cookie on the upgrade", async () => {
   process.env.SHADOK_AUTH = "sk_auth=tok123";
   const mock = await startMockServer({ start: [{ type: "ready", sessionId: "a-1", cwd: "/tmp/x" }] });
   process.env.SHADOK_PORT = String(mock.port);
@@ -36,20 +36,20 @@ test("spawn (WS) présente le cookie SHADOK_AUTH sur l'upgrade", async () => {
   }
 });
 
-test("list (HTTP) présente le cookie SHADOK_AUTH sur /sessions", async () => {
+test("list (HTTP) presents the SHADOK_AUTH cookie on /sessions", async () => {
   process.env.SHADOK_AUTH = "sk_auth=tok123";
   const mock = await startMockServer({ sessions: [] });
   process.env.SHADOK_PORT = String(mock.port);
   try {
     await run(["list", "--cwd", "/tmp/x"]);
-    assert.ok(mock.cookies.http.includes("sk_auth=tok123"), "aucun cookie sur les appels HTTP");
+    assert.ok(mock.cookies.http.includes("sk_auth=tok123"), "no cookie on the HTTP calls");
   } finally {
     delete process.env.SHADOK_AUTH;
     await mock.close();
   }
 });
 
-test("sans mot de passe (pas de SHADOK_AUTH), aucun cookie n'est envoyé", async () => {
+test("with no password (no SHADOK_AUTH), no cookie is sent", async () => {
   delete process.env.SHADOK_AUTH;
   const mock = await startMockServer({ start: [{ type: "ready", sessionId: "b-1", cwd: "/tmp/x" }] });
   process.env.SHADOK_PORT = String(mock.port);

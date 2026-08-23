@@ -11,12 +11,12 @@ process.env.SHADOK_NO_HOLDER = "1";
 process.env.SHADOK_NO_AUTOSTART = "1";
 const { run, writeState, readState } = await import("../pilotctl.mjs");
 
-test("serveur injoignable sans auto-start → erreur explicite", async () => {
-  process.env.SHADOK_PORT = "1"; // rien n'écoute là
+test("unreachable server with no auto-start → an explicit error", async () => {
+  process.env.SHADOK_PORT = "1"; // nothing listens there
   await assert.rejects(() => run(["list"]), /unreachable/);
 });
 
-test("list combine sessions résumables et agents locaux", async () => {
+test("list combines resumable sessions and local agents", async () => {
   const mock = await startMockServer({ sessions: [{ id: "old-1", mtime: 123 }] });
   process.env.SHADOK_PORT = String(mock.port);
   writeState("abc", { sessionId: "abc", cwd: "/tmp/x", holderPid: null });
@@ -30,7 +30,7 @@ test("list combine sessions résumables et agents locaux", async () => {
   }
 });
 
-test("diff passe par le serveur quand la session est live", async () => {
+test("diff goes through the server while the session is live", async () => {
   const mock = await startMockServer({
     diff: { status: "M x.txt", diff: "--- a/x.txt", branch: "shadok-ai/abc" },
   });
@@ -44,7 +44,7 @@ test("diff passe par le serveur quand la session est live", async () => {
   }
 });
 
-test("diff retombe sur git local quand la session n'est plus live", async () => {
+test("diff falls back to local git once the session is no longer live", async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "pilotctl-repo-"));
   const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" });
   git("init", "-q");
@@ -56,7 +56,7 @@ test("diff retombe sur git local quand la session n'est plus live", async () => 
   const baseSha = git("rev-parse", "HEAD").trim();
   fs.writeFileSync(path.join(repo, "x.txt"), "v2\n");
 
-  const mock = await startMockServer(); // /diff répond "no such session"
+  const mock = await startMockServer(); // /diff answers "no such session"
   process.env.SHADOK_PORT = String(mock.port);
   writeState("gone", { sessionId: "gone", cwd: repo, baseSha, branch: "shadok-ai/gone" });
   try {
@@ -69,7 +69,7 @@ test("diff retombe sur git local quand la session n'est plus live", async () => 
   }
 });
 
-test("diff fallback inclut les fichiers non suivis", async () => {
+test("the diff fallback includes untracked files", async () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "pilotctl-repo-"));
   const git = (...a) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf8" });
   git("init", "-q");
@@ -79,7 +79,7 @@ test("diff fallback inclut les fichiers non suivis", async () => {
   const baseSha = git("rev-parse", "HEAD").trim();
   fs.writeFileSync(path.join(repo, "hello.txt"), "hello world\n");
 
-  const mock = await startMockServer(); // /diff répond "no such session"
+  const mock = await startMockServer(); // /diff answers "no such session"
   process.env.SHADOK_PORT = String(mock.port);
   writeState("untracked", { sessionId: "untracked", cwd: repo, baseSha, branch: "shadok-ai/u" });
   try {
@@ -91,7 +91,7 @@ test("diff fallback inclut les fichiers non suivis", async () => {
   }
 });
 
-test("stop sans holder vivant nettoie l'état sans rattacher", async () => {
+test("stop with no live holder cleans the state without reattaching", async () => {
   const mock = await startMockServer();
   process.env.SHADOK_PORT = String(mock.port);
   writeState("dead", { sessionId: "dead", cwd: "/tmp/x", holderPid: 999999 });
@@ -99,19 +99,19 @@ test("stop sans holder vivant nettoie l'état sans rattacher", async () => {
     const r = await run(["stop", "dead"]);
     assert.equal(r.stopped, false);
     assert.equal(readState("dead"), null);
-    assert.equal(mock.received.length, 0); // aucun start envoyé
+    assert.equal(mock.received.length, 0); // no start sent
   } finally {
     await mock.close();
   }
 });
 
-test("stop avec session live envoie stop et nettoie", async () => {
+test("stop with a live session sends stop and cleans up", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "abc", cwd: "/tmp/x" }],
     stop: [{ type: "stopped" }],
   });
   process.env.SHADOK_PORT = String(mock.port);
-  // pid du process de test : vivant, simule un holder actif
+  // the test process' pid: alive, simulates an active holder
   writeState("abc", { sessionId: "abc", cwd: "/tmp/x", holderPid: process.pid });
   try {
     const r = await run(["stop", "abc"]);
@@ -122,7 +122,7 @@ test("stop avec session live envoie stop et nettoie", async () => {
   }
 });
 
-test("screen retourne le dernier screen reçu", async () => {
+test("screen returns the last screen received", async () => {
   const mock = await startMockServer({
     start: [
       { type: "ready", sessionId: "abc", cwd: "/tmp/x" },
@@ -139,7 +139,7 @@ test("screen retourne le dernier screen reçu", async () => {
   }
 });
 
-test("stop avec holder vivant mais session morte nettoie et rapporte stopped:false", async () => {
+test("stop with a live holder but a dead session cleans up and reports stopped:false", async () => {
   const mock = await startMockServer({
     start: [{ type: "error", message: "no session" }],
   });
