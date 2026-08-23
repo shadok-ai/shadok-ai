@@ -1900,6 +1900,15 @@ async function finishTurn(s: Live) {
   broadcast(s, workingMessage(s));
   try {
     await s.pilot.waitForIdle({ stableMs: 2000, timeoutMs: 900_000 });
+    // A MULTI-QUESTION AskUserQuestion ends on a recap page ("Ready to submit
+    // your answers? · Submit answers / Cancel"). That is NOT a real question —
+    // every question was already answered one by one — and it mis-parses as a
+    // multi-select dialog. Auto-confirm it (Enter defaults to "Submit answers")
+    // instead of surfacing a redundant, mis-rendered dialog.
+    if (detectDialog(s.pilot.screen()) && SUBMIT_PAGE.test(s.pilot.screen())) {
+      s.pilot.press("enter");
+      await s.pilot.waitForIdle({ stableMs: 1500, timeoutMs: 120_000 }).catch(() => {});
+    }
     const dialog = detectDialog(s.pilot.screen());
     if (dialog) publishDialog(s, dialog);
     else {
@@ -2024,6 +2033,12 @@ function sendPendingDialog(s: Live, send: (msg: object) => void) {
  */
 function publishDialog(s: Live, d: TuiDialog): void {
   if (isResumeSummaryDialog(d)) return;
+  // Never surface the multi-question recap ("Ready to submit your answers?").
+  // It is not a real question (every question was answered one by one), it
+  // mis-parses as a multi-select, and `finishTurn` auto-confirms it. Left to
+  // the screen watcher, it would flash a broken, disabled dialog before the
+  // auto-submit lands.
+  if (SUBMIT_PAGE.test(s.pilot.screen())) return;
   const key = dialogKey(d);
   if (key === s.lastDialogKey) return;
   s.lastDialogKey = key;
@@ -2489,21 +2504,37 @@ wss.on("connection", (ws: WebSocket) => {
         }
 
         case "confirm": {
-          // Multi-select: Tab → "Submit answers" page → Enter.
+          // Multi-select: commit the checkboxes with Tab, then submit.
           if (!session) return fail("no session started");
-          if (!detectDialog(session.pilot.screen()))
+          const before = detectDialog(session.pilot.screen());
+          if (!before)
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
-          // Tab ouvre une page de récapitulatif ("Ready to submit your answers?")
-          // dont le rendu n'est pas instantané. L'Enter partait après un délai
-          // fixe de 600 ms et pouvait arriver AVANT elle — la page restait
-          // alors affichée, réponses non soumises. On attend la page elle-même.
+          // Tab leaves this multi-select question. In a STANDALONE question it
+          // opens the recap page ("Ready to submit your answers?"); in a
+          // MULTI-QUESTION form (a "← ☐ Q1 ☐ Q2 ✔ Submit →" tab bar) it moves to
+          // the NEXT question instead. The old code pressed Enter unconditionally
+          // — in the multi-question case that Enter answered the next question
+          // with its default (silently, wrongly), corrupting the form. Wait for
+          // whichever screen Tab produced, then decide.
           session.pilot.press("tab");
           await session.pilot
-            .waitFor((scr) => SUBMIT_PAGE.test(scr), { timeoutMs: 5000 })
-            .catch(() => {}); // pas de page de récap : on tente l'Enter quand même
-          session.pilot.press("enter");
-          await sleep(400);
-          await finishTurn(session);
+            .waitFor(
+              (scr) => SUBMIT_PAGE.test(scr) || (detectDialog(scr)?.question ?? before.question) !== before.question,
+              { timeoutMs: 5000 },
+            )
+            .catch(() => {}); // neither settled in time: fall through and inspect
+          await sleep(300);
+          const scr = session.pilot.screen();
+          const next = detectDialog(scr);
+          if (SUBMIT_PAGE.test(scr) || !next) {
+            // The recap/submit page (this was the last question), or the form is
+            // gone: let finishTurn drive it — it auto-confirms the recap.
+            await finishTurn(session);
+          } else {
+            // Tab landed on a FURTHER question — hand it back to the user to
+            // answer rather than auto-picking its default with Enter.
+            publishDialog(session, next);
+          }
           break;
         }
 

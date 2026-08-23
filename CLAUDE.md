@@ -594,6 +594,26 @@ Auth section of `docs/architecture.md`).
     reads as the 77th patch of a 0.3 series that never had one, which is worse
     than useless to whoever is trying to tell two releases apart.
 
+32. **A multi-question `AskUserQuestion` is a form with a tab bar, not one
+    dialog — answer each question, never auto-drive past it.** When Claude asks
+    several questions in one call, the TUI shows a `←  ☐ Q1  ☐ Q2  ✔ Submit  →`
+    tab bar and one question at a time. A SINGLE-select question already worked:
+    `choose` sends the cursor + Enter, which advances to the next question, and
+    `finishTurn` re-detects and publishes it. A MULTI-select question did NOT:
+    the `confirm` handler pressed **Tab then Enter** — fine for a *standalone*
+    multi-select (Tab opens the recap page), but in a multi-question form Tab
+    moves to the NEXT question and that Enter silently answered it with its
+    default, corrupting the form (the user's report was "I answered and it said I
+    declined"). Now `confirm` inspects what Tab produced: the recap page → let
+    `finishTurn` submit; a further question → `publishDialog` it so the user
+    answers it. Two more rules fell out: the recap page ("Ready to submit your
+    answers? · Submit answers / Cancel") is **not a real question** — it
+    mis-parses as a multi-select and would flash a broken, disabled dialog — so
+    `publishDialog` drops it (guarded by `SUBMIT_PAGE`) and `finishTurn`
+    auto-confirms it (Enter defaults to "Submit answers"). Verified end-to-end
+    against a live agent: single, standalone-multi, and multi-question forms with
+    a multi-select all land the exact answers with no decline.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).
