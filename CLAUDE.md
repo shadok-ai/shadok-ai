@@ -614,6 +614,19 @@ Auth section of `docs/architecture.md`).
     against a live agent: single, standalone-multi, and multi-question forms with
     a multi-select all land the exact answers with no decline.
 
+33. **One agent = one channel row: dedup by `sessionId` at BOTH ends, because a
+    duplicate self-feeds.** A spawn-time race (the spawn's `upsertChannel` +
+    the holder's) could momentarily put two rows for one session into a client's
+    tab list; `mergeChannels` iterated `clientList` and pushed each without a
+    within-list dedup, so both were persisted — and `syncChannels` builds
+    `tabById` ONCE, so a `/channels` list carrying the same id twice created a
+    second tab (createTab isn't seen mid-loop). The two tabs then re-persisted
+    the duplicate: same agent, twice in the left column, surviving every reload.
+    Neither layer alone was enough — the fix dedups by id in `mergeChannels` AND
+    `loadChannels` (server, so a corrupted file self-heals on the next save) AND
+    the `syncChannels` loop (client, so a stale/duplicate list never renders
+    twice). `dedupById` is pure and tested.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).

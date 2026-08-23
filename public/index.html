@@ -2832,8 +2832,14 @@
     // (the rule that predates it). Mirrors `isHomeChannel` in src/channels.ts —
     // the server decides, this only has to agree.
     const isMain = (c) => !!c.home || (c.telegram && !c.telegram.threadId && c.telegram.chatId < 0);
+    // `tabById` is built once, so createTab below can't be seen mid-loop: a
+    // /channels list that carries the same sessionId twice would otherwise spawn
+    // a second tab for the one agent (same conversation, both surviving reload).
+    // The server dedups now too; this is the belt to that suspenders.
+    const seenIds = new Set();
     for (const c of chans) {
-      if (!c.sessionId) continue;
+      if (!c.sessionId || seenIds.has(c.sessionId)) continue;
+      seenIds.add(c.sessionId);
       const t = tabById.get(c.sessionId);
       if (t) {
         if (isMain(c)) markMainTab(t);

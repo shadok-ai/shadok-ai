@@ -141,8 +141,25 @@ function writeJson(kind: string, value: any[]): void {
   }
 }
 
+/**
+ * Pure: keep the FIRST record of each sessionId, drop later duplicates. One
+ * agent must map to one channel — a spawn-time race once wrote two rows for one
+ * session and the merge persisted both, so the agent showed twice in the left
+ * column and survived reloads. Reading through this heals a corrupted file on
+ * the next save.
+ */
+export function dedupById(list: Channel[]): Channel[] {
+  const seen = new Set<string>();
+  const out: Channel[] = [];
+  for (const c of list) {
+    if (seen.has(c.sessionId)) continue;
+    seen.add(c.sessionId);
+    out.push(c);
+  }
+  return out;
+}
 export function loadChannels(): Channel[] {
-  return readJson("channels").filter((c) => c && typeof c.sessionId === "string");
+  return dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string"));
 }
 export function saveChannels(list: Channel[]): void {
   writeJson("channels", list);
@@ -199,6 +216,7 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
   const seen = new Set<string>();
   for (const c of Array.isArray(clientList) ? clientList : []) {
     if (!c || typeof c.sessionId !== "string") continue;
+    if (seen.has(c.sessionId)) continue; // the client sent the same agent twice → write it once
     seen.add(c.sessionId);
     const prev = byId.get(c.sessionId);
     if (!prev) {
