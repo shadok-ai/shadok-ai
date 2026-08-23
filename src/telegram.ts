@@ -29,6 +29,7 @@ import {
   removeCron,
   resolveCronId,
   nextRunFor,
+  onceAt,
   cronTimeZone,
   normalizeSchedule,
   scheduleLabel,
@@ -1174,6 +1175,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             "⏰ Scheduled prompts for this agent:\n" +
             "• /cron every 30m <prompt>  (or 2h)\n" +
             "• /cron daily 09:00 <prompt>  (heure du fuseau du serveur)\n" +
+            "• /cron once 2026-08-25T08:42 <prompt>  (une seule fois)\n" +
             "• /cron list · /cron off <id> · /cron on <id> · /cron del <id>";
           const ch = channelForTelegram(chat.id, threadId);
           const parts = cmd.arg.trim().split(/\s+/);
@@ -1218,7 +1220,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             }
             return;
           }
-          // add: "every 30m <prompt>" | "daily 09:00 <prompt>"
+          // add: "every 30m <prompt>" | "daily 09:00 <prompt>" | "once <date> <prompt>"
           if (!ch) {
             await reply(chat.id, threadId, "Send a message here first to create the agent, then schedule.\n\n" + CRON_USAGE);
             return;
@@ -1231,9 +1233,19 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           } else if (sub === "daily") {
             const m = /^(\d{1,2}):(\d{2})$/.exec(spec);
             if (m) sched = normalizeSchedule({ kind: "daily", hour: +m[1], minute: +m[2] });
+          } else if (sub === "once") {
+            const at = onceAt(cronTimeZone({}), spec);
+            if (at != null) sched = normalizeSchedule({ kind: "once", at });
           }
           const prompt = parts.join(" ").trim();
           if (!sched || !prompt) { await reply(chat.id, threadId, CRON_USAGE); return; }
+          // A past instant is not "invalid": the date was perfectly readable,
+          // it is the time that is behind us. Say so, rather than returning the
+          // usage text and letting them hunt for a typo.
+          if (sched.kind === "once" && sched.at <= Date.now()) {
+            await reply(chat.id, threadId, `⏰ ${scheduleLabel(sched, cronTimeZone({}))} is already past — pick a future date.`);
+            return;
+          }
           const cron = {
             id: randomUUID(),
             sessionId: ch.sessionId,

@@ -61,9 +61,34 @@ node scripts/schedule.mjs tz [<zone>|-]
 node scripts/schedule.mjs env
 ```
 
-`<spec>`: `every:30m` · `every:2h` · `daily:09:00`.
+`<spec>`: `every:30m` · `every:2h` · `daily:09:00` · `once:2026-08-25T08:42`.
 
-### Timezone — read this before scheduling a `daily`
+### One-shot — a reminder on a given date
+
+`once:<YYYY-MM-DDTHH:MM>` fires **exactly once**, then the schedule is left in
+the list disabled and marked `(fired)` — so you can see it ran, and delete it
+when you want.
+
+Use it whenever the user asks to be reminded or warned **on a date** ("warn Alex
+on the 25th", "remind me on Monday morning"). Do NOT reach for the harness's own
+one-shot scheduler for that: it lives in the agent's process and dies with it,
+whereas this one is on disk and survives a restart, an auto-update, and a
+container recreate.
+
+Two behaviours worth knowing:
+
+- A date already in the past is **refused**, not silently accepted.
+- A slot missed while the server was down still fires **late**, at the next
+  tick. A reminder arriving late beats a reminder that vanished — the prompt
+  carries its own date, so say in it what it is about and when it was for.
+
+```
+node scripts/schedule.mjs add \
+  --schedule once:2026-08-25T08:42 \
+  --prompt "REMINDER — Alex is back today. Two documents have been stuck in generation since 18/08: …"
+```
+
+### Timezone — read this before scheduling a `daily` or a `once`
 
 A `daily` runs at that wall-clock time **in a timezone**, and the default is
 whatever the SERVER's machine is set to. On a machine running in UTC,
@@ -77,6 +102,11 @@ whatever the SERVER's machine is set to. On a machine running in UTC,
 When the user names an hour and you're not sure the server sits in their
 timezone, check with `tz` first — `list` shows the zone next to each schedule.
 An interval (`every:30m`) is a duration, so it has no timezone.
+
+A `once` date is read in that same timezone at CREATION and stored as an
+absolute instant. Changing the instance timezone afterwards realigns the
+`daily` schedules but **not** a `once` — its instant was already arbitrated.
+So check `tz` BEFORE scheduling a dated reminder, not after.
 
 ### Example — guarded monitoring (near-zero tokens)
 

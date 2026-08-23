@@ -128,6 +128,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/restart` | respawn the agent in place (e.g. to pick up new secrets) |
 | `/profiles` · `/list` | list profiles · list bindings |
 | `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
+| `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
 | `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault |
 | `/update` | fetch `@latest` and respawn |

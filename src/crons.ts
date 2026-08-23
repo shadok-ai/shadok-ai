@@ -13,7 +13,17 @@ import { loadConfig } from "./config.js";
 
 export type CronSchedule =
   | { kind: "interval"; everyMin: number } // every N minutes
-  | { kind: "daily"; hour: number; minute: number }; // daily at HH:MM, in the cron's time zone
+  | { kind: "daily"; hour: number; minute: number } // daily at HH:MM, in the cron's time zone
+  /**
+   * One-shot: fires once at an ABSOLUTE instant, then the cron is spent.
+   *
+   * Stored as an epoch and not as a wall clock + tz on purpose. A `daily` is a
+   * RULE, re-read every day, so changing the default timezone must move it
+   * (that is what `primeCrons` does). A one-shot is an instant already
+   * arbitrated at creation — moving it under the user because a global setting
+   * changed would be the surprise, not the service.
+   */
+  | { kind: "once"; at: number };
 
 export interface Cron {
   id: string;
@@ -160,9 +170,9 @@ export const CRON_MAX_RETRIES = 3;
  */
 export function nextRunAfterFailure(
   nowMs: number,
-  scheduledNextMs: number,
+  scheduledNextMs: number | null,
   attempts: number,
-): { nextRun: number; retrying: boolean; attempts: number } {
+): { nextRun: number | null; retrying: boolean; attempts: number } {
   const giveUp = { nextRun: scheduledNextMs, retrying: false, attempts: 0 };
   // Don't loop forever on a channel that is simply broken.
   if (attempts >= CRON_MAX_RETRIES) return giveUp;
@@ -170,7 +180,9 @@ export function nextRunAfterFailure(
   // The normal slot comes first (short intervals, or a daily cron whose next
   // run is imminent): retrying would fire twice in a row for nothing, and it
   // must never push a run PAST its own schedule.
-  if (candidate >= scheduledNextMs) return giveUp;
+  // A one-shot passes `null`: it has no next slot, so nothing caps the retry —
+  // giving up on it would simply lose the reminder.
+  if (scheduledNextMs !== null && candidate >= scheduledNextMs) return giveUp;
   return { nextRun: candidate, retrying: true, attempts: attempts + 1 };
 }
 
@@ -180,6 +192,10 @@ export function nextRunAfterFailure(
  * time zone. Absent → the machine's local time (historical behaviour).
  */
 export function nextRunFor(s: CronSchedule, fromMs: number, tz?: string | null): number {
+  // A one-shot never rolls forward: its instant is fixed, and returning it even
+  // when it is already past is what lets a fire missed during a restart still
+  // be caught up by `cronTick` (a past `nextRun` is due, not skipped).
+  if (s.kind === "once") return s.at;
   if (s.kind === "interval") {
     const step = Math.max(1, Math.floor(s.everyMin)) * 60_000;
     return fromMs + step;
@@ -201,6 +217,26 @@ export function nextRunFor(s: CronSchedule, fromMs: number, tz?: string | null):
     t = instantOfWallClock(tz, nd.getUTCFullYear(), nd.getUTCMonth() + 1, nd.getUTCDate(), s.hour, s.minute);
   }
   return t;
+}
+
+/**
+ * What firing does to a cron's OWN schedule state, applied the instant it is
+ * fired (before the delivery is even attempted).
+ *
+ * A recurring cron advances to its next slot — that is what stops a long run
+ * from double-firing. A one-shot cannot: advancing lands on the same fixed
+ * instant, so it would fire forever. It is DISABLED instead, which is a
+ * stronger guarantee and reuses a state `cronTick`, `primeCrons` and
+ * `GET /channels` already skip. A transient delivery failure re-arms it — see
+ * `nextRunAfterFailure` with a null slot.
+ */
+export function stateAfterFire(
+  s: CronSchedule,
+  nowMs: number,
+  tz?: string | null,
+): { enabled: boolean; nextRun?: number } {
+  if (s.kind === "once") return { enabled: false, nextRun: undefined };
+  return { enabled: true, nextRun: nextRunFor(s, nowMs, tz) };
 }
 
 /** Is this an IANA zone identifier the bundled ICU knows? */
@@ -257,12 +293,52 @@ function instantOfWallClock(tz: string, y: number, mo: number, d: number, h: num
   return naive - offsetAt(naive - offsetAt(naive));
 }
 
+/** Days in a Gregorian month — so "2026-02-31" is refused instead of rolling
+ *  over into March in silence. */
+function daysInMonth(y: number, mo: number): number {
+  return new Date(Date.UTC(y, mo, 0)).getUTCDate();
+}
+
+/**
+ * Read a human date into the absolute instant a one-shot fires at.
+ *
+ * Two shapes, on purpose. A bare "2026-08-25T08:42" is a WALL CLOCK: it means
+ * 08:42 where the cron lives, so it is resolved through `tz` — that is what the
+ * web form, the CLI and Telegram all produce. A string carrying an explicit
+ * offset (or Z) is already absolute and `tz` must NOT shift it; parsing that
+ * one as a wall clock would move a correct instant by the offset.
+ *
+ * Returns null on anything it cannot read — never a guessed date. A reminder
+ * silently scheduled for the wrong day is worse than a refused one.
+ */
+export function onceAt(tz: string, text: string): number | null {
+  const raw = (text ?? "").trim();
+  if (!raw) return null;
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw)) {
+    const t = Date.parse(raw);
+    return Number.isFinite(t) ? t : null;
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})[Tt ](\d{2}):(\d{2})(?::\d{2})?$/.exec(raw);
+  if (!m) return null;
+  const [y, mo, d, h, mi] = m.slice(1).map(Number);
+  if (mo < 1 || mo > 12) return null;
+  if (d < 1 || d > daysInMonth(y, mo)) return null;
+  if (h > 23 || mi > 59) return null;
+  const zone = isValidTimeZone(tz) ? tz : systemTimeZone();
+  return instantOfWallClock(zone, y, mo, d, h, mi);
+}
+
 /** Validate + normalize a raw schedule object; null if invalid. */
 export function normalizeSchedule(raw: any): CronSchedule | null {
   if (!raw || typeof raw !== "object") return null;
   if (raw.kind === "interval") {
     const everyMin = Number(raw.everyMin);
     return Number.isFinite(everyMin) && everyMin >= 1 ? { kind: "interval", everyMin: Math.floor(everyMin) } : null;
+  }
+  if (raw.kind === "once") {
+    // `at` arrives as a string from an HTTP body often enough to accept one.
+    const at = Number(raw.at);
+    return Number.isFinite(at) && at > 0 ? { kind: "once", at: Math.floor(at) } : null;
   }
   if (raw.kind === "daily") {
     const hour = Number(raw.hour);
@@ -306,6 +382,12 @@ export function cronTimeZone(c: Pick<Cron, "tz">): string {
  * assume (a bare "daily at 09:00" does not say 09:00 where).
  */
 export function scheduleLabel(s: CronSchedule, tz?: string): string {
+  if (s.kind === "once") {
+    const zone = tz || systemTimeZone();
+    const w = wallClockIn(zone, s.at);
+    const p2 = (n: number) => String(n).padStart(2, "0");
+    return `once at ${w.year}-${p2(w.month)}-${p2(w.day)} ${p2(w.hour)}:${p2(w.minute)} (${zone})`;
+  }
   if (s.kind === "interval") {
     if (s.everyMin % 60 === 0) return `every ${s.everyMin / 60}h`;
     return `every ${s.everyMin}m`;
