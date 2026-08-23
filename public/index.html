@@ -1560,6 +1560,7 @@
           <select id="cronKind" aria-label="How often">
             <option value="interval">Every…</option>
             <option value="daily">Daily at…</option>
+            <option value="once">Once, on…</option>
           </select>
           <span id="cronIntervalFields">
             <input id="cronEvery" type="number" min="1" value="60" aria-label="Interval">
@@ -1568,11 +1569,15 @@
           <span id="cronDailyFields" hidden>
             <input id="cronTime" type="time" value="09:00" aria-label="Time of day">
           </span>
+          <span id="cronOnceFields" hidden>
+            <input id="cronAt" type="datetime-local" aria-label="Date and time">
+          </span>
         </div>
       </form>
     </div>
     <div class="modal-foot">
       <span class="foot-note" id="cronTzNote"></span>
+      <span class="foot-note" id="cronErr" style="color:#ff9a9a"></span>
       <button type="submit" form="cronAdd" class="primary">Add schedule</button>
     </div>
   </div>
@@ -5191,9 +5196,19 @@
     $("secretKey").focus();
   });
   // ── Schedule panel (per-channel cron: monitoring / reporting) ───────────
+  let cronZone = "";           // the zone the SERVER applies (see showCronTz)
   function fmtSchedule(s) {
     if (!s) return "?";
     if (s.kind === "interval") return s.everyMin % 60 === 0 ? "every " + (s.everyMin / 60) + "h" : "every " + s.everyMin + "m";
+    if (s.kind === "once") {
+      // Read in the SERVER's zone, not the browser's: the server is what
+      // fires, and a cockpit opened from another zone would otherwise show a
+      // time nobody ever scheduled.
+      const o = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false };
+      if (cronZone) o.timeZone = cronZone;
+      try { return "once at " + new Date(s.at).toLocaleString("sv-SE", o); }
+      catch { return "once at " + new Date(s.at).toISOString().slice(0, 16).replace("T", " "); }
+    }
     return "daily at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
   }
   /**
@@ -5207,12 +5222,13 @@
     try {
       const tz = await (await fetch("/timezone")).json();
       const zone = tz.timezone || tz.system;
-      if (zone) el.textContent = "Daily times run in " + zone;
+      cronZone = zone || "";
+      if (zone) el.textContent = "Scheduled times run in " + zone;
     } catch { /* the popin works perfectly well without this note */ }
   }
   async function renderCrons() {
     const ul = $("cronList"); ul.innerHTML = "";
-    showCronTz();
+    await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
     if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
     let all = [];
@@ -5224,7 +5240,7 @@
       const line = document.createElement("div");
       line.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:space-between";
       const label = document.createElement("span");
-      label.innerHTML = "<b>" + fmtSchedule(c.schedule) + "</b>" + (c.check ? " <span style='opacity:.6'>+guard</span>" : "") + (c.enabled ? "" : " <span style='opacity:.5'>(paused)</span>");
+      label.innerHTML = "<b>" + fmtSchedule(c.schedule) + "</b>" + (c.check ? " <span style='opacity:.6'>+guard</span>" : "") + (c.enabled ? "" : c.schedule && c.schedule.kind === "once" && c.lastRun ? " <span style='opacity:.5'>(fired)</span>" : " <span style='opacity:.5'>(paused)</span>");
       const btns = document.createElement("span");
       const toggle = document.createElement("button");
       toggle.textContent = c.enabled ? "Pause" : "Resume";
@@ -5245,6 +5261,8 @@
     }
   }
   function cronScheduleFromForm() {
+    // Sent as a WALL CLOCK: the server resolves it in the cron's zone.
+    if ($("cronKind").value === "once") return { kind: "once", at: $("cronAt").value };
     if ($("cronKind").value === "daily") {
       const [h, m] = ($("cronTime").value || "09:00").split(":").map((n) => parseInt(n, 10) || 0);
       return { kind: "daily", hour: h, minute: m };
@@ -5254,9 +5272,10 @@
     return { kind: "interval", everyMin: every * unit };
   }
   $("cronKind").addEventListener("change", () => {
-    const daily = $("cronKind").value === "daily";
-    $("cronDailyFields").hidden = !daily;
-    $("cronIntervalFields").hidden = daily;
+    const kind = $("cronKind").value;
+    $("cronDailyFields").hidden = kind !== "daily";
+    $("cronIntervalFields").hidden = kind !== "interval";
+    $("cronOnceFields").hidden = kind !== "once";
   });
   $("cronClose").addEventListener("click", () => { $("cronOverlay").hidden = true; });
   $("cronOverlay").addEventListener("click", (e) => { if (e.target === $("cronOverlay")) $("cronOverlay").hidden = true; });
@@ -5265,7 +5284,19 @@
     const prompt = $("cronPrompt").value.trim();
     if (!prompt || !active || !active.sessionId) return;
     const check = $("cronCheck").value.trim();
-    await fetch("/crons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: active.sessionId, prompt, schedule: cronScheduleFromForm(), enabled: true, ...(check ? { check } : {}) }) });
+    // A refusal from the server (past date, unreadable date) used to be
+    // swallowed in silence: the panel repainted without the new cron, wordlessly.
+    $("cronErr").textContent = "";
+    let r;
+    try {
+      r = await fetch("/crons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: active.sessionId, prompt, schedule: cronScheduleFromForm(), enabled: true, ...(check ? { check } : {}) }) });
+    } catch { $("cronErr").textContent = "server unreachable"; return; }
+    if (!r.ok) {
+      let msg = "could not schedule (" + r.status + ")";
+      try { const j = await r.json(); if (j && j.error) msg = j.error; } catch { /* non-JSON body */ }
+      $("cronErr").textContent = msg;
+      return;
+    }
     $("cronPrompt").value = ""; $("cronCheck").value = "";
     renderCrons();
   });

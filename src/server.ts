@@ -74,6 +74,8 @@ import {
   CRON_MAX_RETRIES,
   markCronPrompt,
   normalizeSchedule,
+  onceAt,
+  stateAfterFire,
   scheduleLabel,
   cronTimeZone,
   defaultTimeZone,
@@ -507,14 +509,19 @@ function settleCron(id: string, outcome: string, reason: DriveReason | undefined
     saveCrons(list);
     return;
   }
-  // `nextRun` was already advanced to the next normal slot before firing.
-  const slot = c.nextRun ?? nextRunFor(c.schedule, Date.now(), cronTimeZone(c));
+  // `nextRun` was already advanced to the next normal slot before firing — a
+  // one-shot has none, and passes null so nothing caps its retries.
+  const once = c.schedule.kind === "once";
+  const slot = once ? null : (c.nextRun ?? nextRunFor(c.schedule, Date.now(), cronTimeZone(c)));
   const r = nextRunAfterFailure(Date.now(), slot, c.retries ?? 0);
-  c.nextRun = r.nextRun;
+  c.nextRun = r.nextRun ?? undefined;
   c.retries = r.attempts;
+  // `cronTick` disabled it before the fire; a transient loss must put it back,
+  // otherwise a channel that was merely busy eats the reminder for good.
+  if (once) c.enabled = r.retrying;
   console.log(
     r.retrying
-      ? `${cronTag(c)} skipped: ${reason}, retry in ${Math.round((r.nextRun - Date.now()) / 60_000)}m (${r.attempts}/${CRON_MAX_RETRIES})`
+      ? `${cronTag(c)} skipped: ${reason}, retry in ${Math.round(((r.nextRun ?? Date.now()) - Date.now()) / 60_000)}m (${r.attempts}/${CRON_MAX_RETRIES})`
       : `${cronTag(c)} skipped: ${reason}, giving up until next slot`,
   );
   saveCrons(list);
@@ -534,7 +541,12 @@ function cronTick(): void {
     // scheduled by settleCron is always in the future, so it can't re-trigger
     // a run that is still going.
     c.lastRun = now;
-    c.nextRun = nextRunFor(c.schedule, now, cronTimeZone(c));
+    // A recurring cron advances to its next slot; a one-shot cannot (its
+    // instant is fixed) and is disabled instead — a stronger anti-double-fire
+    // guarantee, and a state every consumer already skips.
+    const st = stateAfterFire(c.schedule, now, cronTimeZone(c));
+    c.enabled = st.enabled;
+    c.nextRun = st.nextRun;
     changed = true;
     if (cronsFiring.has(c.id)) continue;
     cronsFiring.add(c.id);
@@ -933,17 +945,36 @@ app.post("/crons", (req, res) => {
   const b = req.body ?? {};
   const sessionId = String(b.sessionId ?? "").trim();
   const prompt = String(b.prompt ?? "").trim();
-  const schedule = normalizeSchedule(b.schedule);
-  if (!sessionId || !prompt || !schedule) return res.status(400).json({ error: "sessionId, prompt and a valid schedule are required" });
   const existing = b.id ? loadCrons().find((c) => c.id === b.id) : undefined;
-  const enabled = typeof b.enabled === "boolean" ? b.enabled : (existing?.enabled ?? true);
-  const check = typeof b.check === "string" && b.check.trim() ? String(b.check).trim() : undefined;
+  // The zone is resolved BEFORE the schedule: a one-shot dated as a wall clock
+  // ("2026-08-25T08:42") means nothing without it.
+  //
   // Explicit zone: refused when invalid rather than silently ignored — a
   // "Europe/Pariss" falling back to the machine's zone would produce exactly
   // the silent shift this is meant to remove.
   const rawTz = typeof b.tz === "string" ? b.tz.trim() : "";
   if (rawTz && !isValidTimeZone(rawTz)) return res.status(400).json({ error: `unknown timezone '${rawTz}'` });
   const tz = rawTz || existing?.tz;
+  const zone = cronTimeZone({ tz });
+  let rawSchedule = b.schedule;
+  if (rawSchedule?.kind === "once" && typeof rawSchedule.at === "string" && !/^\d+$/.test(rawSchedule.at.trim())) {
+    const at = onceAt(zone, rawSchedule.at);
+    if (at == null) return res.status(400).json({ error: `unreadable date '${rawSchedule.at}' — use YYYY-MM-DDTHH:MM` });
+    rawSchedule = { kind: "once", at };
+  }
+  const schedule = normalizeSchedule(rawSchedule);
+  if (!sessionId || !prompt || !schedule) return res.status(400).json({ error: "sessionId, prompt and a valid schedule are required" });
+  // An instant already past is refused rather than stored: it would fire within
+  // the second, which is not what anyone means by writing a date.
+  if (schedule.kind === "once" && schedule.at <= Date.now())
+    return res.status(400).json({ error: `that instant is already past (${scheduleLabel(schedule, zone)})` });
+  const enabled =
+    typeof b.enabled === "boolean"
+      ? b.enabled
+      : schedule.kind === "once"
+        ? true // re-arm: a spent one-shot being re-edited is enabled:false
+        : (existing?.enabled ?? true);
+  const check = typeof b.check === "string" && b.check.trim() ? String(b.check).trim() : undefined;
   const cron: Cron = {
     id: existing?.id ?? randomUUID(),
     sessionId,
@@ -953,7 +984,7 @@ app.post("/crons", (req, res) => {
     ...(check ? { check } : {}),
     ...(tz ? { tz } : {}),
     lastRun: existing?.lastRun,
-    nextRun: enabled ? nextRunFor(schedule, Date.now(), cronTimeZone({ tz })) : undefined,
+    nextRun: enabled ? nextRunFor(schedule, Date.now(), zone) : undefined,
   };
   upsertCron(cron);
   res.json({ ...cron, timezone: cronTimeZone(cron) });

@@ -50,12 +50,23 @@ async function api(ctx, method, path, body) {
   return raw ? JSON.parse(raw) : {};
 }
 
-/** `every:30m` · `every:2h` · `every:45` · `daily:09:00` → the API's schedule. */
+/** `every:30m` · `every:2h` · `every:45` · `daily:09:00` · `once:2026-08-25T08:42`
+ *  → the API's schedule. */
 export function parseSchedule(spec) {
   const s = String(spec).trim().toLowerCase();
   const bad = () => {
-    throw new UsageError(`bad schedule '${spec}' (use every:30m, every:2h, or daily:09:00)`);
+    throw new UsageError(
+      `bad schedule '${spec}' (use every:30m, every:2h, daily:09:00, or once:2026-08-25T08:42)`,
+    );
   };
+  if (s.startsWith("once:")) {
+    // Sent as written: the instant depends on the cron's timezone, which only
+    // the server knows. Parsing it here too would be a second truth, and the
+    // server already answers with a precise message on an unreadable date.
+    const at = s.slice(5).trim();
+    if (!at) bad();
+    return { kind: "once", at };
+  }
   if (s.startsWith("every:")) {
     const m = /^(\d+)([hm]?)$/.exec(s.slice(6));
     // Python raised on a non-numeric value; JS would quietly make it NaN and
@@ -76,6 +87,19 @@ const pad = (n) => String(n).padStart(2, "0");
 
 export function label(s, tz) {
   if (s.kind === "interval") return `every ${s.everyMin}m`;
+  if (s.kind === "once") {
+    // `at` comes back from the server as an absolute ms epoch, so it is read in
+    // the cron's zone — otherwise "once 06:42" doesn't say 6:42 WHERE, the same
+    // trap as a bare daily but worse, because a date does not come round again.
+    const p = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz || undefined,
+      hour12: false,
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    }).formatToParts(new Date(s.at));
+    const f = Object.fromEntries(p.filter((x) => x.type !== "literal").map((x) => [x.type, x.value]));
+    const hour = pad(Number(f.hour) % 24); // some ICU builds render midnight as "24"
+    return `once ${f.year}-${f.month}-${f.day} ${hour}:${f.minute}` + (tz ? ` (${tz})` : "");
+  }
   // The timezone is always shown: a bare "daily 09:00" doesn't say 9am WHERE,
   // and that is exactly what makes a UTC server look on time.
   return `daily ${pad(s.hour)}:${pad(s.minute)}` + (tz ? ` (${tz})` : "");
@@ -135,7 +159,10 @@ async function cmdList(ctx) {
   if (!mine.length) return console.log("(no schedule on this channel)");
   const tzinfo = await api(ctx, "GET", "/timezone");
   for (const c of mine) {
-    const flags = (c.enabled ? "" : " (paused)") + (c.check ? " +guard" : "");
+    // A spent one-shot is not "paused": it fired. Saying paused suggests that
+    // resuming it would run it again.
+    const spent = c.schedule?.kind === "once" && c.lastRun;
+    const flags = (c.enabled ? "" : spent ? " (fired)" : " (paused)") + (c.check ? " +guard" : "");
     const tz = c.tz || tzinfo.timezone || tzinfo.system;
     console.log(`[${String(c.id).slice(0, 8)}] ${label(c.schedule, tz)}${flags}\n   ${String(c.prompt).slice(0, 100)}`);
   }

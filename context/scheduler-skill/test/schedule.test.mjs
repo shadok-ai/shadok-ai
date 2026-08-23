@@ -150,3 +150,21 @@ test("an API error is reported, not swallowed", async () => {
   assert.notEqual(res.code, 0);
   assert.match(res.err, /API error 500/);
 });
+
+test("parseSchedule passes a one-shot date through for the server to resolve", () => {
+  // Deliberately NOT parsed here: the instant depends on the cron's timezone,
+  // which only the server knows. Two parsers would be two truths.
+  assert.deepEqual(parseSchedule("once:2026-08-25T08:42"), { kind: "once", at: "2026-08-25t08:42" });
+  assert.deepEqual(parseSchedule(" ONCE:2026-08-25T08:42 "), { kind: "once", at: "2026-08-25t08:42" });
+});
+
+test("parseSchedule still refuses garbage, and names once in the message", () => {
+  assert.throws(() => parseSchedule("once:"), /bad schedule/);
+  assert.throws(() => parseSchedule("nonsense"), /once:2026-08-25T08:42/);
+});
+
+test("label reads a one-shot instant in the cron's timezone", () => {
+  const at = Date.UTC(2026, 7, 25, 6, 42); // 08:42 in Paris (CEST)
+  assert.equal(label({ kind: "once", at }, "Europe/Paris"), "once 2026-08-25 08:42 (Europe/Paris)");
+  assert.equal(label({ kind: "once", at }, "UTC"), "once 2026-08-25 06:42 (UTC)");
+});

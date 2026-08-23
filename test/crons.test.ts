@@ -11,9 +11,11 @@ import {
   nextRunAfterFailure,
   nextRunFor,
   normalizeSchedule,
+  onceAt,
   resolveCronId,
   resolveCronTarget,
   scheduleLabel,
+  stateAfterFire,
   type Cron,
 } from "../src/crons.js";
 import type { Channel } from "../src/channels.js";
@@ -260,4 +262,72 @@ test("isCronPrompt: strict — the mark must OPEN the message", () => {
   assert.equal(isCronPrompt("how does " + CRON_PROMPT_MARK + " work?"), false);
   assert.equal(isCronPrompt("Write the morning report."), false);
   assert.equal(isCronPrompt(""), false);
+});
+
+// ── one-shot ("once") ───────────────────────────────────────────────────────
+
+test("normalizeSchedule: accepts a one-shot instant, rejects a broken one", () => {
+  const at = Date.UTC(2026, 7, 25, 6, 42);
+  assert.deepEqual(normalizeSchedule({ kind: "once", at }), { kind: "once", at });
+  // a string of digits is what an HTTP body carries — accept it, it IS a number
+  assert.deepEqual(normalizeSchedule({ kind: "once", at: String(at) }), { kind: "once", at });
+  assert.equal(normalizeSchedule({ kind: "once" }), null);
+  assert.equal(normalizeSchedule({ kind: "once", at: "tuesday" }), null);
+  assert.equal(normalizeSchedule({ kind: "once", at: NaN }), null);
+  assert.equal(normalizeSchedule({ kind: "once", at: 0 }), null);
+  assert.equal(normalizeSchedule({ kind: "once", at: -1 }), null);
+});
+
+test("nextRunFor: a one-shot is its own instant, past or future", () => {
+  const at = Date.UTC(2026, 7, 25, 6, 42);
+  // it does NOT roll forward like a daily: the instant was already arbitrated
+  assert.equal(nextRunFor({ kind: "once", at }, at - 60_000), at);
+  assert.equal(nextRunFor({ kind: "once", at }, at + 86_400_000), at);
+  // and no timezone can move it — it is absolute
+  assert.equal(nextRunFor({ kind: "once", at }, 0, "Pacific/Kiritimati"), at);
+});
+
+test("stateAfterFire: a one-shot is spent, a recurring one is re-armed", () => {
+  const now = Date.UTC(2026, 7, 25, 6, 42);
+  // Disabling BEFORE the fire is what stops a one-shot from re-firing forever:
+  // advancing nextRun (what a recurring cron does) would land on the same
+  // instant, since `at` is fixed.
+  assert.deepEqual(stateAfterFire({ kind: "once", at: now }, now), { enabled: false, nextRun: undefined });
+  const every = stateAfterFire({ kind: "interval", everyMin: 30 }, now);
+  assert.equal(every.enabled, true);
+  assert.equal(every.nextRun, now + 30 * 60_000);
+});
+
+test("scheduleLabel: a one-shot names its date in the cron's timezone", () => {
+  const at = Date.UTC(2026, 7, 25, 6, 42); // 08:42 in Paris (CEST)
+  assert.equal(scheduleLabel({ kind: "once", at }, "Europe/Paris"), "once at 2026-08-25 08:42 (Europe/Paris)");
+  // the same instant read elsewhere is a different wall clock — and says so
+  assert.equal(scheduleLabel({ kind: "once", at }, "UTC"), "once at 2026-08-25 06:42 (UTC)");
+});
+
+test("onceAt: reads a wall clock in a timezone, rejects nonsense", () => {
+  assert.equal(onceAt("Europe/Paris", "2026-08-25T08:42"), Date.UTC(2026, 7, 25, 6, 42));
+  // the browser's datetime-local, and the same with a space
+  assert.equal(onceAt("Europe/Paris", "2026-08-25 08:42"), Date.UTC(2026, 7, 25, 6, 42));
+  // an explicit offset is absolute — the timezone argument must not shift it
+  assert.equal(onceAt("Europe/Paris", "2026-08-25T06:42:00Z"), Date.UTC(2026, 7, 25, 6, 42));
+  assert.equal(onceAt("America/New_York", "2026-08-25T06:42:00Z"), Date.UTC(2026, 7, 25, 6, 42));
+  assert.equal(onceAt("Europe/Paris", "tomorrow morning"), null);
+  assert.equal(onceAt("Europe/Paris", "2026-13-45T99:99"), null);
+  assert.equal(onceAt("Europe/Paris", ""), null);
+});
+
+test("nextRunAfterFailure: a one-shot has no next slot, so nothing caps its retries", () => {
+  // A recurring cron gives up at its own next slot. A one-shot has none: the
+  // reminder would simply be lost, which is the whole point of the feature.
+  const r = nextRunAfterFailure(NOW, null, 0);
+  assert.deepEqual(r, { nextRun: NOW + CRON_RETRY_DELAY_MS, retrying: true, attempts: 1 });
+  // …but the attempt cap still applies, and giving up leaves no run to schedule
+  assert.deepEqual(nextRunAfterFailure(NOW, null, CRON_MAX_RETRIES), { nextRun: null, retrying: false, attempts: 0 });
+});
+
+test("onceAt: tolerates a lowercase 't' separator", () => {
+  // the CLI lowercases its whole schedule spec ("once:2026-08-25T08:42"), and a
+  // human typing the date by hand rarely reaches for the shift key either
+  assert.equal(onceAt("Europe/Paris", "2026-08-25t08:42"), Date.UTC(2026, 7, 25, 6, 42));
 });

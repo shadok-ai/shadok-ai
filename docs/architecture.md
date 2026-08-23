@@ -597,8 +597,9 @@ broadcast so the UI can show what's happening rather than looking hung.
 
 A cron is a prompt fired at a channel on a timer: `{sessionId, prompt, schedule,
 enabled, check?, tz?}`, persisted per launch directory in
-`~/.shadok-ai/crons/<encoded cwd>.json`. Two schedules: `interval` (every N
-minutes) and `daily` (HH:MM). The server resumes the channel and prompts it, so
+`~/.shadok-ai/crons/<encoded cwd>.json`. Three schedules: `interval` (every N
+minutes), `daily` (HH:MM) and `once` (a single absolute instant). The server
+resumes the channel and prompts it, so
 nothing has to stay alive between runs — which is why there is no duration cap
 here, unlike an agent scheduling itself.
 
@@ -653,6 +654,21 @@ stay 09:00), and `instantOfWallClock` does **two** passes over the UTC offset,
 because the offset depends on the instant you're still looking for — one pass was
 an hour wrong on both switchover days. `scheduleLabel` always prints the zone for
 a `daily`: a bare "daily at 09:00" doesn't say 09:00 *where*.
+
+**A one-shot is spent by its own fire.** `once` stores an **absolute** instant
+(`at`, ms epoch) rather than a wall clock plus a zone: a `daily` is a rule, re-read
+every day, so changing the default timezone must move it; a `once` is an instant
+already arbitrated at creation, and moving it under the user because a global
+setting changed would be the surprise. It cannot advance to a "next slot" — that
+slot is the same fixed instant, so it would fire forever — so `stateAfterFire`
+**disables** it instead, before the delivery is even attempted. That reuses
+`enabled: false`, a state `cronTick`, `primeCrons` and `GET /channels` already
+skip, which is why the whole lifecycle needed no new state. The pendant is in
+`settleCron`: a transient loss must **re-arm** it (`nextRunAfterFailure` with a
+`null` slot, so nothing caps the retry), otherwise a channel that was merely busy
+would eat the reminder for good. A date already past is refused at creation; a
+slot missed while the server was down still fires **late**, since `primeCrons`
+leaves a past `nextRun` alone by design.
 
 **Firing, and losing a fire.** `cronTick` advances `nextRun` *before* firing —
 that's what stops a long run from double-firing — and `cronsFiring` holds the
