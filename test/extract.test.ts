@@ -54,6 +54,40 @@ test("two-column dialog: the right-hand preview chart is stripped from labels", 
   assert.equal(d!.question, "Quel style de visualisation veux-tu ?");
 });
 
+test("preview dialog: footer chrome under the stripped column is not glued onto an option's hint", () => {
+  // Real captured screen from an AskUserQuestion with per-option code previews.
+  // The right-hand preview box is stripped (invariant 2); what remained was
+  // "Notes: press n to add notes" and "Chat about this" — indented footer chrome
+  // that used to be absorbed as option 2's hint ("…add notes Chat about this").
+  const screen = [
+    "────────────────────────────────────────────────────────────",
+    " ☐ Naming",
+    "",
+    "Quel style de nommage préférez-vous ?",
+    "",
+    "❯ 1. camelCase                    ┌──────────────────────────┐",
+    "  2. snake_case                   │ const myVar = 1;         │",
+    "                                  └──────────────────────────┘",
+    "",
+    "                                  Notes: press n to add notes",
+    "",
+    "────────────────────────────────────────────────────────────",
+    "  Chat about this",
+    "",
+    "Enter to select · ↑/↓ to navigate · n to add notes · Esc to cancel",
+  ].join("\n");
+  const d = detectDialog(screen);
+  assert.ok(d, "should detect");
+  assert.equal(d!.multi, false);
+  assert.equal(d!.question, "Quel style de nommage préférez-vous ?");
+  assert.deepEqual(d!.options.map((o) => o.label), ["camelCase", "snake_case"]);
+  // The bug: option 2's hint carried the footer chrome. It must be empty now.
+  assert.equal(d!.options[1].hint, "");
+  for (const o of d!.options) {
+    assert.ok(!/press n to add notes|Chat about this|Notes:/i.test(o.hint || ""), "no chrome in hint");
+  }
+});
+
 test("multi-select dialog: checkboxes parsed with their state", () => {
   const screen = [
     "Quelles garnitures ?",
