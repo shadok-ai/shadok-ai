@@ -1,68 +1,70 @@
-# La case « read-only » dit enfin la vérité
+# The "read-only" checkbox finally tells the truth
 
-Date : 2026-08-09
-Statut : validé, implémenté
+Date: 2026-08-09
+Status: agreed, implemented
 
-## Le symptôme
+## The symptom
 
-« Quand on édite un profil, on ne peut pas modifier le flag git — ou plutôt il
-ne représente pas le statut ? »
+"When you edit a profile, you cannot change the git flag — or rather it does not
+represent the status?"
 
-Les deux à la fois.
+Both at once.
 
-## Les deux défauts
+## The two defects
 
-**Elle ne représentait pas l'état.** `fillProfileForm` faisait
-`$("profReadonly").checked = false;` **sans condition**. Ouvrir `Shadok-Content`,
-qui porte pourtant les 7 motifs `deny`, affichait la case décochée. Pour tous les
-profils, toujours.
+**It did not represent the state.** `fillProfileForm` did
+`$("profReadonly").checked = false;` **unconditionally**. Opening
+`Shadok-Content`, which does carry the 7 `deny` patterns, showed the box
+unticked. For every profile, always.
 
-**Elle ne pilotait rien.** Le gestionnaire était à sens unique :
-`if (e.target.checked) profDeny.value = READONLY_DENY.join("\n")`. Cocher
-écrasait la zone ; **décocher ne faisait rien**. Retirer le read-only imposait de
-vider la zone de texte à la main.
+**It drove nothing.** The handler was one-way:
+`if (e.target.checked) profDeny.value = READONLY_DENY.join("\n")`. Ticking
+overwrote the area; **unticking did nothing**. Removing read-only meant emptying
+the textarea by hand.
 
-L'origine est dans l'intention : « Read-only **preset** » avait été conçu comme
-un bouton « remplis-moi la liste », pas comme un état. Présenté en case à cocher,
-il se lit pourtant comme un état — d'où un vrai interrupteur.
+The origin is in the intent: "Read-only **preset**" had been designed as a
+"fill this list for me" button, not as a state. Presented as a checkbox, it reads
+as a state — hence a real switch.
 
-## La règle retenue
+## The rule adopted
 
-`deny` reste **la source de vérité**. La case en est une vue, jamais l'inverse.
+`deny` remains **the source of truth**. The box is a view of it, never the
+reverse.
 
-- **Cochée** si et seulement si les 7 motifs du preset sont **tous** présents. Un
-  preset à moitié appliqué ne doit pas se donner des airs d'être en place.
-- **Décocher** retire ces 7 motifs et **conserve** les motifs personnalisés.
-- **Cocher** ajoute ceux qui manquent, sans doublon et sans toucher au reste.
-- **Éditer la zone à la main** resynchronise la case — sinon elle se remettrait à
-  mentir dès la première ligne tapée.
+- **Ticked** if and only if **all** 7 preset patterns are present. A
+  half-applied preset must not pretend to be in place.
+- **Unticking** removes those 7 patterns and **keeps** the custom ones.
+- **Ticking** adds the missing ones, without duplicates and without touching the
+  rest.
+- **Editing the area by hand** resyncs the box — otherwise it would start lying
+  again on the first line typed.
 
-Volontairement plus strict que le badge de la carte, qui répond à une autre
-question — « ce profil a-t-il des garde-fous ? » — et s'allume dès qu'un `deny`
-existe, fût-il personnalisé. Les deux cohabitent parce qu'ils n'affirment pas la
-même chose.
+Deliberately stricter than the card's badge, which answers a different question —
+"does this profile have guardrails?" — and lights up as soon as a `deny` exists,
+custom or not. The two coexist because they do not assert the same thing.
 
-## Cœurs purs
+## Pure cores
 
-`hasReadonlyPreset(deny, preset)` et `applyReadonlyPreset(deny, on, preset)` dans
-`public/profile-card.js`, le preset passé en paramètre plutôt que capturé.
+`hasReadonlyPreset(deny, preset)` and `applyReadonlyPreset(deny, on, preset)` in
+`public/profile-card.js`, with the preset passed as a parameter rather than
+captured.
 
-**Un garde anti-dérive** vient avec : `READONLY_DENY` est dupliqué dans
-`index.html` (le navigateur ne peut pas importer le TypeScript). Un test compare
-la copie du HTML à celle de `src/profiles.ts` — sans lui, une modification côté
-serveur laisserait la case poser des garde-fous périmés, en silence.
+**An anti-drift guard** comes with them: `READONLY_DENY` is duplicated in
+`index.html` (the browser cannot import the TypeScript). A test compares the
+HTML's copy to `src/profiles.ts`'s — without it, a server-side change would leave
+the checkbox setting stale guardrails, silently.
 
-## Vérification
+## Verification
 
-434 tests verts. Au navigateur, sur les profils réels :
+434 tests green. In the browser, against the real profiles:
 
-| Action | Résultat |
+| Action | Result |
 |---|---|
-| ouvrir `Shadok-Content` (read-only) | case **cochée** — elle était toujours décochée avant |
-| ouvrir `Shadok-dev` (accès complet) | décochée |
-| ajouter `Bash(rm:*)` à la main | reste cochée |
-| décocher | il ne reste que `Bash(rm:*)` — le perso survit |
-| recocher | 8 motifs, perso conservé, aucun doublon |
-| vider la zone à la main | se décoche |
+| open `Shadok-Content` (read-only) | box **ticked** — it was always unticked before |
+| open `Shadok-dev` (full access) | unticked |
+| add `Bash(rm:*)` by hand | stays ticked |
+| untick | only `Bash(rm:*)` remains — the custom pattern survives |
+| tick again | 8 patterns, custom one kept, no duplicate |
+| empty the area by hand | unticks |
 
-Zéro erreur console.
+Zero console errors.

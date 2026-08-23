@@ -1,73 +1,75 @@
-# Shadok-Boss — un agent de tête qui délègue
+# Shadok-Boss — a lead agent that delegates
 
-Date : 2026-07-30
-Statut : validé, implémenté
+Date: 2026-07-30
+Status: agreed, implemented
 
-## Problème
+## Problem
 
-Le canal `general` est le premier agent de l'environnement (`src/channels.ts`
-force son nom) : c'est à lui que l'utilisateur parle en premier. Il n'avait
-pourtant aucun rôle — un Claude nu, qui traite chaque demande lui-même.
+The `general` channel is the environment's first agent (`src/channels.ts` forces
+its name): it is the one the user talks to first. Yet it had no role at all — a
+bare Claude, handling every request itself.
 
-Or l'intérêt du cockpit est de faire tourner **plusieurs** agents en parallèle.
-L'agent d'entrée devrait donc surtout savoir *répartir*.
+But the point of the cockpit is to run **several** agents in parallel. The entry
+agent should therefore mostly know how to *distribute* work.
 
-Et un trou empêchait de le faire proprement : `pilotctl.mjs` — le client par
-lequel la skill `shadok-ai-agents` crée des agents — ne connaissait pas
-`--profile`. Le message WS `start` accepte pourtant `profile` depuis les
-profils d'agents. Résultat : **tout agent délégué démarrait en Claude nu**, sans
-rôle, sans garde-fou, sans secrets. Un boss qui délègue à des agents anonymes ne
-délègue pas vraiment.
+And one gap made that impossible to do properly: `pilotctl.mjs` — the client
+through which the `shadok-ai-agents` skill creates agents — did not know
+`--profile`. The `start` WS message has accepted `profile` since agent profiles
+landed. The result: **every delegated agent started as bare Claude**, with no
+role, no guardrail, no secrets. A boss that delegates to anonymous agents is not
+really delegating.
 
-## 1. `--profile` dans pilotctl
+## 1. `--profile` in pilotctl
 
-`parseArgs` : `--profile` rejoint les flags à valeur (`--cwd`, `--resume`,
-`--timeout`). `cmdSpawn` : `if (flags.profile) startMsg.profile = flags.profile`.
-Rien à changer côté serveur.
+`parseArgs`: `--profile` joins the value flags (`--cwd`, `--resume`,
+`--timeout`). `cmdSpawn`: `if (flags.profile) startMsg.profile = flags.profile`.
+Nothing to change server-side.
 
-Le profil n'a d'effet que sur une session **neuve** : en `--resume` /
-`--continue`, la session reprend celui qu'elle avait déjà. C'est la règle
-existante du serveur, la doc de la skill la rappelle.
+The profile only takes effect on a **new** session: with `--resume` /
+`--continue`, the session keeps the one it already had. That is the server's
+existing rule, and the skill's documentation restates it.
 
-## 2. Le profil `Shadok-Boss`
+## 2. The `Shadok-Boss` profile
 
-Quatrième entrée de `DEFAULT_PROFILES`, **placée en première position** : c'est
-la porte d'entrée, donc la première carte de la box « New agent ».
+The fourth entry of `DEFAULT_PROFILES`, **placed first**: it is the way in, hence
+the first card of the "New agent" box.
 
-- `deny: READONLY_DENY` — les mêmes écritures git bloquées que Marketing et
+- `deny: READONLY_DENY` — the same git writes blocked as for Marketing and
   Support.
-- `secrets: []`, **pas de `model` forcé** — cohérent avec les trois autres ;
-  l'utilisateur l'épingle depuis le panneau Profiles s'il le veut.
+- `secrets: []`, **no forced `model`** — consistent with the other three; the
+  user pins one from the Profiles panel if they want.
 
-**Pourquoi read-only, c'est le cœur du design.** Un boss qui peut committer
-finit par corriger lui-même « juste ce typo », puis la fonction d'à côté, et ne
-délègue plus. Les écritures bloquées ne sont pas une méfiance : c'est ce qui
-rend la délégation obligatoire plutôt que facultative.
+**Why read-only is the heart of the design.** A boss that can commit ends up
+fixing "just that typo" itself, then the function next to it, and stops
+delegating. Blocked writes are not distrust: they are what makes delegation
+mandatory rather than optional.
 
-Le prompt système lui donne deux tâches, dans l'ordre :
+The system prompt gives it two jobs, in order:
 
-1. **Savoir** — lire le dépôt, `CLAUDE.md`, `docs/` et l'historique avant de
-   répondre ; répondre lui-même aux questions, conclusion d'abord. Ne jamais
-   faire attendre derrière un agent quand une lecture suffit.
-2. **Déléguer** — tout travail réel part à un agent dédié, via
-   `spawn --worktree --profile <rôle>` puis `prompt` en arrière-plan, avec un
-   brief exécutable sans lui ; puis relire le `diff` et le présenter.
+1. **Know** — read the repo, `CLAUDE.md`, `docs/` and the history before
+   answering; answer questions itself, conclusion first. Never make someone wait
+   behind an agent when a read would do.
+2. **Delegate** — all real work goes to a dedicated agent, via
+   `spawn --worktree --profile <role>` then `prompt` in the background, with a
+   brief that is executable without it; then read the `diff` and present it.
 
-Il choisit le rôle (`Shadok-dev` pour le code, `Shadok-Marketing`,
-`Shadok-Support`), **annonce ce qu'il spawne et pourquoi avant de le faire**
-(chaque agent consomme le même quota qu'une session normale), ne merge jamais
-lui-même (invariant 9), et n'arrête jamais une session qu'il n'a pas créée.
+It picks the role (`Shadok-dev` for code, `Shadok-Marketing`, `Shadok-Support`),
+**announces what it is spawning and why before doing it** (every agent consumes
+the same quota as an ordinary session), never merges itself (invariant 9), and
+never stops a session it did not create.
 
-## Livraison
+## Delivery
 
-`seedDefaultProfiles` ne sème que si le fichier est **vide** : ajouter l'entrée
-au code ne donne donc rien aux installations existantes. Le profil est aussi
-créé dans le vault en service via `PUT /profiles`.
+`seedDefaultProfiles` only seeds when the file is **empty**: adding the entry to
+the code therefore gives existing installations nothing. The profile is also
+created in the running vault through `PUT /profiles`.
 
 ## Tests
 
-- `helpers.test.mjs` : `--profile` prend une valeur et ne fuit pas en positionnel.
-- `spawn.test.mjs` : le `start` reçu par le mock-server contient bien `profile`.
-- `profiles.test.ts` : le boss est read-only, en tête de liste, et son prompt
-  cite `shadok-ai-agents`, `--profile` et les trois rôles délégables — qui
-  doivent exister dans `DEFAULT_PROFILES`.
+- `helpers.test.mjs`: `--profile` takes a value and does not leak into
+  positionals.
+- `spawn.test.mjs`: the `start` received by the mock server does contain
+  `profile`.
+- `profiles.test.ts`: the boss is read-only, first in the list, and its prompt
+  mentions `shadok-ai-agents`, `--profile` and the three delegable roles — which
+  must exist in `DEFAULT_PROFILES`.

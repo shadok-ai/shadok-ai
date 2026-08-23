@@ -1,74 +1,74 @@
-# Design — Désencombrer la barre du haut (boutons en icônes + menu ⋯)
+# Design — Decluttering the top bar (icon buttons + a ⋯ menu)
 
-Date : 2026-07-28
-Statut : validé (brainstorming)
+Date: 2026-07-28
+Status: agreed (brainstorming)
 
-## Problème
+## Problem
 
-Le header accumule trop de boutons texte à droite (🔔, Diff, Terminal, Secrets,
-Profiles, ⏰ Schedule, Telegram, End session) → il déborde sur les fenêtres pas
-très larges.
+The header piles up too many text buttons on the right (🔔, Diff, Terminal,
+Secrets, Profiles, ⏰ Schedule, Telegram, End session) → it overflows on windows
+that are not very wide.
 
-## Décisions (utilisateur)
+## Decisions (from the user)
 
-- Passer les boutons en **icônes** (tooltip `title` conservé pour la découverte).
-- **Diff** (jamais utilisé) → rangé dans un menu **⋯** (non destructif, extensible).
-- **Secrets** et **Profiles** → restent visibles, en icônes.
+- Turn the buttons into **icons** (the `title` tooltip kept for discoverability).
+- **Diff** (never used) → tucked into a **⋯** menu (non-destructive, extensible).
+- **Secrets** and **Profiles** → stay visible, as icons.
 
-## Portée
+## Scope
 
-Frontend uniquement (`public/index.html`). Aucun changement serveur. Les **IDs
-des boutons sont conservés** → tous les handlers `addEventListener` existants
-restent branchés ; on ne change que le libellé (→ icône) et on emballe Diff dans
-un menu.
+Frontend only (`public/index.html`). No server change. The **button IDs are
+kept** → every existing `addEventListener` handler stays wired; only the label
+changes (→ an icon) and Diff gets wrapped in a menu.
 
 ## Design
 
-Barre, à droite (après les jauges quota 5h/7d) :
+The bar, on the right (after the 5h/7d quota gauges):
 
-| Bouton (id inchangé) | Avant | Après |
+| Button (id unchanged) | Before | After |
 |---|---|---|
 | `toggleMachine` | Terminal | `⌨️` |
 | `secretsBtn` | Secrets | `🔑` |
 | `profilesBtn` | Profiles | `👤` |
 | `cronBtn` | ⏰ Schedule | `⏰` |
 | `telegramBtn` | Telegram | `✈️` |
-| `muteNotif` | 🔔 | `🔔`/`🔕` (inchangé) |
-| `moreBtn` (nouveau) | — | `⋯` → menu |
-| `stopBtn` | End session | `⏹️` (classe `.stop`, teinte alerte au survol) |
+| `muteNotif` | 🔔 | `🔔`/`🔕` (unchanged) |
+| `moreBtn` (new) | — | `⋯` → menu |
+| `stopBtn` | End session | `⏹️` (class `.stop`, alert tint on hover) |
 
-Chaque bouton icône porte un `title` explicite.
+Every icon button carries an explicit `title`.
 
-**Menu ⋯** : `#moreBtn` ouvre `#moreMenu` (absolute, sous le bouton, aligné à
-droite, fond `--bg-raised`, bord `--line`). Contenu initial : le bouton **Diff**
-(`toggleDiff`, comportement inchangé — bascule le panneau diff). Se ferme au
-clic-dehors et après sélection d'un item. Extensible (futurs réglages rares).
+**The ⋯ menu**: `#moreBtn` opens `#moreMenu` (absolute, under the button, right
+aligned, `--bg-raised` background, `--line` border). Initial content: the **Diff**
+button (`toggleDiff`, behaviour unchanged — toggles the diff panel). Closes on an
+outside click and after an item is selected. Extensible (future rare settings).
 
 ### CSS
 
-- `header button.icon` : padding réduit (`6px 8px`), `font-size: 14px`,
-  `line-height: 1` pour des carrés d'icône réguliers.
-- `.more-wrap { position: relative }` ; `#moreMenu` en dropdown absolu, `z-index`
-  au-dessus du contenu.
+- `header button.icon`: reduced padding (`6px 8px`), `font-size: 14px`,
+  `line-height: 1` for regular icon squares.
+- `.more-wrap { position: relative }`; `#moreMenu` as an absolute dropdown,
+  `z-index` above the content.
 - `header button.stop:hover { border-color: var(--err); color: var(--err) }`.
 
 ### JS
 
-- `#moreBtn` click → toggle `#moreMenu.hidden` (+ `stopPropagation` pour ne pas se
-  refermer aussitôt).
-- `document` click → ferme `#moreMenu` (clic-dehors ; le clic sur un item bulle
-  jusqu'au document → ferme le menu, l'action de l'item s'exécute quand même).
+- `#moreBtn` click → toggles `#moreMenu.hidden` (+ `stopPropagation` so it does
+  not close again immediately).
+- `document` click → closes `#moreMenu` (outside click; a click on an item
+  bubbles up to the document → closes the menu, and the item's action still
+  runs).
 
-## Critères de réussite
+## Success criteria
 
-1. La barre tient sans déborder : icônes compactes + un seul `⋯`.
-2. Chaque icône garde son action (IDs inchangés) et affiche son tooltip.
-3. `⋯` ouvre/ferme un menu contenant Diff ; Diff bascule toujours le panneau.
-4. Le menu se ferme au clic-dehors et après clic sur Diff.
-5. `⏹️` (stop) reste visuellement distinct (survol en teinte alerte).
-6. Frontend seul, aucun asset ajouté (emoji), aucun changement serveur.
+1. The bar fits without overflowing: compact icons + a single `⋯`.
+2. Every icon keeps its action (IDs unchanged) and shows its tooltip.
+3. `⋯` opens/closes a menu containing Diff; Diff still toggles the panel.
+4. The menu closes on an outside click and after clicking Diff.
+5. `⏹️` (stop) stays visually distinct (alert tint on hover).
+6. Frontend only, no asset added (emoji), no server change.
 
-## Hors périmètre
+## Out of scope
 
-Refonte de la partie gauche (Status/Directory/Session/Branch), responsive avancé,
-icônes SVG custom. On reste sur des emoji + un menu simple.
+Reworking the left-hand side (Status/Directory/Session/Branch), advanced
+responsive work, custom SVG icons. We stay with emoji + a simple menu.

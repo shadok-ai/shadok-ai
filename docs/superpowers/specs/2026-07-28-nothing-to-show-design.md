@@ -1,62 +1,61 @@
-# `NOTHING TO SHOW` : laisser un agent ne rien dire
+# `NOTHING TO SHOW`: letting an agent say nothing
 
 *2026-07-28*
 
-## Le problème
+## The problem
 
-Un agent doit toujours répondre quelque chose. Une session planifiée (un cron
-de surveillance, par exemple) qui n'a rien détecté n'a donc aucun moyen de se
-taire : elle poste « rien à signaler », ce qui fait vibrer un téléphone pour
-dire qu'il ne s'est rien passé. Le bruit est exactement ce qu'un cron muet
-devait éviter.
+An agent must always answer something. A scheduled session (a monitoring cron,
+say) that detected nothing therefore has no way to stay silent: it posts
+"nothing to report", which buzzes a phone to say that nothing happened. That
+noise is exactly what a quiet cron was meant to avoid.
 
-## Le comportement visé
+## The intended behaviour
 
-Un bloc de texte dont **tout** le contenu est `NOTHING TO SHOW` n'est ni streamé
-ni rejoué : pas de bulle dans le web, pas de message Telegram, rien dans
-l'historique après rechargement. Le reste du tour (autres blocs, appels
-d'outils, usage de tokens) est inchangé.
+A text block whose **entire** content is `NOTHING TO SHOW` is neither streamed
+nor replayed: no bubble in the web UI, no Telegram message, nothing in the
+history after a reload. The rest of the turn (other blocks, tool calls, token
+usage) is unchanged.
 
-La convention est documentée dans `context/pilot-prompt.md`, donc toute session
-pilotée la connaît.
+The convention is documented in `context/pilot-prompt.md`, so every piloted
+session knows it.
 
 ## Architecture
 
-### Le prédicat (`src/tail.ts`)
+### The predicate (`src/tail.ts`)
 
 ```ts
 const NOTHING_TO_SHOW = /^[*_`\s]*nothing to show[*_`\s.!]*$/i;
 export function isNothingToShow(text: string): boolean;
 ```
 
-Volontairement **strict** : la sentinelle doit constituer le bloc entier
-(emphase Markdown et point final tolérés, casse indifférente). Un agent qui
-*explique* la convention dans une phrase ne se fait pas museler. L'invariant 2
-du CLAUDE.md rappelle ce qu'une heuristique trop large a déjà coûté ici : une
-citation d'« esc to interrupt » suffisait à bloquer une session en « busy ».
+Deliberately **strict**: the sentinel must be the whole block (Markdown emphasis
+and a trailing period tolerated, case-insensitive). An agent that *explains* the
+convention in a sentence does not get muzzled. Invariant 2 of CLAUDE.md is the
+reminder of what an over-broad heuristic has already cost here: quoting "esc to
+interrupt" was enough to leave a session stuck as "busy".
 
-`tail.ts` est la source de vérité du contenu : y placer le filtre le fait valoir
-pour tous les consommateurs d'un coup (web et Telegram passent par le même
+`tail.ts` is the source of truth for content: putting the filter there makes it
+hold for every consumer at once (the web and Telegram go through the same
 `stream-text`).
 
-### Les trois points de filtrage
+### The three filtering points
 
-| Où | Pourquoi |
+| Where | Why |
 |---|---|
-| `parseLine` (`src/tail.ts`) | Le flux live : le bloc n'est jamais émis. |
-| `loadHistory` (`src/extract.ts`) | L'historique rejoué au rechargement — filtré **bloc à bloc**, comme le tail, sinon la sentinelle réapparaîtrait après un F5 alors qu'elle n'a jamais été affichée. |
-| `updateLivePreview` (`public/index.html`) | L'aperçu gris provisoire est lu à l'écran, pas dans le transcript : sans garde il resterait affiché tout le tour, à attendre un `stream-text` qui ne viendra jamais. Jumeau du regex serveur — il n'y a pas de bundler ici. |
+| `parseLine` (`src/tail.ts`) | The live stream: the block is never emitted. |
+| `loadHistory` (`src/extract.ts`) | History replayed on reload — filtered **block by block**, like the tail, otherwise the sentinel would reappear after an F5 though it was never displayed. |
+| `updateLivePreview` (`public/index.html`) | The provisional grey preview is read off the screen, not from the transcript: with no guard it would stay up the whole turn, waiting for a `stream-text` that will never come. Twin of the server-side regex — there is no bundler here. |
 
 ## Tests
 
-- `test/tail.test.ts` : le prédicat (casse, emphase, point final ; la phrase
-  *dans* une phrase n'est pas la sentinelle) et `parseLine` qui laisse passer
-  le reste du message.
-- `test/extract.test.ts` : un bloc sentinelle dans le transcript ne crée aucun
-  tour dans l'historique rejoué.
+- `test/tail.test.ts`: the predicate (case, emphasis, trailing period; the phrase
+  *inside* a sentence is not the sentinel) and `parseLine` letting the rest of
+  the message through.
+- `test/extract.test.ts`: a sentinel block in the transcript creates no turn in
+  the replayed history.
 
-## Hors scope
+## Out of scope
 
-- Rendre la sentinelle configurable : une chaîne en dur suffit et se documente
-  dans le prompt pilote.
-- Signaler « ce tour n'a rien dit » dans l'UI : le silence est le but.
+- Making the sentinel configurable: a hardcoded string is enough and documents
+  itself in the pilot prompt.
+- Reporting "this turn said nothing" in the UI: the silence is the point.
