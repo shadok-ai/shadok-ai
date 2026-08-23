@@ -99,7 +99,8 @@ both are silent in the DOM.
 | `src/channels.ts` | Server-side persistence of the channel + group lists, keyed by launch dir (`~/.shadok-ai/channels/<enc>.json`). `isMirrored` = does this channel live in Telegram too (opt-in per channel; falls back to "has a binding" so existing setups don't change). Also the Telegram board-group binding. Forces the main channel's name to `general`. `isHomeChannel` (pure, tested) is the ONE definition of the home base — the server-owned `home` flag, or a bound board's General (`threadId == null` **and** `chatId < 0`, since a DM has no topic either and must stay closable). It replaced three copies of that condition: `endChannel`, the client's `isMain`, and a comment in `telegram.ts`. `homeAdoptionTarget` gives a pre-flag cockpit its home base and **refuses when it cannot tell** (zero or several candidates): a wrong adoption is irreversible from the UI, since the channel becomes precisely the one that cannot be closed. `homeChannelForGeneral` (pure, tested) is the twin for the OTHER direction: when a board's General is first opened, `bridgeFor` resumes the web home session (`home: true`, not yet Telegram-bound) instead of spawning a SECOND "general" beside it — the home channel gains the binding rather than being duplicated. |
 | `src/telegram.ts` | The Telegram bridge (DMs belong to ONE user — `dmGate` + `…-telegram-owner.json`; the owner is adopted at boot from an existing DM binding or the board group's creator): one topic = one agent. Owns the bot long-poll, the command dispatcher (`/spawn`, `/stop`, `/secret`…), Markdown→Telegram HTML, dialogs as inline keyboards, attachments. Each binding holds a **WS client to our own server** — so a Telegram session is the same `Live` the web sees. |
 | `src/main.ts` | The `npx shadok-ai` entry point: parses flags, first-run token prompt, then runs the **supervisor**. Not the server. |
-| `src/supervisor.ts` / `src/updater.ts` / `src/update-flag.ts` | Self-update: the supervisor runs the npm-installed server as a child, restarts it on the update exit code; the updater fetches `@latest` into `~/.shadok-ai/app`. |
+| `src/supervisor.ts` / `src/updater.ts` / `src/update-flag.ts` | Self-update: the supervisor runs the npm-installed server as a child, restarts it on the update exit code; the updater installs the channel's resolved version into `~/.shadok-ai/app` (an EXACT version, never a tag — the caller already chose). |
+| `src/update-channel.ts` | Which release stream an instance follows: `alpha` (every merge) or `beta` (promotions only, the default). Pure `resolveChannel` (anything malformed → `beta`, never a throw) and `pickTarget` (alpha takes the newer of `alpha`/`latest`, so a promotion cannot make the fast channel downgrade). The beta channel reads the `latest` dist-tag — see invariant 31. |
 | `Dockerfile` | The official image (README "Running in Docker"): Claude Code + shadok-ai + a **bundled headless browser** (Playwright Chromium at `/opt/playwright-browsers`, `--with-deps` so the OS libs are present), plus `git`/`gh`/`tmux`/toolchain. COPYs nothing (installs from npm); `.dockerignore` is `*`. NB: NOT what a given deployment necessarily runs — the live VPS builds from a host-side Dockerfile of its own. |
 | `src/csp.ts` | La Content-Security-Policy (`cspHeader`) et l'injection du nonce dans la page (`injectNonce`, marqueur `__CSP_NONCE__`). Pur, testé. Voir invariant 12. |
 | `src/net.ts` | Où on écoute et qui peut parler : `resolveHost` (`SHADOK_HOST`, loopback par défaut), `bindRefusal` (fail-closed : pas de bind réseau sans mot de passe), `originAllowed` (same-origin, cf. invariant 11). Pur, testé. |
@@ -570,6 +571,24 @@ Auth section of `docs/architecture.md`).
     beat the specificity of the one it corrects (`#composer textarea` beats a bare
     `textarea`) or it silently loses. `test/mobile-viewport.test.ts` locks all of
     it, the way `test/csp.test.ts` locks the nonce.
+
+31. **The beta channel IS the `latest` dist-tag — CI can only ever SET a tag, not
+    move one.** npm Trusted Publishing (OIDC) authenticates `npm publish` and
+    [nothing else](https://docs.npmjs.com/trusted-publishers): `npm dist-tag add`
+    needs a traditional token, so the obvious design — publish everything as
+    `alpha`, then move `beta`/`latest` on promotion — would put a long-lived npm
+    credential back in repository secrets, undoing the reason Trusted Publishing
+    was adopted. Since `npm publish --tag X` *sets* X, an ordinary merge publishes
+    `--tag alpha` and a promotion publishes with no tag, which is what moves
+    `latest`. Two consequences to keep: **do not add a `beta` dist-tag** thinking
+    it is tidier — it cannot be maintained without the token; and a promotion
+    leaves `alpha` pointing at the PREVIOUS build, so for one merge the fast
+    channel resolves older than the calm one. `pickTarget` fixes that client-side
+    (alpha takes the newer of the two tags) rather than in CI, because an alpha
+    instance that downgrades itself is worse than the window it closes.
+    Promotion is decided from the REGISTRY (`package.json` minor vs the minor
+    `latest` points at), never from git history, so a workflow re-run or a replay
+    cannot promote twice.
 
 ## Conventions
 

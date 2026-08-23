@@ -31,6 +31,13 @@ export interface Config {
    */
   autoUpdate?: boolean;
   /**
+   * Which release stream to follow: "alpha" (every merge) or "beta" (only a
+   * promoted version). Absent means "beta" — an instance that predates this
+   * setting keeps updating, just on the calmer channel.
+   * Design: docs/superpowers/specs/2026-08-23-update-channels-design.md
+   */
+  updateChannel?: "alpha" | "beta";
+  /**
    * Permission mode every spawned agent starts in (a `claude --permission-mode`
    * value: "auto" | "acceptEdits" | "manual" | "plan" | "dontAsk" |
    * "bypassPermissions", or "default" for no flag). Authoritative once set;

@@ -382,6 +382,23 @@ npm test
 npm run web        # run the server directly (no supervisor, no auto-update)
 ```
 
+### Update channels
+
+An instance follows one of two release streams, picked in the version menu
+(click the version next to the brand):
+
+- **beta** — the default, and what a fresh `npx shadok-ai` installs. Moves only
+  when a version is promoted, so the instance stays put for days at a time.
+- **alpha** — moves on every merge to `main`. Newest work, freshest bugs.
+
+Promoting is deliberate: someone bumps the minor in `package.json` and merges,
+and that merge becomes the new beta for everyone. Nothing else changes — the
+auto-update switch, the reload behaviour and the version numbering are the same
+on both channels.
+
+```bash
+```
+
 The `postinstall` script fixes the executable bit of node-pty's
 `spawn-helper` (a known npm prebuilds bug on macOS).
 
@@ -475,7 +492,7 @@ several cockpits stay apart in the tab bar; an empty PUT reverts to the default)
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
 key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default),
 `/profiles`, `/secrets`, `/telegram`, `/defaults`, `/version`, `/autoupdate`,
-`/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
+`/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
 returns the cwd to start the tweak agent in), and the sign-in group: `/auth` (GET
 — `{loggedIn, email?, subscriptionType?}`), `/auth/login` (POST — start a flow,
 returns `{url}`; DELETE — cancel it), `/auth/code` (POST `{code}`).

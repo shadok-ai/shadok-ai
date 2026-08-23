@@ -502,6 +502,36 @@ restarts it on a dedicated exit code.
   count>`. The repo's `package.json` stays at `0.1.0`, so a local version
   "behind" npm is normal.
 
+### Two channels
+
+An instance follows one of two release streams, set in the version menu and
+persisted as `updateChannel` (absent = `beta`):
+
+| Channel | Moves on | npm dist-tag |
+|---|---|---|
+| `alpha` | every merge to main | `alpha` |
+| `beta` (default) | a promotion — a minor bump | `latest` |
+
+**Promoting is one edit**: bump the minor in `package.json` and merge. CI
+compares that minor with the one `latest` currently points at; different means
+this merge is the promotion. The decision is read from the registry, not from
+git history, so a re-run or a replay reaches the same verdict instead of
+promoting twice.
+
+The beta channel is `latest` rather than a `beta` dist-tag, and that is not an
+aesthetic choice: npm Trusted Publishing (OIDC) authenticates `npm publish` and
+nothing else, so `npm dist-tag add` would require storing a long-lived npm token
+as a repository secret. Since `npm publish` *sets* a tag, an ordinary merge
+publishes `--tag alpha` and a promotion publishes with no tag — which is exactly
+what moves `latest`. A fresh `npx shadok-ai` therefore lands on the promoted
+version, which is what a newcomer should get.
+
+One wrinkle falls out of it: a promotion moves `latest` while `alpha` still
+points at the previous build, so for the span of one merge the "newest" channel
+resolves *older* than the calm one. `pickTarget` (`src/update-channel.ts`) closes
+it client-side — alpha takes the newer of the two tags — because an alpha
+instance downgrading itself is worse than the oddity it fixes.
+
 This is the trap when testing a local build: see "Running YOUR build" in
 `CLAUDE.md`. A second server finds the port busy, falls back to the next one,
 then auto-updates itself out from under you.

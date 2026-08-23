@@ -15,7 +15,8 @@ import {
 import { loadTgGroup } from "./channels.js";
 import { promptToken } from "./setup-prompt.js";
 import { runSupervisor, type SupervisorDeps } from "./supervisor.js";
-import { serverEntry, update } from "./updater.js";
+import { latestVersion, serverEntry, update } from "./updater.js";
+import { resolveChannel } from "./update-channel.js";
 import { writeUpdateResult } from "./update-flag.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -111,7 +112,19 @@ async function main(): Promise<number> {
         child.on("exit", (code) => resolve(shuttingDown ? 0 : code ?? 0));
         child.on("error", () => resolve(1));
       }),
-    update,
+    /**
+     * The server asked for an update (exit 75) without naming a version, so the
+     * target is resolved HERE — and it must honour the instance's channel, or
+     * this path would quietly drag an alpha instance back to the beta build on
+     * every supervisor-driven update. The config is read at call time: the user
+     * may have switched channels since boot.
+     */
+    update: async () => {
+      const target = await latestVersion(resolveChannel(loadConfig().updateChannel));
+      return target
+        ? update(target)
+        : { ok: false as const, error: "could not reach the npm registry" };
+    },
     writeUpdateResult,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     now: () => Date.now(),

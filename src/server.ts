@@ -129,6 +129,7 @@ import {
   type Worktree,
 } from "./worktree.js";
 import { latestVersion, update } from "./updater.js";
+import { resolveChannel, type UpdateChannel } from "./update-channel.js";
 import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
@@ -870,9 +871,10 @@ app.post("/tweak/prepare", (_req, res) => {
   res.json({ cwd: r.cwd });
 });
 // Running version + latest seen on npm (null if not yet polled / check disabled).
-app.get("/version", (_req, res) =>
-  res.json({ current: OWN_VERSION, latest: latestKnown, autoUpdate, permissionMode }),
-);
+// Same payload as the WS `version` message, deliberately from ONE builder: the
+// two used to be written out separately and drifted the moment a field was
+// added — the HTTP route silently kept serving the older shape.
+app.get("/version", (_req, res) => res.json(versionState()));
 
 // Claude sign-in state. Instance-global — NOT per session — hence HTTP rather
 // than a WS message: every tab and the Telegram bridge share one answer.
@@ -1211,6 +1213,10 @@ const VERSION_CHECK_MIN = Number(process.env.SHADOK_VERSION_CHECK_MIN ?? 15);
 // display poll runs regardless of this flag.
 let autoUpdate: boolean =
   loadConfig().autoUpdate ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_AUTOUPDATE ?? "");
+// Which release stream this instance follows: "alpha" (every merge) or "beta"
+// (promoted versions only). Absent config → beta, so an instance that predates
+// the setting keeps updating, just on the calmer channel.
+let updateChannel: UpdateChannel = resolveChannel(loadConfig().updateChannel);
 
 // Permission mode every spawned agent starts in. Config wins, then the
 // SHADOK_PERMISSION_MODE env var, then the built-in default "auto" (the
@@ -1231,8 +1237,13 @@ function broadcastAll(msg: object): void {
 
 /** The version + settings snapshot every client needs: running/latest version,
  *  whether auto-update is armed, and the spawn permission mode. */
+/** What both /version and the WS `version` message report. */
+function versionState() {
+  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, permissionMode, updateChannel };
+}
+
 function versionMessage(): object {
-  return { type: "version", current: OWN_VERSION, latest: latestKnown, autoUpdate, permissionMode };
+  return { type: "version", ...versionState() };
 }
 
 // One in-flight update at a time (the poll can fire again mid-install).
@@ -1248,7 +1259,7 @@ async function triggerUpdate(version: string): Promise<void> {
   if (updating) return;
   updating = true;
   console.log(`[shadok-ai] auto-update: v${OWN_VERSION} → v${version} (installing in background…)`);
-  const r = await update();
+  const r = await update(version);
   if (!r.ok) {
     console.log(`[shadok-ai] auto-update install failed: ${r.error}; retrying next poll`);
     updating = false;
@@ -1262,7 +1273,7 @@ async function triggerUpdate(version: string): Promise<void> {
 }
 
 async function pollVersion(): Promise<void> {
-  const latest = await latestVersion();
+  const latest = await latestVersion(updateChannel);
   if (!latest) return; // couldn't reach the registry; keep the last known value
   if (latest !== latestKnown) {
     latestKnown = latest;
@@ -1288,6 +1299,31 @@ app.post("/autoupdate", (req, res) => {
   broadcastAll(versionMessage());
   if (autoUpdate && latestKnown && isNewer(latestKnown, OWN_VERSION)) void triggerUpdate(latestKnown);
   res.json({ autoUpdate });
+});
+
+/**
+ * Switch release stream from the GUI. Persisted, then polled at once: the whole
+ * point of moving to alpha is not waiting up to VERSION_CHECK_MIN to see it,
+ * and moving to beta must re-resolve too — `latestKnown` still holds the alpha
+ * version, which would otherwise be offered as an update on the calm channel.
+ */
+app.post("/update-channel", (req, res) => {
+  const c = String(req.body?.channel ?? "");
+  if (c !== "alpha" && c !== "beta") return res.status(400).json({ error: "invalid channel" });
+  updateChannel = c;
+  const cfg = loadConfig();
+  cfg.updateChannel = c;
+  saveConfig(cfg);
+  latestKnown = null; // stale for the new channel until the poll answers
+  broadcastAll(versionMessage());
+  // Re-resolve at once — waiting up to VERSION_CHECK_MIN to see the channel you
+  // just picked is the whole point of the immediate poll. But it MUST honour the
+  // same gate as the periodic one: `SHADOK_VERSION_CHECK_MIN=0` is how a
+  // developer runs a local build without it updating itself away (CLAUDE.md,
+  // "Running YOUR build"), and a poll fired from here bypassed it — the local
+  // build installed the published version and exited mid-test.
+  if (VERSION_CHECK_MIN > 0) void pollVersion();
+  res.json({ updateChannel });
 });
 
 // Set the spawn permission mode from the GUI. Persisted; only affects agents
