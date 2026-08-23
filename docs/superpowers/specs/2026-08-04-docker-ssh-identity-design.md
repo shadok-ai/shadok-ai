@@ -14,7 +14,7 @@ the developer's Mac — shadok must not touch `~/.ssh` at all.
 
 ## Constraints (why the obvious answer is wrong)
 
-- The four production containers on vps1 already mount `shadok-data →
+- The production containers already mount `shadok-data →
   /root/.shadok-ai` and that volume **survives `docker restart` AND `docker rm`
   + recreate** (it's where the auto-updated `app/`, secrets and channels live).
   `/root/.ssh` is **not** mounted → it lives in the ephemeral container layer →

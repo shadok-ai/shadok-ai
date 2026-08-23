@@ -101,7 +101,7 @@ test("mergeChannels: a DM (positive chatId, no threadId) is NOT forced to 'gener
   // second "general". It must keep its own name, and a stale "general" (from
   // the old rule) is cleared.
   const stored = [
-    { sessionId: "dm", cwd: "/x", name: "general", telegram: { chatId: 217436150 } }, // wrongly forced before
+    { sessionId: "dm", cwd: "/x", name: "general", telegram: { chatId: 424242 } }, // wrongly forced before
     { sessionId: "dm2", cwd: "/x", name: "alex", telegram: { chatId: 999 } },
   ];
   const out = mergeChannels(stored, [], new Set());
