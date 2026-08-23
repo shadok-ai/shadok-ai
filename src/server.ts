@@ -2728,6 +2728,26 @@ function seedSecretsSkill(): void {
 }
 seedSecretsSkill();
 
+/**
+ * The tweak PR guard, copied OUT of the repo into ~/.shadok-ai so a cron can
+ * still reach it once the agent's worktree is gone. After the tweak agent
+ * commits and pushes, its tree is clean — closing the session prunes the
+ * checkout, and a guard living in there would start failing every five minutes.
+ */
+function seedTweakPrCheck(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "tweak-pr-check.sh");
+    if (!fs.existsSync(src)) return;
+    const dst = path.join(os.homedir(), ".shadok-ai", "tweak-pr-check.sh");
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(src, dst);
+    fs.chmodSync(dst, 0o755);
+  } catch {
+    /* best effort — the tweak agent still works, it just cannot watch its PR */
+  }
+}
+seedTweakPrCheck();
+
 // Fail-closed BEFORE listening: exposing the cockpit to a network with no
 // password hands command execution to whoever reaches it. Better not to start
 // than to start wide open.

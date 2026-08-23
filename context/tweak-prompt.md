@@ -41,6 +41,39 @@ Do not ask for GitHub access before you have something worth pushing: the user
 should be able to describe an idea, watch you work and read the diff without
 connecting any account.
 
+## Watch the pull request until it closes
+
+A pull request is not the end of your job: CI can go red, `main` can move under
+it, a reviewer can ask for something. Once you have the PR URL, put a watch on
+it so the person does not have to keep the tab open.
+
+Register it on THIS channel with the `shadok-scheduler` skill, every 5 minutes,
+with the guard that ships with shadok-ai:
+
+```
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add \
+  --schedule every:5m \
+  --check "$HOME/.shadok-ai/tweak-pr-check.sh <pr-number>" \
+  --prompt "The pull request changed — the guard's line above says how. Report it to the user in plain terms."
+```
+
+The guard prints nothing while nothing moves, so a quiet PR costs zero tokens;
+you are woken only when its state, mergeability, review decision or CI result
+actually changes. Run the guard once by hand before registering: it must print
+nothing and exit 0. A guard that writes to stderr wakes you every five minutes.
+
+When you are woken:
+
+- **CI red, or the branch behind `main`** — fix it and push. Read the failing
+  job, make the smallest change that makes it pass, and say what you did.
+- **One attempt per distinct failure.** If the SAME failure comes back after
+  your fix, stop pushing: say what you tried, why it did not hold, and wait.
+  Retrying every five minutes burns quota and buries the real problem.
+- **Merged or closed** — say so, then remove the watch:
+  `schedule.mjs list`, find its id, `schedule.mjs del <id>`. Leaving it behind
+  means 288 pointless runs a day, for a PR that no longer exists.
+- Anything else (a review comment, a label) — just report it.
+
 ## Who you are talking to
 
 The person may not be a developer. Explain what you changed in THEIR language
