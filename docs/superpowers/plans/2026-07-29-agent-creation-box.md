@@ -2,46 +2,46 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Faire du profil le point d'entrée de la création d'un agent, réduire la
-hauteur de la box en repliant les sections rares, et parler d'« agent » plutôt
-que de « channel ».
+**Goal:** Make the profile the way into creating an agent, cut the box's height
+by folding the rare sections away, and speak of an "agent" rather than a
+"channel".
 
-**Architecture:** Tout se passe dans `public/index.html` (client sans framework
-ni build) plus un petit module ESM pur `public/profile-card.js` pour les
-libellés dérivés d'un profil — même pattern que `public/live-text.js`, donc
-testable sous `node --test`. Aucun changement de protocole, d'endpoint ni de
-persistance : le message WS `start` garde son champ `profile`, `src/channels.ts`
-n'est pas touché.
+**Architecture:** Everything happens in `public/index.html` (a client with no
+framework and no build) plus a small pure ESM module, `public/profile-card.js`,
+for the labels derived from a profile — the same pattern as
+`public/live-text.js`, hence testable under `node --test`. No protocol, endpoint
+or persistence change: the `start` WS message keeps its `profile` field, and
+`src/channels.ts` is untouched.
 
-**Tech Stack:** HTML/CSS/JS vanilla ESM côté client, `node --import tsx --test`
-côté tests, TypeScript/Express côté serveur (`express.static("public")` sert
-déjà tout nouveau fichier de `public/`).
+**Tech Stack:** Vanilla ESM HTML/CSS/JS on the client, `node --import tsx --test`
+for the tests, TypeScript/Express on the server (`express.static("public")`
+already serves any new file in `public/`).
 
 **Spec:** `docs/superpowers/specs/2026-07-29-agent-creation-box-design.md`
 
 ## Global Constraints
 
-- **Copie UI en anglais.** Tous les libellés visibles sont en anglais (le reste
+- **UI copy in English.** Every visible label is in English (the rest
   de l'UI l'est) : `Agents`, `＋ new agent`, `New agent`, `Which agent?`,
   `∅ No profile`, `plain Claude`, `Start agent`.
-- **Commentaires de code en français**, expliquant le *pourquoi* — convention du
-  dépôt (`CLAUDE.md`, section Conventions).
-- **Aucun champ ajouté au type `Profile`** (`src/profiles.ts` n'est pas
-  modifié) : les cartes se déduisent de `name`, `systemPrompt`, `deny`, `model`,
+- **Code comments in English**, explaining the *why* — the repo's convention
+  (`CLAUDE.md`, the Conventions section).
+- **No field added to the `Profile` type** (`src/profiles.ts` is not modified):
+  the cards are derived from `name`, `systemPrompt`, `deny`, `model`,
   `secrets`.
-- **Aucun renommage d'identifiant de code, d'endpoint, de clé `localStorage` ni
-  de fichier de persistance.** Le renommage est purement cosmétique. En
-  particulier `cp.channels`, `/channels`, `/channel`, `src/channels.ts` et le
-  nom forcé `general` du canal principal restent tels quels.
-- **Ne jamais redémarrer le serveur shadok-ai** pendant l'implémentation : ça
-  tuerait les sessions sœurs (`CLAUDE.md`, invariant 8).
-- Après toute étape touchant le serveur : `npm run build`. Les tâches ci-dessous
-  ne touchent au TypeScript que dans la tâche 2 (`src/telegram.ts`).
-- Un commit par tâche, message en français.
+- **No renaming of a code identifier, an endpoint, a `localStorage` key or a
+  persistence file.** The renaming is purely cosmetic. In particular
+  `cp.channels`, `/channels`, `/channel`, `src/channels.ts` and the main
+  channel's forced `general` name stay as they are.
+- **Never restart the shadok-ai server** during the implementation: that would
+  kill the sibling sessions (`CLAUDE.md`, invariant 8).
+- After any step touching the server: `npm run build`. The tasks below only
+  touch TypeScript in task 2 (`src/telegram.ts`).
+- One commit per task, the message in English.
 
 ---
 
-### Task 1: Module pur `profile-card.js` (libellés dérivés)
+### Task 1: The pure `profile-card.js` module (derived labels)
 
 **Files:**
 - Create: `public/profile-card.js`
@@ -49,23 +49,23 @@ déjà tout nouveau fichier de `public/`).
 
 **Interfaces:**
 - Consumes: rien.
-- Produces: deux fonctions pures exportées, utilisées par la tâche 3 via
+- Produces: two exported pure functions, used by task 3 through
   `window.profileBlurb` / `window.profileBadges` :
-  - `profileBlurb(profile: {name?, systemPrompt?}) => string` — une ligne de
-    présentation, `""` si pas de `systemPrompt`.
+  - `profileBlurb(profile: {name?, systemPrompt?}) => string` — a one-line
+    pitch, `""` when there is no `systemPrompt`.
   - `profileBadges(profile: {deny?, model?, secrets?}) => string[]` — liste de
-    badges courts, toujours au moins un élément.
+    short badges, always at least one item.
 
 - [ ] **Step 1: Write the failing test**
 
-Créer `test/profile-card.test.ts` :
+Create `test/profile-card.test.ts`:
 
 ```ts
 import assert from "node:assert/strict";
 import test from "node:test";
 import { profileBlurb, profileBadges } from "../public/profile-card.js";
 
-test("blurb: garde la 1re phrase et retire l'amorce « You are <nom>, »", () => {
+test("blurb: keeps the 1st sentence and drops the 'You are <name>,' opener", () => {
   const p = {
     name: "Shadok-Marketing",
     systemPrompt:
@@ -74,7 +74,7 @@ test("blurb: garde la 1re phrase et retire l'amorce « You are <nom>, »", () =>
   assert.equal(profileBlurb(p), "the paid-marketing & growth agent.");
 });
 
-test("blurb: un nom à tiret n'est pas coupé en deux", () => {
+test("blurb: a hyphenated name is not cut in two", () => {
   const p = {
     name: "Shadok-dev",
     systemPrompt:
@@ -83,23 +83,23 @@ test("blurb: un nom à tiret n'est pas coupé en deux", () => {
   assert.equal(profileBlurb(p), "a senior software engineer on this project.");
 });
 
-test("blurb: pas de systemPrompt → chaîne vide", () => {
+test("blurb: no systemPrompt → empty string", () => {
   assert.equal(profileBlurb({ name: "x" }), "");
   assert.equal(profileBlurb({ name: "x", systemPrompt: "   " }), "");
   assert.equal(profileBlurb(null), "");
 });
 
-test("blurb: prompt sans point final → tout le texte, tronqué si besoin", () => {
+test("blurb: a prompt with no full stop → the whole text, truncated if needed", () => {
   assert.equal(profileBlurb({ name: "x", systemPrompt: "just a role" }), "just a role");
 });
 
-test("blurb: phrase trop longue → troncature sur une frontière de mot", () => {
+test("blurb: too long a sentence → truncation on a word boundary", () => {
   const long = "You are Bob, " + "alpha ".repeat(30).trim() + ".";
   const out = profileBlurb({ name: "Bob", systemPrompt: long });
-  assert.ok(out.endsWith("…"), "doit finir par une ellipse");
-  assert.ok(out.length <= 91, "90 caractères + l'ellipse");
+  assert.ok(out.endsWith("…"), "must end with an ellipsis");
+  assert.ok(out.length <= 91, "90 characters + the ellipsis");
   assert.ok(!out.slice(0, -1).endsWith(" "), "pas d'espace avant l'ellipse");
-  assert.ok(out.startsWith("alpha alpha"), "l'amorce est retirée");
+  assert.ok(out.startsWith("alpha alpha"), "the opener is dropped");
 });
 
 test("badges: deny vide → full access, deny rempli → read-only", () => {
@@ -108,7 +108,7 @@ test("badges: deny vide → full access, deny rempli → read-only", () => {
   assert.deepEqual(profileBadges({ name: "x", deny: ["Bash(git commit:*)"] }), ["read-only"]);
 });
 
-test("badges: modèle et secrets, dans l'ordre accès → modèle → secrets", () => {
+test("badges: model and secrets, in the order access → model → secrets", () => {
   assert.deepEqual(
     profileBadges({ name: "x", deny: ["Bash(git push:*)"], model: "opus", secrets: ["A", "B"] }),
     ["read-only", "opus", "2 secrets"]
@@ -132,35 +132,35 @@ Expected: FAIL — `Cannot find module '.../public/profile-card.js'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
-Créer `public/profile-card.js` :
+Create `public/profile-card.js`:
 
 ```js
-// Libellés dérivés d'un Profile pour les cartes de la box « New agent » —
+// Labels derived from a Profile for the "New agent" box's cards —
 // voir docs/superpowers/specs/2026-07-29-agent-creation-box-design.md.
 //
-// Chargé tel quel par le navigateur (ESM) et importé par les tests node/tsx,
+// Loaded as is by the browser (ESM) and imported by the node/tsx tests,
 // comme public/live-text.js.
 //
-// Rien n'est ajouté au type Profile : tout se déduit de ce qui existe déjà
-// (systemPrompt, deny, model, secrets), donc les profils déjà enregistrés
-// s'affichent sans migration ni formulaire à re-remplir.
+// Nothing is added to the Profile type: everything is derived from what is
+// already there (systemPrompt, deny, model, secrets), so profiles already
+// stored display with no migration and no form to fill in again.
 
-/** Au-delà, la carte deviendrait un pavé : on tronque. */
+/** Beyond this the card would turn into a wall of text: truncate. */
 const MAX_BLURB = 90;
 
 /**
- * Une ligne de présentation tirée du systemPrompt : sa première phrase, sans
- * le « You are <nom>, » d'amorce — redondant avec le titre de la carte — et
- * tronquée sur une frontière de mot. "" si le profil n'a pas de prompt.
+ * A one-line pitch taken from the systemPrompt: its first sentence, without the
+ * "You are <name>," opener — redundant with the card's title — and truncated on
+ * a word boundary. "" when the profile has no prompt.
  */
 export function profileBlurb(profile) {
   const raw = ((profile && profile.systemPrompt) || "").trim();
   if (!raw) return "";
-  // Première phrase : premier « . » suivi d'un espace ou de la fin.
+  // First sentence: the first "." followed by a space or by the end.
   const m = raw.match(/^[\s\S]*?\.(?=\s|$)/);
   let s = (m ? m[0] : raw).trim();
-  // Le nom peut contenir un tiret (Shadok-dev) : on ne coupe que sur « , » ou
-  // un tiret cadratin, jamais sur le trait d'union du nom lui-même.
+  // The name can contain a hyphen (Shadok-dev): we only cut on "," or an em
+  // dash, never on the name's own hyphen.
   s = s.replace(/^you are\s+[^,—]{1,40}?\s*[,—]\s*/i, "");
   if (s.length <= MAX_BLURB) return s;
   const cut = s.slice(0, MAX_BLURB);
@@ -169,8 +169,8 @@ export function profileBlurb(profile) {
 }
 
 /**
- * Les garde-fous du profil en badges courts : accès git (le seul qui compte
- * vraiment au moment de choisir), modèle forcé, nombre de secrets injectés.
+ * The profile's guardrails as short badges: git access (the only one that
+ * really matters when choosing), forced model, number of injected secrets.
  */
 export function profileBadges(profile) {
   const p = profile || {};
@@ -187,7 +187,7 @@ export function profileBadges(profile) {
 Run: `node --import tsx --test test/profile-card.test.ts`
 Expected: PASS, 9 tests.
 
-Puis la suite complète, pour vérifier qu'on n'a rien cassé :
+Then the whole suite, to check nothing broke:
 Run: `npm test`
 Expected: PASS.
 
@@ -195,12 +195,12 @@ Expected: PASS.
 
 ```bash
 git add public/profile-card.js test/profile-card.test.ts
-git commit -m "Libellés dérivés d'un profil (blurb + badges), module pur testé"
+git commit -m "Labels derived from a profile (blurb + badges), a tested pure module"
 ```
 
 ---
 
-### Task 2: Renommage « channel » → « agent » dans la copie visible
+### Task 2: Renaming "channel" → "agent" in the visible copy
 
 **Files:**
 - Modify: `public/index.html` (lignes 884, 917, 920, 996, 997, 1000, 1001, 1007, 1008-1010, 1037, 1147, 1157, 1286, 2134, 2974, 2975)
@@ -208,15 +208,15 @@ git commit -m "Libellés dérivés d'un profil (blurb + badges), module pur test
 
 **Interfaces:**
 - Consumes: rien.
-- Produces: rien de programmatique — uniquement de la copie.
+- Produces: nothing programmatic — copy only.
 
-**Rappel:** aucun identifiant, endpoint (`/channels`, `/channel`), clé
-`localStorage` (`cp.channels`) ni nom de fichier ne change. Seul le texte
-affiché change.
+**Reminder:** no identifier, endpoint (`/channels`, `/channel`),
+`localStorage` key (`cp.channels`) or file name changes. Only the displayed text
+does.
 
-- [ ] **Step 1: Renommer la colonne de gauche et la box**
+- [ ] **Step 1: Rename the left-hand column and the box**
 
-Dans `public/index.html`, appliquer exactement :
+In `public/index.html`, apply exactly:
 
 ```html
 <!-- ligne 996-1001 -->
@@ -241,9 +241,9 @@ Dans `public/index.html`, appliquer exactement :
       <button class="primary" id="startBtn">Start agent</button>
 ```
 
-- [ ] **Step 2: Renommer les libellés restants du client**
+- [ ] **Step 2: Rename the client's remaining labels**
 
-Toujours dans `public/index.html` :
+Still in `public/index.html`:
 
 ```html
 <!-- ligne 884 -->
@@ -255,8 +255,8 @@ Toujours dans `public/index.html` :
       <strong>⏰ Schedule — <span id="cronChanName">this agent</span></strong>
 ```
 
-Ligne 920, remplacer `<b>this channel's agent</b>` par `<b>this agent</b>` (le
-reste du paragraphe est inchangé).
+On line 920, replace `<b>this channel's agent</b>` with `<b>this agent</b>` (the
+rest of the paragraph is unchanged).
 
 ```js
 // ligne 1147
@@ -273,31 +273,31 @@ reste du paragraphe est inchangé).
     if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
 ```
 
-- [ ] **Step 3: Renommer la copie Telegram**
+- [ ] **Step 3: Rename the Telegram copy**
 
-Dans `src/telegram.ts` :
+In `src/telegram.ts`:
 
 - ligne 856 (aide `/help`) : `"/tools [on|off] — show or hide tool calls in this channel"` → `"/tools [on|off] — show or hide tool calls in this agent"`
 - ligne 926 : `"🔧 tool calls shown in this channel."` → `"…in this agent."` et `"🔧 tool calls hidden in this channel."` → `"…in this agent."`
 - ligne 941 : `"⏰ Scheduled prompts for this channel:\n"` → `"⏰ Scheduled prompts for this agent:\n"`
 - ligne 981 : `"Send a message here first to create the channel, then schedule.\n\n"` → `"Send a message here first to create the agent, then schedule.\n\n"`
 
-- [ ] **Step 4: Vérifier qu'il ne reste aucune copie visible « channel »**
+- [ ] **Step 4: Check no visible "channel" copy remains**
 
 Run:
 ```bash
 grep -nE '"[^"]*[Cc]hannel[^"]*"|>[^<]*[Cc]hannel[^<]*<' public/index.html | grep -vE '/channels?|cp\.channels|persistChannels|dismissedChannels|channelPushTimer'
 ```
-Expected: **aucun résultat**. Ce grep isole exactement les 12 libellés listés aux
-steps 1-2 (vérifié avant modification) : s'il ne renvoie plus rien, la copie est
-complète. Les commentaires CSS/JS qui parlent encore de « channel » restent tels
-quels — ils décrivent le code, dont les identifiants n'ont pas changé.
+Expected: **no result**. This grep isolates exactly the 12 labels listed in
+steps 1-2 (checked before the change): if it returns nothing, the copy is
+complete. The CSS/JS comments that still say "channel" stay as they are — they
+describe the code, whose identifiers have not changed.
 
 - [ ] **Step 5: Build + tests**
 
 Run: `npm run build && npm test`
-Expected: PASS. (`test/telegram.test.ts` existe : si une assertion portait sur
-une de ces chaînes, la mettre à jour dans le même commit.)
+Expected: PASS. (`test/telegram.test.ts` exists: if an assertion covered one of
+those strings, update it in the same commit.)
 
 - [ ] **Step 6: Commit**
 
@@ -308,33 +308,33 @@ git commit -m "L'UI parle d'agents, plus de canaux (copie seulement)"
 
 ---
 
-### Task 3: Grille de cartes de profil à la place du `<select>`
+### Task 3: A grid of profile cards in place of the `<select>`
 
 **Files:**
-- Modify: `public/index.html` — CSS après la ligne ~397, markup lignes
+- Modify: `public/index.html` — CSS after line ~397, markup at lines
   1033-1036, import ESM ligne 1093-1096, `startActiveTab` ligne ~2289, bloc
   Profiles lignes 3032-3046 et 3115-3118.
 
 **Interfaces:**
-- Consumes: `profileBlurb` / `profileBadges` de la tâche 1.
-- Produces, pour les tâches 4 à 6 :
-  - `let selectedProfile` (string) — le nom du profil choisi, `""` pour aucun.
-  - `renderProfileGrid(failed?: boolean)` — repeint la grille depuis
+- Consumes: `profileBlurb` / `profileBadges` from task 1.
+- Produces, for tasks 4 to 6:
+  - `let selectedProfile` (string) — the chosen profile's name, `""` for none.
+  - `renderProfileGrid(failed?: boolean)` — repaints the grid from
     `profileCache`.
-  - `selectProfile(name: string, byUser?: boolean)` — pose la sélection.
-  - `syncProfileSelection()` — reflète `selectedProfile` sur le DOM et retombe
-    sur `""` si le profil sélectionné n'existe plus.
-  - `openProfilesPanel(profile?)` — ouvre l'overlay, prérempli si un profil est
-    passé.
+  - `selectProfile(name: string, byUser?: boolean)` — sets the selection.
+  - `syncProfileSelection()` — reflects `selectedProfile` on the DOM and falls
+    back to `""` when the selected profile no longer exists.
+  - `openProfilesPanel(profile?)` — opens the overlay, prefilled when a profile
+    is passed.
 
-- [ ] **Step 1: Ajouter le CSS des cartes**
+- [ ] **Step 1: Add the cards' CSS**
 
-Dans `public/index.html`, juste après la règle `input[type="radio"]`
-(ligne ~382, avant le commentaire `/* Session picker (resume by id) */`) :
+In `public/index.html`, right after the `input[type="radio"]` rule (line ~382,
+before the `/* Session picker (resume by id) */` comment):
 
 ```css
-  /* Cartes de profil — le profil est LE choix structurant d'un agent (rôle,
-     garde-fous, secrets, modèle), donc en tête de la box et cliquable. */
+  /* Profile cards — the profile is THE structuring choice of an agent (role,
+     guardrails, secrets, model), hence at the top of the box and clickable. */
   .field-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
   .linkish {
     background: none; border: none; padding: 0;
@@ -368,18 +368,18 @@ Dans `public/index.html`, juste après la règle `input[type="radio"]`
     font-size: 10.5px; color: var(--text-dim);
     border: 1px solid var(--line); border-radius: 3px; padding: 0 4px;
   }
-  /* Le crayon n'apparaît qu'au survol : il ne doit pas concurrencer le nom. */
+  /* The pencil only appears on hover: it must not compete with the name. */
   .pc-edit { position: absolute; top: 6px; right: 7px; font-size: 11px; color: var(--text-dim); opacity: 0; }
   .profile-card:hover .pc-edit, .profile-card:focus-within .pc-edit { opacity: 1; }
   .pc-edit:hover { color: var(--amber); }
   .grid-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 12px; font-style: italic; }
-  /* Champ sans effet dans le mode courant (resume/continue) — visible mais inerte. */
+  /* A field with no effect in the current mode (resume/continue) — visible but inert. */
   .na { opacity: .45; pointer-events: none; }
 ```
 
-- [ ] **Step 2: Remplacer le markup du champ Profile**
+- [ ] **Step 2: Replace the Profile field's markup**
 
-Remplacer les lignes 1033-1036 :
+Replace lines 1033-1036:
 
 ```html
       <div class="field" id="profileField">
@@ -401,16 +401,16 @@ par :
       </div>
 ```
 
-Puis **déplacer ce bloc** juste après le `<p class="hint">` (ligne 1010), avant
-le champ `Working directory` : qui d'abord, où ensuite.
+Then **move that block** right after the `<p class="hint">` (line 1010), before
+the `Working directory` field: who first, where next.
 
-Note : `#editProfilesLink` n'est branché qu'en tâche 4 — à la fin de cette
-tâche, le lien est visible mais inerte. C'est volontaire : la tâche 3 livre la
-grille, la tâche 4 livre les raccourcis d'édition.
+Note: `#editProfilesLink` is only wired in task 4 — at the end of this task the
+link is visible but inert. That is deliberate: task 3 delivers the grid, task 4
+delivers the editing shortcuts.
 
-- [ ] **Step 3: Exposer les fonctions du module au script principal**
+- [ ] **Step 3: Expose the module's functions to the main script**
 
-Ligne 1093-1096, étendre le pont ESM existant :
+At lines 1093-1096, extend the existing ESM bridge:
 
 ```html
 <script type="module">
@@ -423,15 +423,15 @@ Ligne 1093-1096, étendre le pont ESM existant :
 ```
 
 `express.static(path.join(__dirname, "..", "public"))` (`src/server.ts:276`)
-sert déjà `/profile-card.js` sans route à ajouter.
+already serves `/profile-card.js` with no route to add.
 
-- [ ] **Step 4: Remplacer le rendu du select par la grille**
+- [ ] **Step 4: Replace the select's rendering with the grid**
 
-Dans le bloc « Profiles panel » (ligne 3032+), remplacer `loadProfilesInto`
+In the "Profiles panel" block (line 3032+), replace `loadProfilesInto`
 (lignes 3036-3046) par :
 
 ```js
-  let selectedProfile = "";    // nom du profil choisi dans la box, "" = aucun
+  let selectedProfile = "";    // name of the profile chosen in the box, "" = none
 
   async function loadProfilesInto() {
     let failed = false;
@@ -441,8 +441,8 @@ Dans le bloc « Profiles panel » (ligne 3032+), remplacer `loadProfilesInto`
     renderProfileGrid(failed);
   }
 
-  /** Peint la grille de la box. La carte « No profile » est toujours présente :
-   *  c'est le défaut, et le seul recours si /profiles est tombé. */
+  /** Paints the box's grid. The "No profile" card is always there: it is the
+   *  default, and the only fallback when /profiles is down. */
   function renderProfileGrid(failed) {
     const grid = $("profileGrid");
     if (!grid) return;
@@ -454,11 +454,11 @@ Dans le bloc « Profiles panel » (ligne 3032+), remplacer `loadProfilesInto`
       grid.appendChild(note);
     }
     for (const p of profileCache) grid.appendChild(profileCardEl(p));
-    grid.appendChild(profileCardEl(null));      // ∅ No profile, toujours en dernier
+    grid.appendChild(profileCardEl(null));      // ∅ No profile, always last
     syncProfileSelection();
   }
 
-  /** Une carte = un <button role="radio">. p === null → la carte « No profile ». */
+  /** One card = one <button role="radio">. p === null → the "No profile" card. */
   function profileCardEl(p) {
     const card = document.createElement("button");
     card.type = "button";
@@ -494,8 +494,8 @@ Dans le bloc « Profiles panel » (ligne 3032+), remplacer `loadProfilesInto`
     syncProfileSelection();
   }
 
-  /** Reflète selectedProfile sur les cartes. Un seul tabindex=0 dans le groupe :
-   *  c'est la convention radiogroup (Tab entre, flèches naviguent). */
+  /** Reflects selectedProfile on the cards. A single tabindex=0 in the group:
+   *  that is the radiogroup convention (Tab enters, arrows navigate). */
   function syncProfileSelection() {
     const grid = $("profileGrid");
     if (!grid) return;
@@ -509,8 +509,8 @@ Dans le bloc « Profiles panel » (ligne 3032+), remplacer `loadProfilesInto`
     }
   }
 
-  /** Flèches = déplacer la sélection (convention radiogroup). Espace/Entrée
-   *  sont déjà le clic natif du <button>. */
+  /** Arrows = move the selection (radiogroup convention). Space/Enter are
+   *  already the <button>'s native click. */
   function onProfileKey(e) {
     const dir = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[e.key];
     if (!dir) return;
@@ -523,14 +523,14 @@ Dans le bloc « Profiles panel » (ligne 3032+), remplacer `loadProfilesInto`
   }
 ```
 
-`profileTouched` est déclaré en tâche 5 ; pour que cette tâche compile seule,
-ajouter dès maintenant, juste au-dessus de `let selectedProfile = "";` :
+`profileTouched` is declared in task 5; so that this task stands alone, add it
+now, right above `let selectedProfile = "";`:
 
 ```js
-  let profileTouched = false;  // l'utilisateur a choisi à la main (voir tâche 5)
+  let profileTouched = false;  // the user picked by hand (see task 5)
 ```
 
-- [ ] **Step 5: Brancher `startActiveTab` sur la nouvelle sélection**
+- [ ] **Step 5: Wire `startActiveTab` to the new selection**
 
 Ligne ~2289, remplacer :
 
@@ -544,44 +544,44 @@ par :
     if (mode === "new" && selectedProfile) msg.profile = selectedProfile;
 ```
 
-- [ ] **Step 6: Corriger le commentaire de l'appel initial**
+- [ ] **Step 6: Fix the initial call's comment**
 
 Ligne 3118 : `loadProfilesInto(); // populate the setup selector on load` →
-`loadProfilesInto(); // peint la grille de profils de la box au chargement`
+`loadProfilesInto(); // paints the box's profile grid on load`
 
-- [ ] **Step 7: Vérifier**
+- [ ] **Step 7: Check**
 
 Run: `npm run build && npm test`
 Expected: PASS.
 
 Run: `grep -n "profileInput" public/index.html`
-Expected: **aucun résultat** — l'ancien `<select>` a totalement disparu.
+Expected: **no result** — the old `<select>` is entirely gone.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add public/index.html
-git commit -m "Le profil devient des cartes en tête de la box, plus un select"
+git commit -m "The profile becomes cards at the top of the box, no longer a select"
 ```
 
 ---
 
-### Task 4: Raccourcis d'édition, état vide, état d'erreur
+### Task 4: Editing shortcuts, the empty state, the error state
 
 **Files:**
 - Modify: `public/index.html` — bloc Profiles (lignes ~3032-3120), gestionnaire
-  Échap (ligne ~2863).
+  Escape (line ~2863).
 
 **Interfaces:**
 - Consumes: `renderProfileGrid`, `profileCardEl`, `loadProfilesInto`,
   `fillProfileForm`, `clearProfileForm`, `renderProfilesList` (existants).
-- Produces: `openProfilesPanel(profile?)` et `closeProfilesPanel()`, utilisés
-  par `#profilesBtn`, `#editProfilesLink`, `#profilesClose`, le clic sur le
-  fond et la touche Échap.
+- Produces: `openProfilesPanel(profile?)` and `closeProfilesPanel()`, used by
+  `#profilesBtn`, `#editProfilesLink`, `#profilesClose`, the backdrop click and
+  the Escape key.
 
 - [ ] **Step 1: Factoriser ouverture / fermeture du panneau**
 
-Remplacer les lignes 3115-3117 :
+Replace lines 3115-3117:
 
 ```js
   $("profilesBtn").addEventListener("click", async () => { await loadProfilesInto(); renderProfilesList(); clearProfileForm(); $("profilesOverlay").hidden = false; });
@@ -592,15 +592,15 @@ Remplacer les lignes 3115-3117 :
 par :
 
 ```js
-  /** Ouvre le panneau Profiles, prérempli sur `p` si on vient du crayon d'une carte. */
+  /** Opens the Profiles panel, prefilled on `p` when coming from a card's pencil. */
   async function openProfilesPanel(p) {
     await loadProfilesInto();
     renderProfilesList();
     if (p) fillProfileForm(p); else clearProfileForm();
     $("profilesOverlay").hidden = false;
   }
-  /** Fermer repeint la grille : un profil créé apparaît tout de suite, et la
-   *  sélection retombe sur « No profile » si le profil choisi a été supprimé
+  /** Closing repaints the grid: a created profile appears at once, and the
+   *  selection falls back to "No profile" when the chosen one was deleted
    *  (syncProfileSelection s'en charge). */
   async function closeProfilesPanel() {
     $("profilesOverlay").hidden = true;
@@ -612,7 +612,7 @@ par :
   $("profilesOverlay").addEventListener("click", (e) => { if (e.target === $("profilesOverlay")) closeProfilesPanel(); });
 ```
 
-- [ ] **Step 2: Fermer par Échap doit aussi repeindre**
+- [ ] **Step 2: Closing with Escape must repaint too**
 
 Ligne ~2863, remplacer :
 
@@ -626,31 +626,31 @@ par :
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
 ```
 
-- [ ] **Step 3: Ajouter le crayon par carte**
+- [ ] **Step 3: Add the per-card pencil**
 
-Dans `profileCardEl`, à l'intérieur du `if (p) { … }` et **après** l'ajout des
-badges, insérer :
+In `profileCardEl`, inside the `if (p) { … }` and **after** the badges are
+added, insert:
 
 ```js
-      // Raccourci : éditer CE profil sans passer par la barre du haut.
+      // Shortcut: edit THIS profile without going through the top bar.
       const pen = document.createElement("span");
       pen.className = "pc-edit";
       pen.textContent = "✎";
       pen.title = "Edit " + p.name;
       pen.addEventListener("click", (e) => {
-        e.stopPropagation();          // éditer, pas sélectionner la carte
+        e.stopPropagation();          // edit, do not select the card
         openProfilesPanel(p);
       });
       card.appendChild(pen);
 ```
 
-- [ ] **Step 4: Ajouter l'état « aucun profil »**
+- [ ] **Step 4: Add the "no profile" state**
 
-Dans `renderProfileGrid`, entre le bloc `if (failed)` et la boucle
+In `renderProfileGrid`, between the `if (failed)` block and the loop
 `for (const p of profileCache)` :
 
 ```js
-    // Zéro profil : on montre la porte d'entrée plutôt qu'un « (none) » muet.
+    // Zero profiles: show the way in rather than a mute "(none)".
     if (!failed && !profileCache.length) {
       const b = document.createElement("button");
       b.type = "button";
@@ -662,50 +662,50 @@ Dans `renderProfileGrid`, entre le bloc `if (failed)` et la boucle
     }
 ```
 
-Cette carte n'a **pas** `role="radio"` : elle est donc ignorée par
-`syncProfileSelection` et par la navigation aux flèches, et la carte
-« No profile » reste la sélection par défaut.
+That card does **not** have `role="radio"`: it is therefore ignored by
+`syncProfileSelection` and by the arrow navigation, and the "No profile" card
+stays the default selection.
 
-- [ ] **Step 5: Vérifier**
+- [ ] **Step 5: Check**
 
 Run: `npm run build && npm test`
 Expected: PASS.
 
-Vérification manuelle dans le navigateur (voir tâche 7 pour le lancement) :
-`✎ edit profiles` ouvre le panneau vide ; le `✎` d'une carte l'ouvre prérempli
-sur ce profil ; Échap le ferme et la grille se rafraîchit.
+A manual check in the browser (see task 7 for the launch): `✎ edit profiles`
+opens the empty panel; a card's `✎` opens it prefilled on that profile; Escape
+closes it and the grid refreshes.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add public/index.html
-git commit -m "Éditer un profil depuis la box, et une porte d'entrée quand il n'y en a aucun"
+git commit -m "Edit a profile from the box, and a way in when there is none"
 ```
 
 ---
 
-### Task 5: Mémoriser le dernier profil utilisé, par dossier
+### Task 5: Remembering the last profile used, per directory
 
 **Files:**
 - Modify: `public/index.html` — `refreshChrome` (lignes ~1692-1703),
   `startActiveTab` (lignes ~2277-2293), gestionnaire `cwdInput` (ligne ~2689),
-  bloc Profiles (déclarations).
+  the Profiles block (declarations).
 
 **Interfaces:**
-- Consumes: `selectProfile`, `selectedProfile`, `profileTouched` (tâche 3).
-- Produces: `applyRememberedProfile()` et la variable `profileTab`.
+- Consumes: `selectProfile`, `selectedProfile`, `profileTouched` (task 3).
+- Produces: `applyRememberedProfile()` and the `profileTab` variable.
 
-- [ ] **Step 1: Ajouter la fonction de rappel**
+- [ ] **Step 1: Add the recall function**
 
-Dans le bloc Profiles, juste après `syncProfileSelection`, ajouter :
+In the Profiles block, right after `syncProfileSelection`, add:
 
 ```js
-  let profileTab = null;   // onglet pour lequel la mémoire a déjà été appliquée
+  let profileTab = null;   // tab for which the memory has already been applied
 
-  /** Présélectionne le dernier profil utilisé DANS CE DOSSIER (à défaut, le
-   *  dernier utilisé tout court) : le cas courant devient un clic + Start.
-   *  Une clé vide est une valeur légitime — « No profile » choisi exprès — d'où
-   *  le test sur null et non sur la vérité de la chaîne. */
+  /** Preselects the last profile used IN THIS DIRECTORY (failing that, the last
+   *  used at all): the common case becomes one click + Start. An empty key is a
+   *  legitimate value — "No profile" chosen on purpose — hence the test on null
+   *  and not on the string's truthiness. */
   function applyRememberedProfile() {
     const cwd = $("cwdInput").value.trim();
     const perDir = cwd ? localStorage.getItem("cp.profile:" + cwd) : null;
@@ -714,18 +714,18 @@ Dans le bloc Profiles, juste après `syncProfileSelection`, ajouter :
   }
 ```
 
-- [ ] **Step 2: Appliquer le rappel quand la box s'ouvre sur un onglet**
+- [ ] **Step 2: Apply the recall when the box opens on a tab**
 
-Dans `refreshChrome`, bloc `if (t.status === "setup") { … }` (ligne ~1692),
-après `$("startBtn").disabled = false;` :
+In `refreshChrome`, the `if (t.status === "setup") { … }` block (line ~1692),
+after `$("startBtn").disabled = false;`:
 
 ```js
-      // refreshChrome tourne souvent : on ne rappelle la mémoire qu'au premier
-      // passage sur CET onglet, sinon on écraserait le choix de l'utilisateur.
+      // refreshChrome runs often: we only recall the memory on the first pass
+      // over THIS tab, otherwise we would overwrite the user's choice.
       if (profileTab !== t) { profileTab = t; profileTouched = false; applyRememberedProfile(); }
 ```
 
-- [ ] **Step 3: Ré-appliquer quand le dossier change**
+- [ ] **Step 3: Re-apply when the directory changes**
 
 Gestionnaire `$("cwdInput").addEventListener("change", …)` (ligne ~2689) :
 
@@ -733,14 +733,14 @@ Gestionnaire `$("cwdInput").addEventListener("change", …)` (ligne ~2689) :
   $("cwdInput").addEventListener("change", () => {
     if (!$("resumeField").hidden) refreshSessionList();
     refreshRecoverList();
-    // Un autre dossier a peut-être son propre habitué — sauf si on a déjà choisi.
+    // Another directory may have its own regular — unless one was already picked.
     if (!profileTouched) applyRememberedProfile();
   });
 ```
 
-- [ ] **Step 4: Écrire la mémoire au lancement**
+- [ ] **Step 4: Write the memory at launch**
 
-Dans `startActiveTab`, après `localStorage.setItem("cp.cwd", cwd);` :
+In `startActiveTab`, after `localStorage.setItem("cp.cwd", cwd);`:
 
 ```js
     if (mode === "new") {
@@ -749,44 +749,44 @@ Dans `startActiveTab`, après `localStorage.setItem("cp.cwd", cwd);` :
     }
 ```
 
-- [ ] **Step 5: Vérifier**
+- [ ] **Step 5: Check**
 
 Run: `npm run build && npm test`
 Expected: PASS.
 
-Vérification manuelle : lancer un agent avec un profil, ouvrir une nouvelle box
-sur le même dossier → la carte est présélectionnée. Changer le dossier pour un
-autre déjà utilisé → l'habitué de ce dossier se sélectionne. Choisir une carte à
-la main puis changer de dossier → le choix manuel tient.
+A manual check: launch an agent with a profile, open a new box on the same
+directory → the card is preselected. Change the directory to another one already
+used → that directory's regular gets selected. Pick a card by hand then change
+directory → the manual choice holds.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add public/index.html
-git commit -m "Le dernier profil utilisé dans un dossier est présélectionné"
+git commit -m "The last profile used in a directory is preselected"
 ```
 
 ---
 
-### Task 6: Replier les sections rares (`<details>`) et grisage hors mode `new`
+### Task 6: Folding the rare sections (`<details>`) and dimming outside `new` mode
 
 **Files:**
-- Modify: `public/index.html` — CSS (après le bloc des cartes), markup
+- Modify: `public/index.html` — CSS (after the cards' block), markup
   1015-1045, `refreshLiveList` (~2194), `refreshRecoverList` (~2233),
-  gestionnaire des radios `mode` (~2679).
+  the `mode` radios' handler (~2679).
 
 **Interfaces:**
-- Consumes: `#profileField`, `#profileNaNote` (tâche 3).
-- Produces: `#advancedField`, `#recoverField`, `#liveField` en `<details>` avec
-  les compteurs `#recoverCount` et `#liveCount`.
+- Consumes: `#profileField`, `#profileNaNote` (task 3).
+- Produces: `#advancedField`, `#recoverField`, `#liveField` as `<details>` with
+  the `#recoverCount` and `#liveCount` counters.
 
-- [ ] **Step 1: Ajouter le CSS des sections repliables**
+- [ ] **Step 1: Add the foldable sections' CSS**
 
-Après le bloc CSS des cartes (tâche 3) :
+After the cards' CSS block (task 3):
 
 ```css
-  /* Sections rares repliées : c'est ce qui empêchait le bouton Start de tenir
-     à l'écran (les listes s'ouvraient d'office dès qu'elles avaient un élément). */
+  /* Rare sections folded away: this is what kept the Start button from fitting
+     on screen (the lists opened by default as soon as they had one item). */
   .fold > summary {
     cursor: pointer; list-style: none;
     display: flex; align-items: center; gap: 6px;
@@ -800,12 +800,12 @@ Après le bloc CSS des cartes (tâche 3) :
   .fold-count { color: var(--amber); }
 ```
 
-- [ ] **Step 2: Passer les trois sections en `<details>`**
+- [ ] **Step 2: Turn the three sections into `<details>`**
 
-Les numéros de ligne ont bougé en tâche 3 : remplacer **tout le contenu de
-`<div id="setup" hidden>`** par ce bloc final, qui fixe l'ordre définitif
-(qui → où → le rare, replié → action). Le champ `Resume` perd son
-`<span class="label">Resume</span>` : le `<summary>` le remplace.
+The line numbers moved in task 3: replace **the whole content of
+`<div id="setup" hidden>`** with this final block, which fixes the definitive
+order (who → where → the rare stuff, folded → the action). The `Resume` field
+loses its `<span class="label">Resume</span>`: the `<summary>` replaces it.
 
 ```html
     <div id="setup" hidden>
@@ -857,28 +857,28 @@ Les numéros de ligne ont bougé en tâche 3 : remplacer **tout le contenu de
     </div>
 ```
 
-- [ ] **Step 3: Alimenter les compteurs**
+- [ ] **Step 3: Feed the counters**
 
-Dans `refreshLiveList`, remplacer `field.hidden = false;` (ligne ~2202) par :
+In `refreshLiveList`, replace `field.hidden = false;` (line ~2202) with:
 
 ```js
     field.hidden = false;
     $("liveCount").textContent = "(" + live.length + ")";
 ```
 
-Dans `refreshRecoverList`, remplacer `field.hidden = false;` (ligne ~2243) par :
+In `refreshRecoverList`, replace `field.hidden = false;` (line ~2243) with:
 
 ```js
     field.hidden = false;
     $("recoverCount").textContent = "(" + sessions.length + ")";
 ```
 
-Les `field.hidden = true` des cas vides restent inchangés : une section sans
-élément reste totalement masquée, comme aujourd'hui.
+The `field.hidden = true` of the empty cases stays unchanged: a section with no
+item stays entirely hidden, as it does today.
 
 - [ ] **Step 4: Griser profil + worktree hors mode `new`**
 
-Remplacer le gestionnaire des radios (lignes 2679-2688) par :
+Replace the radios' handler (lines 2679-2688) with:
 
 ```js
   document.querySelectorAll('input[name="mode"]').forEach((r) =>
@@ -886,8 +886,8 @@ Remplacer le gestionnaire des radios (lignes 2679-2688) par :
       const mode = document.querySelector('input[name="mode"]:checked').value;
       const isNew = mode === "new";
       $("resumeField").hidden = mode !== "resume";
-      // Profil et worktree ne valent que pour une session neuve : startActiveTab
-      // les ignore déjà en resume/continue, l'UI cesse simplement de le cacher.
+      // Profile and worktree only apply to a new session: startActiveTab
+      // already ignores them on resume/continue, the UI simply stops hiding it.
       $("profileField").classList.toggle("na", !isNew);
       $("profileNaNote").hidden = isNew;
       $("worktreeField").classList.toggle("na", !isNew);
@@ -897,42 +897,42 @@ Remplacer le gestionnaire des radios (lignes 2679-2688) par :
   );
 ```
 
-- [ ] **Step 5: Vérifier**
+- [ ] **Step 5: Check**
 
 Run: `npm run build && npm test`
 Expected: PASS.
 
 Run: `grep -n 'style.opacity' public/index.html | grep -i worktree`
-Expected: aucun résultat — l'ancien grisage inline a disparu.
+Expected: no result — the old inline dimming is gone.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add public/index.html
-git commit -m "Box plus courte : sessions passées et resume repliés, Start toujours visible"
+git commit -m "A shorter box: past sessions and resume folded, Start always visible"
 ```
 
 ---
 
-### Task 7: Vérification navigateur et mise à jour de la doc
+### Task 7: Browser verification and a documentation update
 
 **Files:**
 - Modify: `CLAUDE.md` (table « Architecture map » : ligne `public/index.html`,
-  plus une ligne pour `public/profile-card.js`)
+  plus a line for `public/profile-card.js`)
 
-`docs/architecture.md` ne décrit pas la box de création (vérifié : aucune
+`docs/architecture.md` does not describe the creation box (checked: no
 occurrence de `profileInput`, `New link` ni `new channel`) — ne rien y changer.
 
 **Interfaces:**
-- Consumes: tout ce qui précède.
+- Consumes: everything above.
 - Produces: rien de programmatique.
 
-- [ ] **Step 1: Lancer SON build sans casser les sessions sœurs**
+- [ ] **Step 1: Run YOUR build without breaking the sibling sessions**
 
-Suivre exactement « Running YOUR build » de `CLAUDE.md` : noter les pid du
-superviseur et de son fils, les arrêter, passer `"autoUpdate": false` dans
-`~/.shadok-ai/config.json` (une sauvegarde du fichier d'abord — `SHADOK_AUTOUPDATE=0`
-ne suffit pas), puis depuis le worktree :
+Follow "Running YOUR build" in `CLAUDE.md` exactly: note the supervisor's and
+its child's pids, stop them, set `"autoUpdate": false` in
+`~/.shadok-ai/config.json` (back the file up first — `SHADOK_AUTOUPDATE=0` is not
+enough), then from the worktree:
 
 ```bash
 npm run build && node dist/server.js
@@ -943,45 +943,45 @@ Confirmer qu'on est bien sur son build :
 ```bash
 curl -s localhost:3789/version
 ```
-Expected: `current` = `0.1.0` (la version locale), pas la version publiée.
+Expected: `current` = `0.1.0` (the local version), not the published one.
 
-- [ ] **Step 2: Passer la checklist visuelle sur http://localhost:3789**
+- [ ] **Step 2: Go through the visual checklist at http://localhost:3789**
 
-- [ ] La colonne de gauche dit `Agents` et `＋ new agent`.
-- [ ] La box s'ouvre sur `New agent` puis `Which agent?` et ses cartes.
+- [ ] The left-hand column says `Agents` and `＋ new agent`.
+- [ ] The box opens on `New agent`, then `Which agent?` and its cards.
 - [ ] Chaque carte montre nom, blurb sur 2 lignes max, badges corrects
       (`read-only` sur Shadok-Marketing et Shadok-Support, `full access` sur
       Shadok-dev).
-- [ ] Un clic sélectionne (bordure ambre) ; Tab entre dans la grille, les
-      flèches déplacent la sélection, Espace valide.
-- [ ] `✎ edit profiles` ouvre le panneau vide ; le `✎` d'une carte l'ouvre
-      prérempli ; à la fermeture la grille est à jour.
-- [ ] Les trois sections `▸` sont fermées à l'ouverture, avec leur compteur.
-- [ ] La box entière, bouton `Start agent` compris, tient sans scroll dans une
-      fenêtre de 800 px de haut.
-- [ ] Passer en `latest in directory` grise les cartes et le worktree, et
+- [ ] A click selects (an amber border); Tab enters the grid, the arrows move
+      the selection, Space commits.
+- [ ] `✎ edit profiles` opens the empty panel; a card's `✎` opens it prefilled;
+      on closing, the grid is up to date.
+- [ ] The three `▸` sections are closed on opening, with their counter.
+- [ ] The whole box, `Start agent` button included, fits without scrolling in an
+      800 px-tall window.
+- [ ] Switching to `latest in directory` dims the cards and the worktree, and
       affiche « Applies to new sessions only ».
-- [ ] Démarrer un agent avec un profil, rouvrir une box sur le même dossier :
-      la carte est présélectionnée.
+- [ ] Start an agent with a profile, reopen a box on the same directory: the
+      card is preselected.
 
-- [ ] **Step 3: Restaurer le runtime**
+- [ ] **Step 3: Restore the runtime**
 
-Remettre `~/.shadok-ai/config.json` d'origine, arrêter `node dist/server.js`,
-puis relancer le superviseur détaché depuis le dépôt (`node dist/main.js`).
+Put the original `~/.shadok-ai/config.json` back, stop `node dist/server.js`,
+then relaunch the detached supervisor from the repo (`node dist/main.js`).
 Confirmer : `curl -s -o /dev/null -w '%{http_code}' localhost:3789/` → `200`.
 
-- [ ] **Step 4: Mettre la doc à jour**
+- [ ] **Step 4: Update the documentation**
 
-Dans `CLAUDE.md`, ligne de la table `public/index.html` : remplacer
-« Channels, groups, dialogs, … » par « Agents (cartes de profil à la création),
-groups, dialogs, … ». Ajouter une ligne à la table pour
-`public/profile-card.js` : « Libellés dérivés d'un profil (blurb + badges) pour
-les cartes de la box « New agent ». ESM : chargé par le navigateur ET importé
+In `CLAUDE.md`, the `public/index.html` table row: replace "Channels, groups,
+dialogs, …" with "Agents (profile cards at creation), groups, dialogs, …". Add a
+table row for `public/profile-card.js`: "Labels derived from a profile (blurb +
+badges) for the \"New agent\" box's cards. ESM: loaded by the browser AND
+imported
 par `test/profile-card.test.ts`. »
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add CLAUDE.md
-git commit -m "Doc : la box de création est orientée profil"
+git commit -m "Docs: the creation box is profile-first"
 ```
