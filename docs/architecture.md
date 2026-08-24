@@ -266,7 +266,8 @@ Three decisions are worth keeping in mind if you touch this:
   refreshes the managed `Shadok-Tweak` profile's `systemPrompt` from it at every
   boot, so it tracks the running build instead of rotting in the user's
   `profiles.json`. Only that field is rewritten (`withManagedPrompt`), so a vault
-  secret or model attached in the Profiles editor survives. `profile` is already
+  secret or model attached in the Profiles editor survives. Every OTHER shipped
+  role now reaches the same result by storing nothing at all — see below. `profile` is already
   re-applied on resume and restart, so the role is not lost when a session comes
   back.
 
@@ -607,6 +608,32 @@ instance downgrading itself is worse than the oddity it fixes.
 This is the trap when testing a local build: see "Running YOUR build" in
 `CLAUDE.md`. A second server finds the port busy, falls back to the next one,
 then auto-updates itself out from under you.
+
+## Profiles track the build until you edit them
+
+A shipped role (`Shadok-Boss`, `Shadok-dev`, …) is seeded with its guardrails and
+**no `systemPrompt`**. The text is resolved from the build at spawn
+(`effectiveProfile`), so an instance installed today and one installed a month
+ago run the same role, and a later release reaches both.
+
+Writing the prompt into `profiles.json` was the old behaviour, and it froze:
+seeding only ever fills an EMPTY file, so the first boot's wording was owned by
+that file forever. Only the managed `Shadok-Tweak` escaped, by being rewritten
+every boot. `migrateToTracking` closes the gap for existing instances — a stored
+prompt that merely repeats what the build ships is dropped, which changes nothing
+today (it resolves to the same text) and lets every later improvement through.
+
+Editing makes the prompt yours: it is stored, along with `promptBase`, the
+shipped text it was forked from. That is what turns a vague "you edited this"
+into "the build has moved since you forked" (`outdated`), which is the only case
+where an update is worth offering. A profile edited before `promptBase` existed
+reports the lesser, provable `edited` rather than guessing.
+
+Restoring **drops** the stored prompt instead of copying today's text in — the
+role goes back to tracking, so it also picks up whatever ships next. Copying
+would leave a fresh snapshot that starts going stale immediately, which is the
+behaviour this replaced. Guardrails, secrets and model are the user's throughout
+and are never touched.
 
 ## Persistence
 

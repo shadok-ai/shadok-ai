@@ -13,7 +13,18 @@ import path from "node:path";
  */
 export interface Profile {
   name: string;
+  /**
+   * The role text. ABSENT on a shipped profile the user never edited: the build's
+   * own prompt is resolved at spawn instead (`effectiveProfile`), so it can never
+   * go stale. Present means the user owns it.
+   */
   systemPrompt?: string;
+  /**
+   * The shipped prompt this one was forked from, recorded when a shipped role is
+   * first edited. It is what lets us say "the build has moved since" rather than
+   * merely "you edited this".
+   */
+  promptBase?: string;
   /** Claude permission deny patterns, e.g. "Bash(git commit:*)". */
   deny?: string[];
   /** Claude permission allow patterns (optional). */
@@ -148,9 +159,17 @@ export function getProfile(name: string): Profile | undefined {
 }
 
 /** Seed the starter profiles once, when the store is still empty. Idempotent. */
+/**
+ * Install the starter profiles on a fresh instance — WITHOUT their prompts.
+ *
+ * Storing the text would freeze it: profiles.json then owns a copy that no
+ * later release can move. Seeding the guardrails only leaves each role tracking
+ * the build's prompt (`effectiveProfile` resolves it at spawn), so an instance
+ * installed today and one installed a month ago run the same role.
+ */
 export function seedDefaultProfiles(): void {
   if (loadProfiles().length) return;
-  saveProfiles(DEFAULT_PROFILES);
+  saveProfiles(DEFAULT_PROFILES.map(({ systemPrompt: _tracked, ...rest }) => rest as Profile));
 }
 
 export function profileNames(): string[] {
@@ -237,6 +256,20 @@ export function withManagedPrompt(
   return { ...(existing ?? { name }), name, systemPrompt };
 }
 
+/**
+ * One-off migration: every profile whose stored prompt merely repeats the
+ * build's starts tracking it instead. Returns the names adopted (for the log).
+ *
+ * Idempotent, and a no-op on a fresh install. Nothing changes today — the
+ * resolved prompt is byte-identical — but from now on those roles follow the
+ * build instead of the copy their first boot happened to write.
+ */
+export function migrateToTracking(): string[] {
+  const { profiles, adopted } = adoptTracking(loadProfiles());
+  if (adopted.length) saveProfiles(profiles);
+  return adopted;
+}
+
 /** Install/refresh the tweak profile from the repo's prompt file. Idempotent. */
 export function seedTweakProfile(systemPrompt: string): void {
   upsertProfile(withManagedPrompt(getProfile(TWEAK_PROFILE_NAME), TWEAK_PROFILE_NAME, systemPrompt));
@@ -287,22 +320,76 @@ export function promptEditVerdict(opts: {
 }
 
 /** Where a profile's prompt comes from, seen from THIS build. */
-export type PromptOrigin = "stock" | "edited" | "custom";
+export type PromptOrigin = "tracked" | "edited" | "outdated" | "custom";
 
 /**
- * Whether a profile still carries the prompt this build ships.
+ * What a stored profile's prompt IS, relative to the one this build ships.
  *
- * `seedDefaultProfiles` only ever seeds an EMPTY vault, so a starter profile
- * edited once — by the user or by an agent through `/profiles/prompt` — never
- * hears about a newer upstream wording again. Nothing used to say so: a role
- * could sit for months missing a paragraph added since, and the only way to
- * notice was to diff by hand. This is what the Profiles panel marks.
+ *   tracked  — nothing stored: the build's prompt is used, always current.
+ *   edited   — the user wrote their own, and the build has not moved since.
+ *   outdated — the user's own, but the build's has changed since they forked.
+ *   custom   — a role this build knows nothing about; entirely theirs.
+ *
+ * A shipped role that is never touched stores NO prompt at all. That is the
+ * whole point: a copy is what goes stale, so there is no copy. Before this, the
+ * starter prompts were written to profiles.json on first boot and then owned by
+ * that file forever — an instance installed weeks ago still ran the wording of
+ * the day, untouched and silently behind, and only the managed Shadok-Tweak
+ * role escaped it by being rewritten at every boot.
  *
  * Trimmed on both sides: a trailing newline from an editor is not a rewrite.
  */
 export function promptOrigin(stored: Profile, shipped: Profile | undefined): PromptOrigin {
+  // Shadok-Tweak is not in DEFAULT_PROFILES — it is seeded from
+  // context/tweak-prompt.md and rewritten at every boot — so `shipped` is
+  // undefined for it. Reporting the one role that is ALWAYS current as "custom"
+  // would be exactly backwards.
+  if (stored.name === TWEAK_PROFILE_NAME) return "tracked";
   if (!shipped) return "custom";
-  return (stored.systemPrompt ?? "").trim() === (shipped.systemPrompt ?? "").trim() ? "stock" : "edited";
+  if (stored.systemPrompt === undefined) return "tracked";
+  const mine = (stored.systemPrompt ?? "").trim();
+  const ship = (shipped.systemPrompt ?? "").trim();
+  if (mine === ship) return "tracked";     // identical: nothing to own
+  // `promptBase` is the shipped text they forked from. Without it (a profile
+  // edited before this existed) we cannot tell a stale fork from a current one,
+  // and claiming "outdated" on a guess would nag about an update that may not
+  // exist. Say the lesser, provable thing.
+  const base = (stored.promptBase ?? "").trim();
+  return base && base !== ship ? "outdated" : "edited";
+}
+
+/**
+ * The profile to actually spawn with: a tracked prompt is filled in from the
+ * build at the moment it is used, never from a copy.
+ */
+export function effectiveProfile(stored: Profile | undefined | null): Profile | undefined {
+  if (!stored) return undefined;
+  if (stored.systemPrompt !== undefined) return stored;
+  const shipped = shippedProfile(stored.name);
+  return shipped?.systemPrompt ? { ...stored, systemPrompt: shipped.systemPrompt } : stored;
+}
+
+/**
+ * Drop a stored prompt that merely repeats what the build ships, so the profile
+ * starts tracking it. Pure; the caller persists.
+ *
+ * This is the migration for every instance created before tracking existed:
+ * their profiles.json holds the starter prompts verbatim. Dropping them changes
+ * nothing today — the resolved prompt is identical — and means every later
+ * improvement reaches them. A prompt that differs is the user's and is left
+ * exactly as it is.
+ */
+export function adoptTracking(list: Profile[]): { profiles: Profile[]; adopted: string[] } {
+  const adopted: string[] = [];
+  const profiles = list.map((p) => {
+    const ship = shippedProfile(p.name)?.systemPrompt?.trim();
+    if (!ship || p.systemPrompt === undefined) return p;
+    if (p.systemPrompt.trim() !== ship) return p;
+    adopted.push(p.name);
+    const { systemPrompt: _drop, promptBase: _base, ...rest } = p;
+    return rest as Profile;
+  });
+  return { profiles, adopted };
 }
 
 /** The starter profile this build ships under `name`, if any. */
