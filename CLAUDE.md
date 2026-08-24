@@ -88,8 +88,8 @@ both are silent in the DOM.
 | `src/tmux.ts` | `TmuxPilot` — same interface as `PtyPilot`, but runs `claude` in a **detached tmux session** (`sk-<sessionId>`). **Survives server restart** (reattaches). Default transport when tmux is present. |
 | `src/tail.ts` | Tails a session's `.jsonl` transcript → streams assistant text/tool_use/tool_result + token usage. **This is the source of truth for content**, not the screen. Also owns `isNothingToShow` — a text block that is *only* `NOTHING TO SHOW` is dropped (a cron with no signal must be able to stay silent); the twin filters live in `loadHistory` and the web live preview. |
 | `src/extract.ts` | Parse the transcript / screen: `loadHistory`, `detectDialog`, `listSessions`, `findSessionId`. |
-| `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. Also `inputText` and `describeStuckScreen`, which names a recognisable blocking state (first-run screen, masked field, pending question) so a submit failure says WHY instead of accusing the input box. See invariant 25. |
-| `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. Pure, tested against a real message whose CLI footer read 41%. See invariant 24. |
+| `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. Also `inputText` and `describeStuckScreen`, which names a recognisable blocking state (first-run screen, masked field, pending question) so a submit failure says WHY instead of accusing the input box. See invariant 23. |
+| `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. Pure, tested against a real message whose CLI footer read 41%. See invariant 22. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. |
 | `src/selfrepo.ts` | The working copy of shadok-ai's OWN source (`~/.shadok-ai/self/shadok-ai`) behind the "Tweak Shadok-AI" CTA: anonymous clone (no auth needed to start), `main` hard-reset to the remote on each use, never the launch directory. Only the base clone is refreshed — a live tweak session's worktree is a separate checkout and is never touched. Pure cores (`selfRepoPlan`, `gitFailReason`) tested. |
 | `context/tweak-prompt.md` | Role of the tweak agent, written for the person it answers to rather than for the procedure: the non-developer rule comes FIRST and governs the rest (a named banned-words table — pull request / branch / CI / diff — with what to say instead, a three-line answer budget, never hand back a technical decision), and the job ends when the change is VISIBLE, not when it is merged — so the agent reads `updateChannel` / `autoUpdate` off `/version` and never promises a beta instance something only a release will bring. Then the technical half: `CLAUDE.md` first, verify on a free port and never touch 3789, deliver as fork + PR, watch it through. Injected via the managed `Shadok-Tweak` profile, whose `systemPrompt` is refreshed from this file at every boot (`seedTweakProfile` / `withManagedPrompt`) — only that field, so a secret or model the user attached survives. `test/tweak-role.test.ts` locks the intent: prose is the one thing a refactor can quietly undo. |
@@ -97,25 +97,25 @@ both are silent in the DOM.
 | `src/usage.ts` | Fetches subscription usage (5h/7d) from `/api/oauth/usage`. |
 | `src/pace.ts` | The quota **guardrail**: ideal-pace computation + block verdict. |
 | `src/retry.ts` | Auto-retry of turns that died on a transient API error (529, 5xx, timeout). |
-| `src/channels.ts` | Server-side persistence of the channel + group lists, keyed by launch dir (`~/.shadok-ai/channels/<enc>.json`). `isMirrored` = does this channel live in Telegram too (opt-in per channel; falls back to "has a binding" so existing setups don't change). Also the Telegram board-group binding. Forces the main channel's name to `general`. `isHomeChannel` (pure, tested) is the ONE definition of the home base — the server-owned `home` flag, or a bound board's General (`threadId == null` **and** `chatId < 0`, since a DM has no topic either and must stay closable). It replaced three copies of that condition: `endChannel`, the client's `isMain`, and a comment in `telegram.ts`. `homeAdoptionTarget` gives a pre-flag cockpit its home base and **refuses when it cannot tell** (zero or several candidates): a wrong adoption is irreversible from the UI, since the channel becomes precisely the one that cannot be closed. `homeChannelForGeneral` (pure, tested) is the twin for the OTHER direction: when a board's General is first opened, `bridgeFor` resumes the web home session (`home: true`, not yet Telegram-bound) instead of spawning a SECOND "general" beside it — the home channel gains the binding rather than being duplicated. |
+| `src/channels.ts` | Server-side persistence of the channel + group lists, and **the one answer to "where does this session live"** — `resolveSessionTarget` / `resumeTarget` (pure, tested), which EVERY caller acting on a session's behalf goes through; on a resume the registry beats whatever the caller sent (see invariant 1). keyed by launch dir (`~/.shadok-ai/channels/<enc>.json`). `isMirrored` = does this channel live in Telegram too (opt-in per channel; falls back to "has a binding" so existing setups don't change). Also the Telegram board-group binding. Forces the main channel's name to `general`. `isHomeChannel` (pure, tested) is the ONE definition of the home base — the server-owned `home` flag, or a bound board's General (`threadId == null` **and** `chatId < 0`, since a DM has no topic either and must stay closable). It replaced three copies of that condition: `endChannel`, the client's `isMain`, and a comment in `telegram.ts`. `homeAdoptionTarget` gives a pre-flag cockpit its home base and **refuses when it cannot tell** (zero or several candidates): a wrong adoption is irreversible from the UI, since the channel becomes precisely the one that cannot be closed. `homeChannelForGeneral` (pure, tested) is the twin for the OTHER direction: when a board's General is first opened, `bridgeFor` resumes the web home session (`home: true`, not yet Telegram-bound) instead of spawning a SECOND "general" beside it — the home channel gains the binding rather than being duplicated. |
 | `src/telegram.ts` | The Telegram bridge (DMs belong to ONE user — `dmGate` + `…-telegram-owner.json`; the owner is adopted at boot from an existing DM binding or the board group's creator): one topic = one agent. Owns the bot long-poll, the command dispatcher (`/spawn`, `/stop`, `/secret`…), Markdown→Telegram HTML, dialogs as inline keyboards, attachments. Each binding holds a **WS client to our own server** — so a Telegram session is the same `Live` the web sees. |
 | `src/main.ts` | The `npx shadok-ai` entry point: parses flags, first-run token prompt, then runs the **supervisor**. Not the server. |
 | `src/supervisor.ts` / `src/updater.ts` / `src/update-flag.ts` | Self-update: the supervisor runs the npm-installed server as a child, restarts it on the update exit code; the updater installs the channel's resolved version into `~/.shadok-ai/app` (an EXACT version, never a tag — the caller already chose). |
-| `src/update-channel.ts` | Which release stream an instance follows: `alpha` (every merge) or `beta` (promotions only, the default). Pure `resolveChannel` (anything malformed → `beta`, never a throw) and `pickTarget` (alpha takes the newer of `alpha`/`latest`, so a promotion cannot make the fast channel downgrade). The beta channel reads the `latest` dist-tag — see invariant 31. |
+| `src/update-channel.ts` | Which release stream an instance follows: `alpha` (every merge) or `beta` (promotions only, the default). Pure `resolveChannel` (anything malformed → `beta`, never a throw) and `pickTarget` (alpha takes the newer of `alpha`/`latest`, so a promotion cannot make the fast channel downgrade). The beta channel reads the `latest` dist-tag — see invariant 29. |
 | `Dockerfile` | The official image (README "Running in Docker"): Claude Code + shadok-ai + a **bundled headless browser** (Playwright Chromium at `/opt/playwright-browsers`, `--with-deps` so the OS libs are present), plus `git`/`gh`/`tmux`/toolchain. COPYs nothing (installs from npm); `.dockerignore` is `*`. NB: NOT what a given deployment necessarily runs — the live VPS builds from a host-side Dockerfile of its own. |
 | `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). Pure, tested. See invariant 12. |
 | `src/net.ts` | Where we listen and who may speak: `resolveHost` (`SHADOK_HOST`, loopback by default), `bindRefusal` (fail-closed: no network bind without a password), `originAllowed` (same-origin, see invariant 11). Pure, tested. |
 | `src/heartbeat.ts` | Keeps **idle** `/ws` connections alive behind a reverse proxy: an idle agent sends no traffic, so a proxy (nginx `proxy_read_timeout` 60s, Cloudflare ~100s) cuts the socket and the client loops on "reconnecting" — with nothing actually broken. `startHeartbeat(wss)` pings every client every 25s (`SHADOK_WS_PING_MS`) and `terminate()`s the one that misses its pong. `heartbeatSweep` is pure, tested. |
 | `src/config.ts` | `~/.shadok-ai/config.json` (600): port, **per-launch-dir** Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`, `cockpitTitle` (**per-launch-dir** display name, `titleForCwd`/`setTitleForCwd` — the header brand + browser tab, so several cockpits stay apart), and `cockpitTheme` (**per-launch-dir** colour palette key, `themeForCwd`/`setThemeForCwd`, validated against `COCKPIT_THEMES`; default/unknown → cleared). Config is authoritative over env once set. |
-| `src/crons.ts` | Per-channel scheduled prompts (`~/.shadok-ai/crons/<enc>.json`) + the deterministic `check` that avoids waking the LLM for nothing. Three `kind`s: `interval`, `daily` and `once` (an absolute instant, fired a single time — `stateAfterFire` DISABLES it before the fire, since it cannot advance to a next slot, and `settleCron` re-arms it on a transient loss). `nextRunFor` computes a `daily` in an **explicit IANA zone** (`cron.tz` → config `timezone` → machine): without it the hour follows the machine, and a server running UTC shifts everything silently. `nextRunAfterFailure` decides where to reschedule a fire whose delivery was lost (see invariant 15). `resolveCronTarget` says WHERE a cron runs (the channel's cwd/profile/branch/repo) — one source of truth for the guard and for the resume (see invariant 19). The fire itself lives in `server.ts` (`cronTick` / `fireCron` / `driveChannel` / `settleCron`). Also carries `CRON_PROMPT_MARK`: a cron prompt's text is prefixed, because it ends up in the transcript like an ordinary user message — hiding only the direct echo let it come back on a web reload and in a Telegram backfill, both of which re-read `loadHistory`. Twin of `NOTHING TO SHOW`. |
+| `src/crons.ts` | Per-channel scheduled prompts (`~/.shadok-ai/crons/<enc>.json`) + the deterministic `check` that avoids waking the LLM for nothing. Three `kind`s: `interval`, `daily` and `once` (an absolute instant, fired a single time — `stateAfterFire` DISABLES it before the fire, since it cannot advance to a next slot, and `settleCron` re-arms it on a transient loss). `nextRunFor` computes a `daily` in an **explicit IANA zone** (`cron.tz` → config `timezone` → machine): without it the hour follows the machine, and a server running UTC shifts everything silently. `nextRunAfterFailure` decides where to reschedule a fire whose delivery was lost (see invariant 15). WHERE a cron runs is no longer decided here: `fireCron` calls `resolveSessionTarget` (`channels.ts`) once and hands the result to the guard AND to the resume (see invariant 1). The fire itself lives in `server.ts` (`cronTick` / `fireCron` / `driveChannel` / `settleCron`). Also carries `CRON_PROMPT_MARK`: a cron prompt's text is prefixed, because it ends up in the transcript like an ordinary user message — hiding only the direct echo let it come back on a web reload and in a Telegram backfill, both of which re-read `loadHistory`. Twin of `NOTHING TO SHOW`. |
 | `src/lock.ts` | Single-instance lock, keyed by launch dir: two servers from the same directory share a registry and a Telegram bridge, so the second refuses to start. `pidAlive` treats a **zombie** as dead — `kill(pid, 0)` succeeds on one, and in a container pid 1 is the application rather than an init that reaps, so a stopped instance held its lock FOREVER and every later start was refused while naming a pid that no longer existed. It reads `/proc/<pid>/stat` (`stateFromProcStat`, pure and tested — parsed from the LAST `)`, since the command name is parenthesised and may itself contain spaces and brackets); with no `/proc` the signal's answer stands. |
 | `src/kinship.ts` | Who launched whom, and what a parent is told about it. `linkRefusal` (self / cycle / unknown parent / depth / fan-out — every refusal **explicit**, never a silently dropped field), `chainDepth`, `childrenOf`, `notificationText` (the child's own summary + pointers, **never the diff**: the parent is the biggest session in the tree), and `AGENT_PROMPT_MARK` — twin of `CRON_PROMPT_MARK`, since a notification also lands in the transcript as an ordinary user message. Pure, tested. The delivery itself lives in `server.ts` (`notifyParent` / `deliverToParent` / `parentInbox` / `flushParentInbox`). |
 | `src/secrets.ts` | Central secret vault (`~/.shadok-ai/secrets.json`, 600). Profiles reference secrets **by name**; values are injected as env at spawn. `secretWriteVerdict` (pure, tested) is the no-silent-overwrite rule behind `PUT /secrets`: an existing name is refused unless the caller passes `overwrite: true`. HTTP is the only way an AGENT can reach the vault (Telegram's `/secret` calls `setSecret()` directly), so that endpoint is exactly the machine boundary. |
 | `context/secrets-skill/` | The `shadok-secrets` skill, seeded into `~/.claude/skills/` at boot (`seedSecretsSkill`, twin of `seedSchedulerSkill`): lets an agent store a credential it OBTAINED itself. `scripts/secret.mjs` has `list` and `set NAME --stdin` and **no `get`** — `--stdin` is required so a value can never sit in `argv`, which `ps` exposes machine-wide. |
-| `src/claude-home.ts` | Seeds Claude Code's first-run state in `~/.claude.json` — the globals at boot, `projects[<cwd>]` before **every** spawn (a worktree is a new directory, so a new trust dialog every time) — plus an explicit `tui` in `~/.claude/settings.json`, which kills the fullscreen-renderer upsell. That upsell appears only AFTER a sign-in and is **blocking**, so no signed-out probe can find it: the signed-out screens are not the whole set. PURELY ADDITIVE: a key already present is never overwritten, which is why it needs no Docker gate — contrast `src/ssh.ts` (invariant 21). Atomic write; an unparseable file is left alone rather than "repaired". Pure `seedPlan` / `parseClaudeVersion` tested. |
-| `src/first-agent.ts` | The lead agent an instance starts life with: `general` on the `Shadok-Boss` profile, in the launch dir, no worktree. `firstAgentPlan` is pure and tested — it spawns only when there is **no channel at all** AND the auth state is `signed-in` (`unknown` is not signed in: that is the zombie shape, cf. invariant 29). That "no channel" condition is what makes it idempotent, so `startFirstAgent` (`server.ts`) can be called both at boot and after a successful sign-in without either knowing about the other — and a brand-new instance, signed out at boot, gets its agent from the sign-in call. It spawns through a **loopback WS to our own server**, like the Telegram bridge and the cron driver: there is no server-side path that opens a session without a client, and adding one would be a second way to start an agent. |
-| `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs **no PTY**: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. One instance-global flow, two doors (the web card, Telegram `/login`+`/code`). Success is a clean **exit**, never a parsed string (see invariant 29). Pure `parseAuthStatus` / `parseLoginUrl` / `parseLoginOutcome` tested. |
-| `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). **Docker-only** (`/.dockerenv`): generates an ed25519 key under `~/.shadok-ai/ssh/` — on the `shadok-data` volume, so it survives restart AND recreate — and symlinks `~/.ssh` to it so agents' `git`/`ssh` use it. NO-OP on a normal host (never touches `~/.ssh`). Pure `sshPaths`/`planDotSshWiring`/`inContainer` are unit-tested. See invariant 21. |
+| `src/claude-home.ts` | Seeds Claude Code's first-run state in `~/.claude.json` — the globals at boot, `projects[<cwd>]` before **every** spawn (a worktree is a new directory, so a new trust dialog every time) — plus an explicit `tui` in `~/.claude/settings.json`, which kills the fullscreen-renderer upsell. That upsell appears only AFTER a sign-in and is **blocking**, so no signed-out probe can find it: the signed-out screens are not the whole set. PURELY ADDITIVE: a key already present is never overwritten, which is why it needs no Docker gate — contrast `src/ssh.ts` (invariant 19). Atomic write; an unparseable file is left alone rather than "repaired". Pure `seedPlan` / `parseClaudeVersion` tested. |
+| `src/first-agent.ts` | The lead agent an instance starts life with: `general` on the `Shadok-Boss` profile, in the launch dir, no worktree. `firstAgentPlan` is pure and tested — it spawns only when there is **no channel at all** AND the auth state is `signed-in` (`unknown` is not signed in: that is the zombie shape, cf. invariant 27). That "no channel" condition is what makes it idempotent, so `startFirstAgent` (`server.ts`) can be called both at boot and after a successful sign-in without either knowing about the other — and a brand-new instance, signed out at boot, gets its agent from the sign-in call. It spawns through a **loopback WS to our own server**, like the Telegram bridge and the cron driver: there is no server-side path that opens a session without a client, and adding one would be a second way to start an agent. |
+| `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs **no PTY**: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. One instance-global flow, two doors (the web card, Telegram `/login`+`/code`). Success is a clean **exit**, never a parsed string (see invariant 27). Pure `parseAuthStatus` / `parseLoginUrl` / `parseLoginOutcome` tested. |
+| `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). **Docker-only** (`/.dockerenv`): generates an ed25519 key under `~/.shadok-ai/ssh/` — on the `shadok-data` volume, so it survives restart AND recreate — and symlinks `~/.ssh` to it so agents' `git`/`ssh` use it. NO-OP on a normal host (never touches `~/.ssh`). Pure `sshPaths`/`planDotSshWiring`/`inContainer` are unit-tested. See invariant 19. |
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow, e.g. no `git commit`) + secrets + model, applied at spawn via `profileArgs`. Stored on the channel (`profile`) → re-applied on resume/restart. SOFT (same OS user, not a sandbox). |
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
 | `public/index.html` | The entire web client (no framework, no build). Agents (creation is a **popin**, `#setupOverlay`, profile-first: a grid of cards, the rest folded away; the channel is only born at "Start agent", see invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
@@ -139,7 +139,7 @@ both are silent in the DOM.
   - The **context gauge** used to break this rule and paid for it: it scraped
     `ctx:NN%` off the footer, a string only a custom statusLine ever prints, so
     it worked nowhere but the author's machine. It now comes from the transcript
-    like every other datum (`src/context.ts`, invariant 24).
+    like every other datum (`src/context.ts`, invariant 22).
   - **One deliberate exception (web only): the live text *preview*.** The
     `.jsonl` writes a text block only once it's *complete*, so a long paragraph
     stays invisible during generation then appears at once. `public/live-text.js`
@@ -222,10 +222,27 @@ Auth section of `docs/architecture.md`).
 
 ## Invariants & hard-won gotchas (DO NOT relearn these the hard way)
 
-1. **Session cwd must be the session's real directory.** `loadHistory` is keyed
-   by the cwd (encoded → `~/.claude/projects/<enc>/<id>.jsonl`). A worktree
-   session resumed with the repo-root cwd shows **no history**. Always resume a
-   worktree session with its worktree path.
+1. **The registry is the authority on where a session lives — resolve, never
+   guess.** `loadHistory` is keyed by the cwd (encoded →
+   `~/.claude/projects/<enc>/<id>.jsonl`), so a worktree session resumed at the
+   repo root wakes with **no history at all**. That directory, plus the
+   `branch`/`repo` needed to rebuild a reclaimed checkout, is recorded on the
+   channel when the session is created. Every caller acting on a session's
+   behalf reads it back through `resolveSessionTarget` / `resumeTarget`
+   (`src/channels.ts`) instead of naming a directory of its own — and on a
+   resume the registry's answer **beats whatever the caller sent**.
+   That single lookup is not a preference, it is the fix for the same bug three
+   times over: the browser sent `repo: serverCwd` for every channel (right only
+   while every worktree came from the launch repo — the tweak agent was the
+   first that didn't), `driveChannel` sent `cwd: process.cwd()` while the cron
+   guard ten lines above already had the channel's own directory, and the
+   `start` handler fell back to the server's cwd. `process.cwd()` is the
+   server's, never a session's.
+   The other half is writing it down: at `ready` the server ASSERTS `cwd`,
+   `branch` and `repo` from `session.worktree` and never clears them. `branch:
+   worktree?.branch ?? null` erased the branch on the first resume, because a
+   resume has no `worktree` object and `upsertInto` writes anything that is not
+   `undefined`. Omit the key; never write a null.
 2. **Detection heuristics are fragile.** `screenShowsWork` must ignore a
    *quoted* "esc to interrupt" (Claude explaining shadok-ai tripped it →
    session stuck "busy"). `detectDialog` must strip a right-hand **preview
@@ -345,38 +362,7 @@ Auth section of `docs/architecture.md`).
    by carrying `.overlay` (no list of ids left to update — it was that oversight
    that let the cron panel render in the page flow).
 
-19. **Anything that resumes a session on the user's behalf must carry the
-   CHANNEL's cwd — invariant nº 1 has a cron-shaped trap.** `driveChannel` sent
-   `cwd: process.cwd()` (the repo root) while `runCronCheck`, ten lines above,
-   already resolved the channel's own directory: the guard ran in the worktree and
-   the agent was resumed at the root, i.e. with **no history at all**. Both halves
-   now share one pure resolver, `resolveCronTarget` — a single place that decides
-   where a cron runs. It also forwards `branch` + `repo` (both are on `Channel`)
-   so the `start` handler can recreate a reclaimed worktree checkout — which
-   required fixing a second half: a resume has no `worktree` object, so patching
-   `branch: worktree?.branch ?? null` **erased** the branch on the first resume
-   (`upsertInto` writes anything non-`undefined`). `branch` is now only ever
-   *asserted*, never cleared, like `repo`. And `gone`
-   is its own `DriveReason` so a vanished directory is named in the log instead of
-   hiding behind a generic `error`. The same trap waits for any future machine
-   client (a "run now" button, a webhook): `process.cwd()` is the server's, never
-   the session's.
-
-20. **A session's repo is NOT the launch directory — and `mergeChannels` trusts a
-   brand-new channel wholesale.** The browser used to send `repo: serverCwd` for
-   every channel in `persistChannels`. That was accidentally right for years,
-   because every worktree came from the repo the server was launched in. The
-   "Tweak Shadok-AI" agent is the first whose repo differs (a worktree of
-   `~/.shadok-ai/self/shadok-ai`), and a wrong `repo` is not cosmetic: it is what
-   `ensureWorktreeCheckout` uses to recreate a reclaimed checkout, so a reopened
-   session would hunt its branch in a repository that never had it. `repo` is
-   server-owned, but `mergeChannels` pushes a channel the client just created
-   **as-is** (`if (!prev) result.push(c)`) — being in `SERVER_OWNED` protects a
-   field only once something is stored for that id. So the client no longer
-   invents the key, and the server asserts it from `session.worktree.repo` at
-   `ready`, ASSERT-only like `branch` (invariant 19).
-
-21. **The SSH identity must never touch a real host's `~/.ssh`, and must live on
+19. **The SSH identity must never touch a real host's `~/.ssh`, and must live on
     the mounted volume — not `/root/.ssh`.** `ensureSshIdentity` (`src/ssh.ts`)
     runs at boot but is a NO-OP unless `/.dockerenv` is present: on a developer's
     Mac it must not read, move, or symlink `~/.ssh`. In a container it puts the
@@ -389,7 +375,7 @@ Auth section of `docs/architecture.md`).
     back to `GIT_SSH_COMMAND`. The whole thing is swallowed on error — an SSH-setup
     failure must never take down the boot path.
 
-22. **The browser's socket scheme follows the page's — never hardcode `ws://`.**
+20. **The browser's socket scheme follows the page's — never hardcode `ws://`.**
     `openLink` (`public/index.html`) built `` `ws://${location.host}/ws` ``. That is
     correct on every developer setup, because they are all `http://localhost:3789`,
     and it breaks the moment the cockpit sits behind a TLS reverse proxy: the
@@ -404,7 +390,7 @@ Auth section of `docs/architecture.md`).
     "Behind TLS"). The server-side sockets (`telegram.ts`, `server.ts`) stay
     `ws://` on purpose — they dial 127.0.0.1, where there is no TLS.
 
-23. **Dialog detection belongs to the screen watcher, not to one input path.**
+21. **Dialog detection belongs to the screen watcher, not to one input path.**
     `detectDialog` used to be reachable only from `finishTurn`, i.e. only from the
     handlers that submit on the user's behalf (`prompt`, `choose`, `toggle`,
     `confirm`, `freetext`). `case "key"` — the terminal view — writes the
@@ -421,7 +407,7 @@ Auth section of `docs/architecture.md`).
     toggle re-renders through its own direct broadcast). `finishTurn` clears the
     key on `turn-done` so asking the SAME question twice still reaches the clients.
 
-24. **The context gauge reads the transcript, never the footer — and the window is
+22. **The context gauge reads the transcript, never the footer — and the window is
     a SETTING, not a model.** The percentage used to come from
     `screen.match(/ctx:\s*(\d+)\s*%/)`. That string is not produced by Claude
     Code: it comes from a **custom statusLine** the user happens to have
@@ -443,7 +429,7 @@ Auth section of `docs/architecture.md`).
     the CLI footer showed as `ctx:41%` computes to 41%, with or without the model
     setting.
 
-25. **A restart must GUARANTEE a new process — `TmuxPilot.start()` adopts an
+23. **A restart must GUARANTEE a new process — `TmuxPilot.start()` adopts an
     existing pane by design.** That adoption is what makes an agent survive a
     server restart, and it is also the trap: if the pane outlives the stop, the
     "restart" silently reattaches to the very process the user wanted gone. Same
@@ -473,7 +459,7 @@ Auth section of `docs/architecture.md`).
     error: the bare "the text never appeared in the input box" points at an input
     box that does not exist, and sent two investigations to the wrong subsystem.
 
-26. **A field accepted in `start` is not a field STORED — and only the browser
+24. **A field accepted in `start` is not a field STORED — and only the browser
     tells you.** `parent` was added to the `start` message, sent by `pilotctl`
     from its own `SHADOK_SESSION_ID`, typed in `ClientMessage`, and covered by
     unit tests. `tsc` was clean, 408 tests were green, and the automatic link —
@@ -488,10 +474,10 @@ Auth section of `docs/architecture.md`).
     start only DROPS the link instead of failing the spawn — killing an agent
     over a bad link is worse than one that reports to nobody — and it is logged,
     so it is not a silent loss. And `parent` is ASSERT-only on the channel, like
-    `branch` and `repo` (invariant 19): a client that omits the key must never
+    `branch` and `repo` (invariant 1): a client that omits the key must never
     erase a link that already exists.
 
-27. **The diff baseline is COMPUTED, never stored — and `A...B` is the wrong
+25. **The diff baseline is COMPUTED, never stored — and `A...B` is the wrong
     way to compute it.** `Worktree` used to carry a `baseSha` frozen at spawn,
     and `gitDiff` diffed against it. Two ways that goes wrong, in opposite
     directions: a sha frozen days ago is no longer where the branch forks once
@@ -508,7 +494,7 @@ Auth section of `docs/architecture.md`).
     `commits` was already right as `base..branch` — that range excludes the
     base's commits by construction, even ones the agent merged in.
 
-28. **A profile carries the GUARDRAILS, so an agent must never be able to write
+26. **A profile carries the GUARDRAILS, so an agent must never be able to write
     one.** `PUT /profiles` accepts `deny`/`allow`/`secrets`/`model`, and until
     now nothing stopped an agent from calling it: `requestAuthed` returns true
     outright when no GUI password is set, and the origin guard deliberately lets
@@ -527,7 +513,7 @@ Auth section of `docs/architecture.md`).
     `~/.shadok-ai/profiles.json` directly. This removes the accident and takes
     the capability off the documented surface; a hard boundary needs a separate
     OS user or a container per agent.
-29. **A signal you never observed is not a signal — and the sign-in's success is
+27. **A signal you never observed is not a signal — and the sign-in's success is
     one of them.** `claude auth login --claudeai` prints `Invalid code. Please
     make sure the full code was copied.` on a refusal; that wording was captured
     from the real binary. It presumably prints *something* on success too, but
@@ -550,7 +536,7 @@ Auth section of `docs/architecture.md`).
     is ever asserted, `unknown` retries once, is never cached, never opens the
     card and never blocks a spawn.
 
-30. **On a phone the viewport is THREE different rectangles, and CSS only knows
+28. **On a phone the viewport is THREE different rectangles, and CSS only knows
     two of them.** The cockpit is a fixed chassis, so its height is load-bearing:
     `100%` is the *layout* viewport, which assumes the URL bar retracted — that is
     what put the composer under the browser's own bar. `100dvh` follows the bar.
@@ -574,7 +560,7 @@ Auth section of `docs/architecture.md`).
     `textarea`) or it silently loses. `test/mobile-viewport.test.ts` locks all of
     it, the way `test/csp.test.ts` locks the nonce.
 
-31. **The beta channel IS the `latest` dist-tag — CI can only ever SET a tag, not
+29. **The beta channel IS the `latest` dist-tag — CI can only ever SET a tag, not
     move one.** npm Trusted Publishing (OIDC) authenticates `npm publish` and
     [nothing else](https://docs.npmjs.com/trusted-publishers): `npm dist-tag add`
     needs a traditional token, so the obvious design — publish everything as
@@ -596,7 +582,7 @@ Auth section of `docs/architecture.md`).
     reads as the 77th patch of a 0.3 series that never had one, which is worse
     than useless to whoever is trying to tell two releases apart.
 
-32. **A multi-question `AskUserQuestion` is a form with a tab bar, not one
+30. **A multi-question `AskUserQuestion` is a form with a tab bar, not one
     dialog — answer each question, never auto-drive past it.** When Claude asks
     several questions in one call, the TUI shows a `←  ☐ Q1  ☐ Q2  ✔ Submit  →`
     tab bar and one question at a time. A SINGLE-select question already worked:
@@ -616,7 +602,7 @@ Auth section of `docs/architecture.md`).
     against a live agent: single, standalone-multi, and multi-question forms with
     a multi-select all land the exact answers with no decline.
 
-33. **One agent = one channel row: dedup by `sessionId` at BOTH ends, because a
+31. **One agent = one channel row: dedup by `sessionId` at BOTH ends, because a
     duplicate self-feeds.** A spawn-time race (the spawn's `upsertChannel` +
     the holder's) could momentarily put two rows for one session into a client's
     tab list; `mergeChannels` iterated `clientList` and pushed each without a
