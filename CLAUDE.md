@@ -24,7 +24,7 @@ The server runs under a **detached supervisor**, `node dist/main.js`, launched
 from the repo. The supervisor doesn't run your working tree: it runs the
 **npm-installed** copy (`~/.shadok-ai/app/node_modules/shadok-ai/dist/server.js`)
 and auto-updates it. Every merge to main publishes a new version
-(`.github/workflows/publish.yml`, version = `major.minor.<commit count>`), so a
+(`.github/workflows/publish.yml`, version = `major.minor.<commits since that minor>`), so a
 running instance picks up merged work on its own within minutes.
 
 UI: **http://localhost:3789**. Logs: `~/.shadok-ai/local-supervisor.log`.
@@ -579,11 +579,18 @@ Auth section of `docs/architecture.md`).
     instance that downgrades itself is worse than the window it closes.
     Promotion is decided from the REGISTRY (`package.json` minor vs the minor
     `latest` points at), never from git history, so a workflow re-run or a replay
-    cannot promote twice. The channel also picks the NUMBER: an alpha is
-    `<major>.<minor>.<commit count>`, a promotion is `<major>.<minor>.0`. The
-    first promotion went out as `0.3.77` under the older rule — a number that
-    reads as the 77th patch of a 0.3 series that never had one, which is worse
-    than useless to whoever is trying to tell two releases apart.
+    cannot promote twice. The NUMBER follows one rule: `<major>.<minor>.<commits
+    since this minor began>`, so the patch **restarts at 0 on every promotion**
+    and a version says where it sits inside its generation. A promotion is not a
+    special case — the promoting merge is the commit that set the minor, so its
+    count is 0. Two earlier spellings were worse: the global commit count gave
+    `0.3.77`, which reads as the 77th patch of a 0.3 series that never had one;
+    special-casing the promotion to `.0` fixed the milestone but left alphas
+    numbered by repository age. Changing this rule **requires promoting in the
+    same merge** — restarting the count alone publishes a version LOWER than the
+    one already tagged `alpha` (0.5.2 against a published 0.5.123), and every
+    alpha instance silently stops updating, since `isNewer` is false, until the
+    next promotion.
 
 30. **A multi-question `AskUserQuestion` is a form with a tab bar, not one
     dialog — answer each question, never auto-drive past it.** When Claude asks

@@ -24,13 +24,20 @@ Two channels, chosen per instance:
 A promotion is a **minor bump**: `0.2.x` → `0.3.0`. The minor is the generation,
 and it needs no separate release commit.
 
-The patch differs by channel, and deliberately so. An alpha keeps the commit
-count (`0.3.78`) — that stream moves every merge, so a version that points at a
-commit is exactly what you want. A promotion is `.0`: it is a milestone, and
-numbering it by commit count produces something like `0.3.77`, which reads as
-the 77th patch of a 0.3 series whose earlier patches never existed. The first
-promotion shipped that way before the rule was corrected. Nothing can collide —
-an alpha's patch is a commit count, never 0.
+The patch counts **commits since the minor began**, so it restarts at 0 at every
+promotion and a version says where it sits inside its generation: `0.6.4` is the
+fourth merge of the 0.6 line. A promotion is not a special case — the promoting
+merge is the commit that set the minor, so its count is 0.
+
+Two earlier spellings were worse. The global commit count gave `0.3.77`, which
+reads as the 77th patch of a 0.3 series whose earlier patches never existed.
+Special-casing the promotion to `.0` fixed the milestone but left alphas numbered
+by repository age, which says nothing useful about the release.
+
+Changing the rule **must happen in the same merge as a promotion**: restarting
+the count on its own would publish a version LOWER than the one already tagged
+`alpha` (0.5.2 against a published 0.5.123), and every alpha instance would
+silently stop updating — `isNewer` is false — until the next promotion.
 
 ## Why dist-tags, and why only `npm publish`
 

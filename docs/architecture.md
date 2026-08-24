@@ -575,13 +575,18 @@ persisted as `updateChannel` (absent = `beta`):
 compares that minor with the one `latest` currently points at; different means
 this merge is the promotion.
 
-The channel also decides the NUMBER. An alpha is `<major>.<minor>.<commit
-count>` — the version says which commit it is. A promotion is
-`<major>.<minor>.0`: a milestone, not a commit pointer. The first promotion
-shipped as `0.3.77` under the older rule and read as the 77th patch of a 0.3
-series whose 0.3.0–0.3.76 never existed, which is a version number that lies to
-the person reading it. No collision is possible either way — an alpha's patch is
-a commit count, never 0. The decision is read from the registry, not from
+The NUMBER follows one rule: `<major>.<minor>.<commits since this minor began>`.
+The patch **restarts at 0 on every promotion**, so `0.6.4` is the fourth merge of
+the 0.6 line rather than the 4th commit of the repository. A promotion needs no
+special case: the promoting merge is the commit that set the minor, so its count
+is 0 and it publishes `<major>.<minor>.0`.
+
+CI finds where a minor began by walking the commits that touched `package.json`
+newest-first and keeping the last one still carrying it — which is why the
+publish job checks out with `fetch-depth: 0`. With no such commit (a shallow
+clone, a rewritten history) it falls back to the global count: a version too high
+is harmless, since it still sorts after everything published, whereas 0 would
+collide with a promotion. The decision is read from the registry, not from
 git history, so a re-run or a replay reaches the same verdict instead of
 promoting twice.
 
