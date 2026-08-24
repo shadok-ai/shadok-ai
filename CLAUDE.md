@@ -211,7 +211,13 @@ shadok-ai's own source, returns the cwd to start the tweak agent in),
 existing name with 409 unless `overwrite: true`. `PUT /profiles` writes the
 GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
 `/profiles/prompt` (PUT) is the only profile write an agent can make — a
-`systemPrompt`, its own or, under the lead profile, any.
+`systemPrompt`, its own or, under the lead profile, any. `GET /profiles`
+adds a **derived** `origin` per profile (`stock` / `edited` / `custom`, never
+stored, cf. invariant 6): seeding only ever fills an EMPTY vault, so a starter
+profile edited once never catches up on a newer upstream wording — the panel
+marks it. `/profiles/restore` (POST, browser-only) puts that prompt back to the
+build's, and only that field: deny/allow/secrets/model are the user's and
+survive, exactly as `withManagedPrompt` does for the managed role.
 `/telegram` (GET/PUT — bot config from the GUI), `/version`,
 `/autoupdate`, `/permission-mode`, `/login`, `/vendor/marked.js`,
 `/paste` (POST — ANY file pasted into the composer, not just images; lands

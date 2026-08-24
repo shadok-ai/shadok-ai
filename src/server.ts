@@ -122,6 +122,9 @@ import {
   READONLY_DENY,
   TWEAK_PROFILE_NAME,
   type Profile,
+  promptOrigin,
+  shippedProfile,
+  withManagedPrompt,
 } from "./profiles.js";
 import { ensureSelfRepo } from "./selfrepo.js";
 import {
@@ -1086,7 +1089,29 @@ app.delete("/secrets", (req, res) => {
 
 // Agent profiles (global): role + permission guardrails + referenced secrets,
 // applied at spawn. `secrets` is a list of vault NAMES (not values).
-app.get("/profiles", (_req, res) => res.json(loadProfiles()));
+// `origin` is DERIVED, never stored (like `crons` on /channels, cf. invariant 6):
+// "stock" = still this build's wording, "edited" = a starter profile rewritten
+// since, "custom" = a role this build does not ship. Seeding only ever fills an
+// EMPTY vault, so an edited starter never catches up on its own — the panel has
+// to say so, otherwise the drift is invisible.
+app.get("/profiles", (_req, res) =>
+  res.json(loadProfiles().map((p) => ({ ...p, origin: promptOrigin(p, shippedProfile(p.name)) }))),
+);
+
+// Put a starter profile's prompt back to what this build ships. Browser-only,
+// like every guardrail write. Only `systemPrompt` moves: whatever the user
+// attached (deny/allow/secrets/model) is theirs and survives — the exact rule
+// `withManagedPrompt` already applies to the managed Shadok-Tweak role.
+app.post("/profiles/restore", (req, res) => {
+  if (!requestFromBrowser(req))
+    return res.status(403).json({ error: "profiles are restored from the web UI only" });
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const shipped = name ? shippedProfile(name) : undefined;
+  if (!shipped?.systemPrompt)
+    return res.status(404).json({ error: `this build ships no prompt for ${name || "(unnamed)"}` });
+  upsertProfile(withManagedPrompt(getProfile(name), name, shipped.systemPrompt));
+  res.json(loadProfiles().map((p) => ({ ...p, origin: promptOrigin(p, shippedProfile(p.name)) })));
+});
 // Full profile write — INCLUDING the guardrails (deny/allow/secrets/model).
 // Browser-only: an agent's shell sends no Origin and is refused here. Without
 // this gate any agent could `curl -X PUT /profiles` with `deny: []` and strip

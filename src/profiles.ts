@@ -285,3 +285,27 @@ export function promptEditVerdict(opts: {
   if (!opts.targetExists) return { ok: false, error: `${target} no longer exists` };
   return { ok: true, create: false };
 }
+
+/** Where a profile's prompt comes from, seen from THIS build. */
+export type PromptOrigin = "stock" | "edited" | "custom";
+
+/**
+ * Whether a profile still carries the prompt this build ships.
+ *
+ * `seedDefaultProfiles` only ever seeds an EMPTY vault, so a starter profile
+ * edited once — by the user or by an agent through `/profiles/prompt` — never
+ * hears about a newer upstream wording again. Nothing used to say so: a role
+ * could sit for months missing a paragraph added since, and the only way to
+ * notice was to diff by hand. This is what the Profiles panel marks.
+ *
+ * Trimmed on both sides: a trailing newline from an editor is not a rewrite.
+ */
+export function promptOrigin(stored: Profile, shipped: Profile | undefined): PromptOrigin {
+  if (!shipped) return "custom";
+  return (stored.systemPrompt ?? "").trim() === (shipped.systemPrompt ?? "").trim() ? "stock" : "edited";
+}
+
+/** The starter profile this build ships under `name`, if any. */
+export function shippedProfile(name: string): Profile | undefined {
+  return DEFAULT_PROFILES.find((p) => p.name === name);
+}
