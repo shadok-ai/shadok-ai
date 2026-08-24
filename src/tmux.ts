@@ -2,7 +2,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
+import { idleStep, screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
+import { windowMs } from "./session.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
 /**
@@ -401,14 +402,10 @@ export class TmuxPilot {
     while (Date.now() < deadline) {
       if (this.exited) throw new Error("The claude process has exited.");
       const s = this.screen();
-      const working = screenShowsWork(s);
-      if (!working && s === lastScreen) {
-        if (stableSince === 0) stableSince = Date.now();
-        if (Date.now() - stableSince >= stableMs) return s;
-      } else {
-        stableSince = 0;
-        lastScreen = s;
-      }
+      const step = idleStep(s, lastScreen, stableSince, Date.now(), windowMs(stableMs));
+      if (step.done) return s;
+      stableSince = step.stableSince;
+      lastScreen = step.lastScreen;
       await sleep(160);
     }
     throw new Error(`waitForIdle: timed out after ${timeoutMs} ms. Last screen:\n${this.screen()}`);

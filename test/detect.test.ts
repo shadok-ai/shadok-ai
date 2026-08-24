@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { screenShowsWork, inputHasProbe, inputText } from "../src/detect.js";
+import { idleStep, screenShowsWork, inputHasProbe, inputText } from "../src/detect.js";
 
 const idle = [
   "⏺ Done.",
@@ -80,4 +80,42 @@ test("inputText: shell mode — the '!' box padded with a non-breaking space", (
   // The TUI pads the shell prompt with U+00A0, not a regular space.
   assert.equal(inputText("────\n!  echo hi\n────\n  ! for shell mode"), "echo hi");
   assert.equal(inputText("! \n────\n  ! for shell mode"), ""); // empty shell box
+});
+
+// ── idleStep: when is a turn over? ──────────────────────────────────────────
+
+const WORKING = "✻ Jitterbugging… (4m 26s · ↓ 7.1k tokens)";
+const IDLE = "❯ \n  ? for shortcuts";
+
+test("idleStep: a screen that keeps changing never settles", () => {
+  let st = { stableSince: 0, lastScreen: "" };
+  for (let t = 0; t < 10_000; t += 160) {
+    st = idleStep(IDLE + t, st.lastScreen, st.stableSince, t, 2000);
+    assert.equal(st.done, false, `settled at ${t}ms on a moving screen`);
+  }
+});
+
+test("idleStep: settles only once the window has fully elapsed", () => {
+  // First sighting starts the clock but never settles on the spot.
+  let st = idleStep(IDLE, IDLE, 0, 1000, 2000);
+  assert.equal(st.done, false);
+  assert.equal(st.stableSince, 1000, "the clock starts at the first stable poll");
+  assert.equal(idleStep(IDLE, IDLE, 1000, 2999, 2000).done, false, "one ms short is not settled");
+  assert.equal(idleStep(IDLE, IDLE, 1000, 3000, 2000).done, true, "exactly the window settles");
+});
+
+test("idleStep: a working screen never settles, however still it is", () => {
+  // Byte-identical for a minute, but the spinner says otherwise.
+  assert.equal(idleStep(WORKING, WORKING, 1000, 61_000, 2000).done, false);
+  // …and it resets the clock, so calm afterwards is measured from scratch.
+  assert.equal(idleStep(WORKING, WORKING, 1000, 61_000, 2000).stableSince, 0);
+});
+
+test("idleStep: a shorter window settles sooner, on the same screen", () => {
+  // The point of the interrupt path: same evidence, lower bar. 400ms is enough
+  // once the user has explicitly asked the turn to stop.
+  assert.equal(idleStep(IDLE, IDLE, 1000, 1400, 2000).done, false, "the normal window still waits");
+  assert.equal(idleStep(IDLE, IDLE, 1000, 1400, 400).done, true, "the short window is done");
+  // But a shorter window must NOT excuse a screen that is still working.
+  assert.equal(idleStep(WORKING, WORKING, 1000, 61_000, 400).done, false);
 });

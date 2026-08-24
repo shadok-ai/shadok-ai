@@ -31,6 +31,40 @@ export function screenShowsWork(screen: string): boolean {
 }
 
 /**
+ * One step of the "is this turn over?" loop, shared by both pilots.
+ *
+ * A turn ends on an ABSENCE of change: the screen must stop showing work AND
+ * stay byte-identical for `stableMs`. That is a proxy, and a deliberately
+ * conservative one — a TUI can look calm for an instant between two tool calls,
+ * and calling the turn there would cut it in half.
+ *
+ * `stableMs` is a parameter and not a constant because the bar is not always
+ * the same. When the user pressed the interrupt key, the end state is not being
+ * guessed at: we asked for it. The caller may then lower the window, and the
+ * turn is released in a fraction of the time. What it may NOT do is excuse a
+ * screen that still shows work — that check is here, above the window, so no
+ * caller can shorten its way past it.
+ *
+ * Pure on purpose: the loop it replaces lived twice (both pilots) and could
+ * only be exercised by spawning a real process.
+ */
+export function idleStep(
+  screen: string,
+  lastScreen: string,
+  stableSince: number,
+  now: number,
+  stableMs: number,
+): { done: boolean; stableSince: number; lastScreen: string } {
+  if (screenShowsWork(screen) || screen !== lastScreen) {
+    return { done: false, stableSince: 0, lastScreen: screen };
+  }
+  // 0 means "not stable yet": start the clock, but never settle on the spot —
+  // one poll proves nothing about the next.
+  const since = stableSince === 0 ? now : stableSince;
+  return { done: now - since >= stableMs, stableSince: since, lastScreen };
+}
+
+/**
  * True while the text we just typed is still sitting in the input box (the
  * last "❯ …" line). Used to confirm a submit: before Enter the probe is in the
  * box; once Enter is accepted the box clears, so `!inputHasProbe` means "sent".

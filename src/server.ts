@@ -1581,6 +1581,15 @@ interface Live {
   /** Epoch ms when the in-flight turn started — lets clients (re)joining
    *  mid-turn show the real thinking time instead of restarting at zero. */
   turnStartedAt: number | null;
+  /**
+   * When the user pressed the interrupt key during this turn, or null.
+   *
+   * A turn normally ends on an absence of change, proved over two seconds. That
+   * conservatism is right when we are guessing; it is pure waiting once the
+   * user has explicitly asked the turn to stop. The flag lets `finishTurn` lower
+   * the bar — never the check that the screen actually stopped working.
+   */
+  interruptedAt: number | null;
   /** How long the last finished turn took, so a client attaching between
    *  turns can restore the frozen time instead of showing a blank timer. */
   lastTurnMs: number | null;
@@ -1785,6 +1794,7 @@ async function createSession(
     retryCount: 0,
     errorsAtTurnStart: [],
     turnStartedAt: null,
+    interruptedAt: null,
     lastTurnMs: null,
   };
   await attachPilot(s);
@@ -1922,6 +1932,15 @@ function workingMessage(s: Live): { type: "working"; startedAt: number | null; e
  * streamed separately by the transcript tail; here we only signal an
  * interactive dialog (turn stays suspended) or turn completion.
  */
+/**
+ * How long the screen must hold still to end a turn the user INTERRUPTED.
+ *
+ * Short on purpose: the end state is not being inferred, it was requested. Not
+ * zero either — the TUI still repaints the interruption, and calling the turn
+ * on a single poll would race that repaint.
+ */
+const INTERRUPTED_STABLE_MS = 400;
+
 async function finishTurn(s: Live) {
   s.busy = true;
   // Turn found already running (not started by us): typically after a server
@@ -1932,7 +1951,12 @@ async function finishTurn(s: Live) {
   s.errorsAtTurnStart = findTransientErrors(s.pilot.screen());
   broadcast(s, workingMessage(s));
   try {
-    await s.pilot.waitForIdle({ stableMs: 2000, timeoutMs: 900_000 });
+    // Read on every poll, so an interrupt arriving mid-wait takes effect at
+    // once instead of at the next turn.
+    await s.pilot.waitForIdle({
+      stableMs: () => (s.interruptedAt ? INTERRUPTED_STABLE_MS : 2000),
+      timeoutMs: 900_000,
+    });
     // A MULTI-QUESTION AskUserQuestion ends on a recap page ("Ready to submit
     // your answers? · Submit answers / Cancel"). That is NOT a real question —
     // every question was already answered one by one — and it mis-parses as a
@@ -1956,6 +1980,7 @@ async function finishTurn(s: Live) {
     }
   } finally {
     s.busy = false;
+    s.interruptedAt = null;
     // Remember how long it took: a dialog suspends the turn and a completion
     // ends it, but both freeze the client's timer, so both are worth keeping.
     if (s.turnStartedAt) s.lastTurnMs = Date.now() - s.turnStartedAt;
@@ -2596,6 +2621,12 @@ wss.on("connection", (ws: WebSocket) => {
             "ctrl-c",
           ] as const;
           if ((named as readonly string[]).includes(msg.key)) {
+            // An interrupt during a turn is a signal WE emitted: from here on
+            // the end state is known, so `finishTurn` may stop proving it the
+            // slow way. Only while busy — an escape at rest ends no turn.
+            if ((msg.key === "escape" || msg.key === "ctrl-c") && session.busy) {
+              session.interruptedAt = Date.now();
+            }
             session.pilot.press(msg.key as (typeof named)[number]);
           } else if (msg.key.length === 1) {
             session.pilot.write(msg.key);
