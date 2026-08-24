@@ -37,7 +37,10 @@ repo=shadok-ai/shadok-ai
 # ABSOLUTE, not $HOME-relative. This guard has now been broken twice by $HOME
 # moving under it (it became /root when the container was rebuilt), and each time
 # the failure was silent: no state written, no state read, no complaint.
-state_file="/Users/alexandrecognard/.shadok-ai/checks/pr-open.state"
+# Under /root/.shadok-ai (the mounted volume), never /Users/... : only /root/.claude
+# and /root/.shadok-ai survive a container recreate. The scripts themselves lived
+# under /Users once and were wiped on 2026-08-10, taking every guard down at once.
+state_file="/root/.shadok-ai/checks/pr-open.state"
 
 rows=$(gh pr list --repo "$repo" --state open --limit 50 \
     --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository \
@@ -77,11 +80,49 @@ printf '%s\n' "$rows" | awk -F'\t' -v state="$state_file" '
 # Only the LAST run matters, and only while it is failing: an old failure that a
 # later run fixed is history, not news. Reported once per failing run id, so a
 # broken release does not re-wake the agent every minute.
-pub_state="/Users/alexandrecognard/.shadok-ai/checks/publish.state"
+pub_state="/root/.shadok-ai/checks/publish.state"
+gap_state="/root/.shadok-ai/checks/publish-gap.state"
+repo_dir="/Users/alexandrecognard/projects/shadok-ai"
 pub=$(gh api repos/shadok-ai/shadok-ai/actions/workflows/publish.yml/runs \
         --jq '.workflow_runs[0] | select(.status=="completed" and .conclusion!="success")
               | "\(.id)\t\(.conclusion)\t\(.display_title)"' 2>/dev/null) || exit 0
-[ -n "$pub" ] || { : > "$pub_state" 2>/dev/null; exit 0; }   # green: forget the past
+if [ -z "$pub" ]; then
+  : > "$pub_state" 2>/dev/null   # no failing run: forget the past
+  #
+  # A FAILING run is not the only way a version fails to ship — a merge can
+  # trigger NO run at all. #123 landed on main and neither Publish nor CI ever
+  # started: nothing was failing, and nothing was published. Watching runs
+  # cannot see that; comparing the two ends can.
+  #
+  # npm records the commit each version was published from (`gitHead`), so this
+  # needs no knowledge of the numbering rule: if the tip of main is not that
+  # commit and is not behind it, something did not ship.
+  #
+  # GRACE PERIOD: a publish takes a few minutes, so a fresh tip is normal and
+  # not news. Only a tip older than 15 minutes counts — without that, this would
+  # fire after every single merge, which is the noise the guard exists to avoid.
+  head=$(git -C "$repo_dir" rev-parse origin/main 2>/dev/null) || exit 0
+  [ -n "$head" ] || exit 0
+  [ "$(cat "$gap_state" 2>/dev/null)" = "$head" ] && exit 0
+  committed=$(git -C "$repo_dir" log -1 --format=%ct "$head" 2>/dev/null) || exit 0
+  [ -n "$committed" ] || exit 0
+  [ $(( $(date +%s) - committed )) -lt 900 ] && exit 0
+  # The NEWEST published version, not the `alpha` tag: a publish that completes
+  # late sets the tag to its own, older version (0.6.1 landed after 0.6.2 and
+  # dragged `alpha` backwards), so the tag is not a reliable high-water mark.
+  a=$(npm view shadok-ai versions --json 2>/dev/null \
+        | node -pe "try{const v=JSON.parse(require('fs').readFileSync(0,'utf8'));(Array.isArray(v)?v[v.length-1]:v)||''}catch(e){''}")
+  [ -n "$a" ] || exit 0
+  from=$(npm view "shadok-ai@$a" gitHead 2>/dev/null)
+  [ -n "$from" ] || exit 0                                  # not recorded: never guess
+  git -C "$repo_dir" cat-file -e "$from" 2>/dev/null || exit 0
+  behind=$(git -C "$repo_dir" rev-list --count "$from..$head" 2>/dev/null)
+  case "$behind" in ''|0) exit 0 ;; esac
+  printf '%s' "$head" > "$gap_state" 2>/dev/null
+  printf '⚠️ main is %s commit(s) ahead of npm (newest published %s, from %s): a merge did not ship\n' \
+    "$behind" "$a" "$(printf '%s' "$from" | cut -c1-7)"
+  exit 0
+fi
 
 id=$(printf '%s' "$pub" | cut -f1)
 [ "$(cat "$pub_state" 2>/dev/null)" = "$id" ] && exit 0
