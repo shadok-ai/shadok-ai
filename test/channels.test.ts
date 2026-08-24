@@ -184,14 +184,14 @@ test("mergeChannels: a brand-new channel keeps the parent it was created with", 
 // A spawn-time race could write two channels.json rows for one agent (spawn's
 // upsert + the holder's), and the merge used to persist both — a self-feeding
 // duplicate: the same agent showed twice in the left column and survived reload.
-test("mergeChannels: deux entrées du même sessionId dans la liste client → une seule écrite", () => {
+test("mergeChannels: two entries with the same sessionId in the client list → one written", () => {
   const b: Channel = { sessionId: "B", cwd: "/w", name: "agent" };
   const out = mergeChannels([], [b, { ...b, name: "agent-dup" }], new Set());
   assert.equal(out.filter((c) => c.sessionId === "B").length, 1);
-  assert.equal(out[0].name, "agent"); // le premier gagne
+  assert.equal(out[0].name, "agent"); // the first one wins
 });
 
-test("dedupById: garde le premier record de chaque sessionId (répare un fichier corrompu)", () => {
+test("dedupById: keeps the first record of each sessionId (repairs a corrupt file)", () => {
   const list: Channel[] = [
     { sessionId: "A", cwd: "/a" },
     { sessionId: "B", cwd: "/b" },

@@ -42,8 +42,8 @@ test("finished turn: past-tense summary line is NOT working", () => {
 
 test("idle prompt with todo list is NOT working", () => {
   const s =
-    "     ✔ Explorer le contexte du projet (session/server/tail)\n" +
-    "     ✔ Questions de clarification (une à la fois)\n" +
+    "     ✔ Explore the project's context (session/server/tail)\n" +
+    "     ✔ Clarifying questions (one at a time)\n" +
     "      … +2 completed\n" +
     FOOTER;
   assert.equal(screenShowsWork(s), false);

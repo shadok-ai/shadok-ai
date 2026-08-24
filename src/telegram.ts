@@ -1174,8 +1174,8 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           const CRON_USAGE =
             "⏰ Scheduled prompts for this agent:\n" +
             "• /cron every 30m <prompt>  (or 2h)\n" +
-            "• /cron daily 09:00 <prompt>  (heure du fuseau du serveur)\n" +
-            "• /cron once 2026-08-25T08:42 <prompt>  (une seule fois)\n" +
+            "• /cron daily 09:00 <prompt>  (in the server's time zone)\n" +
+            "• /cron once 2026-08-25T08:42 <prompt>  (one shot)\n" +
             "• /cron list · /cron off <id> · /cron on <id> · /cron del <id>";
           const ch = channelForTelegram(chat.id, threadId);
           const parts = cmd.arg.trim().split(/\s+/);

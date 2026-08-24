@@ -549,7 +549,7 @@ with:
 
 Run: `npm test`
 
-Expected: PASS. Two pre-existing tests in `test/csp.test.ts` matter here and must stay green — "CHAQUE bloc `<script>` inline de index.html porte le marqueur" (no new script block was added) and "index.html n'a aucun gestionnaire d'événement inline" (the SVG carries no `on*=` attribute).
+Expected: PASS. Two pre-existing tests in `test/csp.test.ts` matter here and must stay green — "EVERY inline `<script>` block in index.html carries the marker" (no new script block was added) and "index.html has no inline event handler" (the SVG carries no `on*=` attribute).
 
 - [ ] **Step 7: Verify no orphan references remain**
 

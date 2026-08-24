@@ -6,14 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Le garde tourne 288 fois par jour et par PR ouverte. Ce qui compte n'est pas
-// qu'il détecte un changement — c'est qu'il se TAISE le reste du temps :
-// la moindre ligne sur stdout réveille l'agent et coûte un tour (invariant 16).
+// The guard runs 288 times a day, per open PR. What matters is not that it
+// detects a change — it is that it stays SILENT the rest of the time: the
+// slightest line on stdout wakes the agent and costs a turn (invariant 16).
 const SCRIPT = path.join(
   path.dirname(fileURLToPath(import.meta.url)), "..", "context", "tweak-pr-check.sh",
 );
 
-/** Lance le garde avec un faux `gh` en tête de PATH et un HOME jetable. */
+/** Runs the guard with a fake `gh` at the head of PATH and a throwaway HOME. */
 function runGuard(ghBody: string, home: string, args: string[] = ["7"]) {
   const bin = path.join(home, "bin");
   fs.mkdirSync(bin, { recursive: true });
@@ -26,11 +26,11 @@ function runGuard(ghBody: string, home: string, args: string[] = ["7"]) {
 }
 const tmpHome = () => fs.mkdtempSync(path.join(os.tmpdir(), "tweakcheck-"));
 
-test("garde: première observation → silence (l'agent vient d'ouvrir la PR)", () => {
+test("guard: first observation → silence (the agent has just opened the PR)", () => {
   assert.equal(runGuard('echo "OPEN|MERGEABLE||verify=SUCCESS "', tmpHome()), "");
 });
 
-test("garde: état inchangé → silence", () => {
+test("guard: unchanged state → silence", () => {
   const home = tmpHome();
   const gh = 'echo "OPEN|MERGEABLE||verify=SUCCESS "';
   runGuard(gh, home);
@@ -38,39 +38,39 @@ test("garde: état inchangé → silence", () => {
   assert.equal(runGuard(gh, home), "");
 });
 
-test("garde: la CI passe au rouge → une ligne, une seule fois", () => {
+test("guard: the CI goes red → one line, exactly once", () => {
   const home = tmpHome();
   runGuard('echo "OPEN|MERGEABLE||verify=SUCCESS "', home);
   const out = runGuard('echo "OPEN|MERGEABLE||verify=FAILURE "', home);
   assert.match(out, /changed/);
   assert.match(out, /FAILURE/);
-  assert.match(out, /was:.*SUCCESS/, "le message doit dire d'où l'on vient");
-  // Le nouvel état est mémorisé : on ne réalerte pas au créneau suivant.
+  assert.match(out, /was:.*SUCCESS/, "the message must say where we came from");
+  // The new state is stored: we do not alert again on the next slot.
   assert.equal(runGuard('echo "OPEN|MERGEABLE||verify=FAILURE "', home), "");
 });
 
-test("garde: gh en échec → silence et sortie 0, jamais de stderr", () => {
-  // Un réseau qui tousse ne doit pas réveiller l'agent toutes les 5 minutes.
+test("guard: a failing gh → silence and exit 0, never stderr", () => {
+  // A coughing network must not wake the agent every 5 minutes.
   const home = tmpHome();
   runGuard('echo "OPEN|MERGEABLE||verify=SUCCESS "', home);
   assert.equal(runGuard('echo "boom" >&2; exit 1', home), "");
 });
 
-test("garde: gh qui répond vide → silence (pas « tout a disparu »)", () => {
+test("guard: gh answering empty → silence (not \"everything vanished\")", () => {
   const home = tmpHome();
   runGuard('echo "OPEN|MERGEABLE||verify=SUCCESS "', home);
   assert.equal(runGuard("exit 0", home), "");
 });
 
-test("garde: sans argument → silence", () => {
+test("guard: with no argument → silence", () => {
   assert.equal(runGuard('echo "x"', tmpHome(), []), "");
 });
 
-test("garde: deux PR ne partagent pas leur état", () => {
+test("guard: two PRs do not share their state", () => {
   const home = tmpHome();
   runGuard('echo "OPEN|MERGEABLE||a=SUCCESS "', home, ["7"]);
-  // La PR 8 n'a jamais été vue : première observation, donc silence — et elle
-  // ne doit pas hériter de l'état de la 7.
+  // PR 8 has never been seen: a first observation, hence silence — and it must
+  // not inherit PR 7's state.
   assert.equal(runGuard('echo "OPEN|MERGEABLE||a=FAILURE "', home, ["8"]), "");
   assert.equal(runGuard('echo "OPEN|MERGEABLE||a=FAILURE "', home, ["8"]), "");
 });
