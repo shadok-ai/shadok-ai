@@ -40,6 +40,21 @@ export function extractLiveText(screen) {
   //  - running tool: "⏺ Running 1 shell command" / "⏺ Ran 1 shell command".
   // Without this, the tool line showed up as a text preview.
   if (/^[\w.-]+\(/.test(head) || /^(Running|Ran)\b/i.test(head)) return "";
+  // Is the next non-empty line after `idx` a "⎿" (tool-result marker)? If so, the
+  // line at `idx` is a running tool's STATUS ("Sleeping for 6 seconds\n  ⎿ $ sleep
+  // 6"), not assistant text. Claude Code flips that status line's leading bullet
+  // on and off between redraws, so read as text it made the preview oscillate
+  // between the tool status and the real block above it — and glued the status
+  // onto the text when the bullet was absent.
+  const nextIsToolDetail = (idx) => {
+    for (let k = idx + 1; k < lines.length; k++) {
+      const t = lines[k].trim();
+      if (t === "") continue;
+      return t.startsWith("⎿");
+    }
+    return false;
+  };
+  if (nextIsToolDetail(start)) return ""; // the head itself is a tool status
 
   const parts = [head];
   const isToolLine = (t) => t.startsWith("⎿") || /^(Ran|Running)\b/.test(t);
@@ -61,6 +76,7 @@ export function extractLiveText(screen) {
     if (!l.startsWith("  ")) break; // unindented → the end (spinner, box, next block)
     const t = l.trim();
     if (isToolLine(t)) break; // a tool's sub-line
+    if (nextIsToolDetail(i)) break; // an indented tool STATUS ("… \n ⎿ $ cmd") — stop before it
     parts.push(t);
   }
   return parts.join(" ");
