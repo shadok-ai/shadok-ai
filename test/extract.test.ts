@@ -289,6 +289,34 @@ test("loadHistory on a missing transcript is empty, never throws", () => {
   assert.deepEqual(loadHistory("/nope/nowhere", "missing"), []);
 });
 
+test("loadHistory: a human prompt's ⟦context⟧ header is stripped, the message kept", () => {
+  const prevHome = process.env.HOME;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cp-meta-"));
+  process.env.HOME = tmp;
+  try {
+    const cwd = "/tmp/meta/project";
+    const sid = "meta-session";
+    const dir = path.join(tmp, ".claude", "projects", cwd.replace(/[^a-zA-Z0-9]/g, "-"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, sid + ".jsonl"),
+      [
+        JSON.stringify({ type: "user", timestamp: "2026-08-25T14:30:00.000Z", message: { content: "⟦web · 2026-08-25 14:30⟧\nFix the login bug." } }),
+        JSON.stringify({ type: "user", timestamp: "2026-08-25T14:31:00.000Z", message: { content: "⟦telegram · 2026-08-25 14:31 · Alex⟧\nand add a test" } }),
+        JSON.stringify({ type: "user", timestamp: "2026-08-25T14:32:00.000Z", message: { content: "no header here" } }),
+        JSON.stringify({ type: "assistant", timestamp: "2026-08-25T14:32:10.000Z", message: { content: [{ type: "text", text: "On it." }] } }),
+      ].join("\n"),
+    );
+    const users = loadHistory(cwd, sid).filter((t) => t.role === "user").map((t) => t.text);
+    // The header line is gone from each; the actual message (and a plain one) stays.
+    assert.deepEqual(users, ["Fix the login bug.", "and add a test", "no header here"]);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ── Origin of a turn found already running (after a restart) ─────────────
 
 test("userPromptText: a real prompt yes, a technical line no", () => {

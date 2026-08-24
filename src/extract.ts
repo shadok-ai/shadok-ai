@@ -4,6 +4,7 @@ import path from "node:path";
 import { newestTranscriptById, isNothingToShow, parseTimestamp } from "./tail.js";
 import { isCronPrompt } from "./crons.js";
 import { isAgentPrompt } from "./kinship.js";
+import { stripPromptMeta } from "./promptmeta.js";
 
 /**
  * Extracts the response: everything after the "❯ <prompt>" echo in the
@@ -251,7 +252,9 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
       // about a child agent. Neither is shown live, so neither may come back on
       // a reload or a topic backfill.
       if (isCronPrompt(text) || isAgentPrompt(text)) continue;
-      turns.push({ role: "user", text, ...when });
+      // A human prompt may open with a context header (⟦platform · time · who⟧)
+      // the agent was given; strip it for display — the message itself stays.
+      turns.push({ role: "user", text: stripPromptMeta(text), ...when });
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
       const text = e.message.content
         .filter((b: any) => b.type === "text")
