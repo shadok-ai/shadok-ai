@@ -20,8 +20,11 @@ if it isn't installed, the cockpit installs it for you on the first agent launch
 (`npm i -g @anthropic-ai/claude-code`; if that can't write the global dir it
 tells you the one command to run). Either way you sign in to your Claude account
 **once** on first use — that step is yours and can't be skipped (see below).
-`tmux` is optional but recommended — with it, agents survive the server
-restarting.
+`tmux` makes agents survive the server restarting, so shadok-ai **auto-installs
+it** at boot if it's missing (`brew` on macOS, `apt`/`apk`/`dnf`/`pacman` on
+Linux — with `sudo` when not root). If it can't (no package manager, or a sudo
+password it can't provide), it falls back to node-pty and tells you the one
+command to run. `SHADOK_TMUX=0` skips all of that.
 
 On the first run it asks once for an optional **Telegram bot token** (press
 Enter to skip; you can add it later from the web UI).
