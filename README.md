@@ -14,11 +14,14 @@ npx shadok-ai
 
 Then open **http://localhost:3789**.
 
-**Prerequisites:** Node ≥ 20 and the [`claude`](https://claude.com/claude-code)
-CLI installed (shadok-ai drives your existing Claude Code, on your
-subscription). It does **not** need to be signed in beforehand — if it isn't,
-the cockpit offers the sign-in itself (see below). `tmux` is optional but
-recommended — with it, agents survive the server restarting.
+**Prerequisites:** Node ≥ 20. shadok-ai drives the
+[`claude`](https://claude.com/claude-code) CLI on **your** Claude subscription —
+if it isn't installed, the cockpit installs it for you on the first agent launch
+(`npm i -g @anthropic-ai/claude-code`; if that can't write the global dir it
+tells you the one command to run). Either way you sign in to your Claude account
+**once** on first use — that step is yours and can't be skipped (see below).
+`tmux` is optional but recommended — with it, agents survive the server
+restarting.
 
 On the first run it asks once for an optional **Telegram bot token** (press
 Enter to skip; you can add it later from the web UI).
