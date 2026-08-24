@@ -144,6 +144,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
 import { pctFromUsage, windowForModel } from "./context.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { ensureClaude, resolveBin, type EnsureClaudeResult } from "./claude-bin.js";
+import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER } from "./csp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1445,7 +1446,9 @@ type Pilot = PtyPilot | TmuxPilot;
  * start of the same id. Set SHADOK_TMUX=0 to force the node-pty transport
  * (which dies with the server). Falls back to node-pty if tmux is absent.
  */
-const USE_TMUX = process.env.SHADOK_TMUX !== "0" && tmuxAvailable();
+// `let`, not `const`: a boot-time tmux auto-install (below) can flip this
+// process onto tmux without waiting for the next restart.
+let USE_TMUX = process.env.SHADOK_TMUX !== "0" && tmuxAvailable();
 
 /**
  * System prompt appended to every piloted session (--append-system-prompt):
@@ -2847,6 +2850,41 @@ function seedSecretsSkill(): void {
   }
 }
 seedSecretsSkill();
+
+/** Run a package-manager install. Linux managers need root; if we aren't root,
+ *  go through NON-interactive sudo so a password prompt fails fast rather than
+ *  hanging the boot. brew (needsRoot:false) must never be sudo'd. */
+function runTmuxInstall(c: TmuxInstall): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let cmd = c.cmd;
+    let args = c.args;
+    if (c.needsRoot && typeof process.getuid === "function" && process.getuid() !== 0) {
+      args = ["-n", cmd, ...args];
+      cmd = "sudo";
+    }
+    const p = spawnChild(cmd, args, { stdio: ["ignore", "inherit", "inherit"], timeout: 180_000 });
+    p.on("error", reject);
+    p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${c.cmd} exited with code ${code}`))));
+  });
+}
+
+// tmux is the durable transport — with node-pty, agents die on every server
+// restart, and we auto-update often. If tmux is missing, install it once at
+// boot (best-effort) and flip THIS process onto it, so even a first launch is
+// smooth. Never blocks: on failure we stay on node-pty and log how to fix it.
+void (async () => {
+  if (process.env.SHADOK_TMUX === "0") return;
+  const r = await ensureTmux({
+    resolve: () => resolveBin("tmux"),
+    plan: () => tmuxInstallCommand(process.platform, (b) => !!resolveBin(b)),
+    install: runTmuxInstall,
+    notify: (line) => console.log(`[shadok-ai] ${line}`),
+  });
+  if (r.installed && !USE_TMUX) {
+    USE_TMUX = process.env.SHADOK_TMUX !== "0" && tmuxAvailable();
+    if (USE_TMUX) console.log("[shadok-ai] transport: switched to tmux — agents now survive server restarts");
+  }
+})();
 
 // node-pty's prebuilt spawn-helper must be executable, or the first agent's
 // `pty.spawn` throws "posix_spawnp failed". The package postinstall chmods it
