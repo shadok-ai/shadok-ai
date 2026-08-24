@@ -46,7 +46,7 @@ export function parseClaudeVersion(stdout: string): string | null {
  */
 export function seedPlan(
   existing: ClaudeHome,
-  opts: { version: string; cwd?: string; now?: string },
+  opts: { version: string; cwd?: string },
 ): ClaudeHome | null {
   const out: ClaudeHome = { ...existing };
   let changed = false;
@@ -70,11 +70,19 @@ export function seedPlan(
   // "Don't show again". Declining on the user's behalf is defensible; opting
   // them into a scan of their shell history is not.
   //
-  // Key and fields taken from the CLI binary's own string table
-  // (`autoModeEnvSetup` / `dismissedAt` / `dismissed`, next to the
-  // tengu_auto_mode_env_onboarding_dismiss event). Additive like everything
-  // else here: a user who answered the screen keeps their answer.
-  add("autoModeEnvSetup", { dismissed: true, dismissedAt: opts.now ?? "" });
+  // The gate, read out of the 2.1.241 binary: the screen shows when
+  // `numStartups >= 5` AND `denials >= 5` AND the mode is `auto` AND it was
+  // not dismissed — and it fires at query_end, i.e. AFTER a turn. That last
+  // part is why no start-up probe ever caught it.
+  //
+  // shadok is five permission denials away from it by construction: every
+  // profile carries a `deny` list, and `denials` counts refusals.
+  //
+  // `dismissed: true` is exactly what "Don't show again" writes. `dismissedAt`
+  // belongs to "Not now", which brings the screen back after seven days — so
+  // writing it would be asking for the thing we are removing. Additive: a user
+  // who answered the screen keeps their answer.
+  add("autoModeEnvSetup", { dismissed: true });
 
   if (opts.cwd) {
     const projects = { ...(existing.projects ?? {}) };
@@ -187,7 +195,7 @@ function seed(cwd?: string): void {
       console.log(`claude-home: ${file} is unreadable — left alone, so first-run screens may appear`);
       return;
     }
-    const plan = seedPlan(existing, { version: claudeVersion(), cwd, now: new Date().toISOString() });
+    const plan = seedPlan(existing, { version: claudeVersion(), cwd });
     if (plan) writeHome(file, plan);
   } catch (e) {
     // A failed seed must never take down the boot path or a spawn — same rule

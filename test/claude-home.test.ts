@@ -15,11 +15,11 @@ test("parseClaudeVersion returns null rather than guessing", () => {
 });
 
 test("a virgin file gets every global key plus the project entry", () => {
-  const out = seedPlan({}, { version: "2.1.226", cwd: "/w/agent-1", now: "T" });
+  const out = seedPlan({}, { version: "2.1.226", cwd: "/w/agent-1" });
   assert.deepEqual(out, {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
-    autoModeEnvSetup: { dismissed: true, dismissedAt: "T" },
+    autoModeEnvSetup: { dismissed: true },
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -134,16 +134,15 @@ test("the auto-mode environment screen is dismissed, never accepted", () => {
   // their other repos. It is blocking, so someone hitting Continue to unblock
   // an agent opts into a scan they never chose. Declining for them is
   // defensible; accepting for them is not.
-  const out = seedPlan({}, { version: "2.1.241", now: "2026-08-25T00:00:00.000Z" });
-  assert.deepEqual(out?.autoModeEnvSetup, {
-    dismissed: true,
-    dismissedAt: "2026-08-25T00:00:00.000Z",
-  });
+  const out = seedPlan({}, { version: "2.1.241" });
+  // Exactly what "Don’t show again" writes. dismissedAt belongs to "Not now",
+  // which brings the screen back after seven days.
+  assert.deepEqual(out?.autoModeEnvSetup, { dismissed: true });
 });
 
 test("a user who already answered that screen keeps their answer", () => {
   // Additive like the rest: the trust flag is the ONE assertion.
   const existing = { autoModeEnvSetup: { dismissed: false, completedAt: "x" } };
-  const out = seedPlan(existing, { version: "2.1.241", now: "2026-08-25T00:00:00.000Z" });
+  const out = seedPlan(existing, { version: "2.1.241" });
   assert.deepEqual(out?.autoModeEnvSetup, { dismissed: false, completedAt: "x" });
 });
