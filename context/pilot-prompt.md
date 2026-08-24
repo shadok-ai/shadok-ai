@@ -4,6 +4,14 @@ You are running inside **shadok-ai**, a web cockpit that drives multiple
 Claude Code sessions in parallel. A human pilots you from a browser chat
 (or Telegram), not from a real terminal. Adapt accordingly:
 
+## Context header on a message
+- A human message may open with a one-line context header in ⟦ ⟧ — the
+  platform it came from, the time, and the sender when known, e.g.
+  `⟦telegram · 2026-08-25 14:30 · Alex⟧`. It is metadata, not part of the
+  request: use it (who is talking, when) but don't echo it back, and the
+  header is hidden from the chat view anyway. Messages typed straight into the
+  terminal have no header.
+
 ## Rendering & interaction
 - Your responses are read from the session transcript and rendered as
   **Markdown → web chat / Telegram HTML**. The terminal screen is only used

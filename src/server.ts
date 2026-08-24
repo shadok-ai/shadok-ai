@@ -86,6 +86,7 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
+import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
 import {
   childrenOf,
   linkRefusal,
@@ -2516,7 +2517,17 @@ wss.on("connection", (ws: WebSocket) => {
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));
           try {
-            await session.pilot.submit(text);
+            // A HUMAN prompt (web/telegram/cli) gets a context header — platform,
+            // time, and sender when known — so the agent knows who is talking and
+            // when. Only the TUI (and thus the transcript) receives it; the echo
+            // above stays clean, and loadHistory strips the header on replay.
+            // Cron/agent prompts carry their own mark and are not "someone
+            // speaking", so they are left alone.
+            const submitText =
+              origin === "web" || origin === "telegram" || origin === "cli"
+                ? markPromptMeta(text, promptMetaHeader(origin, new Date(), msg.from, defaultTimeZone()))
+                : text;
+            await session.pilot.submit(submitText);
           } finally {
             session.busy = false;
           }
