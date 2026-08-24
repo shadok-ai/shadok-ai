@@ -1948,6 +1948,14 @@
   const ungroupedEl = $("ungrouped"), groupsEl = $("groups");
   const transcripts = $("transcripts"), thinking = $("thinking");
   const composer = $("composer"), promptInput = $("promptInput"), sendBtn = $("sendBtn");
+  // Attachments upload asynchronously and leave a "⏳ …" placeholder in the box
+  // until the server returns the real reference. Sending while that's in flight
+  // would ship the placeholder instead of the file — so Send is inert until
+  // every upload settles. `updateSendDisabled` re-derives the button state.
+  let pendingUploads = 0;
+  function updateSendDisabled() {
+    sendBtn.disabled = !active || active.status !== "ready" || !!active.pendingChoices || pendingUploads > 0;
+  }
   const machine = $("machine"), screenEl = $("screen");
 
   // ── Channels ────────────────────────────────────────────
@@ -3270,7 +3278,7 @@
     $("chanBar").hidden = false;
     $("chanBarName").textContent = t.nameEl ? t.nameEl.textContent : "";
     $("chanBarName").title = t.cwd || "";
-    sendBtn.disabled = t.status !== "ready" || !!t.pendingChoices;
+    updateSendDisabled(); // t === active here; also honours a pending upload
     thinking.classList.toggle("visible", t.status === "busy");
     // Showing/hiding "Shadok is working…" changes the transcript area's height:
     // without re-pinning to the bottom, the last message slips below the fold
@@ -4745,7 +4753,7 @@
     e.preventDefault();
     const t = active;
     const text = promptInput.value.trim();
-    if (!text || t.status !== "ready" || t.pendingChoices || !t.ws) return;
+    if (!text || t.status !== "ready" || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
     // Checked here so nothing is optimistically rendered before the server
     // refuses. The server re-checks anyway — it is the authority.
     if (paceBlocked) return renderPaceConfirm(t, text, paceReason);
@@ -4777,6 +4785,8 @@
     // (two screenshots are both "image.png") must not share a placeholder.
     const mark = "⏳ " + label + "…" + "​".repeat(++pasteSeq);
     insertAtCursor(promptInput, mark + "\n");
+    pendingUploads++;      // Send stays inert until this settles (success OR error)
+    updateSendDisabled();
     try {
       const r = await fetch("/paste", {
         method: "POST",
@@ -4793,6 +4803,9 @@
       // Say it in the composer: a marker left with no explanation would look
       // like an upload in progress that will never arrive.
       promptInput.value = promptInput.value.replace(mark, `⚠️ ${label} not sent (${err.message})`);
+    } finally {
+      pendingUploads--;
+      updateSendDisabled();
     }
     promptInput.dispatchEvent(new Event("input")); // height + draft
   }
