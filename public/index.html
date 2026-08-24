@@ -3478,7 +3478,11 @@
     // for a stream-text that never comes.
     if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
     const nT = normPreview(txt);
+    // Still showing the previous turn's answer (captured at turn start) — this
+    // turn hasn't produced its own text yet. Suppress until it does.
+    if (tab.livePreviewBaseline && nT === tab.livePreviewBaseline) { clearLivePreview(tab); return; }
     if (nT && isFinalizedBlock(tab, nT)) { clearLivePreview(tab); return; }
+    tab.livePreviewBaseline = ""; // real new text arrived — baseline no longer applies
     if (!tab.livePreviewEl) {
       const turn = document.createElement("div");
       turn.className = "turn claude live-preview";
@@ -4310,6 +4314,13 @@
         setTabState(t, "busy", "responding…");
         clearLivePreview(t);
         t.finalizedNorms = [];
+        // The PREVIOUS turn's answer is still on the screen while this turn spins
+        // up (the agent hasn't written anything yet). extractLiveText would grab
+        // that leftover block and show it as a stale grey bubble under the new
+        // message. Remember its shape now and suppress it until real new text
+        // replaces it (finalizedNorms was just cleared, so it can't catch this).
+        t.livePreviewBaseline =
+          window.extractLiveText && t.screenText ? normPreview(extractLiveText(t.screenText)) : "";
         // No visible text produced yet this turn. Used by turn-done to decide
         // whether there is really something "to read": a turn that only outputs
         // NOTHING TO SHOW (filtered by the tail → no stream-text) must not mark
