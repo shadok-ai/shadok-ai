@@ -14,7 +14,7 @@ import path from "node:path";
  * So shadok writes the handful of keys that answer those screens. The module is
  * PURELY ADDITIVE — it only ever adds keys that are absent — which is what
  * makes it safe to run unconditionally. Unlike `src/ssh.ts`, which had to
- * restrict itself to containers (invariant 21), no Docker gate is needed here:
+ * restrict itself to containers (invariant 19), no Docker gate is needed here:
  * on a machine that has used Claude Code before, the plan is empty and nothing
  * is written at all.
  *

@@ -13,7 +13,6 @@ import {
   normalizeSchedule,
   onceAt,
   resolveCronId,
-  resolveCronTarget,
   scheduleLabel,
   stateAfterFire,
   type Cron,
@@ -153,59 +152,6 @@ test("isTransient: only replays failures where nothing reached the agent", () =>
   // a vanished directory won't come back in 10 min — and the resume already
   // tried to recreate a reclaimed worktree checkout before reporting it
   assert.equal(isTransient("gone"), false);
-});
-
-// ── Where does a cron run? ────────────────────────────────────────────────
-// The guard and the session resume must agree: resuming a worktree session with
-// the repo root loads NO history (invariant nº 1).
-
-const chan = (sessionId: string, extra: Partial<Channel> = {}): Channel =>
-  ({ sessionId, cwd: "/repo", ...extra });
-
-test("resolveCronTarget: a worktree channel resolves to its OWN directory", () => {
-  const list = [
-    chan("root-session"),
-    chan("wt-session", {
-      cwd: "/home/u/.shadok-ai/worktrees/shadok-ai-wt",
-      branch: "shadok-ai/wt",
-      repo: "/repo",
-      profile: "reviewer",
-    }),
-  ];
-  assert.deepEqual(resolveCronTarget(list, "wt-session", "/server-cwd"), {
-    cwd: "/home/u/.shadok-ai/worktrees/shadok-ai-wt",
-    profile: "reviewer",
-    branch: "shadok-ai/wt",
-    repo: "/repo",
-    known: true,
-  });
-});
-
-test("resolveCronTarget: an unknown session falls back to the server cwd", () => {
-  // Not a failure: a channel whose registry entry was lost should still fire,
-  // and the repo root is right for the common root-directory channel.
-  assert.deepEqual(resolveCronTarget([chan("other")], "ghost", "/server-cwd"), {
-    cwd: "/server-cwd",
-    profile: null,
-    branch: null,
-    repo: null,
-    known: false,
-  });
-});
-
-test("resolveCronTarget: missing fields normalize to null, blank cwd falls back", () => {
-  const t = resolveCronTarget([chan("s", { cwd: "  " })], "s", "/server-cwd");
-  assert.equal(t.cwd, "/server-cwd");
-  assert.equal(t.branch, null);
-  assert.equal(t.repo, null);
-  assert.equal(t.profile, null);
-  assert.equal(t.known, true); // the channel exists — only its cwd was unusable
-});
-
-test("resolveCronTarget: matches on sessionId, not on cwd", () => {
-  // Several channels can share a directory; picking by cwd would converge them.
-  const list = [chan("a", { profile: "pa" }), chan("b", { profile: "pb" })];
-  assert.equal(resolveCronTarget(list, "b", "/x").profile, "pb");
 });
 
 // ── Naming a cron ────────────────────────────────────────────────────────

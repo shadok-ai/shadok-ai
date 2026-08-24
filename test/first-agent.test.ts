@@ -28,7 +28,7 @@ test("a signed-out instance spawns nothing", () => {
 
 test("an auth state we could not read spawns nothing either", () => {
   // "unknown" means the probe failed, not that we are signed in. Waiting costs
-  // one boot; guessing costs an agent that cannot work (invariant 29).
+  // one boot; guessing costs an agent that cannot work (invariant 27).
   const p = firstAgentPlan({ channelCount: 0, authState: "unknown" });
   assert.equal(p.spawn, false);
   assert.equal(p.reason, "not-signed-in");

@@ -144,6 +144,47 @@ classify the refusal without pattern-matching the message text. And
 read it, so a client dates history correctly instead of stamping everything with
 the moment it reconnected.
 
+## Where a session lives (`src/channels.ts`)
+
+`loadHistory` is keyed by the working directory — the transcript sits at
+`~/.claude/projects/<encoded cwd>/<id>.jsonl`. Resume a worktree session at the
+repo root and it wakes with an empty history: not an error, just a session that
+has apparently forgotten everything.
+
+So the directory is not something a caller may decide. It is recorded on the
+channel when the session is created, alongside the `branch` and `repo` needed to
+rebuild a checkout that was reclaimed, and read back through one pure lookup:
+
+- `resolveSessionTarget(channels, sessionId, fallbackCwd)` → `{cwd, profile,
+  branch, repo, known}`. An unknown id falls back to `fallbackCwd` rather than
+  failing — a channel whose registry entry was lost should still run, and the
+  repo root is right for the common root-directory channel.
+- `resumeTarget(channels, sessionId, sent, fallbackCwd)` — the same, for a
+  resume, where **the registry beats whatever the caller sent**. What the caller
+  supplied still fills the gaps: an unknown session, or a known channel with no
+  branch of its own being reopened from the Recover panel.
+
+Both are pure and unit-tested, and every caller acting on a session's behalf goes
+through them: the `start` handler, the cron driver, the parent-notification path.
+A brand-new session has nothing to resolve — there, `msg.cwd` is all there is.
+
+This replaced three callers that each derived the directory independently, and
+each of which got it wrong exactly once: the browser sent `repo: serverCwd` for
+every channel (accidentally right until the tweak agent, the first worktree not
+cut from the launch repo), `driveChannel` sent `cwd: process.cwd()` while the
+cron guard on the line above already held the channel's own directory, and the
+`start` handler fell back to the server's cwd. The rule they were all failing to
+remember is now a function they cannot bypass.
+
+The other half is writing the record in the first place. At `ready` the server
+**asserts** `cwd`, `branch` and `repo` from `session.worktree` — asserts, never
+clears. `upsertInto` writes any field that is not `undefined`, so
+`branch: worktree?.branch ?? null` erased the branch on the first resume (a
+resume has no `worktree` object). Omit the key when there is nothing to say.
+
+One source still outranks the registry: for a live tmux pane, the pane's own cwd
+wins. A running process knows where it is better than a record does.
+
 ## Worktrees
 
 Created as `~/.shadok-ai/worktrees/<repo>-<tag>` on branch `shadok-ai/<tag>`,
@@ -214,7 +255,7 @@ Three decisions are worth keeping in mind if you touch this:
 - **The clone is separate from the launch directory**, even for a maintainer who
   already has one. It is predictable, and it can never be the directory the
   running server was started from. It is also the first session whose repo is not
-  the launch repo, which is what invariant 20 is about.
+  the launch repo, which is what invariant 1 is about.
 - **The clone is anonymous, and authentication is deferred to push time.** A user
   can describe an idea, watch the agent work and read the whole diff before
   connecting any GitHub account. Only when there is something worth pushing does
@@ -418,7 +459,7 @@ so the URL appears twice in the raw stream and a naive regex captures a
 fragment — `parseLoginUrl` strips escapes before matching. And **success is a
 clean exit, not a string**: the refusal wording was observed, the success
 wording never was, and guessing it would report a completed sign-in as never
-finishing (invariant 29).
+finishing (invariant 27).
 
 `authStatus` reports **three** states, not two: "I observed it is signed out" and
 "I could not look" are different facts. The probe is a ~850ms process spawn, so
@@ -644,23 +685,15 @@ only when it also wrote to **stderr** (or was killed / never spawned). A guard
 that is genuinely broken wakes the agent on purpose, so the monitoring cannot
 die in silence — it costs tokens every slot until someone fixes it.
 
-**Where a cron runs is resolved once.** `resolveCronTarget` (pure, in
-`src/crons.ts`) maps a cron's `sessionId` to its channel's `cwd`, `profile`,
-`branch` and `repo`; `fireCron` calls it once and hands the result to both the
-guard and the resume. It used to be two lookups: the guard resolved the channel's
-cwd, and `driveChannel` sent `cwd: process.cwd()` — the repo root. Since
-`loadHistory` is keyed by the cwd (invariant #1), a cron on a **worktree** channel
-woke its agent in the wrong directory with an empty history (invariant #19). The
-resume also forwards `branch` + `repo` when the channel has both, so a worktree
-whose checkout was pruned is recreated (`ensureWorktreeCheckout`) instead of
-failing. For that to be worth anything the branch has to survive: the start
-handler patched `branch: worktree?.branch ?? null` on every `ready`, and a resume
-holds no `worktree` object, so the first resume erased the branch recorded at
-creation. It is now only ever *asserted* — the key is omitted when there is
-nothing to assert, which is how `repo` has always behaved. An unknown `sessionId`
-still falls back to the server's cwd, with a log line — a lost registry entry
-shouldn't stop a root-directory cron from firing, but it shouldn't run somewhere
-unexpected in silence either.
+**Where a cron runs is not a cron question.** It used to be: `resolveCronTarget`
+lived in `src/crons.ts`, because the cron driver was the caller that had got it
+wrong. The lookup is now `resolveSessionTarget` in `src/channels.ts`, next to the
+registry it reads, and every caller acting on a session's behalf uses it — see
+"Where a session lives" above. The cron path is one of its clients: `fireCron`
+resolves once and hands the result to both the guard and the resume, so the two
+can no longer disagree. An unknown `sessionId` still falls back to the server's
+cwd, with a log line: a lost registry entry should not stop a root-directory cron
+from firing, but it should not run somewhere unexpected in silence either.
 
 **Time zones.** `nextRunFor` reads a `daily` in an explicit IANA zone, resolved
 by `cronTimeZone`: the cron's own `tz`, else the global default (config
@@ -749,7 +782,7 @@ from a human typing. It is fire-and-forget: awaiting would hold the *child's*
 `finishTurn` open for as long as the parent takes to think.
 
 Two hooks suffice. `finishTurn` covers a completed turn; `publishDialog` covers
-a pending question — and that one is a single funnel only because invariant 23
+a pending question — and that one is a single funnel only because invariant 21
 moved dialog detection into the screen watcher, so raw `key` input goes through
 it too. Its dedup on `dialogKey` is what makes hooking there affordable at all,
 since the watcher runs several times a second. A death notifies as well: a

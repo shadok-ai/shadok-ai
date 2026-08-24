@@ -39,7 +39,7 @@ export function firstAgentPlan(input: {
 }): FirstAgentPlan {
   if (input.channelCount > 0) return { spawn: false, reason: "channels-exist" };
   // "unknown" is not "signed in": the probe failed. Waiting costs one boot,
-  // guessing costs an agent with no credentials — the zombie shape (invariant 29).
+  // guessing costs an agent with no credentials — the zombie shape (invariant 27).
   if (input.authState !== "signed-in") return { spawn: false, reason: "not-signed-in" };
   return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
 }
