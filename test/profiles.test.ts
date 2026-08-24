@@ -12,6 +12,9 @@ import {
   promptOrigin,
   promptEditVerdict,
   BOSS_PROFILE_NAME,
+  adoptTracking,
+  effectiveProfile,
+  shippedProfile,
 } from "../src/profiles.js";
 import { normalizeVault, secretsFor, secretWriteVerdict } from "../src/secrets.js";
 
@@ -259,13 +262,21 @@ test("promptEdit: an empty profile name is refused", () => {
 });
 
 // ── Dérive d'un profil livré par rapport au build ────────────────────────
-test("promptOrigin: un profil livré et intact", () => {
-  assert.equal(promptOrigin({ name: "Shadok-dev", systemPrompt: "A" }, { name: "Shadok-dev", systemPrompt: "A" }), "stock");
+test("promptOrigin: nothing stored means the profile tracks the build", () => {
+  // The normal case for a shipped role nobody edited: no prompt in
+  // profiles.json, so `effectiveProfile` fills it from the build every time.
+  assert.equal(promptOrigin({ name: "Shadok-dev" }, { name: "Shadok-dev", systemPrompt: "A" }), "tracked");
 });
 
-test("promptOrigin: les espaces de bord ne comptent pas pour une dérive", () => {
-  // Sinon un simple retour à la ligne ajouté par un éditeur crierait « modifié ».
-  assert.equal(promptOrigin({ name: "d", systemPrompt: "  A\n" }, { name: "d", systemPrompt: "A" }), "stock");
+test("promptOrigin: a stored copy identical to the build still counts as tracked", () => {
+  // What every pre-tracking instance looks like before the migration runs. It
+  // resolves to the same text, so calling it an edit would invent a conflict.
+  assert.equal(promptOrigin({ name: "Shadok-dev", systemPrompt: "A" }, { name: "Shadok-dev", systemPrompt: "A" }), "tracked");
+});
+
+test("promptOrigin: edge whitespace is not a rewrite", () => {
+  // Otherwise a newline an editor appended would shout "edited".
+  assert.equal(promptOrigin({ name: "d", systemPrompt: "  A\n" }, { name: "d", systemPrompt: "A" }), "tracked");
 });
 
 test("promptOrigin: un profil livré dont le prompt a été réécrit", () => {
@@ -277,8 +288,26 @@ test("promptOrigin: un profil que le build ne connaît pas est le tien", () => {
   assert.equal(promptOrigin({ name: "ZZ", systemPrompt: "x" }, undefined), "custom");
 });
 
-test("promptOrigin: un profil livré vidé de son prompt reste une édition", () => {
-  assert.equal(promptOrigin({ name: "d" }, { name: "d", systemPrompt: "livré" }), "edited");
+test("promptOrigin: a prompt deliberately emptied is an edit, absent is not", () => {
+  // The distinction the storage rests on: an empty STRING is a choice the user
+  // made and must be kept; an ABSENT field means "use the build's".
+  assert.equal(promptOrigin({ name: "d", systemPrompt: "" }, { name: "d", systemPrompt: "shipped" }), "edited");
+  assert.equal(promptOrigin({ name: "d" }, { name: "d", systemPrompt: "shipped" }), "tracked");
+});
+
+test("promptOrigin: an edit whose base has since moved is outdated", () => {
+  // What "an update is available" means: their fork is not the current shipped
+  // text, AND the text they forked from is not either.
+  const mine = { name: "d", systemPrompt: "mine", promptBase: "shipped v1" };
+  assert.equal(promptOrigin(mine, { name: "d", systemPrompt: "shipped v2" }), "outdated");
+  assert.equal(promptOrigin(mine, { name: "d", systemPrompt: "shipped v1" }), "edited");
+});
+
+test("promptOrigin: an edit with no recorded base never claims to be outdated", () => {
+  // Edited before promptBase existed: we cannot tell a stale fork from a
+  // current one, and nagging about an update that may not exist is worse than
+  // saying the lesser, provable thing.
+  assert.equal(promptOrigin({ name: "d", systemPrompt: "mine" }, { name: "d", systemPrompt: "shipped" }), "edited");
 });
 
 test("restauration: seul le prompt revient, les garde-fous restent", () => {
@@ -291,4 +320,46 @@ test("restauration: seul le prompt revient, les garde-fous restent", () => {
   assert.deepEqual(out.deny, ["Bash(git push:*)"]);
   assert.deepEqual(out.secrets, ["K"]);
   assert.equal(out.model, "opus");
+});
+
+test("adoptTracking: a stored copy of the shipped prompt is dropped, an edit is kept", () => {
+  // The migration for every instance created before tracking existed. Dropping a
+  // prompt that merely repeats the build changes nothing today — it resolves to
+  // the same text — and means later releases reach it.
+  const shipped = shippedProfile("Shadok-dev")?.systemPrompt ?? "";
+  assert.ok(shipped, "this build must ship a Shadok-dev prompt for the test to mean anything");
+  const { profiles, adopted } = adoptTracking([
+    { name: "Shadok-dev", systemPrompt: shipped, deny: ["Bash(git push:*)"], secrets: ["K"] },
+    { name: "Shadok-dev-mine", systemPrompt: "my own words" },
+  ]);
+  assert.deepEqual(adopted, ["Shadok-dev"]);
+  const tracked = profiles.find((p) => p.name === "Shadok-dev");
+  assert.equal(tracked?.systemPrompt, undefined, "the copy is gone");
+  assert.deepEqual(tracked?.deny, ["Bash(git push:*)"], "guardrails are the user's and survive");
+  assert.deepEqual(tracked?.secrets, ["K"]);
+  assert.equal(profiles.find((p) => p.name === "Shadok-dev-mine")?.systemPrompt, "my own words");
+});
+
+test("adoptTracking: idempotent, and silent when there is nothing to adopt", () => {
+  const once = adoptTracking([{ name: "Shadok-dev" }]);
+  assert.deepEqual(once.adopted, []);
+  assert.deepEqual(once.profiles, [{ name: "Shadok-dev" }]);
+});
+
+test("effectiveProfile: a tracked profile spawns with the build's prompt", () => {
+  const shipped = shippedProfile("Shadok-dev")?.systemPrompt ?? "";
+  const resolved = effectiveProfile({ name: "Shadok-dev", deny: ["X"] });
+  assert.equal(resolved?.systemPrompt, shipped, "resolved at use, never from a copy");
+  assert.deepEqual(resolved?.deny, ["X"]);
+  // An edited one is returned untouched: it is the user's text that spawns.
+  assert.equal(effectiveProfile({ name: "Shadok-dev", systemPrompt: "mine" })?.systemPrompt, "mine");
+  // A role the build does not ship has nothing to resolve, and must not crash.
+  assert.equal(effectiveProfile({ name: "nope-not-shipped" })?.systemPrompt, undefined);
+});
+
+test("promptOrigin: the managed Tweak role reads as tracked, not custom", () => {
+  // It is absent from DEFAULT_PROFILES (seeded from context/tweak-prompt.md and
+  // rewritten every boot), so the shipped lookup finds nothing — yet it is the
+  // one role that is always current.
+  assert.equal(promptOrigin({ name: TWEAK_PROFILE_NAME, systemPrompt: "whatever" }, undefined), "tracked");
 });

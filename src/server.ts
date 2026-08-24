@@ -114,6 +114,7 @@ import {
   isPermissionMode,
   envVarsNote,
   seedDefaultProfiles,
+  migrateToTracking,
   seedTweakProfile,
   loadProfiles,
   upsertProfile,
@@ -123,6 +124,8 @@ import {
   TWEAK_PROFILE_NAME,
   type Profile,
   promptOrigin,
+  effectiveProfile,
+  adoptTracking,
   shippedProfile,
   withManagedPrompt,
 } from "./profiles.js";
@@ -1090,18 +1093,21 @@ app.delete("/secrets", (req, res) => {
 // Agent profiles (global): role + permission guardrails + referenced secrets,
 // applied at spawn. `secrets` is a list of vault NAMES (not values).
 // `origin` is DERIVED, never stored (like `crons` on /channels, cf. invariant 6):
-// "stock" = still this build's wording, "edited" = a starter profile rewritten
-// since, "custom" = a role this build does not ship. Seeding only ever fills an
-// EMPTY vault, so an edited starter never catches up on its own — the panel has
-// to say so, otherwise the drift is invisible.
+// "tracked" = no prompt stored, so the build's is used and is always current;
+// "edited" = the user wrote their own; "outdated" = their own, and the build's
+// has moved since they forked it; "custom" = a role this build does not ship.
+// Only an edited prompt can fall behind now — a tracked one has nothing to fall
+// behind, which is the point of storing nothing.
 app.get("/profiles", (_req, res) =>
   res.json(loadProfiles().map((p) => ({ ...p, origin: promptOrigin(p, shippedProfile(p.name)) }))),
 );
 
-// Put a starter profile's prompt back to what this build ships. Browser-only,
-// like every guardrail write. Only `systemPrompt` moves: whatever the user
-// attached (deny/allow/secrets/model) is theirs and survives — the exact rule
-// `withManagedPrompt` already applies to the managed Shadok-Tweak role.
+// Hand a starter role back to the build. Browser-only, like every guardrail
+// write. It DROPS the stored prompt rather than copying today's text in: the
+// profile goes back to tracking, so it also picks up whatever ships next.
+// Copying would leave a fresh snapshot that starts going stale immediately —
+// the very thing this replaced. Whatever the user attached (deny/allow/secrets/
+// model) is theirs and survives.
 app.post("/profiles/restore", (req, res) => {
   if (!requestFromBrowser(req))
     return res.status(403).json({ error: "profiles are restored from the web UI only" });
@@ -1109,7 +1115,9 @@ app.post("/profiles/restore", (req, res) => {
   const shipped = name ? shippedProfile(name) : undefined;
   if (!shipped?.systemPrompt)
     return res.status(404).json({ error: `this build ships no prompt for ${name || "(unnamed)"}` });
-  upsertProfile(withManagedPrompt(getProfile(name), name, shipped.systemPrompt));
+  const existing: Profile = getProfile(name) ?? { name };
+  const { systemPrompt: _drop, promptBase: _base, ...kept } = existing;
+  upsertProfile(kept as Profile);
   res.json(loadProfiles().map((p) => ({ ...p, origin: promptOrigin(p, shippedProfile(p.name)) })));
 });
 // Full profile write — INCLUDING the guardrails (deny/allow/secrets/model).
@@ -1124,16 +1132,26 @@ app.put("/profiles", (req, res) => {
   const b = req.body ?? {};
   if (typeof b.name !== "string" || !b.name.trim())
     return res.status(400).json({ error: "name required" });
+  const name = b.name.trim();
+  const written = typeof b.systemPrompt === "string" ? b.systemPrompt : undefined;
+  const shipped = shippedProfile(name)?.systemPrompt;
+  // Saving a shipped role UNCHANGED leaves it tracking the build rather than
+  // freezing today's text — opening the editor and pressing save must not
+  // quietly opt a profile out of future improvements.
+  const tracks = written === undefined || (!!shipped && written.trim() === shipped.trim());
   const p: Profile = {
-    name: b.name.trim(),
-    systemPrompt: typeof b.systemPrompt === "string" ? b.systemPrompt : undefined,
+    name,
+    systemPrompt: tracks ? undefined : written,
+    // Record WHICH shipped text they forked from, so a later release can be
+    // reported as "the build has moved" instead of a bare "you edited this".
+    promptBase: tracks ? undefined : shipped,
     deny: Array.isArray(b.deny) ? b.deny.filter((x: unknown) => typeof x === "string") : undefined,
     allow: Array.isArray(b.allow) ? b.allow.filter((x: unknown) => typeof x === "string") : undefined,
     secrets: Array.isArray(b.secrets) ? b.secrets.filter((x: unknown) => typeof x === "string") : undefined,
     model: typeof b.model === "string" && b.model.trim() ? b.model.trim() : undefined,
   };
   upsertProfile(p);
-  res.json(loadProfiles());
+  res.json(loadProfiles().map((x) => ({ ...x, origin: promptOrigin(x, shippedProfile(x.name)) })));
 });
 
 /**
@@ -1551,7 +1569,7 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
-    ...profileArgs(profile),
+    ...profileArgs(effectiveProfile(profile)),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
   ];
@@ -2822,6 +2840,16 @@ migrateTgBindings();
 // Seed the starter agent profiles (Shadok-dev / -Marketing / -Support) on a
 // fresh install, when the user has none yet.
 seedDefaultProfiles();
+// Existing instances stored the starter prompts verbatim on their first boot,
+// so no later release could reach them. Drop the ones that still match what we
+// ship: identical today, current from now on. An edited prompt is the user's
+// and is never touched.
+try {
+  const adopted = migrateToTracking();
+  if (adopted.length) console.log(`profiles: now tracking this build's prompt — ${adopted.join(", ")}`);
+} catch {
+  /* a malformed profiles.json must never stop the boot */
+}
 // Install/refresh the managed Shadok-Tweak role from the repo's prompt file, so
 // it tracks this build instead of going stale in the user's profiles.json.
 try {

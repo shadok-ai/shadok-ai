@@ -5610,24 +5610,29 @@
       pmeta.className = "pmeta";
       pmeta.textContent = `${(p.secrets || []).length} secret(s)${p.model ? " · " + p.model : ""}`;
       meta.append(strong, guard, pmeta);
-      // A starter profile whose prompt was rewritten never hears about a newer
-      // upstream wording again — seeding only ever fills an EMPTY vault. Say it
-      // here, otherwise the drift is invisible and stays invisible.
-      if (p.origin === "edited") {
+      // A role that stores no prompt uses the build's and is always current, so
+      // it needs no badge. Only a rewritten one can fall behind — and when the
+      // build has moved since they forked it, say THAT rather than a bare
+      // "edited", because it is the difference between a choice and a gap.
+      if (p.origin === "edited" || p.origin === "outdated") {
         const drift = document.createElement("span");
         drift.className = "prof-drift";
-        drift.textContent = "✎ edited";
-        drift.title = "This role's prompt differs from the one shipped with this build. "
-          + "Updates never reach an edited profile, so it will not pick up newer wording on its own.";
+        const stale = p.origin === "outdated";
+        drift.textContent = stale ? "✎ edited · update available" : "✎ edited";
+        drift.title = stale
+          ? "You rewrote this role, and the prompt shipped with this build has changed since. "
+            + "Restoring adopts the new one — and keeps tracking later ones."
+          : "You rewrote this role, so it no longer follows the shipped prompt. "
+            + "Roles you have not edited track the build and update on their own.";
         meta.insertBefore(drift, pmeta);
       }
       const btns = document.createElement("div");
-      if (p.origin === "edited") {
+      if (p.origin === "edited" || p.origin === "outdated") {
         const reset = document.createElement("button");
         reset.textContent = "restore";
-        reset.title = "Put the prompt back to this build's version. Guardrails, secrets and model are kept.";
+        reset.title = "Hand this role back to the build: it uses the shipped prompt again, and follows later ones. Guardrails, secrets and model are kept.";
         reset.addEventListener("click", async () => {
-          if (!confirm("Restore " + p.name + "'s prompt to this build's version?\n\nYour edits to the text are lost. Its guardrails, secrets and model are kept."))
+          if (!confirm("Hand " + p.name + " back to the build?\n\nIt uses the shipped prompt again and follows later updates. Your edits to the text are lost; its guardrails, secrets and model are kept."))
             return;
           const r = await fetch("/profiles/restore", {
             method: "POST", headers: { "Content-Type": "application/json" },
