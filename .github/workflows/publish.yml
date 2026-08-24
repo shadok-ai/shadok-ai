@@ -34,13 +34,29 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # need full history for the commit count
+      # TWO Node versions on purpose, and the split is load-bearing.
+      #
+      # The tests run on 20, the same version ci.yml uses. They were running on
+      # 22 here, where `node-pty` fails to load its native module — so
+      # test/telegram.test.ts and test/tmux-stop.test.ts died, `npm test`
+      # returned 1, and the publish aborted while the PR's own `verify` was
+      # green. A gate that only the release path can fail is a gate nobody sees
+      # until a version silently stops shipping.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20 # must match ci.yml: node-pty's binary loads here
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+      # Publishing needs a newer Node than the tests can use: OIDC trusted
+      # publishing requires >= 22.14. Switching here is safe because nothing
+      # past this point loads a native module — `prepublishOnly` only runs tsc.
       - uses: actions/setup-node@v4
         with:
           node-version: 22 # OIDC trusted publishing needs Node >= 22.14
           registry-url: https://registry.npmjs.org
       - run: npm install -g npm@latest # OIDC needs npm >= 11.5.1
-      - run: npm ci
-      - run: npm test
       - name: Decide channel and version
         id: ver
         run: |
