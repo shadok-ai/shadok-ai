@@ -66,3 +66,25 @@ printf '%s\n' "$rows" | awk -F'\t' -v state="$state_file" '
     printf "" > state
     for (i = 1; i <= n; i++) if (rows_[i] != "") print rows_[i] > state
   }'
+
+# ── The release path, which nothing else watches ────────────────────────────
+#
+# A failed publish is SILENT: `verify` was green on the PR, the merge went
+# through, and the version simply never appears on npm. 0.4.115 died that way
+# and nobody noticed for four merges — the loop watches open PRs, and by the
+# time a publish fails the PR is closed.
+#
+# Only the LAST run matters, and only while it is failing: an old failure that a
+# later run fixed is history, not news. Reported once per failing run id, so a
+# broken release does not re-wake the agent every minute.
+pub_state="/Users/alexandrecognard/.shadok-ai/checks/publish.state"
+pub=$(gh api repos/shadok-ai/shadok-ai/actions/workflows/publish.yml/runs \
+        --jq '.workflow_runs[0] | select(.status=="completed" and .conclusion!="success")
+              | "\(.id)\t\(.conclusion)\t\(.display_title)"' 2>/dev/null) || exit 0
+[ -n "$pub" ] || { : > "$pub_state" 2>/dev/null; exit 0; }   # green: forget the past
+
+id=$(printf '%s' "$pub" | cut -f1)
+[ "$(cat "$pub_state" 2>/dev/null)" = "$id" ] && exit 0
+printf '%s' "$id" > "$pub_state" 2>/dev/null
+printf '⚠️ publish %s — %s (run %s): the version did NOT ship\n' \
+  "$(printf '%s' "$pub" | cut -f2)" "$(printf '%s' "$pub" | cut -f3)" "$id"

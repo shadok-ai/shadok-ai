@@ -158,6 +158,15 @@ repetition.
 State is rewritten on every pass, including for PRs that left the list: a PR
 reopened later must be announced again, not swallowed because it was seen once.
 
+It also watches **the release path**, which nothing else does. A failed publish
+is silent: `verify` was green on the PR, the merge went through, and the version
+simply never appears on npm. 0.4.115 died exactly that way and went unnoticed for
+four merges — by the time a publish fails, its PR is closed, so a watcher looking
+at open PRs cannot see it. Only the LAST run counts, and only while it is
+failing; it is reported once per run id, so a broken release does not re-wake the
+agent every minute. When a later run goes green, the state is cleared and the old
+failure stops being news.
+
 Two traps learned the hard way:
 
 - **The executed copy lives outside the repo**, in `~/.shadok-ai/checks/`. A
