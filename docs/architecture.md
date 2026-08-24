@@ -182,6 +182,24 @@ What the click does:
    branch, the isolated checkout, the Diff panel, `pruneWorktree` on close — is
    the existing machinery, unchanged.
 
+**The role is written for the person, not for the procedure.** A tweak agent's
+audience is the one part of shadok-ai that is definitely not technical: someone
+who asked for a button to move. So `context/tweak-prompt.md` opens with who it
+is talking to and only then explains how to work — the reverse of how it was
+first written, where that rule was the last paragraph after eighty lines of git
+and read as an afterthought. Three things carry it: a **named** banned-words
+table (advice like "avoid jargon" is unfalsifiable — the words themselves are
+listed, with the replacement), a three-line budget for an ordinary answer, and a
+ban on handing a technical decision back.
+
+The other half is where the job ends. Merging means nothing to that person; the
+change reaching their cockpit does. And it does not always: CI publishes an
+ordinary merge under the `alpha` tag, so a **beta** instance never receives it.
+The agent therefore reads `updateChannel` and `autoUpdate` off `/version`, waits
+for `current` to actually change before saying it is live, and tells the truth in
+one line when the instance will not get it on its own. Saying "it's live"
+because something was merged is how a non-developer ends up waiting forever.
+
 The card is not a launcher that piles up sessions: **it is the channel's slot**.
 The tweak channel is unique, the CTA shows only while it does not exist, and once
 started the channel's own tab is *moved* into the slot rather than added to the
