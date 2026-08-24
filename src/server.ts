@@ -2308,6 +2308,11 @@ wss.on("connection", (ws: WebSocket) => {
           // an agent on a machine that is perfectly fine. The seeding already
           // removed the silent-zombie failure this guard was protecting
           // against, and an agent spawned without credentials now fails loudly.
+          // Install the `claude` CLI first if it's missing: otherwise the auth
+          // probe below (it runs `claude auth status`) can't run and reads as
+          // "unknown", and the spawn itself would throw "posix_spawnp failed".
+          const claude = await ensureClaudeOnce();
+          if (!claude.ok) return fail(claude.error);
           const auth = await authStatus();
           if (auth.state === "unknown")
             console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
@@ -2462,12 +2467,6 @@ wss.on("connection", (ws: WebSocket) => {
             if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
             else parentAtStart = msg.parent ?? null;
           }
-          // A spawn needs the `claude` CLI; install it once if a fresh machine
-          // lacks it, rather than letting node-pty throw a bare "posix_spawnp
-          // failed". A hard failure (permissions / not on PATH) is surfaced with
-          // the manual command instead.
-          const claude = await ensureClaudeOnce();
-          if (!claude.ok) return fail(claude.error);
           session = await createSession(id, effectiveCwd, args, worktree, profile);
           session.clients.add(ws);
           if (resumed) {
