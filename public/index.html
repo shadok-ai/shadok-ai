@@ -389,8 +389,11 @@
   .tab-row1 { display: flex; align-items: center; gap: 8px; }
   /* Context-window usage: tiny number + thin bar at the bottom of the tab. */
   .tab .ctxnum { font-size: 9px; color: var(--text-dim); flex: none; }
-  /* Time of the last message, discreet (the flex:1 name pushes it right). */
-  .tab .lastat { font-size: 9px; color: var(--text-dim); flex: none; line-height: 1.1; font-variant-numeric: tabular-nums; }
+  /* Time of the last message (the flex:1 name pushes it right). Colour is the
+     full foreground, not the dim one: the age is carried by OPACITY, set per
+     tab in JS (ageOpacity) — bright when fresh, nearly gone when old. The
+     transition makes the 30s refresh a fade rather than a step. */
+  .tab .lastat { font-size: 9px; color: var(--text); flex: none; line-height: 1.1; font-variant-numeric: tabular-nums; transition: opacity 0.6s ease; }
   .tab .ctxbar {
     position: absolute;
     left: 10px;
@@ -3333,11 +3336,27 @@
     if (h < 24) return h + "h ago";
     return Math.round(h / 24) + "d ago";
   }
+  /**
+   * Age → opacity for the tab's "xxx ago": full strength when fresh, fading to
+   * a floor as it gets old, on a LOG scale so both minutes and days get a slice
+   * of the ramp (a linear fade would sit at the floor within the first hour).
+   * Opacity, not colour, so it dims toward the background whatever the theme.
+   */
+  function ageOpacity(ageMs) {
+    const FRESH = 60_000;              // ≤ 1 min: freshly spoken, full white
+    const OLD = 7 * 24 * 3600_000;     // ~1 week: as faint as it gets
+    const FLOOR = 0.22;                // never fully gone — still there on hover
+    if (!(ageMs > FRESH)) return 1;
+    if (ageMs >= OLD) return FLOOR;
+    const t = Math.log(ageMs / FRESH) / Math.log(OLD / FRESH);
+    return +(1 - t * (1 - FLOOR)).toFixed(3);
+  }
   /** (Re)paints the last message's relative time on the tab. */
   function renderLastAt(tab) {
     if (!tab.lastAtEl) return;
     if (!Number.isFinite(tab.lastMsgAt)) { tab.lastAtEl.textContent = ""; return; }
     tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
+    tab.lastAtEl.style.opacity = String(ageOpacity(Date.now() - tab.lastMsgAt));
     tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
   }
   // The relative time ages on its own: refresh every tab periodically.
