@@ -1825,7 +1825,7 @@
       <span class="chan-actions">
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)">⏰</button>
         <button id="chanStop" class="icon stop" title="End session">⏹️</button>
-        <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent">⌨️</button>
+        <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <!-- The per-agent menu (rename, profile, mirror, report to, close). It's
              the same menu a right-click / long-press on a tab opens — but with the
              sidebar hidden on a phone there was no way to reach it, so it lives
@@ -2445,6 +2445,9 @@
     // The profile is only set here for a launched agent: otherwise the creation
     // box carries it, and there is no session to restart.
     if (tab.sessionId) items.push(["👤 Change profile…", () => openProfileSwitcher(tab)]);
+    // Scheduled prompts (crons) for this agent — the panel targets the active
+    // channel, so switch to it first (this menu can be opened on any tab).
+    if (tab.sessionId) items.push(["⏰ Schedule…", () => { activate(tab); $("cronOverlay").hidden = false; renderCrons(); }]);
     // The Telegram mirror. The label states the action AND its cost: turning it
     // off deletes the topic, hence the conversation on the phone — so we confirm.
     // The main channel (the General) is the board's home base: not un-mirrorable.
