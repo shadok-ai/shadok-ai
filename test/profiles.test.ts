@@ -9,6 +9,7 @@ import {
   isPermissionMode,
   TWEAK_PROFILE_NAME,
   withManagedPrompt,
+  promptOrigin,
   promptEditVerdict,
   BOSS_PROFILE_NAME,
 } from "../src/profiles.js";
@@ -255,4 +256,39 @@ test("promptEdit: an empty profile name is refused", () => {
   const v = edit({ caller: BOSS_PROFILE_NAME, target: "  ", targetExists: false, managed: false });
   assert.equal(v.ok, false);
   assert.match((v as { error: string }).error, /name required/i);
+});
+
+// ── Dérive d'un profil livré par rapport au build ────────────────────────
+test("promptOrigin: un profil livré et intact", () => {
+  assert.equal(promptOrigin({ name: "Shadok-dev", systemPrompt: "A" }, { name: "Shadok-dev", systemPrompt: "A" }), "stock");
+});
+
+test("promptOrigin: les espaces de bord ne comptent pas pour une dérive", () => {
+  // Sinon un simple retour à la ligne ajouté par un éditeur crierait « modifié ».
+  assert.equal(promptOrigin({ name: "d", systemPrompt: "  A\n" }, { name: "d", systemPrompt: "A" }), "stock");
+});
+
+test("promptOrigin: un profil livré dont le prompt a été réécrit", () => {
+  assert.equal(promptOrigin({ name: "d", systemPrompt: "mien" }, { name: "d", systemPrompt: "livré" }), "edited");
+});
+
+test("promptOrigin: un profil que le build ne connaît pas est le tien", () => {
+  // Aucun « restaurer » possible : il n'y a pas d'original.
+  assert.equal(promptOrigin({ name: "ZZ", systemPrompt: "x" }, undefined), "custom");
+});
+
+test("promptOrigin: un profil livré vidé de son prompt reste une édition", () => {
+  assert.equal(promptOrigin({ name: "d" }, { name: "d", systemPrompt: "livré" }), "edited");
+});
+
+test("restauration: seul le prompt revient, les garde-fous restent", () => {
+  // Le champ deny/secrets/model appartient à l'utilisateur — restaurer le texte
+  // ne doit pas lui reprendre ce qu'il a attaché. Même règle que Shadok-Tweak.
+  const mine = { name: "d", systemPrompt: "mien", deny: ["Bash(git push:*)"], secrets: ["K"], model: "opus" };
+  const shipped = { name: "d", systemPrompt: "livré" };
+  const out = withManagedPrompt(mine, "d", shipped.systemPrompt!);
+  assert.equal(out.systemPrompt, "livré");
+  assert.deepEqual(out.deny, ["Bash(git push:*)"]);
+  assert.deepEqual(out.secrets, ["K"]);
+  assert.equal(out.model, "opus");
 });

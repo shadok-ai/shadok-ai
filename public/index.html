@@ -663,6 +663,9 @@
   .grid-note { grid-column: 1 / -1; color: var(--text-dim); font-size: 12px; font-style: italic; }
   /* A secret nobody references will never reach an agent: say so on the
      secret's own row, not only in a header paragraph. */
+  /* Un profil livré dont le prompt a été réécrit : les mises à jour ne
+     l'atteindront plus, il faut que ça se voie. */
+  .prof-drift { margin-left: 8px; font-size: 11px; color: var(--amber); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Profile picker for a running agent (the tab's context menu). */
   #profSwitchGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 18px 18px; }
@@ -5607,7 +5610,34 @@
       pmeta.className = "pmeta";
       pmeta.textContent = `${(p.secrets || []).length} secret(s)${p.model ? " · " + p.model : ""}`;
       meta.append(strong, guard, pmeta);
+      // A starter profile whose prompt was rewritten never hears about a newer
+      // upstream wording again — seeding only ever fills an EMPTY vault. Say it
+      // here, otherwise the drift is invisible and stays invisible.
+      if (p.origin === "edited") {
+        const drift = document.createElement("span");
+        drift.className = "prof-drift";
+        drift.textContent = "✎ edited";
+        drift.title = "This role's prompt differs from the one shipped with this build. "
+          + "Updates never reach an edited profile, so it will not pick up newer wording on its own.";
+        meta.insertBefore(drift, pmeta);
+      }
       const btns = document.createElement("div");
+      if (p.origin === "edited") {
+        const reset = document.createElement("button");
+        reset.textContent = "restore";
+        reset.title = "Put the prompt back to this build's version. Guardrails, secrets and model are kept.";
+        reset.addEventListener("click", async () => {
+          if (!confirm("Restore " + p.name + "'s prompt to this build's version?\n\nYour edits to the text are lost. Its guardrails, secrets and model are kept."))
+            return;
+          const r = await fetch("/profiles/restore", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: p.name }),
+          });
+          if (!r.ok) { alert("Restore failed: " + ((await r.json().catch(() => ({}))).error || r.status)); return; }
+          await loadProfilesInto(); renderProfilesList();
+        });
+        btns.appendChild(reset);
+      }
       const edit = document.createElement("button"); edit.textContent = "edit";
       edit.addEventListener("click", () => fillProfileForm(p));
       const del = document.createElement("button"); del.textContent = "delete"; del.style.color = "#e26";
