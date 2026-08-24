@@ -415,7 +415,17 @@ Auth section of `docs/architecture.md`).
     `dialogKey` (question + labels, deliberately NOT the ❯ position nor the
     checkbox states — a cursor move is not a new question, and a multi-select
     toggle re-renders through its own direct broadcast). `finishTurn` clears the
-    key on `turn-done` so asking the SAME question twice still reaches the clients.
+    key on `turn-done` so asking the SAME question twice still reaches the clients
+    — and, for the same reason, it now also clears the key in its **dialog**
+    branch before publishing. `finishTurn` is only reached by a deliberate
+    transition (a prompt or an answered dialog that ran a turn), so a dialog
+    present when it settles is a FRESH ask even when its text is byte-for-byte the
+    one just answered. Two back-to-back CLI permission prompts ("Do you want to
+    proceed? Yes/No") share a `dialogKey`, and so do two AskUserQuestions with the
+    same options; without the clear, the dedup swallowed the second as a repaint
+    and the session sat wedged on an invisible question. The `SUBMIT_PAGE` guard
+    in `publishDialog` still runs first, so clearing the key can never re-surface
+    the multi-question recap.
 
 22. **The context gauge reads the transcript, never the footer — and the window is
     a SETTING, not a model.** The percentage used to come from
