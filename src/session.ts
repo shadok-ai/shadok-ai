@@ -1,6 +1,6 @@
 import pty from "node-pty";
 import xterm from "@xterm/headless";
-import { screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
+import { idleStep, screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
 
 const { Terminal } = xterm;
 
@@ -20,9 +20,22 @@ export interface WaitOptions {
   timeoutMs?: number;
 }
 
+/** The stability window for this poll: a fixed value, or whatever the getter
+ *  says right now. */
+export function windowMs(v: number | (() => number)): number {
+  return typeof v === "function" ? v() : v;
+}
+
 export interface WaitIdleOptions extends WaitOptions {
-  /** How long the screen must stay unchanged to be considered "idle". */
-  stableMs?: number;
+  /**
+   * How long the screen must stay unchanged to be considered "idle".
+   *
+   * A GETTER is accepted because the bar can change mid-wait: an explicit
+   * interrupt arrives while we are already waiting, and from that moment the
+   * end state is known rather than guessed. Read on every poll, so it takes
+   * effect on the next one instead of at the next turn.
+   */
+  stableMs?: number | (() => number);
 }
 
 
@@ -235,14 +248,10 @@ export class PtyPilot {
     while (Date.now() < deadline) {
       if (this.exited) throw new Error("The claude process has exited.");
       const s = this.screen();
-      const working = screenShowsWork(s);
-      if (!working && s === lastScreen) {
-        if (stableSince === 0) stableSince = Date.now();
-        if (Date.now() - stableSince >= stableMs) return s;
-      } else {
-        stableSince = 0;
-        lastScreen = s;
-      }
+      const step = idleStep(s, lastScreen, stableSince, Date.now(), windowMs(stableMs));
+      if (step.done) return s;
+      stableSince = step.stableSince;
+      lastScreen = step.lastScreen;
       await sleep(150);
     }
     throw new Error(
