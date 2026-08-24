@@ -1578,7 +1578,8 @@
     <div class="modal-foot">
       <span class="foot-note" id="cronTzNote"></span>
       <span class="foot-note" id="cronErr" style="color:#ff9a9a"></span>
-      <button type="submit" form="cronAdd" class="primary">Add schedule</button>
+      <button type="button" id="cronCancelEdit" hidden>Cancel</button>
+      <button type="submit" form="cronAdd" class="primary" id="cronSubmit">Add schedule</button>
     </div>
   </div>
 </div>
@@ -5253,6 +5254,9 @@
       const label = document.createElement("span");
       label.innerHTML = "<b>" + fmtSchedule(c.schedule) + "</b>" + (c.check ? " <span style='opacity:.6'>+guard</span>" : "") + (c.enabled ? "" : c.schedule && c.schedule.kind === "once" && c.lastRun ? " <span style='opacity:.5'>(fired)</span>" : " <span style='opacity:.5'>(paused)</span>");
       const btns = document.createElement("span");
+      const edit = document.createElement("button");
+      edit.textContent = "✎"; edit.title = "Edit this schedule";
+      edit.addEventListener("click", () => loadCronIntoForm(c));
       const toggle = document.createElement("button");
       toggle.textContent = c.enabled ? "Pause" : "Resume";
       toggle.addEventListener("click", async () => {
@@ -5261,8 +5265,12 @@
       });
       const del = document.createElement("button");
       del.textContent = "✕"; del.title = "Delete schedule";
-      del.addEventListener("click", async () => { await fetch("/crons?id=" + encodeURIComponent(c.id), { method: "DELETE" }); renderCrons(); });
-      btns.append(toggle, del);
+      del.addEventListener("click", async () => {
+        if (editingCronId === c.id) resetCronEditMode();
+        await fetch("/crons?id=" + encodeURIComponent(c.id), { method: "DELETE" });
+        renderCrons();
+      });
+      btns.append(edit, toggle, del);
       line.append(label, btns);
       const p = document.createElement("div");
       p.textContent = c.prompt;
@@ -5270,6 +5278,46 @@
       li.append(line, p);
       ul.appendChild(li);
     }
+  }
+  // Editing an existing schedule: its id, or null when the form creates a new
+  // one. POST /crons upserts on `id` (preserving lastRun and recomputing
+  // nextRun), so editing is the same submit with the id attached.
+  let editingCronId = null;
+  function resetCronEditMode() {
+    editingCronId = null;
+    $("cronSubmit").textContent = "Add schedule";
+    $("cronCancelEdit").hidden = true;
+    $("cronErr").textContent = "";
+  }
+  const pad2 = (n) => String(n).padStart(2, "0");
+  /** ms epoch → the "YYYY-MM-DDTHH:MM" a datetime-local input wants (local clock). */
+  function toDatetimeLocal(ms) {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
+  /** Load an existing cron into the form and switch it to "edit" mode. */
+  function loadCronIntoForm(c) {
+    editingCronId = c.id;
+    $("cronPrompt").value = c.prompt || "";
+    $("cronCheck").value = c.check || "";
+    const s = c.schedule || {};
+    if (s.kind === "daily") {
+      $("cronKind").value = "daily";
+      $("cronTime").value = pad2(s.hour ?? 9) + ":" + pad2(s.minute ?? 0);
+    } else if (s.kind === "once") {
+      $("cronKind").value = "once";
+      if (Number.isFinite(s.at)) $("cronAt").value = toDatetimeLocal(s.at);
+    } else {
+      $("cronKind").value = "interval";
+      const mins = s.everyMin || 60;
+      if (mins % 60 === 0) { $("cronEvery").value = mins / 60; $("cronUnit").value = "60"; }
+      else { $("cronEvery").value = mins; $("cronUnit").value = "1"; }
+    }
+    $("cronKind").dispatchEvent(new Event("change")); // show the right time fields
+    $("cronSubmit").textContent = "Save changes";
+    $("cronCancelEdit").hidden = false;
+    $("cronErr").textContent = "";
+    $("cronPrompt").focus();
   }
   function cronScheduleFromForm() {
     // Sent as a WALL CLOCK: the server resolves it in the cron's zone.
@@ -5288,8 +5336,9 @@
     $("cronIntervalFields").hidden = kind !== "interval";
     $("cronOnceFields").hidden = kind !== "once";
   });
-  $("cronClose").addEventListener("click", () => { $("cronOverlay").hidden = true; });
-  $("cronOverlay").addEventListener("click", (e) => { if (e.target === $("cronOverlay")) $("cronOverlay").hidden = true; });
+  $("cronClose").addEventListener("click", () => { $("cronOverlay").hidden = true; resetCronEditMode(); });
+  $("cronOverlay").addEventListener("click", (e) => { if (e.target === $("cronOverlay")) { $("cronOverlay").hidden = true; resetCronEditMode(); } });
+  $("cronCancelEdit").addEventListener("click", () => { $("cronPrompt").value = ""; $("cronCheck").value = ""; resetCronEditMode(); });
   $("cronAdd").addEventListener("submit", async (e) => {
     e.preventDefault();
     const prompt = $("cronPrompt").value.trim();
@@ -5298,9 +5347,15 @@
     // A refusal from the server (past date, unreadable date) used to be
     // swallowed in silence: the panel repainted without the new cron, wordlessly.
     $("cronErr").textContent = "";
+    // Editing → carry the id so the server upserts (keeps lastRun, recomputes
+    // nextRun) and preserves the enabled/paused state (enabled omitted). Creating
+    // → a fresh enabled cron.
+    const body = { sessionId: active.sessionId, prompt, schedule: cronScheduleFromForm(), ...(check ? { check } : {}) };
+    if (editingCronId) body.id = editingCronId;
+    else body.enabled = true;
     let r;
     try {
-      r = await fetch("/crons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: active.sessionId, prompt, schedule: cronScheduleFromForm(), enabled: true, ...(check ? { check } : {}) }) });
+      r = await fetch("/crons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     } catch { $("cronErr").textContent = "server unreachable"; return; }
     if (!r.ok) {
       let msg = "could not schedule (" + r.status + ")";
@@ -5309,6 +5364,7 @@
       return;
     }
     $("cronPrompt").value = ""; $("cronCheck").value = "";
+    resetCronEditMode();
     renderCrons();
   });
 
