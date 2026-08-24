@@ -158,7 +158,18 @@ repetition.
 State is rewritten on every pass, including for PRs that left the list: a PR
 reopened later must be announced again, not swallowed because it was seen once.
 
-It also watches **the release path**, which nothing else does. A failed publish
+It also watches **the release path**, which nothing else does, in two ways: a
+publish run that FAILED, and a merge that produced no published version at all —
+the second one caught #123, which landed while neither Publish nor CI ever
+started. The comparison is the tip of `main` against the commit npm records for
+its newest version (`gitHead`), so it needs no knowledge of the numbering rule,
+and it waits **15 minutes** before counting a gap: publishing takes a few
+minutes, so a fresh tip is normal rather than news.
+
+Use the newest published VERSION, never the `alpha` tag, as the high-water mark.
+A publish that completes late sets the tag to its own, older version — 0.6.1
+landed after 0.6.2 and dragged `alpha` backwards — so the tag can move down while
+the registry only ever moves up. A failed publish
 is silent: `verify` was green on the PR, the merge went through, and the version
 simply never appears on npm. 0.4.115 died exactly that way and went unnoticed for
 four merges — by the time a publish fails, its PR is closed, so a watcher looking
