@@ -15,10 +15,11 @@ test("parseClaudeVersion returns null rather than guessing", () => {
 });
 
 test("a virgin file gets every global key plus the project entry", () => {
-  const out = seedPlan({}, { version: "2.1.226", cwd: "/w/agent-1" });
+  const out = seedPlan({}, { version: "2.1.226", cwd: "/w/agent-1", now: "T" });
   assert.deepEqual(out, {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
+    autoModeEnvSetup: { dismissed: true, dismissedAt: "T" },
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -31,6 +32,7 @@ test("an already-onboarded file needs no write at all", () => {
   const existing = {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.0.0",
+    autoModeEnvSetup: { dismissed: true },
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -111,6 +113,7 @@ test("a directory already trusted needs no write", () => {
   const existing = {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
+    autoModeEnvSetup: { dismissed: true },
     projects: { "/w/a": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
   };
   assert.equal(seedPlan(existing, { version: "2.1.226", cwd: "/w/a" }), null);
@@ -124,4 +127,23 @@ test("only the trust flag is asserted — every other key stays additive", () =>
   assert.equal(out?.projects?.["/w/a"].hasTrustDialogAccepted, true);
   assert.equal(out?.projects?.["/w/a"].hasCompletedProjectOnboarding, false);
   assert.equal(out?.projects?.["/w/a"].lastCost, 7);
+});
+
+test("the auto-mode environment screen is dismissed, never accepted", () => {
+  // That screen offers to scan the user's shell history — PRE-TICKED — and
+  // their other repos. It is blocking, so someone hitting Continue to unblock
+  // an agent opts into a scan they never chose. Declining for them is
+  // defensible; accepting for them is not.
+  const out = seedPlan({}, { version: "2.1.241", now: "2026-08-25T00:00:00.000Z" });
+  assert.deepEqual(out?.autoModeEnvSetup, {
+    dismissed: true,
+    dismissedAt: "2026-08-25T00:00:00.000Z",
+  });
+});
+
+test("a user who already answered that screen keeps their answer", () => {
+  // Additive like the rest: the trust flag is the ONE assertion.
+  const existing = { autoModeEnvSetup: { dismissed: false, completedAt: "x" } };
+  const out = seedPlan(existing, { version: "2.1.241", now: "2026-08-25T00:00:00.000Z" });
+  assert.deepEqual(out?.autoModeEnvSetup, { dismissed: false, completedAt: "x" });
 });

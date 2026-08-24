@@ -46,7 +46,7 @@ export function parseClaudeVersion(stdout: string): string | null {
  */
 export function seedPlan(
   existing: ClaudeHome,
-  opts: { version: string; cwd?: string },
+  opts: { version: string; cwd?: string; now?: string },
 ): ClaudeHome | null {
   const out: ClaudeHome = { ...existing };
   let changed = false;
@@ -63,6 +63,18 @@ export function seedPlan(
   // seeding one would be cargo cult that also implies we control the theme.
   add("hasCompletedOnboarding", true);
   add("lastOnboardingVersion", opts.version);
+  // "Teach auto mode about your environment?" — a BLOCKING form that offers to
+  // scan the user's shell history (pre-ticked) and their other repositories.
+  // Someone hitting Continue to unblock their agent accepts that without
+  // meaning to, so shadok picks the third option the screen itself offers:
+  // "Don't show again". Declining on the user's behalf is defensible; opting
+  // them into a scan of their shell history is not.
+  //
+  // Key and fields taken from the CLI binary's own string table
+  // (`autoModeEnvSetup` / `dismissedAt` / `dismissed`, next to the
+  // tengu_auto_mode_env_onboarding_dismiss event). Additive like everything
+  // else here: a user who answered the screen keeps their answer.
+  add("autoModeEnvSetup", { dismissed: true, dismissedAt: opts.now ?? "" });
 
   if (opts.cwd) {
     const projects = { ...(existing.projects ?? {}) };
@@ -175,7 +187,7 @@ function seed(cwd?: string): void {
       console.log(`claude-home: ${file} is unreadable — left alone, so first-run screens may appear`);
       return;
     }
-    const plan = seedPlan(existing, { version: claudeVersion(), cwd });
+    const plan = seedPlan(existing, { version: claudeVersion(), cwd, now: new Date().toISOString() });
     if (plan) writeHome(file, plan);
   } catch (e) {
     // A failed seed must never take down the boot path or a spawn — same rule
