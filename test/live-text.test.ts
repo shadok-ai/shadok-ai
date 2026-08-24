@@ -125,14 +125,46 @@ test('the last ⏺ is a finished tool ("Ran…") → ""', () => {
   assert.equal(extractLiveText(screen), "");
 });
 
-test("a continuation stops at the tool result ⎿", () => {
+test("a bulleted line whose first detail is a ⎿ is a running tool's status, not text", () => {
+  // Real capture: Claude Code renders a running bash as "● Sleeping for 6
+  // seconds\n  ⎿ $ sleep 6" and flips the leading bullet on and off between
+  // redraws. It must read as a tool (→ "") so the preview holds the real block
+  // above, instead of oscillating onto the status line (or gluing it on).
   const screen = [
-    "⏺ Text before a tool.",
-    "  ⎿  tool output that must not be sucked in",
+    "● Sleeping for 6 seconds",
+    "  ⎿  $ sleep 6",
     "✽ Composing… (1s · esc to interrupt)",
     FOOTER,
   ].join("\n");
-  assert.equal(extractLiveText(screen), "Text before a tool.");
+  assert.equal(extractLiveText(screen), "");
+});
+
+test("long-task frames: the tool status never oscillates into (or onto) the real block", () => {
+  // The exact two redraws that flickered: a git sentence, then a `sleep 6` whose
+  // status shows sometimes WITH a "●" bullet, sometimes indented under the text.
+  const withBullet = [
+    "● AAA: Git is a distributed version control system that tracks changes",
+    "  of a project's history.",
+    "● Sleeping for 6 seconds",
+    "  ⎿  $ sleep 6",
+    "· Boondoggling… (2s · ↓ 33 tokens)",
+    FOOTER,
+  ].join("\n");
+  const indented = [
+    "● AAA: Git is a distributed version control system that tracks changes",
+    "  of a project's history.",
+    "  Sleeping for 6 seconds",
+    "  ⎿  $ sleep 6",
+    "✽ Boondoggling… (3s · ↓ 45 tokens)",
+    FOOTER,
+  ].join("\n");
+  // Bullet frame → the last block is the tool status → "" (keep what's shown).
+  assert.equal(extractLiveText(withBullet), "");
+  // Indented frame → the real block, WITHOUT the tool status glued to its end.
+  assert.equal(
+    extractLiveText(indented),
+    "AAA: Git is a distributed version control system that tracks changes of a project's history.",
+  );
 });
 
 test("a real dialog screen: the paragraph preceding the question is recovered", () => {
