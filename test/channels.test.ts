@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { upsertInto, mergeChannels, dedupById, findTelegramChannel, isMirrored, setToolKeys, type Channel } from "../src/channels.js";
+import {
+  upsertInto,
+  mergeChannels,
+  dedupById,
+  findTelegramChannel,
+  isMirrored,
+  setToolKeys,
+  resolveSessionTarget,
+  resumeTarget,
+  type Channel,
+} from "../src/channels.js";
 
 test("upsertInto: inserts a new channel when the id is unknown", () => {
   const out = upsertInto([], { sessionId: "a", cwd: "/x" });
@@ -176,7 +186,7 @@ test("mergeChannels: a stale client cannot rewrite or erase a channel's parent",
 test("mergeChannels: a brand-new channel keeps the parent it was created with", () => {
   // Nothing is stored for this id yet, so SERVER_OWNED cannot protect it —
   // being in that list only guards a field once a previous value exists
-  // (invariant 20). The server asserts it at `ready` instead.
+  // (invariant 1). The server asserts it at `ready` instead.
   const out = mergeChannels([], [{ sessionId: "kid", cwd: "/w", parent: "boss" }], new Set(["kid"]));
   assert.equal(out[0].parent, "boss");
 });
@@ -200,4 +210,95 @@ test("dedupById: keeps the first record of each sessionId (repairs a corrupt fil
   const out = dedupById(list);
   assert.deepEqual(out.map((c) => c.sessionId), ["A", "B"]);
   assert.equal(out.find((c) => c.sessionId === "A")!.cwd, "/a");
+});
+
+// ── Where does a session live? ───────────────────────────────────────────
+// The ONE lookup that answers it. Every caller that resumes a session on the
+// user's behalf goes through here, so none of them can name a directory of
+// its own invention: resuming a worktree session at the repo root loads NO
+// history at all, and that used to be reachable from three different places.
+
+const chan = (sessionId: string, extra: Partial<Channel> = {}): Channel =>
+  ({ sessionId, cwd: "/repo", ...extra });
+
+test("resolveSessionTarget: a worktree channel resolves to its OWN directory", () => {
+  const list = [
+    chan("root-session"),
+    chan("wt-session", {
+      cwd: "/home/u/.shadok-ai/worktrees/shadok-ai-wt",
+      branch: "shadok-ai/wt",
+      repo: "/repo",
+      profile: "reviewer",
+    }),
+  ];
+  assert.deepEqual(resolveSessionTarget(list, "wt-session", "/server-cwd"), {
+    cwd: "/home/u/.shadok-ai/worktrees/shadok-ai-wt",
+    profile: "reviewer",
+    branch: "shadok-ai/wt",
+    repo: "/repo",
+    known: true,
+  });
+});
+
+test("resolveSessionTarget: an unknown session falls back to the server cwd", () => {
+  // Not a failure: a channel whose registry entry was lost should still fire,
+  // and the repo root is right for the common root-directory channel.
+  assert.deepEqual(resolveSessionTarget([chan("other")], "ghost", "/server-cwd"), {
+    cwd: "/server-cwd",
+    profile: null,
+    branch: null,
+    repo: null,
+    known: false,
+  });
+});
+
+test("resolveSessionTarget: missing fields normalize to null, blank cwd falls back", () => {
+  const t = resolveSessionTarget([chan("s", { cwd: "  " })], "s", "/server-cwd");
+  assert.equal(t.cwd, "/server-cwd");
+  assert.equal(t.branch, null);
+  assert.equal(t.repo, null);
+  assert.equal(t.profile, null);
+  assert.equal(t.known, true); // the channel exists — only its cwd was unusable
+});
+
+test("resolveSessionTarget: matches on sessionId, not on cwd", () => {
+  // Several channels can share a directory; picking by cwd would converge them.
+  const list = [chan("a", { profile: "pa" }), chan("b", { profile: "pb" })];
+  assert.equal(resolveSessionTarget(list, "b", "/x").profile, "pb");
+});
+
+// ── A resume trusts the registry, not the caller ─────────────────────────
+// This is what makes the wrong directory unrepresentable rather than merely
+// forbidden: a client, a cron or any future machine caller can send whatever
+// it likes; for a session the registry knows, its own record wins.
+
+test("resumeTarget: the registry beats a cwd the caller invented", () => {
+  const list = [
+    chan("wt", { cwd: "/home/u/.shadok-ai/worktrees/shadok-ai-wt", branch: "shadok-ai/wt", repo: "/repo" }),
+  ];
+  const t = resumeTarget(list, "wt", { cwd: "/repo", branch: "wrong", repo: "/elsewhere" }, "/server-cwd");
+  assert.equal(t.cwd, "/home/u/.shadok-ai/worktrees/shadok-ai-wt");
+  assert.equal(t.branch, "shadok-ai/wt");
+  assert.equal(t.repo, "/repo");
+});
+
+test("resumeTarget: an unknown session still honours what the caller sent", () => {
+  // A channel whose registry entry was lost must still resume where it lived.
+  const t = resumeTarget([], "ghost", { cwd: "/wt", branch: "b", repo: "/r" }, "/server-cwd");
+  assert.deepEqual(t, { cwd: "/wt", profile: null, branch: "b", repo: "/r", known: false });
+});
+
+test("resumeTarget: with nothing anywhere, the server cwd is the last resort", () => {
+  const t = resumeTarget([], "ghost", {}, "/server-cwd");
+  assert.equal(t.cwd, "/server-cwd");
+  assert.equal(t.branch, null);
+});
+
+test("resumeTarget: a known channel missing a field falls back to the caller's", () => {
+  // A root-directory channel has no branch/repo of its own; a reopen that
+  // supplies them (the Recover panel) must not be silently stripped.
+  const t = resumeTarget([chan("s", { cwd: "/wt" })], "s", { branch: "b", repo: "/r" }, "/server-cwd");
+  assert.equal(t.cwd, "/wt");
+  assert.equal(t.branch, "b");
+  assert.equal(t.repo, "/r");
 });

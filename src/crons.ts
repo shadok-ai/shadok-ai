@@ -62,49 +62,6 @@ export interface Cron {
 }
 
 /**
- * Everything a fire needs to know about the channel it drives: where to run,
- * and how to resume it. Resolved ONCE per fire and shared by both halves — the
- * deterministic guard and the session resume. They used to decide separately,
- * and the resume decided wrong (see `resolveCronTarget`).
- */
-export interface CronTarget {
-  /** The channel's own directory — NOT the server's cwd. Invariant nº 1. */
-  cwd: string;
-  /** Profile whose secrets the guard gets, and whose guardrails the resume keeps. */
-  profile: string | null;
-  /** Worktree branch + origin repo, to recreate a reclaimed checkout on resume. */
-  branch: string | null;
-  repo: string | null;
-  /** False when no channel carries this sessionId: `cwd` is the fallback. */
-  known: boolean;
-}
-
-/**
- * Resolve a cron's target channel. Pure on purpose: it's the single place that
- * answers "where does this cron run", so the guard and the resume can no longer
- * disagree — resuming a worktree session with the repo root loses its whole
- * history (invariant nº 1), which is exactly what that split caused.
- *
- * An unknown sessionId falls back to `fallbackCwd` instead of failing: the
- * historical behaviour, and right for the common case of a root-directory
- * channel whose registry entry was lost.
- */
-export function resolveCronTarget(
-  channels: readonly Channel[],
-  sessionId: string,
-  fallbackCwd: string,
-): CronTarget {
-  const ch = channels.find((x) => x.sessionId === sessionId);
-  return {
-    cwd: ch?.cwd?.trim() || fallbackCwd,
-    profile: ch?.profile ?? null,
-    branch: ch?.branch ?? null,
-    repo: ch?.repo ?? null,
-    known: !!ch,
-  };
-}
-
-/**
  * Mark carried by the TEXT of a prompt sent by a cron.
  *
  * Why in the content and not only in the protocol (`origin: "cron"`): the

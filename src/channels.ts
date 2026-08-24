@@ -361,3 +361,79 @@ export function migrateTgBindings(): void {
     /* best effort */
   }
 }
+
+// ── Where does a session live? ───────────────────────────────────────────
+
+/**
+ * Everything a caller needs to resume a session: where it runs, and what it
+ * takes to rebuild its checkout. The registry is the authority — these fields
+ * are recorded when the session is created and are server-owned.
+ */
+export interface SessionTarget {
+  /** The channel's own directory — NOT the server's cwd. */
+  cwd: string;
+  /** Profile whose secrets a guard gets, and whose guardrails a resume keeps. */
+  profile: string | null;
+  /** Worktree branch + origin repo, to recreate a reclaimed checkout. */
+  branch: string | null;
+  repo: string | null;
+  /** False when no channel carries this sessionId: `cwd` is the fallback. */
+  known: boolean;
+}
+
+/**
+ * The ONE lookup that answers "where does this session live". Pure on purpose:
+ * every caller that acts on a session's behalf — the cron driver, the `start`
+ * handler, any future webhook or "run now" button — reads it here instead of
+ * naming a directory of its own.
+ *
+ * That single source is the whole point. `loadHistory` is keyed by the cwd, so
+ * a worktree session resumed at the repo root wakes with no history at all;
+ * when three callers each derived the directory separately, each of them got it
+ * wrong once.
+ *
+ * An unknown sessionId falls back to `fallbackCwd` instead of failing: the
+ * historical behaviour, and right for a root-directory channel whose registry
+ * entry was lost.
+ */
+export function resolveSessionTarget(
+  channels: readonly Channel[],
+  sessionId: string,
+  fallbackCwd: string,
+): SessionTarget {
+  const ch = channels.find((x) => x.sessionId === sessionId);
+  return {
+    cwd: ch?.cwd?.trim() || fallbackCwd,
+    profile: ch?.profile ?? null,
+    branch: ch?.branch ?? null,
+    repo: ch?.repo ?? null,
+    known: !!ch,
+  };
+}
+
+/**
+ * Where a RESUME should actually run, given what the caller sent.
+ *
+ * The registry wins. A caller may pass a cwd, a branch and a repo — the web
+ * client does, the cron driver does — but for a session the registry knows,
+ * those are ignored in favour of the record written when it was created. This
+ * is what turns "always resume a worktree session with its worktree path" from
+ * a rule to remember into something a caller cannot get wrong.
+ *
+ * What the caller sent is still honoured where the registry has nothing: an
+ * unknown session (a lost entry), or a known channel with no branch/repo of its
+ * own being reopened from the Recover panel.
+ */
+export function resumeTarget(
+  channels: readonly Channel[],
+  sessionId: string,
+  sent: { cwd?: string; branch?: string; repo?: string },
+  fallbackCwd: string,
+): SessionTarget {
+  const t = resolveSessionTarget(channels, sessionId, sent.cwd?.trim() || fallbackCwd);
+  return {
+    ...t,
+    branch: t.branch ?? sent.branch?.trim() ?? null,
+    repo: t.repo ?? sent.repo?.trim() ?? null,
+  };
+}

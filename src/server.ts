@@ -45,7 +45,10 @@ import {
   saveTgGroup,
   isHomeChannel,
   homeAdoptionTarget,
+  resolveSessionTarget,
+  resumeTarget,
   type Channel,
+  type SessionTarget,
 } from "./channels.js";
 import {
   startTelegram,
@@ -67,7 +70,6 @@ import {
   upsertCron,
   removeCron,
   resolveCronId,
-  resolveCronTarget,
   nextRunFor,
   nextRunAfterFailure,
   isTransient,
@@ -82,7 +84,6 @@ import {
   systemTimeZone,
   isValidTimeZone,
   type Cron,
-  type CronTarget,
   type DriveReason,
 } from "./crons.js";
 import {
@@ -277,7 +278,7 @@ type CheckResult =
  * with the profile's secrets). stdout is the only content signal: whatever it
  * prints gets prepended to the prompt.
  */
-function runCronCheck(c: Cron, target: CronTarget): Promise<CheckResult> {
+function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
   if (!c.check?.trim()) return Promise.resolve({ kind: "quiet" }); // no guard → the agent always runs
   return new Promise((resolve) => {
     const profile = target.profile ? getProfile(target.profile) : undefined;
@@ -309,7 +310,7 @@ async function fireCron(c: Cron): Promise<{ outcome: string; reason?: DriveReaso
   // Resolved once, used by BOTH halves: the guard runs there and the session is
   // resumed there. Two independent lookups is how the resume ended up on the
   // repo root while the guard ran in the worktree.
-  const target = resolveCronTarget(loadChannels(), c.sessionId, process.cwd());
+  const target = resolveSessionTarget(loadChannels(), c.sessionId, process.cwd());
   // Firing from the fallback cwd is a guess, not a fact: say so rather than let
   // a cron whose channel record was lost run somewhere unexpected in silence.
   if (!target.known)
@@ -349,7 +350,7 @@ async function fireCron(c: Cron): Promise<{ outcome: string; reason?: DriveReaso
 /** Drive a channel once with `text` over a loopback WS (resumes its session in
  *  `target.cwd`). Resolves when the turn ends, the delivery fails, or a safety
  *  cap hits. */
-function driveChannel(sessionId: string, text: string, target: CronTarget): Promise<DriveOutcome> {
+function driveChannel(sessionId: string, text: string, target: SessionTarget): Promise<DriveOutcome> {
   return new Promise((resolve) => {
     const cookie = tgCookie();
     const ws = new WebSocket(`ws://127.0.0.1:${boundPort}/ws`, cookie ? { headers: { cookie } } : {});
@@ -434,7 +435,7 @@ function childLabel(channels: readonly Channel[], childId: string): string {
 
 /** Send one message (or a coalesced batch) to a parent, over the cron path. */
 function deliverToParent(parentId: string, text: string): void {
-  const target = resolveCronTarget(loadChannels(), parentId, process.cwd());
+  const target = resolveSessionTarget(loadChannels(), parentId, process.cwd());
   const tag = `agent: → ${parentId.slice(0, 8)}`;
   // Fire and forget: awaiting would hold the CHILD's finishTurn open for as
   // long as the parent takes to think.
@@ -840,7 +841,7 @@ app.get("/diff", (req, res) => {
   if (!s) return res.json({ status: "", diff: "", branch: null, error: "no such session" });
   // The repo is what gives the diff a baseline (gitDiff computes the fork point
   // off it). A RESUME has no `worktree` object even when the session lives in
-  // one (invariant 19), and a multi-day agent — the very case the live base
+  // one (invariant 1), and a multi-day agent — the very case the live base
   // exists for — has certainly been resumed by then, so fall back to the
   // channel's own `repo`, as endChannel already does.
   const ch = loadChannels().find((c) => c.sessionId === s.id);
@@ -2080,7 +2081,7 @@ function publishDialog(s: Live, d: TuiDialog): void {
   // A child blocked on a question is the deadlock this whole thing exists to
   // break: its turn is suspended, and its parent believes it is still working.
   // Hooking HERE covers every path — including raw `key` input — because this
-  // is the single funnel for dialogs (invariant 23). The dedup above is what
+  // is the single funnel for dialogs (invariant 19). The dedup above is what
   // keeps that affordable: the screen watcher runs several times a second.
   notifyParent(s, {
     kind: "dialog",
@@ -2295,7 +2296,16 @@ wss.on("connection", (ws: WebSocket) => {
           // Isolation: run a NEW session inside a fresh git worktree so the
           // agent's edits stay contained until the user merges them.
           let worktree: Worktree | null = null;
-          let effectiveCwd = cwd;
+          // A RESUME asks the registry where this session lives, and prefers its
+          // answer to anything the caller sent. The caller may be the browser, a
+          // cron, the Telegram bridge or a future webhook; each used to derive
+          // the directory on its own, and each got it wrong once. `loadHistory`
+          // is keyed by the cwd, so the cost of guessing is the entire history.
+          // A NEW session has nothing to resolve — `cwd` is all there is.
+          const target = resumed
+            ? resumeTarget(loadChannels(), id, { cwd: msg.cwd, branch: msg.branch, repo: msg.repo }, process.cwd())
+            : null;
+          let effectiveCwd = target?.cwd ?? cwd;
           // Resume: a reattached tmux agent knows its own cwd (e.g. a worktree
           // path the client didn't supply — the Telegram bridge only passes the
           // repo root). Trust the live pane so history and the transcript tail
@@ -2317,8 +2327,8 @@ wss.on("connection", (ws: WebSocket) => {
 
           // Reopen: if resuming into a worktree whose checkout was reclaimed,
           // recreate it from its branch so the past session can continue.
-          if (resumed && msg.branch && msg.repo && !fs.existsSync(effectiveCwd)) {
-            ensureWorktreeCheckout(msg.repo, msg.branch, effectiveCwd);
+          if (target?.branch && target?.repo && !fs.existsSync(effectiveCwd)) {
+            ensureWorktreeCheckout(target.repo, target.branch, effectiveCwd);
           }
 
           // Guard against a vanished directory (e.g. a restored channel whose
