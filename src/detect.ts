@@ -122,3 +122,33 @@ export function describeStuckScreen(screen: string): string | null {
     return "the agent is waiting on a question, not on a prompt — answer it first";
   return null;
 }
+
+/**
+ * How long to wait before reading a session's screen again.
+ *
+ * The screen watcher used to run at a flat 300 ms for EVERY session, which put
+ * the cadence one consumer needs — a human watching the engine room — on all of
+ * them at once, forever. Since `screen()` is a synchronous `tmux capture-pane`,
+ * the cost lands on the server's event loop and grows with the number of agents
+ * that EXIST rather than with what anyone is looking at: measured at 6 ms a
+ * capture, twenty-one idle agents blocked 42% of the loop and every HTTP
+ * request queued behind it for a second or more.
+ *
+ * An idle agent's screen is byte-identical for hours (measured: ten out of ten
+ * unchanged over 1.2 s), so the watcher can back off and lose nothing. Anything
+ * that could move the screen resets the streak to zero.
+ */
+export const SCREEN_FAST_MS = 300;
+export const SCREEN_SLOW_MS = 2000;
+/** Unchanged polls tolerated before backing off at all — a short burst of
+ *  stillness is normal mid-turn and must not slow the mirror down. */
+export const SCREEN_CALM_AFTER = 3;
+
+export function nextScreenDelay(unchangedStreak: number, busy: boolean): number {
+  // A running turn is watched closely: this is when the screen moves most, and
+  // there is only ever a handful of busy sessions at once.
+  if (busy) return SCREEN_FAST_MS;
+  if (unchangedStreak < SCREEN_CALM_AFTER) return SCREEN_FAST_MS;
+  const grown = SCREEN_FAST_MS * 2 ** (unchangedStreak - SCREEN_CALM_AFTER + 1);
+  return Math.min(grown, SCREEN_SLOW_MS);
+}

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { idleStep, screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
+import { idleStep, screenShowsWork, inputText, describeStuckScreen, nextScreenDelay, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs } from "./session.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
@@ -69,7 +69,10 @@ export class TmuxPilot {
   private readonly opts: Required<Pick<TmuxPilotOptions, "cols" | "rows">> & TmuxPilotOptions;
   private readonly name: string;
   private exitListeners = new Set<(code: number) => void>();
-  private poller: ReturnType<typeof setInterval> | null = null;
+  private poller: ReturnType<typeof setTimeout> | null = null;
+  /** Consecutive captures that found the screen byte-identical — drives the
+   *  poller's back-off. Reset by anything that writes to the pane. */
+  private calm = 0;
   private _screen = "";
   private exited = false;
   /** True when we reattached to an already-running session (survived restart). */
@@ -114,27 +117,61 @@ export class TmuxPilot {
       ]);
     }
     this.capture();
-    this.poller = setInterval(() => this.tick(), 250);
+    // Self-rescheduling rather than a flat interval: the capture is synchronous,
+    // so a fixed cadence puts its cost on the event loop for EVERY agent that
+    // exists, watched or not. An idle pane is byte-identical for hours, so the
+    // poller backs off and loses nothing — and any write to the pane wakes it.
+    this.poller = setTimeout(() => this.tick(), SCREEN_FAST_MS);
   }
 
   private tick(): void {
     if (this.exited) return;
-    if (!this.hasSession()) {
-      this.exited = true;
-      if (this.poller) clearInterval(this.poller);
-      this.poller = null;
-      for (const cb of this.exitListeners) cb(0);
+    // A SUCCESSFUL capture proves the session is alive, so the `has-session`
+    // probe that used to run first was a second tmux spawn per tick for an
+    // answer the capture already gives. Both are synchronous, and the pair cost
+    // ~15 ms of blocked event loop per session every 250 ms — past sixteen
+    // agents the server was oversaturated and every HTTP request queued behind
+    // it. Now the probe only runs when the capture actually failed.
+    if (this.capture()) {
+      this.poller = setTimeout(() => this.tick(), nextScreenDelay(this.calm, false));
       return;
     }
-    this.capture();
+    if (this.hasSession()) {
+      // Transient tmux hiccup — keep the last screen, and look again promptly.
+      this.poller = setTimeout(() => this.tick(), SCREEN_FAST_MS);
+      return;
+    }
+    this.exited = true;
+    if (this.poller) clearTimeout(this.poller);
+    this.poller = null;
+    for (const cb of this.exitListeners) cb(0);
   }
 
-  /** Refreshes the cached rendered screen from tmux. */
-  private capture(): void {
+  /**
+   * Back to the fast cadence at once.
+   *
+   * Every path that writes to the pane calls this: after a keystroke the mirror
+   * must not wait out a back-off it earned while the pane was still.
+   */
+  private wake(): void {
+    this.calm = 0;
+    if (this.exited || !this.poller) return;
+    clearTimeout(this.poller);
+    this.poller = setTimeout(() => this.tick(), SCREEN_FAST_MS);
+  }
+
+  /** Refreshes the cached rendered screen. Returns false when tmux refused. */
+  private capture(): boolean {
     try {
-      this._screen = tmux(["capture-pane", "-t", this.name, "-p"]).replace(/\n+$/, "");
+      const next = tmux(["capture-pane", "-t", this.name, "-p"]).replace(/\n+$/, "");
+      if (next === this._screen) this.calm++;
+      else {
+        this.calm = 0;
+        this._screen = next;
+      }
+      return true;
     } catch {
-      /* session gone or transient tmux error — keep last */
+      return false; // session gone or transient tmux error — keep last
     }
   }
 
@@ -163,6 +200,7 @@ export class TmuxPilot {
 
   /** Sends literal text to the session (no submit). */
   write(text: string): void {
+    this.wake();
     tmux(["send-keys", "-t", this.name, "-l", "--", text]);
   }
 
@@ -226,6 +264,7 @@ export class TmuxPilot {
 
   /** Injects raw bytes into the pane (hex via send-keys -H). */
   sendRaw(data: Buffer): void {
+    this.wake();
     if (!data.length) return;
     const hex = Array.from(data, (b) => b.toString(16).padStart(2, "0"));
     try {
@@ -310,6 +349,7 @@ export class TmuxPilot {
   }
 
   press(key: "enter" | "escape" | "up" | "down" | "left" | "right" | "tab" | "ctrl-c"): void {
+    this.wake();
     const map: Record<string, string> = {
       enter: "Enter",
       escape: "Escape",
