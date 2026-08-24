@@ -25,6 +25,9 @@ export interface ClaudeHome {
   hasCompletedOnboarding?: boolean;
   lastOnboardingVersion?: string;
   theme?: string;
+  /** The auto-mode environment screen's state. `denials` is the CLI's own
+   *  counter; `dismissed`/`dismissedAt` are the user's answer. */
+  autoModeEnvSetup?: Record<string, unknown>;
   projects?: Record<string, Record<string, unknown>>;
   [k: string]: unknown;
 }
@@ -63,6 +66,32 @@ export function seedPlan(
   // seeding one would be cargo cult that also implies we control the theme.
   add("hasCompletedOnboarding", true);
   add("lastOnboardingVersion", opts.version);
+
+  // "Teach auto mode about your environment?" — a BLOCKING form offering to
+  // scan the user's shell history (PRE-TICKED) and their other repositories.
+  // Someone hitting Continue to unblock an agent opts into that scan without
+  // meaning to, so shadok picks the screen's own "Don't show again".
+  //
+  // The gate, read out of the 2.1.241 binary: `numStartups >= 5` AND
+  // `denials >= 5` AND mode `auto` AND not dismissed — fired at query_end,
+  // i.e. AFTER a turn, which is why no start-up probe ever caught it.
+  //
+  // MERGED ON THE SUB-KEY, and that is the whole point. The CLI writes
+  // `autoModeEnvSetup: {denials: n}` on its own from the first refusal, so a
+  // rule that is additive on the WHOLE key silently no-ops from then on — and
+  // would protect only instances that never denied anything, which are exactly
+  // the ones that can never reach the threshold. The counter is preserved; only
+  // the missing verdict is supplied.
+  //
+  // A real answer is left alone: `dismissed` present (the user decided) or
+  // `dismissedAt` present ("Not now", which brings the screen back in seven
+  // days). A counter is not an answer.
+  const env = { ...((existing.autoModeEnvSetup as Record<string, unknown> | undefined) ?? {}) };
+  if (!("dismissed" in env) && !("dismissedAt" in env)) {
+    env.dismissed = true;
+    out.autoModeEnvSetup = env;
+    changed = true;
+  }
 
   if (opts.cwd) {
     const projects = { ...(existing.projects ?? {}) };

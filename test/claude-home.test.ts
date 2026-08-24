@@ -19,6 +19,7 @@ test("a virgin file gets every global key plus the project entry", () => {
   assert.deepEqual(out, {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
+    autoModeEnvSetup: { dismissed: true },
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -31,6 +32,7 @@ test("an already-onboarded file needs no write at all", () => {
   const existing = {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.0.0",
+    autoModeEnvSetup: { dismissed: true },
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -111,6 +113,7 @@ test("a directory already trusted needs no write", () => {
   const existing = {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
+    autoModeEnvSetup: { dismissed: true },
     projects: { "/w/a": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
   };
   assert.equal(seedPlan(existing, { version: "2.1.226", cwd: "/w/a" }), null);
@@ -124,4 +127,45 @@ test("only the trust flag is asserted — every other key stays additive", () =>
   assert.equal(out?.projects?.["/w/a"].hasTrustDialogAccepted, true);
   assert.equal(out?.projects?.["/w/a"].hasCompletedProjectOnboarding, false);
   assert.equal(out?.projects?.["/w/a"].lastCost, 7);
+});
+
+test("the auto-mode environment screen is dismissed, never accepted", () => {
+  // That screen offers to scan the user's shell history — PRE-TICKED — and
+  // their other repos, and it blocks. Declining for someone is defensible;
+  // accepting for them is not. `dismissed: true` is what "Don't show again"
+  // writes; `dismissedAt` is "Not now", which brings it back in seven days.
+  const out = seedPlan({}, { version: "2.1.241" });
+  assert.deepEqual(out?.autoModeEnvSetup, { dismissed: true });
+});
+
+test("a COUNTER is not an answer — the verdict is merged into it", () => {
+  // THE case that matters, and the one an additive-on-the-whole-key rule got
+  // wrong: the CLI writes {denials: n} by itself from the first refusal. Skip
+  // then, and the seeding protects only instances that never denied anything —
+  // precisely the ones that can never reach the denials >= 5 threshold.
+  const out = seedPlan({ autoModeEnvSetup: { denials: 3 } }, { version: "2.1.241" });
+  assert.deepEqual(out?.autoModeEnvSetup, { denials: 3, dismissed: true });
+});
+
+test("a real answer is left alone, in both its forms", () => {
+  const decided = seedPlan(
+    { autoModeEnvSetup: { dismissed: false, denials: 9 } },
+    { version: "2.1.241" },
+  );
+  assert.equal(decided?.autoModeEnvSetup?.dismissed, false);
+  // "Not now" is an answer too: the user asked to be asked again later.
+  const later = seedPlan(
+    { autoModeEnvSetup: { dismissedAt: 1234, denials: 2 } },
+    { version: "2.1.241" },
+  );
+  assert.deepEqual(later?.autoModeEnvSetup, { dismissedAt: 1234, denials: 2 });
+});
+
+test("an instance already dismissed needs no write", () => {
+  const existing = {
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.241",
+    autoModeEnvSetup: { dismissed: true },
+  };
+  assert.equal(seedPlan(existing, { version: "2.1.241" }), null);
 });
