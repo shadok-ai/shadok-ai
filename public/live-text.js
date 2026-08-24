@@ -65,3 +65,25 @@ export function extractLiveText(screen) {
   }
   return parts.join(" ");
 }
+
+/**
+ * What to do with the grey live-preview bubble for a freshly extracted block —
+ * pure so the anti-flicker rule is testable; the DOM effect stays in the caller.
+ *
+ * `isBaseline` = the extracted block equals the PREVIOUS turn's answer, captured
+ * at turn start and still (or transiently again) on the screen. `isFinalized` =
+ * it is a block already streamed as authoritative this turn. `showing` = a
+ * preview bubble is currently up.
+ *
+ * The flicker this fixes: while the model writes, a redraw frame can briefly make
+ * the OLD block the last one on screen. Once new text has shown, that must be
+ * HELD (keep), not flipped back to the old text — the old "clear on baseline /
+ * drop the baseline once new text appears" oscillated new↔old every few frames.
+ *
+ * @returns {"show"|"keep"|"clear"}
+ */
+export function livePreviewDecision({ isBaseline, isFinalized, showing }) {
+  if (isBaseline) return showing ? "keep" : "clear";
+  if (isFinalized) return "clear";
+  return "show";
+}
