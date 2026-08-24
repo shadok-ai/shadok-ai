@@ -2046,8 +2046,19 @@ async function finishTurn(s: Live) {
       await s.pilot.waitForIdle({ stableMs: 1500, timeoutMs: 120_000 }).catch(() => {});
     }
     const dialog = detectDialog(s.pilot.screen());
-    if (dialog) publishDialog(s, dialog);
-    else {
+    if (dialog) {
+      // finishTurn is only ever reached by a DELIBERATE transition — a prompt
+      // submitted, or a dialog answered that then ran a turn. So a dialog on
+      // screen now is a FRESH ask, even when its text is byte-for-byte the one
+      // just answered: two back-to-back CLI permission prompts ("Do you want to
+      // proceed? Yes/No") share a dialogKey, and so do two AskUserQuestions with
+      // the same options. Clearing the dedup key here lets publishDialog surface
+      // the second one instead of swallowing it as a repaint, which left the
+      // session wedged on an invisible question. The watcher (invariant 23)
+      // resumes deduping on the key publishDialog sets, so no double-broadcast.
+      s.lastDialogKey = null;
+      publishDialog(s, dialog);
+    } else {
       // Forget the answered question: asking the SAME one again later must
       // still reach the clients, and the dedup key would otherwise swallow it.
       s.lastDialogKey = null;
