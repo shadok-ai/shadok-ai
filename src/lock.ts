@@ -18,15 +18,51 @@ export function instanceLockPath(cwd = process.cwd()): string {
   return path.join(os.homedir(), ".shadok-ai", "locks", enc + ".lock");
 }
 
-/** Whether a process with `pid` is currently running. */
-export function pidAlive(pid: number): boolean {
+/**
+ * Pure: the process state letter from a `/proc/<pid>/stat` line, or null when
+ * the line is unusable.
+ *
+ * Read from the LAST `)`: the second field is the command name, parenthesised
+ * and arbitrary, so it may itself contain spaces and brackets. Splitting from
+ * the left mis-parses every process whose name has one.
+ */
+export function stateFromProcStat(contents: string): string | null {
+  const close = contents.lastIndexOf(")");
+  if (close < 0) return null;
+  const [state] = contents.slice(close + 1).trim().split(/\s+/);
+  return state || null;
+}
+
+/** How `pidAlive` looks a process up; injected in tests. */
+export type ProcStatReader = (pid: number) => string | null;
+
+const readProcStat: ProcStatReader = (pid) => {
+  try {
+    return fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+  } catch {
+    return null; // no /proc (macOS), or the process just vanished
+  }
+};
+
+/**
+ * Whether a process with `pid` is currently running.
+ *
+ * A **zombie** answers signal 0: it has exited, but nobody has reaped it, so
+ * its pid entry survives. That is the normal case in a container, where pid 1
+ * is the application rather than an init that reaps — so a stopped instance
+ * held its launch directory's lock forever, and every later start was refused
+ * while naming a pid that no longer existed. `/proc` is Linux-only; where it is
+ * absent the signal's answer stands.
+ */
+export function pidAlive(pid: number, procStat: ProcStatReader = readProcStat): boolean {
   if (!pid || pid <= 0) return false;
   try {
     process.kill(pid, 0); // signal 0 = existence check, doesn't kill
-    return true;
   } catch (e: any) {
     return e?.code === "EPERM"; // exists but owned by another user → still alive
   }
+  const stat = procStat(pid);
+  return stat === null ? true : stateFromProcStat(stat) !== "Z";
 }
 
 /**
@@ -34,7 +70,10 @@ export function pidAlive(pid: number): boolean {
  * when the lock is held, or { ok: false, pid } when a LIVE instance already
  * holds it. A stale lock (dead holder) is reclaimed.
  */
-export function acquireInstanceLock(lockPath = instanceLockPath()): { ok: true } | { ok: false; pid: number } {
+export function acquireInstanceLock(
+  lockPath = instanceLockPath(),
+  procStat: ProcStatReader = readProcStat,
+): { ok: true } | { ok: false; pid: number } {
   fs.mkdirSync(path.dirname(lockPath), { recursive: true });
   for (let i = 0; i < 3; i++) {
     try {
@@ -46,7 +85,7 @@ export function acquireInstanceLock(lockPath = instanceLockPath()): { ok: true }
       if (e?.code !== "EEXIST") throw e;
       let pid = 0;
       try { pid = parseInt(fs.readFileSync(lockPath, "utf8").trim(), 10) || 0; } catch { /* unreadable */ }
-      if (pid && pid !== process.pid && pidAlive(pid)) return { ok: false, pid };
+      if (pid && pid !== process.pid && pidAlive(pid, procStat)) return { ok: false, pid };
       try { fs.rmSync(lockPath); } catch { /* someone else cleared it */ } // stale → retry
     }
   }
