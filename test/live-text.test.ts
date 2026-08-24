@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { extractLiveText } from "../public/live-text.js";
+import { extractLiveText, livePreviewDecision } from "../public/live-text.js";
 
 // Shared bottom of screen (separators + input box + footer).
 const FOOTER = [
@@ -166,4 +166,48 @@ test("a real dialog screen: the paragraph preceding the question is recovered", 
       "in 25 seconds, while the question below is displayed. Answer whatever you like, only the " +
       "capture is of interest to me.",
   );
+});
+
+// ── livePreviewDecision (anti-flicker) ─────────────────────────────────────
+
+test("livePreviewDecision: baseline before anything shown → clear (suppress the old answer)", () => {
+  assert.equal(livePreviewDecision({ isBaseline: true, isFinalized: false, showing: false }), "clear");
+});
+
+test("livePreviewDecision: baseline AFTER new text shown → keep (hold, don't flip back)", () => {
+  assert.equal(livePreviewDecision({ isBaseline: true, isFinalized: false, showing: true }), "keep");
+});
+
+test("livePreviewDecision: an already-finalized block → clear", () => {
+  assert.equal(livePreviewDecision({ isBaseline: false, isFinalized: true, showing: true }), "clear");
+});
+
+test("livePreviewDecision: fresh in-flight text → show", () => {
+  assert.equal(livePreviewDecision({ isBaseline: false, isFinalized: false, showing: false }), "show");
+});
+
+test("livePreviewDecision: the new↔old oscillation never flips back to the old text", () => {
+  // Simulate the frames while the model writes: the baseline (previous answer)
+  // keeps re-appearing between frames of new text. Once new text is showing, a
+  // baseline frame must be HELD — the bug was it flipped back to the old text.
+  let showing = false;
+  const frames = [
+    { isBaseline: true, isFinalized: false },   // turn start: old answer on screen
+    { isBaseline: false, isFinalized: false },  // model starts writing
+    { isBaseline: true, isFinalized: false },   // redraw glitch: old block last again
+    { isBaseline: false, isFinalized: false },  // more new text
+    { isBaseline: true, isFinalized: false },   // another glitch
+  ];
+  const seen: string[] = [];
+  for (const f of frames) {
+    const d = livePreviewDecision({ ...f, showing });
+    seen.push(d);
+    if (d === "show") showing = true;
+    if (d === "clear") showing = false;
+    // "keep" leaves `showing` as is
+  }
+  assert.deepEqual(seen, ["clear", "show", "keep", "show", "keep"]);
+  // After the first "show", the preview is never cleared/flipped by a baseline
+  // frame — no oscillation.
+  assert.ok(!seen.slice(seen.indexOf("show") + 1).includes("clear"));
 });

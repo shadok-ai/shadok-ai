@@ -1902,7 +1902,7 @@
      request (src/csp.ts). A block without it does not run — which is what makes
      HTML an agent might write into the transcript harmless. -->
 <script type="module" nonce="__CSP_NONCE__">
-  import { extractLiveText } from "/live-text.js";
+  import { extractLiveText, livePreviewDecision } from "/live-text.js";
   import {
     profileBlurb,
     profileBadges,
@@ -1918,6 +1918,7 @@
   window.unionRect = unionRect;
   window.visibleSteps = visibleSteps;
   window.extractLiveText = extractLiveText;
+  window.livePreviewDecision = livePreviewDecision;
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
@@ -3482,11 +3483,20 @@
     // for a stream-text that never comes.
     if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
     const nT = normPreview(txt);
-    // Still showing the previous turn's answer (captured at turn start) — this
-    // turn hasn't produced its own text yet. Suppress until it does.
-    if (tab.livePreviewBaseline && nT === tab.livePreviewBaseline) { clearLivePreview(tab); return; }
-    if (nT && isFinalizedBlock(tab, nT)) { clearLivePreview(tab); return; }
-    tab.livePreviewBaseline = ""; // real new text arrived — baseline no longer applies
+    // Decide what to do with the block (pure, tested — see livePreviewDecision).
+    // The baseline (previous turn's answer) is kept for the WHOLE turn: once new
+    // text has shown, a redraw frame that briefly makes the OLD block the last
+    // one again is HELD, not flipped back — that flip is what made the preview
+    // oscillate new↔old while the model writes.
+    const decision = window.livePreviewDecision
+      ? window.livePreviewDecision({
+          isBaseline: !!tab.livePreviewBaseline && nT === tab.livePreviewBaseline,
+          isFinalized: !!nT && isFinalizedBlock(tab, nT),
+          showing: !!tab.livePreviewBubble,
+        })
+      : "show";
+    if (decision === "keep") return;
+    if (decision === "clear") { clearLivePreview(tab); return; }
     if (!tab.livePreviewEl) {
       const turn = document.createElement("div");
       turn.className = "turn claude live-preview";
