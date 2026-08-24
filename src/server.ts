@@ -30,6 +30,7 @@ import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-a
 import { starCount } from "./stars.js";
 import { ensureFirstAgent } from "./first-agent.js";
 import { ensureSshIdentity } from "./ssh.js";
+import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
@@ -2846,6 +2847,12 @@ function seedSecretsSkill(): void {
   }
 }
 seedSecretsSkill();
+
+// node-pty's prebuilt spawn-helper must be executable, or the first agent's
+// `pty.spawn` throws "posix_spawnp failed". The package postinstall chmods it
+// but via a relative path that misses on a hoisted (npx / managed) install, so
+// do it here from node-pty's real location — every layout, every boot.
+ensureSpawnHelperExecutable((line) => console.log(`[shadok-ai] ${line}`));
 
 /**
  * The tweak PR guard, copied OUT of the repo into ~/.shadok-ai so a cron can
