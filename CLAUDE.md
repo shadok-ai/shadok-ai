@@ -85,6 +85,7 @@ both are silent in the DOM.
 |---|---|
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
+| `src/claude-bin.ts` | Makes sure the `claude` CLI is there before the first spawn. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight, caches success only), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Pure, tested. |
 | `src/tmux.ts` | `TmuxPilot` — same interface as `PtyPilot`, but runs `claude` in a **detached tmux session** (`sk-<sessionId>`). **Survives server restart** (reattaches). Default transport when tmux is present. |
 | `src/tail.ts` | Tails a session's `.jsonl` transcript → streams assistant text/tool_use/tool_result + token usage. **This is the source of truth for content**, not the screen. Also owns `isNothingToShow` — a text block that is *only* `NOTHING TO SHOW` is dropped (a cron with no signal must be able to stay silent); the twin filters live in `loadHistory` and the web live preview. |
 | `src/extract.ts` | Parse the transcript / screen: `loadHistory`, `detectDialog`, `listSessions`, `findSessionId`. |

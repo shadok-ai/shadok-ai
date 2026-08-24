@@ -1,5 +1,5 @@
 import { randomUUID, timingSafeEqual, createHmac } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import http from "node:http";
@@ -142,6 +142,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
 } from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
 import { startHeartbeat } from "./heartbeat.js";
+import { ensureClaude, resolveBin, type EnsureClaudeResult } from "./claude-bin.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER } from "./csp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1759,6 +1760,36 @@ function detach(ws: WebSocket, s: Live) {
   }, IDLE_RECLAIM_MS);
 }
 
+/** `npm i -g @anthropic-ai/claude-code`, streamed to the server log. Rejects on a
+ *  non-zero exit or a spawn error (e.g. no write permission on the global dir). */
+function installClaudeCli(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+    const p = spawnChild(npm, ["install", "-g", "@anthropic-ai/claude-code", "--no-audit", "--no-fund"], {
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    p.on("error", reject);
+    p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`npm exited with code ${code}`))));
+  });
+}
+
+// The first spawn on a fresh machine used to fail with a bare `posix_spawnp
+// failed` when the `claude` CLI wasn't installed. We now install it once, on
+// demand, and only surface a clear error if that can't help. Cache SUCCESS
+// only, so a manual install after a failed attempt is picked up next spawn.
+let claudeReady: Promise<EnsureClaudeResult> | null = null;
+function ensureClaudeOnce(): Promise<EnsureClaudeResult> {
+  if (claudeReady) return claudeReady;
+  const p = ensureClaude({
+    resolve: () => resolveBin("claude"),
+    install: installClaudeCli,
+    notify: (line) => console.log(`[shadok-ai] ${line}`),
+  });
+  claudeReady = p;
+  p.then((r) => { if (!r.ok) claudeReady = null; }).catch(() => { claudeReady = null; });
+  return p;
+}
+
 async function createSession(
   id: string,
   cwd: string,
@@ -2431,6 +2462,12 @@ wss.on("connection", (ws: WebSocket) => {
             if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
             else parentAtStart = msg.parent ?? null;
           }
+          // A spawn needs the `claude` CLI; install it once if a fresh machine
+          // lacks it, rather than letting node-pty throw a bare "posix_spawnp
+          // failed". A hard failure (permissions / not on PATH) is surfaced with
+          // the manual command instead.
+          const claude = await ensureClaudeOnce();
+          if (!claude.ok) return fail(claude.error);
           session = await createSession(id, effectiveCwd, args, worktree, profile);
           session.clients.add(ws);
           if (resumed) {

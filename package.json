@@ -6,7 +6,7 @@
     "test": "node --import tsx --test test/*.ts .claude/skills/shadok-ai-agents/test/*.test.mjs context/*/test/*.test.mjs",
     "build": "tsc",
     "dev": "tsx src/cli.ts",
-    "postinstall": "chmod +x node_modules/node-pty/prebuilds/darwin-*/spawn-helper 2>/dev/null || true",
+    "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
     "prepublishOnly": "npm run build",
     "web": "node dist/server.js"
   },
