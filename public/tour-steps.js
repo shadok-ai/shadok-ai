@@ -58,10 +58,14 @@ export const TOUR_STEPS = [
   {
     id: "tools",
     title: "The toolbar",
+    // Named in the order the spotlight frames them, NOT drawn as glyphs: this
+    // body is set with textContent, so an inline SVG icon would show as raw
+    // markup — and spelling the buttons out as emoji (🔑/👤/🔔) drifts the
+    // moment those buttons stop being emoji, which is exactly what happened.
     body:
-      "🔑 secrets injected into agents that need them · 👤 profiles (role, guardrails, model) · " +
-      "Telegram settings · 🔔 notifications · ⋯ for the diff of what an agent changed " +
-      "and to replay this tour.",
+      "Left to right: secrets injected into agents that need them, profiles " +
+      "(role, guardrails, model), Telegram settings, and the notification sound. " +
+      "The ⋯ holds the diff of what an agent changed — and replays this tour.",
     // NOT `.hdr-tools`, which is `display: contents` on desktop and therefore
     // generates no box at all — its rect is all zeros, so the step would have
     // been dropped as "not visible" on the very layout where the toolbar is
