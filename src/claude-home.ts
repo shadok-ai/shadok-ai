@@ -30,7 +30,7 @@ export interface ClaudeHome {
 }
 
 /** The per-project keys that answer the trust dialog. */
-const PROJECT_KEYS = ["hasTrustDialogAccepted", "hasCompletedProjectOnboarding"] as const;
+const ADDITIVE_PROJECT_KEYS = ["hasCompletedProjectOnboarding"] as const;
 
 /** Pure: the semver out of `claude --version` ("2.1.226 (Claude Code)"). */
 export function parseClaudeVersion(stdout: string): string | null {
@@ -68,7 +68,19 @@ export function seedPlan(
     const projects = { ...(existing.projects ?? {}) };
     const entry = { ...(projects[opts.cwd] ?? {}) };
     let entryChanged = false;
-    for (const key of PROJECT_KEYS) {
+    // THE one exception to the additive rule, and it is deliberate.
+    //
+    // shadok is what chose this directory: the user expressed trust by pointing
+    // an agent at it. A `hasTrustDialogAccepted: false` left by anything —
+    // an older shadok, a restored config, a hand-run `claude` — would survive
+    // forever under "never overwrite", and the trust dialog would greet every
+    // single spawn. That is not preserving a choice, it is defeating the module.
+    if (entry.hasTrustDialogAccepted !== true) {
+      entry.hasTrustDialogAccepted = true;
+      entryChanged = true;
+    }
+    // Everything else stays additive: a value already there is the CLI's.
+    for (const key of ADDITIVE_PROJECT_KEYS) {
       if (!(key in entry)) {
         entry[key] = true;
         entryChanged = true;
@@ -156,12 +168,19 @@ function seed(cwd?: string): void {
   try {
     const file = homeFile();
     const existing = readHome(file);
-    if (existing === null) return; // unparseable → hands off
+    if (existing === null) {
+      // Saying nothing here cost a long investigation: a seeding that never ran
+      // looked exactly like one that ran, and the first-run screens that came
+      // back had no explanation anywhere.
+      console.log(`claude-home: ${file} is unreadable — left alone, so first-run screens may appear`);
+      return;
+    }
     const plan = seedPlan(existing, { version: claudeVersion(), cwd });
     if (plan) writeHome(file, plan);
-  } catch {
+  } catch (e) {
     // A failed seed must never take down the boot path or a spawn — same rule
-    // as ensureSshIdentity.
+    // as ensureSshIdentity — but it must not be invisible either.
+    console.log(`claude-home: could not seed — ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 

@@ -75,8 +75,10 @@ test("other projects and unknown top-level keys survive untouched", () => {
 test("an existing project entry keeps its own keys and gains only what's missing", () => {
   const existing = { projects: { "/w/a": { lastCost: 1, hasTrustDialogAccepted: false } } };
   const out = seedPlan(existing, { version: "2.1.226", cwd: "/w/a" });
-  // hasTrustDialogAccepted is PRESENT (false) → left alone, per the additive rule.
-  assert.equal(out?.projects?.["/w/a"].hasTrustDialogAccepted, false);
+  // This assertion used to read `false` — it pinned the bug. A stale false makes
+  // the trust dialog greet every spawn, forever, which defeats the module; and
+  // shadok is what chose this directory in the first place.
+  assert.equal(out?.projects?.["/w/a"].hasTrustDialogAccepted, true);
   assert.equal(out?.projects?.["/w/a"].lastCost, 1);
   assert.equal(out?.projects?.["/w/a"].hasCompletedProjectOnboarding, true);
 });
@@ -102,4 +104,24 @@ test("settingsPlan keeps every other setting untouched", () => {
   // those to suppress an upsell would be a terrible trade.
   const out = settingsPlan({ permissions: { allow: ["Bash(git *)"] }, model: "opus" });
   assert.deepEqual(out, { permissions: { allow: ["Bash(git *)"] }, model: "opus", tui: "fullscreen" });
+});
+
+test("a directory already trusted needs no write", () => {
+  // The assertion must not make every spawn rewrite a multi-megabyte file.
+  const existing = {
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.226",
+    projects: { "/w/a": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
+  };
+  assert.equal(seedPlan(existing, { version: "2.1.226", cwd: "/w/a" }), null);
+});
+
+test("only the trust flag is asserted — every other key stays additive", () => {
+  // The exception is deliberately ONE key wide. Anything else present is the
+  // CLI's business, and overwriting it would be the cargo cult we removed.
+  const existing = { projects: { "/w/a": { hasCompletedProjectOnboarding: false, lastCost: 7 } } };
+  const out = seedPlan(existing, { version: "2.1.226", cwd: "/w/a" });
+  assert.equal(out?.projects?.["/w/a"].hasTrustDialogAccepted, true);
+  assert.equal(out?.projects?.["/w/a"].hasCompletedProjectOnboarding, false);
+  assert.equal(out?.projects?.["/w/a"].lastCost, 7);
 });
