@@ -559,3 +559,18 @@ update breaks the detection).
   engine room (`waitFor()` + `press()` in library mode).
 - The TUI runs in the alternate screen: `fullBuffer()` ≈ visible screen;
   very long responses scroll out of view (increase `rows` if needed).
+
+## Why it is called that
+
+Les Shadoks were French cartoon birds, drawn by Jacques Rouxel in 1968, and the
+whole joke was that they pumped. Relentlessly, exhaustingly, and for no result
+anyone could ever identify. One of their mottos: *the more it fails, the more
+likely it is to work.*
+
+An agent woken every hour to report that nothing happened is pumping. You pay a
+model call to be told there was nothing to do, and it will tell you that
+twenty-three more times today. Hence the guard in `crons.ts`: the check runs
+without the model, and a quiet hour costs nothing at all.
+
+The name went unexplained here for the project's first month, which is a
+strange thing to leave out of a README when the joke *is* the design.
