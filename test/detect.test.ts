@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { idleStep, screenShowsWork, inputHasProbe, inputText } from "../src/detect.js";
+import { idleStep, screenShowsWork, inputHasProbe, inputText, nextScreenDelay, SCREEN_FAST_MS, SCREEN_SLOW_MS } from "../src/detect.js";
 
 const idle = [
   "⏺ Done.",
@@ -118,4 +118,34 @@ test("idleStep: a shorter window settles sooner, on the same screen", () => {
   assert.equal(idleStep(IDLE, IDLE, 1000, 1400, 400).done, true, "the short window is done");
   // But a shorter window must NOT excuse a screen that is still working.
   assert.equal(idleStep(WORKING, WORKING, 1000, 61_000, 400).done, false);
+});
+
+test("nextScreenDelay: a moving screen is polled fast", () => {
+  assert.equal(nextScreenDelay(0, false), SCREEN_FAST_MS);
+  assert.equal(nextScreenDelay(2, false), SCREEN_FAST_MS);
+});
+
+test("nextScreenDelay: stillness backs off, and is capped", () => {
+  // Geometric, so a session that has been quiet for hours costs almost nothing,
+  // while one that just went quiet is still nearly live.
+  assert.equal(nextScreenDelay(3, false), 600);
+  assert.equal(nextScreenDelay(4, false), 1200);
+  assert.equal(nextScreenDelay(5, false), SCREEN_SLOW_MS);
+  assert.equal(nextScreenDelay(500, false), SCREEN_SLOW_MS);
+});
+
+test("nextScreenDelay: a busy session is never slowed", () => {
+  // A running turn is when the screen moves most — and there are only ever a
+  // handful of busy sessions, so the cost stays bounded.
+  assert.equal(nextScreenDelay(999, true), SCREEN_FAST_MS);
+});
+
+test("nextScreenDelay: the delay never shrinks as stillness grows", () => {
+  let prev = 0;
+  for (let n = 0; n <= 12; n++) {
+    const d = nextScreenDelay(n, false);
+    assert.ok(d >= prev, `streak ${n}: ${d} < ${prev}`);
+    assert.ok(d >= SCREEN_FAST_MS && d <= SCREEN_SLOW_MS);
+    prev = d;
+  }
 });
