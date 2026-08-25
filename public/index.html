@@ -1434,6 +1434,14 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
+  #ledgerList { list-style: none; margin: 0; padding: 0; }
+  #ledgerList li { padding: 8px 0; border-bottom: 1px solid var(--line, #2a2d32); }
+  #ledgerList li:last-child { border-bottom: none; }
+  #ledgerList .ldg-head { display: flex; align-items: baseline; gap: 8px; }
+  #ledgerList .ldg-status { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .8;
+    border: 1px solid var(--line, #3a3d42); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+  #ledgerList .ldg-meta { color: #888; font-size: 10px; margin-top: 2px; }
+  #ledgerList .ldg-note { font-size: 12px; opacity: .85; margin-top: 3px; }
   #secretsPanel .sec-repo { font-size: 12px; opacity: .8; margin-bottom: 4px; word-break: break-all; }
   #secretsPanel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
   #secretsList { list-style: none; padding: 0; margin: 0 0 12px; }
@@ -1476,6 +1484,7 @@
        the slightest zoom). -->
   <div class="hdr-tools">
   <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)" aria-label="Secrets"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l7.5 7.5M15.5 15.5l1.8-1.8M17.8 17.8l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+  <button id="ledgerBtn" class="icon" title="Shared ledger — what agents have resolved / decided" aria-label="Ledger"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)" aria-label="Profiles"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></button>
   <button id="muteNotif" class="icon" title="Mute the notification sound" aria-label="Notification sound"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 16.5h12c-1.3-1.1-2-2.7-2-4.5v-1.2a4 4 0 0 0-8 0v1.2c0 1.8-.7 3.4-2 4.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.4 19a1.7 1.7 0 0 0 3.2 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line class="mute-slash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
@@ -1552,6 +1561,21 @@
         <input id="secretVal" placeholder="value" autocomplete="off" spellcheck="false" />
         <button type="submit">Add</button>
       </form>
+    </div>
+  </div>
+</div>
+
+<div id="ledgerOverlay" class="overlay" hidden>
+  <div class="sec-panel pinned">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong>Shared ledger</strong>
+        <button id="ledgerClose" title="Close">✕</button>
+      </div>
+      <p class="sec-note">What sibling agents have resolved or decided, so no one re-raises it. One row per entity; a new record supersedes it. Read-only here — agents write it via the <code>shadok-ledger</code> skill.</p>
+    </div>
+    <div class="pin-body">
+      <ul id="ledgerList"></ul>
     </div>
   </div>
 </div>
@@ -5118,7 +5142,7 @@
   // SINGLE row (brand + dials + ⋯) by moving EVERY tool icon into the ⋯ menu —
   // the real button elements, so their click handlers travel with them.
   // Recomputed on load, on resize, and when the instance name changes.
-  const OVERFLOW_TOOLS = ["secretsBtn", "profilesBtn", "telegramBtn", "muteNotif"];
+  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "profilesBtn", "telegramBtn", "muteNotif"];
   function reflowHeaderTools() {
     const hdrTools = document.querySelector(".hdr-tools");
     const moreWrap = document.querySelector(".more-wrap");
@@ -5199,6 +5223,7 @@
     if (!$("profConfirmOverlay").hidden) { closeProfConfirm(); e.preventDefault(); return; }
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
     if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
@@ -5276,6 +5301,41 @@
   });
   $("secretsClose").addEventListener("click", () => { $("secretsOverlay").hidden = true; });
   $("secretsOverlay").addEventListener("click", (e) => { if (e.target === $("secretsOverlay")) $("secretsOverlay").hidden = true; });
+
+  // ── Shared ledger viewer (read-only) ──────────────────────────────────
+  function ldgAge(updatedAt) {
+    const d = Math.floor((Date.now() - (updatedAt || Date.now())) / 86400000);
+    return d <= 0 ? "today" : d === 1 ? "1d ago" : d + "d ago";
+  }
+  function renderLedger(entries) {
+    const ul = $("ledgerList");
+    ul.innerHTML = "";
+    if (!entries || !entries.length) {
+      ul.innerHTML = '<li><span style="opacity:.6">the ledger is empty</span></li>';
+      return;
+    }
+    for (const e of entries) {
+      const li = document.createElement("li");
+      const head = document.createElement("div"); head.className = "ldg-head";
+      const ent = document.createElement("strong"); ent.textContent = e.entity || "?";
+      head.appendChild(ent);
+      if (e.status) { const st = document.createElement("span"); st.className = "ldg-status"; st.textContent = e.status; head.appendChild(st); }
+      const meta = document.createElement("div"); meta.className = "ldg-meta";
+      meta.textContent = ldgAge(e.updatedAt) + (e.source ? " · " + e.source : "");
+      li.append(head, meta);
+      if (e.note) { const n = document.createElement("div"); n.className = "ldg-note"; n.textContent = e.note; li.appendChild(n); }
+      ul.appendChild(li);
+    }
+  }
+  $("ledgerBtn").addEventListener("click", async () => {
+    let entries = [];
+    try { entries = (await (await fetch("/ledger")).json()).entries || []; } catch { entries = []; }
+    renderLedger(entries);
+    $("ledgerOverlay").hidden = false;
+  });
+  $("ledgerClose").addEventListener("click", () => { $("ledgerOverlay").hidden = true; });
+  $("ledgerOverlay").addEventListener("click", (e) => { if (e.target === $("ledgerOverlay")) $("ledgerOverlay").hidden = true; });
+
   $("secretsAdd").addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = $("secretKey").value.trim();
