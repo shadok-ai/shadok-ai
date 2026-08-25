@@ -25,12 +25,13 @@ node ~/.claude/skills/shadok-ledger/ledger.mjs check "<topic or entity>"
 
 - a row says **resolved / done** → do NOT re-raise or re-act; report it as handled.
 - **nothing recorded** → treat as **UNKNOWN**, not as "not done": ask the human
-  or hedge (« de mémoire, à faire — dis-moi si c'est déjà réglé »), don't assert.
+  or hedge ("from memory, still to do — tell me if it is already handled"),
+  don't assert.
 - a **stale** row (many days old) → hedge and confirm before acting.
 
 This fires on status-dependent claims (a bug being open, a PR unmerged, a task
-undone, a campaign live). A **durable lesson/constraint** (« ne pas acheter le
-mot-clé de sens inverse ») is not a status — use it freely, don't gate it.
+undone, a campaign live). A **durable lesson/constraint** ("don't buy the
+opposite-intent keyword") is not a status — use it freely, don't gate it.
 
 ## When you resolve, decide, or change something notable
 

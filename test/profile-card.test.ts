@@ -83,7 +83,7 @@ test("defaultAgentName: a chosen profile gives the agent its name", () => {
 
 test("defaultAgentName: with no profile, we fall back to the directory", () => {
   assert.equal(defaultAgentName("", "/Users/a/projects/shadok-ai"), "shadok-ai");
-  assert.equal(defaultAgentName(null, "/Users/a/projects/biosense/"), "biosense");
+  assert.equal(defaultAgentName(null, "/Users/a/projects/storefront/"), "storefront"); // trailing slash
 });
 
 test("defaultAgentName: neither profile nor directory → a name all the same", () => {

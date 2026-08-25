@@ -10,8 +10,8 @@ import {
 
 test("upsert SUPERSEDES by normalised entity — never a twin", () => {
   let rows: any[] = [];
-  rows = upsertEntry(rows, { entity: "Bilan extraction", status: "broken" }, 1000);
-  rows = upsertEntry(rows, { entity: "  bilan   EXTRACTION ", status: "fixed", source: "PR#12" }, 2000);
+  rows = upsertEntry(rows, { entity: "Nightly import", status: "broken" }, 1000);
+  rows = upsertEntry(rows, { entity: "  nightly   IMPORT ", status: "fixed", source: "PR#12" }, 2000);
   assert.equal(rows.length, 1); // state table, not a log
   assert.equal(rows[0].status, "fixed");
   assert.equal(rows[0].source, "PR#12");
@@ -24,12 +24,12 @@ test("upsert requires an entity", () => {
 
 test("find matches entity OR note, most-recent first", () => {
   const rows = [
-    { entity: "campaign ferritine", status: "paused", updatedAt: 10 },
-    { entity: "bilan extraction", status: "fixed", note: "relance job", updatedAt: 30 },
-    { entity: "TSH budget", status: "learned", updatedAt: 20 },
+    { entity: "landing page rework", status: "paused", updatedAt: 10 },
+    { entity: "nightly import", status: "fixed", note: "restarted the job", updatedAt: 30 },
+    { entity: "staging budget", status: "learned", updatedAt: 20 },
   ];
-  assert.deepEqual(findEntries(rows, "extraction").map((e: any) => e.entity), ["bilan extraction"]);
-  assert.deepEqual(findEntries(rows, "relance").map((e: any) => e.entity), ["bilan extraction"]); // note match
+  assert.deepEqual(findEntries(rows, "import").map((e: any) => e.entity), ["nightly import"]);
+  assert.deepEqual(findEntries(rows, "restarted").map((e: any) => e.entity), ["nightly import"]); // note match
 });
 
 test("empty query lists the whole table, recent-first", () => {
@@ -42,7 +42,7 @@ test("empty query lists the whole table, recent-first", () => {
 });
 
 test("normEntity collapses case and whitespace", () => {
-  assert.equal(normEntity("  Bilan   EXTRACTION "), "bilan extraction");
+  assert.equal(normEntity("  Nightly   IMPORT "), "nightly import");
 });
 
 test("ageDays is whole days since updatedAt", () => {
