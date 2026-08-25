@@ -1445,6 +1445,21 @@ app.post("/restart-all", (_req, res) => {
   res.json({ restarted });
 });
 
+// The shared-ledger table for the GUI viewer (the version-menu / header button).
+// Reads the same file the `shadok-ledger` skill writes; most-recent first; an
+// absent or unreadable file → []. Read-only — agents write it via the skill.
+app.get("/ledger", (_req, res) => {
+  let entries: any[] = [];
+  try {
+    const j = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".shadok-ai", "ledger.json"), "utf8"));
+    if (Array.isArray(j)) entries = j;
+  } catch {
+    /* absent / unreadable → empty */
+  }
+  entries.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
+  res.json({ entries, enabled: ledgerEnabled });
+});
+
 // Toggle the shared-ledger reflex from the GUI. Persisted. The reflex is fixed
 // at spawn, so flipping it only lands once agents respawn — so we respawn them
 // all (when it actually changed), making the toggle "just work". Serial and in
