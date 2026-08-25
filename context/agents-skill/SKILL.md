@@ -8,7 +8,7 @@ description: Create and drive isolated Claude Code agents through the shadok-ai 
 Every operation goes through the thin client shipped with this skill:
 
 ```bash
-node .claude/skills/shadok-ai-agents/pilotctl.mjs <command> …
+node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs <command> …
 ```
 
 Each command prints ONE JSON object on stdout (exit 1 + `{error}` on failure)
@@ -67,7 +67,7 @@ The prompt is passed to `claude` **at spawn**: a change takes effect at the
 agent's next restart, not mid-session.
 
 ```bash
-node .claude/skills/shadok-ai-agents/pilotctl.mjs profile-prompt "$(cat <<'TXT'
+node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs profile-prompt "$(cat <<'TXT'
 … the complete new prompt …
 TXT
 )"

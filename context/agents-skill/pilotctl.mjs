@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // pilotctl — thin client for the shadok-ai web server. One-shot commands,
-// JSON on stdout. See .claude/skills/shadok-ai-agents/SKILL.md.
+// JSON on stdout. See ./SKILL.md.
 import { execFileSync, spawn as spawnChild } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 import WebSocket from "ws";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Only used to auto-start a server when none is reachable (a dev running pilotctl
+// inside the repo). When this skill is seeded into ~/.claude/skills so ANY agent
+// can pilot, REPO_ROOT is meaningless — ensureServer guards on it below.
 export const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
 export const port = () => Number(process.env.SHADOK_PORT ?? 3789);
@@ -169,9 +172,15 @@ export async function ensureServer() {
   if (await serverUp()) return;
   if (process.env.SHADOK_NO_AUTOSTART)
     throw new Error(`shadok-ai server unreachable on :${port()}`);
+  // Auto-start only works from a real repo checkout. Globally seeded, REPO_ROOT
+  // is not a repo — but a piloted agent always has a running server, so this
+  // path is only a standalone dev's. Fail clearly rather than `npm build`-ing $HOME.
   const dist = path.join(REPO_ROOT, "dist", "server.js");
-  if (!fs.existsSync(dist))
+  if (!fs.existsSync(dist)) {
+    if (!fs.existsSync(path.join(REPO_ROOT, "package.json")))
+      throw new Error(`shadok-ai server unreachable on :${port()} (and no repo to auto-start one — start the server first)`);
     execFileSync("npm", ["run", "build"], { cwd: REPO_ROOT, stdio: "ignore" });
+  }
   fs.mkdirSync(stateDir(), { recursive: true });
   const logPath = path.join(stateDir(), "server.log");
   const log = fs.openSync(logPath, "a");

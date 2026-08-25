@@ -3076,6 +3076,27 @@ function seedLedgerSkill(): void {
 }
 seedLedgerSkill();
 
+// Install/refresh the bundled "shadok-ai-agents" skill so an agent in ANY repo
+// (not just this one) can spawn/pilot other agents via pilotctl. It used to live
+// only in the repo's .claude/skills — a project skill invisible to agents working
+// elsewhere (e.g. a BioSense lead told to delegate). Now seeded globally like the
+// others; only SKILL.md + the client ship, never the test dir.
+function seedAgentsSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "agents-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-ai-agents");
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of ["SKILL.md", "pilotctl.mjs"]) {
+      fs.copyFileSync(path.join(src, f), path.join(dst, f));
+    }
+    fs.chmodSync(path.join(dst, "pilotctl.mjs"), 0o755);
+  } catch {
+    /* best effort — no agents skill just means no cross-agent piloting, never a crash */
+  }
+}
+seedAgentsSkill();
+
 /** Run a package-manager install. Linux managers need root; if we aren't root,
  *  go through NON-interactive sudo so a password prompt fails fast rather than
  *  hanging the boot. brew (needsRoot:false) must never be sudo'd. */
