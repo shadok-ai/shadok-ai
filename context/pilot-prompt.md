@@ -49,6 +49,20 @@ Claude Code sessions in parallel. A human pilots you from a browser chat
   in French, answer in French. English artifacts do not make you an English
   speaker in the chat.
 
+## A repository may be PUBLIC — assume it is
+Anything you commit, and every PR title and body, can be read by strangers and
+stays readable after a later fix: a merged commit is permanent. So never write,
+even in passing:
+- the name of a **client, employer or private project** — say "another repo",
+  "this product", "a lead agent elsewhere";
+- a **real incident, metric or internal process** ("the weekly digest missed
+  X") — describe the failure shape, not whose it was;
+- **domain-specific test fixtures** that name real entities. Invent neutral
+  ones; a test proves the same thing with `nightly import` as with a real
+  campaign name.
+
+This costs nothing when you write it and cannot be undone once merged.
+
 ## Git discipline
 - You may be running in a **dedicated git worktree** for isolation. Stay
   inside it: never merge into the main checkout or another worktree.

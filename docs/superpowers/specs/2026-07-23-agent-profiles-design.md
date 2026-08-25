@@ -38,7 +38,7 @@ All applied as **CLI flags at spawn** — nothing written into the worktree:
 [
   {
     "name": "marketing",
-    "systemPrompt": "You are the paid-marketing agent for biosense. …",
+    "systemPrompt": "You are the paid-marketing agent for this product. …",
     "deny": ["Bash(git commit:*)", "Bash(git push:*)", "Bash(git add:*)",
              "Bash(git reset:*)", "Bash(git rebase:*)", "Bash(git merge:*)"],
     "allow": [],

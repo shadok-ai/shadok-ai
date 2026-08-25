@@ -9,11 +9,11 @@ Agents run siloed — one isolated Claude session + one worktree + an ephemeral
 context each. The only cross-agent link is the parent→child kinship
 notification (a tree, not a shared bus). So an agent has no reflex, and no
 means, to check whether a bug / feature / action it is about to raise has
-already been handled elsewhere. Two observed failure modes, both real on the
-BioSense fleet:
+already been handled elsewhere. Two failure modes, both observed on a real
+fleet:
 
-- **Output:** a marketing agent's report lists "relance the two lab-result
-  extractions" as an action — already fixed days earlier by another agent.
+- **Output:** an agent's report lists a broken job as an action to take — it was
+  fixed days earlier by another agent.
 - **Input:** an agent asked to change a PR says "since it isn't merged, I'll
   work on the branch" — it was merged in the meantime, so it acts on a false
   premise.
@@ -30,8 +30,8 @@ git, no diff, no merge event.
   morning digest doesn't stop a 4pm stale assertion); and — the deepest reason —
   **information present in context ≠ information used at the decision point.**
   An LLM does not reliably cross-reference a line buried in a days-old digest
-  against a fresh assertion. Empirically, the team already has a daily digest —
-  the weekly — and it did not prevent the extraction re-surface.
+  against a fresh assertion. Observed: a fleet that already had a periodic
+  digest re-surfaced a resolved item anyway.
 - **Claude Code memory (CLAUDE.md / auto-memory)** has the right DNA (files +
   index + recall) but the wrong economics: it is *push* (loaded into every
   session, re-sent each turn), small, and curated — fine for "what every agent
@@ -94,7 +94,7 @@ shadok's own development first, then the whole fleet.
 - **Toggle — OFF by default.** A config flag `ledgerEnabled` (default `false`,
   like `autoUpdate`/`permissionMode`). The **reflex paragraph is appended to the
   pilot prompt only when enabled** — a behavioural change that reaches every
-  agent (BioSense included) must be opt-in. The skill itself may be seeded
+  agent on the instance must be opt-in. The skill itself may be seeded
   regardless (a tool with no instruction is inert). Flip on → reload agents.
 
 **Activation & companions.** The pilot prompt is applied at spawn
@@ -104,8 +104,8 @@ usable, shipped as their own small PRs:
 - a **self-reload skill** (globally seeded), so an agent — or a lead — can
   reload itself to pick up a new prompt/skill;
 - fixing a pre-existing gap found while scoping this: **`shadok-ai-agents` is
-  not globally seeded** (unlike secrets/scheduler), so agents outside the shadok
-  repo (all of BioSense) don't have `pilotctl` — a `seedAgentsSkill()` twin.
+  not globally seeded** (unlike secrets/scheduler), so agents working outside
+  the shadok repo don't have `pilotctl` — a `seedAgentsSkill()` twin.
 
 **Explicitly OUT of the MVP** (phase 2, added only on evidence): the scoped
 freshness *pin* (recent resolutions per domain, for the conversational case),

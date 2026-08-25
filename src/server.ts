@@ -3088,7 +3088,7 @@ seedLedgerSkill();
 // Install/refresh the bundled "shadok-ai-agents" skill so an agent in ANY repo
 // (not just this one) can spawn/pilot other agents via pilotctl. It used to live
 // only in the repo's .claude/skills — a project skill invisible to agents working
-// elsewhere (e.g. a BioSense lead told to delegate). Now seeded globally like the
+// elsewhere (e.g. a lead in another repo told to delegate). Now seeded globally like the
 // others; only SKILL.md + the client ship, never the test dir.
 function seedAgentsSkill(): void {
   try {
