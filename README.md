@@ -12,7 +12,7 @@ scheduled prompts, and quota gauges.
 npx shadok-ai
 ```
 
-Then open **http://localhost:3789**.
+It **opens your browser** for you once the server is listening — at the port it actually landed on, which is not always 3789 (a busy port walks to the next free one). Only on the launch you asked for: an auto-update respawn never pops a tab. Skipped where it would make no sense — in a container, over SSH, or on a Linux box with no display — and `--no-open` turns it off.
 
 **Prerequisites:** Node ≥ 20. shadok-ai drives the
 [`claude`](https://claude.com/claude-code) CLI on **your** Claude subscription —
@@ -33,6 +33,7 @@ Enter to skip; you can add it later from the web UI).
 |---|---|
 | `--port, -p <n>` | HTTP/WS port (default 3789; falls back to the next free one) |
 | `--no-telegram` | web-only; don't prompt for or use a bot token |
+| `--no-open` | don't open the browser on launch |
 | `--password <p>` | require this password to open the GUI (stored in config) |
 | `--version, -v` · `--help, -h` | version / help |
 

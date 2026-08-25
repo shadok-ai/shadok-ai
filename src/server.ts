@@ -30,6 +30,7 @@ import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-a
 import { starCount } from "./stars.js";
 import { ensureFirstAgent } from "./first-agent.js";
 import { ensureSshIdentity } from "./ssh.js";
+import { openBrowser } from "./open-browser.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -3032,6 +3033,10 @@ server.listen(port, HOST, () => {
   // without its lead agent is a far smaller problem than a boot that hangs.
   // Adopt BEFORE the spawn check: an instance whose `general` predates the flag
   // must be recognised, not given a second one.
+  // Listening means ready enough: the page renders its empty state and picks
+  // the lead agent up when it appears a moment later. Waiting for the agent
+  // would delay the window for nothing.
+  openBrowser("http://localhost:" + port);
   adoptHomeChannel();
   setTimeout(() => void startFirstAgent(), 1500).unref?.();
 });

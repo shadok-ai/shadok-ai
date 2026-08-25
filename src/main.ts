@@ -44,6 +44,7 @@ async function main(): Promise<number> {
         "Usage: npx shadok-ai [options]\n" +
         "  --port, -p <n>   HTTP/WS port (default 3789)\n" +
         "  --no-telegram    run web-only; don't prompt for or use a bot token\n" +
+        "  --no-open        don't open the browser on launch\n" +
         "  --password <p>   require this password to open the GUI (stored in config)\n" +
         "  --version, -v    print version\n" +
         "  --help, -h       this help\n\n" +
@@ -93,6 +94,10 @@ async function main(): Promise<number> {
   if (guiPassword) childEnv.SHADOK_GUI_PASSWORD = guiPassword;
   else delete childEnv.SHADOK_GUI_PASSWORD;
 
+  // Open the browser on the first launch only. The supervisor respawns the
+  // server on every auto-update, and a cockpit that pops a tab open several
+  // times a day is a nuisance, not a convenience.
+  let openOnce = !args.noOpen;
   let current: ReturnType<typeof spawn> | null = null;
   // Ctrl-C / SIGTERM: bring the child down with us instead of orphaning it.
   let shuttingDown = false;
@@ -107,7 +112,10 @@ async function main(): Promise<number> {
   const deps: SupervisorDeps = {
     spawnServer: () =>
       new Promise<number>((resolve) => {
-        const child = spawn(process.execPath, [serverToRun()], { env: childEnv, stdio: "inherit" });
+        // The SERVER opens it: only it knows the port the walk landed on.
+        const env = openOnce ? { ...childEnv, SHADOK_OPEN: "1" } : childEnv;
+        openOnce = false;
+        const child = spawn(process.execPath, [serverToRun()], { env, stdio: "inherit" });
         current = child;
         child.on("exit", (code) => resolve(shuttingDown ? 0 : code ?? 0));
         child.on("error", () => resolve(1));
