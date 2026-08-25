@@ -227,20 +227,40 @@ function withTempHome(fn: (cwd: string, sid: string) => void) {
 test("loadHistory: real turns only, consecutive assistant blocks merged, meta/interrupt skipped", () => {
   withTempHome((cwd, sid) => {
     const turns = loadHistory(cwd, sid);
+    // The prompt, the two consecutive answers MERGED into one turn, then the
+    // cron-fired report as its OWN turn — a hidden cron prompt ran between them,
+    // so it must not glue onto the earlier answer (see the afterInternal test).
     assert.deepEqual(
       turns.map((t) => t.role),
-      ["user", "assistant"],
+      ["user", "assistant", "assistant"],
     );
     assert.equal(turns[0].text, "First request");
     assert.match(turns[1].text, /Answer one\.\n\nAnswer one, continued\./);
+    assert.doesNotMatch(turns[1].text, /Morning report/); // not merged onto the answer
+    assert.match(turns[2].text, /Morning report/);
   });
 });
 
 test("loadHistory: a NOTHING TO SHOW block leaves no trace in the replayed history", () => {
   withTempHome((cwd, sid) => {
     const turns = loadHistory(cwd, sid);
-    assert.equal(turns.length, 2); // no third turn born of the sentinel
-    assert.doesNotMatch(turns[1].text, /NOTHING TO SHOW/);
+    // The sentinel makes no turn of its own: the three turns are the prompt, the
+    // merged answer, and the cron report — none of them the sentinel.
+    assert.equal(turns.length, 3);
+    assert.ok(turns.every((t) => !/NOTHING TO SHOW/.test(t.text)));
+  });
+});
+
+test("loadHistory: a cron-fired answer keeps its own label, not merged onto the last", () => {
+  withTempHome((cwd, sid) => {
+    const turns = loadHistory(cwd, sid);
+    const report = turns.find((t) => t.role === "assistant" && /Morning report/.test(t.text));
+    assert.ok(report);
+    // A hidden cron prompt sat between this report and the previous answer, so
+    // it is a NEW turn (not merged) and carries the boundary flag the client
+    // uses to keep its own speaker label instead of gluing the two together.
+    assert.equal(report.afterInternal, true);
+    assert.doesNotMatch(report.text, /Answer one/);
   });
 });
 

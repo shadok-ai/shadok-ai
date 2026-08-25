@@ -4308,7 +4308,13 @@
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
           if (h.role === "user") addTurn(t, "user", "pilot", h.text, "hist", h.at);
-          else addTurn(t, "claude", "claude", h.text, "hist", h.at);
+          else {
+            const b = addTurn(t, "claude", "claude", h.text, "hist", h.at);
+            // A hidden prompt (cron / notification) ran before this turn: keep
+            // its own label instead of merging it onto the previous answer
+            // (same `.after-gap` boundary the live stream uses).
+            if (h.afterInternal) b.parentElement.classList.add("after-gap");
+          }
         }
         break;
       case "ready":
