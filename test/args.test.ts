@@ -3,7 +3,7 @@ import test from "node:test";
 import { parseArgs } from "../src/args.js";
 
 test("parseArgs: defaults", () => {
-  assert.deepEqual(parseArgs([]), { noTelegram: false, help: false, version: false });
+  assert.deepEqual(parseArgs([]), { noTelegram: false, noOpen: false, help: false, version: false });
 });
 
 test("parseArgs: --port / -p reads the next token as a number", () => {
@@ -19,9 +19,15 @@ test("parseArgs: flags", () => {
 
 test("parseArgs: unknown flags are ignored", () => {
   assert.deepEqual(parseArgs(["--wat", "--port", "5"]), {
-    noTelegram: false,
+    noTelegram: false, noOpen: false,
     help: false,
     version: false,
     port: 5,
   });
+});
+
+test("parseArgs: --no-open", () => {
+  // The escape hatch for someone who does not want a tab thrown at them.
+  assert.equal(parseArgs(["--no-open"]).noOpen, true);
+  assert.equal(parseArgs([]).noOpen, false);
 });
