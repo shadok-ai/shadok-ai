@@ -1212,6 +1212,22 @@ app.put("/profiles/prompt", (req, res) => {
     note: "applies at the agent's next restart — the prompt is passed at spawn",
   });
 });
+
+// An agent reloads ITSELF (the `shadok-reload` skill) to pick up a changed pilot
+// prompt or newly-seeded skills. Scoped by the per-session key, exactly like
+// /profiles/prompt: the public session id proves nothing. Respond BEFORE the
+// respawn — restartSession tears down the very process that made this call.
+app.post("/reload", (req, res) => {
+  const key = typeof req.body?.key === "string" ? req.body.key : "";
+  const id = key ? sessionForKey(key) : null;
+  if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  const s = sessions.get(id);
+  if (!s) return res.status(404).json({ error: "session not running" });
+  console.log(`reload: ${id.slice(0, 8)} — agent respawned itself`);
+  res.json({ ok: true, note: "respawning — resumes with new prompt/skills" });
+  void restartSession(s).catch(() => {});
+});
+
 app.delete("/profiles", (req, res) => {
   const name = String(req.query.name ?? req.body?.name ?? "").trim();
   if (name) removeProfile(name);
@@ -2962,6 +2978,25 @@ function seedSecretsSkill(): void {
   }
 }
 seedSecretsSkill();
+
+// Install/refresh the bundled "shadok-reload" skill so an agent can respawn
+// itself to pick up a changed pilot prompt or newly-seeded skills. Server-owned,
+// overwritten each boot — same contract as the skills above.
+function seedReloadSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "reload-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-reload");
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of ["SKILL.md", "reload.mjs"]) {
+      fs.copyFileSync(path.join(src, f), path.join(dst, f));
+    }
+    fs.chmodSync(path.join(dst, "reload.mjs"), 0o755);
+  } catch {
+    /* best effort — no self-reload skill just means a manual restart, never a crash */
+  }
+}
+seedReloadSkill();
 
 /** Run a package-manager install. Linux managers need root; if we aren't root,
  *  go through NON-interactive sudo so a password prompt fails fast rather than
