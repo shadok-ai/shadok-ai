@@ -4,6 +4,31 @@ import { idleStep, screenShowsWork, inputText, describeStuckScreen } from "./det
 
 const { Terminal } = xterm;
 
+/**
+ * Environment FORCED onto every `claude` this cockpit spawns, whatever the
+ * parent process happened to carry. Both transports apply it; keep them in
+ * step through this constant rather than by copying the string.
+ *
+ * Why it has to be asserted and not merely un-poisoned: shadok-ai reads all
+ * content from the `.jsonl` transcript (`src/tail.ts`), and uses the screen
+ * only for control. An agent that writes no transcript therefore runs, does
+ * the work, and says NOTHING — silent in the web chat, silent in Telegram,
+ * empty on reload. It is the same silent-loss class as invariant 7.
+ *
+ * Claude Code turns transcript writing off when it inherits
+ * CLAUDE_CODE_CHILD_SESSION, and it sets that marker itself on the environment
+ * it hands to its own tool subprocesses — so an agent that shells out to
+ * `claude` passes it on without anyone choosing to.
+ *
+ * Stripping the marker at spawn (below, and in TmuxPilot) still happens and
+ * still matters. This is the other half: subtraction assumes we have listed
+ * every name that can suppress a transcript, and it stops working in silence
+ * the day a new one appears. The assertion holds either way.
+ */
+export const FORCED_CLAUDE_ENV: Record<string, string> = {
+  CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1",
+};
+
 export interface PilotOptions {
   /** Path to the claude executable (default: "claude" from PATH). */
   claudePath?: string;
@@ -82,7 +107,10 @@ export class PtyPilot {
       cols: this.opts.cols,
       rows: this.opts.rows,
       cwd: this.opts.cwd ?? process.cwd(),
-      env: { ...env, TERM: "xterm-256color", ...this.opts.env },
+      // FORCED_CLAUDE_ENV goes LAST, after the profile's secrets: a transcript
+      // is what the cockpit is made of, so nothing a profile carries may switch
+      // it off, even by accident of naming.
+      env: { ...env, TERM: "xterm-256color", ...this.opts.env, ...FORCED_CLAUDE_ENV },
     });
     this.proc.onData((chunk) => {
       this.lastDataAt = Date.now();

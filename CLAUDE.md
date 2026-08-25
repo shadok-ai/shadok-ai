@@ -643,6 +643,34 @@ Auth section of `docs/architecture.md`).
     the `syncChannels` loop (client, so a stale/duplicate list never renders
     twice). `dedupById` is pure and tested.
 
+29. **The transcript is ASSERTED, not merely un-poisoned — a session that writes
+    none runs, works, and says nothing.** Every piece of content the cockpit
+    shows comes from the `.jsonl` (`src/tail.ts`); the screen is only ever used
+    for control. So an agent whose transcript is disabled is silent in the web
+    chat, silent in Telegram and empty on reload, while looking perfectly alive
+    in the engine room — the same silent-loss class as invariant 7, and worse,
+    because there is nothing to resume from afterwards.
+    Claude Code disables transcript writing when it inherits
+    `CLAUDE_CODE_CHILD_SESSION`, and it sets that marker **itself** on the
+    environment it hands to its own tool subprocesses. So the marker is not
+    something a careless operator exports: **any agent that shells out to
+    `claude` passes it on**, without anyone choosing to.
+    Both transports already strip `/^(CLAUDE|CLAUDECODE|AI_AGENT)/` at spawn and
+    that stays. It is not sufficient on its own for two reasons. Subtraction
+    assumes we have enumerated every name that can suppress a transcript, and it
+    stops working **in silence** the day a new one appears. And `TmuxPilot.start()`
+    skips the whole strip when it adopts an existing pane (`this.attached = true`,
+    invariant 25) — which is what makes an agent survive a server restart, and
+    also means a pane created wrong stays wrong forever, including across a
+    "Reload agent" that re-adopts it. `FORCED_CLAUDE_ENV` (`src/session.ts`) is
+    therefore applied **last** in both transports, after the profile's secrets, so
+    nothing a profile carries can switch it off even by accident of naming.
+    **The trap in verifying this: it does not reproduce under `claude -p`.** A
+    headless run writes its transcript with the marker set, so a `-p` test comes
+    back green and proves nothing. It was confirmed the only way that works — a
+    throwaway tmux session in interactive mode, where the marker alone produces
+    the "Transcript saving is off" footer and adding the flag removes it.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).
