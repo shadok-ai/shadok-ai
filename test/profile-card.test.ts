@@ -6,6 +6,7 @@ import {
   profileBlurb,
   profileBadges,
   defaultAgentName,
+  profileSaveBody,
   isManagedProfile,
   hasReadonlyPreset,
   applyReadonlyPreset,
@@ -154,4 +155,37 @@ test("isManagedProfile: the server-driven role is recognised", () => {
 test("isManagedProfile: everything else is pickable", () => {
   for (const n of ["Shadok-Boss", "Shadok-dev", "shadok-tweak", "", null, undefined])
     assert.equal(isManagedProfile(n), false, String(n));
+});
+
+// ── Ce qu'un enregistrement du panneau doit envoyer ──────────────────────
+test("saveBody: un profil SUIVI n'envoie pas de prompt", () => {
+  // Le champ est rempli avec le texte du build pour qu'on le VOIE. L'envoyer
+  // l'épinglerait : le rôle cesserait de suivre les évolutions du dépôt.
+  const b = profileSaveBody({ name: "Shadok-dev", prompt: "texte du build", deny: [], model: "" }, { tracked: true, forked: false });
+  assert.equal("systemPrompt" in b, false);
+  assert.equal(b.name, "Shadok-dev");
+});
+
+test("saveBody: suivi mais explicitement bifurqué → le prompt part", () => {
+  const b = profileSaveBody({ name: "d", prompt: "le mien", deny: [], model: "" }, { tracked: true, forked: true });
+  assert.equal(b.systemPrompt, "le mien");
+});
+
+test("saveBody: un profil déjà édité envoie toujours son prompt", () => {
+  const b = profileSaveBody({ name: "d", prompt: "le mien", deny: [], model: "" }, { tracked: false, forked: false });
+  assert.equal(b.systemPrompt, "le mien");
+});
+
+test("saveBody: un champ vidé sur un profil suivi ne vide pas le rôle", () => {
+  // Le bug qui a coûté quatre prompts : « Save » sur un formulaire vide
+  // enregistrait systemPrompt:"" et l'agent démarrait sans rôle.
+  const b = profileSaveBody({ name: "d", prompt: "", deny: [], model: "" }, { tracked: true, forked: false });
+  assert.equal("systemPrompt" in b, false);
+});
+
+test("saveBody: les autres champs passent toujours", () => {
+  const b = profileSaveBody({ name: "d", prompt: "x", deny: ["Bash(git push:*)"], model: "opus", secrets: ["K"] }, { tracked: true, forked: false });
+  assert.deepEqual(b.deny, ["Bash(git push:*)"]);
+  assert.equal(b.model, "opus");
+  assert.deepEqual(b.secrets, ["K"]);
 });

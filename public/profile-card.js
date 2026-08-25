@@ -119,3 +119,27 @@ export const MANAGED_PROFILES = ["Shadok-Tweak"];
 export function isManagedProfile(name) {
   return MANAGED_PROFILES.includes(String(name ?? "").trim());
 }
+
+/**
+ * What the Profiles panel must PUT when saving.
+ *
+ * A tracked role stores no prompt: the build resolves it at spawn, so every
+ * later improvement reaches it. The panel still shows the text — you want to
+ * read the role you are about to run — but showing it must not persist it:
+ * sending `systemPrompt` back would pin today's wording and stop the tracking,
+ * and sending an EMPTY field would leave the agent with no role at all. That is
+ * how four starter prompts turned into empty strings.
+ *
+ * So the key is omitted unless the user deliberately forked the text. The server
+ * already distinguishes an absent key (keep tracking) from a string (own it).
+ */
+export function profileSaveBody(form, state) {
+  const body = {
+    name: form.name,
+    deny: form.deny ?? [],
+    model: form.model ?? "",
+    secrets: form.secrets ?? [],
+  };
+  if (!state.tracked || state.forked) body.systemPrompt = form.prompt ?? "";
+  return body;
+}

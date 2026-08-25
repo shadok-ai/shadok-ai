@@ -670,6 +670,8 @@
      secret's own row, not only in a header paragraph. */
   /* Un profil livré dont le prompt a été réécrit : les mises à jour ne
      l'atteindront plus, il faut que ça se voie. */
+  /* Un prompt suivi se lit mais ne s'édite pas : le griser dit pourquoi. */
+  #profRole.tracked { opacity: .75; border-style: dashed; }
   .prof-drift { margin-left: 8px; font-size: 11px; color: var(--amber); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Profile picker for a running agent (the tab's context menu). */
@@ -1701,7 +1703,9 @@
     <hr style="border:none;border-top:1px solid rgba(255,255,255,.1);margin:12px 0">
     <div class="sec-head"><strong id="profEditTitle">New profile</strong></div>
     <div class="field"><span class="label">Name</span><input id="profName" placeholder="marketing" autocomplete="off" spellcheck="false"></div>
-    <div class="field"><span class="label">Role (system prompt)</span><textarea id="profRole" rows="3" placeholder="You are the paid-marketing agent for this product…"></textarea></div>
+    <div class="field"><span class="label">Role (system prompt)</span><textarea id="profRole" rows="3" placeholder="You are the paid-marketing agent for this product…"></textarea>
+      <span class="check-hint" id="profTracked" hidden>📎 Tracked — this is the prompt shipped with the build, and it updates itself. <button type="button" class="linkish" id="profFork">Edit it anyway</button></span>
+    </div>
     <label class="check"><input type="checkbox" id="profReadonly"><span>Read-only preset <span class="check-hint">— deny git commit/push/add/reset/rebase/merge/checkout</span></span></label>
     <div class="field"><span class="label">Deny (one per line)</span><textarea id="profDeny" rows="2" placeholder="Bash(git commit:*)"></textarea></div>
     <div class="field"><span class="label">Model (optional)</span><input id="profModel" placeholder="claude-opus-4-8" autocomplete="off" spellcheck="false"></div>
@@ -1916,7 +1920,7 @@
     profileBadges,
     defaultAgentName,
     hasReadonlyPreset,
-    applyReadonlyPreset, isManagedProfile } from "/profile-card.js";
+    applyReadonlyPreset, isManagedProfile, profileSaveBody } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
   import { echoAuthor } from "/echo-author.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
@@ -1930,6 +1934,7 @@
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
+  window.profileSaveBody = profileSaveBody;
   window.isManagedProfile = isManagedProfile;
   window.hasReadonlyPreset = hasReadonlyPreset;
   window.applyReadonlyPreset = applyReadonlyPreset;
@@ -5686,10 +5691,27 @@
       ul.appendChild(li);
     }
   }
+  /** Le profil en cours d'édition suit-il le build, et l'a-t-on bifurqué ? */
+  let editTracked = false, editForked = false;
+
+  /** Le champ Role suit l'état : suivi → lecture seule, bifurqué → éditable. */
+  function syncTrackedPrompt() {
+    const role = $("profRole"), note = $("profTracked");
+    const locked = editTracked && !editForked;
+    role.readOnly = locked;
+    role.classList.toggle("tracked", locked);
+    note.hidden = !locked;
+  }
+
   function fillProfileForm(p) {
     $("profEditTitle").textContent = "Edit: " + p.name;
     $("profName").value = p.name;
-    $("profRole").value = p.systemPrompt || "";
+    // Un rôle suivi ne stocke pas son texte : on affiche celui que le build
+    // résout, pour qu'on puisse LIRE le rôle qu'on s'apprête à lancer.
+    editTracked = p.origin === "tracked";
+    editForked = false;
+    $("profRole").value = (editTracked ? p.effectivePrompt : p.systemPrompt) || "";
+    syncTrackedPrompt();
     $("profDeny").value = (p.deny || []).join("\n");
     $("profModel").value = p.model || "";
     syncReadonlyBox();   // the box follows the real deny, no longer stuck at false
@@ -5697,6 +5719,7 @@
     renderProfSecrets();
   }
   function clearProfileForm() {
+    editTracked = false; editForked = false;
     $("profEditTitle").textContent = "New profile";
     $("profName").value = ""; $("profRole").value = ""; $("profDeny").value = ""; $("profModel").value = "";
     $("profReadonly").checked = false; editSecretRefs = [];   // deny area cleared just above
@@ -5741,16 +5764,24 @@
   $("profDeny").addEventListener("input", syncReadonlyBox);
   $("profSave").addEventListener("click", async () => {
     const name = $("profName").value.trim(); if (!name) return alert("Name required.");
-    const body = {
-      name,
-      systemPrompt: $("profRole").value,
-      deny: $("profDeny").value.split("\n").map((s) => s.trim()).filter(Boolean),
-      model: $("profModel").value.trim(),
-      secrets: editSecretRefs,   // referenced vault NAMES
-    };
+    // profileSaveBody OMET systemPrompt tant que le rôle est suivi et non
+    // bifurqué : le renvoyer épinglerait le texte du jour, et renvoyer un champ
+    // vide laisserait l'agent sans rôle. C'est ce qui a vidé quatre profils.
+    const body = window.profileSaveBody(
+      {
+        name,
+        prompt: $("profRole").value,
+        deny: $("profDeny").value.split("\n").map((s) => s.trim()).filter(Boolean),
+        model: $("profModel").value.trim(),
+        secrets: editSecretRefs,   // referenced vault NAMES
+      },
+      { tracked: editTracked, forked: editForked },
+    );
     await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
     await loadProfilesInto(); renderProfilesList(); clearProfileForm();
   });
+  // Bifurquer = assumer le texte : à partir de là il est à toi et ne suivra plus.
+  $("profFork").addEventListener("click", () => { editForked = true; syncTrackedPrompt(); $("profRole").focus(); });
   $("profReset").addEventListener("click", clearProfileForm);
   /** Opens the Profiles panel, prefilled on `p` when coming from a card's pencil. */
   async function openProfilesPanel(p) {
