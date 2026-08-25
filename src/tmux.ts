@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { idleStep, screenShowsWork, inputText, describeStuckScreen, nextScreenDelay, SCREEN_FAST_MS } from "./detect.js";
-import { windowMs } from "./session.js";
+import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
 /**
@@ -103,7 +103,10 @@ export class TmuxPilot {
       // Repo secrets → KEY=VALUE assignments for the `env` prefix (each token is
       // single-quoted below, so values with spaces/specials are safe).
       const secretEnv = Object.entries(this.opts.env ?? {}).map(([k, v]) => `${k}=${v}`);
-      const cmd = ["env", ...unset, "TERM=xterm-256color", ...secretEnv, bin, ...(this.opts.args ?? [])]
+      // After secretEnv on purpose — `env` applies assignments left to right, so
+      // the last one wins and a profile cannot switch off transcript writing.
+      const forced = Object.entries(FORCED_CLAUDE_ENV).map(([k, v]) => `${k}=${v}`);
+      const cmd = ["env", ...unset, "TERM=xterm-256color", ...secretEnv, ...forced, bin, ...(this.opts.args ?? [])]
         .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
         .join(" ");
       tmux([
