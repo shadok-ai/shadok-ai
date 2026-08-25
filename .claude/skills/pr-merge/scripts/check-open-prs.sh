@@ -6,8 +6,8 @@
 # zero tokens.
 #
 # The target is NAMED explicitly (--repo), not inferred from a `cd`: an earlier
-# version did `cd "$HOME/projects/shadok-ai" || exit 0`, and the day $HOME went
-# from /Users/alexandrecognard to /root the cd failed — empty output, rc=0, a
+# version did `cd "$HOME/projects/shadok-ai" || exit 0`, and the day $HOME moved
+# (a container recreate is enough) the cd failed — empty output, rc=0, a
 # guard that looked healthy while watching nothing. A silent guard and a quiet
 # repository must stay distinguishable.
 #
@@ -40,7 +40,7 @@ repo=shadok-ai/shadok-ai
 # Under /root/.shadok-ai (the mounted volume), never /Users/... : only /root/.claude
 # and /root/.shadok-ai survive a container recreate. The scripts themselves lived
 # under /Users once and were wiped on 2026-08-10, taking every guard down at once.
-state_file="/root/.shadok-ai/checks/pr-open.state"
+state_file="$HOME/.shadok-ai/checks/pr-open.state"
 
 rows=$(gh pr list --repo "$repo" --state open --limit 50 \
     --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository \
@@ -80,9 +80,18 @@ printf '%s\n' "$rows" | awk -F'\t' -v state="$state_file" '
 # Only the LAST run matters, and only while it is failing: an old failure that a
 # later run fixed is history, not news. Reported once per failing run id, so a
 # broken release does not re-wake the agent every minute.
-pub_state="/root/.shadok-ai/checks/publish.state"
-gap_state="/root/.shadok-ai/checks/publish-gap.state"
-repo_dir="/Users/alexandrecognard/projects/shadok-ai"
+pub_state="$HOME/.shadok-ai/checks/publish.state"
+gap_state="$HOME/.shadok-ai/checks/publish-gap.state"
+# The checkout to read history from. Derived from this script's own location
+# (<repo>/.claude/skills/pr-merge/scripts/), so it follows the repo instead of
+# naming one machine's home — the very trap this file's header describes, which
+# a hardcoded absolute path reproduced. SHADOK_REPO_DIR overrides it. No git
+# repo, no news: exit 0 rather than guess.
+repo_dir=${SHADOK_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." 2>/dev/null && pwd)}
+# `git rev-parse`, not `[ -d .git ]`: inside a WORKTREE .git is a FILE, so the
+# directory test would fail and this guard would go silent — the exact failure
+# the header above describes.
+[ -n "$repo_dir" ] && git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1 || exit 0
 pub=$(gh api repos/shadok-ai/shadok-ai/actions/workflows/publish.yml/runs \
         --jq '.workflow_runs[0] | select(.status=="completed" and .conclusion!="success")
               | "\(.id)\t\(.conclusion)\t\(.display_title)"' 2>/dev/null) || exit 0
