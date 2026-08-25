@@ -2971,7 +2971,16 @@ wss.on("connection", (ws: WebSocket) => {
 migrateTgBindings();
 // Seed the starter agent profiles (Shadok-dev / -Marketing / -Support) on a
 // fresh install, when the user has none yet.
-seedDefaultProfiles();
+// Seeds the starter roles a fresh instance has none of — AND the ones a later
+// release added, which an existing instance would otherwise never receive: the
+// old all-or-nothing seed bailed as soon as the vault held anything. A role the
+// user deleted stays deleted (profiles-declined.json).
+try {
+  const added = seedDefaultProfiles();
+  if (added.length) console.log(`profiles: installed missing starter roles — ${added.join(", ")}`);
+} catch {
+  /* a malformed profiles.json must never stop the boot */
+}
 // Existing instances stored the starter prompts verbatim on their first boot,
 // so no later release could reach them. Drop the ones that still match what we
 // ship: identical today, current from now on. An edited prompt is the user's

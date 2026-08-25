@@ -139,6 +139,25 @@ export function envVarsNote(names: string[]): string {
   );
 }
 
+/** Shipped roles the user deleted on purpose. Kept beside the vault rather than
+ *  inside it: profiles.json is an ARRAY of profiles, with nowhere to put a name
+ *  that is deliberately absent. */
+const DECLINED_FILE = path.join(os.homedir(), ".shadok-ai", "profiles-declined.json");
+
+export function loadDeclined(): string[] {
+  try {
+    const v = JSON.parse(fs.readFileSync(DECLINED_FILE, "utf8"));
+    return Array.isArray(v) ? v.filter((n) => typeof n === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveDeclined(list: string[]): void {
+  fs.mkdirSync(path.dirname(DECLINED_FILE), { recursive: true });
+  fs.writeFileSync(DECLINED_FILE, JSON.stringify(list, null, 2), { mode: 0o600 });
+}
+
 export function loadProfiles(): Profile[] {
   try {
     const v = JSON.parse(fs.readFileSync(FILE, "utf8"));
@@ -167,9 +186,15 @@ export function getProfile(name: string): Profile | undefined {
  * the build's prompt (`effectiveProfile` resolves it at spawn), so an instance
  * installed today and one installed a month ago run the same role.
  */
-export function seedDefaultProfiles(): void {
-  if (loadProfiles().length) return;
-  saveProfiles(DEFAULT_PROFILES.map(({ systemPrompt: _tracked, ...rest }) => rest as Profile));
+export function seedDefaultProfiles(): string[] {
+  const stored = loadProfiles();
+  const missing = seedMissingPlan(DEFAULT_PROFILES, stored.map((p) => p.name), loadDeclined());
+  if (!missing.length) return [];
+  const add = DEFAULT_PROFILES.filter((p) => missing.includes(p.name)).map(
+    ({ systemPrompt: _tracked, ...rest }) => rest as Profile,
+  );
+  saveProfiles([...stored, ...add]);
+  return missing;
 }
 
 export function profileNames(): string[] {
@@ -180,10 +205,16 @@ export function upsertProfile(p: Profile): void {
   const list = loadProfiles().filter((x) => x.name !== p.name);
   list.push(p);
   saveProfiles(list);
+  // Le recréer retire le refus : un choix explicite ne doit pas laisser le rôle
+  // écarté en silence par les versions suivantes.
+  const declined = loadDeclined();
+  if (declined.includes(p.name)) saveDeclined(declineList(declined, p.name, "keep"));
 }
 
 export function removeProfile(name: string): void {
   saveProfiles(loadProfiles().filter((p) => p.name !== name));
+  // Sans cette trace, seedMissingProfiles le ressusciterait au prochain boot.
+  saveDeclined(declineList(loadDeclined(), name, "remove"));
 }
 
 // ── Pure cores (unit-tested) ─────────────────────────────────────────────
@@ -395,4 +426,44 @@ export function adoptTracking(list: Profile[]): { profiles: Profile[]; adopted: 
 /** The starter profile this build ships under `name`, if any. */
 export function shippedProfile(name: string): Profile | undefined {
   return DEFAULT_PROFILES.find((p) => p.name === name);
+}
+
+/**
+ * Which shipped roles are missing from this vault and should be installed.
+ *
+ * `seedDefaultProfiles` was all-or-nothing — it bailed the moment the vault
+ * held anything — so a role added in a later release NEVER reached an existing
+ * instance. Adding one is cheap now that prompts are tracked: only guardrails
+ * are stored, and the text follows the build.
+ *
+ * `declined` is what makes it bearable: without it a role you deleted would
+ * come back at the next boot, and we auto-update often enough that deleting
+ * would be impossible in practice.
+ */
+export function seedMissingPlan(
+  shipped: readonly Profile[],
+  storedNames: readonly string[],
+  declined: readonly string[],
+): string[] {
+  return shipped
+    .filter((p) => !storedNames.includes(p.name) && !declined.includes(p.name))
+    .map((p) => p.name);
+}
+
+/**
+ * The declined list after removing or (re-)creating `name`.
+ *
+ * Deleting a SHIPPED role records a refusal; creating it again withdraws it —
+ * an explicit choice must not leave the role silently skipped by later
+ * releases. A role the user invented is never listed: nothing would re-seed it.
+ */
+export function declineList(
+  declined: readonly string[],
+  name: string,
+  action: "remove" | "keep",
+  shippedNames: readonly string[] = DEFAULT_PROFILES.map((p) => p.name),
+): string[] {
+  if (action === "keep") return declined.filter((n) => n !== name);
+  if (!shippedNames.includes(name) || declined.includes(name)) return [...declined];
+  return [...declined, name];
 }
