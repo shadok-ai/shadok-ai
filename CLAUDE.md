@@ -226,7 +226,11 @@ survive, exactly as `withManagedPrompt` does for the managed role.
 scoped by `SHADOK_SESSION_KEY` like `/profiles/prompt`, used by the
 `shadok-reload` skill), `/ledger` (POST — flip the ledger reflex from the GUI;
 **restarts all agents** when it changes so the reflex lands), `/restart-all`
-(POST — respawn every agent, the version-menu button), `/login`,
+(POST — respawn every agent, the version-menu button). Both restart **one at a
+time, in the background** (`restartAllSessions` returns at once): a concurrent
+herd of `claude --resume` trips the upstream OAuth refresh-token race (~30+
+agents) and spikes resources — the manual single reload is safe only because it
+is isolated. `/login`,
 `/vendor/marked.js`,
 `/paste` (POST — ANY file pasted into the composer, not just images; lands
 in the same `MEDIA_DIR` as Telegram attachments, keeps the original name via

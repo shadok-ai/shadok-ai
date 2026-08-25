@@ -1416,27 +1416,41 @@ app.post("/autoupdate", (req, res) => {
   res.json({ autoUpdate });
 });
 
-/** Respawn every running agent (a `--resume`, so history is kept). Returns the
- *  count. Used by /restart-all and by flipping the ledger toggle. */
-async function restartAllSessions(): Promise<number> {
+/**
+ * Respawn every running agent (a `--resume`, so history is kept) — ONE AT A TIME,
+ * in the BACKGROUND. Returns how many will be restarted, immediately.
+ *
+ * Concurrency here is the bug this replaces: a herd of simultaneous
+ * `claude --resume` trips the upstream OAuth refresh-token race (single-use
+ * refresh tokens, concurrent processes, biting at ~30+ agents) and spikes
+ * resources, leaving agents flapping/stuck. The manual single reload is safe
+ * precisely because it is isolated — so we serialize, matching it. And we do NOT
+ * await the loop: a caller (the toggle, the button) must not hang for minutes
+ * while a big fleet cycles.
+ */
+function restartAllSessions(): number {
   const live = [...sessions.values()];
-  await Promise.all(live.map((s) => restartSession(s).catch(() => {})));
+  void (async () => {
+    for (const s of live) await restartSession(s).catch(() => {});
+  })();
   return live.length;
 }
 
 // Restart every agent from the GUI (they resume with history). Behind the same
-// password gate as the other version-menu controls.
-app.post("/restart-all", async (_req, res) => {
-  const restarted = await restartAllSessions();
-  console.log(`restart-all: respawned ${restarted} agent(s)`);
+// password gate as the other version-menu controls. Returns at once; the agents
+// cycle one by one in the background.
+app.post("/restart-all", (_req, res) => {
+  const restarted = restartAllSessions();
+  console.log(`restart-all: respawning ${restarted} agent(s), one at a time`);
   res.json({ restarted });
 });
 
 // Toggle the shared-ledger reflex from the GUI. Persisted. The reflex is fixed
 // at spawn, so flipping it only lands once agents respawn — so we respawn them
-// all here (when it actually changed), making the toggle "just work". Default
+// all (when it actually changed), making the toggle "just work". Serial and in
+// the background (see restartAllSessions), so the request never hangs. Default
 // OFF, opt-in per instance.
-app.post("/ledger", async (req, res) => {
+app.post("/ledger", (req, res) => {
   const next = !!req.body?.enabled;
   const changed = next !== ledgerEnabled;
   ledgerEnabled = next;
@@ -1444,7 +1458,7 @@ app.post("/ledger", async (req, res) => {
   cfg.ledgerEnabled = ledgerEnabled;
   saveConfig(cfg);
   broadcastAll(versionMessage());
-  const restarted = changed ? await restartAllSessions() : 0;
+  const restarted = changed ? restartAllSessions() : 0;
   res.json({ ledgerEnabled, restarted });
 });
 
