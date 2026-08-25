@@ -1416,16 +1416,36 @@ app.post("/autoupdate", (req, res) => {
   res.json({ autoUpdate });
 });
 
-// Toggle the shared-ledger reflex from the GUI. Persisted; takes effect at each
-// agent's NEXT respawn (the pilot prompt is fixed at spawn) — the version badge
-// wording says so. Default OFF, opt-in per instance.
-app.post("/ledger", (req, res) => {
-  ledgerEnabled = !!req.body?.enabled;
+/** Respawn every running agent (a `--resume`, so history is kept). Returns the
+ *  count. Used by /restart-all and by flipping the ledger toggle. */
+async function restartAllSessions(): Promise<number> {
+  const live = [...sessions.values()];
+  await Promise.all(live.map((s) => restartSession(s).catch(() => {})));
+  return live.length;
+}
+
+// Restart every agent from the GUI (they resume with history). Behind the same
+// password gate as the other version-menu controls.
+app.post("/restart-all", async (_req, res) => {
+  const restarted = await restartAllSessions();
+  console.log(`restart-all: respawned ${restarted} agent(s)`);
+  res.json({ restarted });
+});
+
+// Toggle the shared-ledger reflex from the GUI. Persisted. The reflex is fixed
+// at spawn, so flipping it only lands once agents respawn — so we respawn them
+// all here (when it actually changed), making the toggle "just work". Default
+// OFF, opt-in per instance.
+app.post("/ledger", async (req, res) => {
+  const next = !!req.body?.enabled;
+  const changed = next !== ledgerEnabled;
+  ledgerEnabled = next;
   const cfg = loadConfig();
   cfg.ledgerEnabled = ledgerEnabled;
   saveConfig(cfg);
   broadcastAll(versionMessage());
-  res.json({ ledgerEnabled });
+  const restarted = changed ? await restartAllSessions() : 0;
+  res.json({ ledgerEnabled, restarted });
 });
 
 /**

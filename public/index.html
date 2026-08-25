@@ -188,6 +188,10 @@
   #verMenu .vm-label { color: #888; }
   #verMenu .vm-check { display: flex; align-items: center; gap: 6px; margin-top: 9px; cursor: pointer; }
   #verMenu .vm-hint { color: #888; font-size: 10px; margin-top: 7px; line-height: 1.4; }
+  #verMenu .vm-btn { margin-top: 10px; width: 100%; padding: 6px 10px; font-size: 11px; cursor: pointer;
+    color: var(--text, #e8e8ea); background: transparent; border: 1px solid var(--line, #3a3d42); border-radius: 6px; }
+  #verMenu .vm-btn:hover { border-color: var(--amber, #d0a000); }
+  #verMenu .vm-btn:disabled { opacity: 0.5; cursor: default; }
   /* Per-tab context menu (right-click) — same skin as #verMenu, but placed at
      the cursor. Home for the per-channel actions. */
   #tabMenu {
@@ -1524,6 +1528,10 @@
   <div class="vm-hint" id="vmChannelHint"></div>
   <label class="vm-check"><input type="checkbox" id="acceptEditsChk"><span>Auto mode</span></label>
   <div class="vm-hint" id="vmModeHint"></div>
+  <label class="vm-check"><input type="checkbox" id="ledgerChk"><span>Shared ledger</span></label>
+  <div class="vm-hint" id="vmLedgerHint"></div>
+  <button class="vm-btn" id="restartAllBtn" type="button">Restart all agents</button>
+  <div class="vm-hint" id="vmRestartHint">Respawn every agent (they resume with history).</div>
 </div>
 
 <div id="secretsOverlay" class="overlay" hidden>
@@ -4116,6 +4124,8 @@
   const autoUpdateChk = document.getElementById("autoUpdateChk");
   const updChannelSel = document.getElementById("updChannelSel");
   const acceptEditsChk = document.getElementById("acceptEditsChk");
+  const ledgerChk = document.getElementById("ledgerChk");
+  const restartAllBtn = document.getElementById("restartAllBtn");
 
   function verIsNewer(cand, cur) {
     const p = (v) => String(v || "0").replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
@@ -4168,6 +4178,10 @@
       : (m.permissionMode && m.permissionMode !== "default"
            ? "Mode: " + m.permissionMode + "."
            : "New agents ask before each action.");
+    ledgerChk.checked = !!m.ledgerEnabled;
+    document.getElementById("vmLedgerHint").textContent = m.ledgerEnabled
+      ? "Agents verify a status before re-raising it. Toggling restarts all agents."
+      : "Off — agents don't consult the shared ledger. Toggling restarts all agents.";
   }
 
   function toggleVerMenu(show) {
@@ -4279,6 +4293,33 @@
       // affects agents started after this — running ones keep their mode.
     } catch {
       acceptEditsChk.checked = !on; // revert on failure
+    }
+  });
+  ledgerChk.addEventListener("change", async () => {
+    const enabled = ledgerChk.checked;
+    try {
+      // The server flips the flag AND respawns every agent so the reflex takes
+      // effect at once (the pilot prompt is fixed at spawn); state echoes over WS.
+      await fetch("/ledger", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+    } catch {
+      ledgerChk.checked = !enabled; // revert on failure
+    }
+  });
+  restartAllBtn.addEventListener("click", async () => {
+    if (!confirm("Restart all agents? Each respawns and resumes with its history.")) return;
+    restartAllBtn.disabled = true;
+    document.getElementById("vmRestartHint").textContent = "Restarting…";
+    try {
+      const r = await (await fetch("/restart-all", { method: "POST" })).json();
+      document.getElementById("vmRestartHint").textContent = "Restarted " + (r.restarted ?? 0) + " agent(s).";
+    } catch {
+      document.getElementById("vmRestartHint").textContent = "Restart failed.";
+    } finally {
+      restartAllBtn.disabled = false;
     }
   });
 
