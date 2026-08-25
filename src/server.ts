@@ -1937,7 +1937,7 @@ async function attachPilot(s: Live): Promise<void> {
       // `at` = when the block was WRITTEN, not when it was read (see
       // TailEvent): the client shows it as is instead of dating everything on
       // reception.
-      broadcast(s, { type: "stream-text", text: e.text, at: e.at });
+      broadcast(s, { type: "stream-text", text: e.text, at: e.at, afterInternal: e.afterInternal });
     }
     else if (e.kind === "tool")
       broadcast(s, { type: "stream-tool", id: e.id, name: e.name, summary: e.summary });
