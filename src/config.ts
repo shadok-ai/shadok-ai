@@ -31,6 +31,14 @@ export interface Config {
    */
   autoUpdate?: boolean;
   /**
+   * Opt-in to the shared-ledger reflex (docs/.../2026-08-25-shared-ledger-design).
+   * OFF by default: it appends a "verify status before you assert/act" paragraph
+   * to EVERY agent's pilot prompt, a behavioural change that must be opt-in.
+   * Falls back to the SHADOK_LEDGER env var when unset. Takes effect at an
+   * agent's next (re)spawn.
+   */
+  ledgerEnabled?: boolean;
+  /**
    * Which release stream to follow: "alpha" (every merge) or "beta" (only a
    * promoted version). Absent means "beta" — an instance that predates this
    * setting keeps updating, just on the calmer channel.

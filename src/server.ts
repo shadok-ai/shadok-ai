@@ -1324,6 +1324,10 @@ const VERSION_CHECK_MIN = Number(process.env.SHADOK_VERSION_CHECK_MIN ?? 15);
 // display poll runs regardless of this flag.
 let autoUpdate: boolean =
   loadConfig().autoUpdate ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_AUTOUPDATE ?? "");
+// Shared-ledger reflex: OFF unless opted in (config, else SHADOK_LEDGER env).
+// Gates the pilot-prompt paragraph; a live agent picks it up at next respawn.
+let ledgerEnabled: boolean =
+  loadConfig().ledgerEnabled ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_LEDGER ?? "");
 // Which release stream this instance follows: "alpha" (every merge) or "beta"
 // (promoted versions only). Absent config → beta, so an instance that predates
 // the setting keeps updating, just on the calmer channel.
@@ -1350,7 +1354,7 @@ function broadcastAll(msg: object): void {
  *  whether auto-update is armed, and the spawn permission mode. */
 /** What both /version and the WS `version` message report. */
 function versionState() {
-  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, permissionMode, updateChannel };
+  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel };
 }
 
 function versionMessage(): object {
@@ -1410,6 +1414,38 @@ app.post("/autoupdate", (req, res) => {
   broadcastAll(versionMessage());
   if (autoUpdate && latestKnown && isNewer(latestKnown, OWN_VERSION)) void triggerUpdate(latestKnown);
   res.json({ autoUpdate });
+});
+
+/** Respawn every running agent (a `--resume`, so history is kept). Returns the
+ *  count. Used by /restart-all and by flipping the ledger toggle. */
+async function restartAllSessions(): Promise<number> {
+  const live = [...sessions.values()];
+  await Promise.all(live.map((s) => restartSession(s).catch(() => {})));
+  return live.length;
+}
+
+// Restart every agent from the GUI (they resume with history). Behind the same
+// password gate as the other version-menu controls.
+app.post("/restart-all", async (_req, res) => {
+  const restarted = await restartAllSessions();
+  console.log(`restart-all: respawned ${restarted} agent(s)`);
+  res.json({ restarted });
+});
+
+// Toggle the shared-ledger reflex from the GUI. Persisted. The reflex is fixed
+// at spawn, so flipping it only lands once agents respawn — so we respawn them
+// all here (when it actually changed), making the toggle "just work". Default
+// OFF, opt-in per instance.
+app.post("/ledger", async (req, res) => {
+  const next = !!req.body?.enabled;
+  const changed = next !== ledgerEnabled;
+  ledgerEnabled = next;
+  const cfg = loadConfig();
+  cfg.ledgerEnabled = ledgerEnabled;
+  saveConfig(cfg);
+  broadcastAll(versionMessage());
+  const restarted = changed ? await restartAllSessions() : 0;
+  res.json({ ledgerEnabled, restarted });
 });
 
 /**
@@ -1548,6 +1584,24 @@ function pilotPrompt(): string | null {
 }
 
 /**
+ * The shared-ledger reflex, appended to the pilot prompt ONLY when `ledgerEnabled`
+ * is on. Kept OUT of pilot-prompt.md — which is always appended — precisely so it
+ * can be gated. Read once from context/ledger-reflex.md.
+ */
+const LEDGER_REFLEX_PATH = path.join(__dirname, "..", "context", "ledger-reflex.md");
+let ledgerReflexCache: string | null | undefined;
+function ledgerReflex(): string | null {
+  if (ledgerReflexCache === undefined) {
+    try {
+      ledgerReflexCache = fs.readFileSync(LEDGER_REFLEX_PATH, "utf8").trim() || null;
+    } catch {
+      ledgerReflexCache = null;
+    }
+  }
+  return ledgerReflexCache;
+}
+
+/**
  * The model SETTING this session runs with — the string that may carry the
  * `[1m]` suffix, not the resolved model name.
  *
@@ -1598,12 +1652,15 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   // must not promise the agent a variable that does not exist.
   const note = envVarsNote(Object.keys(secretEnv));
   const sp = pilotPrompt();
+  // Opt-in only: a live agent gains the reflex at its next (re)spawn.
+  const lr = ledgerEnabled ? ledgerReflex() : null;
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
     ...profileArgs(effectiveProfile(profile)),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
+    ...(lr ? ["--append-system-prompt", lr] : []),
   ];
   return USE_TMUX
     ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id })
@@ -2997,6 +3054,27 @@ function seedReloadSkill(): void {
   }
 }
 seedReloadSkill();
+
+// Install/refresh the bundled "shadok-ledger" skill so agents can verify a
+// status before asserting/acting, and record resolutions. Server-owned,
+// overwritten each boot — same contract as the skills above. Seeded regardless
+// of `ledgerEnabled`: a tool with no reflex is inert; the pilot-prompt gate is
+// what actually turns the behaviour on.
+function seedLedgerSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "ledger-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-ledger");
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of ["SKILL.md", "ledger.mjs", "ledger-core.mjs"]) {
+      fs.copyFileSync(path.join(src, f), path.join(dst, f));
+    }
+    fs.chmodSync(path.join(dst, "ledger.mjs"), 0o755);
+  } catch {
+    /* best effort — an absent skill just means no ledger, never a crash */
+  }
+}
+seedLedgerSkill();
 
 /** Run a package-manager install. Linux managers need root; if we aren't root,
  *  go through NON-interactive sudo so a password prompt fails fast rather than
