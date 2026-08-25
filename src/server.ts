@@ -468,7 +468,12 @@ function notifyParent(child: Live, report: Omit<ChildReport, "name" | "sessionId
   if (!channels.some((c) => c.sessionId === parentId)) return; // parent is gone
   // A child whose whole answer is the silence placeholder wakes nobody — the
   // same right to stay quiet a cron has.
-  if (report.kind === "done" && report.summary && isNothingToShow(report.summary)) return;
+  // A child whose whole answer is the silence placeholder wakes nobody. Both
+  // forms are checked: `silent` is the one that actually fires, since the tail
+  // drops the block before it can reach `summary`; the text check stays for a
+  // caller that passes a summary of its own.
+  if (report.kind === "done" && (report.silent || (report.summary && isNothingToShow(report.summary))))
+    return;
 
   const text = markAgentPrompt(
     notificationText(
@@ -1595,6 +1600,8 @@ interface Live {
   contextPct: number | null;
   /** The window this session's model setting asks for (see `windowForModel`). */
   contextWindow: number;
+  /** The last assistant block of this turn was the silence placeholder. */
+  lastTurnSilent: boolean;
   /** Stops the .jsonl tail loop (content streaming). */
   stopTail: (() => void) | null;
   /** The last text blocks ALREADY broadcast, so they are not offered again as
@@ -1867,6 +1874,7 @@ async function createSession(
     contextPct: pctFromUsage([...seededUsage.values()].pop(), contextWindow),
     stopTail: null,
     recentTexts: [],
+    lastTurnSilent: false,
     worktree,
     idleTimer: null,
     usage: seededUsage,
@@ -1904,7 +1912,14 @@ async function attachPilot(s: Live): Promise<void> {
   // text/tool block is broadcast as soon as Claude Code writes it — complete,
   // never truncated, at message granularity.
   s.stopTail = tailSession(sessionFilePath(cwd, id), (e) => {
+    if (e.kind === "silent") {
+      // The turn's answer was the placeholder. Recorded here because it is the
+      // only place that still sees it — the tail drops the block itself.
+      s.lastTurnSilent = true;
+      return;
+    }
     if (e.kind === "text") {
+      s.lastTurnSilent = false; // a real block: this turn has something to say
       // Remember BEFORE broadcasting: a question can follow immediately, and
       // its preface must not repeat this block.
       s.recentTexts.push(e.text);
@@ -2067,7 +2082,7 @@ async function finishTurn(s: Live) {
       maybeScheduleRetry(s);
       // As a CHILD: tell whoever launched this agent that it is done, with its
       // own last block as the summary — what it wrote to be read.
-      notifyParent(s, { kind: "done", summary: s.recentTexts[s.recentTexts.length - 1] });
+      notifyParent(s, { kind: "done", summary: s.recentTexts[s.recentTexts.length - 1], silent: s.lastTurnSilent });
     }
   } finally {
     s.busy = false;

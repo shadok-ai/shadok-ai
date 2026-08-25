@@ -81,7 +81,7 @@ test("isNothingToShow: the phrase inside a real sentence is NOT the sentinel", (
   assert.equal(isNothingToShow(""), false);
 });
 
-test("parseLine: a sentinel-only text block is dropped, the rest of the message survives", () => {
+test("parseLine: a sentinel-only text block never streams, but IS signalled", () => {
   const ev = parseLine(
     JSON.stringify({
       type: "assistant",
@@ -93,9 +93,13 @@ test("parseLine: a sentinel-only text block is dropped, the rest of the message 
       },
     }),
   );
+  // This used to assert ["tool"] alone. Dropping the block without a trace is
+  // what made the parent-notification guard unreachable: it reads the last
+  // STREAMED block, and this one never became one, so a quiet agent still woke
+  // its parent. The block still never reaches the chat — it is now reported.
   assert.deepEqual(
     ev.map((e) => e.kind),
-    ["tool"],
+    ["silent", "tool"],
   );
 });
 
@@ -198,4 +202,33 @@ test("scanUsage: last record per message id wins (streaming writes growing count
   assert.equal(map.get("m1")!.output, 9); // last record
   assert.equal(map.get("m2")!.input, 4);
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("a silence placeholder is SIGNALLED, not swallowed", () => {
+  // Dropping it without a trace is what made the parent guard unreachable: the
+  // notification reads the last STREAMED block, and this one never became one —
+  // so a quiet agent still woke its parent, with an empty message or with a
+  // stray earlier thought.
+  const line = JSON.stringify({
+    type: "assistant",
+    uuid: "u1",
+    message: { id: "m1", content: [{ type: "text", text: "NOTHING TO SHOW" }] },
+  });
+  const out = parseLine(line);
+  assert.equal(out.filter((e) => e.kind === "text").length, 0, "no text block reaches the chat");
+  assert.equal(out.filter((e) => e.kind === "silent").length, 1, "but the silence is reported");
+});
+
+test("an ordinary block still streams, and signals nothing", () => {
+  const line = JSON.stringify({
+    type: "assistant",
+    uuid: "u2",
+    message: { id: "m2", content: [{ type: "text", text: "Voici le rapport." }] },
+  });
+  const out = parseLine(line);
+  assert.equal(out.filter((e) => e.kind === "silent").length, 0);
+  assert.deepEqual(
+    out.filter((e) => e.kind === "text").map((e: any) => e.text),
+    ["Voici le rapport."],
+  );
 });
