@@ -1837,7 +1837,17 @@ async function restartSession(s: Live): Promise<void> {
   s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
   s.restarting = false;
-  broadcast(s, { type: "ready", sessionId: s.id, cwd: s.cwd, branch: s.worktree?.branch ?? null });
+  // `lastTurnMs`, like the connect-path `ready`: the transient "working" above
+  // started the client's turn timer, and this "ready" is what stops it — without
+  // the last turn's duration to freeze onto, the counter kept ticking after the
+  // reload instead of pausing.
+  broadcast(s, {
+    type: "ready",
+    sessionId: s.id,
+    cwd: s.cwd,
+    branch: s.worktree?.branch ?? null,
+    lastTurnMs: s.lastTurnMs,
+  });
   broadcastProfile(s);            // the "at next reload" gap has just closed
   broadcast(s, { type: "screen", text: s.pilot.screen(), working: s.pilot.isWorking() });
 }

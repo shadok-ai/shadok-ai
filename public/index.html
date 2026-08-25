@@ -4399,9 +4399,17 @@
         if (t.btnEl.classList.contains("working")) setTabMood(t, null);
         setTabState(t, "ready", "ready");
         persistChannels();
+        // "ready" means the process is idle NOW. Stop any running timer — a
+        // reload broadcasts a transient "working" that started one, and nothing
+        // else stops it, so the counter kept ticking after the reload finished.
+        // Nulling turnStart both pauses the 1s tick AND lets showFrozenTime
+        // stick (the tick would otherwise overwrite it next second). A real
+        // "working" right after re-starts it (its `if (!t.turnStart)` guard).
+        t.turnStart = null;
         // Reattaching between turns: restore the last turn's time rather than
         // leaving a blank timer. A "working" message right after overrides it.
         if (msg.lastTurnMs) showFrozenTime(t, msg.lastTurnMs);
+        else t.timerEl.classList.add("done"); // freeze whatever's shown; don't keep ticking
         addTurn(t, "system", "", "Session established. The pilot has the controls.");
         if (t === active) promptInput.focus();
         break;
