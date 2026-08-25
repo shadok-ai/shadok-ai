@@ -213,6 +213,15 @@ export interface HistoryTurn {
    * turn seen live show the SAME time. Absent on older transcripts.
    */
   at?: number;
+  /**
+   * A HIDDEN user prompt (a scheduled `cron` fire, or a parent notification)
+   * ran between this assistant turn and the one before it. Both are dropped from
+   * the replay, which would otherwise let this turn MERGE into the previous one
+   * (they become adjacent) — a daily report gluing itself onto an unrelated
+   * earlier answer under a single label. The client keeps this turn's own label
+   * when the flag is set. Mirrors `TailEvent.afterInternal` for the live path.
+   */
+  afterInternal?: true;
 }
 
 /**
@@ -234,6 +243,11 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
     return [];
   }
   const turns: HistoryTurn[] = [];
+  // A hidden user prompt (cron / parent notification) was dropped and now
+  // separates the next assistant turn from the previous one — so that turn must
+  // NOT merge into it, and keeps its own label. Reset by any turn we actually
+  // emit; a tool_result `continue` leaves it, since that sits mid-turn.
+  let pendingHiddenPrompt = false;
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     let e: any;
@@ -250,11 +264,16 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
       if (text === null) continue; // tool result, system reminder, interruption
       // Machine-written user messages: a scheduled prompt and a notification
       // about a child agent. Neither is shown live, so neither may come back on
-      // a reload or a topic backfill.
-      if (isCronPrompt(text) || isAgentPrompt(text)) continue;
+      // a reload or a topic backfill — but a dropped one still BROKE the turn,
+      // so remember it to keep the next answer from merging onto the last.
+      if (isCronPrompt(text) || isAgentPrompt(text)) {
+        pendingHiddenPrompt = true;
+        continue;
+      }
       // A human prompt may open with a context header (⟦platform · time · who⟧)
       // the agent was given; strip it for display — the message itself stays.
       turns.push({ role: "user", text: stripPromptMeta(text), ...when });
+      pendingHiddenPrompt = false;
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
       const text = e.message.content
         .filter((b: any) => b.type === "text")
@@ -268,9 +287,11 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
       const last = turns[turns.length - 1];
       // Consecutive blocks merged into one turn: we KEEP the first one's time,
       // which is when the speaking started (and that is where the client shows
-      // the group label).
-      if (last && last.role === "assistant") last.text += "\n\n" + text;
-      else turns.push({ role: "assistant", text, ...when });
+      // the group label). But a hidden prompt in between makes this a NEW turn:
+      // don't merge, and flag it so the client keeps its own label.
+      if (last && last.role === "assistant" && !pendingHiddenPrompt) last.text += "\n\n" + text;
+      else turns.push({ role: "assistant", text, ...(pendingHiddenPrompt ? { afterInternal: true } : {}), ...when });
+      pendingHiddenPrompt = false;
     }
   }
   return turns.slice(-100);

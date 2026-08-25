@@ -1612,6 +1612,13 @@ interface Live {
   contextWindow: number;
   /** The last assistant block of this turn was the silence placeholder. */
   lastTurnSilent: boolean;
+  /** A hidden prompt (a `cron` fire or a parent notification) was just
+   *  submitted and is NOT echoed, so the next assistant text would stream
+   *  adjacent to the previous turn and merge under one label. Set here, consumed
+   *  by the first streamed text as `afterInternal` — the live twin of the
+   *  history-replay flag (`HistoryTurn.afterInternal`). Cleared when a visible
+   *  prompt (which breaks the group itself) takes over. */
+  gapBeforeNextText?: boolean;
   /** Stops the .jsonl tail loop (content streaming). */
   stopTail: (() => void) | null;
   /** The last text blocks ALREADY broadcast, so they are not offered again as
@@ -1934,10 +1941,16 @@ async function attachPilot(s: Live): Promise<void> {
       // its preface must not repeat this block.
       s.recentTexts.push(e.text);
       if (s.recentTexts.length > 8) s.recentTexts.shift();
+      // A hidden prompt (cron / notification) preceded this turn: its first text
+      // opens a group boundary, same as a thinking block within the message
+      // (`e.afterInternal`). Consume the flag so only the FIRST text is marked;
+      // the rest of the turn is continuous.
+      const afterInternal = e.afterInternal || s.gapBeforeNextText || undefined;
+      s.gapBeforeNextText = false;
       // `at` = when the block was WRITTEN, not when it was read (see
       // TailEvent): the client shows it as is instead of dating everything on
       // reception.
-      broadcast(s, { type: "stream-text", text: e.text, at: e.at, afterInternal: e.afterInternal });
+      broadcast(s, { type: "stream-text", text: e.text, at: e.at, afterInternal });
     }
     else if (e.kind === "tool")
       broadcast(s, { type: "stream-tool", id: e.id, name: e.name, summary: e.summary });
@@ -2627,12 +2640,21 @@ wss.on("connection", (ws: WebSocket) => {
           // that is not someone speaking, and its text (the prompt PLUS its
           // guard's dump) drowned the answer in both interfaces. The mark in
           // the content gives the same hiding on replay.
-          if (origin !== "cron")
+          if (origin !== "cron") {
+            // A visible prompt breaks the group by itself (its bubble sits
+            // between the turns), and clears any stale gap left by a silent cron
+            // so the answer to a human is never wrongly detached.
+            session.gapBeforeNextText = false;
             broadcast(
               session,
               { type: "prompt-echo", text, ...(origin ? { origin } : {}), ...(msg.from ? { from: msg.from } : {}) },
               ws,
             );
+          } else {
+            // A cron / notification is hidden: no echo, so the next streamed
+            // text would glue onto the previous turn. Flag it for the tail.
+            session.gapBeforeNextText = true;
+          }
           session.busy = true;
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));
