@@ -310,6 +310,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
+| `SHADOK_LEDGER=1` | opt into the shared-ledger reflex (OFF by default; the GUI/config setting wins once used) |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |
 | `SHADOK_SSH_IDENTITY=0` · `SHADOK_FORCE_SSH_IDENTITY=1` | disable / force the Docker SSH identity |
 | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALLOWED_CHATS` | override the stored config |

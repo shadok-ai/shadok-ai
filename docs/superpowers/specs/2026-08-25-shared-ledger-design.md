@@ -87,14 +87,31 @@ shadok's own development first, then the whole fleet.
   (supersede, never append). Pure read/write core, unit-tested.
 - **Skill `shadok-ledger`** (seeded into `~/.claude/skills` at boot, twin of
   `seedSecretsSkill` / `seedSchedulerSkill`): a thin script with
-  `check <query>` (fuzzy-match entities → status + freshness) and
-  `record <entity> <status> [note]` (upsert). No server changes required.
+  `check <query>` (fuzzy-match entities → status + freshness),
+  `record <entity> <status> [note]` (upsert), and `list` (the whole table — a
+  place to consult it). No server changes required.
 - **Reflex:** the pilot-prompt paragraph above (`context/pilot-prompt.md`).
+- **Toggle — OFF by default.** A config flag `ledgerEnabled` (default `false`,
+  like `autoUpdate`/`permissionMode`). The **reflex paragraph is appended to the
+  pilot prompt only when enabled** — a behavioural change that reaches every
+  agent (BioSense included) must be opt-in. The skill itself may be seeded
+  regardless (a tool with no instruction is inert). Flip on → reload agents.
+
+**Activation & companions.** The pilot prompt is applied at spawn
+(`--append-system-prompt`), so a live agent only picks up the reflex after a
+**respawn** (resume — it keeps its history). Two companion pieces make this
+usable, shipped as their own small PRs:
+- a **self-reload skill** (globally seeded), so an agent — or a lead — can
+  reload itself to pick up a new prompt/skill;
+- fixing a pre-existing gap found while scoping this: **`shadok-ai-agents` is
+  not globally seeded** (unlike secrets/scheduler), so agents outside the shadok
+  repo (all of BioSense) don't have `pilotctl` — a `seedAgentsSkill()` twin.
 
 **Explicitly OUT of the MVP** (phase 2, added only on evidence): the scoped
 freshness *pin* (recent resolutions per domain, for the conversational case),
 the *janitor* cron (dedup / archive-closed / flag-contradiction), auto-feeding
-the ledger from git, and per-domain partitioning.
+the ledger from git, per-domain partitioning, and a **GUI panel** to browse the
+table (the CLI `list` covers consultation until then).
 
 ## What we observe (dogfood success criteria)
 
