@@ -27,7 +27,13 @@ export type TailEvent =
   // blocks (parallel calls) whose results come back batched and out of order.
   | { kind: "tool"; id: string; name: string; summary: string; at?: number }
   | { kind: "result"; toolUseId: string; text: string; isError: boolean; at?: number }
-  | { kind: "usage"; messageId: string; usage: TokenUsage };
+  | { kind: "usage"; messageId: string; usage: TokenUsage }
+  /** The turn's answer was ONLY the silence placeholder. Emitted where the text
+   *  block is dropped, because dropping it without a trace made the guard that
+   *  honours the silence unreachable: the parent notification reads the last
+   *  STREAMED block, and this one never became one — so a quiet agent still woke
+   *  its parent, with an empty message or with a stray earlier thought. */
+  | { kind: "silent"; at?: number };
 
 /** Max characters of a tool result to stream (long outputs are truncated). */
 const MAX_RESULT = 4000;
@@ -271,7 +277,11 @@ export function parseLine(line: string): TailEvent[] {
     if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage });
     for (const block of e.message.content) {
       if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
-        if (isNothingToShow(block.text)) continue; // nothing to report: show nothing
+        if (isNothingToShow(block.text)) {
+          // Signalled, not swallowed — see the `silent` event's own comment.
+          out.push({ kind: "silent", ...when });
+          continue;
+        }
         out.push({ kind: "text", text: block.text, ...when });
       } else if (block?.type === "tool_use" && typeof block.name === "string") {
         out.push({

@@ -115,6 +115,9 @@ export interface ChildReport {
   kind: "done" | "dialog" | "exited" | "timeout";
   /** The child's own last assistant text block — what it wrote to be read. */
   summary?: string;
+  /** The child's whole answer was the silence placeholder. Carried explicitly
+   *  because the tail drops that block, so `summary` can never hold it. */
+  silent?: boolean;
   /** kind === "dialog": the pending question and its options. */
   question?: string;
   options?: string[];
