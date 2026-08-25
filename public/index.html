@@ -764,8 +764,11 @@
      shows none absorb the answer's label. Since the agent almost always uses a
      tool before writing, its answer lost label AND time that way, while the
      pilot's messages kept theirs. */
-  .turn.claude:not(.activity):not(.live-preview) + .turn.claude:not(.dialog) > .label,
+  .turn.claude:not(.activity):not(.live-preview) + .turn.claude:not(.dialog):not(.after-gap) > .label,
   .turn.user + .turn.user > .label { display: none; }
+  /* `.after-gap`: a hidden internal block (thinking / dropped placeholder) sat
+     between this bubble and the one before, so it keeps its own label — a
+     wordless boundary the reader would otherwise never see. */
   .turn.user { align-self: flex-end; align-items: flex-end; }
   .turn.claude { align-self: flex-start; }
   .bubble {
@@ -4426,7 +4429,14 @@
         t.turnHadText = true;
         // Fall back to the local time when the server sent no `at` (a transcript
         // with no timestamp): a live block was just written, the gap is nil.
-        addTurn(t, "claude", "claude", msg.text, "live", msg.at ?? Date.now());
+        {
+          const b = addTurn(t, "claude", "claude", msg.text, "live", msg.at ?? Date.now());
+          // A hidden internal block (thinking / dropped placeholder) separated
+          // this text from the one before it: keep its own label instead of
+          // gluing the two bubbles into one wordless run (the CSS group rule
+          // spares `.after-gap`).
+          if (msg.afterInternal) b.parentElement.classList.add("after-gap");
+        }
         break;
       case "stream-tool":
         // A tool call, grouped into the open activity block.

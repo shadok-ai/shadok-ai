@@ -65,6 +65,66 @@ test("parseLine: thinking blocks and empty text are skipped", () => {
   );
 });
 
+test("parseLine: a text after a skipped thinking block is flagged afterInternal", () => {
+  // "text · <think> · text" in one message: the first text is glued to nothing,
+  // the second must carry the flag so the client keeps its label instead of
+  // merging the two bubbles into one wordless run.
+  const ev = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "First." },
+          { type: "thinking", thinking: "reasoning…" },
+          { type: "text", text: "Second." },
+        ],
+      },
+    }),
+  );
+  assert.deepEqual(ev, [
+    { kind: "text", text: "First." },
+    { kind: "text", text: "Second.", afterInternal: true },
+  ]);
+});
+
+test("parseLine: a tool between two texts does NOT flag afterInternal (activity already breaks the group)", () => {
+  const ev = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "Before." },
+          { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } },
+          { type: "text", text: "After." },
+        ],
+      },
+    }),
+  );
+  assert.deepEqual(ev, [
+    { kind: "text", text: "Before." },
+    { kind: "tool", id: "toolu_1", name: "Bash", summary: "ls" },
+    { kind: "text", text: "After." },
+  ]);
+});
+
+test("parseLine: a dropped NOTHING TO SHOW also flags the text that follows it", () => {
+  const ev = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          { type: "text", text: "NOTHING TO SHOW" },
+          { type: "text", text: "Actually, here it is." },
+        ],
+      },
+    }),
+  );
+  assert.deepEqual(ev, [
+    { kind: "silent" },
+    { kind: "text", text: "Actually, here it is.", afterInternal: true },
+  ]);
+});
+
 test("isNothingToShow: the sentinel alone, whatever its casing, emphasis or final dot", () => {
   assert.equal(isNothingToShow("NOTHING TO SHOW"), true);
   assert.equal(isNothingToShow("  nothing to show.\n"), true);

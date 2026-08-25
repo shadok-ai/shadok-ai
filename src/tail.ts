@@ -21,7 +21,13 @@ export interface TokenUsage {
  * transcripts).
  */
 export type TailEvent =
-  | { kind: "text"; text: string; at?: number }
+  // `afterInternal` marks a text block that a HIDDEN block (a skipped
+  // `thinking`, or a dropped NOTHING TO SHOW) separated from the previous
+  // visible one. The client uses it to keep this block's speaker label instead
+  // of gluing it to the block before: without it, "text · <think> · text"
+  // renders as two bubbles under one label and reads as a single message, with
+  // no sign the agent paused to reason in between (the reported confusion).
+  | { kind: "text"; text: string; at?: number; afterInternal?: true }
   // `id`/`toolUseId` let a consumer pair an output with the call that produced
   // it. Necessary because one assistant message may carry several tool_use
   // blocks (parallel calls) whose results come back batched and out of order.
@@ -275,14 +281,20 @@ export function parseLine(line: string): TailEvent[] {
   if (e.type === "assistant") {
     const usage = parseUsage(e.message);
     if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage });
+    // A hidden block (thinking / dropped placeholder) seen since the last VISIBLE
+    // emit; carried onto the next text so the client can break the group there.
+    let pendingInternal = false;
     for (const block of e.message.content) {
       if (block?.type === "text" && typeof block.text === "string" && block.text.trim()) {
         if (isNothingToShow(block.text)) {
-          // Signalled, not swallowed — see the `silent` event's own comment.
+          // Signalled, not swallowed — see the `silent` event's own comment. It
+          // is also a hidden block, so the NEXT text must not glue to the last.
           out.push({ kind: "silent", ...when });
+          pendingInternal = true;
           continue;
         }
-        out.push({ kind: "text", text: block.text, ...when });
+        out.push({ kind: "text", text: block.text, ...(pendingInternal ? { afterInternal: true } : {}), ...when });
+        pendingInternal = false;
       } else if (block?.type === "tool_use" && typeof block.name === "string") {
         out.push({
           kind: "tool",
@@ -291,8 +303,13 @@ export function parseLine(line: string): TailEvent[] {
           summary: toolSummary(block.input),
           ...when,
         });
+        // A tool renders as an activity block, which already breaks the group.
+        pendingInternal = false;
+      } else if (block?.type === "thinking") {
+        // Intentionally not emitted — but remembered, so the text after it is
+        // announced as its own message rather than merged into the one before.
+        pendingInternal = true;
       }
-      // `thinking` blocks are intentionally skipped.
     }
   } else if (e.type === "user") {
     // User events carry tool results (command output, file reads…). The real
