@@ -6,7 +6,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import WebSocket from "ws";
+// No `import … "ws"`: Node 22 ships a global WHATWG WebSocket (undici), so this
+// skill stays self-contained when seeded into ~/.claude/skills — where there is
+// no node_modules to resolve the `ws` package from (that broke every agent
+// piloting outside the repo). `makeWS` below adds the tiny `.on`/`.once` surface
+// the rest of this file expects.
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Only used to auto-start a server when none is reachable (a dev running pilotctl
@@ -23,6 +27,19 @@ export const wsUrl = () => `ws://localhost:${port()}/ws`;
 // Telegram bridge already do. Empty when no password is set → no change.
 export const authHeaders = () => (process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {});
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The global WebSocket is WHATWG (addEventListener + event.data); the rest of
+// this file uses the `ws` package's EventEmitter surface. Bridge them: `.on` /
+// `.once`, handing a `message` listener the raw payload (event.data — a string
+// for the JSON frames the server sends). Only these two methods are used here.
+function makeWS(url, opts) {
+  const ws = new WebSocket(url, opts);
+  const add = (type, fn, once) =>
+    ws.addEventListener(type, type === "message" ? (e) => fn(e.data) : fn, once ? { once: true } : undefined);
+  ws.on = (type, fn) => (add(type, fn, false), ws);
+  ws.once = (type, fn) => (add(type, fn, true), ws);
+  return ws;
+}
 
 export function stateDir() {
   return process.env.SHADOK_STATE_DIR ?? path.join(os.homedir(), ".shadok-ai", "pilotctl");
@@ -69,7 +86,7 @@ export function parseArgs(argv) {
 
 function connect() {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl(), { headers: authHeaders() });
+    const ws = makeWS(wsUrl(), { headers: authHeaders() });
     ws.once("open", () => resolve(ws));
     ws.once("error", reject);
   });
