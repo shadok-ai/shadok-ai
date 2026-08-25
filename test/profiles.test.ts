@@ -5,6 +5,8 @@ import {
   READONLY_DENY,
   envVarsNote,
   DEFAULT_PROFILES,
+  seedMissingPlan,
+  declineList,
   permissionModeArgs,
   isPermissionMode,
   TWEAK_PROFILE_NAME,
@@ -362,4 +364,48 @@ test("promptOrigin: the managed Tweak role reads as tracked, not custom", () => 
   // rewritten every boot), so the shipped lookup finds nothing — yet it is the
   // one role that is always current.
   assert.equal(promptOrigin({ name: TWEAK_PROFILE_NAME, systemPrompt: "whatever" }, undefined), "tracked");
+});
+
+// ── Semer les rôles livrés qui manquent, sans ressusciter les refusés ────
+const ship = [{ name: "A", systemPrompt: "a" }, { name: "B", systemPrompt: "b" }, { name: "C", systemPrompt: "c" }];
+
+test("seedMissingPlan: coffre vide → tous les rôles livrés", () => {
+  assert.deepEqual(seedMissingPlan(ship, [], []), ["A", "B", "C"]);
+});
+
+test("seedMissingPlan: n'ajoute QUE ce qui manque", () => {
+  // Le cas d'une vieille instance : née avant que C existe, elle ne l'a jamais eu.
+  assert.deepEqual(seedMissingPlan(ship, ["A", "B"], []), ["C"]);
+  assert.deepEqual(seedMissingPlan(ship, ["A", "B", "C"], []), []);
+});
+
+test("seedMissingPlan: un rôle supprimé exprès ne revient pas", () => {
+  // Sans ça il réapparaîtrait à chaque démarrage — et l'auto-update en
+  // déclenche souvent : la suppression serait impossible en pratique.
+  assert.deepEqual(seedMissingPlan(ship, ["A"], ["B"]), ["C"]);
+  assert.deepEqual(seedMissingPlan(ship, [], ["A", "B", "C"]), []);
+});
+
+test("seedMissingPlan: un rôle présent ET refusé n'est pas re-semé", () => {
+  assert.deepEqual(seedMissingPlan(ship, ["A", "B", "C"], ["B"]), []);
+});
+
+test("seedMissingPlan: les rôles que l'utilisateur a créés n'entrent pas en compte", () => {
+  assert.deepEqual(seedMissingPlan(ship, ["A", "B", "C", "SonRole"], []), []);
+});
+
+test("declineList: supprimer inscrit, recréer efface l'inscription", () => {
+  // Recréer un rôle est un choix explicite : il doit cesser d'être « refusé »,
+  // sinon la prochaine version le laisserait de côté sans raison visible.
+  const SHIP = ["A", "B", "C"];
+  assert.deepEqual(declineList([], "B", "remove", SHIP), ["B"]);
+  assert.deepEqual(declineList(["B"], "B", "remove", SHIP), ["B"], "pas de doublon");
+  assert.deepEqual(declineList(["A", "B"], "B", "keep"), ["A"]);
+  assert.deepEqual(declineList(["A"], "Z", "keep"), ["A"]);
+});
+
+test("declineList: seuls les rôles LIVRÉS méritent une inscription", () => {
+  // Un rôle maison supprimé n'a rien à refuser : rien ne le re-sèmera.
+  assert.deepEqual(declineList([], "SonRole", "remove", ["A", "B"]), []);
+  assert.deepEqual(declineList([], "A", "remove", ["A", "B"]), ["A"]);
 });
