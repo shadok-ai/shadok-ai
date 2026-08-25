@@ -42,10 +42,21 @@ repo=shadok-ai/shadok-ai
 # under /Users once and were wiped on 2026-08-10, taking every guard down at once.
 state_file="$HOME/.shadok-ai/checks/pr-open.state"
 
+# A `hold` label means a human is deciding: the PR is deliberately parked, so
+# waking the agent for it every minute is the noise this guard exists to avoid.
+# `--jq` rather than `--template` because a label test needs list membership,
+# which Go templates only reach through an assignment loop — the five TAB-
+# separated fields the awk below expects are unchanged.
 rows=$(gh pr list --repo "$repo" --state open --limit 50 \
-    --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository \
-    --template '{{range .}}{{if and (not .isDraft) (eq .baseRefName "main")}}{{if and (not .isCrossRepository) (ne .mergeStateStatus "DIRTY")}}ACT{{else}}TELL{{end}}	#{{.number}}	{{.mergeStateStatus}}	{{if .isCrossRepository}}fork	{{else}}	{{end}}{{.title}}
-{{end}}{{end}}' 2>/dev/null) || exit 0
+    --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository,labels \
+    --jq '.[]
+          | select(.isDraft | not)
+          | select(.baseRefName == "main")
+          | select([.labels[].name] | index("hold") | not)
+          | [ (if (.isCrossRepository | not) and .mergeStateStatus != "DIRTY" then "ACT" else "TELL" end),
+              "#\(.number)", .mergeStateStatus,
+              (if .isCrossRepository then "fork" else "" end), .title ]
+          | @tsv' 2>/dev/null) || exit 0
 
 printf '%s\n' "$rows" | awk -F'\t' -v state="$state_file" '
   $1 == "ACT"  { act = act sprintf("%s %s — %s\n", $2, $3, $5) }
