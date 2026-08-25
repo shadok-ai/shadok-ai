@@ -1104,8 +1104,18 @@ app.delete("/secrets", (req, res) => {
 // has moved since they forked it; "custom" = a role this build does not ship.
 // Only an edited prompt can fall behind now — a tracked one has nothing to fall
 // behind, which is the point of storing nothing.
+// `origin` and `effectivePrompt` are both DERIVED, never stored (like `crons` on
+// /channels, cf. invariant 6). A tracked role holds no prompt of its own, so the
+// panel had nothing to show and displayed an empty box — you could not read the
+// role you were about to run, and saving that empty box pinned it to "".
 app.get("/profiles", (_req, res) =>
-  res.json(loadProfiles().map((p) => ({ ...p, origin: promptOrigin(p, shippedProfile(p.name)) }))),
+  res.json(
+    loadProfiles().map((p) => ({
+      ...p,
+      origin: promptOrigin(p, shippedProfile(p.name)),
+      effectivePrompt: effectiveProfile(p)?.systemPrompt ?? "",
+    })),
+  ),
 );
 
 // Hand a starter role back to the build. Browser-only, like every guardrail
