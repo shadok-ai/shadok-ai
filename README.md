@@ -119,6 +119,9 @@ Enter to skip; you can add it later from the web UI).
 - **Context sent** — a collapsed block at the head of every conversation showing
   what shadok added to that agent: its role, its guardrails and permission mode,
   the **names** of the variables injected (never the values), the cockpit prompt.
+  It also lists the **capabilities** shadok installs — the skills that let an
+  agent start other agents, schedule its own prompts or store a credential —
+  by description, since that is what Claude Code actually holds in context.
   Captured **at spawn**, so it is what the running process was actually given —
   not a recomputation that would quietly show today's profile. Also on the ⋯
   menu of each channel. It says plainly that it is shadok's half: Claude Code
