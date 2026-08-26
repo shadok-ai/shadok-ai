@@ -5,6 +5,14 @@
 # to wake, and its output is prepended to the prompt. A quiet repository costs
 # zero tokens.
 #
+# EVERY network call is wrapped in `timeout`. The cron gives this guard two
+# minutes; `gh` and `npm` have no deadline of their own, so a single stalled TCP
+# connect to api.github.com (seen twice in one afternoon) hangs past that budget.
+# The cron then reports "the guard failed" and wakes the LLM — the exact cost
+# this guard exists to avoid, and worse than reporting nothing. A timed-out call
+# is indistinguishable from a quiet one on purpose: it writes no stderr, so
+# invariant 16's "broken guard" rule does not fire on a network hiccup.
+#
 # The target is NAMED explicitly (--repo), not inferred from a `cd`: an earlier
 # version did `cd "$HOME/projects/shadok-ai" || exit 0`, and the day $HOME moved
 # (a container recreate is enough) the cd failed — empty output, rc=0, a
@@ -47,7 +55,7 @@ state_file="$HOME/.shadok-ai/checks/pr-open.state"
 # `--jq` rather than `--template` because a label test needs list membership,
 # which Go templates only reach through an assignment loop — the five TAB-
 # separated fields the awk below expects are unchanged.
-rows=$(gh pr list --repo "$repo" --state open --limit 50 \
+rows=$(timeout 25 gh pr list --repo "$repo" --state open --limit 50 \
     --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository,labels \
     --jq '.[]
           | select(.isDraft | not)
@@ -103,7 +111,7 @@ repo_dir=${SHADOK_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../../../.." 2>/
 # directory test would fail and this guard would go silent — the exact failure
 # the header above describes.
 [ -n "$repo_dir" ] && git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1 || exit 0
-pub=$(gh api repos/shadok-ai/shadok-ai/actions/workflows/publish.yml/runs \
+pub=$(timeout 25 gh api repos/shadok-ai/shadok-ai/actions/workflows/publish.yml/runs \
         --jq '.workflow_runs[0] | select(.status=="completed" and .conclusion!="success")
               | "\(.id)\t\(.conclusion)\t\(.display_title)"' 2>/dev/null) || exit 0
 if [ -z "$pub" ]; then
@@ -130,10 +138,10 @@ if [ -z "$pub" ]; then
   # The NEWEST published version, not the `alpha` tag: a publish that completes
   # late sets the tag to its own, older version (0.6.1 landed after 0.6.2 and
   # dragged `alpha` backwards), so the tag is not a reliable high-water mark.
-  a=$(npm view shadok-ai versions --json 2>/dev/null \
+  a=$(timeout 20 npm view shadok-ai versions --json 2>/dev/null \
         | node -pe "try{const v=JSON.parse(require('fs').readFileSync(0,'utf8'));(Array.isArray(v)?v[v.length-1]:v)||''}catch(e){''}")
   [ -n "$a" ] || exit 0
-  from=$(npm view "shadok-ai@$a" gitHead 2>/dev/null)
+  from=$(timeout 20 npm view "shadok-ai@$a" gitHead 2>/dev/null)
   [ -n "$from" ] || exit 0                                  # not recorded: never guess
   git -C "$repo_dir" cat-file -e "$from" 2>/dev/null || exit 0
   behind=$(git -C "$repo_dir" rev-list --count "$from..$head" 2>/dev/null)
