@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { NONCE_PLACEHOLDER, cspHeader, injectNonce } from "../src/csp.js";
+import { NONCE_PLACEHOLDER, cspHeader, injectNonce, injectAssetVersion } from "../src/csp.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(HERE, "..", "public", "index.html");
@@ -84,4 +84,35 @@ test("index.html has no inline event handler", () => {
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
     .replace(/<!--[\s\S]*?-->/g, "");
   assert.equal(markup.match(/\son(?:click|submit|change|input|error|load|keydown)\s*=/gi), null);
+});
+
+// ── Les modules ESM sont versionnés dans leur URL ────────────────────────
+// index.html est servi par une route dynamique (jamais mis en cache), alors que
+// les modules passent par express.static. Un navigateur a donc pu apparier une
+// page NEUVE avec un profile-card.js ANCIEN : l'import de `secretUsers` a échoué
+// et les 19 fonctions du pont ont disparu d'un coup. Une URL portant la version
+// rend l'appariement impossible — une page neuve demande des URL neuves.
+test("injectAssetVersion: remplace le marqueur partout", () => {
+  const html = 'import a from "/a.js?v=__ASSET_V__"; import b from "/b.js?v=__ASSET_V__";';
+  const out = injectAssetVersion(html, "1.2.3");
+  assert.equal(out.includes("__ASSET_V__"), false);
+  assert.equal((out.match(/\?v=1\.2\.3/g) || []).length, 2);
+});
+
+test("injectAssetVersion: une version douteuse est encodée, jamais injectée telle quelle", () => {
+  // La version vient du package.json, mais elle finit dans une URL : si elle
+  // contenait un guillemet, elle casserait l'import.
+  const out = injectAssetVersion('import a from "/a.js?v=__ASSET_V__";', 'x"y z');
+  assert.equal(out.includes('"y'), false);
+  assert.match(out, /\?v=x%22y%20z/);
+});
+
+test("index.html: chaque module importé porte la version", () => {
+  const html = fs.readFileSync(INDEX, "utf8");
+  const mod = html.match(/<script type="module"[^>]*>([\s\S]*?)<\/script>/);
+  assert.ok(mod, "bloc module introuvable");
+  const imports = [...mod[1].matchAll(/from "(\/[^"]+\.js[^"]*)"/g)].map((m) => m[1]);
+  assert.ok(imports.length >= 5, "on s'attend à plusieurs imports");
+  const nus = imports.filter((u) => !u.includes("?v=__ASSET_V__"));
+  assert.deepEqual(nus, [], `sans version, ces modules peuvent être servis périmés : ${nus.join(", ")}`);
 });

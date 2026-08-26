@@ -9,7 +9,9 @@
      fields (see the coarse-pointer query) fix it at the source instead. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>shadok-ai — cockpit</title>
-<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314161d'/%3E%3Ctext x='16' y='25' font-family='monospace' font-size='26' font-weight='700' fill='%23f0a848' text-anchor='middle'%3E%E2%80%BA%3C/text%3E%3C/svg%3E">
+<!-- The idle favicon: a resting Shadok. paint() swaps in the pumping / "!" / "?"
+     variants once the JS runs; this is only the pre-script icon. -->
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%2314161d%22%2F%3E%3Cline%20x1%3D%2210.8%22%20y1%3D%2223%22%20x2%3D%2210.4%22%20y2%3D%2230.6%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%2216.400000000000002%22%20y1%3D%2223%22%20x2%3D%2216.8%22%20y2%3D%2230.6%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%228.8%22%20y1%3D%2230.7%22%20x2%3D%2211.9%22%20y2%3D%2230.7%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%2215.4%22%20y1%3D%2230.7%22%20x2%3D%2218.5%22%20y2%3D%2230.7%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%2219.6%22%20y1%3D%2217.2%22%20x2%3D%2224.000000000000004%22%20y2%3D%2220.4%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cg%3E%3Cline%20x1%3D%2211.600000000000001%22%20y1%3D%225.399999999999999%22%20x2%3D%229.600000000000001%22%20y2%3D%222.8%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%220.9%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%229.600000000000001%22%20cy%3D%222.8%22%20r%3D%221%22%20fill%3D%22%23f0a848%22%2F%3E%3Cline%20x1%3D%2216%22%20y1%3D%225.399999999999999%22%20x2%3D%2218%22%20y2%3D%222.8%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%220.9%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2218%22%20cy%3D%222.8%22%20r%3D%221%22%20fill%3D%22%23f0a848%22%2F%3E%3Ccircle%20cx%3D%2213.8%22%20cy%3D%2216.2%22%20r%3D%228.4%22%20fill%3D%22%23f0a848%22%2F%3E%3Cpath%20d%3D%22M12.200000000000001%2018.2%20L15.4%2018.2%20L13.8%2021.6%20Z%22%20fill%3D%22%23f0a848%22%2F%3E%3Ccircle%20cx%3D%2210.9%22%20cy%3D%227.799999999999999%22%20r%3D%222.6%22%20fill%3D%22%23fff%22%2F%3E%3Ccircle%20cx%3D%2216.7%22%20cy%3D%227.799999999999999%22%20r%3D%222.6%22%20fill%3D%22%23fff%22%2F%3E%3Ccircle%20cx%3D%2211.200000000000001%22%20cy%3D%228.1%22%20r%3D%221.3%22%20fill%3D%22%2314161d%22%2F%3E%3Ccircle%20cx%3D%2217%22%20cy%3D%228.1%22%20r%3D%221.3%22%20fill%3D%22%2314161d%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
 <style>
   :root {
     --bg: #14161d;
@@ -365,7 +367,7 @@
 
   /* ── Channels (left column) ──────────────────────────── */
   #tabbar {
-    width: 220px;
+    width: 264px; /* the agents column, 20% wider than the former 220px */
     flex: none;
     display: flex;
     flex-direction: column;
@@ -677,6 +679,15 @@
   /* Un prompt suivi se lit mais ne s'édite pas : le griser dit pourquoi. */
   #profRole.tracked { opacity: .75; border-style: dashed; }
   .prof-drift { margin-left: 8px; font-size: 11px; color: var(--amber); }
+  /* À qui ce secret est injecté. Discret : c'est une information de contexte,
+     pas une alerte — contrairement à sec-orphan juste en dessous. */
+  /* Le pont ESM n'a jamais chargé : le dire plutôt que d'afficher un écran
+     amputé sans explication. */
+  .bridge-dead {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 200;
+    background: #e2564a; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 13px;
+  }
+  .sec-users { margin-left: 8px; font-size: 11px; color: var(--text-dim); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Profile picker for a running agent (the tab's context menu). */
   #profSwitchGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 18px 18px; }
@@ -996,7 +1007,7 @@
   .freetext-row input { flex: 1; }
   #thinking { display: none; align-self: flex-start; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; padding: 0 22px 6px; }
   #thinking.visible { display: flex; align-items: center; gap: 6px; }
-  /* Shimmering text (an amber sweep) + three bouncing dots. */
+  /* Shimmering text (an amber sweep) + a little Shadok pumping alongside. */
   #thinking .tw-text {
     background: linear-gradient(90deg, var(--text-dim) 30%, var(--phosphor) 50%, var(--text-dim) 70%);
     background-size: 220% 100%;
@@ -1005,17 +1016,13 @@
     animation: tw-shimmer 1.9s linear infinite;
   }
   @keyframes tw-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-  #thinking .tw-dots { display: inline-flex; align-items: flex-end; gap: 3px; }
-  #thinking .tw-dots i {
-    width: 3px; height: 3px; border-radius: 50%; background: var(--amber);
-    opacity: 0.3; animation: tw-dot 1.2s ease-in-out infinite;
-  }
-  #thinking .tw-dots i:nth-child(2) { animation-delay: 0.18s; }
-  #thinking .tw-dots i:nth-child(3) { animation-delay: 0.36s; }
-  @keyframes tw-dot { 0%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+  /* The pumping Shadok: `color` feeds its `currentColor` fill so it follows the
+     palette. It is animated by re-drawing in JS (renderTw), not CSS — the pump's
+     arm has to be re-linked to the lever each frame. */
+  #thinking .tw-shadok { display: inline-flex; color: var(--amber); }
+  #thinking .tw-shadok svg { width: 22px; height: 22px; overflow: visible; }
   @media (prefers-reduced-motion: reduce) {
     #thinking .tw-text { animation: none; color: var(--phosphor); -webkit-text-fill-color: currentColor; }
-    #thinking .tw-dots i { animation: none; opacity: 0.6; }
   }
 
   /* Composer */
@@ -1295,6 +1302,25 @@
     backdrop-filter: blur(2px);
   }
   .overlay[hidden] { display: none; }
+  /* The context shadok added, at the head of the conversation. Collapsed by
+     default: it is reference material, not part of the exchange. */
+  .preprompt { margin: 0 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised); }
+  .preprompt > summary {
+    cursor: pointer; padding: 8px 12px; color: var(--text-dim);
+    font-size: 12px; font-family: var(--mono); list-style: none;
+  }
+  .preprompt > summary::-webkit-details-marker { display: none; }
+  .preprompt > summary::before { content: "▸ "; }
+  .preprompt[open] > summary::before { content: "▾ "; }
+  .preprompt > summary:hover { color: var(--amber); }
+  .pp-body { padding: 0 12px 12px; }
+  .pp-part { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .pp-part:first-child { border-top: 0; margin-top: 0; }
+  .pp-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+  .pp-head strong { font-size: 12px; }
+  .pp-src { color: var(--text-dim); font-size: 11px; font-family: var(--mono); }
+  .pp-text { white-space: pre-wrap; font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+  .pp-note { color: var(--text-dim); font-size: 11px; margin-top: 10px; font-style: italic; }
   /* Above the other popins: during the tour it is the thing being interacted
      with, and the sign-in card may already be on screen behind it. */
   #tourOverlay { z-index: 60; }
@@ -1891,7 +1917,9 @@
     </div>
 
     <div id="transcripts"></div>
-    <div id="thinking"><span class="tw-text">Shadok is working</span><span class="tw-dots"><i></i><i></i><i></i></span></div>
+    <!-- The Shadok is injected into .tw-shadok by the script (one drawing shared
+         with the favicon, `shadokInner`); it pumps via CSS. -->
+    <div id="thinking"><span class="tw-text">Shadok is pumping</span><span class="tw-shadok" aria-hidden="true"></span></div>
 
     <form id="composer" hidden>
       <textarea id="promptInput" rows="1"
@@ -1949,17 +1977,17 @@
      request (src/csp.ts). A block without it does not run — which is what makes
      HTML an agent might write into the transcript harmless. -->
 <script type="module" nonce="__CSP_NONCE__">
-  import { extractLiveText, livePreviewDecision } from "/live-text.js";
+  import { extractLiveText, livePreviewDecision } from "/live-text.js?v=__ASSET_V__";
   import {
     profileBlurb,
     profileBadges,
     defaultAgentName,
     hasReadonlyPreset,
-    applyReadonlyPreset, isManagedProfile, profileSaveBody } from "/profile-card.js";
-  import { notifyState, BLINK_MS } from "/notify.js";
-  import { echoAuthor } from "/echo-author.js";
-  import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
-  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js";
+    applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
+  import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
+  import { echoAuthor } from "/echo-author.js?v=__ASSET_V__";
+  import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js?v=__ASSET_V__";
+  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   window.TOUR_STEPS = TOUR_STEPS;
   window.bubblePlacement = bubblePlacement;
   window.unionRect = unionRect;
@@ -1969,6 +1997,7 @@
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
+  window.secretUsers = secretUsers;
   window.profileSaveBody = profileSaveBody;
   window.isManagedProfile = isManagedProfile;
   window.hasReadonlyPreset = hasReadonlyPreset;
@@ -1981,8 +2010,71 @@
   window.arcSegments = arcSegments;
   window.dialTitle = dialTitle;
   window.SWEEP_DEG = SWEEP_DEG;
+  // Les bouchons du script classique sont maintenant remplacés par les vraies
+  // fonctions : tout ce qui a pu être peint entre-temps est incomplet.
+  window.dispatchEvent(new Event("shadok-bridge-ready"));
 </script>
 <script nonce="__CSP_NONCE__">
+  // ── Bouchons du pont ESM (invariant 10) ─────────────────────────────────
+  // Le bloc module ci-dessus est DIFFÉRÉ : il s'exécute après le parsing,
+  // alors que ce script-ci tourne PENDANT et câble déjà les boutons.
+  // Un clic dans cet intervalle appelait un window.<fn> inexistant — c'est
+  // ainsi que `profileBadges` a levé sur un clic Secrets, à cinq lignes d'un
+  // appel voisin correctement gardé. Garder chaque site d'appel était un
+  // combat perdu : le suivant oubliait. Un bouchon neutre par nom, remplacé à
+  // l'arrivée du module, rend tous les sites sûrs par construction.
+  // test/esm-bridge.test.ts verrouille la correspondance nom ↔ bouchon.
+  const BRIDGE_STUBS = {
+    profileBlurb: () => "",
+    profileBadges: () => [],
+    defaultAgentName: (_p, cwd) => String(cwd ?? "").split("/").filter(Boolean).pop() || "agent",
+    hasReadonlyPreset: () => false,
+    applyReadonlyPreset: (deny) => deny,
+    isManagedProfile: () => false,
+    profileSaveBody: (form) => ({ ...form }),
+    secretUsers: () => [],
+    extractLiveText: () => "",
+    livePreviewDecision: () => null,
+    echoAuthor: () => "",
+    notifyState: () => ({ color: null, badge: "", blink: false }),
+    dialPos: () => 0,
+    dialColor: () => "",
+    arcSegments: () => [],
+    dialTitle: () => "",
+    bubblePlacement: () => null,
+    unionRect: () => null,
+    visibleSteps: (steps) => steps ?? [],
+  };
+  for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
+    if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
+  }
+  // Un bouchon empêche le plantage, il ne remplace pas la fonction : si le
+  // module n'arrive JAMAIS (un des six fichiers en échec, une coupure), l'écran
+  // resterait silencieusement amputé — pas de badges, pas d'aperçu en direct,
+  // pas de notifications. Une dégradation muette est pire que l'erreur qu'elle
+  // masque : on le dit.
+  window.addEventListener("load", () => setTimeout(() => {
+    const dead = Object.keys(BRIDGE_STUBS).filter((n) => window[n] && window[n].__stub);
+    if (!dead.length) return;
+    console.error("shadok-ai: le pont ESM n'a pas chargé — " + dead.join(", "));
+    const bar = document.createElement("div");
+    bar.className = "bridge-dead";
+    bar.textContent = "⚠ This page did not load fully — some panels will look empty. Reload it.";
+    document.body.appendChild(bar);
+  }, 3000));
+  // Un écran peint pendant que les bouchons étaient en place est incomplet
+  // (une carte sans badges, une jauge à plat). Le module signale son arrivée :
+  // on repeint ce qui est à l'écran, plutôt que de laisser un rendu dégradé.
+  window.addEventListener("shadok-bridge-ready", () => {
+    try {
+      if (typeof renderProfileGrid === "function" && $("profileGrid")) renderProfileGrid(false);
+      if (typeof renderProfilesList === "function" && !$("profilesOverlay").hidden) renderProfilesList();
+      if (typeof renderSecrets === "function" && !$("secretsOverlay").hidden) renderSecrets();
+    } catch {
+      /* une repeinte ratée ne doit pas casser le chargement */
+    }
+  });
+
   const $ = (id) => document.getElementById(id);
   const tabbar = $("tabbar"), newTabBtn = $("newTab"), newGroupBtn = $("newGroup");
   const ungroupedEl = $("ungrouped"), groupsEl = $("groups");
@@ -2498,6 +2590,7 @@
        () => setMuted(tab, !tab.muted)],
       ["↻ Reload agent", () => reloadTab(tab)],
       ["✎ Rename", () => startRename(tab)],
+      ["☰ Context sent", () => showPreprompt(tab)],
     ];
     // The profile is only set here for a launched agent: otherwise the creation
     // box carries it, and there is no session to restart.
@@ -2561,6 +2654,62 @@
     }
     // Pin it at the very top of the channel list (above groups & other tabs).
     ungroupedEl.insertBefore(tab.btnEl, ungroupedEl.firstChild);
+  }
+
+  /**
+   * The context shadok added to this agent, at the head of its conversation.
+   *
+   * Rendered from `ready`, so it comes back on every attach and every reload —
+   * and it is what the RUNNING process was given, captured at spawn rather than
+   * recomputed, since a profile can be changed under a live agent.
+   */
+  function renderPreprompt(tab, parts) {
+    tab.preprompt = parts;
+    const host = tab.transcriptEl;
+    if (!host) return;
+    host.querySelector(".preprompt")?.remove();
+    if (!parts.length) return;
+    const d = document.createElement("details");
+    d.className = "preprompt";
+    const sum = document.createElement("summary");
+    sum.textContent = `context sent to this agent — ${parts.length} section${parts.length > 1 ? "s" : ""}`;
+    d.appendChild(sum);
+    const body = document.createElement("div");
+    body.className = "pp-body";
+    for (const p of parts) {
+      const sec = document.createElement("div");
+      sec.className = "pp-part";
+      const head = document.createElement("div");
+      head.className = "pp-head";
+      const strong = document.createElement("strong");
+      strong.textContent = p.label;
+      const src = document.createElement("span");
+      src.className = "pp-src";
+      src.textContent = p.source;
+      head.append(strong, src);
+      const txt = document.createElement("div");
+      txt.className = "pp-text";
+      // textContent, never innerHTML: these strings are prompts, and a prompt
+      // is exactly the kind of text an agent can influence (invariant 13).
+      txt.textContent = p.text;
+      sec.append(head, txt);
+      body.appendChild(sec);
+    }
+    const note = document.createElement("div");
+    note.className = "pp-note";
+    note.textContent =
+      "This is what shadok adds. Claude Code adds its own — CLAUDE.md, skills, its built-in instructions — which shadok never sees.";
+    body.appendChild(note);
+    d.appendChild(body);
+    host.insertBefore(d, host.firstChild);
+  }
+
+  /** Open it from the channel's ⋯ menu and scroll it into view. */
+  function showPreprompt(tab) {
+    const d = tab.transcriptEl?.querySelector(".preprompt");
+    if (!d) return;
+    d.open = true;
+    d.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function closeTab(tab) {
@@ -3087,33 +3236,84 @@
     const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     return v || fallback;
   }
-  /** SVG data-URI favicon: the base mark, plus a coloured corner pip if given. */
-  /** The indicator fills the WHOLE favicon: at rest, a dark background + an
-   *  accent chevron; for a state (red = to do, amber = to read) the whole square
-   *  takes the colour, dark chevron on top. Far more visible than a small pip. */
-  function faviconSVG(bg) {
+  /** The Shadok itself — the cockpit's mascot, which famously PUMPS. Drawn like
+   *  the real thing (Rouxel): a round BALL body, two big googly eyes perched on
+   *  top, two antennae, a tiny beak, thin stick legs. One drawing serves every
+   *  state. `lever` (degrees around the fulcrum) poses the see-saw hand-pump it
+   *  works — pass a number to show the pump, null for the idle stub arm; `bob`
+   *  dips the ball with the effort. The arm is recomputed each call from the
+   *  (bobbed) shoulder to the lever end it grips, so the linkage is always right —
+   *  animating the arm with CSS instead made it swing around the pivot, backwards.
+   *  `sym` stamps a bold "!" / "?" over the ball, outlined in the ground colour so
+   *  the accent-on-accent "?" still reads (eyes stay clear above it). Legs and the
+   *  fulcrum stay planted. Eyes are always white + dark, never the accent, so they
+   *  read on any `fill` (the `currentColor` indicator included). */
+  const PX = 23.2, PY = 24.4; // the pump lever's fulcrum
+  function shadokInner(fill, { lever = null, bob = 0, sym = null, symColor } = {}) {
     const base = themeColor("--bg", "#14161d");
-    const accent = themeColor("--amber", "#f0a848");
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
-      `<rect width="32" height="32" rx="7" fill="${bg || base}"/>` +
-      `<text x="16" y="25" font-family="monospace" font-size="26" font-weight="700" fill="${bg ? base : accent}" text-anchor="middle">›</text>` +
-      `</svg>`;
-    return "data:image/svg+xml," + encodeURIComponent(svg);
+    const cx = 13.8, cy = 16.2, r = 8.4, eyeY = cy - 8.4, eyeSep = 5.8, eyeR = 2.6, pupR = 1.3;
+    const shX = cx + r - 2.6, shY = cy + 1.8 + bob; // shoulder (moves with the bob)
+    let fulcrum = "", leverEl = "", armEl = "";
+    if (lever !== null) {
+      const rad = (lever * Math.PI) / 180, nearX = PX - 6.5, farX = PX + 5;
+      const ax = PX + (nearX - PX) * Math.cos(rad), ay = PY + (nearX - PX) * Math.sin(rad);
+      const bx = PX + (farX - PX) * Math.cos(rad), by = PY + (farX - PX) * Math.sin(rad);
+      fulcrum = `<path d="M${PX - 2.2} 29 L${PX + 2.2} 29 L${PX} ${PY} Z" fill="${fill}"/>`;
+      leverEl = `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${fill}" stroke-width="1.7" stroke-linecap="round"/>`;
+      armEl = `<line x1="${shX}" y1="${shY}" x2="${ax}" y2="${ay}" stroke="${fill}" stroke-width="1.3" stroke-linecap="round"/>`;
+    } else {
+      armEl = `<line x1="${shX}" y1="${cy + 1 + bob}" x2="${cx + r + 1.8}" y2="${cy + 4.2 + bob}" stroke="${fill}" stroke-width="1.3" stroke-linecap="round"/>`;
+    }
+    const glyph = sym
+      ? `<text x="${cx}" y="${cy + 3.4 + bob}" font-family="ui-monospace, monospace" font-size="14" font-weight="800" fill="${symColor || fill}" stroke="${base}" stroke-width="2.4" paint-order="stroke" text-anchor="middle">${sym}</text>`
+      : "";
+    return (
+      fulcrum + leverEl +
+      // thin legs + feet (planted)
+      `<line x1="${cx - 3}" y1="${cy + r - 1.6}" x2="${cx - 3.4}" y2="30.6" stroke="${fill}" stroke-width="1.3" stroke-linecap="round"/>` +
+      `<line x1="${cx + 2.6}" y1="${cy + r - 1.6}" x2="${cx + 3}" y2="30.6" stroke="${fill}" stroke-width="1.3" stroke-linecap="round"/>` +
+      `<line x1="${cx - 5}" y1="30.7" x2="${cx - 1.9}" y2="30.7" stroke="${fill}" stroke-width="1.3" stroke-linecap="round"/>` +
+      `<line x1="${cx + 1.6}" y1="30.7" x2="${cx + 4.7}" y2="30.7" stroke="${fill}" stroke-width="1.3" stroke-linecap="round"/>` +
+      armEl +
+      // ball body + antennae + beak + eyes — bob together with the effort
+      `<g transform="translate(0 ${bob})">` +
+      `<line x1="${cx - 2.2}" y1="${eyeY - 2.4}" x2="${cx - 4.2}" y2="2.8" stroke="${fill}" stroke-width="0.9" stroke-linecap="round"/><circle cx="${cx - 4.2}" cy="2.8" r="1" fill="${fill}"/>` +
+      `<line x1="${cx + 2.2}" y1="${eyeY - 2.4}" x2="${cx + 4.2}" y2="2.8" stroke="${fill}" stroke-width="0.9" stroke-linecap="round"/><circle cx="${cx + 4.2}" cy="2.8" r="1" fill="${fill}"/>` +
+      `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}"/>` +
+      `<path d="M${cx - 1.6} ${cy + 2} L${cx + 1.6} ${cy + 2} L${cx} ${cy + 5.4} Z" fill="${fill}"/>` +
+      `<circle cx="${cx - eyeSep / 2}" cy="${eyeY}" r="${eyeR}" fill="#fff"/><circle cx="${cx + eyeSep / 2}" cy="${eyeY}" r="${eyeR}" fill="#fff"/>` +
+      `<circle cx="${cx - eyeSep / 2 + 0.3}" cy="${eyeY + 0.3}" r="${pupR}" fill="${base}"/><circle cx="${cx + eyeSep / 2 + 0.3}" cy="${eyeY + 0.3}" r="${pupR}" fill="${base}"/>` +
+      `</g>` +
+      glyph
+    );
   }
-  /** The "working" favicon: one BIG centred spinner filling the favicon (a faint
-   *  track + a rotating accent arc). */
-  function faviconWorkingSVG(angle) {
+  function faviconWrap(inner) {
     const base = themeColor("--bg", "#14161d");
+    return (
+      "data:image/svg+xml," +
+      encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
+          `<rect width="32" height="32" rx="7" fill="${base}"/>${inner}</svg>`,
+      )
+    );
+  }
+  /** The favicon: an accent Shadok on the dark ground. A waiting state stamps a
+   *  bold "!" (something to answer) or "?" (something to read) OVER it, in its
+   *  colour. No symbol → the idle Shadok. */
+  function faviconSVG(symbol, symColor) {
     const accent = themeColor("--amber", "#f0a848");
-    const track = accent + "38"; // ~0.22 alpha on a 6-digit-hex accent
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
-      `<rect width="32" height="32" rx="7" fill="${base}"/>` +
-      `<circle cx="16" cy="16" r="11" fill="none" stroke="${track}" stroke-width="4"/>` +
-      `<g transform="rotate(${angle} 16 16)"><circle cx="16" cy="16" r="11" fill="none" stroke="${accent}" stroke-width="4" stroke-linecap="round" stroke-dasharray="34 100"/></g>` +
-      `</svg>`;
-    return "data:image/svg+xml," + encodeURIComponent(svg);
+    return faviconWrap(shadokInner(accent, symbol ? { sym: symbol, symColor } : {}));
+  }
+  /** The pump pose for a phase p (0..1..0): the Shadok pushes the lever DOWN (near
+   *  end down = negative angle) and the ball dips with the effort — shared by the
+   *  favicon and the in-page indicator so both pump the same way. */
+  function pumpPose(p) { return { lever: 13 - p * 28, bob: +(p * 1.5).toFixed(2) }; }
+  /** The "working" favicon: the Shadok pumping its lever. `phase` rides a cycle. */
+  const PUMP_FRAMES = 12;
+  function faviconPumpingSVG(phase) {
+    const accent = themeColor("--amber", "#f0a848");
+    const p = (Math.sin((phase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2; // 0..1..0
+    return faviconWrap(shadokInner(accent, pumpPose(p)));
   }
   /** What each channel is asking for, as the pure module wants it. */
   function attentionInput() {
@@ -3129,8 +3329,8 @@
   // costs no timer at all.
   let blinkTimer = null;
   let blinkPhase = 0;
-  let workTimer = null;   // animates the "working" favicon (spinner)
-  let workAngle = 0;
+  let workTimer = null;   // animates the "working" favicon (the pumping Shadok)
+  let workPhase = 0;
   function stopWork() { if (workTimer) { clearInterval(workTimer); workTimer = null; } }
   function paint() {
     // The ESM bridge lands after the document is parsed (gotcha #10): until it
@@ -3150,20 +3350,24 @@
       phase: blinkPhase,
     });
     document.title = s.badge + titleBase;
-    // "working" = animated favicon (spinner). The module only returns that mode
+    // "working" = the animated pumping Shadok. The module only returns that mode
     // when NOTHING of higher priority (blocked / unread) is waiting — priority is
     // therefore handled upstream: a waiting agent always beats a busy one.
     if (s.mode === "working") {
       if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; blinkPhase = 0; }
       if (!workTimer) {
-        const tick = () => { workAngle = (workAngle + 30) % 360; favicon.href = faviconWorkingSVG(workAngle); };
+        const tick = () => { workPhase = (workPhase + 1) % PUMP_FRAMES; favicon.href = faviconPumpingSVG(workPhase); };
         tick();
-        workTimer = setInterval(tick, 120);
+        workTimer = setInterval(tick, 110);
       }
       return;
     }
     stopWork();
-    favicon.href = faviconSVG(s.color);
+    // A waiting Shadok carries the glyph the user asked for: "!" when it needs an
+    // answer, "?" when something's there to read. The colour is notifyState's
+    // (RED / RED_DIM on the away-blink, AMBER for unread); idle → no glyph.
+    const symbol = s.mode === "blocked" ? "!" : s.mode === "unread" ? "?" : null;
+    favicon.href = faviconSVG(symbol, s.color);
     if (s.blink && !blinkTimer) {
       blinkTimer = setInterval(() => { blinkPhase ^= 1; paint(); }, window.BLINK_MS || 900);
     } else if (!s.blink && blinkTimer) {
@@ -3173,6 +3377,28 @@
     }
   }
   function refreshBadge() { paint(); }
+  // The in-page "Shadok is pumping" indicator uses the SAME `shadokInner`, tinted
+  // via `currentColor` so it follows the palette. It animates by RE-DRAWING each
+  // frame (like the favicon), not CSS: the pump's arm must be re-linked to the
+  // lever every frame. A single heartbeat re-draws only while the indicator is
+  // visible (it shows only during a turn), so an idle cockpit pays almost nothing.
+  const twShadok = document.querySelector("#thinking .tw-shadok");
+  const thinkingEl = document.getElementById("thinking");
+  function renderTw(p) {
+    if (!twShadok) return;
+    const { lever, bob } = pumpPose(p);
+    twShadok.innerHTML =
+      `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", { lever, bob })}</svg>`;
+  }
+  renderTw(0); // populate immediately so it isn't blank on first show
+  if (!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
+    let twPhase = 0;
+    setInterval(() => {
+      if (!thinkingEl || !thinkingEl.classList.contains("visible")) return;
+      twPhase = (twPhase + 1) % PUMP_FRAMES;
+      renderTw((Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2);
+    }, 95);
+  }
   // Coming back must stop the blink at once, not at the next tick. Both signals
   // matter: switching tabs fires visibilitychange, switching application only
   // fires focus/blur.
@@ -3320,7 +3546,7 @@
     $("chanBarName").title = t.cwd || "";
     updateSendDisabled(); // t === active here; also honours a pending upload
     thinking.classList.toggle("visible", t.status === "busy");
-    // Showing/hiding "Shadok is working…" changes the transcript area's height:
+    // Showing/hiding "Shadok is pumping" changes the transcript area's height:
     // without re-pinning to the bottom, the last message slips below the fold
     // (typically "cut off" right after sending a prompt).
     pinBottom(t);
@@ -4383,6 +4609,7 @@
         }
         break;
       case "ready":
+        if (Array.isArray(msg.preprompt)) renderPreprompt(t, msg.preprompt);
         t.cwd = msg.cwd;
         t.sessionId = msg.sessionId;
         t.branch = msg.branch || null;
@@ -5262,19 +5489,28 @@
     const ul = $("secretsList");
     ul.innerHTML = "";
     if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
-    // How many profiles reference each secret. A blurb is read once; a secret
-    // marked "unused" shows the problem where the problem is.
-    const usage = {};
-    for (const p of profileCache) for (const n of p.secrets || []) usage[n] = (usage[n] || 0) + 1;
     for (const k of vaultNames) {
       const li = document.createElement("li");
       const code = document.createElement("code"); code.textContent = k;
-      if (!usage[k]) {
-        const warn = document.createElement("span");
-        warn.className = "sec-orphan";
-        warn.textContent = "⚠ no profile uses it";
-        warn.title = "No agent will ever receive this secret until a profile references it";
-        code.appendChild(warn);
+      // Qui reçoit ce secret. Le panneau disait déjà « personne » ; il ne disait
+      // pas À QUI il sert quand il sert, ce qui obligeait à ouvrir les profils
+      // un par un. Garde du pont ESM (invariant 10) : pas de module, pas de
+      // mention, plutôt qu'une exception qui viderait la liste.
+      const users = window.secretUsers ? window.secretUsers(profileCache, k) : null;
+      if (users) {
+        const tag = document.createElement("span");
+        if (users.length) {
+          tag.className = "sec-users";
+          tag.textContent = "→ " + users.join(", ");
+          tag.title = users.length === 1
+            ? "Injected as an environment variable into agents running " + users[0]
+            : "Injected as an environment variable into agents running any of: " + users.join(", ");
+        } else {
+          tag.className = "sec-orphan";
+          tag.textContent = "⚠ no profile uses it";
+          tag.title = "No agent will ever receive this secret until a profile references it";
+        }
+        code.appendChild(tag);
       }
       const del = document.createElement("button");
       del.textContent = "✕"; del.title = "Remove from vault";
@@ -5303,9 +5539,26 @@
   $("secretsOverlay").addEventListener("click", (e) => { if (e.target === $("secretsOverlay")) $("secretsOverlay").hidden = true; });
 
   // ── Shared ledger viewer (read-only) ──────────────────────────────────
-  function ldgAge(updatedAt) {
-    const d = Math.floor((Date.now() - (updatedAt || Date.now())) / 86400000);
-    return d <= 0 ? "today" : d === 1 ? "1d ago" : d + "d ago";
+  // An ACTUAL date + time, not just "today/Nd ago" — a ledger filled today
+  // showed "today" on every row, which read as no dates at all. Browser-local,
+  // year shown only when it isn't the current one. A relative age is kept as a
+  // trailing hint so freshness is still legible at a glance.
+  function ldgWhen(updatedAt) {
+    if (!updatedAt) return "";
+    const dt = new Date(updatedAt);
+    const now = new Date();
+    const abs = dt.toLocaleString(undefined, {
+      day: "numeric", month: "short",
+      year: dt.getFullYear() === now.getFullYear() ? undefined : "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+    // Calendar-day difference (not a rolling 24 h), so the hint agrees with the
+    // date shown — an entry from yesterday evening reads "yesterday", not "today".
+    const d0 = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+    const n0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const days = Math.round((n0.getTime() - d0.getTime()) / 86400000);
+    const age = days <= 0 ? "today" : days === 1 ? "yesterday" : days + "d ago";
+    return abs + " · " + age;
   }
   function renderLedger(entries) {
     const ul = $("ledgerList");
@@ -5321,7 +5574,8 @@
       head.appendChild(ent);
       if (e.status) { const st = document.createElement("span"); st.className = "ldg-status"; st.textContent = e.status; head.appendChild(st); }
       const meta = document.createElement("div"); meta.className = "ldg-meta";
-      meta.textContent = ldgAge(e.updatedAt) + (e.source ? " · " + e.source : "");
+      meta.textContent = ldgWhen(e.updatedAt) + (e.source ? " · " + e.source : "");
+      if (e.updatedAt) meta.title = new Date(e.updatedAt).toLocaleString();
       li.append(head, meta);
       if (e.note) { const n = document.createElement("div"); n.className = "ldg-note"; n.textContent = e.note; li.appendChild(n); }
       ul.appendChild(li);

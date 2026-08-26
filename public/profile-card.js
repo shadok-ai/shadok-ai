@@ -143,3 +143,20 @@ export function profileSaveBody(form, state) {
   if (!state.tracked || state.forked) body.systemPrompt = form.prompt ?? "";
   return body;
 }
+
+/**
+ * Les profils qui injectent ce secret, triés par nom.
+ *
+ * Un secret ne sert à rien tant qu'aucun profil ne le référence — le panneau le
+ * disait déjà, mais sans dire À QUI il sert quand il sert, ce qui obligeait à
+ * ouvrir les profils un par un pour le savoir.
+ *
+ * Compte AUSSI les rôles que le panneau des profils masque (Shadok-Tweak) : ils
+ * reçoivent bel et bien le secret, et les annoncer « inutilisés » serait faux.
+ */
+export function secretUsers(profiles, name) {
+  return (Array.isArray(profiles) ? profiles : [])
+    .filter((p) => p && typeof p.name === "string" && (p.secrets || []).includes(name))
+    .map((p) => p.name)
+    .sort();
+}

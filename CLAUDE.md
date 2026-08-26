@@ -107,6 +107,7 @@ both are silent in the DOM.
 | `src/update-channel.ts` | Which release stream an instance follows: `alpha` (every merge) or `beta` (promotions only, the default). Pure `resolveChannel` (anything malformed → `beta`, never a throw) and `pickTarget` (alpha takes the newer of `alpha`/`latest`, so a promotion cannot make the fast channel downgrade). The beta channel reads the `latest` dist-tag — see invariant 29. |
 | `Dockerfile` | The official image (README "Running in Docker"): Claude Code + shadok-ai + a **bundled headless browser** (Playwright Chromium at `/opt/playwright-browsers`, `--with-deps` so the OS libs are present), plus `git`/`gh`/`tmux`/toolchain. COPYs nothing (installs from npm); `.dockerignore` is `*`. NB: NOT what a given deployment necessarily runs — the live VPS builds from a host-side Dockerfile of its own. |
 | `src/open-browser.ts` | Opens the cockpit on launch. Done by the SERVER, not the supervisor, because only it knows the port the walk landed on (`START_PORT` is where the walk BEGINS). The supervisor sets `SHADOK_OPEN=1` on the FIRST spawn only — it respawns the server on every auto-update, and a tab popping open several times a day is a nuisance. `shouldOpenBrowser` / `openCommand` are pure and tested; refuses in a container, over SSH, and on a display-less Linux. Fire-and-forget: a browser that will not open must never keep the server from serving. |
+| `src/preprompt.ts` | Pure `prepromptParts` — what shadok adds to an agent's context, as labelled sections with their source. Captured in `makePilot` AT SPAWN and kept in `prepromptById`, never recomputed: a profile or the permission mode can change under a live agent, and the panel must show what the RUNNING process got (the gap the UI already models as `profile` vs `appliedProfile`). It takes secret **names**, never values — values live in the child's env and never in its args, so the signature makes a leak impossible rather than merely unlikely. Sent with every `ready`, so it survives a reload. The **capabilities** section is read from DISK at spawn rather than assumed from the seeded list: a seed that failed must show as missing. Skills are listed by DESCRIPTION only, because that is what Claude Code loads into context — the body is read when it decides to use one — and because they are installed for the whole machine and rewritten at every boot, which the panel says on screen. |
 | `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). Pure, tested. See invariant 12. |
 | `src/net.ts` | Where we listen and who may speak: `resolveHost` (`SHADOK_HOST`, loopback by default), `bindRefusal` (fail-closed: no network bind without a password), `originAllowed` (same-origin, see invariant 11). Pure, tested. |
 | `src/heartbeat.ts` | Keeps **idle** `/ws` connections alive behind a reverse proxy: an idle agent sends no traffic, so a proxy (nginx `proxy_read_timeout` 60s, Cloudflare ~100s) cuts the socket and the client loops on "reconnecting" — with nothing actually broken. `startHeartbeat(wss)` pings every client every 25s (`SHADOK_WS_PING_MS`) and `terminate()`s the one that misses its pong. `heartbeatSweep` is pure, tested. |
@@ -326,6 +327,27 @@ Auth section of `docs/architecture.md`).
    the grid stayed empty **in silence** — the call site is an unawaited async
    function, so nothing surfaced. tsc and the tests were green; only the browser
    showed it.
+   **Worse than that race: ONE failing module kills EVERY bridge.** The block
+   imports six files; if any of them 404s, 500s or throws, the whole script is
+   discarded and not one `window.*` is assigned — so the first click raises
+   `TypeError: window.X is not a function` on a name that has nothing to do with
+   the file that failed (a broken `gauge-dial.js` surfaced as
+   `window.visibleSteps`, a user hit it as `window.profileBadges`). Guarding call
+   sites one at a time kept losing: `profileBadges` threw five lines from a
+   correctly guarded twin, and eleven calls were still bare. So the classic
+   script installs a neutral **stub per bridged name** before wiring any button,
+   the module `dispatchEvent`s `shadok-bridge-ready` so anything painted with
+   stubs is repainted, and a stub still in place three seconds after `load`
+   raises a visible banner — an amputated UI in silence is worse than the error
+   it replaces. `test/esm-bridge.test.ts` locks the name↔stub pairing, the way
+   `test/csp.test.ts` locks the nonce.
+   **And the pairing itself is now impossible.** What actually failed in the
+   wild was a NEW `index.html` (importing `secretUsers`) served next to an OLD
+   cached `profile-card.js` that did not export it — the page is a dynamic
+   route, the modules go through `express.static`, so the two can drift. The
+   import URLs therefore carry `?v=<running version>`, injected beside the nonce
+   (`injectAssetVersion`): a page of one version can only ever request that
+   version's modules. `test/csp.test.ts` refuses a bare module URL.
 11. **The origin guard must let `Origin`-less clients through.** `src/net.ts`
    refuses a browser whose `Origin` isn't the request's own `Host` (a WebSocket
    ignores the same-origin policy, so any visited page could otherwise drive an
