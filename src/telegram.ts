@@ -50,6 +50,11 @@ import { UPDATE_EXIT_CODE } from "./supervisor.js";
  * /new /end /list, binding persistence. Topics + dialogs come next.
  */
 
+/** Combien de temps on laisse à l'échap pour faire retomber le tour avant de
+ *  dire que le message n'est pas parti. Un tour ordinaire s'arrête en une ou
+ *  deux secondes ; au-delà, l'agent est coincé et le silence serait pire. */
+const PREEMPT_TIMEOUT_MS = 20_000;
+
 const MSG_LIMIT = 4000; // Telegram hard limit is 4096; leave headroom.
 
 // Downloaded Telegram attachments live OUTSIDE any repo/worktree (never in a
@@ -135,6 +140,30 @@ export function senderName(from?: { first_name?: string; last_name?: string; use
   if (full) return full;
   const handle = (from?.username ?? "").trim();
   return handle ? "@" + handle : undefined;
+}
+
+/**
+ * Should a refused prompt take the hand from the running turn?
+ *
+ * Writing in a topic while the agent is mid-turn used to answer "a response is
+ * already in progress" and DROP what was typed — the message had to be sent
+ * again by hand once the agent went quiet. Telegram has no "interrupt" button,
+ * so the refusal was a dead end.
+ *
+ * Only `busy` qualifies: it is the one refusal an interrupt actually resolves.
+ * And only for a message we still hold — killing a turn for a prompt we cannot
+ * resend would destroy work and replace it with nothing.
+ *
+ * `lastRetried` bounds it to ONE attempt per message: the resend can itself be
+ * refused (another client claimed the session in between), and retrying then
+ * would interrupt again, be refused again — a loop that burns the quota and
+ * never delivers. Pure — unit tested.
+ */
+export function shouldPreempt(o: { code?: string; text?: string; lastRetried?: string }): boolean {
+  if (o.code !== "busy") return false;
+  const text = (o.text ?? "").trim();
+  if (!text) return false;
+  return text !== o.lastRetried;
 }
 
 export function nextToolsState(arg: string, current: boolean): boolean {
@@ -527,6 +556,13 @@ interface Bridge {
   // send it back as `freetext` rather than as a new prompt. Disarmed at the end
   // of the turn — an orphan wait would hijack an ordinary prompt.
   awaitingFreetext?: { n: number };
+  // Préemption d'un tour en cours (cf. `shouldPreempt`) : le dernier prompt
+  // qu'on a soumis, celui qu'on rejouera après l'échap, et celui pour lequel on
+  // a DÉJÀ interrompu une fois — la borne qui empêche la boucle.
+  lastSent?: string;
+  preempting?: string;
+  lastRetried?: string;
+  preemptTimer?: ReturnType<typeof setTimeout>;
   // A dialog's preface waiting for its authoritative twin (see the 2026-07-28
   // spec): the text read off the screen, and the message carrying it — edited
   // in place when the tail finally delivers the real block, instead of a
@@ -914,7 +950,6 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           }
           break;
         case "turn-done":
-          b.typing.stop();
           b.dialogMsgId = undefined; // any dialog is resolved once the turn ends
           b.awaitingFreetext = undefined; // no question waiting for text any more
           // A preface's authoritative twin arrives WITHIN the turn that follows
@@ -922,6 +957,19 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           // otherwise a later text could match it and edit an old message.
           b.prefaceText = undefined;
           b.prefaceMsgId = undefined;
+          // The interrupted turn has just settled: NOW send the message that was
+          // refused. These resets run first — the turn really did end, and
+          // skipping them would leave a stale keyboard or preface behind. But
+          // `typing` keeps running: a new turn starts in the same breath, and
+          // stopping it would only make the indicator blink.
+          if (b.preempting) {
+            const text = b.preempting;
+            b.preempting = undefined;
+            clearTimeout(b.preemptTimer);
+            promptTo(b, text, undefined, true);
+            break;
+          }
+          b.typing.stop();
           break;
         case "pace-blocked":
           // The prompt was refused by the pace guard (there is no "force"
@@ -931,6 +979,27 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           send(b, "⏸️ pace guard: " + (m.reason ?? "over the ideal pace") + "\nYour message was not sent — retry later.");
           break;
         case "error":
+          // Écrire pendant un tour en cours : plutôt que de refuser et de PERDRE
+          // le message, on rend la main à l'utilisateur — échap, puis on rejoue
+          // son texte dès que le tour se termine. Telegram n'a pas de bouton
+          // « interrompre » : sans ça, le refus est un cul-de-sac.
+          if (shouldPreempt({ code: m.code, text: b.lastSent, lastRetried: b.lastRetried })) {
+            const text = b.lastSent!;
+            b.lastRetried = text;
+            b.preempting = text;
+            b.ws.send(JSON.stringify({ type: "key", key: "escape" }));
+            send(b, "⏹ interrupted — sending your message instead.");
+            // Filet : si l'échap ne fait pas retomber le tour (agent coincé),
+            // le message resterait en attente pour toujours, sans un mot.
+            clearTimeout(b.preemptTimer);
+            b.preemptTimer = setTimeout(() => {
+              if (b.preempting !== text) return;
+              b.preempting = undefined;
+              b.typing.stop();
+              send(b, "⚠️ Couldn't take the hand back — your message was not sent. Try /stop, then send it again.");
+            }, PREEMPT_TIMEOUT_MS);
+            break;
+          }
           // No typing.stop() here: fail() errors ("a response is already in
           // progress") don't end the running turn — turn-done/exited will.
           send(b, "⚠️ " + m.message);
@@ -971,7 +1040,11 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
 
   // `from`: who typed it, carried so the OTHER clients (the web cockpit) can
   // name the author instead of showing an anonymous "pilot (elsewhere)".
-  const promptTo = (b: Bridge, text: string, from?: string) => {
+  const promptTo = (b: Bridge, text: string, from?: string, resend = false) => {
+    b.lastSent = text;
+    // Un message NEUF rouvre le droit d'interrompre ; un renvoi, non — sinon
+    // deux clients qui se disputent la session se relancent indéfiniment.
+    if (!resend) b.lastRetried = undefined;
     if (b.ready && b.ws.readyState === WebSocket.OPEN)
       b.ws.send(JSON.stringify({ type: "prompt", text, ...(from ? { from } : {}) }));
     else b.pending.push(text);

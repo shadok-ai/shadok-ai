@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   shouldReattachBridge,
   senderName,
+  shouldPreempt,
   pasteExtension,
   pasteFileName,
   bindKey,
@@ -630,4 +631,34 @@ test("pasteFileName: strips path-ish and shell-hostile characters", () => {
   assert.equal(pasteFileName("ID", "../../etc/passwd", "application/octet-stream"), "paste-ID-passwd.bin");
   assert.equal(pasteFileName("ID", ".bashrc", "text/plain"), "paste-ID-bashrc.txt"); // leading dot stripped, ext from type
   assert.ok(!/[/\\;]/.test(pasteFileName("ID", "a;b/c.txt", "text/plain")));
+});
+
+test("shouldPreempt: a busy refusal takes the hand and resends", () => {
+  // The behaviour asked for: writing while the agent is mid-turn interrupts it
+  // and sends the new message, instead of answering "a response is already in
+  // progress" and dropping what was typed.
+  assert.equal(shouldPreempt({ code: "busy", text: "nouveau message" }), true);
+});
+
+test("shouldPreempt: only a busy refusal — every other error is just shown", () => {
+  // A link refusal, a logged-out spawn, a submit failure: interrupting the agent
+  // would neither fix them nor be expected.
+  assert.equal(shouldPreempt({ code: "link-refused", text: "x" }), false);
+  assert.equal(shouldPreempt({ text: "x" }), false);
+});
+
+test("shouldPreempt: nothing to resend means nothing to interrupt for", () => {
+  // The refusal can arrive with no prompt of ours in flight (another client's,
+  // a stale echo). Killing a turn for a message we do not have would destroy
+  // work and replace it with nothing.
+  assert.equal(shouldPreempt({ code: "busy" }), false);
+  assert.equal(shouldPreempt({ code: "busy", text: "   " }), false);
+});
+
+test("shouldPreempt: the same message is never interrupted for twice", () => {
+  // The resend can itself be refused (another client claimed the session in
+  // between). Retrying then would interrupt again, get refused again — a loop
+  // that empties the quota and never delivers.
+  assert.equal(shouldPreempt({ code: "busy", text: "same", lastRetried: "same" }), false);
+  assert.equal(shouldPreempt({ code: "busy", text: "other", lastRetried: "same" }), true);
 });
