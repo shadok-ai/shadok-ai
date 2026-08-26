@@ -1958,17 +1958,17 @@
      request (src/csp.ts). A block without it does not run — which is what makes
      HTML an agent might write into the transcript harmless. -->
 <script type="module" nonce="__CSP_NONCE__">
-  import { extractLiveText, livePreviewDecision } from "/live-text.js";
+  import { extractLiveText, livePreviewDecision } from "/live-text.js?v=__ASSET_V__";
   import {
     profileBlurb,
     profileBadges,
     defaultAgentName,
     hasReadonlyPreset,
-    applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js";
-  import { notifyState, BLINK_MS } from "/notify.js";
-  import { echoAuthor } from "/echo-author.js";
-  import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
-  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js";
+    applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
+  import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
+  import { echoAuthor } from "/echo-author.js?v=__ASSET_V__";
+  import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js?v=__ASSET_V__";
+  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   window.TOUR_STEPS = TOUR_STEPS;
   window.bubblePlacement = bubblePlacement;
   window.unionRect = unionRect;

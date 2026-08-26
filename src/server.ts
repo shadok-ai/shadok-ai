@@ -152,7 +152,7 @@ import { pctFromUsage, windowForModel } from "./context.js";
 import { startHeartbeat } from "./heartbeat.js";
 import { ensureClaude, resolveBin, type EnsureClaudeResult } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
-import { cspHeader, injectNonce, NONCE_PLACEHOLDER } from "./csp.js";
+import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion } from "./csp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const START_PORT = Number(process.env.PORT ?? 3789);
@@ -730,7 +730,10 @@ app.get(["/", "/index.html"], (_req, res) => {
   }
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
-  res.type("html").send(injectNonce(html, nonce));
+  // La version part AUSSI dans l'URL des modules : cette page ne peut alors
+  // demander que les modules de sa propre version, jamais ceux d'une plus
+  // ancienne restés en cache (cf. invariant 10).
+  res.type("html").send(injectAssetVersion(injectNonce(html, nonce), OWN_VERSION));
 });
 
 /**
