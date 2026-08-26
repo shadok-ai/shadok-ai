@@ -31,7 +31,7 @@ import { starCount } from "./stars.js";
 import { ensureFirstAgent } from "./first-agent.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { openBrowser } from "./open-browser.js";
-import { prepromptParts, type PrepromptPart } from "./preprompt.js";
+import { parseSkillMeta, prepromptParts, type PrepromptPart } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -1668,6 +1668,38 @@ function sessionModelSetting(profileName?: string | null): string | null {
  */
 const prepromptById = new Map<string, PrepromptPart[]>();
 
+/** The skills shadok seeds — the ones it is answerable for. */
+const SEEDED_SKILLS = [
+  "shadok-ai-agents",
+  "shadok-scheduler",
+  "shadok-secrets",
+  "shadok-ledger",
+  "shadok-reload",
+];
+
+/**
+ * What shadok installed into this machine's skills directory, read from DISK
+ * rather than assumed from the list above: a seed that failed must show as
+ * missing, not as present. Read at spawn, because these are refreshed at every
+ * boot and are not captured with the rest of the arguments.
+ */
+function installedCapabilities(): { name: string; description: string }[] {
+  const out: { name: string; description: string }[] = [];
+  for (const name of SEEDED_SKILLS) {
+    try {
+      const md = fs.readFileSync(
+        path.join(os.homedir(), ".claude", "skills", name, "SKILL.md"),
+        "utf8",
+      );
+      const meta = parseSkillMeta(md);
+      out.push({ name, description: meta.description ?? "(no description)" });
+    } catch {
+      /* not seeded here — leaving it out IS the honest answer */
+    }
+  }
+  return out;
+}
+
 function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
@@ -1717,6 +1749,7 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
       permissionMode,
       // NAMES only: the values are in `env`, and never travel to a client.
       secretNames: Object.keys(secretEnv),
+      capabilities: installedCapabilities(),
       pilotPrompt: sp ?? undefined,
       ledgerReflex: lr,
     }),

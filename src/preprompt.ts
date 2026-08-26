@@ -38,6 +38,8 @@ export interface PrepromptInput {
   pilotPrompt?: string;
   /** The opt-in ledger reflex, when the instance has it on. */
   ledgerReflex?: string | null;
+  /** The skills shadok installs, as read from disk at spawn. */
+  capabilities?: { name: string; description: string }[];
 }
 
 const bullets = (items: string[]): string => items.map((i) => `• ${i}`).join("\n");
@@ -74,6 +76,20 @@ export function prepromptParts(input: PrepromptInput): PrepromptPart[] {
     });
   }
 
+  if (input.capabilities?.length) {
+    parts.push({
+      label: "Capabilities installed",
+      source: "seeded to ~/.claude/skills",
+      // Descriptions only, and the note says why: Claude Code loads a skill's
+      // DESCRIPTION into context and reads its body only when it decides to use
+      // it. Pasting five whole skills here would be both wrong and unreadable.
+      text:
+        bullets(input.capabilities.map((c) => `${c.name} — ${c.description}`)) +
+        "\n\nOnly these descriptions are in context; each body is read on demand." +
+        "\nInstalled for the whole machine, not this agent, and refreshed at every boot.",
+    });
+  }
+
   if (input.pilotPrompt?.trim()) {
     parts.push({
       label: "Cockpit context",
@@ -87,4 +103,21 @@ export function prepromptParts(input: PrepromptInput): PrepromptPart[] {
   }
 
   return parts;
+}
+
+/**
+ * Pure: a skill's name and one-line description, from its SKILL.md frontmatter.
+ *
+ * Tolerant on purpose — a skill whose header we cannot read is still installed,
+ * and listing it without its description beats omitting a capability the agent
+ * actually has.
+ */
+export function parseSkillMeta(md: string): { name?: string; description?: string } {
+  const fm = md.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!fm) return {};
+  const field = (k: string) => {
+    const m = fm[1].match(new RegExp("^" + k + ":\\s*(.+)$", "m"));
+    return m ? m[1].trim().replace(/^["']|["']$/g, "") : undefined;
+  };
+  return { name: field("name"), description: field("description") };
 }
