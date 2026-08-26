@@ -326,6 +326,20 @@ Auth section of `docs/architecture.md`).
    the grid stayed empty **in silence** — the call site is an unawaited async
    function, so nothing surfaced. tsc and the tests were green; only the browser
    showed it.
+   **Worse than that race: ONE failing module kills EVERY bridge.** The block
+   imports six files; if any of them 404s, 500s or throws, the whole script is
+   discarded and not one `window.*` is assigned — so the first click raises
+   `TypeError: window.X is not a function` on a name that has nothing to do with
+   the file that failed (a broken `gauge-dial.js` surfaced as
+   `window.visibleSteps`, a user hit it as `window.profileBadges`). Guarding call
+   sites one at a time kept losing: `profileBadges` threw five lines from a
+   correctly guarded twin, and eleven calls were still bare. So the classic
+   script installs a neutral **stub per bridged name** before wiring any button,
+   the module `dispatchEvent`s `shadok-bridge-ready` so anything painted with
+   stubs is repainted, and a stub still in place three seconds after `load`
+   raises a visible banner — an amputated UI in silence is worse than the error
+   it replaces. `test/esm-bridge.test.ts` locks the name↔stub pairing, the way
+   `test/csp.test.ts` locks the nonce.
 11. **The origin guard must let `Origin`-less clients through.** `src/net.ts`
    refuses a browser whose `Origin` isn't the request's own `Host` (a WebSocket
    ignores the same-origin policy, so any visited page could otherwise drive an
