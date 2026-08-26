@@ -34,7 +34,8 @@ import { openBrowser } from "./open-browser.js";
 import { parseSkillMeta, prepromptParts, type PrepromptPart } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
-import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
+import { scanUsage, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
+import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
 import { getUsage, type Window } from "./usage.js";
 import {
@@ -1760,6 +1761,21 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
 
 interface Live {
   id: string;
+  /** The transcript the content tail FOLLOWS. Defaults to `id`; set to a new id
+   *  when Claude Code forks the session (context overflow) so the chat follows
+   *  the live transcript instead of freezing on the old one. See forktrace.ts. */
+  tailId?: string;
+  /** Lineage-root id used to recognise a fork (the transcript's snake_case
+   *  `session_id`, constant across the whole fork chain). Cached on first need;
+   *  falls back to `id` when the file has no root record yet. See forktrace.ts. */
+  rootId?: string;
+  /** Transcript ids this session has already tailed and left (anti-flap: never
+   *  follow back onto a transcript we moved off). See forktrace.ts. */
+  tailSeen?: Set<string>;
+  /** When the tracked transcript last produced content. The fork detector only
+   *  hunts once this has been silent for FORK_STALL_MS while the pane shows work
+   *  — so a healthy, still-streaming session never looks for a fork. */
+  lastContentAt?: number;
   cwd: string;
   pilot: Pilot;
   clients: Set<WebSocket>;
@@ -2088,23 +2104,23 @@ async function createSession(
  * fresh pilot (e.g. to pick up new env/secrets) on the SAME Live object — every
  * WS client keeps its reference, so nobody is disconnected.
  */
-async function attachPilot(s: Live): Promise<void> {
-  const pilot = s.pilot;
-  const { id, cwd } = s;
-  s.pilotOff = pilot.onExit((code) => {
-    if (s.restarting) return; // a restart is swapping the pilot; don't tear down
-    broadcast(s, { type: "exited", code });
-    // A failure must notify too. A lost run that says nothing is
-    // indistinguishable from a run with nothing to say (invariant 15), and the
-    // parent would otherwise wait forever for a child that is already gone.
-    notifyParent(s, { kind: "exited" });
-    destroySession(s);
-  });
-  pilot.start();
-  // Stream authoritative content from the session transcript: each assistant
-  // text/tool block is broadcast as soon as Claude Code writes it — complete,
-  // never truncated, at message granularity.
-  s.stopTail = tailSession(sessionFilePath(cwd, id), (e) => {
+/**
+ * (Re)start the content tail on the transcript this session should FOLLOW —
+ * `tailId` when a fork was detected, else the session id. Restarting it (instead
+ * of letting the tail's path-resolver swap files, which KEEPS the byte offset —
+ * right for a moved-but-same transcript, wrong for a genuinely different one)
+ * gives the new file its OWN startOffset. For the initial tail that is EOF (only
+ * new turns stream; `loadHistory` replays the rest); on a fork-follow the caller
+ * seeds the new file's position to 0 first, so its unseen backlog replays.
+ */
+function startContentTail(s: Live): void {
+  s.stopTail?.();
+  const cwd = s.cwd;
+  const tid = () => s.tailId ?? s.id;
+  s.stopTail = tailSession(sessionFilePath(cwd, tid()), (e) => {
+    // Any content from the tracked transcript means it is alive: stamp it so the
+    // fork detector only hunts when THIS file has actually gone silent.
+    s.lastContentAt = Date.now();
     if (e.kind === "silent") {
       // The turn's answer was the placeholder. Recorded here because it is the
       // only place that still sees it — the tail drops the block itself.
@@ -2127,8 +2143,7 @@ async function attachPilot(s: Live): Promise<void> {
       // TailEvent): the client shows it as is instead of dating everything on
       // reception.
       broadcast(s, { type: "stream-text", text: e.text, at: e.at, afterInternal });
-    }
-    else if (e.kind === "tool")
+    } else if (e.kind === "tool")
       broadcast(s, { type: "stream-tool", id: e.id, name: e.name, summary: e.summary });
     else if (e.kind === "usage") {
       s.usage.set(e.messageId, e.usage);
@@ -2148,8 +2163,77 @@ async function attachPilot(s: Live): Promise<void> {
         text: e.text,
         isError: e.isError,
       });
-  }, 250, () => sessionFilePath(cwd, id));
+  }, 250, () => sessionFilePath(cwd, tid()));
+}
+
+/**
+ * Follow the agent's ACTUAL transcript when Claude Code forks the session id — a
+ * context overflow ("Prompt is too long") makes the live `claude` continue under
+ * a NEW id, freezing the old transcript the tail reads (the chat stops updating
+ * while the TUI is fine). We find the new file by its lineage root (the snake
+ * `session_id` shared across the fork chain): the newest file in the same
+ * directory whose root matches ours but whose own id differs — never a sibling
+ * agent's, even when agents share a cwd. Cross-platform (transcript content, no
+ * /proc). See docs/superpowers/specs/2026-08-26-follow-forked-transcript-design.md.
+ */
+/** How long the tracked transcript must be silent — WHILE the pane shows work —
+ *  before we go looking for a fork. The gate is the safety mechanism: a healthy
+ *  session (its file still growing) never hunts, so it can never mis-adopt a
+ *  stale same-lineage file. It also matches the exact symptom (terminal busy,
+ *  chat frozen) and keeps the scan off all but genuinely-stuck sessions. */
+const FORK_STALL_MS = 30_000;
+
+function maybeFollowFork(s: Live): void {
+  // Only hunt when the file we tail has gone quiet while the agent is visibly
+  // working — the fork's signature. Skip the scan entirely otherwise.
+  if (!s.pilot.isWorking()) return;
+  if (Date.now() - (s.lastContentAt ?? 0) < FORK_STALL_MS) return;
+  const tailId = s.tailId ?? s.id;
+  const myFile = sessionFilePath(s.cwd, tailId);
+  // Lineage root: read once from the file we currently tail, then cache. The
+  // original session's root is its own id, so `?? s.id` is the right fallback
+  // when the file has no root record yet (a session that never took a turn).
+  const myRoot = (s.rootId ??= rootIdOfFile(myFile) ?? s.id);
+  const seen = (s.tailSeen ??= new Set([tailId]));
+  const target = detectFork(myFile, tailId, myRoot, seen);
+  if (!target) return;
+  console.log(`[sk-${s.id.slice(0, 8)}] transcript forked → following ${target.slice(0, 8)} (context overflow)`);
+  seen.add(tailId);
+  s.tailId = target;
+  // None of the new file was ever shown in chat (it is a different transcript),
+  // so replay it from the start rather than from EOF.
+  seedTailPos(sessionFilePath(s.cwd, target), 0);
+  startContentTail(s);
+  broadcast(s, {
+    type: "stream-text",
+    text: "— la session précédente était pleine ; le chat s'est reconnecté à la session en cours de l'agent —",
+    at: Date.now(),
+  });
+}
+
+async function attachPilot(s: Live): Promise<void> {
+  const pilot = s.pilot;
+  const { id, cwd } = s;
+  s.pilotOff = pilot.onExit((code) => {
+    if (s.restarting) return; // a restart is swapping the pilot; don't tear down
+    broadcast(s, { type: "exited", code });
+    // A failure must notify too. A lost run that says nothing is
+    // indistinguishable from a run with nothing to say (invariant 15), and the
+    // parent would otherwise wait forever for a child that is already gone.
+    notifyParent(s, { kind: "exited" });
+    destroySession(s);
+  });
+  pilot.start();
+  // Start the stall clock now: a session reattached mid-work must not look
+  // instantly "silent since epoch" and trip the fork detector before its tail
+  // has had a chance to stream anything.
+  s.lastContentAt = Date.now();
+  // Stream authoritative content from the session transcript: each assistant
+  // text/tool block is broadcast as soon as Claude Code writes it — complete,
+  // never truncated, at message granularity.
+  startContentTail(s);
   let settled = false;
+  let forkTick = 0;
   s.screenTimer = setInterval(() => {
     if (pilot.hasExited) return;
     const scr = pilot.screen();
@@ -2173,6 +2257,10 @@ async function attachPilot(s: Live): Promise<void> {
     // background agent completing and waking the model). No handler called
     // finishTurn, so watch for it here and signal the turn like any other.
     if (settled && !s.busy && pilot.isWorking()) finishTurn(s).catch(() => {});
+    // Every ~15 s (50 × 300 ms): if the pane's process moved to a different
+    // transcript (Claude Code forked the session on a context overflow), follow
+    // it so the chat doesn't freeze on the old, dead transcript.
+    if (settled && ++forkTick % 50 === 0) maybeFollowFork(s);
   }, 300);
 
   // Ready as soon as the TUI is up: trust prompt, input line, or an
