@@ -65,8 +65,8 @@ export function notifyState(channels, view) {
       : { color: RED, badge: "● ", blink: true, mode: "blocked" };
   }
   if (unread) return { color: AMBER, badge: "● ", blink: false, mode: "unread" };
-  // "working" has neither pip colour nor badge: the favicon is animated (a
-  // spinner) by the caller for as long as the mode is "working".
+  // "working" has neither pip colour nor badge: the caller animates the favicon
+  // (the Shadok pumping) for as long as the mode is "working".
   if (working) return { color: null, badge: "", blink: false, mode: "working" };
   return { color: null, badge: "", blink: false, mode: null };
 }

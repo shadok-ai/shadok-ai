@@ -9,7 +9,9 @@
      fields (see the coarse-pointer query) fix it at the source instead. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>shadok-ai — cockpit</title>
-<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2314161d'/%3E%3Ctext x='16' y='25' font-family='monospace' font-size='26' font-weight='700' fill='%23f0a848' text-anchor='middle'%3E%E2%80%BA%3C/text%3E%3C/svg%3E">
+<!-- The idle favicon: a resting Shadok. paint() swaps in the pumping / "!" / "?"
+     variants once the JS runs; this is only the pre-script icon. -->
+<link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%2314161d%22%2F%3E%3Cg%20fill%3D%22%23f0a848%22%3E%3Crect%20x%3D%2211.4%22%20y%3D%2221%22%20width%3D%221.7%22%20height%3D%229%22%20rx%3D%220.85%22%2F%3E%3Crect%20x%3D%2217.4%22%20y%3D%2221%22%20width%3D%221.7%22%20height%3D%229%22%20rx%3D%220.85%22%2F%3E%3Crect%20x%3D%229.2%22%20y%3D%2228.7%22%20width%3D%224.6%22%20height%3D%221.7%22%20rx%3D%220.85%22%2F%3E%3Crect%20x%3D%2216.4%22%20y%3D%2228.7%22%20width%3D%224.6%22%20height%3D%221.7%22%20rx%3D%220.85%22%2F%3E%3C%2Fg%3E%3Cg%20fill%3D%22%23f0a848%22%3E%3Cellipse%20cx%3D%2215%22%20cy%3D%2216.8%22%20rx%3D%227.4%22%20ry%3D%227.6%22%2F%3E%3Cg%20transform%3D%22rotate(6%2019.6%2015.6)%22%3E%3Crect%20x%3D%2218.6%22%20y%3D%2215%22%20width%3D%222.1%22%20height%3D%228.4%22%20rx%3D%221.05%22%2F%3E%3C%2Fg%3E%3Cpath%20d%3D%22M14.6%2010%20C%2014.6%206.6%2C%2016.6%204.8%2C%2018.9%204.8%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%223%22%20fill%3D%22none%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2219.5%22%20cy%3D%224.7%22%20r%3D%223%22%2F%3E%3Cpath%20d%3D%22M22.1%203.5%20L26.4%205%20L22.1%206.5%20Z%22%2F%3E%3Ccircle%20cx%3D%2220.2%22%20cy%3D%224.2%22%20r%3D%220.95%22%20fill%3D%22%2314161d%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
 <style>
   :root {
     --bg: #14161d;
@@ -999,7 +1001,7 @@
   .freetext-row input { flex: 1; }
   #thinking { display: none; align-self: flex-start; color: var(--text-dim); font-family: var(--mono); font-size: 12.5px; padding: 0 22px 6px; }
   #thinking.visible { display: flex; align-items: center; gap: 6px; }
-  /* Shimmering text (an amber sweep) + three bouncing dots. */
+  /* Shimmering text (an amber sweep) + a little Shadok pumping alongside. */
   #thinking .tw-text {
     background: linear-gradient(90deg, var(--text-dim) 30%, var(--phosphor) 50%, var(--text-dim) 70%);
     background-size: 220% 100%;
@@ -1008,17 +1010,20 @@
     animation: tw-shimmer 1.9s linear infinite;
   }
   @keyframes tw-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-  #thinking .tw-dots { display: inline-flex; align-items: flex-end; gap: 3px; }
-  #thinking .tw-dots i {
-    width: 3px; height: 3px; border-radius: 50%; background: var(--amber);
-    opacity: 0.3; animation: tw-dot 1.2s ease-in-out infinite;
-  }
-  #thinking .tw-dots i:nth-child(2) { animation-delay: 0.18s; }
-  #thinking .tw-dots i:nth-child(3) { animation-delay: 0.36s; }
-  @keyframes tw-dot { 0%, 100% { opacity: 0.25; transform: translateY(0); } 40% { opacity: 1; transform: translateY(-3px); } }
+  /* The pumping Shadok: `color` feeds its `currentColor` fill so it follows the
+     palette. The body bobs and the arm swings — the pump — on the same beat. */
+  #thinking .tw-shadok { display: inline-flex; color: var(--amber); }
+  #thinking .tw-shadok svg { width: 20px; height: 20px; overflow: visible; }
+  /* Body bobs with translate (no transform-origin needed — that unit is a
+     cross-browser trap on SVG). The arm swings from its own top via fill-box, so
+     it reads as working a pump handle. */
+  #thinking .tw-shadok .sh-body { animation: tw-pump 0.7s ease-in-out infinite; }
+  #thinking .tw-shadok .sh-arm { animation: tw-arm 0.7s ease-in-out infinite; transform-box: fill-box; transform-origin: top center; }
+  @keyframes tw-pump { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(1.5px); } }
+  @keyframes tw-arm { 0%, 100% { transform: rotate(-10deg); } 50% { transform: rotate(28deg); } }
   @media (prefers-reduced-motion: reduce) {
     #thinking .tw-text { animation: none; color: var(--phosphor); -webkit-text-fill-color: currentColor; }
-    #thinking .tw-dots i { animation: none; opacity: 0.6; }
+    #thinking .tw-shadok .sh-body, #thinking .tw-shadok .sh-arm { animation: none; }
   }
 
   /* Composer */
@@ -1894,7 +1899,9 @@
     </div>
 
     <div id="transcripts"></div>
-    <div id="thinking"><span class="tw-text">Shadok is working</span><span class="tw-dots"><i></i><i></i><i></i></span></div>
+    <!-- The Shadok is injected into .tw-shadok by the script (one drawing shared
+         with the favicon, `shadokInner`); it pumps via CSS. -->
+    <div id="thinking"><span class="tw-text">Shadok is pumping</span><span class="tw-shadok" aria-hidden="true"></span></div>
 
     <form id="composer" hidden>
       <textarea id="promptInput" rows="1"
@@ -3091,33 +3098,67 @@
     const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
     return v || fallback;
   }
-  /** SVG data-URI favicon: the base mark, plus a coloured corner pip if given. */
-  /** The indicator fills the WHOLE favicon: at rest, a dark background + an
-   *  accent chevron; for a state (red = to do, amber = to read) the whole square
-   *  takes the colour, dark chevron on top. Far more visible than a small pip. */
-  function faviconSVG(bg) {
+  /** The Shadok itself — the cockpit's mascot, which famously PUMPS. One drawing
+   *  serves every use: the favicon states here and the in-page "pumping"
+   *  indicator. `dx` shifts it left to clear room for a "!" / "?"; `bob`/`armRot`
+   *  pose a single frame of the pump (the favicon animates by re-generating with
+   *  new values, like the old spinner did); `anim` instead tags the body and arm
+   *  groups so CSS can drive them (used only in the DOM indicator, never a data
+   *  URI — CSS animation inside a favicon is unreliable). Legs stay planted. */
+  function shadokInner(fill, { dx = 0, bob = 0, armRot = 6, anim = false } = {}) {
     const base = themeColor("--bg", "#14161d");
-    const accent = themeColor("--amber", "#f0a848");
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
-      `<rect width="32" height="32" rx="7" fill="${bg || base}"/>` +
-      `<text x="16" y="25" font-family="monospace" font-size="26" font-weight="700" fill="${bg ? base : accent}" text-anchor="middle">›</text>` +
-      `</svg>`;
-    return "data:image/svg+xml," + encodeURIComponent(svg);
+    const bodyCls = anim ? ' class="sh-body"' : "";
+    const armCls = anim ? ' class="sh-arm"' : "";
+    const bodyTf = anim ? "" : ` transform="translate(0 ${bob})"`;
+    const armTf = anim ? "" : ` transform="rotate(${armRot} 19.6 15.6)"`;
+    return (
+      `<g transform="translate(${dx} 0)">` +
+      // legs + feet (planted, not part of the bob)
+      `<g fill="${fill}">` +
+      `<rect x="11.4" y="21" width="1.7" height="9" rx="0.85"/><rect x="17.4" y="21" width="1.7" height="9" rx="0.85"/>` +
+      `<rect x="9.2" y="28.7" width="4.6" height="1.7" rx="0.85"/><rect x="16.4" y="28.7" width="4.6" height="1.7" rx="0.85"/>` +
+      `</g>` +
+      // body + pumping arm + long neck + head + beak + eye
+      `<g${bodyCls} fill="${fill}"${bodyTf}>` +
+      `<ellipse cx="15" cy="16.8" rx="7.4" ry="7.6"/>` +
+      `<g${armCls}${armTf}><rect x="18.6" y="15" width="2.1" height="8.4" rx="1.05"/></g>` +
+      `<path d="M14.6 10 C 14.6 6.6, 16.6 4.8, 18.9 4.8" stroke="${fill}" stroke-width="3" fill="none" stroke-linecap="round"/>` +
+      `<circle cx="19.5" cy="4.7" r="3"/><path d="M22.1 3.5 L26.4 5 L22.1 6.5 Z"/>` +
+      `<circle cx="20.2" cy="4.2" r="0.95" fill="${base}"/>` +
+      `</g></g>`
+    );
   }
-  /** The "working" favicon: one BIG centred spinner filling the favicon (a faint
-   *  track + a rotating accent arc). */
-  function faviconWorkingSVG(angle) {
+  function faviconWrap(inner) {
     const base = themeColor("--bg", "#14161d");
+    return (
+      "data:image/svg+xml," +
+      encodeURIComponent(
+        `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
+          `<rect width="32" height="32" rx="7" fill="${base}"/>${inner}</svg>`,
+      )
+    );
+  }
+  /** The favicon: an accent Shadok on the dark ground. A waiting state adds a
+   *  bold "!" (something to answer) or "?" (something to read) in its colour, and
+   *  the Shadok slides left to make room — the coloured glyph is what the user
+   *  asked to distinguish the two. No symbol → the idle Shadok. */
+  function faviconSVG(symbol, symColor) {
     const accent = themeColor("--amber", "#f0a848");
-    const track = accent + "38"; // ~0.22 alpha on a 6-digit-hex accent
-    const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">` +
-      `<rect width="32" height="32" rx="7" fill="${base}"/>` +
-      `<circle cx="16" cy="16" r="11" fill="none" stroke="${track}" stroke-width="4"/>` +
-      `<g transform="rotate(${angle} 16 16)"><circle cx="16" cy="16" r="11" fill="none" stroke="${accent}" stroke-width="4" stroke-linecap="round" stroke-dasharray="34 100"/></g>` +
-      `</svg>`;
-    return "data:image/svg+xml," + encodeURIComponent(svg);
+    const shadok = shadokInner(accent, symbol ? { dx: -3.6 } : {});
+    const sym = symbol
+      ? `<text x="25.8" y="13" font-family="monospace" font-size="15" font-weight="800" fill="${symColor || accent}" text-anchor="middle">${symbol}</text>`
+      : "";
+    return faviconWrap(shadok + sym);
+  }
+  /** The "working" favicon: the Shadok pumping. `phase` (0..PUMP_FRAMES-1) rides
+   *  a cycle — the body bobs and the arm swings, re-generated each tick. */
+  const PUMP_FRAMES = 8;
+  function faviconPumpingSVG(phase) {
+    const accent = themeColor("--amber", "#f0a848");
+    const p = (Math.sin((phase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2; // 0..1..0
+    const bob = +(p * 1.8).toFixed(2);
+    const armRot = Math.round(-8 + p * 32); // -8 (up) .. +24 (down)
+    return faviconWrap(shadokInner(accent, { bob, armRot }));
   }
   /** What each channel is asking for, as the pure module wants it. */
   function attentionInput() {
@@ -3133,8 +3174,8 @@
   // costs no timer at all.
   let blinkTimer = null;
   let blinkPhase = 0;
-  let workTimer = null;   // animates the "working" favicon (spinner)
-  let workAngle = 0;
+  let workTimer = null;   // animates the "working" favicon (the pumping Shadok)
+  let workPhase = 0;
   function stopWork() { if (workTimer) { clearInterval(workTimer); workTimer = null; } }
   function paint() {
     // The ESM bridge lands after the document is parsed (gotcha #10): until it
@@ -3154,20 +3195,24 @@
       phase: blinkPhase,
     });
     document.title = s.badge + titleBase;
-    // "working" = animated favicon (spinner). The module only returns that mode
+    // "working" = the animated pumping Shadok. The module only returns that mode
     // when NOTHING of higher priority (blocked / unread) is waiting — priority is
     // therefore handled upstream: a waiting agent always beats a busy one.
     if (s.mode === "working") {
       if (blinkTimer) { clearInterval(blinkTimer); blinkTimer = null; blinkPhase = 0; }
       if (!workTimer) {
-        const tick = () => { workAngle = (workAngle + 30) % 360; favicon.href = faviconWorkingSVG(workAngle); };
+        const tick = () => { workPhase = (workPhase + 1) % PUMP_FRAMES; favicon.href = faviconPumpingSVG(workPhase); };
         tick();
-        workTimer = setInterval(tick, 120);
+        workTimer = setInterval(tick, 110);
       }
       return;
     }
     stopWork();
-    favicon.href = faviconSVG(s.color);
+    // A waiting Shadok carries the glyph the user asked for: "!" when it needs an
+    // answer, "?" when something's there to read. The colour is notifyState's
+    // (RED / RED_DIM on the away-blink, AMBER for unread); idle → no glyph.
+    const symbol = s.mode === "blocked" ? "!" : s.mode === "unread" ? "?" : null;
+    favicon.href = faviconSVG(symbol, s.color);
     if (s.blink && !blinkTimer) {
       blinkTimer = setInterval(() => { blinkPhase ^= 1; paint(); }, window.BLINK_MS || 900);
     } else if (!s.blink && blinkTimer) {
@@ -3177,6 +3222,16 @@
     }
   }
   function refreshBadge() { paint(); }
+  // The in-page "pumping" Shadok, drawn once from the SAME `shadokInner` as the
+  // favicon. `currentColor` lets the CSS palette (var(--amber)) tint it, so it
+  // follows a theme change with no redraw; `anim` tags the body/arm for the CSS
+  // pump. The element sits earlier in the document, so it's here to fill now.
+  {
+    const twShadok = document.querySelector("#thinking .tw-shadok");
+    if (twShadok)
+      twShadok.innerHTML =
+        `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", { anim: true })}</svg>`;
+  }
   // Coming back must stop the blink at once, not at the next tick. Both signals
   // matter: switching tabs fires visibilitychange, switching application only
   // fires focus/blur.
@@ -3324,7 +3379,7 @@
     $("chanBarName").title = t.cwd || "";
     updateSendDisabled(); // t === active here; also honours a pending upload
     thinking.classList.toggle("visible", t.status === "busy");
-    // Showing/hiding "Shadok is working…" changes the transcript area's height:
+    // Showing/hiding "Shadok is pumping" changes the transcript area's height:
     // without re-pinning to the bottom, the last message slips below the fold
     // (typically "cut off" right after sending a prompt).
     pinBottom(t);
