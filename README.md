@@ -116,6 +116,13 @@ Enter to skip; you can add it later from the web UI).
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
 - **Diff panel** — what an agent actually changed, against its base.
+- **Context sent** — a collapsed block at the head of every conversation showing
+  what shadok added to that agent: its role, its guardrails and permission mode,
+  the **names** of the variables injected (never the values), the cockpit prompt.
+  Captured **at spawn**, so it is what the running process was actually given —
+  not a recomputation that would quietly show today's profile. Also on the ⋯
+  menu of each channel. It says plainly that it is shadok's half: Claude Code
+  adds its own context, which shadok never sees.
 - **Phone layout** — the cockpit is a fixed chassis that never pans sideways,
   sized on the *visual* viewport so the composer stays clear of the browser's
   own bar and, when the keyboard opens, sits right above it (the instrument bar
