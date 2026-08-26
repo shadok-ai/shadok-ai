@@ -340,6 +340,13 @@ Auth section of `docs/architecture.md`).
    raises a visible banner — an amputated UI in silence is worse than the error
    it replaces. `test/esm-bridge.test.ts` locks the name↔stub pairing, the way
    `test/csp.test.ts` locks the nonce.
+   **And the pairing itself is now impossible.** What actually failed in the
+   wild was a NEW `index.html` (importing `secretUsers`) served next to an OLD
+   cached `profile-card.js` that did not export it — the page is a dynamic
+   route, the modules go through `express.static`, so the two can drift. The
+   import URLs therefore carry `?v=<running version>`, injected beside the nonce
+   (`injectAssetVersion`): a page of one version can only ever request that
+   version's modules. `test/csp.test.ts` refuses a bare module URL.
 11. **The origin guard must let `Origin`-less clients through.** `src/net.ts`
    refuses a browser whose `Origin` isn't the request's own `Host` (a WebSocket
    ignores the same-origin policy, so any visited page could otherwise drive an

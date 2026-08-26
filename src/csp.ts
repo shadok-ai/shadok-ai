@@ -60,3 +60,23 @@ export function cspHeader(nonce: string): string {
 export function injectNonce(html: string, nonce: string): string {
   return html.split(NONCE_PLACEHOLDER).join(nonce);
 }
+
+/**
+ * Marqueur de version dans les URL des modules ESM de la page.
+ *
+ * `index.html` est servi par une route dynamique — donc toujours frais — alors
+ * que les modules passent par `express.static`. Un navigateur a pu apparier une
+ * page NEUVE, qui importe `secretUsers`, avec un `profile-card.js` ANCIEN qui ne
+ * l'exporte pas : l'import échoue, et comme un bloc module est tout-ou-rien, les
+ * dix-neuf fonctions du pont disparaissent d'un coup (cf. invariant 10).
+ *
+ * Mettre la version dans l'URL rend l'appariement impossible : une page d'une
+ * version donnée ne peut demander que les modules de cette version.
+ */
+export const ASSET_VERSION_PLACEHOLDER = "__ASSET_V__";
+
+export function injectAssetVersion(html: string, version: string): string {
+  // La version vient du package.json et finit dans une URL : on l'encode, sinon
+  // un caractère malheureux casserait l'import qu'elle est censée protéger.
+  return html.split(ASSET_VERSION_PLACEHOLDER).join(encodeURIComponent(version));
+}
