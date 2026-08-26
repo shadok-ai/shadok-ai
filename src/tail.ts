@@ -151,6 +151,14 @@ function writePos(file: string, pos: number): void {
   }
 }
 
+/** Seed the resume position for a transcript BEFORE tailing it, so the next
+ *  `tailSession(file)` starts there instead of at EOF. Used when following a
+ *  fork: the new `<id>.jsonl` was never shown in chat, so we seed 0 to replay it
+ *  from the start (still capped by MAX_CATCHUP via `startOffset`). */
+export function seedTailPos(file: string, pos: number): void {
+  writePos(file, pos);
+}
+
 /** Forget a finished session's position — it has nothing left to resume. */
 export function clearTailPos(file: string): void {
   try {
