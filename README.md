@@ -1,10 +1,44 @@
-# shadok-ai
+<div align="center">
 
-A **web cockpit that drives multiple real Claude Code sessions in parallel** —
-each channel is one `claude` process, on your Claude subscription (not the API).
-Pilot them from a browser **and** from **Telegram** (one topic = one agent),
-with git-worktree isolation, agent profiles, a secret vault, a diff panel,
-scheduled prompts, and quota gauges.
+<h1>shadok-ai</h1>
+
+<h3>Many Claude Codes. One cockpit. And it wrote itself.</h3>
+
+<p>Run <b>real</b> Claude Code sessions side by side, each in its own git worktree,
+on the Claude subscription you already pay for. When one of them has a question,
+you answer it with a click — in the browser, or from Telegram when you are not
+at the desk.</p>
+
+<p>
+<a href="https://www.npmjs.com/package/shadok-ai"><img alt="npm" src="https://img.shields.io/npm/v/shadok-ai?color=F5A524&amp;label=npm"></a>
+<a href="LICENSE"><img alt="licence AGPL-3.0" src="https://img.shields.io/badge/licence-AGPL--3.0-7C6CF0"></a>
+<a href="https://shadok.ai"><img alt="shadok.ai" src="https://img.shields.io/badge/shadok.ai-F5F0E6?labelColor=08090D"></a>
+</p>
+
+<p><code>npx shadok-ai</code></p>
+
+<a href="https://shadok.ai"><img width="720" alt="The cockpit: three agents running in parallel, one of them asking a multiple-choice question that is answered with a click, then the diff it wrote" src="https://shadok.ai/demo.gif"></a>
+
+</div>
+
+**It does not stop at one.** An agent can start other agents — each with its own
+worktree, branch and role — and it is told when one of its own finishes, blocks on
+a question, or dies. Nothing else wakes it.
+
+**It keeps working when you are not there.** Mirror an agent to a Telegram topic
+and answer from your phone, one topic per agent. Put a prompt on a schedule with a
+**guard that runs without the model**: prints nothing, nothing happened, zero
+tokens spent.
+
+**It stays on a leash.** A profile is a role plus guardrails — forbid `git commit`
+and the agent cannot commit. Secrets live in a vault outside your repository and
+are injected only into the agents that need them. Quota gauges show the 5h and 7d
+windows, and can hold an agent back when it is burning faster than the window
+elapses.
+
+**It wrote itself.** shadok-ai is largely built by agents running inside shadok-ai,
+in their own worktrees, landed as reviewed pull requests. The section below is what
+that produced.
 
 ## Quick start
 
