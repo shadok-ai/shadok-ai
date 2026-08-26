@@ -681,6 +681,12 @@
   .prof-drift { margin-left: 8px; font-size: 11px; color: var(--amber); }
   /* À qui ce secret est injecté. Discret : c'est une information de contexte,
      pas une alerte — contrairement à sec-orphan juste en dessous. */
+  /* Le pont ESM n'a jamais chargé : le dire plutôt que d'afficher un écran
+     amputé sans explication. */
+  .bridge-dead {
+    position: fixed; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 200;
+    background: #e2564a; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 13px;
+  }
   .sec-users { margin-left: 8px; font-size: 11px; color: var(--text-dim); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Profile picker for a running agent (the tab's context menu). */
@@ -1992,8 +1998,71 @@
   window.arcSegments = arcSegments;
   window.dialTitle = dialTitle;
   window.SWEEP_DEG = SWEEP_DEG;
+  // Les bouchons du script classique sont maintenant remplacés par les vraies
+  // fonctions : tout ce qui a pu être peint entre-temps est incomplet.
+  window.dispatchEvent(new Event("shadok-bridge-ready"));
 </script>
 <script nonce="__CSP_NONCE__">
+  // ── Bouchons du pont ESM (invariant 10) ─────────────────────────────────
+  // Le bloc module ci-dessus est DIFFÉRÉ : il s'exécute après le parsing,
+  // alors que ce script-ci tourne PENDANT et câble déjà les boutons.
+  // Un clic dans cet intervalle appelait un window.<fn> inexistant — c'est
+  // ainsi que `profileBadges` a levé sur un clic Secrets, à cinq lignes d'un
+  // appel voisin correctement gardé. Garder chaque site d'appel était un
+  // combat perdu : le suivant oubliait. Un bouchon neutre par nom, remplacé à
+  // l'arrivée du module, rend tous les sites sûrs par construction.
+  // test/esm-bridge.test.ts verrouille la correspondance nom ↔ bouchon.
+  const BRIDGE_STUBS = {
+    profileBlurb: () => "",
+    profileBadges: () => [],
+    defaultAgentName: (_p, cwd) => String(cwd ?? "").split("/").filter(Boolean).pop() || "agent",
+    hasReadonlyPreset: () => false,
+    applyReadonlyPreset: (deny) => deny,
+    isManagedProfile: () => false,
+    profileSaveBody: (form) => ({ ...form }),
+    secretUsers: () => [],
+    extractLiveText: () => "",
+    livePreviewDecision: () => null,
+    echoAuthor: () => "",
+    notifyState: () => ({ color: null, badge: "", blink: false }),
+    dialPos: () => 0,
+    dialColor: () => "",
+    arcSegments: () => [],
+    dialTitle: () => "",
+    bubblePlacement: () => null,
+    unionRect: () => null,
+    visibleSteps: (steps) => steps ?? [],
+  };
+  for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
+    if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
+  }
+  // Un bouchon empêche le plantage, il ne remplace pas la fonction : si le
+  // module n'arrive JAMAIS (un des six fichiers en échec, une coupure), l'écran
+  // resterait silencieusement amputé — pas de badges, pas d'aperçu en direct,
+  // pas de notifications. Une dégradation muette est pire que l'erreur qu'elle
+  // masque : on le dit.
+  window.addEventListener("load", () => setTimeout(() => {
+    const dead = Object.keys(BRIDGE_STUBS).filter((n) => window[n] && window[n].__stub);
+    if (!dead.length) return;
+    console.error("shadok-ai: le pont ESM n'a pas chargé — " + dead.join(", "));
+    const bar = document.createElement("div");
+    bar.className = "bridge-dead";
+    bar.textContent = "⚠ This page did not load fully — some panels will look empty. Reload it.";
+    document.body.appendChild(bar);
+  }, 3000));
+  // Un écran peint pendant que les bouchons étaient en place est incomplet
+  // (une carte sans badges, une jauge à plat). Le module signale son arrivée :
+  // on repeint ce qui est à l'écran, plutôt que de laisser un rendu dégradé.
+  window.addEventListener("shadok-bridge-ready", () => {
+    try {
+      if (typeof renderProfileGrid === "function" && $("profileGrid")) renderProfileGrid(false);
+      if (typeof renderProfilesList === "function" && !$("profilesOverlay").hidden) renderProfilesList();
+      if (typeof renderSecrets === "function" && !$("secretsOverlay").hidden) renderSecrets();
+    } catch {
+      /* une repeinte ratée ne doit pas casser le chargement */
+    }
+  });
+
   const $ = (id) => document.getElementById(id);
   const tabbar = $("tabbar"), newTabBtn = $("newTab"), newGroupBtn = $("newGroup");
   const ungroupedEl = $("ungrouped"), groupsEl = $("groups");
