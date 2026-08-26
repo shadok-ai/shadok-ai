@@ -1,7 +1,9 @@
 # Follow a session when Claude Code forks its transcript id
 
 **Date:** 2026-08-26
-**Status:** design — the safe detection is process-based, NOT content-based.
+**Status:** built — content-based (transcript lineage root). The process-based
+`/proc` design below was tried first and **abandoned**; the reason is kept because
+it is the trap a future rewrite would fall into again.
 
 ## Problem (observed on correctsms, the "Apple Ads" agent)
 
@@ -25,75 +27,83 @@ Exactly the reported symptom: chat frozen, terminal OK.
 `.jsonl` in the cwd's project dir" is unsafe: **agents can share a cwd.** On
 correctsms every agent runs in `/workspace`, so *all* their transcripts live in
 `~/.claude/projects/-workspace/`. "Newest in the dir" could be a *sibling
-agent's* transcript (e.g. Lettrio's) — adopting it would show one agent's
-content in another's chat. A data-integrity disaster across the fleet.
+agent's* transcript — adopting it would show one agent's content in another's
+chat. A data-integrity disaster across the fleet.
 
-Content heuristics don't save it either: the fork transcript need not carry a
-structural parent link (the observed `94f5df2b` started as a fresh session), and
-"references the old id" also matches unrelated mentions.
+## What the transcripts actually record (the ground truth)
 
-## The one reliable signal: the pane's own open file
+Inspecting the real Apple Ads pair on correctsms settled the design. Every
+Claude Code record carries **two** ids:
 
-The fork is, by definition, **the transcript the pane's live `claude` process is
-writing**. The shadok server runs as root inside the container, so it can read
-`/proc` and follow the pane's process tree to the `.jsonl` it holds open. That
-ties the new transcript to *this* session unambiguously — never to a sibling.
+- `sessionId` (camelCase) — the file's OWN id, equal to its filename.
+- `session_id` (snake_case) — the lineage **ROOT**: the id of the FIRST session
+  in a compaction/fork chain, **constant across every fork**.
 
-- **Linux/Docker only** (where it matters — a fleet of agents in one container).
-  On macOS there is no `/proc`; the detection no-ops and we fall back to a
-  surfaced warning (below).
+Measured:
 
-## Design
+| file | own `sessionId` | root `session_id` |
+|---|---|---|
+| old `15f1efac.jsonl` (frozen) | `15f1efac` | `15f1efac` (== own) |
+| new `94f5df2b.jsonl` (live fork) | `94f5df2b` | **`15f1efac`** (the root) |
+| any sibling agent's file | its own id | its own id (== own) |
 
-1. **Decouple the tail from the session id.** Add `tailId?: string` to `Live`
-   (the transcript the tail follows; defaults to `id`). The content tail resolves
-   its path from `sessionFilePath(cwd, s.tailId ?? s.id)`. Factor the tail setup
-   (today inline in `attachPilot`) into `startContentTail(s)` so it can be
-   restarted on a re-point. Control (submit/screen) stays on the pane — untouched.
+So the fork points **back** at the root, and a sibling never does. The new file
+mentioned the old id 41×; the old file never mentioned the new one. That gives a
+signal that is **safe under a shared cwd** and needs no OS-specific machinery.
 
-2. **Expose the pane pid.** `TmuxPilot.panePid()` via
-   `tmux display-message -p "#{pane_pid}"`; `PtyPilot` exposes `this.proc.pid`.
+## Why NOT the process/`/proc` approach (tried first, abandoned)
 
-3. **Detect the live transcript (pure core + a thin /proc reader).**
-   - `transcriptIdFromFd(target)` — pure: parse a `/proc/<pid>/fd/*` symlink
-     target, return the `<uuid>` iff it is a `…/projects/…/<uuid>.jsonl`. Tested.
-   - `liveTranscriptId(pid)` — walks the pane's process descendants, reads their
-     open fds, returns the transcript id the tree holds open (or null off-Linux).
+The first design read the file the pane's `claude` process held open via
+`/proc/<pid>/fd`, reasoning that the live process ties the new transcript to
+*this* pane unambiguously. It was implemented, then a probe against a real live
+session showed the flaw: **Claude Code does not hold the transcript open.** It
+opens-appends-closes per write, so a session at idle (and most of the time
+during work) has **no `.jsonl` fd at all**. A periodic fd scan almost always
+sees nothing — the detection would essentially never fire. `/proc` is also
+Linux-only, so macOS got nothing. The content signal above has neither problem.
 
-4. **Re-point, guardedly.** In the screen watcher (throttled, only while the
-   tracked transcript looks stale — no growth for N s while the pane is up):
-   call `liveTranscriptId(panePid)`. If it differs from `s.tailId ?? s.id`:
-   - set `s.tailId` to it, restart the content tail (fresh `startOffset` on the
-     new file — starts at EOF, so no history flood; `loadHistory` already replays
-     history on reload), and broadcast a one-line note that the chat re-attached.
-   - Also update the **channel's `sessionId`** to the live id and rename the pane
-     `sk-<old>`→`sk-<new>`, so a later restart resumes the *working* (small)
-     session, not the 8 MB one it will only fork again. (This is the half that
-     stops the fork from recurring every reboot.)
+## Design (as built)
 
-5. **Fallback (no /proc, or nothing found): surface, don't freeze silently.**
-   When the tracked transcript is stale while the pane is active and we cannot
-   identify the live one, broadcast a clear note: "context full — this agent may
-   have started a fresh session; check the terminal / reload," instead of a
-   silently frozen chat.
+1. **Decouple the tail from the session id.** `Live.tailId?: string` — the
+   transcript the content tail follows; defaults to `id`. The tail resolves its
+   path from `sessionFilePath(cwd, s.tailId ?? s.id)`. The tail setup, once
+   inline in `attachPilot`, is factored into `startContentTail(s)` so it can be
+   restarted on a re-point. Control (submit/screen) stays on the pane, untouched.
 
-## Why not just prevent the fork
+2. **`src/forktrace.ts` — pure detection over transcript content.**
+   - `rootIdFromChunk(chunk)` — the snake `session_id` from a slice of JSONL.
+   - `idFromTranscriptName(name)` — the own id from a `<uuid>.jsonl` filename.
+   - `rootIdOfFile(file)` — bounded HEAD read (1 MB) → the file's lineage root.
+   - `forkTarget(candidates, tailId, myRoot)` — pure pick: the NEWEST candidate
+     whose `root === myRoot` and whose `id !== tailId`. Same-lineage only (no
+     sibling); newest so a multi-step chain jumps to the live tip.
+   - `detectFork(myFile, tailId, myRoot)` — lists the tracked file's directory,
+     considers only files **newer** than `myFile` (the fork post-dates the
+     freeze; while the agent works normally ITS file is newest, so the common
+     case opens no transcript), reads each one's root, and returns the target.
 
-Shadok can't stop Claude Code auto-compacting / starting fresh on overflow, and
-it can't shrink an 8 MB transcript for it. Following the fork is the robust cure;
-proactively warning as the context gauge nears 100% is a separate, additive
-improvement (the gauge data already exists — `src/context.ts`).
+3. **Re-point in the screen watcher.** Every ~15 s (`forkTick % 50` at 300 ms),
+   `maybeFollowFork(s)`:
+   - `myRoot = s.rootId ??= rootIdOfFile(<tailId file>) ?? s.id` (cached; the
+     original session's root is its own id, hence the fallback);
+   - `detectFork(...)`; if it returns a new id, set `s.tailId`, **seed the new
+     file's tail position to 0** (`seedTailPos`, so its unseen backlog replays
+     rather than starting at EOF — still capped by `MAX_CATCHUP`), restart the
+     content tail, and broadcast a one-line note that the chat re-attached.
 
-## Verification plan
+## Out of scope (deliberate follow-ups)
 
-- Unit: `transcriptIdFromFd` (valid path → id; a non-transcript fd → null) and
-  the "should re-point?" decision (live id differs, is non-null, tracked is stale).
-- End to end on a Linux box: a session whose `claude` is made to write a second
-  transcript in the same dir → the tail follows the pane's file, never a
-  sibling's. Confirm a sibling agent's transcript in the same cwd is NOT adopted.
+- **Resume the live (small) session on restart.** Today a reload still resumes
+  `s.id` (the 8 MB original), which will just fork again. Resuming the lineage
+  tip instead is a natural next step, kept separate to limit blast radius.
+- **Proactive "context almost full" warning** from the gauge (`src/context.ts`)
+  before the fork happens.
+- A cleaner upstream: a Claude Code that exposes its current session id directly.
 
-## Out of scope (follow-ups)
+## Verification
 
-- Proactive "context almost full" warning from the gauge.
-- A cleaner upstream: ask Claude Code for the current session id directly, if a
-  future version exposes it (removes the /proc dependency).
+- Unit (`test/forktrace.test.ts`): the pure pickers, plus fs-level `rootIdOfFile`
+  and `detectFork` against real fixture files in a temp dir — fork followed,
+  sibling ignored, quiet no-op. Full suite green (693).
+- Ground truth: field semantics confirmed on TWO instances (correctsms fork pair
+  + a normal session on shadok-self, where root == own id).
