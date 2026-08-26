@@ -31,6 +31,7 @@ import { starCount } from "./stars.js";
 import { ensureFirstAgent } from "./first-agent.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { openBrowser } from "./open-browser.js";
+import { prepromptParts, type PrepromptPart } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
 import { scanUsage, sessionFilePath, tailSession, clearTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
@@ -1657,6 +1658,15 @@ function sessionModelSetting(profileName?: string | null): string | null {
   }
 }
 
+/**
+ * What shadok added to each agent's context, captured AT SPAWN.
+ *
+ * Not recomputed on demand: the profile and the permission mode can change
+ * after an agent started, and the panel must show what the RUNNING process was
+ * given — the same gap the UI already models as `profile` vs `appliedProfile`.
+ */
+const prepromptById = new Map<string, PrepromptPart[]>();
+
 function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
@@ -1694,6 +1704,22 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
   ];
+  const resolved = effectiveProfile(profile);
+  prepromptById.set(
+    id,
+    prepromptParts({
+      profileName: profileName ?? null,
+      role: resolved?.systemPrompt,
+      model: resolved?.model,
+      deny: resolved?.deny,
+      allow: resolved?.allow,
+      permissionMode,
+      // NAMES only: the values are in `env`, and never travel to a client.
+      secretNames: Object.keys(secretEnv),
+      pilotPrompt: sp ?? undefined,
+      ledgerReflex: lr,
+    }),
+  );
   return USE_TMUX
     ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id })
     : new PtyPilot({ cwd, args: fullArgs, env });
@@ -1862,6 +1888,7 @@ async function restartSession(s: Live): Promise<void> {
   broadcast(s, {
     type: "ready",
     sessionId: s.id,
+    preprompt: prepromptById.get(s.id) ?? [],
     cwd: s.cwd,
     branch: s.worktree?.branch ?? null,
     lastTurnMs: s.lastTurnMs,
@@ -1877,6 +1904,7 @@ function broadcastProfile(s: Live) {
 }
 
 function destroySession(s: Live) {
+  prepromptById.delete(s.id);
   sessionKeys.delete(s.id);
   if (s.screenTimer) clearInterval(s.screenTimer);
   s.screenTimer = null;
@@ -2631,6 +2659,7 @@ wss.on("connection", (ws: WebSocket) => {
             send({
               type: "ready",
               sessionId: id,
+              preprompt: prepromptById.get(id) ?? [],
               cwd: session.cwd,
               lastTurnMs: session.lastTurnMs,
             });
@@ -2688,6 +2717,7 @@ wss.on("connection", (ws: WebSocket) => {
           send({
             type: "ready",
             sessionId: id,
+            preprompt: prepromptById.get(id) ?? [],
             cwd: effectiveCwd,
             branch: worktree?.branch ?? null,
           });
