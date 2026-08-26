@@ -6,7 +6,22 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import WebSocket from "ws";
+// The WebSocket implementation, chosen at load: Node's BUILT-IN global first,
+// the `ws` package only as a fallback.
+//
+// Why the built-in first: seeded into ~/.claude/skills so any agent can pilot,
+// this file has no node_modules to resolve `ws` from, and the bare import broke
+// every agent piloting outside the repo with ERR_MODULE_NOT_FOUND.
+//
+// Why `ws` is still needed: the global WebSocket is only unflagged from Node 22.
+// This project supports Node >= 20 (README, and ci.yml runs the suite on 20),
+// where `globalThis.WebSocket` is undefined — dropping the package outright
+// traded a failure that hit agents outside the repo for one that hits EVERY
+// Node 20 user, in-repo included. The `.catch` keeps the absent-package case
+// (seeded copy) from throwing at import time, so the pure helpers this module
+// exports stay usable; `makeWS` reports it instead, when someone actually
+// connects.
+const WS = globalThis.WebSocket ?? (await import("ws").catch(() => null))?.default;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Only used to auto-start a server when none is reachable (a dev running pilotctl
@@ -23,6 +38,31 @@ export const wsUrl = () => `ws://localhost:${port()}/ws`;
 // Telegram bridge already do. Empty when no password is set → no change.
 export const authHeaders = () => (process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {});
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The built-in WebSocket is WHATWG (addEventListener + event.data); the rest of
+// this file uses the `ws` package's EventEmitter surface. Bridge them: `.on` /
+// `.once`, handing a `message` listener the raw payload (event.data — a string
+// for the JSON frames the server sends). Only these two methods are used here.
+// `ws` already has them, so it is returned untouched.
+//
+// Both accept the non-standard `{ headers }` option, which is what carries the
+// SHADOK_AUTH cookie past the password gate — verified against a real upgrade
+// handler on the built-in, not assumed.
+function makeWS(url, opts) {
+  if (!WS)
+    throw new Error(
+      "no WebSocket available: Node < 22 has no global one, and the `ws` package " +
+        "is not resolvable from here (a globally-seeded skill has no node_modules). " +
+        "Run pilotctl from the repo, or upgrade to Node 22+.",
+    );
+  const ws = new WS(url, opts);
+  if (typeof ws.on === "function") return ws; // the `ws` package: already an emitter
+  const add = (type, fn, once) =>
+    ws.addEventListener(type, type === "message" ? (e) => fn(e.data) : fn, once ? { once: true } : undefined);
+  ws.on = (type, fn) => (add(type, fn, false), ws);
+  ws.once = (type, fn) => (add(type, fn, true), ws);
+  return ws;
+}
 
 export function stateDir() {
   return process.env.SHADOK_STATE_DIR ?? path.join(os.homedir(), ".shadok-ai", "pilotctl");
@@ -69,7 +109,7 @@ export function parseArgs(argv) {
 
 function connect() {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(wsUrl(), { headers: authHeaders() });
+    const ws = makeWS(wsUrl(), { headers: authHeaders() });
     ws.once("open", () => resolve(ws));
     ws.once("error", reject);
   });
