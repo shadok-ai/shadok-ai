@@ -5,13 +5,13 @@
 `/proc` design below was tried first and **abandoned**; the reason is kept because
 it is the trap a future rewrite would fall into again.
 
-## Problem (observed on correctsms, the "Apple Ads" agent)
+## Problem (observed on a production instance)
 
 A shadok channel keys everything by a fixed `sessionId`: the tmux pane
 (`sk-<id>`), the transcript the tail reads (`<id>.jsonl`), and the channel
 record. That holds until Claude Code **forks its session id mid-flight**:
 
-- the Apple Ads transcript grew to **8 MB**, and a turn hit **"Prompt is too
+- the agent's transcript grew to **8 MB**, and a turn hit **"Prompt is too
   long"** (the request exceeded the context window);
 - the live `claude` in the pane then continued under a **new session id**
   (a fresh `<newid>.jsonl`), leaving `<oldid>.jsonl` frozen at the error;
@@ -24,15 +24,15 @@ Exactly the reported symptom: chat frozen, terminal OK.
 ## The trap that makes the obvious fix WRONG
 
 "When the tracked transcript freezes while the pane is alive, adopt the newest
-`.jsonl` in the cwd's project dir" is unsafe: **agents can share a cwd.** On
-correctsms every agent runs in `/workspace`, so *all* their transcripts live in
-`~/.claude/projects/-workspace/`. "Newest in the dir" could be a *sibling
-agent's* transcript — adopting it would show one agent's content in another's
-chat. A data-integrity disaster across the fleet.
+`.jsonl` in the cwd's project dir" is unsafe: **agents can share a cwd.** On a
+containerised instance every agent runs in `/workspace`, so *all* their
+transcripts live in `~/.claude/projects/-workspace/`. "Newest in the dir" could
+be a *sibling agent's* transcript — adopting it would show one agent's content
+in another's chat. A data-integrity disaster across the fleet.
 
 ## What the transcripts actually record (the ground truth)
 
-Inspecting the real Apple Ads pair on correctsms settled the design. Every
+Inspecting a real fork pair settled the design. Every
 Claude Code record carries **two** ids:
 
 - `sessionId` (camelCase) — the file's OWN id, equal to its filename.
@@ -105,5 +105,5 @@ Linux-only, so macOS got nothing. The content signal above has neither problem.
 - Unit (`test/forktrace.test.ts`): the pure pickers, plus fs-level `rootIdOfFile`
   and `detectFork` against real fixture files in a temp dir — fork followed,
   sibling ignored, quiet no-op. Full suite green (693).
-- Ground truth: field semantics confirmed on TWO instances (correctsms fork pair
+- Ground truth: field semantics confirmed on TWO instances (a real fork pair
   + a normal session on shadok-self, where root == own id).
