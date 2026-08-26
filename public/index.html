@@ -5440,9 +5440,26 @@
   $("secretsOverlay").addEventListener("click", (e) => { if (e.target === $("secretsOverlay")) $("secretsOverlay").hidden = true; });
 
   // ── Shared ledger viewer (read-only) ──────────────────────────────────
-  function ldgAge(updatedAt) {
-    const d = Math.floor((Date.now() - (updatedAt || Date.now())) / 86400000);
-    return d <= 0 ? "today" : d === 1 ? "1d ago" : d + "d ago";
+  // An ACTUAL date + time, not just "today/Nd ago" — a ledger filled today
+  // showed "today" on every row, which read as no dates at all. Browser-local,
+  // year shown only when it isn't the current one. A relative age is kept as a
+  // trailing hint so freshness is still legible at a glance.
+  function ldgWhen(updatedAt) {
+    if (!updatedAt) return "";
+    const dt = new Date(updatedAt);
+    const now = new Date();
+    const abs = dt.toLocaleString(undefined, {
+      day: "numeric", month: "short",
+      year: dt.getFullYear() === now.getFullYear() ? undefined : "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+    // Calendar-day difference (not a rolling 24 h), so the hint agrees with the
+    // date shown — an entry from yesterday evening reads "yesterday", not "today".
+    const d0 = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+    const n0 = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const days = Math.round((n0.getTime() - d0.getTime()) / 86400000);
+    const age = days <= 0 ? "today" : days === 1 ? "yesterday" : days + "d ago";
+    return abs + " · " + age;
   }
   function renderLedger(entries) {
     const ul = $("ledgerList");
@@ -5458,7 +5475,8 @@
       head.appendChild(ent);
       if (e.status) { const st = document.createElement("span"); st.className = "ldg-status"; st.textContent = e.status; head.appendChild(st); }
       const meta = document.createElement("div"); meta.className = "ldg-meta";
-      meta.textContent = ldgAge(e.updatedAt) + (e.source ? " · " + e.source : "");
+      meta.textContent = ldgWhen(e.updatedAt) + (e.source ? " · " + e.source : "");
+      if (e.updatedAt) meta.title = new Date(e.updatedAt).toLocaleString();
       li.append(head, meta);
       if (e.note) { const n = document.createElement("div"); n.className = "ldg-note"; n.textContent = e.note; li.appendChild(n); }
       ul.appendChild(li);
