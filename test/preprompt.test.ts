@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { prepromptParts } from "../src/preprompt.js";
+import { parseSkillMeta, prepromptParts } from "../src/preprompt.js";
 
 test("an agent with nothing added shows nothing", () => {
   // A bare spawn has no role, no guardrails and no cockpit prompt: the panel
@@ -50,4 +50,33 @@ test("guardrails collapse into one section, and vanish when there are none", () 
 test("blank strings count as absent", () => {
   // A profile whose prompt is "   " must not open an empty section.
   assert.deepEqual(prepromptParts({ role: "   ", pilotPrompt: "\n\n", ledgerReflex: "" }), []);
+});
+
+test("capabilities list descriptions, never whole skills", () => {
+  // Claude Code loads a skill's DESCRIPTION into context and reads its body only
+  // when it decides to use it. Pasting five whole skills would be wrong as well
+  // as unreadable.
+  const parts = prepromptParts({
+    capabilities: [
+      { name: "shadok-scheduler", description: "Schedule recurring prompts." },
+      { name: "shadok-secrets", description: "Store a credential it obtained." },
+    ],
+  });
+  assert.equal(parts[0].label, "Capabilities installed");
+  assert.match(parts[0].text, /shadok-scheduler — Schedule recurring prompts\./);
+  assert.match(parts[0].text, /read on demand/i);
+  // Global, not per-agent, and rewritten at boot: both are surprising enough to
+  // belong on screen rather than in someone's memory.
+  assert.match(parts[0].text, /whole machine/i);
+});
+
+test("no capabilities means no section", () => {
+  assert.deepEqual(prepromptParts({ capabilities: [] }), []);
+});
+
+test("parseSkillMeta reads the frontmatter, and tolerates a broken one", () => {
+  const md = ['---', 'name: shadok-reload', 'description: Reload your own session.', '---', '# body'].join("\n");
+  assert.deepEqual(parseSkillMeta(md), { name: "shadok-reload", description: "Reload your own session." });
+  // A skill we cannot parse is still installed: better listed bare than hidden.
+  assert.deepEqual(parseSkillMeta("# no frontmatter"), {});
 });
