@@ -1307,6 +1307,25 @@
     backdrop-filter: blur(2px);
   }
   .overlay[hidden] { display: none; }
+  /* The context shadok added, at the head of the conversation. Collapsed by
+     default: it is reference material, not part of the exchange. */
+  .preprompt { margin: 0 0 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised); }
+  .preprompt > summary {
+    cursor: pointer; padding: 8px 12px; color: var(--text-dim);
+    font-size: 12px; font-family: var(--mono); list-style: none;
+  }
+  .preprompt > summary::-webkit-details-marker { display: none; }
+  .preprompt > summary::before { content: "▸ "; }
+  .preprompt[open] > summary::before { content: "▾ "; }
+  .preprompt > summary:hover { color: var(--amber); }
+  .pp-body { padding: 0 12px 12px; }
+  .pp-part { border-top: 1px solid var(--line); padding-top: 10px; margin-top: 10px; }
+  .pp-part:first-child { border-top: 0; margin-top: 0; }
+  .pp-head { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; }
+  .pp-head strong { font-size: 12px; }
+  .pp-src { color: var(--text-dim); font-size: 11px; font-family: var(--mono); }
+  .pp-text { white-space: pre-wrap; font-size: 12px; line-height: 1.5; color: var(--text-dim); }
+  .pp-note { color: var(--text-dim); font-size: 11px; margin-top: 10px; font-style: italic; }
   /* Above the other popins: during the tour it is the thing being interacted
      with, and the sign-in card may already be on screen behind it. */
   #tourOverlay { z-index: 60; }
@@ -2576,6 +2595,7 @@
        () => setMuted(tab, !tab.muted)],
       ["↻ Reload agent", () => reloadTab(tab)],
       ["✎ Rename", () => startRename(tab)],
+      ["☰ Context sent", () => showPreprompt(tab)],
     ];
     // The profile is only set here for a launched agent: otherwise the creation
     // box carries it, and there is no session to restart.
@@ -2639,6 +2659,62 @@
     }
     // Pin it at the very top of the channel list (above groups & other tabs).
     ungroupedEl.insertBefore(tab.btnEl, ungroupedEl.firstChild);
+  }
+
+  /**
+   * The context shadok added to this agent, at the head of its conversation.
+   *
+   * Rendered from `ready`, so it comes back on every attach and every reload —
+   * and it is what the RUNNING process was given, captured at spawn rather than
+   * recomputed, since a profile can be changed under a live agent.
+   */
+  function renderPreprompt(tab, parts) {
+    tab.preprompt = parts;
+    const host = tab.transcriptEl;
+    if (!host) return;
+    host.querySelector(".preprompt")?.remove();
+    if (!parts.length) return;
+    const d = document.createElement("details");
+    d.className = "preprompt";
+    const sum = document.createElement("summary");
+    sum.textContent = `context sent to this agent — ${parts.length} section${parts.length > 1 ? "s" : ""}`;
+    d.appendChild(sum);
+    const body = document.createElement("div");
+    body.className = "pp-body";
+    for (const p of parts) {
+      const sec = document.createElement("div");
+      sec.className = "pp-part";
+      const head = document.createElement("div");
+      head.className = "pp-head";
+      const strong = document.createElement("strong");
+      strong.textContent = p.label;
+      const src = document.createElement("span");
+      src.className = "pp-src";
+      src.textContent = p.source;
+      head.append(strong, src);
+      const txt = document.createElement("div");
+      txt.className = "pp-text";
+      // textContent, never innerHTML: these strings are prompts, and a prompt
+      // is exactly the kind of text an agent can influence (invariant 13).
+      txt.textContent = p.text;
+      sec.append(head, txt);
+      body.appendChild(sec);
+    }
+    const note = document.createElement("div");
+    note.className = "pp-note";
+    note.textContent =
+      "This is what shadok adds. Claude Code adds its own — CLAUDE.md, skills, its built-in instructions — which shadok never sees.";
+    body.appendChild(note);
+    d.appendChild(body);
+    host.insertBefore(d, host.firstChild);
+  }
+
+  /** Open it from the channel's ⋯ menu and scroll it into view. */
+  function showPreprompt(tab) {
+    const d = tab.transcriptEl?.querySelector(".preprompt");
+    if (!d) return;
+    d.open = true;
+    d.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function closeTab(tab) {
@@ -4521,6 +4597,7 @@
         }
         break;
       case "ready":
+        if (Array.isArray(msg.preprompt)) renderPreprompt(t, msg.preprompt);
         t.cwd = msg.cwd;
         t.sessionId = msg.sessionId;
         t.branch = msg.branch || null;
