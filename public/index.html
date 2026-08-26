@@ -677,6 +677,9 @@
   /* Un prompt suivi se lit mais ne s'édite pas : le griser dit pourquoi. */
   #profRole.tracked { opacity: .75; border-style: dashed; }
   .prof-drift { margin-left: 8px; font-size: 11px; color: var(--amber); }
+  /* À qui ce secret est injecté. Discret : c'est une information de contexte,
+     pas une alerte — contrairement à sec-orphan juste en dessous. */
+  .sec-users { margin-left: 8px; font-size: 11px; color: var(--text-dim); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Profile picker for a running agent (the tab's context menu). */
   #profSwitchGrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; padding: 0 18px 18px; }
@@ -1955,7 +1958,7 @@
     profileBadges,
     defaultAgentName,
     hasReadonlyPreset,
-    applyReadonlyPreset, isManagedProfile, profileSaveBody } from "/profile-card.js";
+    applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js";
   import { notifyState, BLINK_MS } from "/notify.js";
   import { echoAuthor } from "/echo-author.js";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js";
@@ -1969,6 +1972,7 @@
   window.profileBlurb = profileBlurb;
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
+  window.secretUsers = secretUsers;
   window.profileSaveBody = profileSaveBody;
   window.isManagedProfile = isManagedProfile;
   window.hasReadonlyPreset = hasReadonlyPreset;
@@ -5262,19 +5266,28 @@
     const ul = $("secretsList");
     ul.innerHTML = "";
     if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
-    // How many profiles reference each secret. A blurb is read once; a secret
-    // marked "unused" shows the problem where the problem is.
-    const usage = {};
-    for (const p of profileCache) for (const n of p.secrets || []) usage[n] = (usage[n] || 0) + 1;
     for (const k of vaultNames) {
       const li = document.createElement("li");
       const code = document.createElement("code"); code.textContent = k;
-      if (!usage[k]) {
-        const warn = document.createElement("span");
-        warn.className = "sec-orphan";
-        warn.textContent = "⚠ no profile uses it";
-        warn.title = "No agent will ever receive this secret until a profile references it";
-        code.appendChild(warn);
+      // Qui reçoit ce secret. Le panneau disait déjà « personne » ; il ne disait
+      // pas À QUI il sert quand il sert, ce qui obligeait à ouvrir les profils
+      // un par un. Garde du pont ESM (invariant 10) : pas de module, pas de
+      // mention, plutôt qu'une exception qui viderait la liste.
+      const users = window.secretUsers ? window.secretUsers(profileCache, k) : null;
+      if (users) {
+        const tag = document.createElement("span");
+        if (users.length) {
+          tag.className = "sec-users";
+          tag.textContent = "→ " + users.join(", ");
+          tag.title = users.length === 1
+            ? "Injected as an environment variable into agents running " + users[0]
+            : "Injected as an environment variable into agents running any of: " + users.join(", ");
+        } else {
+          tag.className = "sec-orphan";
+          tag.textContent = "⚠ no profile uses it";
+          tag.title = "No agent will ever receive this secret until a profile references it";
+        }
+        code.appendChild(tag);
       }
       const del = document.createElement("button");
       del.textContent = "✕"; del.title = "Remove from vault";

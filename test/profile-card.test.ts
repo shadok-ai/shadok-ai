@@ -6,6 +6,7 @@ import {
   profileBlurb,
   profileBadges,
   defaultAgentName,
+  secretUsers,
   profileSaveBody,
   isManagedProfile,
   hasReadonlyPreset,
@@ -188,4 +189,33 @@ test("saveBody: les autres champs passent toujours", () => {
   assert.deepEqual(b.deny, ["Bash(git push:*)"]);
   assert.equal(b.model, "opus");
   assert.deepEqual(b.secrets, ["K"]);
+});
+
+// ── Qui utilise un secret du coffre ─────────────────────────────────────
+const VAULT_PROFILES = [
+  { name: "Shadok-Marketing", secrets: ["GOOGLE_ADWORDS", "GA4"] },
+  { name: "Shadok-Content", secrets: ["GA4"] },
+  { name: "Shadok-dev" },                                  // pas de clé `secrets`
+  { name: "Shadok-Support", secrets: [] },
+  { name: "Shadok-Tweak", secrets: ["GH_TOKEN"] },         // masqué du panneau
+];
+
+test("secretUsers: les profils qui référencent un secret, triés", () => {
+  assert.deepEqual(secretUsers(VAULT_PROFILES, "GA4"), ["Shadok-Content", "Shadok-Marketing"]);
+  assert.deepEqual(secretUsers(VAULT_PROFILES, "GOOGLE_ADWORDS"), ["Shadok-Marketing"]);
+});
+
+test("secretUsers: un secret que personne ne référence", () => {
+  assert.deepEqual(secretUsers(VAULT_PROFILES, "ORPHELIN"), []);
+});
+
+test("secretUsers: un rôle MASQUÉ du panneau compte quand même", () => {
+  // Shadok-Tweak n'apparaît pas dans la liste des profils, mais il reçoit bien
+  // le secret : l'annoncer « inutilisé » serait faux.
+  assert.deepEqual(secretUsers(VAULT_PROFILES, "GH_TOKEN"), ["Shadok-Tweak"]);
+});
+
+test("secretUsers: entrées bancales ignorées, pas de plantage", () => {
+  assert.deepEqual(secretUsers([null, { secrets: ["X"] }, { name: "OK", secrets: ["X"] }], "X"), ["OK"]);
+  assert.deepEqual(secretUsers(null, "X"), []);
 });
