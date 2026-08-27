@@ -118,12 +118,16 @@ went wrong" is the difference between asking for a new link and filing a bug.
 
 A **Users** panel beside Profiles and Secrets: the list (name, role, "invitation
 pending"), create, change role, delete. Shown to admins only — and **refused
-server-side**, not merely hidden. An admin cannot delete or demote themselves
-into an instance with no admin left.
+server-side**, not merely hidden.
+
+There is no "last admin" guard, and none is needed: the bootstrap admin lives in
+the password, not in the file, so it cannot be deleted and lockout is impossible.
+What IS refused is creating a file account named `admin`, which would shadow it.
 
 ## 7. Endpoints
 
 - `GET /users` — the list (names, roles, pending invitations; never a hash).
+  Admin only: a member has no use for it, and the shortest surface wins.
 - `POST /users` — create + issue an invitation. Admin only.
 - `DELETE /users` — remove an account. Admin only.
 - `POST /users/role` — change a role. Admin only.
@@ -132,6 +136,10 @@ into an instance with no admin left.
 - `GET /me` — who the current session is, so the client can label itself.
 - `POST /login` — now accepts `{ user, password }`, and still accepts
   `{ password }` alone, which means the admin.
+
+The login page gains a **username** field beside the password. Left empty, it
+means the admin — so the existing muscle memory (type the password, enter) still
+works.
 
 ## 8. What breaks, once
 
