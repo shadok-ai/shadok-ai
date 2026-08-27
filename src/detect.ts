@@ -152,3 +152,56 @@ export function nextScreenDelay(unchangedStreak: number, busy: boolean): number 
   const grown = SCREEN_FAST_MS * 2 ** (unchangedStreak - SCREEN_CALM_AFTER + 1);
   return Math.min(grown, SCREEN_SLOW_MS);
 }
+
+/** The option number the ❯ cursor is currently on in a single-select dialog. */
+export function selectedOptionN(screen: string): number | null {
+  for (const l of screen.split("\n")) {
+    const m = l.match(/^\s*❯\s*(\d+)\.\s/);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
+
+/** The slice of a pilot `moveToOption` needs: read the screen, press a key, and
+ *  wait until the screen satisfies a predicate. Both PtyPilot and TmuxPilot match
+ *  it; a fake one lets the overshoot regression be tested without a real TUI. */
+export interface DialogPilot {
+  screen(): string;
+  press(key: "up" | "down"): void;
+  waitFor(predicate: (screen: string) => boolean, opts?: { timeoutMs?: number }): Promise<string>;
+}
+
+/**
+ * Moves the ❯ cursor onto option `n` — one press per step, WAITING for the
+ * cursor to actually move before the next press. Returns whether it landed on n.
+ *
+ * The wait is the whole point. A fixed delay after each press overshot on the
+ * tmux transport: its screen is a mirror refreshed on a ~300ms poll
+ * (SCREEN_FAST_MS), so a 160ms read came back stale — the cursor still on the old
+ * option — and the loop pressed down again and again, sailing past the target.
+ * Single-select answers then landed on the LAST option, so the web form "did
+ * nothing" and the question re-appeared. node-pty's screen is synchronous and hid
+ * it entirely. `waitFor` polls until the move lands, which is correct on both.
+ */
+export async function moveToOption(pilot: DialogPilot, n: number): Promise<boolean> {
+  let cur = selectedOptionN(pilot.screen());
+  if (cur === null) return false; // unreadable cursor: the caller deals with it
+  for (let i = 0; i < 16 && cur !== n; i++) {
+    const from = cur;
+    pilot.press(from < n ? "down" : "up");
+    try {
+      await pilot.waitFor(
+        (s) => {
+          const c = selectedOptionN(s);
+          return c !== null && c !== from;
+        },
+        { timeoutMs: 2000 },
+      );
+    } catch {
+      return false; // the cursor never moved — let the caller try the digit
+    }
+    cur = selectedOptionN(pilot.screen());
+    if (cur === null) return false;
+  }
+  return cur === n;
+}

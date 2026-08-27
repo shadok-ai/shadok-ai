@@ -274,6 +274,17 @@ Auth section of `docs/architecture.md`).
 3. **Single-select dialogs are navigated, not typed.** `choose` moves the `❯`
    cursor with arrow keys then Enter — preview-style dialogs ignore digit keys.
    Multi-select `toggle` uses the digit; `confirm` does Tab→Submit→Enter.
+   **`moveToOption` must WAIT for the cursor to move between presses, never poll a
+   fixed delay** (`src/detect.ts`, pure-tested via a lag-simulating fake pilot).
+   A `TmuxPilot.screen()` is a MIRROR refreshed on a ~300ms poll (`SCREEN_FAST_MS`),
+   so a keystroke is invisible until the next capture: a 160ms read came back with
+   the cursor still on the old option, the loop pressed again, and it sailed past
+   the target — single-select answers all landed on the LAST option, so every form
+   "did nothing" and re-appeared. This broke EVERY select in web mode on the
+   default (tmux) transport; `PtyPilot.screen()` is synchronous and hid it
+   entirely, which is why only an end-to-end run against a real tmux agent found
+   it. `waitFor` (both pilots have it) polls until the move lands — correct on
+   either transport.
 4. **The resume-from-summary prompt is auto-answered** ("full session as-is")
    at startup and never surfaced (`SHADOK_RESUME_SUMMARY=1` to disable).
 5. **Worktrees never lose work — but an empty one is pruned on close.**
