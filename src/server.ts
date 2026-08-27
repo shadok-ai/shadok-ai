@@ -23,7 +23,7 @@ import {
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { screenShowsWork } from "./detect.js";
+import { screenShowsWork, moveToOption } from "./detect.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
@@ -2383,32 +2383,6 @@ async function finishTurn(s: Live) {
     // during a turn is exactly what the queue exists to avoid.
     flushParentInbox(s.id);
   }
-}
-
-/** The option number the ❯ cursor is currently on, or null. */
-function selectedOptionN(screen: string): number | null {
-  for (const l of screen.split("\n")) {
-    const m = l.match(/^\s*❯\s*(\d+)\.\s/);
-    if (m) return Number(m[1]);
-  }
-  return null;
-}
-
-/**
- * Selects option `n` in a single-select dialog by moving the ❯ cursor with
- * arrow keys, then Enter — the only reliable way for preview-style dialogs
- * that ignore digit keys. Falls back to typing the digit if the cursor can't
- * be read.
- */
-async function moveToOption(pilot: Pilot, n: number): Promise<boolean> {
-  for (let i = 0; i < 12; i++) {
-    const cur = selectedOptionN(pilot.screen());
-    if (cur === null) return false; // unreadable cursor: the caller deals with it
-    if (cur === n) return true;
-    pilot.press(cur < n ? "down" : "up");
-    await new Promise((r) => setTimeout(r, 160));
-  }
-  return false;
 }
 
 async function selectOption(pilot: Pilot, n: number): Promise<void> {
