@@ -16,7 +16,8 @@ Then let it steer you:
   ("de mémoire, à faire — dis-moi si c'est déjà réglé"), don't assert;
 - a **stale** record (days old) → confirm before acting.
 
-**You are also pushed the changes.** Before each user message you may receive a
+**You are also pushed the changes.** Ahead of each turn you are given — a user
+message, or a scheduled/automated run — you may receive a
 `⟦ledger · N updates since your last message⟧` block listing what sibling agents
 resolved or decided since you last heard — each line `• [id] entity — status`.
 Treat it as current status (don't re-raise what it shows resolved). It is the
