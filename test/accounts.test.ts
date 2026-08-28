@@ -105,3 +105,48 @@ test("session: a user name containing a dot still round-trips", () => {
   const t = signSession("first.last", 1_000, SECRET);
   assert.equal(readSession(t, SECRET, 2_000, WEEK), "first.last");
 });
+
+import { newInvite, inviteVerdict, INVITE_TTL_MS, type Account } from "../src/accounts.js";
+
+const withInvite = (over: Partial<Account> = {}): Account => ({
+  name: "bob", role: "member", createdAt: 0,
+  invite: { token: "tok", expiresAt: 1_000 }, ...over,
+});
+
+test("invite: a fresh one is valid until it expires", () => {
+  assert.deepEqual(inviteVerdict(withInvite(), "tok", 999), { ok: true });
+});
+
+test("invite: an unknown account says so", () => {
+  const v = inviteVerdict(undefined, "tok", 0);
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /unknown/i);
+});
+
+test("invite: a wrong token is refused", () => {
+  const v = inviteVerdict(withInvite(), "nope", 0);
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /invalid/i);
+});
+
+test("invite: an expired link says EXPIRED, not 'invalid'", () => {
+  // "This link has expired" tells you to ask for another one; "invalid" sends
+  // you looking for a bug.
+  const v = inviteVerdict(withInvite(), "tok", 1_001);
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /expired/i);
+});
+
+test("invite: an already redeemed link says so", () => {
+  const used: Account = { name: "bob", role: "member", createdAt: 0, passwordHash: "scrypt$aa$bb" };
+  const v = inviteVerdict(used, "tok", 0);
+  assert.equal(v.ok, false);
+  assert.match((v as { error: string }).error, /already/i);
+});
+
+test("newInvite: a random token and a one-week life", () => {
+  const a = newInvite(0), b = newInvite(0);
+  assert.notEqual(a.token, b.token);
+  assert.ok(a.token.length >= 32);
+  assert.equal(a.expiresAt, INVITE_TTL_MS);
+});

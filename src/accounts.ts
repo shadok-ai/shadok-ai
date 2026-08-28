@@ -144,3 +144,32 @@ export function readSession(
     return null;
   }
 }
+
+/** A week: long enough to hand the link over by another channel, short enough
+ *  that a forgotten one stops working. */
+export const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
+
+export function newInvite(now: number): { token: string; expiresAt: number } {
+  return { token: randomBytes(24).toString("base64url"), expiresAt: now + INVITE_TTL_MS };
+}
+
+/**
+ * Whether this link may still be redeemed.
+ *
+ * Each refusal names its own reason: "expired" tells the holder to ask for a
+ * new link, "already redeemed" tells them the account is live, and "invalid" is
+ * a real mismatch. One generic error would send all three to the wrong place.
+ */
+export function inviteVerdict(
+  account: Account | undefined,
+  token: string,
+  now: number,
+): { ok: true } | { ok: false; error: string } {
+  if (!account) return { ok: false, error: "unknown invitation" };
+  if (!account.invite)
+    return { ok: false, error: "this invitation was already redeemed — sign in instead" };
+  if (account.invite.token !== token) return { ok: false, error: "invalid invitation" };
+  if (now > account.invite.expiresAt)
+    return { ok: false, error: "this invitation has expired — ask for a new link" };
+  return { ok: true };
+}
