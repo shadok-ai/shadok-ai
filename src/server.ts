@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual, createHmac } from "node:crypto";
 import { execFile, spawn as spawnChild } from "node:child_process";
+import type { IncomingMessage } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import http from "node:http";
@@ -140,6 +141,21 @@ import {
   shippedProfile,
   withManagedPrompt,
 } from "./profiles.js";
+import {
+  BOOTSTRAP_ADMIN,
+  loadAccounts,
+  verifyPassword,
+  sessionSecret,
+  signSession,
+  readSession,
+  saveAccounts,
+  userWriteVerdict,
+  newInvite,
+  inviteVerdict,
+  hashPassword,
+  promptAuthor,
+  type Role,
+} from "./accounts.js";
 import { ensureSelfRepo } from "./selfrepo.js";
 import {
   createWorktree,
@@ -216,9 +232,17 @@ const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
 // user back to the login screen. Any instance with the same password accepts
 // the same cookie; it's one-way, so the cookie never leaks the password. The
 // in-process Telegram bridge presents this same cookie on its WS.
-const AUTH_TOKEN = GUI_PASSWORD
-  ? createHmac("sha256", GUI_PASSWORD).update("shadok-ai-auth-v1").digest("hex")
-  : "";
+/** A week, matching the cookie's Max-Age: one is the other's enforcement. */
+const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+// Sessions are signed with a per-instance secret, NOT with the password: the
+// password reaches every agent's environment, so signing with it would let an
+// agent mint a cookie for anyone. Drawn lazily, so an instance with no password
+// never creates a key file it will not use.
+let sessionKeyCache: Buffer | null = null;
+const signingSecret = (): Buffer => (sessionKeyCache ??= sessionSecret());
+/** The Telegram bridge and the agents authenticate as the bootstrap admin. */
+const adminCookie = (): string | undefined =>
+  GUI_PASSWORD ? `sk_auth=${signSession(BOOTSTRAP_ADMIN, Date.now(), signingSecret())}` : undefined;
 
 // The live Telegram bridge handle + the port we actually bound, so the
 // /telegram endpoint can tear it down and recreate it hot (no server restart).
@@ -228,7 +252,7 @@ let tgBridge: TelegramHandle = {
   status: () => ({ username: null, tokenError: null }),
 };
 let boundPort = 0;
-const tgCookie = () => (GUI_PASSWORD ? `sk_auth=${AUTH_TOKEN}` : undefined);
+const tgCookie = adminCookie;
 
 /**
  * Start the instance's lead agent when it has no channel at all.
@@ -626,11 +650,26 @@ function cookieToken(cookieHeader: string | undefined): string | null {
   const m = /(?:^|;\s*)sk_auth=([^;]+)/.exec(cookieHeader ?? "");
   return m ? decodeURIComponent(m[1]) : null;
 }
-function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
-  if (!GUI_PASSWORD) return true;
+/**
+ * Who this request is, or null. Re-reads the account file every time, so
+ * deleting an account or changing a role takes effect at once — that is what
+ * buys us the absence of a session store.
+ */
+function currentAccount(req: { headers: Record<string, unknown> }): { name: string; role: Role } | null {
+  if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
   const tok = cookieToken(req.headers.cookie as string | undefined);
-  if (!tok || tok.length !== AUTH_TOKEN.length) return false;
-  return timingSafeEqual(Buffer.from(tok), Buffer.from(AUTH_TOKEN));
+  if (!tok) return null;
+  const user = readSession(tok, signingSecret(), Date.now(), SESSION_TTL_MS);
+  if (!user) return null;
+  if (user === BOOTSTRAP_ADMIN) return { name: BOOTSTRAP_ADMIN, role: "admin" };
+  const acct = loadAccounts().find((a) => a.name === user);
+  // No hash means an invitation that was never redeemed: not a login yet.
+  if (!acct?.passwordHash) return null;
+  return { name: acct.name, role: acct.role };
+}
+
+function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
+  return currentAccount(req) !== null;
 }
 function passwordMatches(input: string): boolean {
   const a = Buffer.from(input);
@@ -646,25 +685,54 @@ const LOGIN_HTML = `<!doctype html><meta charset=utf8><meta name=viewport conten
 form{background:#1b1d22;padding:28px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5);width:min(320px,90vw)}
 h1{font-size:16px;margin:0 0 14px;color:#e0a44a}input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:7px;border:1px solid #333;background:#0d0f12;color:inherit;font-size:14px}
 button{margin-top:12px;width:100%;padding:9px;border-radius:7px;border:none;background:#e0a44a;color:#14161a;font-weight:600;cursor:pointer}.err{color:#e26;font-size:12px;margin-top:8px;min-height:14px}</style>
-<form id=f>
-<h1>◆ shadok-ai</h1><input id=pw type=password placeholder="Password" autofocus autocomplete=current-password><button>Enter</button><div class=err></div></form>
+<form id=f data-action="/login">
+<h1>◆ shadok-ai</h1><input id=u placeholder="User (blank = admin)" autocomplete=username><input id=pw type=password placeholder="Password" autofocus autocomplete=current-password><button>Enter</button><div class=err></div></form>
 <script nonce="${NONCE_PLACEHOLDER}">
 document.getElementById("f").addEventListener("submit", (e) => {
   e.preventDefault();
-  fetch("/login", {
+  const f = e.currentTarget;
+  // One form, two destinations: signing in, or choosing a password for the
+  // first time. The user field only exists on the first.
+  const u = document.getElementById("u");
+  const body = u
+    ? { user: u.value, password: document.getElementById("pw").value }
+    : { password: document.getElementById("pw").value };
+  fetch(f.dataset.action, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password: document.getElementById("pw").value }),
-  }).then((r) => (r.ok ? location.reload() : (document.querySelector(".err").textContent = "Wrong password")));
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    if (r.ok) return location.assign("/");
+    const j = await r.json().catch(() => ({}));
+    document.querySelector(".err").textContent = j.error || "Wrong username or password";
+  });
 });
 </script>`;
 
-/** Serves the login page with its CSP and nonce (it sits outside the gate, so
- *  it does not go through the index route). */
-function sendLogin(res: express.Response): void {
+/** Serves a login-shaped page with its CSP and nonce (these sit outside the
+ *  gate, so they do not go through the index route). */
+function sendAuthPage(res: express.Response, html: string, status: number): void {
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
-  res.status(401).type("html").send(injectNonce(LOGIN_HTML, nonce));
+  res.status(status).type("html").send(injectNonce(html, nonce));
+}
+
+function sendLogin(res: express.Response): void {
+  sendAuthPage(res, LOGIN_HTML, 401);
+}
+
+/** The page an invited person lands on: the login shell, pointed at the
+ *  redemption route. Same CSP and same nonce — a page that exempted itself from
+ *  the policy protecting every other page would be a strange message. */
+function invitePage(name: string, token: string): string {
+  return LOGIN_HTML
+    .replace("<title>shadok-ai — login</title>", "<title>shadok-ai — choose a password</title>")
+    .replace('data-action="/login"', `data-action="/invite/${encodeURIComponent(token)}"`)
+    // The name is the admin's input: it must never be able to close the tag.
+    .replace("◆ shadok-ai", `Welcome, ${name.replace(/[<>&"']/g, "")}`)
+    .replace('<input id=u placeholder="User (blank = admin)" autocomplete=username>', "")
+    .replace('placeholder="Password"', 'placeholder="Choose a password (8+ characters)"')
+    .replace("autocomplete=current-password", "autocomplete=new-password");
 }
 
 /** This server's same-origin guard (see `originAllowed`). */
@@ -712,21 +780,71 @@ app.use((req, res, next) => {
   res.status(403).json({ error: "cross-origin request refused" });
 });
 
-// Login endpoint (always reachable) — sets an HttpOnly session cookie.
+// Login endpoint (always reachable) — sets an HttpOnly cookie naming the user.
 app.post("/login", (req, res) => {
   if (!GUI_PASSWORD) return res.json({ ok: true });
-  if (passwordMatches(String(req.body?.password ?? ""))) {
-    res.setHeader(
-      "Set-Cookie",
-      `sk_auth=${AUTH_TOKEN}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`,
-    );
-    return res.json({ ok: true });
-  }
-  return res.status(401).json({ error: "wrong password" });
+  const user = String(req.body?.user ?? "").trim();
+  const password = String(req.body?.password ?? "");
+  // No username means the instance password: the habit of typing just the
+  // password keeps working, and that IS the bootstrap admin.
+  const ok =
+    !user || user === BOOTSTRAP_ADMIN
+      ? passwordMatches(password)
+      : (() => {
+          const a = loadAccounts().find((x) => x.name === user);
+          return !!a?.passwordHash && verifyPassword(password, a.passwordHash);
+        })();
+  if (!ok) return res.status(401).json({ error: "wrong username or password" });
+  const name = user || BOOTSTRAP_ADMIN;
+  res.setHeader(
+    "Set-Cookie",
+    `sk_auth=${signSession(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
+  );
+  return res.json({ ok: true, user: name });
 });
-// Gate everything else behind the cookie when a password is set.
+
+// Redeeming an invitation happens WITHOUT a session: the whole point is that
+// the holder cannot get in yet. Hence these sit before the gate.
+app.get("/invite/:token", (req, res) => {
+  const token = String(req.params.token ?? "");
+  const acct = loadAccounts().find((a) => a.invite?.token === token);
+  const v = inviteVerdict(acct, token, Date.now());
+  if (!v.ok) return res.status(400).type("text").send(v.error);
+  return sendAuthPage(res, invitePage(acct!.name, token), 200);
+});
+
+app.post("/invite/:token", (req, res) => {
+  const token = String(req.params.token ?? "");
+  const password = String(req.body?.password ?? "");
+  const list = loadAccounts();
+  const acct = list.find((a) => a.invite?.token === token);
+  const v = inviteVerdict(acct, token, Date.now());
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
+  // Redeeming DROPS the invite and sets the hash: the link is single-use by
+  // construction, not by a flag someone could forget to check.
+  saveAccounts(
+    list.map((a) =>
+      a.name === acct!.name
+        ? { name: a.name, role: a.role, createdAt: a.createdAt, passwordHash: hashPassword(password) }
+        : a,
+    ),
+  );
+  console.log(`users: ${acct!.name} redeemed their invitation`);
+  res.json({ ok: true, user: acct!.name });
+});
+
+// Who am I? The client labels itself with this, and a tab whose session expired
+// finds out here rather than by a silent failure.
+app.get("/me", (req, res) => {
+  const me = currentAccount(req);
+  return me ? res.json(me) : res.status(401).json({ error: "unauthorized" });
+});
+
+// Gate everything else behind the cookie when a password is set. /me answers
+// for itself: it must return 401, not the login page.
 app.use((req, res, next) => {
-  if (requestAuthed(req)) return next();
+  if (req.path === "/me" || req.path.startsWith("/invite/") || requestAuthed(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
     return sendLogin(res);
   return res.status(401).json({ error: "unauthorized" });
@@ -1131,6 +1249,109 @@ app.delete("/secrets", (req, res) => {
 // /channels, cf. invariant 6). A tracked role holds no prompt of its own, so the
 // panel had nothing to show and displayed an empty box — you could not read the
 // role you were about to run, and saving that empty box pinned it to "".
+/**
+ * Managing accounts is BROWSER-ONLY, on top of the admin role.
+ *
+ * Every agent is handed `SHADOK_AUTH` — a signed session for the bootstrap
+ * admin — so the role check alone is satisfied by any agent on this machine: it
+ * could mint an admin invitation or delete an account without anyone asking it
+ * to. The account surface is exactly where that must not be reachable by
+ * accident, so it takes the same guard as the guardrail routes (invariant 28,
+ * `PUT /profiles`): a real same-origin `Origin`, which loopback callers —
+ * agents, pilotctl, the Telegram bridge — do not send.
+ *
+ * It is a boundary against ACCIDENT, not against intent, and the difference is
+ * worth stating: agents run as the same OS user, so one that means to escalate
+ * can read the signing key out of `~/.shadok-ai/users/` and forge any cookie,
+ * or edit the accounts file directly. Real separation between PEOPLE needs the
+ * agent-side leaks closed and, ultimately, an OS user or a container per agent.
+ * What this buys is that nothing reaches these routes without meaning to.
+ */
+function accountAdmin(
+  req: { headers: Record<string, unknown> },
+  res: { status: (n: number) => { json: (b: unknown) => unknown } },
+): { name: string; role: Role } | null {
+  if (!requestFromBrowser(req)) {
+    res.status(403).json({ error: "same-origin browser only" });
+    return null;
+  }
+  const me = currentAccount(req);
+  if (me?.role !== "admin") {
+    res.status(403).json({ error: "only an admin can manage accounts" });
+    return null;
+  }
+  return me;
+}
+
+/** Accounts are listed to admins only: a member has no use for the list, and
+ *  the shortest surface wins. Hashes and live invitation tokens never leave. */
+app.get("/users", (req, res) => {
+  if (!accountAdmin(req, res)) return;
+  res.json(
+    loadAccounts().map((a) => ({
+      name: a.name,
+      role: a.role,
+      pending: !a.passwordHash,
+      expiresAt: a.invite?.expiresAt ?? null,
+    })),
+  );
+});
+
+// Create AND issue the invitation in one step: an account with no way in is a
+// dead row, and two calls would let one succeed without the other.
+app.post("/users", (req, res) => {
+  const me = accountAdmin(req, res);
+  if (!me) return;
+  const name = String(req.body?.name ?? "").trim();
+  const role: Role = req.body?.role === "admin" ? "admin" : "member";
+  const list = loadAccounts();
+  const v = userWriteVerdict({
+    actorRole: me?.role ?? null,
+    action: "create",
+    target: name,
+    exists: list.some((a) => a.name === name),
+  });
+  if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  const invite = newInvite(Date.now());
+  saveAccounts([...list, { name, role, createdAt: Date.now(), invite }]);
+  console.log(`users: ${me!.name} invited ${name} as ${role}`);
+  res.json({ ok: true, name, role, inviteUrl: `/invite/${invite.token}` });
+});
+
+app.delete("/users", (req, res) => {
+  const me = accountAdmin(req, res);
+  if (!me) return;
+  const name = String(req.query.name ?? "").trim();
+  const list = loadAccounts();
+  const v = userWriteVerdict({
+    actorRole: me?.role ?? null,
+    action: "delete",
+    target: name,
+    exists: list.some((a) => a.name === name),
+  });
+  if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  saveAccounts(list.filter((a) => a.name !== name));
+  console.log(`users: ${me!.name} removed ${name}`);
+  res.json({ ok: true });
+});
+
+app.post("/users/role", (req, res) => {
+  const me = accountAdmin(req, res);
+  if (!me) return;
+  const name = String(req.body?.name ?? "").trim();
+  const role: Role = req.body?.role === "admin" ? "admin" : "member";
+  const list = loadAccounts();
+  const v = userWriteVerdict({
+    actorRole: me?.role ?? null,
+    action: "role",
+    target: name,
+    exists: list.some((a) => a.name === name),
+  });
+  if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  saveAccounts(list.map((a) => (a.name === name ? { ...a, role } : a)));
+  res.json({ ok: true });
+});
+
 app.get("/profiles", (_req, res) =>
   res.json(
     loadProfiles().map((p) => ({
@@ -1733,7 +1954,7 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   // plain language just by asking the agent).
   env.SHADOK_SESSION_ID = id;
   env.SHADOK_PORT = String(boundPort || START_PORT);
-  if (GUI_PASSWORD) env.SHADOK_AUTH = `sk_auth=${AUTH_TOKEN}`;
+  if (GUI_PASSWORD) env.SHADOK_AUTH = adminCookie()!;
   // Proves WHO calls /profiles/prompt: without it "my own profile" means
   // nothing, since the session id is public.
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
@@ -2648,7 +2869,11 @@ function maybeScheduleRetry(s: Live) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-wss.on("connection", (ws: WebSocket) => {
+wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
+  // Who is on the other end, resolved ONCE at connect. A browser must not be
+  // able to claim someone else's name by editing a frame, so THIS — not
+  // `msg.from` — is what a web prompt is attributed to.
+  const me = currentAccount(req);
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -2923,6 +3148,10 @@ wss.on("connection", (ws: WebSocket) => {
           if (session.busy) return fail("a response is already in progress", "busy");
           const text = msg.text.trim();
           if (!text) return;
+          // The Telegram bridge is trusted to name its sender — it knows it. A
+          // browser is not: for a web client the SESSION decides, and whatever
+          // `from` the frame carried is discarded.
+          const author = promptAuthor(origin, me?.name, msg.from);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -2951,7 +3180,7 @@ wss.on("connection", (ws: WebSocket) => {
             session.gapBeforeNextText = false;
             broadcast(
               session,
-              { type: "prompt-echo", text, ...(origin ? { origin } : {}), ...(msg.from ? { from: msg.from } : {}) },
+              { type: "prompt-echo", text, ...(origin ? { origin } : {}), ...(author ? { from: author } : {}) },
               ws,
             );
           } else {
@@ -2971,7 +3200,7 @@ wss.on("connection", (ws: WebSocket) => {
             // speaking", so they get no header.
             let submitText = text;
             if (origin === "web" || origin === "telegram" || origin === "cli") {
-              submitText = markPromptMeta(text, promptMetaHeader(origin, new Date(), msg.from, defaultTimeZone()));
+              submitText = markPromptMeta(text, promptMetaHeader(origin, new Date(), author, defaultTimeZone()));
             }
             // Push the ledger DELTA ahead of the message: rows changed since this
             // agent last saw the ledger, so it learns what siblings resolved /

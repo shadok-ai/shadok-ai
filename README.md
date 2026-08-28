@@ -227,6 +227,18 @@ know before opening it up:
 - `SHADOK_HOST=0.0.0.0` **requires a password** (`--password`, or
   `SHADOK_GUI_PASSWORD`); without one the server refuses to start rather than
   hand the network a shell.
+- **That password is the `admin` account.** With it set, the login page gains a
+  user field — leave it blank to sign in as the admin. An admin can then invite
+  other people from the **Users** panel: each invitation is a single-use link,
+  valid 7 days, on which the invitee chooses their own password, so the admin
+  never learns it. Two roles: `admin` manages accounts, `member` does everything
+  else you do. Accounts belong to **one instance** (one launch directory), like
+  its channels and its scheduled prompts. With no password there are no
+  accounts and no login screen — nothing changes for a machine you use alone.
+- Once people are named, **a prompt carries its sender**: the agent sees who
+  asked, and the other browsers show the name above the message instead of
+  "pilot (elsewhere)". The server takes that name from the session, never from
+  what the browser claims.
 - **In Docker**, `SHADOK_HOST=0.0.0.0` is the only value that works (the
   container's own loopback isn't reachable from the host). Publish the port on
   the host's loopback: `-p 127.0.0.1:3789:3789`. Plain `-p 3789:3789` publishes
