@@ -1512,6 +1512,7 @@
   <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)" aria-label="Secrets"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l7.5 7.5M15.5 15.5l1.8-1.8M17.8 17.8l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <button id="ledgerBtn" class="icon" title="Shared ledger — what agents have resolved / decided" aria-label="Ledger"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)" aria-label="Profiles"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+  <button id="usersBtn" class="icon" title="Users — accounts for this instance" aria-label="Users" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 19a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 6.2a3.2 3.2 0 0 1 0 6.1M17.5 19a6 6 0 0 0-2.2-4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></button>
   <button id="muteNotif" class="icon" title="Mute the notification sound" aria-label="Notification sound"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 16.5h12c-1.3-1.1-2-2.7-2-4.5v-1.2a4 4 0 0 0-8 0v1.2c0 1.8-.7 3.4-2 4.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.4 19a1.7 1.7 0 0 0 3.2 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line class="mute-slash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   <div class="more-wrap">
@@ -1747,6 +1748,23 @@
       <button id="profConfirmSave">Save only</button>
       <button class="primary" id="profConfirmRestart">Restart now</button>
     </div>
+  </div>
+</div>
+
+<div id="usersOverlay" class="overlay" hidden>
+  <div class="sec-panel">
+    <div class="sec-head">
+      <strong>Users</strong>
+      <button id="usersClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note">Accounts for <b>this instance</b> — another instance on this machine has its own. A member does everything you do; only an admin manages accounts. The instance password is the <code>admin</code> account.</p>
+    <ul id="usersList"></ul>
+    <form id="usersAdd">
+      <input id="userName" placeholder="name" autocomplete="off" spellcheck="false">
+      <select id="userRole"><option value="member">member</option><option value="admin">admin</option></select>
+      <button type="submit">Invite</button>
+    </form>
+    <p class="sec-note warn" id="inviteOut" hidden></p>
   </div>
 </div>
 
@@ -5465,6 +5483,7 @@
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
     if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
@@ -6190,6 +6209,83 @@
     $("profilesOverlay").hidden = true;
     await loadProfilesInto();
   }
+  // ── Users (accounts for THIS instance) ──────────────────────────────────
+  // The button only exists for an admin. Hiding it is a courtesy: the server
+  // refuses a member's write regardless, which is where the rule actually lives.
+  let me = null;
+  async function loadMe() {
+    try { me = await (await fetch("/me")).json(); } catch { me = null; }
+    const b = $("usersBtn");
+    if (b) b.hidden = me?.role !== "admin";
+  }
+  async function renderUsers() {
+    const ul = $("usersList");
+    ul.innerHTML = "";
+    let list = [];
+    try { list = await (await fetch("/users")).json(); } catch { list = []; }
+    if (!Array.isArray(list) || !list.length) {
+      ul.innerHTML = '<li><span style="opacity:.6">no accounts yet — only the instance password</span></li>';
+      return;
+    }
+    for (const u of list) {
+      const li = document.createElement("li");
+      const meta = document.createElement("div");
+      const who = document.createElement("b");
+      // A name chosen by an admin, but rendered as text all the same.
+      who.textContent = u.name;
+      const sub = document.createElement("div");
+      sub.className = "pmeta";
+      sub.textContent = u.role + (u.pending ? " · invitation pending" : "");
+      meta.append(who, sub);
+      const btns = document.createElement("div");
+      const flip = document.createElement("button");
+      flip.textContent = u.role === "admin" ? "make member" : "make admin";
+      flip.addEventListener("click", async () => {
+        await fetch("/users/role", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: u.name, role: u.role === "admin" ? "member" : "admin" }),
+        });
+        renderUsers();
+      });
+      const del = document.createElement("button");
+      del.textContent = "delete"; del.style.color = "#e26";
+      del.addEventListener("click", async () => {
+        if (!confirm("Remove " + u.name + "?\n\nTheir open sessions stop working immediately.")) return;
+        await fetch("/users?name=" + encodeURIComponent(u.name), { method: "DELETE" });
+        renderUsers();
+      });
+      btns.append(flip, del);
+      li.append(meta, btns);
+      ul.appendChild(li);
+    }
+  }
+  $("usersBtn").addEventListener("click", async () => {
+    $("inviteOut").hidden = true;
+    await renderUsers();
+    $("usersOverlay").hidden = false;
+  });
+  $("usersClose").addEventListener("click", () => { $("usersOverlay").hidden = true; });
+  $("usersOverlay").addEventListener("click", (e) => { if (e.target === $("usersOverlay")) $("usersOverlay").hidden = true; });
+  $("usersAdd").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("userName").value.trim();
+    if (!name) return;
+    const r = await fetch("/users", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, role: $("userRole").value }),
+    });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(out.error || "failed"); return; }
+    // The link is the ONLY way in, and it is shown once. It stays on screen
+    // until the panel is reopened rather than flashing past in a toast.
+    $("inviteOut").hidden = false;
+    $("inviteOut").textContent =
+      "Invitation link for " + name + ", valid 7 days — send it to them: " + location.origin + out.inviteUrl;
+    $("userName").value = "";
+    renderUsers();
+  });
+  loadMe();
+
   $("profilesBtn").addEventListener("click", () => openProfilesPanel());
   $("editProfilesLink").addEventListener("click", () => openProfilesPanel());
   $("profilesClose").addEventListener("click", closeProfilesPanel);
