@@ -831,7 +831,23 @@ app.post("/invite/:token", (req, res) => {
     ),
   );
   console.log(`users: ${acct!.name} redeemed their invitation`);
+  // Redeeming SIGNS YOU IN. Holding the link and choosing the password is an
+  // authentication, and without this the browser keeps whatever session it
+  // already had — an admin who invites someone from their own browser lands
+  // back as the admin, with nothing to say the redemption did not take.
+  res.setHeader(
+    "Set-Cookie",
+    `sk_auth=${signSession(acct!.name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
+  );
   res.json({ ok: true, user: acct!.name });
+});
+
+// Signing out expires the cookie. Before the gate on purpose: throwing away a
+// session must work even when that session is already invalid, otherwise a
+// stale cookie would leave you stuck on a 401 with no way to clear it.
+app.post("/logout", (_req, res) => {
+  res.setHeader("Set-Cookie", "sk_auth=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+  res.json({ ok: true });
 });
 
 // Who am I? The client labels itself with this, and a tab whose session expired
@@ -844,7 +860,7 @@ app.get("/me", (req, res) => {
 // Gate everything else behind the cookie when a password is set. /me answers
 // for itself: it must return 401, not the login page.
 app.use((req, res, next) => {
-  if (req.path === "/me" || req.path.startsWith("/invite/") || requestAuthed(req)) return next();
+  if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || requestAuthed(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
     return sendLogin(res);
   return res.status(401).json({ error: "unauthorized" });

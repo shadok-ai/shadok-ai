@@ -1522,6 +1522,9 @@
            reflowHeaderTools (the real buttons, so their handlers come along).
            Empty — and hidden — whenever everything fits. -->
       <div id="overflowTools" class="mm-tools"></div>
+      <div class="mm-label" id="whoAmI" hidden></div>
+      <button id="signOut" hidden>Sign out</button>
+      <div class="mm-sep" id="whoSep" hidden></div>
       <button id="toggleDiff">Diff</button>
       <button id="tourReplay">Guided tour</button>
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
@@ -6217,7 +6220,22 @@
     try { me = await (await fetch("/me")).json(); } catch { me = null; }
     const b = $("usersBtn");
     if (b) b.hidden = me?.role !== "admin";
+    // No password on this instance means no session at all: nothing to name and
+    // nothing to leave. Showing "Sign out" there would promise a door that does
+    // not exist.
+    const named = !!me?.name;
+    $("whoAmI").hidden = !named;
+    $("signOut").hidden = !named;
+    $("whoSep").hidden = !named;
+    if (named) $("whoAmI").textContent = "Signed in as " + me.name + " · " + me.role;
   }
+
+  $("signOut").addEventListener("click", async () => {
+    await fetch("/logout", { method: "POST" }).catch(() => {});
+    // Reload rather than route: the server answers the login page itself, and a
+    // full load also drops every in-memory channel of the session we just left.
+    location.assign("/");
+  });
   async function renderUsers() {
     const ul = $("usersList");
     ul.innerHTML = "";

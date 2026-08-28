@@ -231,7 +231,9 @@ know before opening it up:
   user field — leave it blank to sign in as the admin. An admin can then invite
   other people from the **Users** panel: each invitation is a single-use link,
   valid 7 days, on which the invitee chooses their own password, so the admin
-  never learns it. Two roles: `admin` manages accounts, `member` does everything
+  never learns it — and redeeming the link signs them in straight away. The ⋯
+  menu names who you are and lets you sign out. Two roles: `admin` manages
+  accounts, `member` does everything
   else you do. Accounts belong to **one instance** (one launch directory), like
   its channels and its scheduled prompts. With no password there are no
   accounts and no login screen — nothing changes for a machine you use alone.
