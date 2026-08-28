@@ -1249,11 +1249,44 @@ app.delete("/secrets", (req, res) => {
 // /channels, cf. invariant 6). A tracked role holds no prompt of its own, so the
 // panel had nothing to show and displayed an empty box — you could not read the
 // role you were about to run, and saving that empty box pinned it to "".
+/**
+ * Managing accounts is BROWSER-ONLY, on top of the admin role.
+ *
+ * Every agent is handed `SHADOK_AUTH` — a signed session for the bootstrap
+ * admin — so the role check alone is satisfied by any agent on this machine: it
+ * could mint an admin invitation or delete an account without anyone asking it
+ * to. The account surface is exactly where that must not be reachable by
+ * accident, so it takes the same guard as the guardrail routes (invariant 28,
+ * `PUT /profiles`): a real same-origin `Origin`, which loopback callers —
+ * agents, pilotctl, the Telegram bridge — do not send.
+ *
+ * It is a boundary against ACCIDENT, not against intent, and the difference is
+ * worth stating: agents run as the same OS user, so one that means to escalate
+ * can read the signing key out of `~/.shadok-ai/users/` and forge any cookie,
+ * or edit the accounts file directly. Real separation between PEOPLE needs the
+ * agent-side leaks closed and, ultimately, an OS user or a container per agent.
+ * What this buys is that nothing reaches these routes without meaning to.
+ */
+function accountAdmin(
+  req: { headers: Record<string, unknown> },
+  res: { status: (n: number) => { json: (b: unknown) => unknown } },
+): { name: string; role: Role } | null {
+  if (!requestFromBrowser(req)) {
+    res.status(403).json({ error: "same-origin browser only" });
+    return null;
+  }
+  const me = currentAccount(req);
+  if (me?.role !== "admin") {
+    res.status(403).json({ error: "only an admin can manage accounts" });
+    return null;
+  }
+  return me;
+}
+
 /** Accounts are listed to admins only: a member has no use for the list, and
  *  the shortest surface wins. Hashes and live invitation tokens never leave. */
 app.get("/users", (req, res) => {
-  const me = currentAccount(req);
-  if (me?.role !== "admin") return res.status(403).json({ error: "only an admin can manage accounts" });
+  if (!accountAdmin(req, res)) return;
   res.json(
     loadAccounts().map((a) => ({
       name: a.name,
@@ -1267,7 +1300,8 @@ app.get("/users", (req, res) => {
 // Create AND issue the invitation in one step: an account with no way in is a
 // dead row, and two calls would let one succeed without the other.
 app.post("/users", (req, res) => {
-  const me = currentAccount(req);
+  const me = accountAdmin(req, res);
+  if (!me) return;
   const name = String(req.body?.name ?? "").trim();
   const role: Role = req.body?.role === "admin" ? "admin" : "member";
   const list = loadAccounts();
@@ -1285,7 +1319,8 @@ app.post("/users", (req, res) => {
 });
 
 app.delete("/users", (req, res) => {
-  const me = currentAccount(req);
+  const me = accountAdmin(req, res);
+  if (!me) return;
   const name = String(req.query.name ?? "").trim();
   const list = loadAccounts();
   const v = userWriteVerdict({
@@ -1301,7 +1336,8 @@ app.delete("/users", (req, res) => {
 });
 
 app.post("/users/role", (req, res) => {
-  const me = currentAccount(req);
+  const me = accountAdmin(req, res);
+  if (!me) return;
   const name = String(req.body?.name ?? "").trim();
   const role: Role = req.body?.role === "admin" ? "admin" : "member";
   const list = loadAccounts();
