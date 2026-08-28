@@ -12,6 +12,7 @@ import {
   mintLedgerId,
 } from "../src/ledger.js";
 import { stripPromptMeta, markPromptMeta } from "../src/promptmeta.js";
+import { markCronPrompt, isCronPrompt } from "../src/crons.js";
 
 test("ledgerFileFor: per-instance path under ~/.shadok-ai/ledger/<enc>.json", () => {
   const f = ledgerFileFor("/home/x/proj");
@@ -85,4 +86,15 @@ test("mintLedgerId: 4 hex chars, avoids collisions with taken ids", () => {
   const id = mintLedgerId(new Set(["a1b2"]));
   assert.match(id, /^[0-9a-f]{4}$/);
   assert.notEqual(id, "a1b2");
+});
+
+test("a cron prompt carrying a ledger block stays hidden — strip before classify", () => {
+  const block = formatLedgerBlock([{ id: "a1b2", entity: "x", status: "resolved", updatedAt: 1 }], 1);
+  const cron = markCronPrompt("check the nightly export");
+  const withBlock = markLedgerBlock(cron, block);
+  // With the block in front, the cron mark is no longer first — a naive check misses it…
+  assert.equal(isCronPrompt(withBlock), false);
+  // …so loadHistory strips the ledger block FIRST, which restores recognition
+  // (the prompt stays hidden) — the exact ordering the extract fix depends on.
+  assert.equal(isCronPrompt(stripLedgerBlock(withBlock)), true);
 });

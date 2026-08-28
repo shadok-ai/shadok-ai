@@ -263,19 +263,22 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
     if (e.type === "user") {
       const text = userPromptText(e);
       if (text === null) continue; // tool result, system reminder, interruption
+      // A pushed ledger delta may ride ahead of ANY prompt — human, cron, or an
+      // agent notification — so strip it BEFORE classifying: otherwise a cron /
+      // agent prompt no longer starts with its hiding mark and would leak into
+      // the display.
+      const bare = stripLedgerBlock(text);
       // Machine-written user messages: a scheduled prompt and a notification
       // about a child agent. Neither is shown live, so neither may come back on
       // a reload or a topic backfill — but a dropped one still BROKE the turn,
       // so remember it to keep the next answer from merging onto the last.
-      if (isCronPrompt(text) || isAgentPrompt(text)) {
+      if (isCronPrompt(bare) || isAgentPrompt(bare)) {
         pendingHiddenPrompt = true;
         continue;
       }
-      // A human prompt may open with a pushed ledger delta then a context header
-      // (⟦platform · time · who⟧) the agent was given; strip both for display —
-      // the ledger block first (its ⟦ledger⟧ line also looks like a header), then
-      // the header — leaving the message itself.
-      turns.push({ role: "user", text: stripPromptMeta(stripLedgerBlock(text)), ...when });
+      // A human prompt may still open with a context header (⟦platform · time ·
+      // who⟧) the agent was given; strip it for display — leaving the message.
+      turns.push({ role: "user", text: stripPromptMeta(bare), ...when });
       pendingHiddenPrompt = false;
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
       const text = e.message.content

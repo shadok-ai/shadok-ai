@@ -2968,25 +2968,30 @@ wss.on("connection", (ws: WebSocket) => {
             // when. Only the TUI (and thus the transcript) receives it; the echo
             // above stays clean, and loadHistory strips the header on replay.
             // Cron/agent prompts carry their own mark and are not "someone
-            // speaking", so they are left alone.
+            // speaking", so they get no header.
             let submitText = text;
             if (origin === "web" || origin === "telegram" || origin === "cli") {
               submitText = markPromptMeta(text, promptMetaHeader(origin, new Date(), msg.from, defaultTimeZone()));
-              // Push the ledger DELTA ahead of the message: rows changed since
-              // this agent last saw the ledger, so it learns what siblings
-              // resolved/decided in near-real-time. Gated by the reflex toggle;
-              // stripped from the display like the ⟦platform⟧ header. Advancing
-              // the watermark whether or not there was a delta keeps it truthful:
-              // by now the agent has seen everything up to this moment.
-              if (ledgerEnabled) {
-                const { rows, total } = deltaSince(
-                  loadLedger(ledgerFileFor(process.cwd())),
-                  session.ledgerSeenAt ?? 0,
-                  LEDGER_PUSH_CAP,
-                );
-                session.ledgerSeenAt = Date.now();
-                if (rows.length) submitText = markLedgerBlock(submitText, formatLedgerBlock(rows, total));
-              }
+            }
+            // Push the ledger DELTA ahead of the message: rows changed since this
+            // agent last saw the ledger, so it learns what siblings resolved /
+            // decided in near-real-time. It rides ahead of ANY prompt that starts
+            // a turn — human, cron, or an agent notification — because an
+            // autonomous cron benefits from world-state awareness as much as a
+            // human turn does (a monitoring cron reporting an issue a sibling
+            // just fixed is the very silo this closes). Gated by the reflex
+            // toggle; stripped from the display, and stripped before the
+            // cron/agent mark is classified so a cron prompt stays hidden.
+            // Advancing the watermark whether or not there was a delta keeps it
+            // truthful: by now the agent has seen everything up to this moment.
+            if (ledgerEnabled) {
+              const { rows, total } = deltaSince(
+                loadLedger(ledgerFileFor(process.cwd())),
+                session.ledgerSeenAt ?? 0,
+                LEDGER_PUSH_CAP,
+              );
+              session.ledgerSeenAt = Date.now();
+              if (rows.length) submitText = markLedgerBlock(submitText, formatLedgerBlock(rows, total));
             }
             await session.pilot.submit(submitText);
           } finally {

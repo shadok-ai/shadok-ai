@@ -37,19 +37,26 @@ the legacy global ledger (COPY — a second instance seeds its own from the same
 source, then they diverge, which is the point), and backfill an id onto every
 id-less row. Best-effort; a failure never blocks boot.
 
-### 2. Delta pushed before each human prompt
+### 2. Delta pushed before each turn
 
 `Live.ledgerSeenAt` is a per-agent watermark, anchored to `now` at attach (so the
 first message shows changes from then on, not the whole backlog). In the `prompt`
-handler, for **human origins only** (`web`/`telegram`/`cli`) and only when
-`ledgerEnabled`:
+handler, for **any prompt that starts a turn** — human (`web`/`telegram`/`cli`),
+**cron, or an agent notification** — and only when `ledgerEnabled`:
 
 - `deltaSince(rows, ledgerSeenAt, cap)` → the rows with `updatedAt > watermark`,
   newest-first, capped at `LEDGER_PUSH_CAP` (8) with a `+N more` line;
 - advance `ledgerSeenAt = now` (whether or not there was a delta — by now the
   agent has seen everything up to this moment);
-- if non-empty, `markLedgerBlock` prepends the block ahead of the existing
-  `⟦platform⟧` prompt-meta header.
+- if non-empty, `markLedgerBlock` prepends the block ahead of the message (and,
+  for a human prompt, ahead of the `⟦platform⟧` prompt-meta header).
+
+**Why crons too** (added just after the first cut): the `⟦platform⟧` header is
+human-only because it answers "who is speaking", meaningless for a cron. The
+ledger delta answers "what changed in the world", which an autonomous cron needs
+*more* than a human turn — a monitoring cron reporting an issue a sibling just
+fixed is the exact silo this closes. So the delta rides ahead of cron and
+agent-notification prompts as well; only the platform header stays human-only.
 
 The block (English — it is transcript-side):
 
@@ -60,12 +67,16 @@ The block (English — it is transcript-side):
 ```
 
 It is stripped from the display in `extract.ts` `loadHistory` via
-`stripLedgerBlock` run **before** `stripPromptMeta` — the `⟦ledger⟧` header line
+`stripLedgerBlock`, run **before** `stripPromptMeta` — the `⟦ledger⟧` header line
 also satisfies `hasPromptMeta` (it has ` · `), so the whole ledger block must be
 removed first (its header + the contiguous `• ` bullets), then the platform
-header. The agent sees the block; the chat shows only the message. Because a
-delta is usually empty, most prompts carry nothing, so the transcript does not
-bloat. In-memory watermark (near-real-time, not an audit): a restart re-anchors.
+header — **and before** the `isCronPrompt`/`isAgentPrompt` classification: a cron
+or agent prompt with a block in front no longer *starts* with its hiding mark, so
+without stripping first it would be misclassified as a human message and leak into
+the display. The agent sees the block; the chat shows only the message (or nothing
+at all, for a cron). Because a delta is usually empty, most prompts carry nothing,
+so the transcript does not bloat. In-memory watermark (near-real-time, not an
+audit): a restart re-anchors.
 
 ### 3. Short id, update-by-id
 
@@ -83,8 +94,10 @@ pushed block, and in the GUI viewer, so an agent can quote the handle it just sa
   id-preserve, `resolveId`, find) and `src/ledger.ts` (server side — path,
   migration, delta, block, strip). The tiny cwd-encoding is duplicated the way
   the rest of the codebase duplicates it (channels/crons/tail).
-- Only human prompts get the block; cron/agent prompts carry their own marks and
-  are left alone, exactly as prompt-meta already is.
+- The block rides ahead of human, cron, and agent-notification prompts alike;
+  only the `⟦platform⟧` header stays human-only (it names a speaker, which a cron
+  has none of). Cron/agent prompts keep their hiding marks — the strip runs before
+  classification so they stay hidden.
 
 ## Out of scope (deliberate)
 
