@@ -106,7 +106,7 @@ test("session: a user name containing a dot still round-trips", () => {
   assert.equal(readSession(t, SECRET, 2_000, WEEK), "first.last");
 });
 
-import { newInvite, inviteVerdict, INVITE_TTL_MS, type Account } from "../src/accounts.js";
+import { newInvite, inviteVerdict, INVITE_TTL_MS, promptAuthor, type Account } from "../src/accounts.js";
 
 const withInvite = (over: Partial<Account> = {}): Account => ({
   name: "bob", role: "member", createdAt: 0,
@@ -152,4 +152,28 @@ test("newInvite: a random token and a one-week life", () => {
   assert.notEqual(a.token, b.token);
   assert.ok(a.token.length >= 32);
   assert.equal(a.expiresAt, INVITE_TTL_MS);
+});
+
+// ── Who a prompt is attributed to ───────────────────────────────────────
+test("author: a web prompt is the SESSION, never what the frame claims", () => {
+  // The security property of the whole feature: without this, a member renames
+  // themselves by editing one WebSocket frame.
+  assert.equal(promptAuthor("web", "bob", "root"), "bob");
+  assert.equal(promptAuthor("web", "bob", undefined), "bob");
+});
+
+test("author: the Telegram bridge keeps naming its own sender", () => {
+  // It is a trusted bridge and it knows the sender; the server does not.
+  assert.equal(promptAuthor("telegram", undefined, "Alexandre"), "Alexandre");
+  assert.equal(promptAuthor("telegram", "admin", "Alexandre"), "Alexandre");
+});
+
+test("author: a web client with no session names nobody", () => {
+  // An instance with no password: today's behaviour, no author at all.
+  assert.equal(promptAuthor("web", undefined, "root"), undefined);
+});
+
+test("author: other origins keep whatever they supplied", () => {
+  assert.equal(promptAuthor("cli", "admin", "script"), "script");
+  assert.equal(promptAuthor("cron", "admin", undefined), undefined);
 });

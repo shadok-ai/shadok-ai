@@ -177,3 +177,20 @@ export function inviteVerdict(
     return { ok: false, error: "this invitation has expired — ask for a new link" };
   return { ok: true };
 }
+
+/**
+ * Who a prompt is attributed to.
+ *
+ * The security property of the accounts feature, in one place: for a WEB client
+ * the session decides and the frame's claim is discarded, because a browser can
+ * put anything in `from`. The Telegram bridge is a trusted bridge that knows its
+ * sender, so it keeps naming them; other origins (cli, cron) are the server's
+ * own callers and keep whatever they supplied.
+ */
+export function promptAuthor(
+  origin: string | undefined,
+  sessionName: string | undefined,
+  claimed: string | undefined,
+): string | undefined {
+  return origin === "web" ? sessionName : claimed;
+}

@@ -1,5 +1,6 @@
 import { randomUUID, timingSafeEqual, createHmac } from "node:crypto";
 import { execFile, spawn as spawnChild } from "node:child_process";
+import type { IncomingMessage } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import http from "node:http";
@@ -152,6 +153,7 @@ import {
   newInvite,
   inviteVerdict,
   hashPassword,
+  promptAuthor,
   type Role,
 } from "./accounts.js";
 import { ensureSelfRepo } from "./selfrepo.js";
@@ -2831,7 +2833,11 @@ function maybeScheduleRetry(s: Live) {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-wss.on("connection", (ws: WebSocket) => {
+wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
+  // Who is on the other end, resolved ONCE at connect. A browser must not be
+  // able to claim someone else's name by editing a frame, so THIS — not
+  // `msg.from` — is what a web prompt is attributed to.
+  const me = currentAccount(req);
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -3106,6 +3112,10 @@ wss.on("connection", (ws: WebSocket) => {
           if (session.busy) return fail("a response is already in progress", "busy");
           const text = msg.text.trim();
           if (!text) return;
+          // The Telegram bridge is trusted to name its sender — it knows it. A
+          // browser is not: for a web client the SESSION decides, and whatever
+          // `from` the frame carried is discarded.
+          const author = promptAuthor(origin, me?.name, msg.from);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -3134,7 +3144,7 @@ wss.on("connection", (ws: WebSocket) => {
             session.gapBeforeNextText = false;
             broadcast(
               session,
-              { type: "prompt-echo", text, ...(origin ? { origin } : {}), ...(msg.from ? { from: msg.from } : {}) },
+              { type: "prompt-echo", text, ...(origin ? { origin } : {}), ...(author ? { from: author } : {}) },
               ws,
             );
           } else {
@@ -3154,7 +3164,7 @@ wss.on("connection", (ws: WebSocket) => {
             // speaking", so they get no header.
             let submitText = text;
             if (origin === "web" || origin === "telegram" || origin === "cli") {
-              submitText = markPromptMeta(text, promptMetaHeader(origin, new Date(), msg.from, defaultTimeZone()));
+              submitText = markPromptMeta(text, promptMetaHeader(origin, new Date(), author, defaultTimeZone()));
             }
             // Push the ledger DELTA ahead of the message: rows changed since this
             // agent last saw the ledger, so it learns what siblings resolved /
