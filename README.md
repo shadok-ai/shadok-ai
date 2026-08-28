@@ -144,13 +144,16 @@ Enter to skip; you can add it later from the web UI).
   rename, change profile, mirror to Telegram, close — and closing it brings the
   card back. Desktop only: the agents column is hidden on phones.
 - **Guided tour** — on a browser's first visit, a welcome card explains what
-  shadok-ai is, then a spotlight walks the real controls: the agents column, an
-  agent's ⋯ menu, the toolbar, the quota dials. Skip and Escape end it at any
-  point; ⋯ → *Guided tour* replays it. A step whose target isn't on screen is
-  **dropped rather than faked**, so the phone (no agents column) and an empty
-  cockpit (no agent tab) get a shorter tour instead of a spotlight on nothing.
-  On a brand-new instance it comes **before** the sign-in card — being asked to
-  authorise an OAuth flow before you know what the thing is takes it backwards.
+  shadok-ai is, then a spotlight walks the real controls: the agents list, an
+  agent's ⋯ menu, scheduled prompts, the toolbar, the quota dials. Skip and
+  Escape end it at any point; ⋯ → *Guided tour* replays it. A step whose target
+  isn't on screen is **dropped rather than faked** — an empty cockpit has no
+  agent menu, so it gets a shorter tour instead of a spotlight on nothing. The
+  **phone gets the whole tour**, because a step can name the landmark on either
+  layout (the agents column *or* the channel picker) and is framed on whichever
+  one is rendered. On a brand-new instance it comes **before** the sign-in card
+  — being asked to authorise an OAuth flow before you know what the thing is
+  takes it backwards.
 - **A lead agent from the start** — an instance with no channel at all gets one:
   `general`, running the **Shadok-Boss** profile, in the launch directory and
   without a worktree. It is created at boot, or right after the first sign-in on
