@@ -117,10 +117,13 @@ test("invite: a fresh one is valid until it expires", () => {
   assert.deepEqual(inviteVerdict(withInvite(), "tok", 999), { ok: true });
 });
 
-test("invite: an unknown account says so", () => {
+test("invite: a link matching no account covers BOTH cases", () => {
+  // Redeeming deletes the token, so by then a used link and a made-up one look
+  // the same. The message must not claim to know which.
   const v = inviteVerdict(undefined, "tok", 0);
   assert.equal(v.ok, false);
-  assert.match((v as { error: string }).error, /unknown/i);
+  assert.match((v as { error: string }).error, /no longer valid/i);
+  assert.match((v as { error: string }).error, /already have been used/i);
 });
 
 test("invite: a wrong token is refused", () => {

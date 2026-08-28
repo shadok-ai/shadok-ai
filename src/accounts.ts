@@ -165,7 +165,11 @@ export function inviteVerdict(
   token: string,
   now: number,
 ): { ok: true } | { ok: false; error: string } {
-  if (!account) return { ok: false, error: "unknown invitation" };
+  // Redeeming DELETES the token, so a used link and a made-up one are
+  // indistinguishable by then — and keeping consumed tokens around just to tell
+  // them apart would be clutter with no payoff. Say what is true of both.
+  if (!account)
+    return { ok: false, error: "this link is no longer valid — it may already have been used. Ask for a new one" };
   if (!account.invite)
     return { ok: false, error: "this invitation was already redeemed — sign in instead" };
   if (account.invite.token !== token) return { ok: false, error: "invalid invitation" };

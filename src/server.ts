@@ -147,6 +147,11 @@ import {
   sessionSecret,
   signSession,
   readSession,
+  saveAccounts,
+  userWriteVerdict,
+  newInvite,
+  inviteVerdict,
+  hashPassword,
   type Role,
 } from "./accounts.js";
 import { ensureSelfRepo } from "./selfrepo.js";
@@ -678,25 +683,54 @@ const LOGIN_HTML = `<!doctype html><meta charset=utf8><meta name=viewport conten
 form{background:#1b1d22;padding:28px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5);width:min(320px,90vw)}
 h1{font-size:16px;margin:0 0 14px;color:#e0a44a}input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:7px;border:1px solid #333;background:#0d0f12;color:inherit;font-size:14px}
 button{margin-top:12px;width:100%;padding:9px;border-radius:7px;border:none;background:#e0a44a;color:#14161a;font-weight:600;cursor:pointer}.err{color:#e26;font-size:12px;margin-top:8px;min-height:14px}</style>
-<form id=f>
-<h1>◆ shadok-ai</h1><input id=pw type=password placeholder="Password" autofocus autocomplete=current-password><button>Enter</button><div class=err></div></form>
+<form id=f data-action="/login">
+<h1>◆ shadok-ai</h1><input id=u placeholder="User (blank = admin)" autocomplete=username><input id=pw type=password placeholder="Password" autofocus autocomplete=current-password><button>Enter</button><div class=err></div></form>
 <script nonce="${NONCE_PLACEHOLDER}">
 document.getElementById("f").addEventListener("submit", (e) => {
   e.preventDefault();
-  fetch("/login", {
+  const f = e.currentTarget;
+  // One form, two destinations: signing in, or choosing a password for the
+  // first time. The user field only exists on the first.
+  const u = document.getElementById("u");
+  const body = u
+    ? { user: u.value, password: document.getElementById("pw").value }
+    : { password: document.getElementById("pw").value };
+  fetch(f.dataset.action, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password: document.getElementById("pw").value }),
-  }).then((r) => (r.ok ? location.reload() : (document.querySelector(".err").textContent = "Wrong password")));
+    body: JSON.stringify(body),
+  }).then(async (r) => {
+    if (r.ok) return location.assign("/");
+    const j = await r.json().catch(() => ({}));
+    document.querySelector(".err").textContent = j.error || "Wrong username or password";
+  });
 });
 </script>`;
 
-/** Serves the login page with its CSP and nonce (it sits outside the gate, so
- *  it does not go through the index route). */
-function sendLogin(res: express.Response): void {
+/** Serves a login-shaped page with its CSP and nonce (these sit outside the
+ *  gate, so they do not go through the index route). */
+function sendAuthPage(res: express.Response, html: string, status: number): void {
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
-  res.status(401).type("html").send(injectNonce(LOGIN_HTML, nonce));
+  res.status(status).type("html").send(injectNonce(html, nonce));
+}
+
+function sendLogin(res: express.Response): void {
+  sendAuthPage(res, LOGIN_HTML, 401);
+}
+
+/** The page an invited person lands on: the login shell, pointed at the
+ *  redemption route. Same CSP and same nonce — a page that exempted itself from
+ *  the policy protecting every other page would be a strange message. */
+function invitePage(name: string, token: string): string {
+  return LOGIN_HTML
+    .replace("<title>shadok-ai — login</title>", "<title>shadok-ai — choose a password</title>")
+    .replace('data-action="/login"', `data-action="/invite/${encodeURIComponent(token)}"`)
+    // The name is the admin's input: it must never be able to close the tag.
+    .replace("◆ shadok-ai", `Welcome, ${name.replace(/[<>&"']/g, "")}`)
+    .replace('<input id=u placeholder="User (blank = admin)" autocomplete=username>', "")
+    .replace('placeholder="Password"', 'placeholder="Choose a password (8+ characters)"')
+    .replace("autocomplete=current-password", "autocomplete=new-password");
 }
 
 /** This server's same-origin guard (see `originAllowed`). */
@@ -767,6 +801,37 @@ app.post("/login", (req, res) => {
   return res.json({ ok: true, user: name });
 });
 
+// Redeeming an invitation happens WITHOUT a session: the whole point is that
+// the holder cannot get in yet. Hence these sit before the gate.
+app.get("/invite/:token", (req, res) => {
+  const token = String(req.params.token ?? "");
+  const acct = loadAccounts().find((a) => a.invite?.token === token);
+  const v = inviteVerdict(acct, token, Date.now());
+  if (!v.ok) return res.status(400).type("text").send(v.error);
+  return sendAuthPage(res, invitePage(acct!.name, token), 200);
+});
+
+app.post("/invite/:token", (req, res) => {
+  const token = String(req.params.token ?? "");
+  const password = String(req.body?.password ?? "");
+  const list = loadAccounts();
+  const acct = list.find((a) => a.invite?.token === token);
+  const v = inviteVerdict(acct, token, Date.now());
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
+  // Redeeming DROPS the invite and sets the hash: the link is single-use by
+  // construction, not by a flag someone could forget to check.
+  saveAccounts(
+    list.map((a) =>
+      a.name === acct!.name
+        ? { name: a.name, role: a.role, createdAt: a.createdAt, passwordHash: hashPassword(password) }
+        : a,
+    ),
+  );
+  console.log(`users: ${acct!.name} redeemed their invitation`);
+  res.json({ ok: true, user: acct!.name });
+});
+
 // Who am I? The client labels itself with this, and a tab whose session expired
 // finds out here rather than by a silent failure.
 app.get("/me", (req, res) => {
@@ -777,7 +842,7 @@ app.get("/me", (req, res) => {
 // Gate everything else behind the cookie when a password is set. /me answers
 // for itself: it must return 401, not the login page.
 app.use((req, res, next) => {
-  if (req.path === "/me" || requestAuthed(req)) return next();
+  if (req.path === "/me" || req.path.startsWith("/invite/") || requestAuthed(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
     return sendLogin(res);
   return res.status(401).json({ error: "unauthorized" });
@@ -1182,6 +1247,73 @@ app.delete("/secrets", (req, res) => {
 // /channels, cf. invariant 6). A tracked role holds no prompt of its own, so the
 // panel had nothing to show and displayed an empty box — you could not read the
 // role you were about to run, and saving that empty box pinned it to "".
+/** Accounts are listed to admins only: a member has no use for the list, and
+ *  the shortest surface wins. Hashes and live invitation tokens never leave. */
+app.get("/users", (req, res) => {
+  const me = currentAccount(req);
+  if (me?.role !== "admin") return res.status(403).json({ error: "only an admin can manage accounts" });
+  res.json(
+    loadAccounts().map((a) => ({
+      name: a.name,
+      role: a.role,
+      pending: !a.passwordHash,
+      expiresAt: a.invite?.expiresAt ?? null,
+    })),
+  );
+});
+
+// Create AND issue the invitation in one step: an account with no way in is a
+// dead row, and two calls would let one succeed without the other.
+app.post("/users", (req, res) => {
+  const me = currentAccount(req);
+  const name = String(req.body?.name ?? "").trim();
+  const role: Role = req.body?.role === "admin" ? "admin" : "member";
+  const list = loadAccounts();
+  const v = userWriteVerdict({
+    actorRole: me?.role ?? null,
+    action: "create",
+    target: name,
+    exists: list.some((a) => a.name === name),
+  });
+  if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  const invite = newInvite(Date.now());
+  saveAccounts([...list, { name, role, createdAt: Date.now(), invite }]);
+  console.log(`users: ${me!.name} invited ${name} as ${role}`);
+  res.json({ ok: true, name, role, inviteUrl: `/invite/${invite.token}` });
+});
+
+app.delete("/users", (req, res) => {
+  const me = currentAccount(req);
+  const name = String(req.query.name ?? "").trim();
+  const list = loadAccounts();
+  const v = userWriteVerdict({
+    actorRole: me?.role ?? null,
+    action: "delete",
+    target: name,
+    exists: list.some((a) => a.name === name),
+  });
+  if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  saveAccounts(list.filter((a) => a.name !== name));
+  console.log(`users: ${me!.name} removed ${name}`);
+  res.json({ ok: true });
+});
+
+app.post("/users/role", (req, res) => {
+  const me = currentAccount(req);
+  const name = String(req.body?.name ?? "").trim();
+  const role: Role = req.body?.role === "admin" ? "admin" : "member";
+  const list = loadAccounts();
+  const v = userWriteVerdict({
+    actorRole: me?.role ?? null,
+    action: "role",
+    target: name,
+    exists: list.some((a) => a.name === name),
+  });
+  if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  saveAccounts(list.map((a) => (a.name === name ? { ...a, role } : a)));
+  res.json({ ok: true });
+});
+
 app.get("/profiles", (_req, res) =>
   res.json(
     loadProfiles().map((p) => ({
