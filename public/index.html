@@ -2015,6 +2015,20 @@
   window.dispatchEvent(new Event("shadok-bridge-ready"));
 </script>
 <script nonce="__CSP_NONCE__">
+  // A link the AGENT wrote (rendered markdown) opens in a NEW tab. The cockpit
+  // is a long-lived app driving live sessions; following a link in place would
+  // tear the whole thing down. One DOMPurify hook stamps target/rel on every
+  // <a href> it sanitises, so all agent content is covered in a single place
+  // (set AFTER attribute sanitising, so the allowlist can't strip it back).
+  // rel="noopener" stops the opened page reaching back via window.opener.
+  if (window.DOMPurify) {
+    DOMPurify.addHook("afterSanitizeAttributes", (node) => {
+      if (node.tagName === "A" && node.getAttribute("href")) {
+        node.setAttribute("target", "_blank");
+        node.setAttribute("rel", "noopener noreferrer");
+      }
+    });
+  }
   // ── Bouchons du pont ESM (invariant 10) ─────────────────────────────────
   // Le bloc module ci-dessus est DIFFÉRÉ : il s'exécute après le parsing,
   // alors que ce script-ci tourne PENDANT et câble déjà les boutons.
