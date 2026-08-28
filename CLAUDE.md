@@ -85,7 +85,7 @@ both are silent in the DOM.
 |---|---|
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
-| `src/claude-bin.ts` | Makes sure the `claude` CLI is there before the first spawn. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight, caches success only), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Pure, tested. |
+| `src/claude-bin.ts` | Makes sure a RUNNABLE `claude` is there before every spawn, and says which binary that is. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Since the split packaging, "a file named claude that is executable" is NOT "a claude that works": `classifyBin` recognises the npm placeholder, `findClaudeBin` falls back to the native binary behind it, and `claudeCommand` is the ONE answer to "which binary do we spawn" — the pilots, the auth probe, the sign-in and the version probe all go through it. See invariant 32. Pure cores (`classifyBin`, `platformPkg`, `nativeBinCandidates`, `findClaudeBin`, `findClaudeBinWithRetry`) tested; the placeholder is also read off a real file on disk. |
 | `src/node-pty-fix.ts` | The OTHER `posix_spawnp failed`: node-pty's prebuilt `spawn-helper` must be `chmod +x` to run. The package `postinstall` does that, but via a RELATIVE path that only holds for a dev checkout; installed as a dependency (npx / managed `~/.shadok-ai/app`) node-pty is **hoisted** to the parent `node_modules` and the chmod silently misses — so a colleague's very first agent died with `posix_spawnp` even though `claude` was fine. `ensureSpawnHelperExecutable` (called at boot in `server.ts`) chmods it from node-pty's REAL location, resolved at runtime — every install layout. `spawnHelperPaths` is pure, tested; the real chmod is covered end-to-end. |
 | `src/tmux.ts` | `TmuxPilot` — same interface as `PtyPilot`, but runs `claude` in a **detached tmux session** (`sk-<sessionId>`). **Survives server restart** (reattaches). Default transport when tmux is present. |
 | `src/tmux-install.ts` | Auto-installs tmux at boot when it's missing, so the durable transport is the default without setup (node-pty agents die on every auto-update). `tmuxInstallCommand` (pure, tested) picks the package manager — `brew` on macOS (no root), `apt-get`/`apk`/`dnf`/`yum`/`pacman` on Linux (root, else non-interactive `sudo`). `ensureTmux` runs it best-effort and NEVER blocks the boot: on failure it stays on node-pty with a clear message. The boot caller (`server.ts`) flips the `let USE_TMUX` on once the install lands, so the same process picks tmux up. `SHADOK_TMUX=0` skips it. |
@@ -715,6 +715,50 @@ Auth section of `docs/architecture.md`).
     back green and proves nothing. It was confirmed the only way that works — a
     throwaway tmux session in interactive mode, where the marker alone produces
     the "Transcript saving is off" footer and adding the flag removes it.
+
+32. **An executable file named `claude` is not a working `claude` — and the npm
+    launcher is, intermittently, a 500-byte shell placeholder.** Since the split
+    packaging (verified on 2.1.250), `@anthropic-ai/claude-code` ships
+    `bin/claude.exe` as a placeholder and its postinstall hardlinks the ~223 MB
+    native binary from an optional dependency (`…-linux-x64`, `…-darwin-arm64`,
+    one per platform) over it. That placeholder is mode 0755, so `resolveBin`'s
+    `X_OK` test hands it back happily, `ensureClaude` reported `{ok:true}`, and
+    the spawn died on its `Error: claude native binary not installed.` + exit 1
+    — the same "agent zombie / failed to start" shape as the two `posix_spawnp`
+    traps above, with nothing in the log to name it.
+    It is not only the `--ignore-scripts` / `--omit=optional` case, which would
+    at least be permanent and obvious. `placeBinary` in their `install.cjs`
+    **unlinks the destination before relinking**, and restores the placeholder if
+    the copy fails, so EVERY claude-code upgrade opens a window where the
+    launcher is absent or is the placeholder again. Measured here: sampling every
+    2 s for a minute, 1 sample in 30 was broken, and a `claude --version`
+    answered `No such file or directory` while `/usr/local/bin/claude` plainly
+    existed. Anthropic fixed a cousin of this for their own background sessions
+    in 2.1.246; we had no equivalent.
+    Four rules came out of it, and each is load-bearing.
+    **Recognise the placeholder, do not condemn everything else.** `classifyBin`
+    matches its own wording in a file under 4 kB (the test `install.cjs` uses on
+    its own stub) and calls anything unrecognised usable. The tempting rule —
+    "the real one is an ELF of hundreds of MB, so a small file is broken" —
+    would also condemn pnpm/volta/asdf shims and npm's Windows `.cmd` shim,
+    which work fine. Same discipline as invariant 27: assert only what you saw.
+    **Do not probe by executing.** A `claude --version` before each spawn costs a
+    process launch and is no more sound: its answer is stale the moment it
+    returns, and the window is milliseconds wide. A stat plus a 512-byte read is
+    exactly as raceable and costs microseconds.
+    **Resolve the fallback at runtime, never hard-code it.** `nativeBinCandidates`
+    walks `node_modules` ancestors from the launcher's own package, because npm
+    HOISTS that optional dependency as readily as it nests it — assuming the
+    nested layout is precisely what made `node-pty-fix.ts`'s chmod silently miss.
+    **Never cache a verdict about it.** The path rots on the next upgrade, so
+    `claudeCommand` re-validates on every call (one stat, next to a process spawn
+    the caller is about to pay for anyway) and `ensureClaudeOnce` re-runs when its
+    cached path stops classifying as usable. Caching "ok" across the window is
+    what would turn milliseconds into a permanently broken instance.
+    A placeholder is also NOT a reason to `npm i -g`: the package is plainly
+    installed, and reinstalling while someone else's postinstall is mid-rewrite
+    makes it worse. Say what is wrong instead (`claudeStubMessage`), in the
+    spirit of `claudeMissingMessage` and `describeStuckScreen`.
 
 ## Conventions
 

@@ -152,7 +152,17 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
 } from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
 import { startHeartbeat } from "./heartbeat.js";
-import { ensureClaude, resolveBin, type EnsureClaudeResult } from "./claude-bin.js";
+import {
+  ensureClaude,
+  claudeCommand,
+  classifyBin,
+  findClaudeBinWithRetry,
+  liveClaudeDeps,
+  rememberClaudeBin,
+  resolveBin,
+  sampleBin,
+  type EnsureClaudeResult,
+} from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion } from "./csp.js";
 
@@ -1754,9 +1764,15 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
       ledgerReflex: lr,
     }),
   );
+  // Spawn the binary `claudeCommand` resolved, not the bare name `claude`. They
+  // differ exactly when the npm launcher is the fallback placeholder: spawning
+  // by name would then run the 500-byte stub, which exits 1 on stderr and looks
+  // like an agent that died for no reason. With nothing resolvable it falls
+  // back to the bare name, i.e. the historical behaviour.
+  const claudePath = claudeCommand();
   return USE_TMUX
-    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id })
-    : new PtyPilot({ cwd, args: fullArgs, env });
+    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath })
+    : new PtyPilot({ cwd, args: fullArgs, env, claudePath });
 }
 
 interface Live {
@@ -1926,6 +1942,12 @@ async function restartSession(s: Live): Promise<void> {
   // Resume only if there's a transcript; a never-used session has
   // nothing to resume (claude --resume would exit) — re-create it.
   const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id));
+  // A restart respawns without passing through the `start` handler, so it is
+  // its own chance to notice that the launcher has become the placeholder since
+  // this session was created. Non-fatal: a restart that cannot re-resolve still
+  // respawns on the last known path, which is what it did before.
+  const claude = await ensureClaudeOnce();
+  if (!claude.ok) console.error(`[sk-${s.id}] restart: ${claude.error}`);
   s.pilot = makePilot(s.id, s.cwd, hasTranscript ? ["--resume", s.id] : ["--session-id", s.id], s.profile);
   s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
@@ -2039,18 +2061,43 @@ function installClaudeCli(): Promise<void> {
 
 // The first spawn on a fresh machine used to fail with a bare `posix_spawnp
 // failed` when the `claude` CLI wasn't installed. We now install it once, on
-// demand, and only surface a clear error if that can't help. Cache SUCCESS
-// only, so a manual install after a failed attempt is picked up next spawn.
+// demand, and only surface a clear error if that can't help. A FAILURE is never
+// cached, so a manual install after a failed attempt is picked up next spawn —
+// and a success is re-validated (below), because the path it holds rots.
 let claudeReady: Promise<EnsureClaudeResult> | null = null;
-function ensureClaudeOnce(): Promise<EnsureClaudeResult> {
-  if (claudeReady) return claudeReady;
+function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
+  const cached = claudeReady;
+  if (cached) {
+    if (!revalidate) return cached;
+    // A cached path ROTS. The claude-code postinstall unlinks bin/claude.exe
+    // and relinks the native binary over it on every upgrade, so a path that
+    // was fine an hour ago can be the 500-byte placeholder right now — and
+    // caching "ok" across that window is exactly what would turn a window of
+    // milliseconds into a permanently broken instance. Re-validating is a stat
+    // plus at most a 512-byte read, on a path we already have: cheap enough to
+    // pay per spawn, which is a human-scale event.
+    return cached.then((r) => {
+      if (r.ok && classifyBin(sampleBin(r.path)) === "usable") return r;
+      if (claudeReady === cached) claudeReady = null;
+      // Re-resolve ONCE and take that answer as it comes. Looping until the
+      // path validates would spin forever on a launcher that keeps flipping,
+      // which is the very state we are trying to report.
+      return ensureClaudeOnce(false);
+    });
+  }
   const p = ensureClaude({
-    resolve: () => resolveBin("claude"),
+    // A short bounded retry, not a single look: the placeholder window is
+    // transient, so failing hard on the first sample would report a healthy
+    // install as broken. Nothing here runs at boot.
+    find: () => findClaudeBinWithRetry(liveClaudeDeps()),
     install: installClaudeCli,
     notify: (line) => console.log(`[shadok-ai] ${line}`),
   });
   claudeReady = p;
-  p.then((r) => { if (!r.ok) claudeReady = null; }).catch(() => { claudeReady = null; });
+  p.then((r) => {
+    rememberClaudeBin(r.ok ? r.path : null);
+    if (!r.ok && claudeReady === p) claudeReady = null;
+  }).catch(() => { if (claudeReady === p) claudeReady = null; });
   return p;
 }
 

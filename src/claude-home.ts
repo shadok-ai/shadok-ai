@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { claudeCommand } from "./claude-bin.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -158,7 +159,7 @@ const settingsFile = (): string => path.join(os.homedir(), ".claude", "settings.
 function claudeVersion(): string {
   try {
     return (
-      parseClaudeVersion(execFileSync("claude", ["--version"], { encoding: "utf8" })) ?? "0.0.0"
+      parseClaudeVersion(execFileSync(claudeCommand(), ["--version"], { encoding: "utf8" })) ?? "0.0.0"
     );
   } catch {
     return "0.0.0";
