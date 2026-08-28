@@ -140,6 +140,15 @@ import {
   shippedProfile,
   withManagedPrompt,
 } from "./profiles.js";
+import {
+  BOOTSTRAP_ADMIN,
+  loadAccounts,
+  verifyPassword,
+  sessionSecret,
+  signSession,
+  readSession,
+  type Role,
+} from "./accounts.js";
 import { ensureSelfRepo } from "./selfrepo.js";
 import {
   createWorktree,
@@ -216,9 +225,17 @@ const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
 // user back to the login screen. Any instance with the same password accepts
 // the same cookie; it's one-way, so the cookie never leaks the password. The
 // in-process Telegram bridge presents this same cookie on its WS.
-const AUTH_TOKEN = GUI_PASSWORD
-  ? createHmac("sha256", GUI_PASSWORD).update("shadok-ai-auth-v1").digest("hex")
-  : "";
+/** A week, matching the cookie's Max-Age: one is the other's enforcement. */
+const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+// Sessions are signed with a per-instance secret, NOT with the password: the
+// password reaches every agent's environment, so signing with it would let an
+// agent mint a cookie for anyone. Drawn lazily, so an instance with no password
+// never creates a key file it will not use.
+let sessionKeyCache: Buffer | null = null;
+const signingSecret = (): Buffer => (sessionKeyCache ??= sessionSecret());
+/** The Telegram bridge and the agents authenticate as the bootstrap admin. */
+const adminCookie = (): string | undefined =>
+  GUI_PASSWORD ? `sk_auth=${signSession(BOOTSTRAP_ADMIN, Date.now(), signingSecret())}` : undefined;
 
 // The live Telegram bridge handle + the port we actually bound, so the
 // /telegram endpoint can tear it down and recreate it hot (no server restart).
@@ -228,7 +245,7 @@ let tgBridge: TelegramHandle = {
   status: () => ({ username: null, tokenError: null }),
 };
 let boundPort = 0;
-const tgCookie = () => (GUI_PASSWORD ? `sk_auth=${AUTH_TOKEN}` : undefined);
+const tgCookie = adminCookie;
 
 /**
  * Start the instance's lead agent when it has no channel at all.
@@ -626,11 +643,26 @@ function cookieToken(cookieHeader: string | undefined): string | null {
   const m = /(?:^|;\s*)sk_auth=([^;]+)/.exec(cookieHeader ?? "");
   return m ? decodeURIComponent(m[1]) : null;
 }
-function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
-  if (!GUI_PASSWORD) return true;
+/**
+ * Who this request is, or null. Re-reads the account file every time, so
+ * deleting an account or changing a role takes effect at once — that is what
+ * buys us the absence of a session store.
+ */
+function currentAccount(req: { headers: Record<string, unknown> }): { name: string; role: Role } | null {
+  if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
   const tok = cookieToken(req.headers.cookie as string | undefined);
-  if (!tok || tok.length !== AUTH_TOKEN.length) return false;
-  return timingSafeEqual(Buffer.from(tok), Buffer.from(AUTH_TOKEN));
+  if (!tok) return null;
+  const user = readSession(tok, signingSecret(), Date.now(), SESSION_TTL_MS);
+  if (!user) return null;
+  if (user === BOOTSTRAP_ADMIN) return { name: BOOTSTRAP_ADMIN, role: "admin" };
+  const acct = loadAccounts().find((a) => a.name === user);
+  // No hash means an invitation that was never redeemed: not a login yet.
+  if (!acct?.passwordHash) return null;
+  return { name: acct.name, role: acct.role };
+}
+
+function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
+  return currentAccount(req) !== null;
 }
 function passwordMatches(input: string): boolean {
   const a = Buffer.from(input);
@@ -712,21 +744,40 @@ app.use((req, res, next) => {
   res.status(403).json({ error: "cross-origin request refused" });
 });
 
-// Login endpoint (always reachable) — sets an HttpOnly session cookie.
+// Login endpoint (always reachable) — sets an HttpOnly cookie naming the user.
 app.post("/login", (req, res) => {
   if (!GUI_PASSWORD) return res.json({ ok: true });
-  if (passwordMatches(String(req.body?.password ?? ""))) {
-    res.setHeader(
-      "Set-Cookie",
-      `sk_auth=${AUTH_TOKEN}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`,
-    );
-    return res.json({ ok: true });
-  }
-  return res.status(401).json({ error: "wrong password" });
+  const user = String(req.body?.user ?? "").trim();
+  const password = String(req.body?.password ?? "");
+  // No username means the instance password: the habit of typing just the
+  // password keeps working, and that IS the bootstrap admin.
+  const ok =
+    !user || user === BOOTSTRAP_ADMIN
+      ? passwordMatches(password)
+      : (() => {
+          const a = loadAccounts().find((x) => x.name === user);
+          return !!a?.passwordHash && verifyPassword(password, a.passwordHash);
+        })();
+  if (!ok) return res.status(401).json({ error: "wrong username or password" });
+  const name = user || BOOTSTRAP_ADMIN;
+  res.setHeader(
+    "Set-Cookie",
+    `sk_auth=${signSession(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
+  );
+  return res.json({ ok: true, user: name });
 });
-// Gate everything else behind the cookie when a password is set.
+
+// Who am I? The client labels itself with this, and a tab whose session expired
+// finds out here rather than by a silent failure.
+app.get("/me", (req, res) => {
+  const me = currentAccount(req);
+  return me ? res.json(me) : res.status(401).json({ error: "unauthorized" });
+});
+
+// Gate everything else behind the cookie when a password is set. /me answers
+// for itself: it must return 401, not the login page.
 app.use((req, res, next) => {
-  if (requestAuthed(req)) return next();
+  if (req.path === "/me" || requestAuthed(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
     return sendLogin(res);
   return res.status(401).json({ error: "unauthorized" });
@@ -1733,7 +1784,7 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   // plain language just by asking the agent).
   env.SHADOK_SESSION_ID = id;
   env.SHADOK_PORT = String(boundPort || START_PORT);
-  if (GUI_PASSWORD) env.SHADOK_AUTH = `sk_auth=${AUTH_TOKEN}`;
+  if (GUI_PASSWORD) env.SHADOK_AUTH = adminCookie()!;
   // Proves WHO calls /profiles/prompt: without it "my own profile" means
   // nothing, since the session id is public.
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
