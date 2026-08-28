@@ -55,7 +55,7 @@ The block (English — it is transcript-side):
 
 ```
 ⟦ledger · 2 updates since your last message⟧
-• [a965] biosense nightly export — resolved (agentA)
+• [a965] nightly export — resolved (agentA)
 • [7565] fork-follow (context overflow) — resolved (PR#164)
 ```
 
