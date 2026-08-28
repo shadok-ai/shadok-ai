@@ -1,4 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { claudeCommand } from "./claude-bin.js";
 
 /**
  * Claude Code authentication: status, and the interactive login.
@@ -101,7 +102,7 @@ export function invalidateAuthStatus(): void {
 
 const probe = (): Promise<AuthStatus> =>
   new Promise((resolve) => {
-    execFile("claude", ["auth", "status", "--json"], { timeout: 15_000 }, (_err, stdout) =>
+    execFile(claudeCommand(), ["auth", "status", "--json"], { timeout: 15_000 }, (_err, stdout) =>
       resolve(parseAuthStatus(stdout ?? "")),
     );
   });
@@ -166,7 +167,7 @@ export async function startLogin(): Promise<
   // caller here, a forced re-check has the last word.
   if ((await authStatus(true)).state === "signed-in") return { alreadySignedIn: true };
   cancelLogin();
-  const child = spawn("claude", ["auth", "login", "--claudeai"], {
+  const child = spawn(claudeCommand(), ["auth", "login", "--claudeai"], {
     // BROWSER is neutralised: on a desktop host the CLI would otherwise open a
     // tab on the SERVER's machine, which is not where the user is.
     env: { ...process.env, BROWSER: "/usr/bin/true" },
