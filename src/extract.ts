@@ -5,6 +5,7 @@ import { newestTranscriptById, isNothingToShow, parseTimestamp } from "./tail.js
 import { isCronPrompt } from "./crons.js";
 import { isAgentPrompt } from "./kinship.js";
 import { stripPromptMeta } from "./promptmeta.js";
+import { stripLedgerBlock } from "./ledger.js";
 
 /**
  * Extracts the response: everything after the "❯ <prompt>" echo in the
@@ -270,9 +271,11 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
         pendingHiddenPrompt = true;
         continue;
       }
-      // A human prompt may open with a context header (⟦platform · time · who⟧)
-      // the agent was given; strip it for display — the message itself stays.
-      turns.push({ role: "user", text: stripPromptMeta(text), ...when });
+      // A human prompt may open with a pushed ledger delta then a context header
+      // (⟦platform · time · who⟧) the agent was given; strip both for display —
+      // the ledger block first (its ⟦ledger⟧ line also looks like a header), then
+      // the header — leaving the message itself.
+      turns.push({ role: "user", text: stripPromptMeta(stripLedgerBlock(text)), ...when });
       pendingHiddenPrompt = false;
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
       const text = e.message.content
