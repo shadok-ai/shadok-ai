@@ -92,6 +92,14 @@ import {
 } from "./crons.js";
 import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
 import {
+  ledgerFileFor,
+  ensureLedgerFile,
+  loadLedger,
+  deltaSince,
+  formatLedgerBlock,
+  markLedgerBlock,
+} from "./ledger.js";
+import {
   childrenOf,
   linkRefusal,
   markAgentPrompt,
@@ -1343,6 +1351,9 @@ let autoUpdate: boolean =
 // Gates the pilot-prompt paragraph; a live agent picks it up at next respawn.
 let ledgerEnabled: boolean =
   loadConfig().ledgerEnabled ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_LEDGER ?? "");
+// Most ledger changes to push ahead of one human prompt; the rest collapse to a
+// "+N more" line. Deltas are usually tiny, so this rarely bites.
+const LEDGER_PUSH_CAP = 8;
 // Which release stream this instance follows: "alpha" (every merge) or "beta"
 // (promoted versions only). Absent config → beta, so an instance that predates
 // the setting keeps updating, just on the calmer channel.
@@ -1464,13 +1475,9 @@ app.post("/restart-all", (_req, res) => {
 // Reads the same file the `shadok-ledger` skill writes; most-recent first; an
 // absent or unreadable file → []. Read-only — agents write it via the skill.
 app.get("/ledger", (_req, res) => {
-  let entries: any[] = [];
-  try {
-    const j = JSON.parse(fs.readFileSync(path.join(os.homedir(), ".shadok-ai", "ledger.json"), "utf8"));
-    if (Array.isArray(j)) entries = j;
-  } catch {
-    /* absent / unreadable → empty */
-  }
+  // This instance's own ledger (keyed by the launch dir), the same file agents
+  // write through SHADOK_LEDGER_FILE.
+  const entries = loadLedger(ledgerFileFor(process.cwd()));
   entries.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
   res.json({ entries, enabled: ledgerEnabled });
 });
@@ -1730,6 +1737,9 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   // Proves WHO calls /profiles/prompt: without it "my own profile" means
   // nothing, since the session id is public.
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
+  // The PER-INSTANCE ledger file: an agent's cwd is a worktree, not the launch
+  // dir, so it cannot derive the scope itself — hand it the path the skill writes.
+  env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
@@ -1792,6 +1802,10 @@ interface Live {
    *  hunts once this has been silent for FORK_STALL_MS while the pane shows work
    *  — so a healthy, still-streaming session never looks for a fork. */
   lastContentAt?: number;
+  /** Watermark for the pushed ledger delta: the moment this agent last saw the
+   *  ledger. Each human prompt injects the rows changed since, then advances it.
+   *  In-memory (near-real-time, not an audit); a restart re-anchors it to now. */
+  ledgerSeenAt?: number;
   cwd: string;
   pilot: Pilot;
   clients: Set<WebSocket>;
@@ -2275,6 +2289,9 @@ async function attachPilot(s: Live): Promise<void> {
   // instantly "silent since epoch" and trip the fork detector before its tail
   // has had a chance to stream anything.
   s.lastContentAt = Date.now();
+  // Anchor the ledger watermark to now: an agent's first prompt after attach
+  // shows changes from here on, not the whole backlog.
+  s.ledgerSeenAt ??= Date.now();
   // Stream authoritative content from the session transcript: each assistant
   // text/tool block is broadcast as soon as Claude Code writes it — complete,
   // never truncated, at message granularity.
@@ -2952,10 +2969,25 @@ wss.on("connection", (ws: WebSocket) => {
             // above stays clean, and loadHistory strips the header on replay.
             // Cron/agent prompts carry their own mark and are not "someone
             // speaking", so they are left alone.
-            const submitText =
-              origin === "web" || origin === "telegram" || origin === "cli"
-                ? markPromptMeta(text, promptMetaHeader(origin, new Date(), msg.from, defaultTimeZone()))
-                : text;
+            let submitText = text;
+            if (origin === "web" || origin === "telegram" || origin === "cli") {
+              submitText = markPromptMeta(text, promptMetaHeader(origin, new Date(), msg.from, defaultTimeZone()));
+              // Push the ledger DELTA ahead of the message: rows changed since
+              // this agent last saw the ledger, so it learns what siblings
+              // resolved/decided in near-real-time. Gated by the reflex toggle;
+              // stripped from the display like the ⟦platform⟧ header. Advancing
+              // the watermark whether or not there was a delta keeps it truthful:
+              // by now the agent has seen everything up to this moment.
+              if (ledgerEnabled) {
+                const { rows, total } = deltaSince(
+                  loadLedger(ledgerFileFor(process.cwd())),
+                  session.ledgerSeenAt ?? 0,
+                  LEDGER_PUSH_CAP,
+                );
+                session.ledgerSeenAt = Date.now();
+                if (rows.length) submitText = markLedgerBlock(submitText, formatLedgerBlock(rows, total));
+              }
+            }
             await session.pilot.submit(submitText);
           } finally {
             session.busy = false;
@@ -3380,6 +3412,11 @@ function seedTweakPrCheck(): void {
   }
 }
 seedTweakPrCheck();
+
+// Give this instance its own ledger (keyed by the launch dir), seeded from the
+// legacy single-file ledger the first time and with ids backfilled, so both the
+// pushed delta and the GUI viewer read a per-instance table with durable handles.
+ensureLedgerFile(process.cwd());
 
 // Fail-closed BEFORE listening: exposing the cockpit to a network with no
 // password hands command execution to whoever reaches it. Better not to start

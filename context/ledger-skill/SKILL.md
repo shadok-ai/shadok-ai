@@ -46,6 +46,15 @@ node ~/.claude/skills/shadok-ledger/ledger.mjs record \
 Re-recording the same entity **supersedes** its row (no duplicates). Log facts —
 resolutions, decisions, state changes, launched actions — never chatter.
 
+Every row has a short **id** (shown as `[id]` in `check`/`list` and in the ledger
+block pushed ahead of your messages). To update a row you already saw, quote its
+id instead of retyping the name — no risk of a typo forking a second row:
+
+```
+node ~/.claude/skills/shadok-ledger/ledger.mjs record \
+  --id <id> --status resolved --note "<one line>"
+```
+
 ## To consult the whole table
 
 ```
