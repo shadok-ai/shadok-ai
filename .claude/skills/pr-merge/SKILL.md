@@ -214,6 +214,31 @@ confined to what the existing workflows already do — install, build, test.
 Approving is not merging. It buys a verdict, nothing else: the PR still comes
 from a fork, so it still waits for a human.
 
+## After a merge: record it in the ledger
+
+A merged PR is a **state change** sibling agents will not otherwise see: they do
+not re-read `main`, so work already shipped keeps coming back in their reports
+and their plans. After each merge:
+
+```bash
+node ~/.claude/skills/shadok-ledger/ledger.mjs record \
+  --entity "<the subject, not the PR title>" --status resolved \
+  --note "<what it changes, and what stays open>" --source "PR#<n> / PR loop"
+```
+
+The **entity is the subject**, not the number: "web forms overshoot on tmux",
+never "PR 173" — a number means nothing to an agent hitting the same symptom
+next week. It is a state TABLE: re-recording an entity **supersedes** its row,
+so a follow-up PR updates the existing line (`--id <id>`) instead of forking a
+second one, and a row an authoring agent already left as `in-progress` gets
+closed rather than duplicated.
+
+Worth a row: a behaviour fix, a failure class closed, a version promotion, a
+decision. Not worth one: an isolated cosmetic tweak.
+
+Say what stays OPEN too. "Merged, but macOS is only unit-tested" is what stops
+the next agent asserting the whole thing is covered.
+
 ## Red flags — stop and ask the human
 
 - The PR touches `.github/workflows/` — **always**, even if the rest is clean.
