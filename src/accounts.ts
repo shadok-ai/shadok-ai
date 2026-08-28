@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { instanceKey } from "./paths.js";
 
 /**
@@ -88,4 +88,59 @@ export function userWriteVerdict(o: {
     return o.exists ? { ok: false, error: `${name} already exists` } : { ok: true };
   }
   return o.exists ? { ok: true } : { ok: false, error: `no such account: ${name}` };
+}
+
+/**
+ * The key that signs sessions — per instance, drawn once, persisted.
+ *
+ * NOT derived from SHADOK_GUI_PASSWORD, and never exported into an agent's
+ * environment. The password reaches every agent's env today (measured on three
+ * production agents, 2026-08-23); signing with it would let any agent mint a
+ * cookie for any user. Untidy becomes impersonation the moment accounts exist.
+ */
+export function sessionSecret(): Buffer {
+  const f = path.join(os.homedir(), ".shadok-ai", "users", instanceKey() + ".key");
+  try {
+    const hex = fs.readFileSync(f, "utf8").trim();
+    if (hex.length >= 32) return Buffer.from(hex, "hex");
+  } catch {
+    /* first run, or unreadable: draw a new one below */
+  }
+  const secret = randomBytes(32);
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, secret.toString("hex"), { mode: 0o600 });
+  fs.chmodSync(f, 0o600);
+  return secret;
+}
+
+/** `<user base64url>.<issuedAt>.<hmac>` — the name is encoded so a dot in it
+ *  cannot shift the fields. The ROLE is deliberately absent: it is re-read from
+ *  the account file at use time, so a demotion takes effect immediately instead
+ *  of riding in a stale cookie. */
+export function signSession(user: string, issuedAt: number, secret: Buffer): string {
+  const u = Buffer.from(user, "utf8").toString("base64url");
+  const body = `${u}.${issuedAt}`;
+  return `${body}.${createHmac("sha256", secret).update(body).digest("hex")}`;
+}
+
+export function readSession(
+  token: string,
+  secret: Buffer,
+  now: number,
+  maxAgeMs: number,
+): string | null {
+  const parts = String(token ?? "").split(".");
+  if (parts.length !== 3) return null;
+  const [u, at, mac] = parts;
+  const issuedAt = Number(at);
+  if (!at || !Number.isFinite(issuedAt)) return null;
+  const want = createHmac("sha256", secret).update(`${u}.${at}`).digest("hex");
+  if (mac.length !== want.length) return null;
+  if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
+  if (now - issuedAt > maxAgeMs) return null;
+  try {
+    return Buffer.from(u, "base64url").toString("utf8") || null;
+  } catch {
+    return null;
+  }
 }

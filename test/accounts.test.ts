@@ -65,3 +65,43 @@ test("write rules: not signed in is not an admin", () => {
   const v = userWriteVerdict({ actorRole: null, action: "create", target: "bob", exists: false });
   assert.equal(v.ok, false);
 });
+
+import { signSession, readSession } from "../src/accounts.js";
+
+const SECRET = Buffer.from("a".repeat(64), "hex");
+const WEEK = 7 * 24 * 3600 * 1000;
+
+test("session: a token round-trips to its user", () => {
+  const t = signSession("alex", 1_000, SECRET);
+  assert.equal(readSession(t, SECRET, 2_000, WEEK), "alex");
+});
+
+test("session: a tampered user is refused", () => {
+  // Swapping the name must not survive: the signature covers it.
+  const t = signSession("alex", 1_000, SECRET);
+  const forged = signSession("root", 1_000, SECRET).split(".")[0] + "." + t.split(".").slice(1).join(".");
+  assert.equal(readSession(forged, SECRET, 2_000, WEEK), null);
+});
+
+test("session: another instance's secret is refused", () => {
+  // The secret is per instance, so a cookie never crosses instances.
+  const other = Buffer.from("b".repeat(64), "hex");
+  assert.equal(readSession(signSession("alex", 1_000, SECRET), other, 2_000, WEEK), null);
+});
+
+test("session: an expired token is refused", () => {
+  const t = signSession("alex", 1_000, SECRET);
+  assert.equal(readSession(t, SECRET, 1_000 + WEEK + 1, WEEK), null);
+  assert.equal(readSession(t, SECRET, 1_000 + WEEK - 1, WEEK), "alex");
+});
+
+test("session: garbage in, null out — never a throw", () => {
+  for (const bad of ["", "x", "a.b", "a.b.c.d", "..", "alex.notanumber.deadbeef"])
+    assert.equal(readSession(bad, SECRET, 2_000, WEEK), null, bad);
+});
+
+test("session: a user name containing a dot still round-trips", () => {
+  // The token is dot-separated; a name with a dot must not shift the fields.
+  const t = signSession("first.last", 1_000, SECRET);
+  assert.equal(readSession(t, SECRET, 2_000, WEEK), "first.last");
+});
