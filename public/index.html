@@ -6246,9 +6246,20 @@
   async function renderUsers() {
     const ul = $("usersList");
     ul.innerHTML = "";
-    let list = [];
-    try { list = await (await fetch("/users")).json(); } catch { list = []; }
-    if (!Array.isArray(list) || !list.length) {
+    // A refused or broken request must NOT read as "no accounts": that is what
+    // hid a real account behind a reassuring empty state for two days.
+    let list = null;
+    try {
+      const r = await fetch("/users");
+      if (r.ok) list = await r.json();
+    } catch {
+      /* offline or refused — handled just below */
+    }
+    if (!Array.isArray(list)) {
+      ul.innerHTML = '<li><span style="opacity:.6">couldn\'t load the accounts</span></li>';
+      return;
+    }
+    if (!list.length) {
       ul.innerHTML = '<li><span style="opacity:.6">no accounts yet — only the instance password</span></li>';
       return;
     }
