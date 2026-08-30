@@ -19,5 +19,8 @@ export function echoAuthor(msg) {
   // want of a name, and even then through the generic wording.
   const place = origin && origin !== "web" ? origin : "";
   if (from) return place ? `${from} · ${place}` : from;
-  return place || "pilot (elsewhere)";
+  // No name and nowhere worth naming (a web message, or none): it is the human
+  // driving this cockpit — you. Shown for your own prompts and for a message
+  // from another of your tabs; a single cockpit has one human.
+  return place || "you";
 }
