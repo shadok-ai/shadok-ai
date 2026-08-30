@@ -24,6 +24,10 @@ const req = http.request(
       "content-type": "application/json",
       "content-length": Buffer.byteLength(body),
       ...(cookie ? { cookie } : {}),
+      // The key authenticates too, and unlike the cookie it cannot age out —
+      // which matters most here: an expired cookie left the agent unable to
+      // reach the one endpoint that would have repaired it.
+      "x-shadok-session-key": key,
     },
   },
   (r) => {

@@ -14,6 +14,9 @@ process.env.SHADOK_NO_HOLDER = "1";
 process.env.SHADOK_NO_AUTOSTART = "1";
 delete process.env.SHADOK_SESSION_ID;
 delete process.env.SHADOK_AUTH;
+// These tests run INSIDE an agent, whose env carries a real session key — so
+// clear it, or every exact-equality assertion below silently gains a header.
+delete process.env.SHADOK_SESSION_KEY;
 const { authHeaders, run } = await import("../pilotctl.mjs");
 
 test("authHeaders: SHADOK_AUTH present → cookie; absent → {}", () => {
@@ -21,6 +24,24 @@ test("authHeaders: SHADOK_AUTH present → cookie; absent → {}", () => {
   assert.deepEqual(authHeaders(), { cookie: "sk_auth=tok123" });
   delete process.env.SHADOK_AUTH;
   assert.deepEqual(authHeaders(), {});
+});
+
+test("authHeaders sends the session key too, and it alone is enough", () => {
+  // The cookie is a DATED token frozen into this process's environment at
+  // spawn, and an environment cannot be refreshed: past a week every call an
+  // agent made to its own server answered 401 — schedules, sibling agents, the
+  // vault — and the self-reload that would have fixed it sits behind the same
+  // gate. The key is derived from the session id and does not age, so it must
+  // go out even when the cookie is missing or long dead.
+  process.env.SHADOK_SESSION_KEY = "sid.deadbeef";
+  assert.deepEqual(authHeaders(), { "x-shadok-session-key": "sid.deadbeef" });
+  process.env.SHADOK_AUTH = "sk_auth=tok123";
+  assert.deepEqual(authHeaders(), {
+    cookie: "sk_auth=tok123",
+    "x-shadok-session-key": "sid.deadbeef",
+  });
+  delete process.env.SHADOK_AUTH;
+  delete process.env.SHADOK_SESSION_KEY;
 });
 
 test("spawn (WS) presents the SHADOK_AUTH cookie on the upgrade", async () => {

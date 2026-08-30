@@ -155,6 +155,8 @@ import {
   hashPassword,
   promptAuthor,
   type Role,
+  signSessionKey,
+  readSessionKey,
 } from "./accounts.js";
 import { ensureSelfRepo } from "./selfrepo.js";
 import {
@@ -657,6 +659,22 @@ function cookieToken(cookieHeader: string | undefined): string | null {
  */
 function currentAccount(req: { headers: Record<string, unknown> }): { name: string; role: Role } | null {
   if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
+  // An AGENT authenticates with its own session key, not with the cookie.
+  //
+  // `SHADOK_AUTH` is still injected and still works, but it is a dated token in
+  // a process environment, and an environment cannot be refreshed: an agent
+  // alive longer than SESSION_TTL_MS got 401 on every call to its own server —
+  // schedules, sibling agents, the vault, all of it — with nothing to see and
+  // nothing it could do, since the self-reload skill sits behind this same
+  // gate. A running agent proving it is that agent has no reason to expire.
+  //
+  // It grants exactly what the cookie already did, no more: `SHADOK_AUTH` IS
+  // the bootstrap admin's cookie, so this is the same authority reached by a
+  // credential that cannot age out. `sessionForKey` requires the session to be
+  // live, so the key dies with the agent.
+  const skey = req.headers["x-shadok-session-key"];
+  if (typeof skey === "string" && skey && sessionForKey(skey))
+    return { name: BOOTSTRAP_ADMIN, role: "admin" };
   const tok = cookieToken(req.headers.cookie as string | undefined);
   if (!tok) return null;
   const user = readSession(tok, signingSecret(), Date.now(), SESSION_TTL_MS);
@@ -741,19 +759,35 @@ function invitePage(name: string, token: string): string {
  * SHADOK_SESSION_KEY. The session id is PUBLIC (`/live` lists every id), so it
  * cannot prove "this is my own profile" — this can. Same-user shell access
  * still trumps it: soft isolation, not a sandbox.
+ *
+ * DERIVED from the id (see `signSessionKey`), not drawn and remembered. The Map
+ * this replaced died with the server while tmux agents did not, so every
+ * auto-update silently invalidated the key of every surviving agent.
  */
-const sessionKeys = new Map<string, string>();
 function sessionKeyFor(id: string): string {
-  let k = sessionKeys.get(id);
-  if (!k) {
-    k = randomUUID();
-    sessionKeys.set(id, k);
-  }
-  return k;
+  return signSessionKey(id, signingSecret());
 }
+/**
+ * The session a key attests to — while that agent still EXISTS.
+ *
+ * A derived key stays verifiable forever, so something has to bound it; that is
+ * what the Map's `delete` on teardown used to do. The bound is deliberately the
+ * CHANNEL and not the `sessions` map, and the difference is not academic: after
+ * a restart the server does not re-adopt a web session until a client opens it
+ * (`reconcileOnBoot` reattaches Telegram bridges, not sessions), so a tmux agent
+ * can be running, executing tools, and absent from `sessions` for hours.
+ * Measured: pane alive, `/live` empty, key refused — which would have rebuilt
+ * the very cliff this change removes, one restart wide instead of a week.
+ *
+ * The channel list is on disk, survives the restart, and loses the entry when
+ * the agent is closed — which is the moment the key should stop working.
+ * The map is still consulted first: it costs nothing and spares the file read.
+ */
 function sessionForKey(key: string): string | null {
-  for (const [id, k] of sessionKeys) if (k === key) return id;
-  return null;
+  const id = readSessionKey(key, signingSecret());
+  if (!id) return null;
+  if (sessions.has(id)) return id;
+  return loadChannels().some((c) => c.sessionId === id) ? id : null;
 }
 
 /** A browser on our own origin — the only caller allowed to change guardrails. */
@@ -2227,7 +2261,6 @@ function broadcastProfile(s: Live) {
 
 function destroySession(s: Live) {
   prepromptById.delete(s.id);
-  sessionKeys.delete(s.id);
   if (s.screenTimer) clearInterval(s.screenTimer);
   s.screenTimer = null;
   if (s.idleTimer) clearTimeout(s.idleTimer);

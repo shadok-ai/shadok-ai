@@ -126,7 +126,7 @@ both are silent in the DOM.
 | `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs **no PTY**: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. One instance-global flow, two doors (the web card, Telegram `/login`+`/code`). Success is a clean **exit**, never a parsed string (see invariant 27). Pure `parseAuthStatus` / `parseLoginUrl` / `parseLoginOutcome` tested. |
 | `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). **Docker-only** (`/.dockerenv`): generates an ed25519 key under `~/.shadok-ai/ssh/` — on the `shadok-data` volume, so it survives restart AND recreate — and symlinks `~/.ssh` to it so agents' `git`/`ssh` use it. NO-OP on a normal host (never touches `~/.ssh`). Pure `sshPaths`/`planDotSshWiring`/`inContainer` are unit-tested. See invariant 19. |
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600; deliberately deleted starter roles are remembered in `profiles-declined.json` — the seed installs the shipped roles a vault is MISSING, including ones a later release added, so it must not resurrect what you removed): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow) + secrets + model, applied at spawn via `profileArgs`. **A shipped role stores NO prompt until the user edits it** — `effectiveProfile` resolves it from the build at spawn, so it cannot go stale; `promptOrigin` reports `tracked` / `edited` / `outdated` (their fork, and the build has moved since — `promptBase` records what they forked from) / `custom`. `adoptTracking` + `migrateToTracking` drop a stored copy that merely repeats the build, which is how pre-tracking instances catch up. Restoring DROPS the stored prompt rather than copying today's text, or the fresh snapshot would start going stale immediately. Stored on the channel (`profile`) → re-applied on resume/restart. SOFT (same OS user, not a sandbox). |
-| `src/accounts.ts` | Web accounts, PER INSTANCE (`~/.shadok-ai/users/<key>.json`, 600): roles (`admin`/`member`), salted scrypt hashes, single-use invitations, and the signed session token. The signing secret (`<key>.key`) is per instance and **never exported into an agent's env** — the GUI password is, so signing with it would let an agent mint a cookie for anyone. `SHADOK_GUI_PASSWORD` stays the door and IS the `admin` account; with no password everything is dormant. `promptAuthor` is where the web's author comes from the SESSION and never from the frame. Pure cores tested. |
+| `src/accounts.ts` | Web accounts, PER INSTANCE (`~/.shadok-ai/users/<key>.json`, 600): roles (`admin`/`member`), salted scrypt hashes, single-use invitations, and the signed session token. The signing secret (`<key>.key`) is per instance and **never exported into an agent's env** — the GUI password is, so signing with it would let an agent mint a cookie for anyone. `SHADOK_GUI_PASSWORD` stays the door and IS the `admin` account; with no password everything is dormant. `promptAuthor` is where the web's author comes from the SESSION and never from the frame. Also `signSessionKey` / `readSessionKey` — the per-session key an AGENT authenticates with (`x-shadok-session-key`), DERIVED from the session id by HMAC so it needs no server state and carries no issue time. See invariant 33. Pure cores tested. |
 | `src/paths.ts` | `instanceKey(cwd)` — the launch directory encoded as a filename, for anything stored per instance. |
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
 | `public/index.html` | The entire web client (no framework, no build). Agents (creation is a **popin**, `#setupOverlay`, profile-first: a grid of cards, the rest folded away; the channel is only born at "Start agent", see invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
@@ -765,6 +765,45 @@ Auth section of `docs/architecture.md`).
     installed, and reinstalling while someone else's postinstall is mid-rewrite
     makes it worse. Say what is wrong instead (`claudeStubMessage`), in the
     spirit of `claudeMissingMessage` and `describeStuckScreen`.
+
+33. **A credential frozen into a process's environment cannot be refreshed — so
+    it must not be one that expires.** Every agent is handed `SHADOK_AUTH`, the
+    bootstrap admin's cookie, at spawn. That cookie carries its issue time and
+    `readSession` refuses it past `SESSION_TTL_MS` (a week). An environment
+    variable cannot be updated in a running process, and shadok's agents run for
+    weeks — so on day eight an agent started getting `401` on **every** call to
+    its own server: `schedule.mjs`, `pilotctl`, the vault, `/channels`. Nothing
+    is logged, nothing is on screen, and the agent's own report is accurate to
+    the word: *nothing changed on my side*. The self-repair path is behind the
+    same door — `shadok-reload` reads `SHADOK_AUTH` too — so the one thing that
+    would have fixed it is the one thing it could not do. A human must hit
+    *Reload agent*.
+    The fix is the OTHER credential it already carries. `SHADOK_SESSION_KEY`
+    proves "I am this agent", which is a fact with no expiry date, and it grants
+    exactly what the cookie granted (the bootstrap admin) — so accepting it via
+    `x-shadok-session-key` removes the cliff without widening anything. Three
+    things make it work, and each replaced something that did not.
+    **Derive the key, never store it.** It was a `randomUUID` in an in-memory
+    `Map`, which had the same class of cliff one level down: the Map dies with
+    the server, a tmux agent does not, so every auto-update invalidated the key
+    of every surviving agent and `/reload` answered 403 forever after. An HMAC of
+    the session id needs no state to survive a restart.
+    **Carry the id inside the key** (`<id>.<mac>`), so verification recovers it
+    with no lookup and the wire format stays one opaque string — nothing that
+    presents a key had to learn a second field.
+    **Bound it by the CHANNEL, not by `sessions`.** A key that cannot expire
+    needs something to revoke it, and the obvious choice is wrong: after a
+    restart the server does not re-adopt a web session until a client opens it
+    (`reconcileOnBoot` reattaches Telegram bridges, not sessions), so a tmux
+    agent can be running, executing tools, and absent from `sessions` for hours.
+    Measured, not reasoned — pane alive, `/live` empty, key refused — which would
+    have rebuilt this very cliff one restart wide instead of a week. The channel
+    list is on disk, survives the restart, and loses its entry when the agent is
+    closed, which is exactly when the key should stop working.
+    One consequence to state plainly: an agent that predates this fix holds a
+    random UUID no derivation can recognise, and an expired cookie. Nothing
+    unforgeable survives in its env, so it needs **one** reload — and then never
+    again.
 
 ## Conventions
 

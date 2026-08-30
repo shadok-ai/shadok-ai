@@ -501,6 +501,35 @@ password accepts the same cookie. It's one-way, so the cookie never leaks the
 password. The in-process Telegram bridge presents that same cookie on its
 loopback WS.
 
+**An agent authenticates with its session key, not with that cookie.** Both are
+injected at spawn (`SHADOK_AUTH`, `SHADOK_SESSION_KEY`) and both are accepted,
+but only one of them can be trusted to still work tomorrow. The cookie carries
+its issue time and is refused past `SESSION_TTL_MS` (a week) — and a process
+environment cannot be refreshed, so an agent alive longer than that got `401` on
+*every* call to its own server: its schedules, its sibling agents, the vault.
+Nothing surfaced, and it could not repair itself either, because the
+`shadok-reload` skill sits behind the same gate. A running agent proving it is
+that agent has no reason to expire, so `currentAccount` also accepts the
+`x-shadok-session-key` header and grants exactly what the cookie granted — the
+bootstrap admin, no more.
+
+The key is **derived, never stored**: `signSessionKey` HMACs the session id with
+the per-instance secret and carries the id inside the token, so `readSessionKey`
+recovers it with no server-side state. That is what replaced an in-memory `Map`
+of random UUIDs, which had a sharper cliff nobody had noticed — the Map died
+with the server while a tmux agent did not, so every auto-update silently
+invalidated the key of every surviving agent, and `/reload` and
+`/profiles/prompt` answered 403 from then on.
+
+What bounds a key that cannot expire is the **channel**, not the `sessions` map.
+The distinction is load-bearing and was measured, not reasoned: after a restart
+the server does not re-adopt a web session until a client opens it
+(`reconcileOnBoot` reattaches Telegram bridges, not sessions), so a tmux agent
+can be running, executing tools, and absent from `sessions` for hours — pane
+alive, `/live` empty, key refused. Keying on the channel list, which is on disk
+and loses its entry when the agent is closed, revokes at the right moment and
+survives the restart.
+
 ## Where it listens, and who may talk to it (`src/net.ts`)
 
 The cockpit runs arbitrary commands on the host, so the network surface is
