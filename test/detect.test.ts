@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { idleStep, screenShowsWork, inputHasProbe, inputText, nextScreenDelay, SCREEN_FAST_MS, SCREEN_SLOW_MS } from "../src/detect.js";
+import { idleStep, screenShowsWork, inputHasProbe, inputText, nextScreenDelay, SCREEN_FAST_MS, SCREEN_SLOW_MS, typeIntoBox } from "../src/detect.js";
 
 const idle = [
   "⏺ Done.",
@@ -148,4 +148,50 @@ test("nextScreenDelay: the delay never shrinks as stillness grows", () => {
     assert.ok(d >= SCREEN_FAST_MS && d <= SCREEN_SLOW_MS);
     prev = d;
   }
+});
+
+// A fake input box for typeIntoBox: `paste` may land LATE (per-call delay, to
+// model a slow/freshly-respawned pane), `clearInput` empties it, and `waitFor`
+// polls a rendered "❯ <box>" screen — exactly what inputText reads.
+function fakeBox(landDelays: number[]) {
+  const st = { box: "", pastes: 0 };
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  return {
+    st,
+    paste(text: string) {
+      const d = landDelays[st.pastes++] ?? 0;
+      if (d <= 0) st.box += text;
+      else setTimeout(() => (st.box += text), d);
+    },
+    clearInput() {
+      st.box = "";
+    },
+    async waitFor(pred: (s: string) => boolean, opts?: { timeoutMs?: number }) {
+      const deadline = Date.now() + (opts?.timeoutMs ?? 1000);
+      while (Date.now() < deadline) {
+        const screen = "❯ " + st.box;
+        if (pred(screen)) return screen;
+        await sleep(2);
+      }
+      throw new Error("timeout");
+    },
+  };
+}
+
+test("typeIntoBox: a SLOW first paste is not doubled (the reload-nudge bug)", async () => {
+  // Paste 1 lands at ~30ms — AFTER the 15ms appear check, so that attempt times
+  // out; paste 2 lands at once. The old recovery (immediate Ctrl-U) cleared an
+  // empty box, the late paste arrived, and attempt 2 pasted on top → "XX".
+  const p = fakeBox([30, 0]);
+  const ok = await typeIntoBox(p, "HELLO", { appearMs: 15, settleMs: 45, clearMs: 45 });
+  assert.equal(ok, true);
+  assert.equal(p.st.box, "HELLO"); // exactly ONE copy — not "HELLOHELLO"
+});
+
+test("typeIntoBox: a prompt that appears at once is typed exactly once", async () => {
+  const p = fakeBox([0]);
+  const ok = await typeIntoBox(p, "HI", { appearMs: 50 });
+  assert.equal(ok, true);
+  assert.equal(p.st.box, "HI");
+  assert.equal(p.st.pastes, 1); // no needless retry on the happy path
 });

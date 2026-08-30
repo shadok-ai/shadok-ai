@@ -1,6 +1,6 @@
 import pty from "node-pty";
 import xterm from "@xterm/headless";
-import { idleStep, screenShowsWork, inputText, describeStuckScreen } from "./detect.js";
+import { idleStep, screenShowsWork, inputText, describeStuckScreen, typeIntoBox } from "./detect.js";
 
 const { Terminal } = xterm;
 
@@ -182,21 +182,14 @@ export class PtyPilot {
    * echo in the transcript), with retries.
    */
   async submit(text: string): Promise<void> {
-    let typed = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      this.write(`\x1b[200~${text}\x1b[201~`);
-      try {
-        // The box just needs to be non-empty — a big paste collapses to a
-        // "[Pasted text +N lines]" placeholder, so looking for the literal text
-        // fails and used to abort before Enter was pressed.
-        await this.waitFor((s) => inputText(s) !== "", { timeoutMs: 2_000 });
-        typed = true;
-        break;
-      } catch {
-        this.write("\x15"); // Ctrl-U: clear any partial input.
-        await sleep(300);
-      }
-    }
+    const typed = await typeIntoBox(
+      {
+        paste: (t) => this.write(`\x1b[200~${t}\x1b[201~`),
+        clearInput: () => this.write("\x15"), // Ctrl-U
+        waitFor: (p, o) => this.waitFor(p, o),
+      },
+      text,
+    );
     if (!typed) {
       throw this.submitError("the text never appeared in the input box");
     }

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { idleStep, screenShowsWork, inputText, describeStuckScreen, nextScreenDelay, SCREEN_FAST_MS } from "./detect.js";
+import { idleStep, screenShowsWork, inputText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
@@ -376,21 +376,14 @@ export class TmuxPilot {
    * until the turn is actually sent.
    */
   async submit(text: string): Promise<void> {
-    let typed = false;
-    for (let attempt = 0; attempt < 6; attempt++) {
-      this.paste(text);
-      try {
-        // Content-agnostic: the box just needs to be non-empty. A big paste is
-        // collapsed to "[Pasted text +N lines]", so looking for the literal
-        // text fails — which used to abort before Enter was ever pressed.
-        await this.waitFor((s) => inputText(s) !== "", { timeoutMs: 2_000 });
-        typed = true;
-        break;
-      } catch {
-        this.write("\x15"); // Ctrl-U: clear partial input
-        await sleep(300);
-      }
-    }
+    const typed = await typeIntoBox(
+      {
+        paste: (t) => this.paste(t),
+        clearInput: () => this.write("\x15"), // Ctrl-U
+        waitFor: (p, o) => this.waitFor(p, o),
+      },
+      text,
+    );
     if (!typed) {
       throw this.submitError("the text never appeared in the input box");
     }
