@@ -101,7 +101,10 @@ pushed block, and in the GUI viewer, so an agent can quote the handle it just sa
 
 ## Out of scope (deliberate)
 
-- Persisting the watermark across restarts (in-memory is fine for near-real-time).
+- ~~Persisting the watermark across restarts (in-memory is fine for near-real-time).~~
+  **Superseded 2026-08-30** — it was not fine: a `Live` is rebuilt on every
+  auto-update, so two pushes in three never arrived. See
+  `2026-08-30-ledger-watermark-persistence.md`.
 - Filtering out an agent's own writes from its delta (low noise; seeing your own
   confirms it landed).
 - Word-overlap recall for `check` (a separate improvement; the push reduces the

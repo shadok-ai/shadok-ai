@@ -99,6 +99,9 @@ import {
   deltaSince,
   formatLedgerBlock,
   markLedgerBlock,
+  ledgerSeenFileFor,
+  seenFor,
+  recordSeen,
 } from "./ledger.js";
 import {
   childrenOf,
@@ -2596,9 +2599,13 @@ async function attachPilot(s: Live): Promise<void> {
   // instantly "silent since epoch" and trip the fork detector before its tail
   // has had a chance to stream anything.
   s.lastContentAt = Date.now();
-  // Anchor the ledger watermark to now: an agent's first prompt after attach
-  // shows changes from here on, not the whole backlog.
-  s.ledgerSeenAt ??= Date.now();
+  // The ledger watermark comes back from disk when this agent has one: a `Live`
+  // is rebuilt on every server restart (so on every auto-update) and whenever a
+  // dormant channel is woken, and anchoring to the attach instant made the next
+  // delta silently empty — which is where two thirds of the pushes went.
+  // A session with NO record is genuinely new and still anchors to now, so a
+  // fresh agent is not handed the whole table on its first prompt.
+  s.ledgerSeenAt ??= seenFor(ledgerSeenFileFor(process.cwd()), s.id) ?? Date.now();
   // Stream authoritative content from the session transcript: each assistant
   // text/tool block is broadcast as soon as Claude Code writes it — complete,
   // never truncated, at message granularity.
@@ -3299,16 +3306,32 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // cron/agent mark is classified so a cron prompt stays hidden.
             // Advancing the watermark whether or not there was a delta keeps it
             // truthful: by now the agent has seen everything up to this moment.
+            // But only ONCE THE SUBMIT LANDED, and persisted with it — advancing
+            // first meant a submit that threw (a wedged screen, invariant 23)
+            // burned the block for good, and keeping the mark only in memory
+            // meant the next restart burned it too.
+            let ledgerSeen: number | null = null;
             if (ledgerEnabled) {
               const { rows, total } = deltaSince(
                 loadLedger(ledgerFileFor(process.cwd())),
                 session.ledgerSeenAt ?? 0,
                 LEDGER_PUSH_CAP,
               );
-              session.ledgerSeenAt = Date.now();
+              ledgerSeen = Date.now();
               if (rows.length) submitText = markLedgerBlock(submitText, formatLedgerBlock(rows, total));
             }
             await session.pilot.submit(submitText);
+            if (ledgerSeen !== null) {
+              session.ledgerSeenAt = ledgerSeen;
+              // The live channel list prunes the watermarks of agents that are
+              // gone; the one being written is kept whatever the list says.
+              recordSeen(
+                ledgerSeenFileFor(process.cwd()),
+                session.id,
+                ledgerSeen,
+                new Set(loadChannels().map((c) => c.sessionId)),
+              );
+            }
           } finally {
             session.busy = false;
           }
