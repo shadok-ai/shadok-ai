@@ -15,9 +15,9 @@ test("echoAuthor: no name → the origin still explains the message", () => {
 test("echoAuthor: another tab of the same cockpit teaches nothing", () => {
   // "web" as a label would be noise — it's the surface you are already looking
   // at. Fall back to the generic wording.
-  assert.equal(echoAuthor({ origin: "web" }), "pilot (elsewhere)");
-  assert.equal(echoAuthor({}), "pilot (elsewhere)");
-  assert.equal(echoAuthor(undefined), "pilot (elsewhere)");
+  assert.equal(echoAuthor({ origin: "web" }), "you");
+  assert.equal(echoAuthor({}), "you");
+  assert.equal(echoAuthor(undefined), "you");
 });
 
 test("echoAuthor: a name without origin is enough on its own", () => {
@@ -31,5 +31,5 @@ test("echoAuthor: the pace guard's auto-continue is nobody", () => {
 
 test("echoAuthor: blank fields never produce a blank author", () => {
   // An empty label above a bubble reads as a bug, not as "unknown".
-  assert.equal(echoAuthor({ from: "   ", origin: "  " }), "pilot (elsewhere)");
+  assert.equal(echoAuthor({ from: "   ", origin: "  " }), "you");
 });
