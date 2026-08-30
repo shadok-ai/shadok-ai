@@ -3725,7 +3725,7 @@
    *  in /echo-author.js (pure, tested). Guarded on `window`: the ESM bridge runs
    *  AFTER the document is parsed (invariant 10). */
   function echoAuthorLabel(msg) {
-    return window.echoAuthor ? window.echoAuthor(msg) : "pilot (elsewhere)";
+    return window.echoAuthor ? window.echoAuthor(msg) : "you";
   }
 
   function addTurn(tab, role, who, text, extraClass, at) {
@@ -4634,13 +4634,10 @@
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
           if (h.role === "user") {
-            // Who sent it, recovered from the stripped ⟦…⟧ header: the SAME
-            // label the live echo shows (Michael · telegram). A message with no
-            // recoverable author (a plain web prompt) stays the generic "pilot".
-            const who = h.from || (h.origin && h.origin !== "web")
-              ? echoAuthorLabel({ from: h.from, origin: h.origin })
-              : "pilot";
-            addTurn(t, "user", who, h.text, "hist", h.at);
+            // Who sent it, recovered from the stripped ⟦…⟧ header, through the
+            // SAME echoAuthor the live echo uses: "Michael Chekroun · telegram"
+            // for a Telegram message, "you" for your own web prompt.
+            addTurn(t, "user", echoAuthorLabel({ from: h.from, origin: h.origin }), h.text, "hist", h.at);
           } else {
             const b = addTurn(t, "claude", "claude", h.text, "hist", h.at);
             // A hidden prompt (cron / notification) ran before this turn: keep
@@ -5033,7 +5030,7 @@
     // Sending = going back to the bottom, whatever happens (even after scrolling
     // up): you want to see your message and the answer that follows.
     t.transcriptEl._stickBottom = true;
-    addTurn(t, "user", "pilot", text, null, Date.now());
+    addTurn(t, "user", "you", text, null, Date.now());
     startTurnTimer(t);
     setTabMood(t, "working");
     // Remember this channel's last sent prompt, so Escape (an interruption) can
