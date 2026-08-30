@@ -3400,12 +3400,22 @@
    *  size — the same lesson as the waiting glyph. The Shadok keeps pumping on top
    *  for whoever looks closely. */
   const PUMP_FRAMES = 12;
-  const BREATHE = 0.26; // how far the ground travels toward the accent, at full stroke
+  /** How far the ground lifts at full stroke, toward `--text-dim`.
+   *
+   *  Toward the DIM TEXT colour, not toward the accent, and that is the whole
+   *  point: a waiting state is now a full tile of red or amber, so a ground
+   *  drifting far enough toward the accent to be noticed also starts to read as
+   *  "unread". Lifting into the neutral family is unmistakable at 16px and
+   *  cannot be confused with either. 0.7 sounds large because the stroke rides a
+   *  sine and barely rests at the peak — at 0.26 toward the accent, the swing
+   *  was there in a still and invisible in a tab. */
+  const BREATHE = 0.7;
   function faviconPumpingSVG(phase) {
     const accent = themeColor("--amber", "#f0a848");
     const base = themeColor("--bg", "#14161d");
+    const lift = themeColor("--text-dim", "#7d8293");
     const p = (Math.sin((phase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2; // 0..1..0
-    return faviconWrap(shadokInner(accent, pumpPose(p)), mixHex(base, accent, p * BREATHE));
+    return faviconWrap(shadokInner(accent, pumpPose(p)), mixHex(base, lift, p * BREATHE));
   }
   /** What each channel is asking for, as the pure module wants it. */
   function attentionInput() {
