@@ -159,3 +159,98 @@ export function stripLedgerBlock(text: string): string {
   while (i < lines.length && lines[i].startsWith("• ")) i++;
   return lines.slice(i).join("\n");
 }
+
+/* ------------------------------------------------------------------ *
+ * The per-agent watermark: "what had this agent already seen?"
+ *
+ * It used to live only in memory, on the `Live`, anchored to the attach
+ * instant. A `Live` is rebuilt on every server restart — i.e. on every
+ * auto-update — and again whenever a dormant channel is woken, so the
+ * watermark jumped to "now" and the next delta came back EMPTY. Measured on a
+ * real instance: of the pushes that were due, roughly two in three never
+ * arrived, and the misses clustered exactly on merge times — a merge publishes,
+ * the instance updates, every watermark resets, and the very burst of ledger
+ * activity that merge produced is what gets swallowed.
+ *
+ * So it is written down, next to the table it tracks and keyed the same way.
+ * An agent with no record is NEW and still anchors to now (no history flood);
+ * an agent that has one gets its backlog, bounded by the push cap.
+ * ------------------------------------------------------------------ */
+
+/** Where this instance stores its agents' ledger watermarks. Beside the table,
+ *  same launch-dir encoding, distinct name — writing one must never clobber the
+ *  other. */
+export function ledgerSeenFileFor(cwd: string): string {
+  const enc = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
+  return path.join(os.homedir(), ".shadok-ai", "ledger", enc + "-seen.json");
+}
+
+function readSeenMap(file: string): Record<string, number> {
+  try {
+    const j = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!j || typeof j !== "object" || Array.isArray(j)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(j)) if (typeof v === "number" && isFinite(v)) out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The moment this agent last saw the ledger, or `undefined` if it never has.
+ * The two are DIFFERENT answers and the caller acts on the difference: no
+ * record means a fresh agent, which anchors to now rather than replaying the
+ * whole table (0 would do exactly that).
+ */
+export function seenFor(file: string, sessionId: string): number | undefined {
+  const v = readSeenMap(file)[sessionId];
+  return typeof v === "number" ? v : undefined;
+}
+
+/**
+ * Keep the map bounded: drop agents that no longer exist (`keep` is the live
+ * channel list), never drop the one being written — a spawn can race its own
+ * channel upsert, and losing that entry would re-anchor it to now — and cap the
+ * rest newest-first as a backstop when there is no list to compare against.
+ * Pure.
+ */
+export function pruneSeen(
+  map: Record<string, number>,
+  keep: ReadonlySet<string> | undefined,
+  current: string,
+  cap: number,
+): Record<string, number> {
+  const kept = Object.entries(map).filter(([id]) => id === current || !keep || keep.has(id));
+  kept.sort((a, b) => (a[0] === current ? -1 : b[0] === current ? 1 : b[1] - a[1]));
+  return Object.fromEntries(kept.slice(0, cap));
+}
+
+/** Highest number of agent watermarks kept. Well above any plausible channel
+ *  count; only a missing channel list can ever make it bite. */
+const SEEN_CAP = 200;
+
+/**
+ * Write this agent's watermark. Best-effort and atomic: a lost write costs a
+ * duplicated block on the next prompt, never a swallowed one, so it must never
+ * be able to break a turn.
+ */
+export function recordSeen(
+  file: string,
+  sessionId: string,
+  at: number,
+  keep?: ReadonlySet<string>,
+): void {
+  try {
+    const map = readSeenMap(file);
+    map[sessionId] = at;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = file + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(pruneSeen(map, keep, sessionId, SEEN_CAP), null, 2), {
+      mode: 0o600,
+    });
+    fs.renameSync(tmp, file);
+  } catch {
+    /* a turn must never fail over a watermark */
+  }
+}
