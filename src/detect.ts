@@ -205,3 +205,79 @@ export async function moveToOption(pilot: DialogPilot, n: number): Promise<boole
   }
   return cur === n;
 }
+
+/** The slice of a pilot `typeIntoBox` needs: put text in the box, clear the box,
+ *  and wait until the screen satisfies a predicate. Both PtyPilot and TmuxPilot
+ *  match it; a fake one lets the doubled-prompt regression be tested without a
+ *  real TUI. */
+export interface TypingPilot {
+  /** Bracketed-paste the text into the input box — never submits it. */
+  paste(text: string): void;
+  /** Ctrl-U: clear whatever is in the input box. */
+  clearInput(): void;
+  waitFor(predicate: (screen: string) => boolean, opts?: { timeoutMs?: number }): Promise<string>;
+}
+
+export interface TypeOptions {
+  attempts?: number;
+  /** How long to wait for a paste to show up in the box. */
+  appearMs?: number;
+  /** How long to let an in-flight paste land before clearing. */
+  settleMs?: number;
+  /** How long to wait for the box to actually read empty after Ctrl-U. */
+  clearMs?: number;
+}
+
+/**
+ * Puts `text` in the input box, retrying until it is actually there. Returns
+ * whether it landed; the caller decides what a failure means.
+ *
+ * The retry is what makes it robust — the TUI flushes stdin received before its
+ * keyboard handler is ready — and the RECOVERY between attempts is where it used
+ * to go wrong. A slow first paste (a freshly respawned pane, a loaded machine)
+ * can still be in flight when the appearance check times out: the old code sent
+ * Ctrl-U immediately, so it cleared an EMPTY box, the paste landed a moment
+ * later, and the next attempt pasted on top of it — leaving the partial text
+ * PLUS the full text in the box, which is how a prompt came through doubled.
+ * Nothing about that is visible afterwards: the transcript just shows one
+ * mangled message.
+ *
+ * So the recovery does the two things the fast path cannot: it WAITS for any
+ * in-flight paste to land before clearing, and it CONFIRMS the box reads empty
+ * before pasting again. A box that will not clear is left to the next attempt
+ * rather than pasted into blindly.
+ *
+ * It lives here, next to `idleStep` and `moveToOption`, for the reason those do:
+ * it was written twice (node-pty and tmux), and could only be exercised by
+ * spawning a real process.
+ */
+export async function typeIntoBox(
+  pilot: TypingPilot,
+  text: string,
+  { attempts = 6, appearMs = 2_000, settleMs = 400, clearMs = 1_000 }: TypeOptions = {},
+): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    pilot.paste(text);
+    try {
+      // Content-agnostic: the box just needs to be non-empty. A big paste is
+      // collapsed to "[Pasted text +N lines]", so looking for the literal text
+      // fails — which used to abort before Enter was ever pressed.
+      await pilot.waitFor((s) => inputText(s) !== "", { timeoutMs: appearMs });
+      return true;
+    } catch {
+      await delay(settleMs); // let a paste that is still in flight land
+      pilot.clearInput();
+      try {
+        await pilot.waitFor((s) => inputText(s) === "", { timeoutMs: clearMs });
+      } catch {
+        pilot.clearInput(); // stubborn — clear once more, then try again
+        await delay(settleMs);
+      }
+    }
+  }
+  return false;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
