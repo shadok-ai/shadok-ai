@@ -36,7 +36,19 @@ export const wsUrl = () => `ws://localhost:${port()}/ws`;
 // into every agent's env; loopback HTTP + WS calls must present it as the cookie
 // or the password gate 401s them — exactly what secret.py / schedule.py and the
 // Telegram bridge already do. Empty when no password is set → no change.
-export const authHeaders = () => (process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {});
+// The session key is the DURABLE half and is sent whenever it is set.
+// SHADOK_AUTH is a dated cookie frozen into this process's environment at
+// spawn, so it expires after a week and nothing can refresh it — an agent
+// older than that got 401 on every call here. The key is derived from the
+// session id, verifies for as long as the agent runs, and grants exactly what
+// the cookie did. Both are sent: the cookie still works, and an older server
+// that does not know the header simply ignores it.
+export const authHeaders = () => ({
+  ...(process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {}),
+  ...(process.env.SHADOK_SESSION_KEY
+    ? { "x-shadok-session-key": process.env.SHADOK_SESSION_KEY }
+    : {}),
+});
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The built-in WebSocket is WHATWG (addEventListener + event.data); the rest of

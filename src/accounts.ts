@@ -194,3 +194,44 @@ export function promptAuthor(
 ): string | undefined {
   return origin === "web" ? sessionName : claimed;
 }
+
+/**
+ * The per-session capability key handed to an agent as `SHADOK_SESSION_KEY`.
+ *
+ * DERIVED, never stored. It used to be a `randomUUID` kept in an in-memory Map,
+ * which had a cliff nobody had noticed: the Map dies with the server, while a
+ * tmux agent does not. So every auto-update left every surviving agent holding
+ * a key the new process had never issued — `/reload` and `/profiles/prompt`
+ * answered 403 from then on, and the agent could not repair itself either.
+ *
+ * An HMAC of the session id needs no state to survive a restart, and carrying
+ * the id inside the key keeps the wire format one opaque string, so nothing
+ * that presents a key had to learn a second field.
+ *
+ * It authenticates a LIVE session and nothing else: the id half is public
+ * (`/live` lists every id), and only the MAC proves the holder was handed this
+ * by the server at spawn. Same-user shell access still trumps it — soft
+ * isolation, not a sandbox (invariant 26).
+ */
+export function signSessionKey(sessionId: string, secret: Buffer): string {
+  const id = Buffer.from(sessionId, "utf8").toString("base64url");
+  return `${id}.${createHmac("sha256", secret).update(`session:${id}`).digest("hex")}`;
+}
+
+/** Pure: the session id a key attests to, or null if it does not verify. */
+export function readSessionKey(key: string, secret: Buffer): string | null {
+  const parts = String(key ?? "").split(".");
+  if (parts.length !== 2) return null;
+  const [id, mac] = parts;
+  if (!id || !mac) return null;
+  const want = createHmac("sha256", secret).update(`session:${id}`).digest("hex");
+  // Length first: timingSafeEqual THROWS on a mismatch rather than returning
+  // false, so a short key would be a 500 instead of a refusal.
+  if (mac.length !== want.length) return null;
+  if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
+  try {
+    return Buffer.from(id, "base64url").toString("utf8") || null;
+  } catch {
+    return null;
+  }
+}

@@ -66,7 +66,7 @@ test("write rules: not signed in is not an admin", () => {
   assert.equal(v.ok, false);
 });
 
-import { signSession, readSession } from "../src/accounts.js";
+import { signSession, readSession, signSessionKey, readSessionKey } from "../src/accounts.js";
 
 const SECRET = Buffer.from("a".repeat(64), "hex");
 const WEEK = 7 * 24 * 3600 * 1000;
@@ -176,4 +176,45 @@ test("author: a web client with no session names nobody", () => {
 test("author: other origins keep whatever they supplied", () => {
   assert.equal(promptAuthor("cli", "admin", "script"), "script");
   assert.equal(promptAuthor("cron", "admin", undefined), undefined);
+});
+
+test("a session key round-trips and carries its session id", () => {
+  const id = "496ba110-0245-46f0-830b-2bfa055ef335";
+  assert.equal(readSessionKey(signSessionKey(id, SECRET), SECRET), id);
+});
+
+test("a session key does NOT expire — that is the whole point", () => {
+  // `SHADOK_AUTH` is a dated cookie frozen into an agent's environment at spawn,
+  // and an environment cannot be refreshed: past SESSION_TTL_MS every call an
+  // agent made to its own server answered 401, including the self-reload that
+  // would have repaired it. A key carries no timestamp, so there is no clock to
+  // run out — liveness of the session is what bounds it, on the server side.
+  const key = signSessionKey("agent-1", SECRET);
+  assert.equal(readSessionKey(key, SECRET), "agent-1");
+  assert.ok(!/\d{13}/.test(key), "a key must carry no issue time");
+});
+
+test("a session key is derived, so the same id always yields the same key", () => {
+  // What makes it survive a server restart, which the in-memory Map it replaced
+  // did not: a tmux agent outlives the process that spawned it, so every
+  // auto-update used to invalidate the key of every surviving agent.
+  assert.equal(signSessionKey("agent-1", SECRET), signSessionKey("agent-1", SECRET));
+  assert.notEqual(signSessionKey("agent-1", SECRET), signSessionKey("agent-2", SECRET));
+});
+
+test("a session key is refused when forged, truncated or from another instance", () => {
+  const key = signSessionKey("agent-1", SECRET);
+  const other = Buffer.from("another instance's secret key value!!");
+  // The id half is PUBLIC (/live lists every session id), so swapping it in
+  // must not carry the MAC with it.
+  const swapped =
+    Buffer.from("agent-2", "utf8").toString("base64url") + "." + key.split(".")[1];
+  assert.equal(readSessionKey(swapped, SECRET), null);
+  assert.equal(readSessionKey(key, other), null);
+  // A short MAC must be REFUSED, not throw: timingSafeEqual raises on a length
+  // mismatch, which would turn a bad key into a 500.
+  assert.equal(readSessionKey("YWdlbnQtMQ.beef", SECRET), null);
+  assert.equal(readSessionKey("", SECRET), null);
+  assert.equal(readSessionKey("no-dot", SECRET), null);
+  assert.equal(readSessionKey(".", SECRET), null);
 });
