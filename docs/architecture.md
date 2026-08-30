@@ -320,7 +320,7 @@ feed the card.
 
 **What the favicon actually draws.** Idle, it is the Shadok on the dark ground;
 while a turn runs, the same Shadok pumping its lever **on a tile that breathes** —
-the ground travels toward the accent with the stroke and back. The breathing is
+the ground lifts toward `--text-dim` with the stroke and back. Toward the NEUTRAL, not the accent: a waiting state is now a full tile of red or amber, so a ground drifting far enough toward the accent to be noticed also starts to read as "unread". The breathing is
 the part that survives the format: the lever swings 28° about a 5px radius and
 the body dips 1.5, which at 16px is 1.2 and 0.75 real pixels — under the
 threshold of a rendered pixel, so idle and mid-stroke were pixel-identical in a
