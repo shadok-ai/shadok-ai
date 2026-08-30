@@ -55,6 +55,7 @@ import {
   type Channel,
   type SessionTarget,
 } from "./channels.js";
+import { deliverWithRetry } from "./reload.js";
 import {
   startTelegram,
   renameTelegramTopic,
@@ -513,13 +514,24 @@ const RELOAD_CONTINUE_MSG =
 
 /** Nudge a freshly self-reloaded (and therefore idle) agent to carry on. Uses
  *  the same hidden loopback path as a parent notification, so it drives a real
- *  turn server-side without a client. Fire-and-forget; a pace-block or busy
- *  session just logs, exactly as a cron would. */
+ *  turn server-side without a client.
+ *
+ *  Delivered with RETRY: a `--resume` can still be finishing its own resume turn
+ *  (the session reads busy) or its respawned TUI is not yet accepting a paste, so
+ *  the first delivery can be refused — and a single refusal used to leave the
+ *  agent idle forever (an agent reloaded fine, then nothing happened). We retry,
+ *  backing off, until it lands or the session is gone. If it stays busy every
+ *  time, the agent is already working and needs no nudge, so giving up is right. */
 function continueAfterReload(id: string): void {
-  const target = resolveSessionTarget(loadChannels(), id, process.cwd());
   const tag = `reload: ${id.slice(0, 8)}`;
-  void driveChannel(id, markAgentPrompt(RELOAD_CONTINUE_MSG), target).then((res) => {
-    console.log(res.ok ? `${tag} — continued` : `${tag} — continue failed (${res.reason})`);
+  const nudge = markAgentPrompt(RELOAD_CONTINUE_MSG);
+  void deliverWithRetry(
+    () => driveChannel(id, nudge, resolveSessionTarget(loadChannels(), id, process.cwd())),
+    () => sessions.has(id),
+  ).then((res) => {
+    if (res.ok) console.log(`${tag} — continued (attempt ${res.attempts})`);
+    else if (res.gone) console.log(`${tag} — session gone before continue landed`);
+    else console.log(`${tag} — continue gave up after ${res.attempts} tries (${res.reason})`);
   });
 }
 
