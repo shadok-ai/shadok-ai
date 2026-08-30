@@ -135,3 +135,19 @@ The server kills the claude process when its last WS client detaches; so
 `hold` command), restarted as needed by every command. Local state:
 `~/.shadok-ai/pilotctl/<id>.json` (cwd, branch, baseSha, holderPid). Log of the
 auto-started server: `~/.shadok-ai/pilotctl/server.log`.
+
+## Authenticating a direct API call
+
+The commands above do this for you. If you call the cockpit's API yourself, send
+your session key — it is in your environment and it does not expire:
+
+```bash
+curl -sS -H "x-shadok-session-key: $SHADOK_SESSION_KEY" \
+  "http://127.0.0.1:$SHADOK_PORT/channels"
+```
+
+`$SHADOK_AUTH` (a cookie) is still accepted, but it was frozen into your
+environment at spawn and expires after a week, so never rely on it alone. A
+`401` means that header is missing — or that you were started before this
+existed, in which case nothing you hold can authenticate any more and only a
+human can fix it: ask them for *Reload agent* on your ⋯ menu.
