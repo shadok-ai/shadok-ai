@@ -50,6 +50,22 @@ export function hasPromptMeta(text: string): boolean {
   return first.startsWith(META_OPEN) && first.endsWith(META_CLOSE) && first.includes(" · ");
 }
 
+/**
+ * Parse a leading context header into its fields, or null if there is none.
+ * `who` is often empty (the web usually sends no sender name; Telegram does).
+ * The name is taken as everything past the time, so a name that itself contains
+ * " · " survives. Lets a replayed history restore who spoke — otherwise a
+ * Telegram message came back as the generic "pilot", its sender lost with the
+ * stripped header.
+ */
+export function parsePromptMeta(text: string): { platform: string; who: string } | null {
+  if (!hasPromptMeta(text)) return null;
+  const first = text.split("\n", 1)[0].trim();
+  const inner = first.slice(META_OPEN.length, first.length - META_CLOSE.length);
+  const parts = inner.split(" · ");
+  return { platform: (parts[0] ?? "").trim(), who: parts.slice(2).join(" · ").trim() };
+}
+
 /** Prepend the header as its own first line. Idempotent. */
 export function markPromptMeta(text: string, header: string): string {
   if (hasPromptMeta(text)) return text; // never double a header

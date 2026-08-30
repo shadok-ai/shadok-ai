@@ -4,7 +4,7 @@ import path from "node:path";
 import { newestTranscriptById, isNothingToShow, parseTimestamp } from "./tail.js";
 import { isCronPrompt } from "./crons.js";
 import { isAgentPrompt } from "./kinship.js";
-import { stripPromptMeta } from "./promptmeta.js";
+import { stripPromptMeta, parsePromptMeta } from "./promptmeta.js";
 import { stripLedgerBlock } from "./ledger.js";
 
 /**
@@ -223,6 +223,15 @@ export interface HistoryTurn {
    * when the flag is set. Mirrors `TailEvent.afterInternal` for the live path.
    */
   afterInternal?: true;
+  /**
+   * For a USER turn: who sent it and from where, recovered from the stripped
+   * `⟦platform · time · who⟧` header. `origin` is the platform (telegram / web /
+   * cli), `from` the sender's name when known. The client feeds them to
+   * `echoAuthor` for the SAME label the live echo shows — without them a replayed
+   * Telegram message came back as the generic "pilot". Absent on a plain prompt.
+   */
+  from?: string;
+  origin?: string;
 }
 
 /**
@@ -277,8 +286,17 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
         continue;
       }
       // A human prompt may still open with a context header (⟦platform · time ·
-      // who⟧) the agent was given; strip it for display — leaving the message.
-      turns.push({ role: "user", text: stripPromptMeta(bare), ...when });
+      // who⟧) the agent was given; strip it for display — leaving the message —
+      // but FIRST recover who spoke, so a replayed Telegram message shows its
+      // sender instead of the generic "pilot".
+      const meta = parsePromptMeta(bare);
+      turns.push({
+        role: "user",
+        text: stripPromptMeta(bare),
+        ...(meta?.who ? { from: meta.who } : {}),
+        ...(meta?.platform ? { origin: meta.platform } : {}),
+        ...when,
+      });
       pendingHiddenPrompt = false;
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
       const text = e.message.content

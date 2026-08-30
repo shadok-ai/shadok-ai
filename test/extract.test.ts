@@ -327,9 +327,17 @@ test("loadHistory: a human prompt's ⟦context⟧ header is stripped, the messag
         JSON.stringify({ type: "assistant", timestamp: "2026-08-25T14:32:10.000Z", message: { content: [{ type: "text", text: "On it." }] } }),
       ].join("\n"),
     );
-    const users = loadHistory(cwd, sid).filter((t) => t.role === "user").map((t) => t.text);
+    const userTurns = loadHistory(cwd, sid).filter((t) => t.role === "user");
+    const users = userTurns.map((t) => t.text);
     // The header line is gone from each; the actual message (and a plain one) stays.
     assert.deepEqual(users, ["Fix the login bug.", "and add a test", "no header here"]);
+    // …and who spoke is recovered, so a replay isn't stuck on the generic "pilot".
+    assert.equal(userTurns[0].origin, "web");
+    assert.equal(userTurns[0].from, undefined); // the web sent no sender name
+    assert.equal(userTurns[1].origin, "telegram");
+    assert.equal(userTurns[1].from, "Alex");
+    assert.equal(userTurns[2].origin, undefined); // a plain prompt, no header
+    assert.equal(userTurns[2].from, undefined);
   } finally {
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;

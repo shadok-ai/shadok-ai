@@ -6,6 +6,7 @@ import {
   hasPromptMeta,
   markPromptMeta,
   stripPromptMeta,
+  parsePromptMeta,
 } from "../src/promptmeta.js";
 
 const AT = new Date("2026-08-25T14:30:00Z");
@@ -45,4 +46,22 @@ test("hasPromptMeta: strict — the header must open the message", () => {
   assert.equal(hasPromptMeta("⟦web · 2026-08-25 14:30⟧\nx"), true);
   assert.equal(hasPromptMeta("hi\n⟦web · x⟧"), false);
   assert.equal(hasPromptMeta("⟦no separator⟧\nx"), false);
+});
+
+test("parsePromptMeta: recovers platform and sender (Telegram), else who is empty", () => {
+  assert.deepEqual(parsePromptMeta("⟦telegram · 2026-08-25 14:30 · Michael Chekroun⟧\nhi"), {
+    platform: "telegram",
+    who: "Michael Chekroun",
+  });
+  assert.deepEqual(parsePromptMeta("⟦web · 2026-08-25 14:30⟧\nhi"), { platform: "web", who: "" });
+  assert.equal(parsePromptMeta("just a plain message"), null);
+});
+
+test("parsePromptMeta: round-trips promptMetaHeader, and a name with ' · ' survives", () => {
+  assert.deepEqual(parsePromptMeta(promptMetaHeader("telegram", AT, "Alex", "UTC") + "\nx"), {
+    platform: "telegram",
+    who: "Alex",
+  });
+  // Everything past the time is the name, so a separator inside it is kept.
+  assert.equal(parsePromptMeta("⟦telegram · 2026-08-25 14:30 · A · B⟧\nx")?.who, "A · B");
 });
