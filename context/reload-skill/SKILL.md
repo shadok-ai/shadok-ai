@@ -18,6 +18,10 @@ key in your environment (`SHADOK_SESSION_KEY`), not by the public session id.
 Your current turn ends as the process is replaced; you come back with your
 history intact and the new prompt/skills active.
 
+Once the respawn is ready the cockpit **nudges you to continue** — you get a
+short "you've just been reloaded, resume what you were doing" message and pick up
+on your own, so a reload does not leave you idle. Nothing to trigger yourself.
+
 ## Authenticating a direct API call
 
 The commands above do this for you. If you call the cockpit's API yourself, send

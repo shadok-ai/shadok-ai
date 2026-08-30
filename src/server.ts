@@ -501,6 +501,25 @@ function deliverToParent(parentId: string, text: string): void {
   });
 }
 
+/** One line of context, not a bare "continue": after a `--resume` the agent has
+ *  no signal it was reloaded, so tell it WHY it woke and let it resume with
+ *  intent. Marked hidden (`markAgentPrompt`), so it drives a turn but never shows
+ *  as a chat bubble — the display strips it like a cron/notification prompt. */
+const RELOAD_CONTINUE_MSG =
+  "You've just been reloaded — your updated pilot prompt and any newly-seeded skills are now active. Resume what you were doing.";
+
+/** Nudge a freshly self-reloaded (and therefore idle) agent to carry on. Uses
+ *  the same hidden loopback path as a parent notification, so it drives a real
+ *  turn server-side without a client. Fire-and-forget; a pace-block or busy
+ *  session just logs, exactly as a cron would. */
+function continueAfterReload(id: string): void {
+  const target = resolveSessionTarget(loadChannels(), id, process.cwd());
+  const tag = `reload: ${id.slice(0, 8)}`;
+  void driveChannel(id, markAgentPrompt(RELOAD_CONTINUE_MSG), target).then((res) => {
+    console.log(res.ok ? `${tag} — continued` : `${tag} — continue failed (${res.reason})`);
+  });
+}
+
 /**
  * Tell a child's parent what just happened to it. A channel with no parent
  * notifies nobody — that scoping is the whole point: a parent hears about the
@@ -1530,7 +1549,14 @@ app.post("/reload", (req, res) => {
   if (!s) return res.status(404).json({ error: "session not running" });
   console.log(`reload: ${id.slice(0, 8)} — agent respawned itself`);
   res.json({ ok: true, note: "respawning — resumes with new prompt/skills" });
-  void restartSession(s).catch(() => {});
+  // The respawn is a `--resume`: the conversation is loaded but NOTHING drives a
+  // turn, so the agent sits idle ("il ne se passe plus rien"). Nudge it once the
+  // new process is ready so it carries on. Scoped to the SELF-reload only — not
+  // the GUI reload, restart-all, or an auto-update respawn (those touch many/all
+  // agents at once, and waking every idle one would be a token storm).
+  void restartSession(s)
+    .then(() => continueAfterReload(s.id))
+    .catch(() => {});
 });
 
 app.delete("/profiles", (req, res) => {
