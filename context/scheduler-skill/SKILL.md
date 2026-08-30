@@ -126,3 +126,19 @@ node scripts/schedule.mjs add --schedule daily:18:00 \
 
 After creating a schedule, confirm to the user in plain language: what it watches,
 when it runs, and that quiet runs won't cost tokens (if a check was set).
+
+## Authenticating a direct API call
+
+The commands above do this for you. If you call the cockpit's API yourself, send
+your session key — it is in your environment and it does not expire:
+
+```bash
+curl -sS -H "x-shadok-session-key: $SHADOK_SESSION_KEY" \
+  "http://127.0.0.1:$SHADOK_PORT/channels"
+```
+
+`$SHADOK_AUTH` (a cookie) is still accepted, but it was frozen into your
+environment at spawn and expires after a week, so never rely on it alone. A
+`401` means that header is missing — or that you were started before this
+existed, in which case nothing you hold can authenticate any more and only a
+human can fix it: ask them for *Reload agent* on your ⋯ menu.

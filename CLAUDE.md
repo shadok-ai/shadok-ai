@@ -804,6 +804,19 @@ Auth section of `docs/architecture.md`).
     random UUID no derivation can recognise, and an expired cookie. Nothing
     unforgeable survives in its env, so it needs **one** reload — and then never
     again.
+    And SAY it where an agent will read it. The scripts authenticate on their
+    own, so nothing about this is discoverable from a failure: an agent that
+    writes its own `curl` — an ordinary thing to do — gets a bare `401` and, with
+    no sentence anywhere naming the header, stops there. That is what a
+    production agent actually did. The rule therefore lives in the four
+    `SKILL.md` (what to send, what a `401` means, and that the pre-fix case needs
+    a human) and as one line in `context/pilot-prompt.md`, for the agent that
+    loaded no skill at all. `test/skill-auth-docs.test.ts` locks that prose, the
+    way `test/tweak-role.test.ts` locks the tweak role's — a code change can
+    never make it go red, which is precisely why it needs a test. Note the two
+    reach agents differently: skills are `copyFileSync`'d over at **every boot**,
+    so a merged SKILL.md lands on existing agents with no reload, whereas the
+    pilot prompt is fixed at spawn and only reaches new ones.
 
 ## Conventions
 

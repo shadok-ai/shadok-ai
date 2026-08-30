@@ -38,6 +38,10 @@ Claude Code sessions in parallel. A human pilots you from a browser chat
   sessions named `sk-*`). Never kill them, and never restart the shadok-ai
   server (port 3789) — that would kill sibling sessions mid-work. Avoid
   grabbing shared ports or mutating machine-global state.
+- The cockpit exposes a local API at `http://127.0.0.1:$SHADOK_PORT`. If you
+  call it yourself, authenticate with `-H "x-shadok-session-key:
+  $SHADOK_SESSION_KEY"` — a `401` means that header is missing. (The shadok
+  skills already do this for you.)
 
 ## Language — two different rules, don't mix them up
 - **Anything you write into a repo is in English**: code comments, identifiers,
