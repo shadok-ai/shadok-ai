@@ -4692,7 +4692,7 @@
         for (const h of msg.turns) {
           if (h.role === "user") {
             // Who sent it, recovered from the stripped ⟦…⟧ header, through the
-            // SAME echoAuthor the live echo uses: "Michael Chekroun · telegram"
+            // SAME echoAuthor the live echo uses: "Ada · telegram"
             // for a Telegram message, "you" for your own web prompt.
             addTurn(t, "user", echoAuthorLabel({ from: h.from, origin: h.origin }), h.text, "hist", h.at);
           } else {
