@@ -1475,6 +1475,26 @@
   #secretsList li:nth-child(odd) { background: rgba(255,255,255,.04); }
   #secretsList code { font-size: 13px; }
   #secretsList button { background: none; border: none; color: #e26; cursor: pointer; font-size: 14px; }
+  /* Le panneau Users n'avait AUCUN style : d'où les puces brutes et le nom, le
+     rôle et les boutons empilés les uns sous les autres. Même traitement que
+     #profilesList, dont il est le frère. */
+  #usersList { list-style: none; padding: 0; margin: 0 0 10px; }
+  #usersList li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+  #usersList li:nth-child(odd) { background: rgba(255,255,255,.04); }
+  #usersList .pmeta { font-size: 12px; opacity: .7; }
+  #usersList button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; }
+  #usersList .u-actions { display: flex; gap: 6px; flex: none; }
+  #usersAdd { display: flex; gap: 8px; }
+  #usersAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; }
+  #usersAdd select, #usersAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
+  /* L'invitation est un OBJET à transmettre, pas une phrase : un encadré, une
+     URL en monospace qui se coupe n'importe où plutôt que de laisser une
+     traîne, et de quoi la copier sans la sélectionner à la souris. */
+  #inviteBox { margin-top: 12px; border: 1px solid var(--amber); border-radius: 8px; padding: 10px 12px; background: rgba(224,164,74,.06); }
+  #inviteBox .ib-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text-dim); }
+  #inviteBox .ib-url { margin-top: 6px; font-family: var(--mono); font-size: 12px; line-height: 1.45; word-break: break-all; user-select: all; }
+  #inviteBox button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; flex: none; }
+  #inviteBox button:hover { border-color: var(--amber); color: var(--amber); }
   #secretsAdd { display: flex; gap: 8px; }
   #secretsAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; }
   #secretsAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
@@ -1767,7 +1787,10 @@
       <select id="userRole"><option value="member">member</option><option value="admin">admin</option></select>
       <button type="submit">Invite</button>
     </form>
-    <p class="sec-note warn" id="inviteOut" hidden></p>
+    <div id="inviteBox" hidden>
+      <div class="ib-head"><span id="inviteWho"></span><button type="button" id="inviteCopy">Copy</button></div>
+      <div class="ib-url" id="inviteUrl"></div>
+    </div>
   </div>
 </div>
 
@@ -6290,13 +6313,43 @@
         await fetch("/users?name=" + encodeURIComponent(u.name), { method: "DELETE" });
         renderUsers();
       });
+      btns.className = "u-actions";
       btns.append(flip, del);
       li.append(meta, btns);
       ul.appendChild(li);
     }
   }
+  /** The link is the only way in and it is shown once, so it gets a block of
+   *  its own: readable, selectable, and copyable without aiming at wrapped text. */
+  function showInvite(name, url) {
+    $("inviteWho").textContent = "Invitation for " + name + " — valid 7 days";
+    $("inviteUrl").textContent = url;
+    $("inviteCopy").textContent = "Copy";
+    $("inviteBox").hidden = false;
+  }
+
+  $("inviteCopy").addEventListener("click", async () => {
+    const url = $("inviteUrl").textContent;
+    // navigator.clipboard only exists in a SECURE context. An instance reached
+    // over plain http on a LAN has none, and the button would fail silently —
+    // so select the text and say what to press instead of pretending it worked.
+    try {
+      if (!navigator.clipboard) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(url);
+      $("inviteCopy").textContent = "Copied";
+      setTimeout(() => { $("inviteCopy").textContent = "Copy"; }, 1500);
+    } catch {
+      const r = document.createRange();
+      r.selectNodeContents($("inviteUrl"));
+      const sel = getSelection();
+      sel.removeAllRanges();
+      sel.addRange(r);
+      $("inviteCopy").textContent = navigator.platform.includes("Mac") ? "Press ⌘C" : "Press Ctrl+C";
+    }
+  });
+
   $("usersBtn").addEventListener("click", async () => {
-    $("inviteOut").hidden = true;
+    $("inviteBox").hidden = true;
     await renderUsers();
     $("usersOverlay").hidden = false;
   });
@@ -6314,9 +6367,7 @@
     if (!r.ok) { alert(out.error || "failed"); return; }
     // The link is the ONLY way in, and it is shown once. It stays on screen
     // until the panel is reopened rather than flashing past in a toast.
-    $("inviteOut").hidden = false;
-    $("inviteOut").textContent =
-      "Invitation link for " + name + ", valid 7 days — send it to them: " + location.origin + out.inviteUrl;
+    showInvite(name, location.origin + out.inviteUrl);
     $("userName").value = "";
     renderUsers();
   });
