@@ -3302,12 +3302,12 @@
    *  dips the ball with the effort. The arm is recomputed each call from the
    *  (bobbed) shoulder to the lever end it grips, so the linkage is always right —
    *  animating the arm with CSS instead made it swing around the pivot, backwards.
-   *  `sym` stamps a bold "!" / "?" over the ball, outlined in the ground colour so
-   *  the accent-on-accent "?" still reads (eyes stay clear above it). Legs and the
-   *  fulcrum stay planted. Eyes are always white + dark, never the accent, so they
-   *  read on any `fill` (the `currentColor` indicator included). */
+   *  Legs and the fulcrum stay planted. Eyes are always white + dark, never the
+   *  accent, so they read on any `fill` (the `currentColor` indicator included).
+   *  The drawing carries no glyph: a waiting state is a signal tile drawn around
+   *  it (see `faviconSVG`), not a stamp on its belly. */
   const PX = 23.2, PY = 24.4; // the pump lever's fulcrum
-  function shadokInner(fill, { lever = null, bob = 0, sym = null, symColor } = {}) {
+  function shadokInner(fill, { lever = null, bob = 0 } = {}) {
     const base = themeColor("--bg", "#14161d");
     const cx = 13.8, cy = 16.2, r = 8.4, eyeY = cy - 8.4, eyeSep = 5.8, eyeR = 2.6, pupR = 1.3;
     const shX = cx + r - 2.6, shY = cy + 1.8 + bob; // shoulder (moves with the bob)
@@ -3322,9 +3322,6 @@
     } else {
       armEl = `<line x1="${shX}" y1="${cy + 1 + bob}" x2="${cx + r + 1.8}" y2="${cy + 4.2 + bob}" stroke="${fill}" stroke-width="1.3" stroke-linecap="round"/>`;
     }
-    const glyph = sym
-      ? `<text x="${cx}" y="${cy + 3.4 + bob}" font-family="ui-monospace, monospace" font-size="14" font-weight="800" fill="${symColor || fill}" stroke="${base}" stroke-width="2.4" paint-order="stroke" text-anchor="middle">${sym}</text>`
-      : "";
     return (
       fulcrum + leverEl +
       // thin legs + feet (planted)
@@ -3341,12 +3338,11 @@
       `<path d="M${cx - 1.6} ${cy + 2} L${cx + 1.6} ${cy + 2} L${cx} ${cy + 5.4} Z" fill="${fill}"/>` +
       `<circle cx="${cx - eyeSep / 2}" cy="${eyeY}" r="${eyeR}" fill="#fff"/><circle cx="${cx + eyeSep / 2}" cy="${eyeY}" r="${eyeR}" fill="#fff"/>` +
       `<circle cx="${cx - eyeSep / 2 + 0.3}" cy="${eyeY + 0.3}" r="${pupR}" fill="${base}"/><circle cx="${cx + eyeSep / 2 + 0.3}" cy="${eyeY + 0.3}" r="${pupR}" fill="${base}"/>` +
-      `</g>` +
-      glyph
+      `</g>`
     );
   }
-  function faviconWrap(inner) {
-    const base = themeColor("--bg", "#14161d");
+  function faviconWrap(inner, ground) {
+    const base = ground || themeColor("--bg", "#14161d");
     return (
       "data:image/svg+xml," +
       encodeURIComponent(
@@ -3355,12 +3351,27 @@
       )
     );
   }
-  /** The favicon: an accent Shadok on the dark ground. A waiting state stamps a
-   *  bold "!" (something to answer) or "?" (something to read) OVER it, in its
-   *  colour. No symbol → the idle Shadok. */
+  /** The favicon.
+   *
+   *  Idle: an accent Shadok on the dark ground.
+   *
+   *  Waiting: a SIGNAL TILE. The whole tile takes the state colour, the glyph —
+   *  "!" (answer me) or "?" (something to read) — is drawn in the ground colour
+   *  at nearly the tile's height, and the Shadok stays behind it as a watermark.
+   *  It used to be a 14px glyph stamped on the Shadok's belly, which at the 16px
+   *  a browser tab actually renders left about seven pixels of symbol competing
+   *  with the whole drawing: unreadable exactly when it mattered. A favicon has
+   *  one glyph's worth of room, so the glyph has to BE the favicon. */
+  const GLYPH_SIZE = 29;
   function faviconSVG(symbol, symColor) {
     const accent = themeColor("--amber", "#f0a848");
-    return faviconWrap(shadokInner(accent, symbol ? { sym: symbol, symColor } : {}));
+    if (!symbol) return faviconWrap(shadokInner(accent));
+    const base = themeColor("--bg", "#14161d");
+    const inner =
+      `<g opacity="0.18">${shadokInner(base)}</g>` +
+      `<text x="16" y="23.5" font-family="ui-monospace, monospace" font-size="${GLYPH_SIZE}"` +
+      ` font-weight="800" fill="${base}" text-anchor="middle">${symbol}</text>`;
+    return faviconWrap(inner, symColor || accent);
   }
   /** The pump pose for a phase p (0..1..0): the Shadok pushes the lever DOWN (near
    *  end down = negative angle) and the ball dips with the effort — shared by the
