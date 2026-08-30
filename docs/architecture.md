@@ -318,6 +318,21 @@ background tab must never leave the page looking calm when it isn't.
 (`systemPrompt` / `deny` / `model` / `secrets`); nothing was added to the type to
 feed the card.
 
+**What the favicon actually draws.** Idle, it is the Shadok on the dark ground;
+while a turn runs, the same Shadok animated pumping its lever. A **waiting**
+state is not that drawing with a mark added — it is a signal tile: the whole
+32×32 takes the state colour (red to answer, amber to read), the glyph is drawn
+in the ground colour at nearly the tile's height, and the Shadok stays behind it
+as a watermark at low opacity.
+
+That is a correction, not a preference. The glyph used to be a 14px `<text>`
+stamped on the Shadok's belly, which at the **16px a browser tab really paints**
+left roughly seven pixels of symbol competing with a complete drawing — illegible
+precisely when it mattered. A favicon has room for one glyph, so the glyph has to
+BE the favicon. The degradation is graceful: a browser that refuses to rasterise
+text in an SVG favicon still shows a full-tile colour, which already carries the
+state.
+
 **The trap that comes with this** (invariant #10): the `<script type="module">`
 that bridges those exports onto `window` runs **after** the document is parsed,
 while the classic `<script>` below it runs *during*. Anything that paints on load
