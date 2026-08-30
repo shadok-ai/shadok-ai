@@ -107,8 +107,26 @@ Two roles differing only in subject matter are one role with two briefs.
 | Role | What distinguishes it |
 |---|---|
 | `Shadok-QA` | reproduces and tests; wants to write `test/` and not `src/` — a guardrail shape no existing role has |
-| `Shadok-Release` | signing certificates, App Store Connect, Fastlane — a **secrets** distinction, and secrets are the one thing an agent cannot grant itself |
+| `Shadok-Release` | ships to production, whatever production is — see below |
 | `Shadok-Product` | writes specs, not code: read-only on `src/`, writes `docs/`, and interrogates before proposing |
+
+`Shadok-Release` is deliberately **general**, not an Apple/Fastlane role. Cut
+that narrowly it would have rested on its secrets alone; cut generally it gets
+the strongest justification of the three: **it is the only role whose mistakes
+are already in front of users by the time anyone notices them.** A dev agent's
+error sits in a worktree. A release agent's error is live.
+
+Two consequences follow, and they are the role, not decoration:
+
+- **It prepares, verifies and reports. It never decides to ship.** A human pulls
+  the trigger, exactly as landing a branch is a human-reviewed step and as an
+  agent may not restart the server (invariant 8).
+- **Its guardrails are shaped the other way round from `Shadok-dev`**: it may run
+  the deployment path and may not edit the source it is deploying. Changing what
+  you ship while shipping it is how a release becomes unreproducible.
+
+Its secrets still distinguish it — registry tokens, cloud credentials, signing
+certificates — and secrets remain the one thing an agent cannot grant itself.
 
 A UI/UX design role is **deliberately deferred**: it overlaps `Shadok-Product`
 heavily, and its output is visual, which is the hardest kind for an agent to
