@@ -4633,8 +4633,15 @@
         t.transcriptEl.innerHTML = "";
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
-          if (h.role === "user") addTurn(t, "user", "pilot", h.text, "hist", h.at);
-          else {
+          if (h.role === "user") {
+            // Who sent it, recovered from the stripped ⟦…⟧ header: the SAME
+            // label the live echo shows (Michael · telegram). A message with no
+            // recoverable author (a plain web prompt) stays the generic "pilot".
+            const who = h.from || (h.origin && h.origin !== "web")
+              ? echoAuthorLabel({ from: h.from, origin: h.origin })
+              : "pilot";
+            addTurn(t, "user", who, h.text, "hist", h.at);
+          } else {
             const b = addTurn(t, "claude", "claude", h.text, "hist", h.at);
             // A hidden prompt (cron / notification) ran before this turn: keep
             // its own label instead of merging it onto the previous answer
