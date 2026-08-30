@@ -3377,12 +3377,35 @@
    *  end down = negative angle) and the ball dips with the effort — shared by the
    *  favicon and the in-page indicator so both pump the same way. */
   function pumpPose(p) { return { lever: 13 - p * 28, bob: +(p * 1.5).toFixed(2) }; }
-  /** The "working" favicon: the Shadok pumping its lever. `phase` rides a cycle. */
+  /** Blend `t` of `b` into `a`, both 6-digit hex. Every palette colour is written
+   *  that way on purpose (see the theme blocks), so this needs no colour parser —
+   *  but anything else RETURNS `a` rather than producing `#NaNNaNNaN`, which is
+   *  an invalid fill and would take the whole favicon down silently. */
+  const HEX6 = /^#[0-9a-f]{6}$/i;
+  function mixHex(a, b, t) {
+    if (!HEX6.test(a) || !HEX6.test(b)) return a;
+    const ch = (c, i) => parseInt(c.slice(1 + i * 2, 3 + i * 2), 16);
+    const out = [0, 1, 2].map((i) => Math.round(ch(a, i) + (ch(b, i) - ch(a, i)) * t));
+    return "#" + out.map((v) => v.toString(16).padStart(2, "0")).join("");
+  }
+  /** The "working" favicon: the Shadok pumping its lever, on a tile that BREATHES
+   *  with the stroke. `phase` rides a cycle.
+   *
+   *  The breathing is the part that survives. The pump is line work: the lever
+   *  swings 28° about a 5px radius and the body dips 1.5 — roughly 1.2 and 0.75
+   *  real pixels at the 16px a tab actually paints, i.e. under the threshold of a
+   *  rendered pixel. Idle and mid-stroke were pixel-identical there, so the whole
+   *  animation existed only for someone who zoomed in. Moving the GROUND moves
+   *  every pixel of the icon at once, which is the only thing that reads at that
+   *  size — the same lesson as the waiting glyph. The Shadok keeps pumping on top
+   *  for whoever looks closely. */
   const PUMP_FRAMES = 12;
+  const BREATHE = 0.26; // how far the ground travels toward the accent, at full stroke
   function faviconPumpingSVG(phase) {
     const accent = themeColor("--amber", "#f0a848");
+    const base = themeColor("--bg", "#14161d");
     const p = (Math.sin((phase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2; // 0..1..0
-    return faviconWrap(shadokInner(accent, pumpPose(p)));
+    return faviconWrap(shadokInner(accent, pumpPose(p)), mixHex(base, accent, p * BREATHE));
   }
   /** What each channel is asking for, as the pure module wants it. */
   function attentionInput() {

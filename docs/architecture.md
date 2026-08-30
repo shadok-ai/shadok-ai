@@ -319,7 +319,15 @@ background tab must never leave the page looking calm when it isn't.
 feed the card.
 
 **What the favicon actually draws.** Idle, it is the Shadok on the dark ground;
-while a turn runs, the same Shadok animated pumping its lever. A **waiting**
+while a turn runs, the same Shadok pumping its lever **on a tile that breathes** —
+the ground travels toward the accent with the stroke and back. The breathing is
+the part that survives the format: the lever swings 28° about a 5px radius and
+the body dips 1.5, which at 16px is 1.2 and 0.75 real pixels — under the
+threshold of a rendered pixel, so idle and mid-stroke were pixel-identical in a
+tab and the animation existed only for someone who zoomed in. Moving the ground
+moves every pixel at once. (`mixHex` blends the two palette colours and returns
+the base untouched for anything that is not 6-digit hex: a malformed fill would
+take the whole favicon down, silently.) A **waiting**
 state is not that drawing with a mark added — it is a signal tile: the whole
 32×32 takes the state colour (red to answer, amber to read), the glyph is drawn
 in the ground colour at nearly the tile's height, and the Shadok stays behind it
