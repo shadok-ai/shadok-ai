@@ -1339,8 +1339,19 @@ app.delete("/secrets", (req, res) => {
 function accountAdmin(
   req: { headers: Record<string, unknown> },
   res: { status: (n: number) => { json: (b: unknown) => unknown } },
+  /**
+   * Require a real same-origin `Origin`. True for WRITES only.
+   *
+   * A browser sends no `Origin` on a same-origin GET — that is the spec, not a
+   * quirk — so demanding one on the read made the Users panel's own `fetch`
+   * impossible: it got 403 and showed "no accounts yet" while an account
+   * existed. The guard is a CSRF protection; it belongs on the requests that
+   * CHANGE something, where the browser does send the header. A read stays
+   * admin-only, which is what it was designed to be.
+   */
+  browserOnly = true,
 ): { name: string; role: Role } | null {
-  if (!requestFromBrowser(req)) {
+  if (browserOnly && !requestFromBrowser(req)) {
     res.status(403).json({ error: "same-origin browser only" });
     return null;
   }
@@ -1355,7 +1366,7 @@ function accountAdmin(
 /** Accounts are listed to admins only: a member has no use for the list, and
  *  the shortest surface wins. Hashes and live invitation tokens never leave. */
 app.get("/users", (req, res) => {
-  if (!accountAdmin(req, res)) return;
+  if (!accountAdmin(req, res, false)) return;
   res.json(
     loadAccounts().map((a) => ({
       name: a.name,
