@@ -196,6 +196,7 @@ import {
   claudeCommand,
   classifyBin,
   findClaudeBinWithRetry,
+  startWithBusyRetry,
   liveClaudeDeps,
   rememberClaudeBin,
   resolveBin,
@@ -2701,7 +2702,14 @@ async function attachPilot(s: Live): Promise<void> {
     notifyParent(s, { kind: "exited" });
     destroySession(s);
   });
-  pilot.start();
+  // Not `pilot.start()` directly: a claude-code upgrade rewrites a ~214 MB
+  // binary in place, and a spawn landing in that window dies on ETXTBSY. It is
+  // transient by construction, so it is waited out rather than reported as a
+  // death — see `isBinaryBusyError`.
+  await startWithBusyRetry(() => pilot.start(), {
+    onRetry: (attempt, tries) =>
+      console.log(`spawn ${id.slice(0, 8)}: claude binary busy (upgrade in flight), retry ${attempt}/${tries}`),
+  });
   // Start the stall clock now: a session reattached mid-work must not look
   // instantly "silent since epoch" and trip the fork detector before its tail
   // has had a chance to stream anything.
