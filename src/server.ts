@@ -30,6 +30,8 @@ import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { starCount } from "./stars.js";
 import { ensureFirstAgent } from "./first-agent.js";
+import { readGroundAt } from "./ground.js";
+import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { openBrowser } from "./open-browser.js";
 import { parseSkillMeta, prepromptParts, type PrepromptPart } from "./preprompt.js";
@@ -284,6 +286,52 @@ function adoptHomeChannel(): void {
   }
 }
 
+/**
+ * The lead's first message: it introduces itself, says what it found in the
+ * directory it woke up in, and makes ONE concrete offer.
+ *
+ * Delivered as a HIDDEN prompt over the loopback, exactly like a cron fire or a
+ * parent notification — so the greeting ARRIVES on its own instead of reading
+ * as the answer to something the user can plainly see they never typed.
+ *
+ * Retried like the reload nudge, for the same reason: the agent it is aimed at
+ * was spawned a second ago and may still be finishing its own startup turn, and
+ * a single refused delivery would leave the cockpit exactly as silent as the
+ * blank chat this exists to replace.
+ *
+ * Never fatal, and never blocking: a cockpit whose lead forgot to say hello is
+ * a far smaller problem than one whose boot path threw. `SHADOK_GREETING=0`
+ * turns it off, the way `SHADOK_PILOT_PROMPT=0` does for the pilot prompt.
+ */
+function greetHomeAgent(id: string): void {
+  if (process.env.SHADOK_GREETING === "0") return;
+  const tag = `first agent: greeting ${id.slice(0, 8)}`;
+  let brief: string;
+  try {
+    const cwd = process.cwd();
+    brief = markAgentPrompt(
+      homeGreetingBrief({
+        // The launch directory, not a worktree: the lead runs in the project
+        // the person actually opened the cockpit on.
+        ground: readGroundAt(cwd),
+        profiles: loadProfiles(),
+        dirName: path.basename(cwd) || cwd,
+      }),
+    );
+  } catch (e) {
+    console.log(`${tag} — not built (${e instanceof Error ? e.message : String(e)})`);
+    return;
+  }
+  void deliverWithRetry(
+    () => driveChannel(id, brief, resolveSessionTarget(loadChannels(), id, process.cwd())),
+    () => sessions.has(id),
+  ).then((res) => {
+    if (res.ok) console.log(`${tag} — delivered (attempt ${res.attempts})`);
+    else if (res.gone) console.log(`${tag} — session gone before it landed`);
+    else console.log(`${tag} — gave up after ${res.attempts} tries (${res.reason})`);
+  });
+}
+
 async function startFirstAgent(): Promise<void> {
   try {
     const why = await ensureFirstAgent({
@@ -297,6 +345,10 @@ async function startFirstAgent(): Promise<void> {
         // channel an instance is born with, and nothing else may mint one.
         upsertChannel({ sessionId, name, home: true });
         console.log(`first agent: started "${name}" (${sessionId.slice(0, 8)})`);
+        // Only ever from here: this callback runs when a lead agent is really
+        // created, which `firstAgentPlan` already gates on "no channel at all".
+        // A second trigger would be a second way to greet, and they would drift.
+        greetHomeAgent(sessionId);
       },
     });
     if (why !== "first-boot") console.log(`first agent: skipped (${why})`);
