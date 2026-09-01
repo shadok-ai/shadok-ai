@@ -85,7 +85,12 @@ Enter to skip; you can add it later from the web UI).
   Telegram.
 - **Agent profiles** — a named bundle of role prompt, permission guardrails
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
-  spawn, remembered across resume.
+  spawn, remembered across resume. Eight roles ship with it: a lead that
+  delegates, a dev, a QA agent that writes the failing test and cannot fix the
+  code it covers, a release agent that prepares a deployment and leaves the
+  trigger to you, a product agent that writes the spec instead of the change,
+  and three go-to-market roles (paid, organic, support). Each one is yours to
+  edit, and a role you delete stays deleted.
 - **Secret vault** — stored under `~/.shadok-ai`, never in your repo, injected
   as env vars into the agents that need them. An agent that **obtains** a
   credential (a CLI login, a key it just provisioned) can add it to the vault
