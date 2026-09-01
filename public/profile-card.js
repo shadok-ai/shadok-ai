@@ -32,26 +32,88 @@ export function profileBlurb(profile) {
 }
 
 /**
- * The profile's guardrails as short badges: git access (the only one that
- * really matters when choosing), forced model, number of injected secrets.
+ * The access badge: what this profile may change, read off what its deny
+ * blocks. A file deny is read for its SCOPE as well as its presence — a
+ * blanket `Write` stops everything, `Write(src/**)` stops the source and
+ * leaves the deliverable (a test, a spec, a draft) writable.
  */
-export function profileBadges(profile) {
-  const p = profile || {};
-  const readonly = !!(p.deny && p.deny.length);
-  const out = [
-    readonly
+function access(deny, gitBlocked, files) {
+  if (!deny.length)
+    return {
+      label: "full access",
+      icon: "✏️",
+      title: "Can change and commit the code — no permission guardrail on this profile.",
+    };
+  if (files === "all")
+    return gitBlocked
       ? {
           label: "read-only",
           icon: "🔒",
-          title:
-            "Git writes blocked (commit / push / merge…). This profile reads and diagnoses, it does not change the code.",
+          title: "Cannot edit files and cannot commit. This profile runs, reads and reports — it changes nothing.",
         }
       : {
-          label: "full access",
-          icon: "✏️",
-          title: "Can change and commit the code — no permission guardrail on this profile.",
-        },
-  ];
+          label: "no file writes",
+          icon: "🔒",
+          title: "Cannot create or edit any file. It can still run commands and commit what it did not write.",
+        };
+  // Only some directories are out of reach: the agent still writes its
+  // deliverable, beside the code rather than in it.
+  if (files === "some")
+    return gitBlocked
+      ? {
+          label: "no source edits",
+          icon: "🧪",
+          title:
+            "Writes its deliverable outside the directories its guardrails protect — it cannot edit the source, and git writes are blocked, so a human commits.",
+        }
+      : {
+          label: "no source edits",
+          icon: "🧪",
+          title:
+            "Can run commands and commit, but cannot create or edit files in the directories its guardrails protect. Its deliverable lives beside the code, not in it.",
+        };
+  if (gitBlocked)
+    return {
+      label: "read-only",
+      icon: "🔒",
+      title:
+        "Git writes blocked (commit / push / merge…). This profile reads and diagnoses, it does not change the code.",
+    };
+  // A deny we do not recognise — a custom pattern the user wrote. Saying "full
+  // access" over a guardrail would be the worse of the two mistakes, and
+  // naming a restriction we did not read would be the other one.
+  return {
+    label: "guarded",
+    icon: "🔒",
+    title: "This profile carries custom permission guardrails — read its deny list for what it cannot do.",
+  };
+}
+
+/**
+ * The profile's guardrails as short badges: what this agent may change (the
+ * question one is actually asking when picking a role), forced model, number of
+ * injected secrets.
+ *
+ * The access badge reads WHAT is denied, not merely THAT something is. Any deny
+ * used to print "read-only — git writes blocked", which was true while every
+ * shipped role's deny was READONLY_DENY. Shadok-QA broke that: its deny blocks
+ * the source FILES and leaves git open, so the old badge described that card
+ * with two falsehoods at once — and a card is where someone picks a role.
+ */
+export function profileBadges(profile) {
+  const p = profile || {};
+  const deny = p.deny || [];
+  const gitBlocked = deny.some((d) => /^Bash\(\s*git\b/.test(String(d)));
+  const W = /^(Write|Edit|MultiEdit|NotebookEdit)/;
+  // "all" (the tool denied outright) vs "some" (denied on a path pattern):
+  // the difference between a role that writes nothing and one whose
+  // deliverable simply must not be the source.
+  const files = deny.some((d) => W.test(String(d)) && !String(d).includes("("))
+    ? "all"
+    : deny.some((d) => W.test(String(d)))
+      ? "some"
+      : "none";
+  const out = [access(deny, gitBlocked, files)];
   if (p.model)
     out.push({ label: p.model, icon: "", title: "Model forced for this profile's sessions." });
   const n = (p.secrets || []).length;

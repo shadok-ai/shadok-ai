@@ -406,6 +406,39 @@ Without this gate a public bot username is an open shell.
 Guardrails are **soft**: the agent runs as the same OS user. This is a
 misfire-prevention mechanism, not a sandbox — don't treat it as containment.
 
+**The shipped catalogue is a set of guardrail shapes, not a set of topics.** A
+role earns its place on guardrails, secrets or method; two roles differing only
+in subject matter are one role with two briefs, and a catalogue nobody can
+choose from is worse than a missing role. There are four shapes, each a
+different answer to *what may this agent change?*
+
+| Shape | Roles | Why |
+|---|---|---|
+| no `deny` | `Shadok-dev` | writes anything, lands nothing (landing is human-reviewed) |
+| `READONLY_DENY` | `Shadok-Boss`, `-Marketing`, `-Content`, `-Support` | git blocked, `Write`/`Edit` deliberately open: their deliverable IS a file |
+| `SOURCE_WRITE_DENY` | `Shadok-QA` | the mirror image — the source blocked, git open, so it delivers a branch carrying a failing test it cannot then make pass |
+| both, or the file tools outright | `Shadok-Product`, `Shadok-Release` | a spec agent that edits code stops writing specs; a release agent that edits the source while shipping it makes the release irreproducible |
+
+`SOURCE_WRITE_DENY` enumerates `src`/`lib`/`app`, each anchored and `**/`-
+prefixed for a monorepo, and stops there. It cannot be complete — every extra
+entry is a directory some other ecosystem uses for something else — and it does
+not need to be: the layer is soft (a shell redirection writes anywhere), the
+rule that governs is in the role's prompt, and a false block costs more than a
+missed one.
+
+The card's access badge reads **what** is denied rather than merely that
+something is (`profileBadges`, `public/profile-card.js`). Any `deny` used to
+print "read-only — git writes blocked", which was true while every shipped
+role's deny was `READONLY_DENY`; `Shadok-QA` broke it, and a card is exactly
+where someone picks a role.
+
+Every role that lands in an unknown project opens with `READ_THE_GROUND`, one
+shared constant rather than a paragraph copied per prompt. It is the fix for a
+real bug — a role naming *this* repository's convention files as if every
+project had them — and three copies of a fix drift back one at a time.
+`test/role-catalogue.test.ts` locks that prose for the whole catalogue, the way
+`test/boss-role.test.ts` locks the lead's.
+
 **An agent can add to the vault, and only add.** A credential an agent obtains
 itself — `gh auth login`, a provisioning CLI — used to die with the session. The
 `shadok-secrets` skill (seeded at boot from `context/secrets-skill/`) gives it a

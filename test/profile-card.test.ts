@@ -62,6 +62,45 @@ test("badges: access — full access (✏️) vs read-only (🔒), each with an 
   assert.match(ro[0].title, /blocked/i);
 });
 
+test("badges: a source-write guardrail is not a git guardrail", () => {
+  // Shadok-QA is the first shipped role whose deny blocks FILES and not git:
+  // it may commit, and its whole point is that it writes tests. The badge used
+  // to light up "read-only — git writes blocked" on any deny at all, which
+  // would have described that card with two falsehoods at once.
+  const qa = profileBadges({ name: "x", deny: ["Write(src/**)", "Edit(src/**)"] });
+  assert.notEqual(qa[0].label, "read-only");
+  assert.match(qa[0].label, /source/i);
+  assert.doesNotMatch(qa[0].title, /git writes blocked/i);
+});
+
+test("badges: blocking both the files and git reads as read-only, and says so", () => {
+  // Shadok-Release: it runs the deployment path and changes nothing. "Git
+  // writes blocked" alone would undersell it — the file tools are blocked too.
+  const rel = profileBadges({ name: "x", deny: ["Bash(git push:*)", "Write", "Edit"] });
+  assert.equal(rel[0].label, "read-only");
+  assert.match(rel[0].title, /cannot edit|file edits|edit files/i);
+  assert.match(rel[0].title, /commit/i);
+});
+
+test("badges: blocking the SOURCE and git is not blocking everything", () => {
+  // Shadok-Product: git blocked like Shadok-Content, plus the source. Its
+  // document IS the deliverable, so a card reading "changes nothing" would
+  // describe the one thing this role exists to produce as impossible — the
+  // same wording trap Shadok-Content's prompt documents.
+  const prod = profileBadges({ name: "x", deny: ["Bash(git commit:*)", "Write(src/**)", "Edit(src/**)"] });
+  assert.notEqual(prod[0].label, "read-only");
+  assert.match(prod[0].title, /write/i);
+  assert.match(prod[0].title, /commit/i, "the other half of its guardrails must still be said");
+});
+
+test("badges: a deny we cannot read is neither full access nor a git claim", () => {
+  // A custom pattern the user wrote. Announcing "full access" over a guardrail
+  // is one mistake; naming a restriction we never read is the other.
+  const b = profileBadges({ name: "x", deny: ["Bash(rm:*)"] });
+  assert.equal(b[0].label, "guarded");
+  assert.doesNotMatch(b[0].title, /git/i);
+});
+
 test("badges: model and secrets, in the order access → model → secrets", () => {
   const b = profileBadges({ name: "x", deny: ["Bash(git push:*)"], model: "opus", secrets: ["A", "B"] });
   assert.deepEqual(b.map((x) => x.label), ["read-only", "opus", "2 secrets"]);
