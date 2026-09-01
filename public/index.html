@@ -1165,18 +1165,20 @@
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
   #xtermHost .xterm { height: 100%; }
   /* No agent open. The central panel no longer shows a half-filled form up
-     front: it invites you to act, and nothing else. */
-  #emptyState {
+     front: it invites you to act, and nothing else.
+     #startingState is its twin for the seconds in which the instance's OWN lead
+     agent is being born — same box, and deliberately no button. */
+  #emptyState, #startingState {
     flex: 1; min-height: 0; display: none;
     flex-direction: column; align-items: center; justify-content: center;
     gap: 12px; padding: 32px; text-align: center;
   }
-  #emptyState.visible { display: flex; }
-  #emptyState .es-title {
+  #emptyState.visible, #startingState.visible { display: flex; }
+  #emptyState .es-title, #startingState .es-title {
     font-family: var(--mono); font-size: 12px;
     letter-spacing: 0.18em; text-transform: uppercase; color: var(--text-dim);
   }
-  #emptyState .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  #emptyState .es-hint, #startingState .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
   .keys {
     display: flex;
     gap: 6px;
@@ -1958,6 +1960,18 @@
       <span class="es-title">No agent open</span>
       <p class="es-hint">Every agent is a real Claude Code session with its own directory and its own branch. Start one and it takes the controls.</p>
       <button class="primary" id="emptyNewBtn">＋ new agent</button>
+    </div>
+
+    <!-- The same "nothing to show" moment, but one the server has told us is
+         temporary: this instance is starting its own lead agent. A STATUS, not
+         a gate — nothing to click, nothing to dismiss (claude-home.ts exists to
+         delete first-run screens, and this must not add one back). Showing
+         #emptyState here would invite a second lead agent while the first is
+         being born; the two are told apart by GET /first-agent, never guessed
+         from the tab count. -->
+    <div id="startingState">
+      <span class="es-title">Starting your first agent…</span>
+      <p class="es-hint">This cockpit has no agent yet, so one is being started for you in the launch directory. It takes a few seconds, then it takes the controls and says hello.</p>
     </div>
 
     <div id="transcripts"></div>
@@ -3230,7 +3244,44 @@
     }
     lastChannelIds = current;
   }
-  setInterval(syncChannels, 4000);
+
+  // Is the server currently starting this instance's lead agent? Never inferred
+  // from "no tabs": that is also what closing your last agent looks like
+  // (invariant 18), and guessing would either tell a returning user their first
+  // agent is starting forever, or invite a newcomer to create a second one.
+  let firstAgentPending = false;
+  async function syncFirstAgent() {
+    let st;
+    try { st = await (await fetch("/first-agent")).json(); } catch { return; }
+    const now = !!(st && st.pending);
+    if (now === firstAgentPending) return;
+    firstAgentPending = now;
+    // Only the no-agent panel changes; a cockpit with an active tab shows neither.
+    if (!active) refreshChrome();
+  }
+
+  // One self-rescheduling loop rather than a fixed interval, for two reasons.
+  // It runs ONCE immediately — a channel the server already has (the lead agent,
+  // a Telegram /spawn) used to take at least a full period to appear, on top of
+  // however long `claude` took to boot. And it polls faster while a first agent
+  // is genuinely on its way, settling back to the steady 4s the moment it lands:
+  // the wait is a handful of seconds and happens once per instance, so speeding
+  // the poll up for everyone would be paying for it forever.
+  const SYNC_IDLE_MS = 4000;
+  const SYNC_STARTING_MS = 800;
+  async function syncLoop() {
+    try {
+      await syncChannels();
+      // Only asked while it can change anything: with no tab on screen, or to
+      // see a pending wait end. Steady state stays exactly one /channels fetch.
+      if (!tabs.length || firstAgentPending) await syncFirstAgent();
+    } catch {
+      // One bad pass must never END the reconciliation. A setInterval could not
+      // die; a self-rescheduling loop can, and losing it would silently stop
+      // every channel discovery for the life of the page.
+    }
+    setTimeout(syncLoop, firstAgentPending ? SYNC_STARTING_MS : SYNC_IDLE_MS);
+  }
 
   function activate(tab) {
     if (active && active !== tab) {
@@ -3688,10 +3739,15 @@
       // talking about an agent that does not exist.
       $("chanCron").disabled = true;
       $("chanStop").disabled = true;
-      $("emptyState").classList.add("visible");
+      // Two different truths behind the same empty panel — the server tells us
+      // which (see syncFirstAgent), so a newcomer is never invited to create a
+      // second lead agent while theirs is being born.
+      $("emptyState").classList.toggle("visible", !firstAgentPending);
+      $("startingState").classList.toggle("visible", firstAgentPending);
       return;
     }
     $("emptyState").classList.remove("visible");
+    $("startingState").classList.remove("visible");
     $("chanCron").disabled = !t.sessionId;
     $("chanStop").disabled = false;
     $("led").className = "led " +
@@ -6917,10 +6973,14 @@
     // Fetch defaults + groups + channels in PARALLEL (they were three sequential
     // round-trips before a single tab could render). Groups are still created
     // before channel tabs so tabs land in the right group.
-    const [defaultsR, groupsR, channelsR] = await Promise.allSettled([
+    // `/first-agent` rides along in the SAME batch rather than being awaited in
+    // the empty branch below: it costs no extra latency there, and it adds no
+    // second place where a hanging server could hold the first paint.
+    const [defaultsR, groupsR, channelsR, firstAgentR] = await Promise.allSettled([
       serverCwd ? Promise.resolve(null) : fetch("/defaults").then((r) => r.json()),
       fetch("/groups").then((r) => r.json()),
       fetch("/channels").then((r) => r.json()),
+      fetch("/first-agent").then((r) => r.json()),
     ]);
     if (defaultsR.status === "fulfilled" && defaultsR.value) {
       if (!serverCwd) serverCwd = defaultsR.value.cwd || "";
@@ -6935,6 +6995,8 @@
       localStorage.removeItem("cp.channels");
       localStorage.removeItem("cp.groups");
     }
+    if (firstAgentR.status === "fulfilled" && firstAgentR.value)
+      firstAgentPending = !!firstAgentR.value.pending;
 
     // A fulfilled /groups (or /channels) response is authoritative — even when
     // empty. Only a failed fetch falls back to the (now dir-scoped) cache.
@@ -7000,13 +7062,20 @@
         if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
       }
     } else {
-      // Nothing to restore: the invitation. The form does not open by force —
-      // you may also land here to watch, or to launch from Telegram.
+      // Nothing to restore: the invitation — unless the server said it is
+      // starting this instance's lead agent (read above, before this first
+      // paint), in which case inviting a new one is the bug. The form does not
+      // open by force either — you may land here to watch, or to launch from
+      // Telegram.
       refreshChrome();
       // Nothing to restore: enable persistence for user actions, but do NOT
       // push a blank list (a failed /channels fetch must never wipe the store).
       restoring = false;
     }
+    // Only now: `syncChannels` is a no-op while `restoring`, so kicking the loop
+    // off any earlier would leave the first EFFECTIVE pass a full period away —
+    // which is the four-second blank this whole change is about.
+    syncLoop();
   })();
 </script>
 </body>

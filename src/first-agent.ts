@@ -44,6 +44,61 @@ export function firstAgentPlan(input: {
   return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
 }
 
+/**
+ * What the cockpit is allowed to SAY while it has no agent to show.
+ *
+ * The browser cannot work this out on its own: "a first agent is on its way"
+ * and "the user closed their last tab" are the same zero channels (invariant
+ * 18, which is why `active` can be null). Guessing picks one of two wrong
+ * answers — either a returning user is told forever that their first agent is
+ * starting, or a brand-new one is invited to create a SECOND lead agent while
+ * the first is being born. So the side doing the spawning says which it is.
+ *
+ * The state is deliberately hard to leave switched on. Every exit from
+ * `ensureFirstAgent` goes through `settleFirstAgent`, including the ones that
+ * spawn nothing (`not-signed-in`, `channels-exist`), the socket erroring and
+ * the 60s guard — because a flag that could stick would leave a signed-out
+ * cockpit reading "starting your first agent…" forever, which is a worse first
+ * impression than the empty state this replaces.
+ */
+export interface FirstAgentStatus {
+  /** Is a lead agent genuinely being started right now? */
+  pending: boolean;
+  /** Why — the plan's reason once one has been computed, before that "starting". */
+  reason: FirstAgentPlan["reason"] | "starting" | "idle";
+}
+
+let status: FirstAgentStatus = { pending: false, reason: "idle" };
+
+/** A copy, so no caller can hold a handle on the state and edit it. */
+export function firstAgentStatus(): FirstAgentStatus {
+  return { ...status };
+}
+
+/**
+ * Say a spawn is coming, BEFORE the attempt itself.
+ *
+ * The boot path defers `ensureFirstAgent` a beat (so it dials a server already
+ * accepting) and opens the browser first — so without this the very page this
+ * status exists for loads during that gap and is told "idle", which is the bug.
+ * The auth probe inside `ensureFirstAgent` costs another ~850ms on top.
+ *
+ * Authoritative, not sticky: called with channels present it CLEARS the flag
+ * rather than leaving a stale one — an instance that has agents has nothing
+ * pending by definition.
+ */
+export function announceFirstAgent(channelCount: number): void {
+  status =
+    channelCount > 0
+      ? { pending: false, reason: "channels-exist" }
+      : { pending: true, reason: "starting" };
+}
+
+/** The one way out of `pending`. Never conditional: every reason ends the wait. */
+export function settleFirstAgent(reason: FirstAgentPlan["reason"]): void {
+  status = { pending: false, reason };
+}
+
 /** Guards the two callers (boot, sign-in) against firing at the same moment. */
 let inFlight = false;
 
@@ -66,8 +121,16 @@ export async function ensureFirstAgent(deps: {
     channelCount: loadChannels().length,
     authState: (await authStatus()).state,
   });
-  if (!plan.spawn) return plan.reason;
+  if (!plan.spawn) {
+    settleFirstAgent(plan.reason);
+    return plan.reason;
+  }
 
+  // The sign-in path reaches here without the boot path's announcement, and the
+  // auth probe above has just spent ~850ms — say it now, so the window in which
+  // the page could be told "idle" while a spawn is under way is closed at both
+  // ends rather than only at boot.
+  announceFirstAgent(0);
   inFlight = true;
   try {
     await new Promise<void>((resolve) => {
@@ -114,6 +177,11 @@ export async function ensureFirstAgent(deps: {
     });
   } finally {
     inFlight = false;
+    // In the `finally` on purpose: the spawn resolves on `ready`, on `error`,
+    // on `exited`, on a socket failure and on the 60s guard, and every one of
+    // them has to end the "starting…" status. `onReady` has already written the
+    // channel by now, so the client sees the tab and the cleared flag together.
+    settleFirstAgent("first-boot");
   }
   return "first-boot";
 }

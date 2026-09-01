@@ -165,6 +165,14 @@ Enter to skip; you can add it later from the web UI).
   a brand-new instance (which is signed out at boot, so there is nothing to
   spawn yet). The condition is "no channel", which makes it idempotent: it never
   appears twice.
+  While it is being started the central panel says so — *starting your first
+  agent…* — instead of the *no agent open* invitation, which would ask you to
+  create a second one while the first is being born. It is a status, not a
+  screen: nothing to click, nothing to dismiss, and it ends on its own whichever
+  way the spawn goes (started, refused because the instance is signed out,
+  failed). The two look identical from the browser — an empty cockpit is an
+  empty cockpit — so the server is asked (`GET /first-agent`) rather than
+  guessed at, and the agent list is reconciled faster while the answer is yes.
   It is the environment's **home base**: pinned at the top of the list, with no
   close button and no *Close agent* in its menu. You can still reload, rename,
   re-profile or mute it — "permanent" should not mean "stuck". A cockpit that
@@ -580,7 +588,9 @@ cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
 key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default),
-`/profiles`, `/secrets`, `/telegram`, `/defaults`, `/version`, `/autoupdate`,
+`/profiles`, `/secrets`, `/telegram`, `/defaults`, `/first-agent` (GET —
+`{pending, reason}`: whether this instance's lead agent is being started
+right now), `/version`, `/autoupdate`,
 `/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
 returns the cwd to start the tweak agent in), and the sign-in group: `/auth` (GET
 — `{loggedIn, email?, subscriptionType?}`), `/auth/login` (POST — start a flow,
