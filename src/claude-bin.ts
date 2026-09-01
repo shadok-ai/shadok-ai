@@ -253,6 +253,84 @@ export async function findClaudeBinWithRetry(
   return last;
 }
 
+/**
+ * Is this the kernel refusing to run a binary that is being rewritten?
+ *
+ * ETXTBSY — "text file busy", where "text" is the old Unix word for a
+ * program's CODE segment, nothing to do with text files. The kernel refuses
+ * both directions: writing a file that is executing, and executing a file that
+ * is being written. It is the second that reaches us.
+ *
+ * Every `@anthropic-ai/claude-code` upgrade rewrites a ~214 MB native binary in
+ * place, so the window is SECONDS wide rather than microseconds, and a machine
+ * that follows releases hits it repeatedly — three times in one day here, each
+ * time killing an agent spawn and reporting it as a death.
+ *
+ * This is a DIFFERENT failure from invariant 32, and the difference decides the
+ * cure. There the file is the wrong thing (the npm placeholder) and reinstalling
+ * makes it worse, so we say what is wrong and stop. Here the file is exactly
+ * right and merely busy — the condition is transient by construction, resolves
+ * on its own, and the only possible mistake is concluding too early.
+ *
+ * `findClaudeBinWithRetry` cannot help: it retries a STAT, and a busy binary
+ * stats perfectly. You only learn at `execve`.
+ */
+export function isBinaryBusyError(e: unknown): boolean {
+  if (!e) return false;
+  const code = (e as { code?: unknown }).code;
+  if (code === "ETXTBSY") return true;
+  // node-pty surfaces the errno inside a message rather than as `code`, and a
+  // shell in between may too. Matching the token is what actually catches it.
+  const msg = e instanceof Error ? e.message : String(e);
+  return /\bETXTBSY\b|text file busy/i.test(msg);
+}
+
+/** Marks a spawn that failed because the pane's command never got to run. */
+export function binaryBusyError(what: string): Error {
+  const e = new Error(`${what} could not be executed (ETXTBSY: the binary is being rewritten)`);
+  (e as { code?: string }).code = "ETXTBSY";
+  return e;
+}
+
+export const BINARY_BUSY_TRIES = 6;
+export const BINARY_BUSY_DELAY_MS = 500;
+
+/**
+ * Runs a pilot's synchronous `start()`, waiting out a binary that is mid-upgrade.
+ *
+ * The retry lives HERE and not inside `start()` because both pilots' `start()`
+ * are synchronous: waiting there would block the event loop for every other
+ * agent. `attachPilot` is already async, so this is the first place that can
+ * afford to wait at all.
+ *
+ * Only a busy binary is retried. Any other failure is rethrown at once — a
+ * missing binary or a bad path does not get better by being asked six times,
+ * and burying it under three seconds of retries would hide the real message.
+ */
+export async function startWithBusyRetry(
+  start: () => void,
+  opts: {
+    tries?: number;
+    delayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    onRetry?: (attempt: number, tries: number) => void;
+  } = {},
+): Promise<void> {
+  const tries = Math.max(1, opts.tries ?? BINARY_BUSY_TRIES);
+  const delayMs = opts.delayMs ?? BINARY_BUSY_DELAY_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let i = 1; ; i++) {
+    try {
+      start();
+      return;
+    } catch (e) {
+      if (!isBinaryBusyError(e) || i >= tries) throw e;
+      opts.onRetry?.(i, tries);
+      await sleep(delayMs);
+    }
+  }
+}
+
 /** Live deps for {@link findClaudeBin}, reading the real filesystem. */
 export function liveClaudeDeps(): FindClaudeDeps {
   return {

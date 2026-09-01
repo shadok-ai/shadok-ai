@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { idleStep, screenShowsWork, inputText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
+import { binaryBusyError } from "./claude-bin.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
 /**
@@ -118,6 +119,14 @@ export class TmuxPilot {
         "-c", this.opts.cwd ?? process.cwd(),
         cmd,
       ]);
+      // `tmux new-session` returns as soon as the pane exists, so a pane that is
+      // ALREADY gone means its command never got to run — ETXTBSY being the
+      // reason that actually happens here, when a claude-code upgrade is
+      // rewriting the binary. Without this the pane simply vanishes, `tick()`
+      // reads it as an ordinary exit, and a spawn killed by a transient reports
+      // as a dead agent. A pane tmux has not torn down yet reads as alive and we
+      // fall through to the old behaviour — no worse than before, never worse.
+      if (!this.hasSession()) throw binaryBusyError(bin);
     }
     this.capture();
     // Self-rescheduling rather than a flat interval: the capture is synchronous,

@@ -769,6 +769,20 @@ Auth section of `docs/architecture.md`).
     the caller is about to pay for anyway) and `ensureClaudeOnce` re-runs when its
     cached path stops classifying as usable. Caching "ok" across the window is
     what would turn milliseconds into a permanently broken instance.
+    **And a busy binary is a THIRD shape, distinct from both.** The kernel
+    refuses to execute a file that is being written — `ETXTBSY`, where "text"
+    is the old Unix word for a program's code segment. `placeBinary` rewrites
+    ~214 MB in place, so that window is SECONDS wide, and a machine that follows
+    releases lands in it repeatedly: three times in one day here, each one
+    killing an agent spawn and surfacing as a dead agent, a `pilotctl` `dialog`
+    that hung, and turns cut between an agent's last write and its commit. The
+    cure is the opposite of the placeholder's: the file is exactly right and
+    merely busy, the condition resolves on its own, and the only mistake
+    available is concluding too early. `isBinaryBusyError` / `startWithBusyRetry`
+    wait it out; `findClaudeBinWithRetry` cannot help, because it retries a STAT
+    and a busy binary stats perfectly — you only learn at `execve`. `TmuxPilot`
+    reaches the same path from the other end: `tmux new-session` returns once the
+    pane exists, so a pane ALREADY gone means its command never ran.
     A placeholder is also NOT a reason to `npm i -g`: the package is plainly
     installed, and reinstalling while someone else's postinstall is mid-rewrite
     makes it worse. Say what is wrong instead (`claudeStubMessage`), in the
