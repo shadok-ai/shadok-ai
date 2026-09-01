@@ -17,9 +17,11 @@ import {
   lastPromptAt,
   listSessions,
   loadHistory,
+  readHistoryTurns,
   resumedTurnStart,
   type TuiDialog,
 } from "./extract.js";
+import { searchTurns, normalizeQuery, MIN_QUERY } from "./search.js";
 // Same implementation as the web client's preview (plain JS, loaded as is by
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
@@ -1095,6 +1097,38 @@ app.get("/vendor/addon-fit.js", (_req, res) =>
 app.get("/sessions", (req, res) => {
   const cwd = String(req.query.cwd ?? "").trim() || process.cwd();
   res.json(listSessions(cwd));
+});
+// Full-text search across THIS cockpit's agents: every channel's WHOLE
+// transcript (readHistoryTurns, uncapped) matched by the pure `searchTurns`,
+// with the same text a human would have read. Behind the gate above, like the
+// rest — a transcript can hold anything an agent printed. The corpus is small,
+// so scanning on demand is fine; hits are newest-first across agents and capped
+// so one query can't return a giant payload.
+app.get("/search", (req, res) => {
+  const q = normalizeQuery(String(req.query.q ?? ""));
+  if (q.length < MIN_QUERY) return res.json({ q, results: [], truncated: false });
+  const TOTAL_CAP = 80;
+  const results: {
+    sessionId: string;
+    agent: string;
+    role: string;
+    at: number | null;
+    snippet: { before: string; match: string; after: string };
+  }[] = [];
+  for (const ch of loadChannels()) {
+    if (!ch.sessionId || !ch.cwd) continue;
+    for (const h of searchTurns(readHistoryTurns(ch.cwd, ch.sessionId), q, 5)) {
+      results.push({
+        sessionId: ch.sessionId,
+        agent: ch.name || ch.sessionId.slice(0, 8),
+        role: h.role,
+        at: h.at ?? null,
+        snippet: h.snippet,
+      });
+    }
+  }
+  results.sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+  res.json({ q, results: results.slice(0, TOTAL_CAP), truncated: results.length > TOTAL_CAP });
 });
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
