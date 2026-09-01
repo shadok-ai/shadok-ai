@@ -72,6 +72,7 @@ import {
   type TelegramHandle,
 } from "./telegram.js";
 import { migrateTgBindings } from "./channels.js";
+import { instanceKey } from "./paths.js";
 import {
   loadCrons,
   saveCrons,
@@ -196,7 +197,7 @@ import {
   type EnsureClaudeResult,
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
-import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion } from "./csp.js";
+import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const START_PORT = Number(process.env.PORT ?? 3789);
@@ -1007,7 +1008,7 @@ app.get(["/", "/index.html"], (_req, res) => {
   // La version part AUSSI dans l'URL des modules : cette page ne peut alors
   // demander que les modules de sa propre version, jamais ceux d'une plus
   // ancienne restés en cache (cf. invariant 10).
-  res.type("html").send(injectAssetVersion(injectNonce(html, nonce), OWN_VERSION));
+  res.type("html").send(injectInstanceKey(injectAssetVersion(injectNonce(html, nonce), OWN_VERSION), instanceKey()));
 });
 
 /**
@@ -1147,7 +1148,10 @@ app.get("/recover", (req, res) => {
 });
 // Server-side defaults (the launch directory pre-fills the working dir field).
 app.get("/defaults", (_req, res) => {
-  res.json({ cwd: process.cwd() });
+  // instanceKey namespaces the client's localStorage channel cache by launch
+  // dir, so two cockpits on the same origin (same port, sequentially) never
+  // share it. One source of truth with the server's own per-dir keying.
+  res.json({ cwd: process.cwd(), instanceKey: instanceKey() });
 });
 // Cockpit name (header brand + browser tab), per launch directory — so several
 // cockpits stay distinguishable across a reload. Empty PUT clears it.

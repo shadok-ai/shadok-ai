@@ -2032,6 +2032,9 @@
   import { echoAuthor } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js?v=__ASSET_V__";
   import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
+  import { pickChannelSource, dirKey } from "/channel-store.js?v=__ASSET_V__";
+  window.pickChannelSource = pickChannelSource;
+  window.dirKey = dirKey;
   window.TOUR_STEPS = TOUR_STEPS;
   window.bubblePlacement = bubblePlacement;
   window.unionRect = unionRect;
@@ -2102,6 +2105,16 @@
     bubblePlacement: () => null,
     unionRect: () => null,
     visibleSteps: (steps) => steps ?? [],
+    // Boot-critical (runs in restore before the module might land): a fulfilled
+    // /channels wins even when empty; only a failed fetch uses the cache.
+    pickChannelSource: (settled, cached) =>
+      settled && settled.status === "fulfilled" && Array.isArray(settled.value)
+        ? settled.value
+        : Array.isArray(cached) ? cached : [],
+    // Boot-critical too: persistChannels can fire on an early WS `ready` before
+    // the module lands. A bare-key stub would write the un-namespaced (cross-dir)
+    // cache. instanceKey is stamped synchronously, so the stub can namespace.
+    dirKey: (base) => (instanceKey ? base + ":" + instanceKey : base),
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -2156,10 +2169,20 @@
   let seq = 0;
   // The server's launch directory — the sensible default for new channels.
   let serverCwd = "";
+  // The launch dir encoded as a filename (server-provided, one source of truth
+  // with paths.ts). It namespaces the localStorage channel cache so two dirs on
+  // the same origin (same port) never share a bucket — see dirKey / the per-dir
+  // isolation invariant. It is STAMPED INTO THE PAGE (like the nonce) so it is
+  // known synchronously: fetching it would leave a window where an early persist
+  // writes the un-namespaced (cross-dir) key. instanceKey has no "_", so the
+  // un-replaced placeholder (raw file / old cached page) is detected by that.
+  let instanceKey = "__INSTANCE_KEY__";
+  if (instanceKey.indexOf("INSTANCE_KEY") >= 0) instanceKey = ""; // not stamped → /defaults fallback below
   fetch("/defaults")
     .then((r) => r.json())
     .then((d) => {
       serverCwd = d.cwd || "";
+      instanceKey = d.instanceKey || "";
       if (!$("setupOverlay").hidden && !$("cwdInput").value) $("cwdInput").value = serverCwd || "";
     })
     .catch(() => {});
@@ -2820,7 +2843,7 @@
         muted: !!t.muted,
         mirror: !!t.mirror,
       }));
-    localStorage.setItem("cp.channels", JSON.stringify(list));
+    localStorage.setItem(dirKey("cp.channels", instanceKey), JSON.stringify(list));
     persistGroups();
     pushChannels(list);
   }
@@ -2843,10 +2866,10 @@
 
   /** Drops a session id from the remembered channels (invalid / gone). */
   function forgetChannel(sessionId) {
-    const list = JSON.parse(localStorage.getItem("cp.channels") || "[]").filter(
+    const list = JSON.parse(localStorage.getItem(dirKey("cp.channels", instanceKey)) || "[]").filter(
       (s) => s.sessionId !== sessionId,
     );
-    localStorage.setItem("cp.channels", JSON.stringify(list));
+    localStorage.setItem(dirKey("cp.channels", instanceKey), JSON.stringify(list));
     pushChannels(list);
   }
 
@@ -2866,7 +2889,7 @@
       name: el._group.nameEl.textContent,
       collapsed: el.classList.contains("collapsed"),
     }));
-    localStorage.setItem("cp.groups", JSON.stringify(list));
+    localStorage.setItem(dirKey("cp.groups", instanceKey), JSON.stringify(list));
     localStorage.setItem("cp.groupSeq", String(groupSeq));
     if (restoring) return; // don't overwrite the server set mid-restore
     clearTimeout(groupPushTimer);
@@ -6871,16 +6894,26 @@
       fetch("/groups").then((r) => r.json()),
       fetch("/channels").then((r) => r.json()),
     ]);
-    if (!serverCwd && defaultsR.status === "fulfilled" && defaultsR.value) serverCwd = defaultsR.value.cwd || "";
+    if (defaultsR.status === "fulfilled" && defaultsR.value) {
+      if (!serverCwd) serverCwd = defaultsR.value.cwd || "";
+      if (!instanceKey) instanceKey = defaultsR.value.instanceKey || "";
+    }
+    // Legacy un-namespaced cache keys are the cross-dir leak vector: on the same
+    // origin (same port) a different launch dir wrote them. Drop them once the
+    // dir is known — the server list is authoritative (below), so nothing is
+    // lost. Don't touch them when the dir is unknown: dirKey then resolves to
+    // the bare key and this would delete the fallback we're about to read.
+    if (instanceKey) {
+      localStorage.removeItem("cp.channels");
+      localStorage.removeItem("cp.groups");
+    }
 
-    let savedGroups =
-      groupsR.status === "fulfilled" && Array.isArray(groupsR.value) && groupsR.value.length ? groupsR.value : [];
-    if (!savedGroups.length) savedGroups = JSON.parse(localStorage.getItem("cp.groups") || "[]");
+    // A fulfilled /groups (or /channels) response is authoritative — even when
+    // empty. Only a failed fetch falls back to the (now dir-scoped) cache.
+    let savedGroups = pickChannelSource(groupsR, JSON.parse(localStorage.getItem(dirKey("cp.groups", instanceKey)) || "[]"));
     for (const g of savedGroups) createGroup(g);
 
-    let saved =
-      channelsR.status === "fulfilled" && Array.isArray(channelsR.value) && channelsR.value.length ? channelsR.value : [];
-    if (!saved.length) saved = JSON.parse(localStorage.getItem("cp.channels") || "[]");
+    let saved = pickChannelSource(channelsR, JSON.parse(localStorage.getItem(dirKey("cp.channels", instanceKey)) || "[]"));
 
     const seenIds = new Set();
     const uniqueChannels = saved.filter(

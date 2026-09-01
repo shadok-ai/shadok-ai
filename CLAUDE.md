@@ -108,7 +108,7 @@ both are silent in the DOM.
 | `Dockerfile` | The official image (README "Running in Docker"): Claude Code + shadok-ai + a **bundled headless browser** (Playwright Chromium at `/opt/playwright-browsers`, `--with-deps` so the OS libs are present), plus `git`/`gh`/`tmux`/toolchain. COPYs nothing (installs from npm); `.dockerignore` is `*`. NB: NOT what a given deployment necessarily runs — the live VPS builds from a host-side Dockerfile of its own. |
 | `src/open-browser.ts` | Opens the cockpit on launch. Done by the SERVER, not the supervisor, because only it knows the port the walk landed on (`START_PORT` is where the walk BEGINS). The supervisor sets `SHADOK_OPEN=1` on the FIRST spawn only — it respawns the server on every auto-update, and a tab popping open several times a day is a nuisance. `shouldOpenBrowser` / `openCommand` are pure and tested; refuses in a container, over SSH, and on a display-less Linux. Fire-and-forget: a browser that will not open must never keep the server from serving. |
 | `src/preprompt.ts` | Pure `prepromptParts` — what shadok adds to an agent's context, as labelled sections with their source. Captured in `makePilot` AT SPAWN and kept in `prepromptById`, never recomputed: a profile or the permission mode can change under a live agent, and the panel must show what the RUNNING process got (the gap the UI already models as `profile` vs `appliedProfile`). It takes secret **names**, never values — values live in the child's env and never in its args, so the signature makes a leak impossible rather than merely unlikely. Sent with every `ready`, so it survives a reload. The **capabilities** section is read from DISK at spawn rather than assumed from the seeded list: a seed that failed must show as missing. Skills are listed by DESCRIPTION only, because that is what Claude Code loads into context — the body is read when it decides to use one — and because they are installed for the whole machine and rewritten at every boot, which the panel says on screen. |
-| `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). Pure, tested. See invariant 12. |
+| `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). Also `injectAssetVersion` (`__ASSET_V__`) and `injectInstanceKey` (`__INSTANCE_KEY__`) — the launch-dir key stamped into the page so the client namespaces its localStorage channel cache SYNCHRONOUSLY (invariant 34). Pure, tested. See invariant 12. |
 | `src/net.ts` | Where we listen and who may speak: `resolveHost` (`SHADOK_HOST`, loopback by default), `bindRefusal` (fail-closed: no network bind without a password), `originAllowed` (same-origin, see invariant 11). Pure, tested. |
 | `src/heartbeat.ts` | Keeps **idle** `/ws` connections alive behind a reverse proxy: an idle agent sends no traffic, so a proxy (nginx `proxy_read_timeout` 60s, Cloudflare ~100s) cuts the socket and the client loops on "reconnecting" — with nothing actually broken. `startHeartbeat(wss)` pings every client every 25s (`SHADOK_WS_PING_MS`) and `terminate()`s the one that misses its pong. `heartbeatSweep` is pure, tested. |
 | `src/config.ts` | `~/.shadok-ai/config.json` (600): port, **per-launch-dir** Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`, `cockpitTitle` (**per-launch-dir** display name, `titleForCwd`/`setTitleForCwd` — the header brand + browser tab, so several cockpits stay apart), and `cockpitTheme` (**per-launch-dir** colour palette key, `themeForCwd`/`setThemeForCwd`, validated against `COCKPIT_THEMES`; default/unknown → cleared). Config is authoritative over env once set. |
@@ -134,6 +134,7 @@ both are silent in the DOM.
 | `public/index.html` | The entire web client (no framework, no build). Agents (creation is a **popin**, `#setupOverlay`, profile-first: a grid of cards, the rest folded away; the channel is only born at "Start agent", see invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
 | `public/live-text.js` | Pure `extractLiveText(screen)` — pulls the in-flight assistant text block from the TUI screen for the web live preview. ESM: loaded by the browser (bridged to `window.extractLiveText`) AND imported by `test/live-text.test.ts`. |
 | `public/echo-author.js` | Pure `echoAuthor(msg)` — the author label above a prompt that came from ANOTHER client: the sender's name when the emitting client knows it (Telegram does), else its origin, else the generic wording. ESM: loaded by the browser AND imported by `test/echo-author.test.ts`. |
+| `public/channel-store.js` | Pure `pickChannelSource` / `dirKey` — how the client's boot restore chooses its channel list. `pickChannelSource` makes a fulfilled `/channels` (even `[]`) AUTHORITATIVE, so only a FAILED fetch consults the origin-scoped localStorage cache; `dirKey` namespaces that cache key by launch dir. Together they close the cross-dir channel leak (invariant 34). ESM: loaded by the browser (bridged, with boot-critical stubs that mirror the real logic — see invariant 10) AND imported by `test/channel-store.test.ts`. |
 | `public/notify.js` | Pure `notifyState(channels, {hidden, phase})` → `{color, badge, blink}` — the favicon/title/blink decision. The badge only blinks when the browser tab is hidden AND an **unmuted** channel is waiting for an answer; both phases stay visible (a browser-throttled timer must never make the page look calm). ESM: loaded by the browser AND imported by `test/notify.test.ts`. |
 | `public/profile-card.js` | Pure `profileBlurb` / `profileBadges` — the labels a profile card shows, derived from `systemPrompt` / `deny` / `model` / `secrets` (nothing added to `Profile`) — plus `defaultAgentName(profile, cwd)`, the name proposed for a new agent (profile → directory → `"agent"`), and `isManagedProfile` — the server-owned roles (`Shadok-Tweak`) that must never appear in a list where one PICKS a profile, since their prompt is rewritten at every boot. ESM: loaded by the browser AND imported by `test/profile-card.test.ts`. |
 | `public/tour-steps.js` | Pure `TOUR_STEPS` / `visibleSteps` / `unionRect` / `bubblePlacement` — the guided tour's step data and geometry. A step whose target is not on screen is **dropped, never faked** (an empty cockpit has no agent menu), so the counter reads over the RETAINED steps. **An empty rect is not a point at the origin**: `unionRect` DROPS `{0,0,0,0}` members and returns null only when none survive. Without that, `reflowHeaderTools` parking five tool buttons in the closed ⋯ menu below 640px pinned the union's `Math.min` to zero and stretched the toolbar spotlight from the viewport's corner across the header — measured `top -6px, left -6px, 367x51` — framing the brand and the gauges while the body described buttons that were not on screen. Same family as `.hdr-tools`, which is `display: contents` on desktop and has **no box at all**; that one dropped its step honestly, this one kept it and lied. Dropping empties is also what lets one step carry BOTH layouts' selectors (`["#tabbar", "#chanSelect"]`), which is how the phone stopped losing every step that mentions agents — it used to get 3 of 6. Two copy rules the tests hold, both learned from real drift: **never promise an order** ("left to right" put the ledger's name on the profiles icon the day the ledger was inserted) and **never name a position** ("at the bottom" describes the column, and the phone's `<select>` has no bottom and no *Tweak Shadok-AI*). ESM: loaded by the browser AND imported by `test/tour-steps.test.ts`. |
@@ -819,6 +820,50 @@ Auth section of `docs/architecture.md`).
     reach agents differently: skills are `copyFileSync`'d over at **every boot**,
     so a merged SKILL.md lands on existing agents with no reload, whereas the
     pilot prompt is fixed at spawn and only reaches new ones.
+
+34. **Per-launch-dir isolation is a CLIENT property too — the localStorage
+    channel cache is scoped by ORIGIN, not by directory.** Everything the SERVER
+    stores is keyed by launch dir (`channels/<enc>.json`, crons, ledger, the
+    per-dir config fields) and is correctly isolated. But the web client keeps a
+    fallback copy of the channel list in `localStorage` (`cp.channels`,
+    `cp.groups`), and `localStorage` is keyed by `scheme://host:port` — the same
+    key for every launch dir served on that port. Two instances RUNNING at once
+    can't collide (the port walk gives them different origins), but sequentially
+    they share one: stop the main cockpit, launch shadok in another dir, and it
+    binds the now-free 3789 — the browser hands the new instance the MAIN
+    project's cached channels. The old restore then made it worse two ways: it
+    fell back to that cache whenever `/channels` was merely EMPTY (exactly a
+    fresh dir), rendered and RESUMED the foreign channels, and `persistChannels`
+    wrote them back into the new dir's own server file. Reported as "I launch a
+    shadok in another directory and all the main project's channels come out".
+    Three parts close it, and each is load-bearing.
+    **A fulfilled `/channels` is authoritative — even `[]`.** `pickChannelSource`
+    (`public/channel-store.js`) consults the cache ONLY on a failed fetch; an
+    empty-but-successful response means "this dir has no channels", never
+    "consult the cache". This alone stops the leak in the normal case.
+    **Namespace the cache by launch dir.** `dirKey(base, instanceKey)` suffixes
+    the key, so two dirs on one origin keep separate buckets even when a fetch
+    DOES fail. The legacy un-namespaced keys are dropped on restore (the server
+    is authoritative, so nothing is lost) — never MIGRATED into the current dir's
+    namespace, which would re-create the leak by stamping one dir's data as
+    another's.
+    **The key must be known SYNCHRONOUSLY, or an early write beats it.**
+    `instanceKey` is STAMPED into the page (`injectInstanceKey`, marker
+    `__INSTANCE_KEY__`, like the nonce) rather than fetched from `/defaults`:
+    `persistChannels` fires on an early WS `ready`, and if the dir is not yet
+    known `dirKey` falls back to the bare (cross-dir) key and writes it. For the
+    same reason the bridged STUBS of `pickChannelSource`/`dirKey` (invariant 10)
+    mirror the REAL logic instead of being neutral — persist can run before the
+    ESM module lands, and a `(base) => base` stub silently wrote the bare key
+    (this is precisely what the first browser repro caught, twice, after the
+    unit tests were green). Verified end to end: a fake cache under the old key,
+    a reload → the fake never renders, the bare key is gone, only the dir's own
+    channel survives. Not reproducible by curl (the leak is client localStorage)
+    and invisible to `tsc`/tests — it needs a real browser on a shared port.
+    One thing this does NOT touch: a global `TELEGRAM_BOT_TOKEN` env override
+    still lets a second instance adopt the board group's topics (the per-dir
+    token store is what normally isolates it) — a deliberate override, documented
+    under "Running YOUR build", not a leak to fix here.
 
 ## Conventions
 

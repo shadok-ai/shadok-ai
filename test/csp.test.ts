@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { NONCE_PLACEHOLDER, cspHeader, injectNonce, injectAssetVersion } from "../src/csp.js";
+import { NONCE_PLACEHOLDER, cspHeader, injectNonce, injectAssetVersion, injectInstanceKey } from "../src/csp.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(HERE, "..", "public", "index.html");
@@ -105,6 +105,23 @@ test("injectAssetVersion: une version douteuse est encodée, jamais injectée te
   const out = injectAssetVersion('import a from "/a.js?v=__ASSET_V__";', 'x"y z');
   assert.equal(out.includes('"y'), false);
   assert.match(out, /\?v=x%22y%20z/);
+});
+
+test("injectInstanceKey: remplace le marqueur par la clé de dossier", () => {
+  // La clé doit être présente SYNCHRONEMENT au parse : sans elle, un persist
+  // précoce écrit la clé de cache NON namespacée (le vecteur de fuite cross-dir).
+  const out = injectInstanceKey('let k = "__INSTANCE_KEY__";', "-Users-x-projA");
+  assert.equal(out, 'let k = "-Users-x-projA";');
+  assert.equal(out.includes("__INSTANCE_KEY__"), false);
+});
+
+test("injectInstanceKey: une clé n'est jamais autre chose que [a-zA-Z0-9-]", () => {
+  // instanceKey() ne produit que ça, mais on assainit quand même : la valeur
+  // finit dans une chaîne JS servie sur une page authentifiée.
+  const out = injectInstanceKey('"__INSTANCE_KEY__"', '"; alert(1); //');
+  assert.equal(out.includes("alert"), true); // le texte survit…
+  assert.equal(out.includes('"; alert'), false); // …mais les guillemets/espaces sont retirés
+  assert.match(out, /^"alert1"$/);
 });
 
 test("index.html: chaque module importé porte la version", () => {
