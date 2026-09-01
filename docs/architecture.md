@@ -797,8 +797,11 @@ and are never touched.
   and `…-groups.json`, via `src/channels.ts`. **Keyed by the server's launch
   directory** — each project/repo the server is started from keeps its own
   cockpit, its own bot token, and its own board group. Server is the source of
-  truth; browser localStorage is an offline fallback. See invariant #6 for the
-  erosion trap.
+  truth; browser localStorage is an offline fallback consulted ONLY when the
+  fetch fails (a fulfilled `/channels`, even empty, is authoritative), and its
+  key is namespaced by launch dir — because localStorage is scoped by origin,
+  not by directory, two cockpits sharing a port would otherwise share it. See
+  invariant #6 for the erosion trap and invariant #34 for the cross-dir leak.
 - **Global config**: `~/.shadok-ai/config.json` (600) — port, per-launch-dir
   Telegram token/allowed chats/enabled, GUI password, `autoUpdate`,
   `permissionMode`, `timezone`.

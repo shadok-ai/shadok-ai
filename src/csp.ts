@@ -80,3 +80,15 @@ export function injectAssetVersion(html: string, version: string): string {
   // un caractère malheureux casserait l'import qu'elle est censée protéger.
   return html.split(ASSET_VERSION_PLACEHOLDER).join(encodeURIComponent(version));
 }
+
+export const INSTANCE_KEY_PLACEHOLDER = "__INSTANCE_KEY__";
+
+// The launch-dir key namespaces the client's localStorage channel cache. It has
+// to be present SYNCHRONOUSLY at parse time: fetching it from /defaults leaves a
+// window where an early persist writes the un-namespaced (cross-dir) cache key —
+// the very leak this closes. So the server stamps it into the page like the
+// nonce. instanceKey() only ever yields [a-zA-Z0-9-]; we sanitise anyway, since
+// the value lands inside a JS string literal.
+export function injectInstanceKey(html: string, key: string): string {
+  return html.split(INSTANCE_KEY_PLACEHOLDER).join(key.replace(/[^a-zA-Z0-9-]/g, ""));
+}
