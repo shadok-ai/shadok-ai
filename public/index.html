@@ -2032,9 +2032,10 @@
   import { echoAuthor } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js?v=__ASSET_V__";
   import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
-  import { pickChannelSource, dirKey } from "/channel-store.js?v=__ASSET_V__";
+  import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   window.pickChannelSource = pickChannelSource;
   window.dirKey = dirKey;
+  window.serverSwapped = serverSwapped;
   window.TOUR_STEPS = TOUR_STEPS;
   window.bubblePlacement = bubblePlacement;
   window.unionRect = unionRect;
@@ -2115,6 +2116,7 @@
     // the module lands. A bare-key stub would write the un-namespaced (cross-dir)
     // cache. instanceKey is stamped synchronously, so the stub can namespace.
     dirKey: (base) => (instanceKey ? base + ":" + instanceKey : base),
+    serverSwapped: (pageKey, serverKey) => !!pageKey && !!serverKey && pageKey !== serverKey,
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -2852,15 +2854,36 @@
   // directory), so it survives a wiped browser, another device or a reboot.
   let channelPushTimer = null;
   let restoring = true; // suppress pushes until the initial restore is done
+  // Set once the server on this origin turns out to be a DIFFERENT instance than
+  // the one this page was loaded from (its port was taken over after a stop).
+  // From then on the tab must not write — it would only poison the new
+  // instance's file with this one's channels.
+  let swapped = false;
+  function handleSwap() {
+    if (swapped) return;
+    swapped = true;
+    restoring = true; // freezes pushChannels AND persistGroups (both bail on it)
+    const bar = document.createElement("div");
+    bar.style.cssText =
+      "position:fixed;top:0;left:0;right:0;z-index:99999;background:#b23b3b;color:#fff;" +
+      "padding:10px 14px;font:14px system-ui;text-align:center";
+    bar.textContent = "This cockpit was replaced by another instance on this port — reload to reconnect. ";
+    const btn = document.createElement("button");
+    btn.textContent = "Reload";
+    btn.style.cssText = "margin-left:8px;padding:3px 10px;cursor:pointer";
+    btn.addEventListener("click", () => location.reload());
+    bar.appendChild(btn);
+    document.body.appendChild(bar);
+  }
   function pushChannels(list) {
-    if (restoring) return; // never overwrite the server list with a partial one
+    if (restoring || swapped) return; // never overwrite the server list with a partial one, nor a foreign instance's
     clearTimeout(channelPushTimer);
     channelPushTimer = setTimeout(() => {
       fetch("/channels", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-shadok-instance": instanceKey },
         body: JSON.stringify(list),
-      }).catch(() => {});
+      }).then((r) => { if (r.status === 409) handleSwap(); }).catch(() => {});
     }, 400);
   }
 
@@ -2891,14 +2914,14 @@
     }));
     localStorage.setItem(dirKey("cp.groups", instanceKey), JSON.stringify(list));
     localStorage.setItem("cp.groupSeq", String(groupSeq));
-    if (restoring) return; // don't overwrite the server set mid-restore
+    if (restoring || swapped) return; // don't overwrite the server set mid-restore, nor a foreign instance's
     clearTimeout(groupPushTimer);
     groupPushTimer = setTimeout(() => {
       fetch("/groups", {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-shadok-instance": instanceKey },
         body: JSON.stringify(list),
-      }).catch(() => {});
+      }).then((r) => { if (r.status === 409) handleSwap(); }).catch(() => {});
     }, 400);
   }
 
@@ -4755,6 +4778,11 @@
         }
         break;
       case "ready":
+        // The server just named the instance it is. If it's not the one this
+        // page was loaded from, the port was taken over — stop writing, prompt a
+        // reload. (The write guard on the server refuses the PUT anyway; this is
+        // the honest UX so the user isn't silently driving the wrong instance.)
+        if (window.serverSwapped(instanceKey, msg.instanceKey)) { handleSwap(); break; }
         if (Array.isArray(msg.preprompt)) renderPreprompt(t, msg.preprompt);
         t.cwd = msg.cwd;
         t.sessionId = msg.sessionId;

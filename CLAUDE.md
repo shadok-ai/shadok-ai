@@ -100,7 +100,7 @@ both are silent in the DOM.
 | `src/usage.ts` | Fetches subscription usage (5h/7d) from `/api/oauth/usage`. |
 | `src/pace.ts` | The quota **guardrail**: ideal-pace computation + block verdict. |
 | `src/retry.ts` | Auto-retry of turns that died on a transient API error (529, 5xx, timeout). |
-| `src/channels.ts` | Server-side persistence of the channel + group lists, and **the one answer to "where does this session live"** — `resolveSessionTarget` / `resumeTarget` (pure, tested), which EVERY caller acting on a session's behalf goes through; on a resume the registry beats whatever the caller sent (see invariant 1). keyed by launch dir (`~/.shadok-ai/channels/<enc>.json`). `isMirrored` = does this channel live in Telegram too (opt-in per channel; falls back to "has a binding" so existing setups don't change). Also the Telegram board-group binding. Forces the main channel's name to `general`. `isHomeChannel` (pure, tested) is the ONE definition of the home base — the server-owned `home` flag, or a bound board's General (`threadId == null` **and** `chatId < 0`, since a DM has no topic either and must stay closable). It replaced three copies of that condition: `endChannel`, the client's `isMain`, and a comment in `telegram.ts`. `homeAdoptionTarget` gives a pre-flag cockpit its home base and **refuses when it cannot tell** (zero or several candidates): a wrong adoption is irreversible from the UI, since the channel becomes precisely the one that cannot be closed. `homeChannelForGeneral` (pure, tested) is the twin for the OTHER direction: when a board's General is first opened, `bridgeFor` resumes the web home session (`home: true`, not yet Telegram-bound) instead of spawning a SECOND "general" beside it — the home channel gains the binding rather than being duplicated. |
+| `src/channels.ts` | Server-side persistence of the channel + group lists, and **the one answer to "where does this session live"** — `resolveSessionTarget` / `resumeTarget` (pure, tested), which EVERY caller acting on a session's behalf goes through; on a resume the registry beats whatever the caller sent (see invariant 1). keyed by launch dir (`~/.shadok-ai/channels/<enc>.json`). `isMirrored` = does this channel live in Telegram too (opt-in per channel; falls back to "has a binding" so existing setups don't change). Also the Telegram board-group binding. Forces the main channel's name to `general`. `isHomeChannel` (pure, tested) is the ONE definition of the home base — the server-owned `home` flag, or a bound board's General (`threadId == null` **and** `chatId < 0`, since a DM has no topic either and must stay closable). It replaced three copies of that condition: `endChannel`, the client's `isMain`, and a comment in `telegram.ts`. `homeAdoptionTarget` gives a pre-flag cockpit its home base and **refuses when it cannot tell** (zero or several candidates): a wrong adoption is irreversible from the UI, since the channel becomes precisely the one that cannot be closed. `homeChannelForGeneral` (pure, tested) is the twin for the OTHER direction: when a board's General is first opened, `bridgeFor` resumes the web home session (`home: true`, not yet Telegram-bound) instead of spawning a SECOND "general" beside it — the home channel gains the binding rather than being duplicated. `channelWriteAllowed` (pure, tested) gates `PUT /channels`/`/groups` on the caller's `x-shadok-instance` key so a stale tab can't write to an instance that took over its port; `dropForeignHomes` (pure, tested, applied on load AND save) strips another instance's `home` "general". See invariant 35. |
 | `src/telegram.ts` | The Telegram bridge (DMs belong to ONE user — `dmGate` + `…-telegram-owner.json`; the owner is adopted at boot from an existing DM binding or the board group's creator): one topic = one agent. Owns the bot long-poll, the command dispatcher (`/spawn`, `/stop`, `/secret`…), Markdown→Telegram HTML, dialogs as inline keyboards, attachments. Each binding holds a **WS client to our own server** — so a Telegram session is the same `Live` the web sees. |
 | `src/main.ts` | The `npx shadok-ai` entry point: parses flags, first-run token prompt, then runs the **supervisor**. Not the server. |
 | `src/supervisor.ts` / `src/updater.ts` / `src/update-flag.ts` | Self-update: the supervisor runs the npm-installed server as a child, restarts it on the update exit code; the updater installs the channel's resolved version into `~/.shadok-ai/app` (an EXACT version, never a tag — the caller already chose). |
@@ -134,7 +134,7 @@ both are silent in the DOM.
 | `public/index.html` | The entire web client (no framework, no build). Agents (creation is a **popin**, `#setupOverlay`, profile-first: a grid of cards, the rest folded away; the channel is only born at "Start agent", see invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
 | `public/live-text.js` | Pure `extractLiveText(screen)` — pulls the in-flight assistant text block from the TUI screen for the web live preview. ESM: loaded by the browser (bridged to `window.extractLiveText`) AND imported by `test/live-text.test.ts`. |
 | `public/echo-author.js` | Pure `echoAuthor(msg)` — the author label above a prompt that came from ANOTHER client: the sender's name when the emitting client knows it (Telegram does), else its origin, else the generic wording. ESM: loaded by the browser AND imported by `test/echo-author.test.ts`. |
-| `public/channel-store.js` | Pure `pickChannelSource` / `dirKey` — how the client's boot restore chooses its channel list. `pickChannelSource` makes a fulfilled `/channels` (even `[]`) AUTHORITATIVE, so only a FAILED fetch consults the origin-scoped localStorage cache; `dirKey` namespaces that cache key by launch dir. Together they close the cross-dir channel leak (invariant 34). ESM: loaded by the browser (bridged, with boot-critical stubs that mirror the real logic — see invariant 10) AND imported by `test/channel-store.test.ts`. |
+| `public/channel-store.js` | Pure `pickChannelSource` / `dirKey` — how the client's boot restore chooses its channel list. `pickChannelSource` makes a fulfilled `/channels` (even `[]`) AUTHORITATIVE, so only a FAILED fetch consults the origin-scoped localStorage cache; `dirKey` namespaces that cache key by launch dir. Together they close the cross-dir channel leak (invariant 34). `serverSwapped(pageKey, serverKey)` — did the instance answering this origin change under the tab (a port taken over after a stop)? — drives the "cockpit replaced, reload" banner (invariant 35). ESM: loaded by the browser (bridged, with boot-critical stubs that mirror the real logic — see invariant 10) AND imported by `test/channel-store.test.ts`. |
 | `public/notify.js` | Pure `notifyState(channels, {hidden, phase})` → `{color, badge, blink}` — the favicon/title/blink decision. The badge only blinks when the browser tab is hidden AND an **unmuted** channel is waiting for an answer; both phases stay visible (a browser-throttled timer must never make the page look calm). ESM: loaded by the browser AND imported by `test/notify.test.ts`. |
 | `public/profile-card.js` | Pure `profileBlurb` / `profileBadges` — the labels a profile card shows, derived from `systemPrompt` / `deny` / `model` / `secrets` (nothing added to `Profile`) — plus `defaultAgentName(profile, cwd)`, the name proposed for a new agent (profile → directory → `"agent"`), and `isManagedProfile` — the server-owned roles (`Shadok-Tweak`) that must never appear in a list where one PICKS a profile, since their prompt is rewritten at every boot. ESM: loaded by the browser AND imported by `test/profile-card.test.ts`. |
 | `public/tour-steps.js` | Pure `TOUR_STEPS` / `visibleSteps` / `unionRect` / `bubblePlacement` — the guided tour's step data and geometry. A step whose target is not on screen is **dropped, never faked** (an empty cockpit has no agent menu), so the counter reads over the RETAINED steps. **An empty rect is not a point at the origin**: `unionRect` DROPS `{0,0,0,0}` members and returns null only when none survive. Without that, `reflowHeaderTools` parking five tool buttons in the closed ⋯ menu below 640px pinned the union's `Math.min` to zero and stretched the toolbar spotlight from the viewport's corner across the header — measured `top -6px, left -6px, 367x51` — framing the brand and the gauges while the body described buttons that were not on screen. Same family as `.hdr-tools`, which is `display: contents` on desktop and has **no box at all**; that one dropped its step honestly, this one kept it and lied. Dropping empties is also what lets one step carry BOTH layouts' selectors (`["#tabbar", "#chanSelect"]`), which is how the phone stopped losing every step that mentions agents — it used to get 3 of 6. Two copy rules the tests hold, both learned from real drift: **never promise an order** ("left to right" put the ledger's name on the profiles icon the day the ledger was inserted) and **never name a position** ("at the bottom" describes the column, and the phone's `<select>` has no bottom and no *Tweak Shadok-AI*). ESM: loaded by the browser AND imported by `test/tour-steps.test.ts`. |
@@ -194,7 +194,7 @@ ONLY legitimate path: `profile` is `SERVER_OWNED` on the channel, so a browser
 PUT `/channels` cannot touch it), `stop` (`sessionId?` —
 kills a specific channel, so the UI can remove a zombie).
 
-**server → client:** `ready`, `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
+**server → client:** `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
 `stream-tool`, `stream-result`, `history`, `dialog`, `screen`, `tokens`,
 `context`, `parent` (the parent channel changed — broadcast, so every tab follows),
 `profile` (the `{profile, applied}` pair — desired vs the one the running process
@@ -210,8 +210,10 @@ text.
 **HTTP:** `/usage` (5h/7d + pace verdict), `/live` (running sessions),
 `/sessions` `/recover` (resumable), `/diff`, `/channels` `/groups` (GET/PUT,
 persisted per launch dir; the GET of `/channels` adds a **derived** `crons` —
-the channel's schedules, for the tab's ⏰ — never stored, see invariant 6),
-`/defaults` (server cwd), `/title` (GET/PUT — the cockpit's per-launch-dir
+the channel's schedules, for the tab's ⏰ — never stored, see invariant 6; the
+PUT carries an `x-shadok-instance` header and is refused **409** on a mismatch
+with the server's own launch dir — invariant 35),
+`/defaults` (server cwd, plus `instanceKey`), `/title` (GET/PUT — the cockpit's per-launch-dir
 name; empty PUT reverts to default), `/theme` (GET/PUT — the cockpit's
 per-launch-dir colour palette; default/unknown reverts to default),
 `/tweak/prepare` (POST — clone/refresh
@@ -864,6 +866,38 @@ Auth section of `docs/architecture.md`).
     still lets a second instance adopt the board group's topics (the per-dir
     token store is what normally isolates it) — a deliberate override, documented
     under "Running YOUR build", not a leak to fix here.
+
+35. **A browser tab belongs to the instance it was LOADED from — gate writes on
+    the instance key, because two instances share a port sequentially.** Invariant
+    34 (localStorage) was a real vector but NOT the one the reported bug hit. The
+    actual mechanism, found only by reproducing with the user watching the Network
+    tab: you launch a cockpit, the browser opens a tab, you STOP that server and
+    relaunch one from a DIFFERENT directory on the same port. The stale tab's
+    WebSocket reconnects to the new instance, and the tab still holds the old
+    instance's channels in memory — so its next `persistChannels` **PUTs them into
+    the new instance's file** (the user's own words: "la première page envoie ses
+    canaux à l'instance, et paf"). The GET was empty; the PUT is what fills it,
+    which is why it looked like it "came from the server" and appeared after a
+    delay (the 4 s `syncChannels` poll reads the now-poisoned `/channels`). Zero
+    tabs open → no source → no leak. The fix reuses invariant 34's stamped
+    `instanceKey` as an IDENTITY: the client sends it (`x-shadok-instance`) on
+    every `PUT /channels`/`/groups`, and the server **refuses (409) an explicit
+    mismatch** (`channelWriteAllowed`, `src/channels.ts`) — a stale A-tab can no
+    longer write to instance B. A no-key client is allowed (a pre-fix page, or the
+    non-browser callers that never PUT channels). The server also re-states its
+    `instanceKey` in every `ready`; the client compares it to the page's
+    (`serverSwapped`, `public/channel-store.js`) and, on a mismatch, freezes all
+    pushes and shows a "this cockpit was replaced — reload" banner, so the user
+    isn't silently driving the wrong instance. And `dropForeignHomes` (applied in
+    BOTH `loadChannels` and `saveChannels`) strips any `home:true` channel whose
+    cwd is a different launch dir — a foreign "general" has no place in this file —
+    which **self-heals the already-poisoned files** the old bug left behind (an
+    empty cwd is kept: it's an own home whose cwd is not yet asserted). The deeper
+    point the user named — that a tab can not only WRITE but DRIVE another
+    instance's sessions on a shared port — is left for a follow-up; the same
+    instance-key-on-the-wire primitive extends to it. Verified at the HTTP layer:
+    a PUT with a matching header writes, a mismatched one is 409, and a foreign
+    home in a matching PUT is dropped on save.
 
 ## Conventions
 

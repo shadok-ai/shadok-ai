@@ -9,8 +9,56 @@ import {
   setToolKeys,
   resolveSessionTarget,
   resumeTarget,
+  channelWriteAllowed,
+  dropForeignHomes,
   type Channel,
 } from "../src/channels.js";
+
+// A browser tab belongs to the instance it was LOADED from. When the server is
+// stopped and another instance (a different launch dir) takes the same port,
+// the stale tab reconnects and PUTs its in-memory channels into the new
+// instance — contaminating it with a foreign project's agents. The page carries
+// the server's launch-dir key; a write is gated on it.
+
+test("channelWriteAllowed: a write whose instance key matches the server is allowed", () => {
+  assert.equal(channelWriteAllowed("-Users-x-projA", "-Users-x-projA"), true);
+});
+
+test("channelWriteAllowed: a write from a DIFFERENT instance is refused", () => {
+  // The stale-tab case: the tab was loaded from projA, the server is now projB.
+  assert.equal(channelWriteAllowed("-Users-x-projB", "-Users-x-projA"), false);
+});
+
+test("channelWriteAllowed: a client that sends no key is allowed (legacy / non-browser)", () => {
+  // pilotctl/cron/telegram never PUT /channels, and a pre-fix page sends no
+  // header; refusing those would break writes with no isolation benefit.
+  assert.equal(channelWriteAllowed("-Users-x-projA", undefined), true);
+  assert.equal(channelWriteAllowed("-Users-x-projA", ""), true);
+});
+
+test("dropForeignHomes: a home channel from another launch dir is dropped", () => {
+  const list: Channel[] = [
+    { sessionId: "a", cwd: "/here", name: "general", home: true },
+    { sessionId: "b", cwd: "/other", name: "general", home: true },
+  ];
+  const out = dropForeignHomes(list, "/here");
+  assert.deepEqual(out.map((c) => c.sessionId), ["a"]);
+});
+
+test("dropForeignHomes: a non-home channel keeps its own cwd (a worktree)", () => {
+  // Ordinary agents legitimately run in worktrees with a different cwd — only a
+  // FOREIGN HOME (another instance's lead) is the contamination.
+  const list: Channel[] = [
+    { sessionId: "a", cwd: "/here", name: "general", home: true },
+    { sessionId: "w", cwd: "/here/.wt/x", name: "agent" },
+  ];
+  assert.deepEqual(dropForeignHomes(list, "/here").map((c) => c.sessionId), ["a", "w"]);
+});
+
+test("dropForeignHomes: a home with an empty cwd is kept (own, cwd not yet asserted)", () => {
+  const list: Channel[] = [{ sessionId: "a", cwd: "", name: "general", home: true }];
+  assert.deepEqual(dropForeignHomes(list, "/here").map((c) => c.sessionId), ["a"]);
+});
 
 test("upsertInto: inserts a new channel when the id is unknown", () => {
   const out = upsertInto([], { sessionId: "a", cwd: "/x" });

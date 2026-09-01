@@ -48,6 +48,7 @@ import {
   upsertChannel,
   removeChannel,
   mergeClientChannels,
+  channelWriteAllowed,
   loadTgGroup,
   saveTgGroup,
   isHomeChannel,
@@ -1325,6 +1326,14 @@ app.delete("/crons", (req, res) => {
   res.json({ ok: true, id: r.id });
 });
 app.put("/channels", (req, res) => {
+  // A stale tab whose server was stopped and replaced by another instance on the
+  // same port must not write its old channels into THIS instance's file. The
+  // page carries the launch-dir key it was loaded from; refuse an explicit
+  // mismatch. Return the live list so the confused client can reconcile.
+  const clientKey = req.get("x-shadok-instance");
+  if (!channelWriteAllowed(instanceKey(), clientKey)) {
+    return res.status(409).json({ error: "instance-mismatch", channels: loadChannels() });
+  }
   // Merge, don't overwrite: the browser owns order + name/group, but must never
   // drop a live or Telegram-bound session or strip server-owned fields.
   const live = new Set([...sessions.values()].filter((s) => !s.pilot.hasExited).map((s) => s.id));
@@ -1351,6 +1360,9 @@ app.delete("/channel", async (req, res) => {
 });
 app.get("/groups", (_req, res) => res.json(loadGroups()));
 app.put("/groups", (req, res) => {
+  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
+    return res.status(409).json({ error: "instance-mismatch" });
+  }
   saveGroups(Array.isArray(req.body) ? req.body : []);
   res.json({ ok: true });
 });
@@ -2351,6 +2363,9 @@ async function restartSession(s: Live): Promise<void> {
   // reload instead of pausing.
   broadcast(s, {
     type: "ready",
+    // Which instance is answering this origin — the client compares it to the
+    // launch dir stamped in its page and stops writing on a mismatch (swap).
+    instanceKey: instanceKey(),
     sessionId: s.id,
     preprompt: prepromptById.get(s.id) ?? [],
     cwd: s.cwd,
@@ -3203,6 +3218,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             if (turns.length) send({ type: "history", turns });
             send({
               type: "ready",
+              instanceKey: instanceKey(),
               sessionId: id,
               preprompt: prepromptById.get(id) ?? [],
               cwd: session.cwd,
@@ -3261,6 +3277,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           }
           send({
             type: "ready",
+            instanceKey: instanceKey(),
             sessionId: id,
             preprompt: prepromptById.get(id) ?? [],
             cwd: effectiveCwd,
