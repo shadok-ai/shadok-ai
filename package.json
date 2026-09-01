@@ -1,6 +1,6 @@
 {
   "name": "shadok-ai",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "main": "dist/session.js",
   "scripts": {
     "test": "node --import tsx --test test/*.ts context/*/test/*.test.mjs",
