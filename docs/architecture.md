@@ -616,6 +616,55 @@ delete those, so adding one back has to clear a high bar. An offer that costs
 three lines when ignored clears it; a question you must answer before anything
 works does not. `SHADOK_GREETING=0` turns it off entirely.
 
+### The seconds before it exists (`GET /first-agent`)
+
+Between opening the browser and the lead agent's first `ready` there are several
+seconds — the boot defers the spawn a beat, the auth probe costs about 850ms and
+`claude` itself takes its time. The page filled them with `#emptyState`: *no
+agent open*, and a **＋ new agent** button. That is worse than a slow spinner. It
+is not merely uninformative, it invites the one action that produces a SECOND
+lead agent while the first is being born.
+
+The honest version needs a fact the browser does not have. *A first agent is on
+its way* and *the user closed their last tab* are the **same zero channels**
+(invariant 18, which is why `active` can be null), so any client-side rule picks
+one of the two wrong answers — a returning user told forever that their first
+agent is starting, or a newcomer invited to duplicate theirs. The side doing the
+spawning is the one that knows, so it says: `announceFirstAgent` /
+`settleFirstAgent` in `first-agent.ts`, served as `GET /first-agent` — its own
+route rather than a field on `/defaults`, because the two have different
+lifetimes. `/defaults` hands out facts that cannot change under the page (the
+launch directory and its `instanceKey`) and is read once; this one changes while
+the page watches, and is polled only for as long as it answers `pending`.
+
+The design work is entirely in **ending** the state, because the failure it
+would cause is permanent and untouchable from the UI. `firstAgentPlan` spawns
+nothing on a signed-out instance, and a naive flag would leave that cockpit
+reading *starting your first agent…* forever — a worse first impression than the
+bug being fixed. So `settleFirstAgent` is unconditional and is reached from
+every exit: `ensureFirstAgent`'s `finally` (which covers `ready`, `error`,
+`exited`, the socket failing and the 60s guard — they all resolve the same
+promise), the `!plan.spawn` branch before the socket is even opened, and
+`startFirstAgent`'s `catch`, for a throw that never reaches the `finally`.
+Announcing is authoritative rather than sticky in the other direction too:
+called with channels present it clears the flag, since an instance that has
+agents has nothing pending by definition.
+
+It is announced at boot **before** the deferred spawn, not inside it: the
+browser is opened first, so otherwise the very page this exists for loads inside
+the gap and is told there is nothing coming.
+
+The client half is two changes. `syncChannels` now runs from a self-rescheduling
+loop that fires **once immediately** — a channel the server already has used to
+wait out a full 4s period, on top of `claude`'s own boot — and that loop polls at
+800ms while the answer is `pending`, settling back to 4s the moment it lands. The
+wait happens once per instance; making everyone's steady-state poll faster would
+be paying for it forever. `/first-agent` itself is only asked when there is no
+tab on screen, or to watch a pending wait end, so an ordinary cockpit still makes
+exactly one fetch per pass. And `#startingState` replaces `#emptyState` for that
+moment: same box, **no button**. The boundary above applies here too — it is a
+status, not a gate. Nothing to click, nothing to dismiss.
+
 ## Auth (optional password gate)
 
 Set a password (`--password`, `SHADOK_GUI_PASSWORD`, or config) and every page,

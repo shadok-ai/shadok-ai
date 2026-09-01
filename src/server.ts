@@ -29,7 +29,12 @@ import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { starCount } from "./stars.js";
-import { ensureFirstAgent } from "./first-agent.js";
+import {
+  announceFirstAgent,
+  ensureFirstAgent,
+  firstAgentStatus,
+  settleFirstAgent,
+} from "./first-agent.js";
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
@@ -335,6 +340,9 @@ function greetHomeAgent(id: string): void {
 }
 
 async function startFirstAgent(): Promise<void> {
+  // Before the attempt, not after it: the browser may already be loading, and
+  // the empty state it would otherwise paint invites a SECOND lead agent.
+  announceFirstAgent(loadChannels().length);
   try {
     const why = await ensureFirstAgent({
       port: boundPort,
@@ -355,6 +363,11 @@ async function startFirstAgent(): Promise<void> {
     });
     if (why !== "first-boot") console.log(`first agent: skipped (${why})`);
   } catch (e) {
+    // `ensureFirstAgent` settles its own status in a `finally`, but it can also
+    // throw BEFORE reaching it (reading the channel list, probing auth). A
+    // cockpit stuck on "starting your first agent…" is exactly what this
+    // feature must never produce, so the outermost handler ends the wait too.
+    settleFirstAgent("not-signed-in");
     console.log(`first agent: could not start — ${e instanceof Error ? e.message : String(e)}`);
   }
 }
@@ -1153,6 +1166,17 @@ app.get("/defaults", (_req, res) => {
   // dir, so two cockpits on the same origin (same port, sequentially) never
   // share it. One source of truth with the server's own per-dir keying.
   res.json({ cwd: process.cwd(), instanceKey: instanceKey() });
+});
+// Is the instance's lead agent on its way? A page with no channel cannot tell
+// "one is being born" from "you closed your last tab" — both are zero channels
+// (invariant 18) — and the difference decides whether it invites the user to
+// create an agent or asks them to wait. Its own route rather than a field on
+// `/defaults`, because the two have different lifetimes: `/defaults` hands out
+// facts that cannot change under the page (the launch dir, its `instanceKey`)
+// and is read once, while this one changes while the page watches and is
+// POLLED — for as long as it answers `pending`, and never after.
+app.get("/first-agent", (_req, res) => {
+  res.json(firstAgentStatus());
 });
 // Cockpit name (header brand + browser tab), per launch directory — so several
 // cockpits stay distinguishable across a reload. Empty PUT clears it.
@@ -3907,5 +3931,9 @@ server.listen(port, HOST, () => {
   // would delay the window for nothing.
   openBrowser("http://localhost:" + port);
   adoptHomeChannel();
+  // Announce here, not only inside the deferred call: the browser is opening
+  // NOW and would otherwise be told there is nothing coming for a second and a
+  // half — the whole window this status exists to fill.
+  announceFirstAgent(loadChannels().length);
   setTimeout(() => void startFirstAgent(), 1500).unref?.();
 });
