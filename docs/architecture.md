@@ -547,6 +547,75 @@ is either permanent and invisible (the seeded state) or transient and blocking
 never be visited. The onboarding is instead cards that exist only while
 something is missing.
 
+## The first message (`src/ground.ts`, `src/greeting.ts`)
+
+A fresh cockpit opened on a blank chat and left the newcomer to guess. The lead
+agent now speaks first: it says what it found in the directory it woke up in and
+makes **one** concrete offer.
+
+Two modules, split on the line between fact and judgement.
+
+`ground.ts` answers *what kind of project is this* with the filesystem alone —
+no model call, no network, no process spawn, not even `git`. It is the cron
+guard's move applied to onboarding: recognising a `Gemfile` is not reasoning, so
+paying a model call for it would be slower, costlier and less reliable than
+reading the directory. It reports version control, stack markers (each with the
+file that proved it), CI configuration and the project's convention files, and
+it keeps `empty` and `unrecognised` as separate facts — a README is prose, and
+letting one count as recognition would make the honest register below
+unreachable for a folder of documents.
+
+`greeting.ts` turns that into the BRIEF the model writes the greeting from — not
+into the greeting itself. The introduction has to describe the roles that exist
+in *this* cockpit, including ones the user minted after the file was written, so
+it reads the vault (minus the managed roles, `isManagedProfile`'s own reason, and
+minus the lead, which is the one speaking). Hardcoded prose would reproduce the
+drift this codebase documents half a dozen times: a description that outlives
+the thing it describes.
+
+The register is the whole design, because the risk here is not silence but being
+**wrong**: a greeting that misreads the project costs trust at the exact moment
+there is none in reserve.
+
+| What the pass found | What the greeting does |
+|---|---|
+| A marker **and** a shadok mechanism it makes applicable | names what it saw, offers one thing |
+| Something recognised, nothing that fits | names what it saw, then **asks** |
+| `empty` or `unrecognised` | one honest line, then the offer that needs no detection |
+
+Only the first speaks with specificity. The third is explicitly forbidden from
+naming a stack, a framework or a tool: none was found, and an invented one is
+the single failure a greeting cannot recover from. What it offers instead —
+*want me to read this project and tell you what it is?* — works in a Rails app,
+an Xcode project and a folder cloned five minutes ago, and is already the lead's
+stated KNOW job.
+
+An offer earns its place on a **mechanism the ground makes applicable**, never on
+the stack being nameable — which is why there is no table of one offer per
+stack. A `Gemfile` with no version control tells us what the project builds with
+and nothing about what would help; that is exactly the informed register.
+
+Two smaller decisions. The facts are **handed to the agent** rather than looked
+up by it, and the brief forbids reading the project before answering: otherwise
+the first message costs a fistful of tool calls and can disagree with what
+shadok saw — and reading it properly is what the greeting is OFFERING. And the
+delivery (`greetHomeAgent`, server.ts) is a **hidden** prompt over the loopback,
+marked like a cron fire, so the greeting *arrives* instead of reading as the
+answer to something the user can plainly see they never typed. It retries like
+the reload nudge, since the agent it is aimed at was spawned a second ago and
+may still be finishing its own startup turn.
+
+It fires from one place only: `ensureFirstAgent`'s `onReady`. Channels are
+stored per launch directory, so `firstAgentPlan`'s "no channel at all" is
+already evaluated per project — the greeting happens once per directory, not
+once per installation, and a second trigger would only be a second thing to keep
+in agreement with the first.
+
+The boundary kept: this is **not** a first-run screen. `claude-home.ts` exists to
+delete those, so adding one back has to clear a high bar. An offer that costs
+three lines when ignored clears it; a question you must answer before anything
+works does not. `SHADOK_GREETING=0` turns it off entirely.
+
 ## Auth (optional password gate)
 
 Set a password (`--password`, `SHADOK_GUI_PASSWORD`, or config) and every page,

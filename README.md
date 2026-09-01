@@ -164,13 +164,24 @@ Enter to skip; you can add it later from the web UI).
   without a worktree. It is created at boot, or right after the first sign-in on
   a brand-new instance (which is signed out at boot, so there is nothing to
   spawn yet). The condition is "no channel", which makes it idempotent: it never
-  appears twice. Nothing is prompted — the agent waits for you.
+  appears twice.
   It is the environment's **home base**: pinned at the top of the list, with no
   close button and no *Close agent* in its menu. You can still reload, rename,
   re-profile or mute it — "permanent" should not mean "stuck". A cockpit that
   already had a `general` at its launch directory adopts it on the next start,
   and only ever when exactly one channel matches: a wrong adoption would be
   irreversible from the UI, since that channel becomes the one you cannot close.
+- **It says hello, and makes one offer** — the lead's first message is written
+  from a deterministic read of the directory it woke up in: version control,
+  stack markers, CI configuration, the convention files. It names what it *saw*
+  (`package.json`, `Shadok.xcodeproj`) and offers **one** concrete thing that
+  fits, then lists the other roles this cockpit holds — the profiles you really
+  have, so a role you minted appears and a role you deleted cannot be promised.
+  When nothing in the directory is recognisable it says so plainly and offers
+  the one thing that is true everywhere ("want me to read this project and tell
+  you what it is?") rather than guessing a stack. It is an **offer, not a
+  first-run screen**: ignore it entirely and the cockpit works exactly the same.
+  `SHADOK_GREETING=0` turns it off.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)
@@ -376,6 +387,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
+| `SHADOK_GREETING=0` | the lead agent starts silent — no first-message greeting |
 | `SHADOK_LEDGER=1` | opt into the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (OFF by default; the GUI/config setting wins once used) |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |
 | `SHADOK_SSH_IDENTITY=0` · `SHADOK_FORCE_SSH_IDENTITY=1` | disable / force the Docker SSH identity |
