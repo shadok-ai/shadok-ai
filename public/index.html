@@ -2190,7 +2190,20 @@
     }
   }
 
-  function createTab(groupId) {
+  /**
+   * `focus` says whether the new tab takes over the view. It defaults to true
+   * because most callers ARE the user asking for a tab — the Start-agent
+   * button, the phone's "new agent" entry, the Tweak CTA — and those must land
+   * on what they just created.
+   *
+   * `syncChannels` is the exception, and the reason this option exists. It
+   * creates a tab for every channel it DISCOVERS on the server, every four
+   * seconds, so an agent spawned by another agent, from Telegram, from a cron
+   * or on another machine used to yank every open browser onto it mid-sentence.
+   * Delegating is this product's central action; it must not cost the user
+   * their place in the conversation they are having.
+   */
+  function createTab(groupId, { focus = true } = {}) {
     seq++;
     const el = document.createElement("div");
     el.className = "transcript";
@@ -2335,7 +2348,7 @@
     });
     btn.addEventListener("dragend", () => endDrag());
     tabs.push(tab);
-    activate(tab);
+    if (focus) activate(tab);
     return tab;
   }
 
@@ -3133,7 +3146,11 @@
           saveName(t, c.name);
         }
       } else if (!dismissedChannels.has(c.sessionId)) {
-        const nt = createTab(c.group);
+        // Discovered, not asked for: never steal the view. The one exception is
+        // an empty cockpit — with `active === null` the user is looking at
+        // #emptyState (invariant 18), so this displaces nobody, and showing the
+        // channel beats leaving them in front of nothing.
+        const nt = createTab(c.group, { focus: !active });
         nt.sessionId = c.sessionId;
         nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
