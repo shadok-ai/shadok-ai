@@ -1,7 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-expect-error — pure ESM module loaded by the browser too, no types.
-import { pickChannelSource, dirKey } from "../public/channel-store.js";
+import { pickChannelSource, dirKey, serverSwapped } from "../public/channel-store.js";
+
+// The page is stamped with the launch dir it was loaded from. If the server
+// answering this origin later reports a DIFFERENT launch dir (its port was
+// taken over by another instance after a stop), the tab is now talking to the
+// wrong instance and must stop writing to it.
+
+test("serverSwapped: same key on both sides is not a swap", () => {
+  assert.equal(serverSwapped("-Users-x-projA", "-Users-x-projA"), false);
+});
+
+test("serverSwapped: a different server key is a swap", () => {
+  assert.equal(serverSwapped("-Users-x-projA", "-Users-x-projB"), true);
+});
+
+test("serverSwapped: an unknown key on either side is never a swap (no false alarm)", () => {
+  // Before either side is known there is nothing to compare; a swap must be an
+  // AFFIRMED mismatch, never an absence.
+  assert.equal(serverSwapped("", "-Users-x-projB"), false);
+  assert.equal(serverSwapped("-Users-x-projA", ""), false);
+  assert.equal(serverSwapped("", ""), false);
+});
 
 // The channel list has two sources at boot: the server's /channels (isolated
 // per launch dir) and an origin-scoped localStorage cache. Falling back to the

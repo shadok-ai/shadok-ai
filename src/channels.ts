@@ -159,10 +159,43 @@ export function dedupById(list: Channel[]): Channel[] {
   return out;
 }
 export function loadChannels(): Channel[] {
-  return dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string"));
+  // dropForeignHomes on READ too: a file poisoned by an older build (a stale tab
+  // that PUT another instance's home before the write guard existed) is cleaned
+  // the moment it is read, so /channels never surfaces a foreign "general".
+  return dropForeignHomes(
+    dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string")),
+    process.cwd(),
+  );
 }
 export function saveChannels(list: Channel[]): void {
-  writeJson("channels", list);
+  writeJson("channels", dropForeignHomes(list, process.cwd()));
+}
+
+/**
+ * A browser tab belongs to the instance it was LOADED from. The page carries
+ * that instance's launch-dir key (stamped by `injectInstanceKey`), and a
+ * mutating call (`PUT /channels`, `PUT /groups`) sends it back. A stale tab
+ * whose server was stopped and replaced by another instance on the same port
+ * would otherwise PUT its in-memory channels into the NEW instance's file. The
+ * write is refused only on an EXPLICIT mismatch: a client that sends no key
+ * (a pre-fix page, or a non-browser caller that never PUTs channels anyway) is
+ * allowed, so the guard adds isolation without breaking anything.
+ */
+export function channelWriteAllowed(serverKey: string, clientKey: string | undefined | null): boolean {
+  return !clientKey || clientKey === serverKey;
+}
+
+/**
+ * Drop a channel that is another instance's HOME (lead) — a `home` channel whose
+ * cwd is a different launch directory. Its "general" has no place in this
+ * instance's file; it lands there only through the stale-tab contamination
+ * above. Non-home agents legitimately run in worktrees with a different cwd, so
+ * only `home` is filtered; an empty cwd is kept (own home, cwd not yet
+ * asserted at `ready`). Applied on both read and write, so an already-poisoned
+ * file self-heals on the next load or save.
+ */
+export function dropForeignHomes(list: Channel[], serverCwd: string): Channel[] {
+  return list.filter((c) => !(c.home && c.cwd && c.cwd !== serverCwd));
 }
 
 /**

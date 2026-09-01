@@ -32,3 +32,17 @@ export function pickChannelSource(settled, cached) {
 export function dirKey(base, instanceKey) {
   return instanceKey ? base + ":" + instanceKey : base;
 }
+
+/**
+ * Did the server on this origin get replaced by a different instance? The page
+ * is stamped with the launch dir it was loaded from; the server re-states its
+ * own on every `ready`. A swap is an AFFIRMED mismatch — never an absence, or a
+ * page that hasn't learned its key yet would cry wolf. On a swap the tab must
+ * stop persisting (it would only write the wrong instance's file) and prompt a
+ * reload.
+ * @param {string} pageKey - the instance key stamped into this page
+ * @param {string} serverKey - the instance key the server just reported
+ */
+export function serverSwapped(pageKey, serverKey) {
+  return !!pageKey && !!serverKey && pageKey !== serverKey;
+}
