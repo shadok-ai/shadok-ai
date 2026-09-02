@@ -988,10 +988,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             b.lastRetried = text;
             b.preempting = text;
             b.ws.send(JSON.stringify({ type: "key", key: "escape" }));
-            // Rien à annoncer quand ça marche : la réponse au nouveau message
-            // EST la confirmation, et une ligne de plus à chaque envoi ne fait
-            // que du bruit. Ce qui reste dit, c'est l'échec, juste en dessous —
-            // là, le silence laisserait croire à un message parti.
+            // Nothing to announce when it works: the answer to the new message
+            // IS the confirmation, and one more line on every send is just
+            // noise. What stays spoken is the FAILURE, just below — there,
+            // silence would let someone believe their message went out.
             // Filet : si l'échap ne fait pas retomber le tour (agent coincé),
             // le message resterait en attente pour toujours, sans un mot.
             clearTimeout(b.preemptTimer);
