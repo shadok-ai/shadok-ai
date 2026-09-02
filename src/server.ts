@@ -1763,10 +1763,15 @@ const VERSION_CHECK_MIN = Number(process.env.SHADOK_VERSION_CHECK_MIN ?? 15);
 // display poll runs regardless of this flag.
 let autoUpdate: boolean =
   loadConfig().autoUpdate ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_AUTOUPDATE ?? "");
-// Shared-ledger reflex: OFF unless opted in (config, else SHADOK_LEDGER env).
+// Shared-ledger reflex: ON by default. An explicit choice always wins — the
+// config (GUI toggle / POST /ledger), or SHADOK_LEDGER, which can now force it
+// EITHER way (`0`/`false` turns it off, not just `1` on). Only an instance that
+// set neither falls through to the default, so a brand-new cockpit gets the
+// ledger while any instance that already turned it off keeps that choice.
 // Gates the pilot-prompt paragraph; a live agent picks it up at next respawn.
+const ledgerEnv = (process.env.SHADOK_LEDGER ?? "").trim();
 let ledgerEnabled: boolean =
-  loadConfig().ledgerEnabled ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_LEDGER ?? "");
+  loadConfig().ledgerEnabled ?? (ledgerEnv ? /^(1|true|yes|on)$/i.test(ledgerEnv) : true);
 // Most ledger changes to push ahead of one human prompt; the rest collapse to a
 // "+N more" line. Deltas are usually tiny, so this rarely bites.
 const LEDGER_PUSH_CAP = 8;
