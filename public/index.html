@@ -759,6 +759,27 @@
   }
   .turn { display: flex; flex-direction: column; gap: 3px; max-width: 82%; margin-top: 8px; }
   .turn:first-child { margin-top: 0; }
+  /* "Jump to the latest": floats bottom-right of the chat, above the composer
+     (its `bottom` is set in JS to the composer's height). Hidden at the bottom. */
+  #jumpBottom {
+    position: absolute; right: 18px; z-index: 6;
+    display: inline-flex; align-items: center; gap: 5px;
+    font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    border-radius: 16px; cursor: pointer;
+    background: var(--bg-raised); color: var(--text); border: 1px solid var(--line);
+    box-shadow: 0 3px 12px rgba(0,0,0,.45);
+  }
+  #jumpBottom:hover { border-color: var(--amber); color: var(--amber); }
+  #jumpBottom svg { display: block; }
+  /* Divider between messages already seen and the ones that arrived since. */
+  .unread-sep {
+    display: flex; align-items: center; gap: 10px; margin: 10px 2px 4px;
+    color: var(--amber); font-size: 10px; letter-spacing: .16em; text-transform: uppercase;
+  }
+  .unread-sep::before, .unread-sep::after {
+    content: ""; flex: 1; height: 1px;
+    background: color-mix(in srgb, var(--amber) 45%, transparent);
+  }
   /* Copy: always visible, never on hover — a phone has no hover, and a button
      you cannot reveal does not exist. */
   .turn .copy {
@@ -1979,6 +2000,13 @@
          with the favicon, `shadokInner`); it pumps via CSS. -->
     <div id="thinking"><span class="tw-text">Shadok is pumping</span><span class="tw-shadok" aria-hidden="true"></span></div>
 
+    <!-- Floating "jump to the latest": shown only when the active channel is
+         scrolled up. Its bottom offset tracks the composer's height (JS). -->
+    <button id="jumpBottom" type="button" hidden aria-label="Jump to the latest">
+      <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M12 5v13M6 12l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      Latest
+    </button>
+
     <form id="composer" hidden>
       <textarea id="promptInput" rows="1"
         placeholder="Write your prompt — Enter to send, Shift+Enter for a new line"></textarea>
@@ -2253,7 +2281,12 @@
     // (no more stolen scroll during live streaming). See pinBottom().
     el._stickBottom = true;
     el.addEventListener("scroll", () => {
-      el._stickBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+      el._stickBottom = atBottom;
+      if (tab === active) {
+        if (atBottom) markCaughtUp(tab); // scrolled down to the end → all seen
+        updateJumpButton();
+      }
     });
 
     const btn = document.createElement("div");
@@ -2331,6 +2364,7 @@
       contextPct: null,
       muted: false,      // no favicon pip, no title badge/blink, no chime
       transcriptEl: el,
+      unreadSep: null,   // the "new messages" separator element, when present
       profile: null,     // the agent's "type": the profile applied at spawn
       crons: [],         // labels of the scheduled prompts (the ⏰ on the tab)
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
@@ -3304,7 +3338,17 @@
     // Experimental terminal follows the active channel (re-seeds on switch).
     if (typeof syncTerm === "function") syncTerm();
     if (tab.status !== "setup") {
-      tab.transcriptEl.scrollTop = tab.transcriptEl.scrollHeight;
+      // Resume at the "new" separator when this channel has unread messages
+      // (you left off there), otherwise at the latest. Either way the composer
+      // clears the mood on activate; the separator lingers until you read down.
+      if (tab.unreadSep) {
+        tab.unreadSep.scrollIntoView({ block: "start" });
+        tab.transcriptEl._stickBottom = false;
+      } else {
+        tab.transcriptEl.scrollTop = tab.transcriptEl.scrollHeight;
+        tab.transcriptEl._stickBottom = true;
+      }
+      updateJumpButton();
       promptInput.focus();
     }
   }
@@ -3795,6 +3839,53 @@
     const el = tab.transcriptEl;
     if (tab === active && el._stickBottom !== false) el.scrollTop = el.scrollHeight;
   }
+
+  // ── "Jump to the latest" + the unread separator ─────────────────────────
+  // A channel is "caught up" when you're viewing it AND at its bottom. Anything
+  // that arrives otherwise (another channel in the background, or this one while
+  // you scrolled up) is unread: a separator is dropped before the first such
+  // message, and the floating button offers a one-click way down.
+  const jumpBottom = $("jumpBottom");
+  function isCaughtUp(tab) {
+    return tab === active && tab.transcriptEl._stickBottom !== false;
+  }
+  /** Drop a "new" separator before `turnEl` when the channel isn't caught up and
+   *  doesn't already carry one. */
+  function markUnreadBoundary(tab, turnEl) {
+    if (tab.unreadSep || isCaughtUp(tab) || !turnEl) return;
+    const sep = document.createElement("div");
+    sep.className = "unread-sep";
+    sep.setAttribute("role", "separator");
+    const label = document.createElement("span");
+    label.textContent = "new";
+    sep.appendChild(label);
+    tab.transcriptEl.insertBefore(sep, turnEl);
+    tab.unreadSep = sep;
+  }
+  /** Reached the bottom of a channel → its new messages are now seen. */
+  function markCaughtUp(tab) {
+    if (tab.unreadSep) { tab.unreadSep.remove(); tab.unreadSep = null; }
+    if (tab.btnEl.classList.contains("unread")) setTabMood(tab, null);
+  }
+  /** Show the button only while the active channel is scrolled up; keep it clear
+   *  of the composer. */
+  function updateJumpButton() {
+    const el = active && active.transcriptEl;
+    const composerH = $("composer").hidden ? 12 : $("composer").offsetHeight + 12;
+    jumpBottom.style.bottom = composerH + "px";
+    const up = !!el && !$("composer").hidden && el._stickBottom === false && el.scrollHeight - el.clientHeight > 60;
+    jumpBottom.hidden = !up;
+  }
+  function goToLatest() {
+    if (!active) return;
+    const el = active.transcriptEl;
+    el.scrollTop = el.scrollHeight;
+    el._stickBottom = true;
+    markCaughtUp(active);
+    updateJumpButton();
+  }
+  jumpBottom.addEventListener("click", goToLatest);
+  window.addEventListener("resize", updateJumpButton);
 
   /* A message's date/time. Today → the time alone ("21:57"). Another day → date
      + time ("3 August, 21:57"), with the year when it differs — otherwise a
@@ -4817,6 +4908,7 @@
         // reconnect (laptop wake / dropped link) rebuilds the transcript instead
         // of appending a second copy of the whole history.
         t.transcriptEl.innerHTML = "";
+        t.unreadSep = null; // the separator element went with the wipe
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
           if (h.role === "user") {
@@ -4924,7 +5016,11 @@
         // who typed). Falling back to the origin still beats "elsewhere": a
         // scheduled run answering on its own has an explanation this way.
         closeActivity(t);
-        addTurn(t, "user", echoAuthorLabel(msg), msg.text, null, Date.now());
+        {
+          const b = addTurn(t, "user", echoAuthorLabel(msg), msg.text, null, Date.now());
+          markUnreadBoundary(t, b.parentElement);
+        }
+        if (t === active) updateJumpButton();
         break;
       case "profile":
         // The desired / in-force pair. Broadcast to EVERY client: changing the
@@ -4972,7 +5068,9 @@
           // gluing the two bubbles into one wordless run (the CSS group rule
           // spares `.after-gap`).
           if (msg.afterInternal) b.parentElement.classList.add("after-gap");
+          markUnreadBoundary(t, b.parentElement);
         }
+        if (t === active) updateJumpButton();
         break;
       case "stream-tool":
         // A tool call, grouped into the open activity block.
@@ -5422,6 +5520,7 @@
   function autosizePrompt() {
     promptInput.style.height = "auto";
     promptInput.style.height = Math.min(promptInput.scrollHeight, 160) + "px";
+    updateJumpButton(); // the composer grew/shrank — keep the button above it
   }
   promptInput.addEventListener("input", () => {
     autosizePrompt();
