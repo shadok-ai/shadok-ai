@@ -1497,7 +1497,11 @@
   #secretsList li { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-radius: 6px; }
   #secretsList li:nth-child(odd) { background: rgba(255,255,255,.04); }
   #secretsList code { font-size: 13px; }
-  #secretsList button { background: none; border: none; color: #e26; cursor: pointer; font-size: 14px; }
+  #secretsList .s-actions { display: flex; gap: 2px; flex: none; }
+  #secretsList button { background: none; border: none; cursor: pointer; font-size: 14px; padding: 0 4px; }
+  #secretsList .s-del { color: #e26; }
+  #secretsList .s-edit { color: var(--text-dim); }
+  #secretsList .s-edit:hover { color: var(--amber); }
   /* Le panneau Users n'avait AUCUN style : d'où les puces brutes et le nom, le
      rôle et les boutons empilés les uns sous les autres. Même traitement que
      #profilesList, dont il est le frère. */
@@ -1518,9 +1522,21 @@
   #inviteBox .ib-url { margin-top: 6px; font-family: var(--mono); font-size: 12px; line-height: 1.45; word-break: break-all; user-select: all; }
   #inviteBox button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; flex: none; }
   #inviteBox button:hover { border-color: var(--amber); color: var(--amber); }
-  #secretsAdd { display: flex; gap: 8px; }
-  #secretsAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; }
-  #secretsAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
+  #secretsAdd { display: flex; flex-direction: column; gap: 8px; }
+  #secretsAdd .sec-add-row { display: flex; gap: 8px; }
+  #secretsAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-size: 16px; }
+  #secretsAdd #secretSubmit { flex: none; padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
+  #secretKey[readonly] { opacity: .65; }
+  .sec-attach { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+  .sec-attach-label { font-size: 12px; color: var(--text-dim); }
+  .sec-profiles { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sec-profiles label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 9px; border: 1px solid var(--line); border-radius: 14px; cursor: pointer; }
+  .sec-profiles label:hover { border-color: var(--amber); }
+  .sec-profiles input { accent-color: var(--amber); margin: 0; }
+  .sec-reload { margin-top: 10px; border: 1px solid var(--amber); border-radius: 8px; padding: 9px 11px; background: color-mix(in srgb, var(--amber) 8%, transparent); font-size: 12.5px; display: flex; align-items: center; gap: 10px; }
+  .sec-reload span { flex: 1; }
+  .sec-reload button { flex: none; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--amber); background: none; color: var(--amber); cursor: pointer; font: inherit; font-size: 12px; }
+  .sec-reload button:hover { background: color-mix(in srgb, var(--amber) 15%, transparent); }
 </style>
 </head>
 <body>
@@ -1630,10 +1646,18 @@
     <div class="pin-body">
       <ul id="secretsList"></ul>
       <form id="secretsAdd">
-        <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
-        <input id="secretVal" placeholder="value" autocomplete="off" spellcheck="false" />
-        <button type="submit">Add</button>
+        <div class="sec-add-row">
+          <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
+          <input id="secretVal" placeholder="value" autocomplete="off" spellcheck="false" />
+          <button type="submit" id="secretSubmit">Add</button>
+        </div>
+        <div id="secretAttach" class="sec-attach" hidden>
+          <span class="sec-attach-label">Inject into profiles:</span>
+          <div id="secretProfiles" class="sec-profiles"></div>
+          <button type="button" id="secretEditCancel" class="linkish" hidden>cancel edit</button>
+        </div>
       </form>
+      <div id="secretsReload" class="sec-reload" hidden></div>
     </div>
   </div>
 </div>
@@ -5842,24 +5866,122 @@
         }
         code.appendChild(tag);
       }
+      const actions = document.createElement("div");
+      actions.className = "s-actions";
+      const edit = document.createElement("button");
+      edit.type = "button"; edit.className = "s-edit"; edit.textContent = "✎";
+      edit.title = "Update this secret's value / the profiles it feeds";
+      edit.addEventListener("click", () => startEditSecret(k));
       const del = document.createElement("button");
-      del.textContent = "✕"; del.title = "Remove from vault";
+      del.type = "button"; del.className = "s-del"; del.textContent = "✕"; del.title = "Remove from vault";
       del.addEventListener("click", async () => {
         await fetch("/secrets?name=" + encodeURIComponent(k), { method: "DELETE" });
+        if (editingSecret === k) resetSecretForm();
         await loadVault(); renderSecrets();
       });
-      li.append(code, del);
+      actions.append(edit, del);
+      li.append(code, actions);
       ul.appendChild(li);
     }
+  }
+
+  // ── Add / update a secret, and wire it to profiles ──────────────────────
+  // The vault add form doubles as an editor: ✎ on a row loads the name (locked)
+  // and the profiles it already feeds, so you can rotate the value or change
+  // which profiles get it in one place.
+  let editingSecret = null;
+  /** Paint a checkbox per (non-managed) profile; `checked` is the set to tick. */
+  function renderSecretProfiles(checked) {
+    const box = $("secretProfiles");
+    box.replaceChildren();
+    const names = profileCache
+      .map((p) => p.name)
+      .filter((n) => !(window.isManagedProfile && window.isManagedProfile(n)))
+      .sort();
+    $("secretAttach").hidden = names.length === 0;
+    for (const n of names) {
+      const label = document.createElement("label");
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = n; cb.checked = checked.has(n);
+      const span = document.createElement("span");
+      span.textContent = n;
+      label.append(cb, span);
+      box.appendChild(label);
+    }
+  }
+  function checkedProfiles() {
+    return [...$("secretProfiles").querySelectorAll("input:checked")].map((c) => c.value);
+  }
+  function resetSecretForm() {
+    editingSecret = null;
+    $("secretKey").value = ""; $("secretKey").readOnly = false;
+    $("secretVal").value = ""; $("secretVal").placeholder = "value";
+    $("secretSubmit").textContent = "Add";
+    $("secretEditCancel").hidden = true;
+    renderSecretProfiles(new Set());
+  }
+  function startEditSecret(name) {
+    editingSecret = name;
+    $("secretKey").value = name; $("secretKey").readOnly = true;
+    $("secretVal").value = ""; $("secretVal").placeholder = "new value (blank = keep)";
+    $("secretSubmit").textContent = "Update";
+    $("secretEditCancel").hidden = false;
+    const users = window.secretUsers ? window.secretUsers(profileCache, name) : [];
+    renderSecretProfiles(new Set(users));
+    $("secretVal").focus();
+  }
+  /** Write the checkbox choices back onto every affected profile (add where now
+   *  ticked, remove where now unticked), preserving each profile's other fields —
+   *  crucially its systemPrompt, or omitting it would silently un-edit the role. */
+  async function syncSecretToProfiles(name, wanted) {
+    const want = new Set(wanted);
+    const changed = [];
+    for (const p of profileCache) {
+      if (window.isManagedProfile && window.isManagedProfile(p.name)) continue;
+      const has = (p.secrets || []).includes(name);
+      if (want.has(p.name) === has) continue; // no change for this profile
+      const secrets = want.has(p.name)
+        ? [...(p.secrets || []), name]
+        : (p.secrets || []).filter((s) => s !== name);
+      const body = { name: p.name, deny: p.deny, allow: p.allow, model: p.model, secrets };
+      if (typeof p.systemPrompt === "string") body.systemPrompt = p.systemPrompt; // keep an edited prompt
+      await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      changed.push(p.name);
+    }
+    if (changed.length) await loadProfilesInto();
+    return changed;
+  }
+  /** Offer to reload the LIVE agents whose profile now feeds this secret — the
+   *  value only reaches a process at spawn, so a running one needs a respawn. */
+  function offerReload(secretName) {
+    const users = new Set(window.secretUsers ? window.secretUsers(profileCache, secretName) : []);
+    // Only LIVE agents: a stopped one will get the value when it next launches.
+    const agents = tabs.filter((t) => users.has(t.profile) && t.ws && t.ws.readyState === WebSocket.OPEN);
+    const box = $("secretsReload");
+    box.replaceChildren();
+    if (!agents.length) { box.hidden = true; return; }
+    const txt = document.createElement("span");
+    txt.textContent =
+      agents.length === 1
+        ? `1 running agent (${agents[0].nameEl.textContent}) uses “${secretName}”. Reload it to pick up the new value?`
+        : `${agents.length} running agents use “${secretName}”. Reload them to pick up the new value?`;
+    const go = document.createElement("button");
+    go.type = "button"; go.textContent = "Reload " + (agents.length === 1 ? "it" : "all");
+    go.addEventListener("click", () => { agents.forEach(reloadTab); box.hidden = true; });
+    box.append(txt, go);
+    box.hidden = false;
   }
   // profileCache feeds the "no profile uses it" warning: it must be fresh when
   // the panel opens, or we would show a stale diagnosis.
   $("secretsBtn").addEventListener("click", async () => {
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
+    resetSecretForm();
+    $("secretsReload").hidden = true;
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
   });
+  $("secretEditCancel").addEventListener("click", resetSecretForm);
   // The missing link: from the secrets, go and attach them to a profile.
   $("secretsToProfiles").addEventListener("click", () => {
     $("secretsOverlay").hidden = true;
@@ -5924,13 +6046,21 @@
     e.preventDefault();
     const name = $("secretKey").value.trim();
     const value = $("secretVal").value;
+    const wanted = checkedProfiles();
     if (!name) return;
-    // `overwrite` because a person reading the vault's list and clicking Save is
-    // acting deliberately. The flag exists to stop an AGENT from replacing a
-    // credential silently — not to slow the human down.
-    await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
-    $("secretKey").value = ""; $("secretVal").value = "";
+    // Editing an existing secret with the value left BLANK means "keep the value,
+    // just change the profiles" — the vault is write-only, so we must not clobber
+    // it with "". A new secret, or a value typed, is written (overwrite: true
+    // because a human at the vault is acting deliberately; the flag only stops an
+    // AGENT replacing a credential silently).
+    const keepValue = editingSecret && value === "";
+    if (!keepValue) {
+      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
+    }
+    await syncSecretToProfiles(name, wanted); // refreshes profileCache
     await loadVault(); renderSecrets();
+    offerReload(name); // propose reloading the live agents that now feed on it
+    resetSecretForm();
     $("secretKey").focus();
   });
   // Parse a pasted .env-style block → [{name, value}]. Handles `export

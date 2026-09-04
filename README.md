@@ -92,11 +92,13 @@ Enter to skip; you can add it later from the web UI).
   and three go-to-market roles (paid, organic, support). Each one is yours to
   edit, and a role you delete stays deleted.
 - **Secret vault** — stored under `~/.shadok-ai`, never in your repo, injected
-  as env vars into the agents that need them. An agent that **obtains** a
-  credential (a CLI login, a key it just provisioned) can add it to the vault
-  itself so the next agent doesn't start from nothing — write-only, the value
-  piped in rather than typed as an argument, and never overwriting an existing
-  name without you saying so.
+  as env vars into the agents that need them. Add or **update** a secret from the
+  panel, tick the **profiles** it should feed right there, and reload the running
+  agents on those profiles in one click so a rotated value takes effect now. An
+  agent that **obtains** a credential (a CLI login, a key it just provisioned)
+  can add it to the vault itself so the next agent doesn't start from nothing —
+  write-only, the value piped in rather than typed as an argument, and never
+  overwriting an existing name without you saying so.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
   daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
