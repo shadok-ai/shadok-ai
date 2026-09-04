@@ -1483,6 +1483,17 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
+  /* Search results. 16px input so iOS doesn't zoom the field on focus (inv. 28). */
+  #searchInput { font-size: 16px; }
+  .search-results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+  .search-hit { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 7px; padding: 7px 9px; cursor: pointer; color: inherit; font: inherit; }
+  .search-hit:hover, .search-hit:focus-visible { border-color: var(--line); background: var(--bg-inset); outline: none; }
+  .search-hit .hit-top { display: flex; gap: 8px; align-items: baseline; font-size: 11px; margin-bottom: 3px; }
+  .search-hit .hit-agent { color: var(--amber); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .search-hit .hit-who { color: var(--text-dim); flex: none; }
+  .search-hit .hit-time { color: var(--text-dim); margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
+  .search-hit .hit-snip { font-size: 12.5px; color: var(--text-dim); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .search-hit .hit-snip mark { background: color-mix(in srgb, var(--amber) 32%, transparent); color: var(--text); border-radius: 2px; padding: 0 1px; }
   #ledgerList { list-style: none; margin: 0; padding: 0; }
   #ledgerList li { padding: 8px 0; border-bottom: 1px solid var(--line, #2a2d32); }
   #ledgerList li:last-child { border-bottom: none; }
@@ -1568,6 +1579,7 @@
        against the right edge (the 🔑 was there, 16px from it — out of sight at
        the slightest zoom). -->
   <div class="hdr-tools">
+  <button id="searchBtn" class="icon" title="Search across all agents (⌘/Ctrl-K)" aria-label="Search"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15.2 15.2 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)" aria-label="Secrets"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l7.5 7.5M15.5 15.5l1.8-1.8M17.8 17.8l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
   <button id="ledgerBtn" class="icon" title="Shared ledger — what agents have resolved / decided" aria-label="Ledger"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
   <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)" aria-label="Profiles"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
@@ -1673,6 +1685,22 @@
     </div>
     <div class="pin-body">
       <ul id="ledgerList"></ul>
+    </div>
+  </div>
+</div>
+
+<div id="searchOverlay" class="overlay" hidden>
+  <div class="sec-panel pinned">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong>Search</strong>
+        <button id="searchClose" title="Close">✕</button>
+      </div>
+      <input id="searchInput" type="text" placeholder="Search across all agents…" autocomplete="off" spellcheck="false" />
+    </div>
+    <div class="pin-body">
+      <div id="searchStatus" class="sec-note"></div>
+      <ul id="searchResults" class="search-results"></ul>
     </div>
   </div>
 </div>
@@ -5722,7 +5750,7 @@
   // SINGLE row (brand + dials + ⋯) by moving EVERY tool icon into the ⋯ menu —
   // the real button elements, so their click handlers travel with them.
   // Recomputed on load, on resize, and when the instance name changes.
-  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "profilesBtn", "telegramBtn", "muteNotif"];
+  const OVERFLOW_TOOLS = ["searchBtn", "secretsBtn", "ledgerBtn", "profilesBtn", "telegramBtn", "muteNotif"];
   function reflowHeaderTools() {
     const hdrTools = document.querySelector(".hdr-tools");
     const moreWrap = document.querySelector(".more-wrap");
@@ -5804,6 +5832,7 @@
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("searchOverlay").hidden) { $("searchOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
@@ -6041,6 +6070,86 @@
   });
   $("ledgerClose").addEventListener("click", () => { $("ledgerOverlay").hidden = true; });
   $("ledgerOverlay").addEventListener("click", (e) => { if (e.target === $("ledgerOverlay")) $("ledgerOverlay").hidden = true; });
+
+  // ── Search across all agents ──────────────────────────────────────────
+  // Full-text over every agent's whole transcript (server /search); a hit opens
+  // its agent. Opened by the toolbar magnifier or ⌘/Ctrl-K.
+  const searchOverlay = $("searchOverlay");
+  const searchInput = $("searchInput");
+  const searchResults = $("searchResults");
+  const searchStatus = $("searchStatus");
+  let searchTimer = null;
+  let searchSeq = 0; // guards against an older response landing after a newer one
+  function openAgentBySession(sessionId) {
+    const t = tabs.find((x) => x.sessionId === sessionId);
+    if (t) activate(t);
+  }
+  function openSearch() {
+    searchOverlay.hidden = false;
+    searchInput.focus();
+    searchInput.select();
+    if (searchInput.value.trim()) runSearch();
+  }
+  function closeSearch() { searchOverlay.hidden = true; }
+  function renderSearch(data) {
+    searchResults.replaceChildren();
+    const results = (data && data.results) || [];
+    if (!results.length) { searchStatus.textContent = "No matches."; return; }
+    searchStatus.textContent = results.length + (data.truncated ? "+" : "") + (results.length === 1 && !data.truncated ? " match" : " matches");
+    for (const r of results) {
+      const li = document.createElement("li");
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "search-hit";
+      const top = document.createElement("div");
+      top.className = "hit-top";
+      const agent = document.createElement("span");
+      agent.className = "hit-agent";
+      agent.textContent = r.agent;
+      const who = document.createElement("span");
+      who.className = "hit-who";
+      who.textContent = r.role === "assistant" ? "claude" : "you";
+      const time = document.createElement("span");
+      time.className = "hit-time";
+      time.textContent = Number.isFinite(r.at) ? relTime(r.at) : "";
+      top.append(agent, who, time);
+      const snip = document.createElement("div");
+      snip.className = "hit-snip";
+      // textContent throughout — the snippet is agent-written; never innerHTML it.
+      snip.append(document.createTextNode(r.snippet.before));
+      const mk = document.createElement("mark");
+      mk.textContent = r.snippet.match;
+      snip.append(mk, document.createTextNode(r.snippet.after));
+      b.append(top, snip);
+      b.addEventListener("click", () => { openAgentBySession(r.sessionId); closeSearch(); });
+      li.append(b);
+      searchResults.append(li);
+    }
+  }
+  async function runSearch() {
+    const q = searchInput.value.trim();
+    if (q.length < 2) { searchResults.replaceChildren(); searchStatus.textContent = q ? "Keep typing…" : ""; return; }
+    searchStatus.textContent = "Searching…";
+    const seq = ++searchSeq;
+    try {
+      const data = await (await fetch("/search?q=" + encodeURIComponent(q))).json();
+      if (seq !== searchSeq) return; // a newer query already fired
+      renderSearch(data);
+    } catch {
+      if (seq === searchSeq) searchStatus.textContent = "Search failed.";
+    }
+  }
+  searchInput.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 220); });
+  searchInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); clearTimeout(searchTimer); runSearch(); } });
+  $("searchBtn").addEventListener("click", openSearch);
+  $("searchClose").addEventListener("click", closeSearch);
+  searchOverlay.addEventListener("click", (e) => { if (e.target === searchOverlay) closeSearch(); });
+  window.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      searchOverlay.hidden ? openSearch() : closeSearch();
+    }
+  });
 
   $("secretsAdd").addEventListener("submit", async (e) => {
     e.preventDefault();
