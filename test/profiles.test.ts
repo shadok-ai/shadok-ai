@@ -409,3 +409,28 @@ test("declineList: seuls les rôles LIVRÉS méritent une inscription", () => {
   assert.deepEqual(declineList([], "SonRole", "remove", ["A", "B"]), []);
   assert.deepEqual(declineList([], "A", "remove", ["A", "B"]), ["A"]);
 });
+
+test("Shadok-Boss: what he may do himself is a CLOSED list, not a judgement call", () => {
+  // "Every piece of actual work goes to an agent" was too vague to bind: what
+  // counts as work is exactly what a busy lead negotiates with himself.
+  const boss = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Boss")!.systemPrompt!;
+  assert.match(boss, /YOURSELF, AND NOTHING ELSE/);
+  assert.match(boss, /EVERYTHING ELSE GOES TO AN AGENT/);
+  // The small task is the trap, so it must be named.
+  assert.match(boss, /two minutes/i);
+});
+
+test("Shadok-Boss: a stated check before anything that changes something", () => {
+  const boss = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Boss")!.systemPrompt!;
+  assert.match(boss, /BEFORE ANY ACTION THAT CHANGES SOMETHING/);
+  assert.match(boss, /out loud/i);
+});
+
+test("Shadok-Boss: no claim about permissions he may not have", () => {
+  // His deny list is the user's to set, and on a real instance it was empty
+  // while the prompt asserted "git writes are blocked". Telling an agent about a
+  // barrier that is not there teaches it that its instructions are unreliable.
+  const boss = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Boss")!.systemPrompt!;
+  assert.doesNotMatch(boss, /git writes are blocked/);
+  assert.match(boss, /You do not commit/);
+});
