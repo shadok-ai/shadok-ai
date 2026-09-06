@@ -1146,12 +1146,24 @@
     #chanBar #dirGauge, #chanBar #branchGauge { display: none !important; }
     #chanBar .gauge .label { display: none; }   /* values only, more compact */
     #chanBar { gap: 6px; padding: 6px 10px; }
-    header { flex-wrap: wrap; row-gap: 6px; gap: 8px; padding: 8px 12px; }
     /* One header row: brand + dials + ⋯. reflowHeaderTools (JS) moves ALL tool
-       icons into the ⋯ menu on a phone, so nothing wraps to a second line. The
-       spacer that right-aligns them on desktop is dropped so what remains packs
-       left. .hdr-tools keeps its base `display: contents`. */
+       icons into the ⋯ menu, and `nowrap` makes the brand — the one elastic item
+       — ABSORB the squeeze instead of shoving a dial onto a second line. Before
+       this, a long instance title (e.g. a full hostname) pushed the 7d gauge to
+       wrap, leaving the header a broken two-row mess that also peeked, dimmed,
+       behind every open modal. The spacer that right-aligns the tools on desktop
+       is dropped so what remains packs left. */
+    header { flex-wrap: nowrap; gap: 8px; padding: 8px 12px; }
     header .spacer { display: none; }
+    /* The brand becomes a flex row of its own so ONLY the name ellipsizes: the
+       ◆ and the version badge keep their size, the title yields. The pencil cue
+       is hover-only, so it is of no use on a phone and just eats width. */
+    header .brand { display: flex; align-items: baseline; gap: 4px; min-width: 0; flex: 0 1 auto; }
+    header .brand-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    header .brand-edit { display: none; }
+    /* While renaming, show the whole field — a transient nudge of the dials is
+       fine, the ellipsis returns the moment the edit commits. */
+    header .brand.editing .brand-name, header .brand-name:focus { overflow: visible; text-overflow: clip; }
     header button.icon { padding: 5px 7px; }
     /* The star pill is the widest tool and would push an icon off the row; on a
        phone it moves into the ⋯ menu (#starMenuItem) instead. */
