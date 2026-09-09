@@ -248,6 +248,18 @@ const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
 // user back to the login screen. Any instance with the same password accepts
 // the same cookie; it's one-way, so the cookie never leaks the password. The
 // in-process Telegram bridge presents this same cookie on its WS.
+//
+// SameSite is `Lax`, not `Strict`. Strict WITHHOLDS the cookie on any top-level
+// navigation the browser considers cross-site — following a bookmark from
+// another app, a link out of Telegram/notes, a restored session on some setups
+// — so the cockpit greeted the user with the login screen despite a cookie that
+// was still valid and persistent (a week's Max-Age). Reported as "it makes me
+// log in again every time I reopen my machine" on an http://<tailscale-ip> URL.
+// Strict was never what protected us: EVERY request already passes the
+// same-origin `Origin` gate (the middleware below, `originAllowed`), which
+// refuses a cross-site page's fetch/POST with a 403 regardless of SameSite, and
+// a cross-site WS is refused the same way. Lax keeps that defense and only lets
+// the cookie ride a top-level GET the user themselves initiated.
 /** A week, matching the cookie's Max-Age: one is the other's enforcement. */
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 // Sessions are signed with a per-instance secret, NOT with the password: the
@@ -934,7 +946,7 @@ app.post("/login", (req, res) => {
   const name = user || BOOTSTRAP_ADMIN;
   res.setHeader(
     "Set-Cookie",
-    `sk_auth=${signSession(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
+    `sk_auth=${signSession(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
   );
   return res.json({ ok: true, user: name });
 });
@@ -973,7 +985,7 @@ app.post("/invite/:token", (req, res) => {
   // back as the admin, with nothing to say the redemption did not take.
   res.setHeader(
     "Set-Cookie",
-    `sk_auth=${signSession(acct!.name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
+    `sk_auth=${signSession(acct!.name, Date.now(), signingSecret())}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
   );
   res.json({ ok: true, user: acct!.name });
 });
@@ -982,7 +994,7 @@ app.post("/invite/:token", (req, res) => {
 // session must work even when that session is already invalid, otherwise a
 // stale cookie would leave you stuck on a 401 with no way to clear it.
 app.post("/logout", (_req, res) => {
-  res.setHeader("Set-Cookie", "sk_auth=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+  res.setHeader("Set-Cookie", "sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
   res.json({ ok: true });
 });
 

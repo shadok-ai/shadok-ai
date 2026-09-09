@@ -63,8 +63,9 @@ export function parseOrigins(raw: string | undefined): string[] {
  *
  * WebSockets are **not subject to the same-origin policy**: without this check,
  * any page the user has open can do `new WebSocket("ws://localhost:3789/ws")`,
- * start an agent and give it orders. The `SameSite=Strict` cookie only covers
- * password-protected instances; the default mode has nothing.
+ * start an agent and give it orders. The `SameSite=Lax` cookie only covers
+ * password-protected instances (and a cross-site WS carries it under neither
+ * Lax nor Strict); the default mode has nothing. This check is the real defense.
  *
  * The rule is **same-origin**, not a hardcoded `localhost` list: the cockpit is
  * also reached on a LAN IP or a domain behind a proxy, and a frozen allowlist
