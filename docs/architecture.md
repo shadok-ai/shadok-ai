@@ -675,6 +675,17 @@ password accepts the same cookie. It's one-way, so the cookie never leaks the
 password. The in-process Telegram bridge presents that same cookie on its
 loopback WS.
 
+The cookie is `HttpOnly`, persistent (a week's `Max-Age`) and **`SameSite=Lax`,
+not `Strict`**. Strict withholds the cookie on any top-level navigation the
+browser judges cross-site — a bookmark opened from another app, a link out of
+Telegram, a restored session on some setups — so a user with a perfectly valid
+cookie was met by the login screen every time they reopened the cockpit from
+elsewhere (reported on an `http://<tailscale-ip>` URL). SameSite was never the
+CSRF defense here: **every** request first passes the same-origin `Origin` gate
+(`originAllowed`, `src/net.ts`), which 403s a cross-site page's fetch/POST — and
+a cross-site WS — regardless of SameSite. Lax keeps that defense and only lets
+the cookie ride a top-level GET the user initiated themselves.
+
 **An agent authenticates with its session key, not with that cookie.** Both are
 injected at spawn (`SHADOK_AUTH`, `SHADOK_SESSION_KEY`) and both are accepted,
 but only one of them can be trusted to still work tomorrow. The cookie carries
