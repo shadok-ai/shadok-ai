@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { upsertEntry, findEntries, ageDays, resolveId, normEntity } from "./ledger-core.mjs";
+import { upsertEntry, searchEntries, ageDays, resolveId, normEntity } from "./ledger-core.mjs";
 
 const FILE =
   (process.env.SHADOK_LEDGER_FILE || "").trim() ||
@@ -68,12 +68,21 @@ if (cmd === "check") {
     console.error('usage: ledger check "<topic or entity>"');
     process.exit(2);
   }
-  const hits = findEntries(load(), q);
-  if (hits.length === 0) {
-    // Nothing recorded is NOT "not done" — it's UNKNOWN. Tell the agent to hedge.
-    console.log(`(nothing recorded for "${q}" — treat as UNKNOWN: ask or hedge, do not assert)`);
+  // Two tiers, and the difference is the whole point: `strong` answers the
+  // question, `weak` merely shares words with it. Collapsing them would make a
+  // loosely-related row read as a status — the opposite of what this gates.
+  const { strong, weak } = searchEntries(load(), q);
+  if (strong.length) {
+    console.log(strong.map((e) => fmt(e, now)).join("\n"));
   } else {
-    console.log(hits.map((e) => fmt(e, now)).join("\n"));
+    // Nothing recorded is NOT "not done" — it's UNKNOWN. Tell the agent to hedge.
+    // This line comes FIRST and unchanged even when there are leads below it:
+    // the reflex keys on it, and a lead must not quietly become an answer.
+    console.log(`(nothing recorded for "${q}" — treat as UNKNOWN: ask or hedge, do not assert)`);
+    if (weak.length) {
+      console.log(`\nrelated rows — they may NOT answer your question, do not assert on them:`);
+      console.log(weak.map((e) => fmt(e, now)).join("\n"));
+    }
   }
 } else if (cmd === "record") {
   const f = parseFlags(rest);
@@ -105,7 +114,7 @@ if (cmd === "check") {
   const row = byId ? resolveId(rows, f.id) : rows.find((r) => normEntity(r.entity) === normEntity(f.entity));
   console.log(`recorded: ${row.entity} — ${row.status} [${row.id}]`);
 } else if (cmd === "list") {
-  const rows = findEntries(load(), "");
+  const rows = searchEntries(load(), "").strong;
   console.log(rows.length ? rows.map((e) => fmt(e, now)).join("\n") : "(ledger empty)");
 } else {
   console.error("usage: ledger <check|record|list> …");

@@ -20,13 +20,23 @@ system of record**: infra changes, marketing actions, site activity, ops, tasks.
 Run `check` and let it steer you:
 
 ```
-node ~/.claude/skills/shadok-ledger/ledger.mjs check "<topic or entity>"
+node ~/.claude/skills/shadok-ledger/ledger.mjs check "<topic, in your own words>"
 ```
+
+**Ask in plain language — don't try to guess how a sibling worded the row.** The
+search ranks rows by word overlap, so `check "claude launcher stub spawn
+failure"` finds `claude-launcher-stub-breaks-spawns`. Describing the topic in a
+few words beats one lucky keyword; extra words that turn out to be absent cost
+you nothing.
 
 - a row says **resolved / done** → do NOT re-raise or re-act; report it as handled.
 - **nothing recorded** → treat as **UNKNOWN**, not as "not done": ask the human
   or hedge ("from memory, still to do — tell me if it is already handled"),
   don't assert.
+- **related rows — they may NOT answer your question** → exactly what it says:
+  the search found no row that answers you, only rows sharing some words. You
+  are still in the UNKNOWN case above. Read them as leads (they may point at the
+  right topic under another name), never as a status to assert.
 - a **stale** row (many days old) → hedge and confirm before acting.
 
 This fires on status-dependent claims (a bug being open, a PR unmerged, a task

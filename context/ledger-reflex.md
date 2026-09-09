@@ -9,11 +9,15 @@ open, a PR being unmerged, a task undone, a campaign live — **verify it first*
   `git log`), never assume "not merged".
 - **Everything else** (infra, marketing, site, ops, tasks): the `shadok-ledger`
   skill — `node ~/.claude/skills/shadok-ledger/ledger.mjs check "<topic>"`.
+  Ask in plain language; it ranks by word overlap, so you need not guess the
+  exact wording a sibling used.
 
 Then let it steer you:
 - a record says **resolved / done** → do NOT re-raise or re-act; report it handled;
 - **nothing recorded is UNKNOWN, not "not done"** → ask the human or hedge
   ("de mémoire, à faire — dis-moi si c'est déjà réglé"), don't assert;
+- rows printed under **"related rows — they may NOT answer your question"** are
+  leads, not an answer: you are still in the UNKNOWN case above;
 - a **stale** record (days old) → confirm before acting.
 
 **You are also pushed the changes.** Ahead of each turn you are given — a user
