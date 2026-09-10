@@ -239,7 +239,14 @@ export interface HistoryTurn {
  * (~/.claude/projects/<encoded cwd>/<session-id>.jsonl) so the history can
  * be replayed when resuming the session.
  */
-export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
+/**
+ * ALL displayable turns of a session, oldest→newest and UNCAPPED — the whole
+ * history. `loadHistory` hands the last 100 of these to the chat replay; the
+ * search engine reads the lot. Same filters throughout (tool noise, cron/agent
+ * marks, NOTHING TO SHOW, a stripped ⟦…⟧ header and ledger block), so search
+ * matches exactly the text a human would have read.
+ */
+export function readHistoryTurns(cwd: string, sessionId: string): HistoryTurn[] {
   // Same drift-immunity as the tail: prefer the newest <id>.jsonl anywhere, so a
   // moved/renamed worktree's history still resolves (see sessionFilePath).
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
@@ -318,7 +325,12 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
       pendingHiddenPrompt = false;
     }
   }
-  return turns.slice(-100);
+  return turns;
+}
+
+/** The last 100 displayable turns, for the chat replay. */
+export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
+  return readHistoryTurns(cwd, sessionId).slice(-100);
 }
 
 export interface SessionInfo {

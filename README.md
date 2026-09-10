@@ -83,6 +83,9 @@ Enter to skip; you can add it later from the web UI).
 - **Interactive dialogs** — the TUI's permission prompts and multiple-choice
   questions become clickable buttons in the chat, and an inline keyboard in
   Telegram.
+- **Search** — the magnifier (or ⌘/Ctrl-K) searches across **every** agent's
+  full history, not just what's on screen; a hit shows the agent, the snippet,
+  and opens the conversation on click.
 - **Agent profiles** — a named bundle of role prompt, permission guardrails
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
   spawn, remembered across resume. Eight roles ship with it: a lead that
