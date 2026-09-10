@@ -213,6 +213,20 @@
   /* Same for the opposite: an agent with scheduled prompts can speak without
      anyone having asked it anything. */
   .tab .cron, .tab .tg { font-size: 9px; opacity: 0.75; flex: 0 0 auto; }
+  /* Background shells the agent left running. Last of the row on purpose: it is
+     the most transient thing a tab says, so it must not shift the icons that sit
+     still. It TURNS because a stopped hourglass and a running one look the same,
+     and "is something still going?" is the whole question being answered. */
+  .tab .shells { font-size: 9px; opacity: 0.75; flex: 0 0 auto; display: inline-flex; gap: 1px; align-items: center; }
+  .tab .shells .glass { display: inline-block; animation: hourglass 2.4s ease-in-out infinite; }
+  .tab .shells .n { font-variant-numeric: tabular-nums; }
+  @keyframes hourglass {
+    0%, 45% { transform: rotate(0deg); }
+    60%, 100% { transform: rotate(180deg); }
+  }
+  /* A turning icon is decoration for anyone who asked not to have motion; the
+     count and the tooltip carry the same information without it. */
+  @media (prefers-reduced-motion: reduce) { .tab .shells .glass { animation: none; } }
   /* Right-click menu header: the agent's identity, not an action. */
   #tabMenu .tm-head {
     padding: 5px 9px 6px; color: var(--text-dim); font-size: 11px;
@@ -2368,12 +2382,18 @@
     // The real Telegram logo (as in the header) rather than a generic plane.
     tg.innerHTML = '<svg viewBox="0 0 24 24" width="12" height="12" style="vertical-align:-1px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>';
     tg.title = "Mirrored to Telegram";
+    // Shells the agent left running in the background — often a script that will
+    // wake it later, sometimes one nobody will ever collect. Invisible until now.
+    const shells = document.createElement("span");
+    shells.className = "shells";
+    shells.hidden = true;
+    shells.innerHTML = '<span class="glass">\u23F3</span><span class="n"></span>';
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
     // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
     // left, context % hard right (no longer hidden behind the icons).
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(led, name, timer, mute, cron, tg, close);
+    row1.append(led, name, timer, mute, cron, tg, shells, close);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
     row2.append(lastAt, ctxNum);
@@ -2405,8 +2425,9 @@
       unreadSep: null,   // the "new messages" separator element, when present
       profile: null,     // the agent's "type": the profile applied at spawn
       crons: [],         // labels of the scheduled prompts (the ⏰ on the tab)
+      shells: 0,         // background shells the pane reports (the ⏳ on the tab)
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg,
+      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -2582,6 +2603,19 @@
     tab.mirror = !!on;
     tab.tgEl.hidden = !tab.mirror;
     if (persist) persistChannels();
+  }
+
+  /** Background shells the pane reports. The number shows only past one: "⏳"
+   *  already says "something is running", while "3" says something else. */
+  function setShells(tab, count) {
+    const n = Number(count) || 0;
+    tab.shells = n;
+    if (!tab.shellsEl) return;
+    tab.shellsEl.hidden = n === 0;
+    tab.shellsEl.querySelector(".n").textContent = n > 1 ? String(n) : "";
+    tab.shellsEl.title = n === 1
+      ? "1 background shell still running in this agent"
+      : n + " background shells still running in this agent";
   }
 
   function setCrons(tab, labels) {
@@ -5074,6 +5108,9 @@
       case "tokens":
         t.tokens = msg.tokens;
         refreshTitle();
+        break;
+      case "shells":
+        setShells(t, msg.count);
         break;
       case "context":
         t.contextPct = msg.pct;

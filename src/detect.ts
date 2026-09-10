@@ -138,6 +138,35 @@ export function describeStuckScreen(screen: string): string | null {
  * unchanged over 1.2 s), so the watcher can back off and lose nothing. Anything
  * that could move the screen resets the streak to zero.
  */
+/**
+ * How many background shells the pane reports, from the TUI's own footer.
+ *
+ * Claude Code writes the count in its persistent hint line —
+ * `▶▶ auto mode on · 1 shell · ← for agents · ↓ to manage` — and that is the
+ * only place it stays: the turn line ("… · 1 shell still running") scrolls away
+ * with the turn, so a session that has been quiet for an hour still shows the
+ * footer and no longer shows the turn line.
+ *
+ * Two guards, because this is the family of invariant 2 — a *quoted* "esc to
+ * interrupt" once wedged a session as busy, and an agent explaining its own work
+ * must never move an indicator:
+ *
+ * - only the FOOTER REGION is read (the last few non-empty lines), never the
+ *   scrollback, where an old footer or a transcript line could still sit;
+ * - the leading `·` separator is REQUIRED, so "I launched 2 shells" in prose
+ *   cannot match.
+ *
+ * Unlike the context gauge before invariant 24, this string is Claude Code's
+ * own: verified with no `statusLine` configured, on 61 of 64 live panes.
+ */
+const FOOTER_LINES = 6;
+export function backgroundShells(screen: string): number {
+  const lines = screen.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim());
+  const footer = lines.slice(-FOOTER_LINES).join("\n");
+  const m = /·\s*(\d+)\s+shells?\b/.exec(footer);
+  return m ? Number(m[1]) : 0;
+}
+
 export const SCREEN_FAST_MS = 300;
 export const SCREEN_SLOW_MS = 2000;
 /** Unchanged polls tolerated before backing off at all — a short burst of

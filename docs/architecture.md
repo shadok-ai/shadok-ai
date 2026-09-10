@@ -122,7 +122,10 @@ design, and a raw pipe plus a rendered snapshot of the same pane can disagree.
 3. **turn**: `prompt` → pace gate (unless `force`) → `pilot.submit()` →
    `finishTurn()` waits for idle, then broadcasts either a `dialog` (interactive
    question) or `turn-done`. Content streams independently via the tail.
-4. **screen watcher** (300 ms): broadcasts `screen`, `context`, and catches a
+4. **screen watcher** (300 ms): broadcasts `screen`, `shells` — the count of
+   background shells, read off the pane's own footer and sent only when it
+   MOVES, which is what makes a script an agent left running visible instead of
+   invisible — and catches a
    spontaneous resume (a background turn starting with no client prompt).
 5. **detach**: a client leaves → if it was the last, arm an idle-reclaim timer
    (`SHADOK_IDLE_MIN`, default 60 min). Reattaching cancels it.

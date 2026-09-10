@@ -123,6 +123,11 @@ Enter to skip; you can add it later from the web UI).
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
 - **Diff panel** — what an agent actually changed, against its base.
+- **Background shells, on the tab** — an agent that leaves `sleep`, a watcher or
+  a build running in the background gets a turning ⏳ on its tab (with the count
+  past one). Claude Code knows about those shells and says so in its own footer;
+  until now the cockpit did not pass it on, so a script an agent had left running
+  — including the ones that wake it up later — was invisible from the outside.
 - **Context sent** — a collapsed block at the head of every conversation showing
   what shadok added to that agent: its role, its guardrails and permission mode,
   the **names** of the variables injected (never the values), the cockpit prompt.
