@@ -879,13 +879,15 @@
     overflow-x: auto;
   }
   .bubble.md pre code { background: none; padding: 0; }
+  /* The horizontal scroll for a wide table lives on this wrapper (added in JS
+     after sanitising), NOT on the <table>: `display:block` on a table breaks its
+     own layout — thead and tbody stop sharing column widths, so the header row
+     detaches and misaligns from the body. */
+  .bubble.md .md-table-wrap { overflow-x: auto; max-width: 100%; margin: 8px 0; }
   .bubble.md table {
     border-collapse: collapse;
-    margin: 8px 0;
     font-size: 13px;
-    display: block;
-    overflow-x: auto;
-    max-width: 100%;
+    width: auto;
   }
   .bubble.md th, .bubble.md td {
     border: 1px solid var(--line);
@@ -4077,6 +4079,17 @@
     if (role === "claude" && (extraClass === "hist" || extraClass === "live") && window.marked && window.DOMPurify) {
       bubble.classList.add("md");
       bubble.innerHTML = DOMPurify.sanitize(marked.parse(text));
+      // A wide table must be able to scroll sideways WITHOUT `display:block` on
+      // the <table> itself — that turns the thead and tbody into separate stacked
+      // blocks that size their columns independently, so the header detaches from
+      // the body and the columns no longer line up (a real, reported render bug).
+      // The scroll belongs on a wrapper; the table stays a real table.
+      for (const t of bubble.querySelectorAll("table")) {
+        const wrap = document.createElement("div");
+        wrap.className = "md-table-wrap";
+        t.replaceWith(wrap);
+        wrap.appendChild(t);
+      }
     } else {
       bubble.textContent = text;
     }
