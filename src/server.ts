@@ -24,7 +24,7 @@ import {
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { screenShowsWork, moveToOption } from "./detect.js";
+import { backgroundShells, screenShowsWork, moveToOption } from "./detect.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
@@ -2251,6 +2251,8 @@ interface Live {
   lastDialogKey: string | null;
   /** Context-window fill (%), computed from the transcript's token usage. */
   contextPct: number | null;
+  /** Background shells the pane reports (its footer's count). Live, never stored. */
+  shells: number;
   /** The window this session's model setting asks for (see `windowForModel`). */
   contextWindow: number;
   /** The last assistant block of this turn was the silence placeholder. */
@@ -2577,6 +2579,7 @@ async function createSession(
     // A reattached session must show its bar at once, not only after the next
     // turn writes a usage record — so seed from the transcript's last message.
     contextPct: pctFromUsage([...seededUsage.values()].pop(), contextWindow),
+    shells: 0,
     stopTail: null,
     recentTexts: [],
     lastTurnSilent: false,
@@ -2750,6 +2753,14 @@ async function attachPilot(s: Live): Promise<void> {
     if (scr !== s.lastScreen) {
       s.lastScreen = scr;
       broadcast(s, { type: "screen", text: scr, working: pilot.isWorking() });
+      // Background shells, straight off the pane's own footer. Same shape as the
+      // context gauge: recomputed here, broadcast only when it MOVES, and never
+      // persisted — it describes a running process, not the channel.
+      const shells = backgroundShells(scr);
+      if (shells !== s.shells) {
+        s.shells = shells;
+        broadcast(s, { type: "shells", count: shells });
+      }
       // A question that appeared without anyone calling `finishTurn`. Typing in
       // the terminal view writes straight to the pilot (`case "key"`), so no
       // handler ever ran the detection: the dialog existed on the screen only —
@@ -3284,6 +3295,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             send({ type: "tokens", tokens: tokenTotals(session) });
             send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });
             if (session.contextPct !== null) send({ type: "context", pct: session.contextPct });
+            if (session.shells) send({ type: "shells", count: session.shells });
             send({
               type: "screen",
               text: session.pilot.screen(),
@@ -3366,6 +3378,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           send({ type: "tokens", tokens: tokenTotals(session) });
           send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });
             if (session.contextPct !== null) send({ type: "context", pct: session.contextPct });
+            if (session.shells) send({ type: "shells", count: session.shells });
           sendPendingDialog(session, send);
           break;
         }
