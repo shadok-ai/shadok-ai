@@ -138,33 +138,52 @@ export function describeStuckScreen(screen: string): string | null {
  * unchanged over 1.2 s), so the watcher can back off and lose nothing. Anything
  * that could move the screen resets the streak to zero.
  */
+export interface BackgroundTasks {
+  /** Shells the agent left running (a build, a watcher, a forgotten `sleep`). */
+  shells: number;
+  /** Monitors it armed. A `persistent` one never ends on its own. */
+  monitors: number;
+}
+
 /**
- * How many background shells the pane reports, from the TUI's own footer.
+ * What the pane says is still running, from the TUI's own footer.
  *
- * Claude Code writes the count in its persistent hint line —
- * `▶▶ auto mode on · 1 shell · ← for agents · ↓ to manage` — and that is the
- * only place it stays: the turn line ("… · 1 shell still running") scrolls away
- * with the turn, so a session that has been quiet for an hour still shows the
- * footer and no longer shows the turn line.
+ * Claude Code lists both in one segment of its persistent hint line, and the
+ * two share it, comma-separated — captured live:
  *
- * Two guards, because this is the family of invariant 2 — a *quoted* "esc to
- * interrupt" once wedged a session as busy, and an agent explaining its own work
- * must never move an indicator:
+ *   ⏵⏵ auto mode on · 1 shell, 1 monitor · esc to interrupt · ← for agents
  *
- * - only the FOOTER REGION is read (the last few non-empty lines), never the
- *   scrollback, where an old footer or a transcript line could still sit;
- * - the leading `·` separator is REQUIRED, so "I launched 2 shells" in prose
- *   cannot match.
+ * That shape is why the rule is not "find a number before `shell`": the monitor
+ * sits after a COMMA, so anchoring on a leading `·` sees the shell and misses
+ * the monitor. The segment is matched WHOLE instead — split the footer on `·`
+ * and accept a part only if it is entirely a comma-separated list of counts.
+ * Being exact is also what keeps prose out, which is invariant 2's family: a
+ * *quoted* "esc to interrupt" once wedged a session as busy, and an agent
+ * describing its own work must never move an indicator.
+ *
+ * Only the footer REGION is read (the last few non-empty lines), never the
+ * scrollback, where an older footer may still sit.
  *
  * Unlike the context gauge before invariant 24, this string is Claude Code's
  * own: verified with no `statusLine` configured, on 61 of 64 live panes.
  */
 const FOOTER_LINES = 6;
-export function backgroundShells(screen: string): number {
+const COUNT = /^(\d+)\s+(shell|monitor)s?$/;
+export function backgroundTasks(screen: string): BackgroundTasks {
   const lines = screen.split("\n").map((l) => l.trimEnd()).filter((l) => l.trim());
-  const footer = lines.slice(-FOOTER_LINES).join("\n");
-  const m = /·\s*(\d+)\s+shells?\b/.exec(footer);
-  return m ? Number(m[1]) : 0;
+  const out: BackgroundTasks = { shells: 0, monitors: 0 };
+  for (const line of lines.slice(-FOOTER_LINES)) {
+    for (const part of line.split("·")) {
+      const items = part.trim().split(",").map((x) => x.trim());
+      if (!items.length || !items.every((x) => COUNT.test(x))) continue;
+      for (const item of items) {
+        const m = COUNT.exec(item)!;
+        if (m[2] === "shell") out.shells = Number(m[1]);
+        else out.monitors = Number(m[1]);
+      }
+    }
+  }
+  return out;
 }
 
 export const SCREEN_FAST_MS = 300;
