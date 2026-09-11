@@ -217,7 +217,8 @@
      the most transient thing a tab says, so it must not shift the icons that sit
      still. It TURNS because a stopped hourglass and a running one look the same,
      and "is something still going?" is the whole question being answered. */
-  .tab .shells { font-size: 9px; opacity: 0.75; flex: 0 0 auto; display: inline-flex; gap: 1px; align-items: center; }
+  .tab .shells, .tab .monitors { font-size: 9px; opacity: 0.75; flex: 0 0 auto; display: inline-flex; gap: 1px; align-items: center; }
+  .tab .monitors .n { font-variant-numeric: tabular-nums; }
   .tab .shells .glass { display: inline-block; animation: hourglass 2.4s ease-in-out infinite; }
   .tab .shells .n { font-variant-numeric: tabular-nums; }
   @keyframes hourglass {
@@ -227,6 +228,9 @@
   /* A turning icon is decoration for anyone who asked not to have motion; the
      count and the tooltip carry the same information without it. */
   @media (prefers-reduced-motion: reduce) { .tab .shells .glass { animation: none; } }
+  /* The eye deliberately does NOT move. The hourglass turns because it stands
+     for work that progresses; a monitor is a steady watch, and two things
+     stirring on one tab is noise. The stillness is the difference. */
   /* Right-click menu header: the agent's identity, not an action. */
   #tabMenu .tm-head {
     padding: 5px 9px 6px; color: var(--text-dim); font-size: 11px;
@@ -2390,12 +2394,18 @@
     shells.className = "shells";
     shells.hidden = true;
     shells.innerHTML = '<span class="glass">\u23F3</span><span class="n"></span>';
+    // Monitors it armed. More dangerous to forget than a shell: a `persistent`
+    // one runs for the whole session by construction and never ends on its own.
+    const monitors = document.createElement("span");
+    monitors.className = "monitors";
+    monitors.hidden = true;
+    monitors.innerHTML = '<span class="eye">\u{1F441}</span><span class="n"></span>';
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
     // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
     // left, context % hard right (no longer hidden behind the icons).
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(led, name, timer, mute, cron, tg, shells, close);
+    row1.append(led, name, timer, mute, cron, tg, shells, monitors, close);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
     row2.append(lastAt, ctxNum);
@@ -2428,8 +2438,9 @@
       profile: null,     // the agent's "type": the profile applied at spawn
       crons: [],         // labels of the scheduled prompts (the ⏰ on the tab)
       shells: 0,         // background shells the pane reports (the ⏳ on the tab)
+      monitors: 0,       // monitors it armed (the 👁 on the tab)
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells,
+      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -2607,17 +2618,21 @@
     if (persist) persistChannels();
   }
 
-  /** Background shells the pane reports. The number shows only past one: "⏳"
-   *  already says "something is running", while "3" says something else. */
-  function setShells(tab, count) {
-    const n = Number(count) || 0;
-    tab.shells = n;
-    if (!tab.shellsEl) return;
-    tab.shellsEl.hidden = n === 0;
-    tab.shellsEl.querySelector(".n").textContent = n > 1 ? String(n) : "";
-    tab.shellsEl.title = n === 1
-      ? "1 background shell still running in this agent"
-      : n + " background shells still running in this agent";
+  /** What the pane says is still running. Each number shows only past one: the
+   *  icon already says "something is going", while "3" says something else. */
+  function setBackground(tab, shells, monitors) {
+    paintCount(tab.shellsEl, Number(shells) || 0, "background shell");
+    paintCount(tab.monitorsEl, Number(monitors) || 0, "monitor");
+    tab.shells = Number(shells) || 0;
+    tab.monitors = Number(monitors) || 0;
+  }
+  function paintCount(el, n, noun) {
+    if (!el) return;
+    el.hidden = n === 0;
+    el.querySelector(".n").textContent = n > 1 ? String(n) : "";
+    el.title = n === 1
+      ? "1 " + noun + " still running in this agent"
+      : n + " " + noun + "s still running in this agent";
   }
 
   function setCrons(tab, labels) {
@@ -5122,8 +5137,8 @@
         t.tokens = msg.tokens;
         refreshTitle();
         break;
-      case "shells":
-        setShells(t, msg.count);
+      case "background":
+        setBackground(t, msg.shells, msg.monitors);
         break;
       case "context":
         t.contextPct = msg.pct;
