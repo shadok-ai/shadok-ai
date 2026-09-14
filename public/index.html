@@ -504,7 +504,19 @@
     border-radius: 0 4px 4px 0;
     color: var(--text);
   }
-  @media (prefers-reduced-motion: reduce) { .tab.working { animation: none; } }
+  /* Background work still running (shells and/or monitors the agent left going,
+     the ⏳/👁 on the row): a green diagonal HATCH that breathes, the way
+     .working breathes amber — so a tab with something ticking in the background
+     reads at a glance, distinct from the solid fill of an active turn. Layered as
+     a background-IMAGE, not the `background` shorthand, so a tab that is ALSO
+     working / needs-answer / unread keeps its state colour underneath the hatch. */
+  .tab.has-bg {
+    background-image: repeating-linear-gradient(45deg,
+      color-mix(in srgb, var(--ok) 22%, transparent) 0 5px,
+      transparent 5px 10px);
+    animation: breathe 1.8s ease-in-out infinite;
+  }
+  @media (prefers-reduced-motion: reduce) { .tab.working, .tab.has-bg { animation: none; } }
   #newTab, #newGroup {
     margin-top: 8px;
     border: 1px dashed var(--line);
@@ -2646,6 +2658,9 @@
     paintCount(tab.monitorsEl, Number(monitors) || 0, "monitor");
     tab.shells = Number(shells) || 0;
     tab.monitors = Number(monitors) || 0;
+    // The green hatched breathe on the whole tab: on as soon as anything is left
+    // running in the background, off when the last one stops.
+    tab.btnEl.classList.toggle("has-bg", tab.shells > 0 || tab.monitors > 0);
   }
   function paintCount(el, n, noun) {
     if (!el) return;
