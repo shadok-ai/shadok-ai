@@ -87,7 +87,7 @@ both are silent in the DOM.
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
 | `src/claude-bin.ts` | Makes sure a RUNNABLE `claude` is there before every spawn, and says which binary that is. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Since the split packaging, "a file named claude that is executable" is NOT "a claude that works": `classifyBin` recognises the npm placeholder, `findClaudeBin` falls back to the native binary behind it, and `claudeCommand` is the ONE answer to "which binary do we spawn" — the pilots, the auth probe, the sign-in and the version probe all go through it. See invariant 32. Pure cores (`classifyBin`, `platformPkg`, `nativeBinCandidates`, `findClaudeBin`, `findClaudeBinWithRetry`) tested; the placeholder is also read off a real file on disk. |
 | `src/node-pty-fix.ts` | The OTHER `posix_spawnp failed`: node-pty's prebuilt `spawn-helper` must be `chmod +x` to run. The package `postinstall` does that, but via a RELATIVE path that only holds for a dev checkout; installed as a dependency (npx / managed `~/.shadok-ai/app`) node-pty is **hoisted** to the parent `node_modules` and the chmod silently misses — so a colleague's very first agent died with `posix_spawnp` even though `claude` was fine. `ensureSpawnHelperExecutable` (called at boot in `server.ts`) chmods it from node-pty's REAL location, resolved at runtime — every install layout. `spawnHelperPaths` is pure, tested; the real chmod is covered end-to-end. |
-| `src/tmux.ts` | `TmuxPilot` — same interface as `PtyPilot`, but runs `claude` in a **detached tmux session** (`sk-<sessionId>`). **Survives server restart** (reattaches). Default transport when tmux is present. |
+| `src/tmux.ts` | `TmuxPilot` — same interface as `PtyPilot`, but runs `claude` in a **detached tmux session** (`sk-<sessionId>`). **Survives server restart** (reattaches). Default transport when tmux is present. A spawn goes through `launcherScript`: secrets and prompts are written to a private one-shot script and the tmux command is just `sh <script>`, never the values themselves; `tmuxErrorMessage` keeps any tmux failure down to the subcommand and tmux's own complaint. Both pure and tested — the script is RUN by the tests. See invariant 36. |
 | `src/tmux-install.ts` | Auto-installs tmux at boot when it's missing, so the durable transport is the default without setup (node-pty agents die on every auto-update). `tmuxInstallCommand` (pure, tested) picks the package manager — `brew` on macOS (no root), `apt-get`/`apk`/`dnf`/`yum`/`pacman` on Linux (root, else non-interactive `sudo`). `ensureTmux` runs it best-effort and NEVER blocks the boot: on failure it stays on node-pty with a clear message. The boot caller (`server.ts`) flips the `let USE_TMUX` on once the install lands, so the same process picks tmux up. `SHADOK_TMUX=0` skips it. |
 | `src/tail.ts` | Tails a session's `.jsonl` transcript → streams assistant text/tool_use/tool_result + token usage. **This is the source of truth for content**, not the screen. Also emits a `silent` event where such a block is dropped — dropping it without a trace made the parent-notification guard UNREACHABLE (`notifyParent` reads the last STREAMED block, and that one never became one), so a quiet child still woke its parent: empty, or carrying a stray earlier thought. Also owns `isNothingToShow` — a text block that is *only* `NOTHING TO SHOW` is dropped (a cron with no signal must be able to stay silent); the twin filters live in `loadHistory` and the web live preview. A `text` event carries `afterInternal` when a HIDDEN block (a skipped `thinking`, or a dropped `NOTHING TO SHOW`) separated it from the previous visible one, so the client keeps its speaker label instead of gluing "text · &lt;think&gt; · text" into one wordless run under a single label. The SAME boundary is needed one level up, between TURNS: a hidden USER prompt (a `cron` fire or a parent notification) is dropped, so the answer it triggered would stream/replay adjacent to the previous turn and merge under one label (a daily report gluing onto an unrelated earlier answer). `loadHistory` sets `HistoryTurn.afterInternal` on that turn (and stops merging it), and live the server flags it via `Live.gapBeforeNextText` (set when a `cron`-origin prompt is submitted un-echoed, consumed by the next streamed text) — both surface as the client's `.after-gap`. |
 | `src/extract.ts` | Parse the transcript / screen: `loadHistory`, `detectDialog`, `listSessions`, `findSessionId`. |
@@ -915,6 +915,42 @@ Auth section of `docs/architecture.md`).
     instance-key-on-the-wire primitive extends to it. Verified at the HTTP layer:
     a PUT with a matching header writes, a mismatched one is 409, and a foreign
     home in a matching PUT is dropped on save.
+
+36. **Nothing secret may ride on a command line — not the vault's own spawn
+    either.** `TmuxPilot` started every agent as one string on `tmux new-session`:
+    `env KEY=VALUE … claude <args>`, i.e. every secret VALUE of the profile plus
+    every system prompt. That broke in two ways at once, found together on a real
+    instance. **tmux refuses a command over ~16 KB** — measured in the container:
+    16 000 bytes pass, 17 000 answer `command too long` — so once the vault held
+    47 secrets (one of them a 2.4 KB service-account JSON), the lead role could no
+    longer be launched at all, while `Shadok-dev` on the SAME vault still could.
+    The difference was the role prompt (~2.8 KB against ~0.9 KB), not the
+    secrets, which made the failure look role-specific and nothing like a size
+    limit. And **the failure displayed the credentials**: `execFileSync` builds
+    its message as "Command failed: <every argument>", the start handler forwarded
+    it to the client untouched, and the web UI showed forty-six secret values —
+    database password, Cloudflare token, encryption keys included. The values were
+    also, for the life of the spawn, arguments of a process, which `ps` shows to
+    anyone on the machine: the exact exposure the `shadok-secrets` skill was
+    designed to rule out on the WRITE side.
+    Now the spawn writes a one-shot script (`launcherScript`) into
+    `~/.shadok-ai/run/` (dir 0700, file 0600, created with `wx` after a forced
+    remove so a stale file cannot keep a looser mode) and tmux runs `sh <script>`
+    — a few dozen bytes whatever the vault holds. Values are set with the `export`
+    **builtin**, so they are never any process's argument; a name the shell cannot
+    export is skipped and logged by NAME, never half-written. The script deletes
+    itself before `exec` (`sh` already holds it open), and every failure path
+    before that — tmux refusing, the pane dying at once on ETXTBSY — removes it
+    too. Invariant 29's ordering survives unchanged: strip the CLAUDE* markers,
+    then the profile's env, then `FORCED_CLAUDE_ENV` last. Independently,
+    `tmux()` now never lets its arguments into an error (`tmuxErrorMessage`):
+    `send-keys` carries the user's prompt text, which has no place in one either.
+    The tests RUN the generated script rather than read it — a hostile value
+    (quotes, `$`, backticks, a newline) arrives byte for byte, the forced vars win
+    over a same-named secret, the file is gone — and one spawns a real tmux pane
+    carrying 40 KB of secrets, the shape that used to be refused. Sabotaging the
+    export order turns both that test and the source scan in
+    `test/transcript-persistence.test.ts` red.
 
 ## Conventions
 

@@ -5,6 +5,7 @@ import path from "node:path";
 import { idleStep, screenShowsWork, inputText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
 import { binaryBusyError } from "./claude-bin.js";
+import { SHADOK_DIR } from "./config.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
 /**
@@ -21,16 +22,95 @@ import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 export interface TmuxPilotOptions extends PilotOptions {
   /** tmux session name (stable across restarts — derive from the session id). */
   tmuxName: string;
+  /** Where the one-shot launcher script is written (default `~/.shadok-ai/run`). */
+  launcherDir?: string;
 }
 
 function tmux(args: string[], input?: string): string {
-  return execFileSync("tmux", args, {
-    encoding: "utf8",
-    input,
-    timeout: 10_000,
-    maxBuffer: 8 * 1024 * 1024,
-    stdio: ["pipe", "pipe", "ignore"],
-  });
+  try {
+    return execFileSync("tmux", args, {
+      encoding: "utf8",
+      input,
+      timeout: 10_000,
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (e) {
+    throw new Error(tmuxErrorMessage(args, (e as { stderr?: unknown }).stderr));
+  }
+}
+
+/**
+ * What a failed tmux call is allowed to say: the subcommand and tmux's own
+ * complaint, NEVER the rest of the argument vector.
+ *
+ * `execFileSync` builds its error message as "Command failed: <every argument>",
+ * and that message travelled to the browser untouched. When the arguments are a
+ * spawn command, they are every secret the profile injects — so a spawn that
+ * failed for an unrelated reason displayed forty-six credentials in the web UI.
+ * `send-keys` carries the user's own prompt text, which has no business in an
+ * error either.
+ */
+export function tmuxErrorMessage(args: string[], stderr: unknown): string {
+  const why = typeof stderr === "string" ? stderr.trim() : Buffer.isBuffer(stderr) ? stderr.toString("utf8").trim() : "";
+  return `tmux ${args[0] ?? "command"} failed${why ? `: ${why}` : ""}`;
+}
+
+/** Single-quote a string for POSIX sh; safe for any content, newlines included. */
+export function shellQuote(s: string): string {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
+}
+
+/** A name `export` accepts. The vault does not restrict names, the shell does. */
+export function isEnvName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+/**
+ * The one-shot script a tmux pane runs to start an agent.
+ *
+ * The spawn used to be a single `env KEY=VALUE … claude <args>` string handed to
+ * `tmux new-session`. Two things were wrong with carrying it that way. tmux
+ * refuses a command over ~16 KB ("command too long", measured: 16000 bytes
+ * pass, 17000 fail), and that string holds every secret VALUE of the profile
+ * plus every system prompt — so a lead role with a long prompt on a large vault
+ * simply could not be launched, while a shorter role on the same vault could.
+ * And those values were arguments of a process, which `ps` shows to anyone on
+ * the machine.
+ *
+ * Writing them to a file makes the tmux command a few dozen bytes whatever the
+ * vault holds, and `export` is a shell builtin, so no value is ever the argument
+ * of any process. The order is the old one and is load-bearing: strip the
+ * inherited CLAUDE* markers, then the secrets, then `FORCED_CLAUDE_ENV` LAST so
+ * a profile can never switch transcript writing off (invariant 29). The script
+ * removes itself first thing — `sh` already holds it open, so unlinking the name
+ * loses nothing — which bounds the file's life to the moment before `exec`.
+ */
+export function launcherScript(o: {
+  unset: string[];
+  env: Record<string, string>;
+  forced: Record<string, string>;
+  bin: string;
+  args: string[];
+}): { script: string; skipped: string[] } {
+  const skipped: string[] = [];
+  const exports: string[] = [];
+  const add = (k: string, v: string) => {
+    if (!isEnvName(k)) return skipped.push(k);
+    exports.push(`export ${k}=${shellQuote(v)}`);
+  };
+  add("TERM", "xterm-256color");
+  for (const [k, v] of Object.entries(o.env)) add(k, v);
+  for (const [k, v] of Object.entries(o.forced)) add(k, v);
+  const script = [
+    "#!/bin/sh",
+    'rm -f -- "$0"',
+    ...o.unset.filter(isEnvName).map((k) => `unset ${k}`),
+    ...exports,
+    `exec ${[o.bin, ...o.args].map(shellQuote).join(" ")}`,
+    "",
+  ].join("\n");
+  return { script, skipped };
 }
 
 function tmuxOk(args: string[]): boolean {
@@ -97,28 +177,43 @@ export class TmuxPilot {
     } else {
       // Strip a parent Claude Code session's vars (a nested claude that sees
       // them may disable interactive mode), like PtyPilot does.
-      const unset = Object.keys(process.env)
-        .filter((k) => /^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k))
-        .flatMap((k) => ["-u", k]);
+      const unset = Object.keys(process.env).filter((k) => /^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k));
       const bin = this.opts.claudePath ?? "claude";
-      // Repo secrets → KEY=VALUE assignments for the `env` prefix (each token is
-      // single-quoted below, so values with spaces/specials are safe).
-      const secretEnv = Object.entries(this.opts.env ?? {}).map(([k, v]) => `${k}=${v}`);
-      // After secretEnv on purpose — `env` applies assignments left to right, so
-      // the last one wins and a profile cannot switch off transcript writing.
-      const forced = Object.entries(FORCED_CLAUDE_ENV).map(([k, v]) => `${k}=${v}`);
-      const cmd = ["env", ...unset, "TERM=xterm-256color", ...secretEnv, ...forced, bin, ...(this.opts.args ?? [])]
-        .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
-        .join(" ");
-      tmux([
-        "new-session",
-        "-d",
-        "-s", this.name,
-        "-x", String(this.opts.cols),
-        "-y", String(this.opts.rows),
-        "-c", this.opts.cwd ?? process.cwd(),
-        cmd,
-      ]);
+      // Secrets and prompts go into a private one-shot script, never onto the
+      // tmux command line: see `launcherScript` for why both halves matter.
+      const { script, skipped } = launcherScript({
+        unset,
+        env: this.opts.env ?? {},
+        forced: FORCED_CLAUDE_ENV,
+        bin,
+        args: this.opts.args ?? [],
+      });
+      for (const name of skipped)
+        console.error(`[${this.name}] secret "${name}" not exported — not a valid environment variable name`);
+      const dir = this.opts.launcherDir ?? path.join(SHADOK_DIR, "run");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+      const launcher = path.join(dir, `${this.name}.sh`);
+      // `wx` after a forced remove: a stale file from an earlier failed spawn must
+      // not keep whatever mode it had — the new one is created 0600 or not at all.
+      fs.rmSync(launcher, { force: true });
+      fs.writeFileSync(launcher, script, { mode: 0o600, flag: "wx" });
+      try {
+        tmux([
+          "new-session",
+          "-d",
+          "-s", this.name,
+          "-x", String(this.opts.cols),
+          "-y", String(this.opts.rows),
+          "-c", this.opts.cwd ?? process.cwd(),
+          `sh ${shellQuote(launcher)}`,
+        ]);
+      } catch (e) {
+        // The pane never ran, so the script never removed itself: it holds the
+        // profile's secrets and must not outlive the failure.
+        fs.rmSync(launcher, { force: true });
+        throw e;
+      }
       // `tmux new-session` returns as soon as the pane exists, so a pane that is
       // ALREADY gone means its command never got to run — ETXTBSY being the
       // reason that actually happens here, when a claude-code upgrade is
@@ -126,7 +221,10 @@ export class TmuxPilot {
       // reads it as an ordinary exit, and a spawn killed by a transient reports
       // as a dead agent. A pane tmux has not torn down yet reads as alive and we
       // fall through to the old behaviour — no worse than before, never worse.
-      if (!this.hasSession()) throw binaryBusyError(bin);
+      if (!this.hasSession()) {
+        fs.rmSync(launcher, { force: true });
+        throw binaryBusyError(bin);
+      }
     }
     this.capture();
     // Self-rescheduling rather than a flat interval: the capture is synchronous,

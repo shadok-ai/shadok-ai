@@ -454,6 +454,14 @@ the whole design:
 - **The value never touches `argv`.** `secret.mjs set NAME --stdin` makes the flag
   *required*, so there is structurally no argument to leak — `ps` shows a
   process's arguments to every user on the machine.
+  The same rule holds at the OTHER end, where the value is injected — and until
+  the tmux launcher script it did not. `TmuxPilot` spawned an agent as one
+  `env KEY=VALUE … claude <args>` string on `tmux new-session`, so every secret
+  of the profile was an argument, and a failed spawn's error ("Command failed:
+  <every argument>") carried them all the way to the browser. The values now go
+  into a private one-shot script (`~/.shadok-ai/run/<session>.sh`, 0600, removed
+  by the script itself before `exec`), set with the `export` builtin so they are
+  never the argument of any process. See CLAUDE.md invariant 36.
 - **No silent overwrite.** `PUT /secrets` refuses an existing name (409) unless
   the caller passes `overwrite: true`. The web Secrets panel passes it, because a
   person reading the list and clicking Save is deliberate. An agent does not, and
