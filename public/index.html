@@ -275,7 +275,8 @@
   .led.busy { background: var(--amber); box-shadow: 0 0 8px var(--amber); animation: breathe 1.2s ease-in-out infinite; }
   .led.off { background: var(--err); }
   @keyframes breathe { 50% { opacity: 0.35; } }
-  @media (prefers-reduced-motion: reduce) { .led.busy { animation: none; } }
+  @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { .led.busy { animation: none; } body.picker-open #tabbar { animation: none; } }
   header .spacer { flex: 1; }
   /* Quota dials (5h / 7d subscription usage).
      A 240° speedometer whose CENTRE is the ideal pace and whose RIGHT END is
@@ -1178,17 +1179,43 @@
   #chanBar .gauge .label { font-size: 10px; }
   #chanBar #cwdView { display: inline-block; max-width: 200px; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }
   /* Channel selector: hidden on desktop (the sidebar is the navigation). */
-  #chanSelect {
-    display: none;
-    font-family: var(--mono); font-size: 13px;
+  /* Mobile agents trigger: hidden on desktop (the sidebar IS the navigation),
+     shown as a compact "● name ▾" pill on a phone. */
+  #chanPicker {
+    display: none; align-items: center; gap: 6px;
+    font-family: var(--mono); font-size: 13px; cursor: pointer;
     background: var(--bg-inset); color: var(--text);
     border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
     max-width: 55vw;
   }
+  #chanPicker #pickerName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #chanPicker .pk-caret { color: var(--text-dim); font-size: 11px; flex: none; transition: transform 0.15s; }
+  body.picker-open #chanPicker { border-color: var(--amber); }
+  body.picker-open #chanPicker .pk-caret { transform: rotate(180deg); }
   /* ── Mobile: sidebar hidden, navigation via the channel header's selector ── */
   @media (max-width: 640px) {
     #tabbar { display: none; }
-    #chanSelect { display: inline-block; min-width: 0; }
+    #chanPicker { display: inline-flex; min-width: 0; }
+    /* The agents column, on demand, as a bottom sheet — the SAME rich tabs, not a
+       flattened list. Slides up over the chat; a backdrop dims and closes it. */
+    body.picker-open #tabbar {
+      display: flex;
+      position: fixed; left: 0; right: 0; bottom: 0; top: auto;
+      width: auto; max-height: 78vh; z-index: 55;
+      border-right: none; border-top: 1px solid var(--line);
+      border-radius: 14px 14px 0 0;
+      box-shadow: 0 -12px 40px rgba(0, 0, 0, 0.5);
+      padding: 8px 8px calc(12px + env(safe-area-inset-bottom, 0px));
+      animation: sheet-up 0.18s ease-out;
+    }
+    /* A grab handle, so the panel reads as a sheet you can dismiss. */
+    body.picker-open #tabbar::before {
+      content: ""; align-self: center; flex: none;
+      width: 36px; height: 4px; margin: 2px 0 8px;
+      border-radius: 2px; background: var(--line);
+    }
+    #pickerBackdrop { position: fixed; inset: 0; z-index: 54; background: rgba(8, 9, 13, 0.5); }
+    #pickerBackdrop[hidden] { display: none; }
     #chanBar #chanBarName { display: none; }
     /* Condensed channel bar: keep Status + Session, hide the rest. */
     #chanBar #dirGauge, #chanBar #branchGauge { display: none !important; }
@@ -1241,7 +1268,7 @@
   @media (pointer: coarse) {
     textarea, select,
     input[type="text"], input[type="password"], input[type="number"], input[type="search"],
-    #composer textarea, #chanSelect { font-size: 16px; }
+    #composer textarea { font-size: 16px; }
   }
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
   #xtermHost .xterm { height: 100%; }
@@ -2022,6 +2049,8 @@
       </button>
     </div>
   </nav>
+  <!-- Dims the chat behind the mobile agents sheet; tap to close. -->
+  <div id="pickerBackdrop" hidden></div>
 
   <section class="chat-pane">
 
@@ -2030,8 +2059,12 @@
          separate place, so its actions have no reason to appear with it. -->
     <div id="chanBar" hidden>
       <span class="label" id="chanBarName"></span>
-      <!-- Mobile: sidebar hidden → this selector switches channel / creates one. -->
-      <select id="chanSelect" title="Agent"></select>
+      <!-- Mobile: the sidebar is hidden → this button opens the very same rich
+           agent tabs (LED, state, background-work hatch, context bar) as a bottom
+           sheet, instead of flattening them into a native <select>. -->
+      <button id="chanPicker" type="button" aria-haspopup="true" aria-expanded="false" title="Agents">
+        <span id="pickerLed" class="led"></span><span id="pickerName">—</span><span class="pk-caret">▾</span>
+      </button>
       <div class="gauge">
         <span class="label">Status</span>
         <span class="value"><span id="led" class="led"></span><span id="state">—</span></span>
@@ -2787,7 +2820,7 @@
   document.addEventListener("click", () => {
     if (Date.now() - tabMenuOpenedAt > 200) closeTabMenu();
   });
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTabMenu(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeTabMenu(); closePicker(); } });
   window.addEventListener("blur", () => closeTabMenu());
 
   /** Right-click menu on a tab: the home for per-channel actions. */
@@ -3460,6 +3493,8 @@
     promptInput.value = tab.draft;
     autosizePrompt();
     refreshChrome();
+    // Picking an agent from the mobile sheet dismisses it.
+    closePicker();
     // Experimental terminal follows the active channel (re-seeds on switch).
     if (typeof syncTerm === "function") syncTerm();
     if (tab.status !== "setup") {
@@ -3866,29 +3901,39 @@
    * central panel shows the invitation.
    */
   /** (Re)builds the mobile selector: one option per channel + "＋ New agent". */
+  // The mobile trigger just MIRRORS the active agent (its name + LED). The sheet
+  // it opens is the real sidebar (#tabbar), so there is no flattened list to
+  // rebuild here — every rich tab renders itself. Name kept for its callers.
   function rebuildChanSelect() {
-    const sel = $("chanSelect");
-    if (!sel) return;
-    const cur = active ? String(active.id) : "";
-    sel.innerHTML = "";
-    for (const t of tabs) {
-      const o = document.createElement("option");
-      o.value = String(t.id);
-      o.textContent = t.nameEl ? t.nameEl.textContent : "agent " + t.id;
-      sel.appendChild(o);
-    }
-    const nw = document.createElement("option");
-    nw.value = "__new__";
-    nw.textContent = "＋ New agent";
-    sel.appendChild(nw);
-    sel.value = cur;
+    const led = $("pickerLed"), name = $("pickerName");
+    if (!led || !name) return;
+    led.className = active && active.ledEl ? active.ledEl.className : "led";
+    name.textContent = active ? (active.nameEl ? active.nameEl.textContent : "agent " + active.id) : "—";
   }
-  $("chanSelect").addEventListener("change", () => {
-    const v = $("chanSelect").value;
-    if (v === "__new__") { createTab(); return; }
-    const t = tabs.find((x) => String(x.id) === v);
-    if (t) activate(t);
-  });
+  // ── Mobile agents sheet ──────────────────────────────────────────────────
+  // On a phone the sidebar is hidden; this opens it as a bottom sheet so the
+  // channels keep their full rendering (status, background-work hatch, context)
+  // instead of collapsing into a native <select>.
+  function isMobileWidth() { return matchMedia("(max-width: 640px)").matches; }
+  function openPicker() {
+    if (!isMobileWidth()) return;
+    document.body.classList.add("picker-open");
+    $("pickerBackdrop").hidden = false;
+    $("chanPicker").setAttribute("aria-expanded", "true");
+  }
+  function closePicker() {
+    if (!document.body.classList.contains("picker-open")) return;
+    document.body.classList.remove("picker-open");
+    $("pickerBackdrop").hidden = true;
+    $("chanPicker").setAttribute("aria-expanded", "false");
+  }
+  function togglePicker() {
+    document.body.classList.contains("picker-open") ? closePicker() : openPicker();
+  }
+  $("chanPicker").addEventListener("click", togglePicker);
+  $("pickerBackdrop").addEventListener("click", closePicker);
+  // Leaving phone width (rotation, resized window) must not strand an open sheet.
+  addEventListener("resize", () => { if (!isMobileWidth()) closePicker(); });
 
   function refreshChrome() {
     rebuildChanSelect();   // keeps the mobile selector in step (list + active)
@@ -4774,6 +4819,9 @@
    * of the conversation you were watching.
    */
   function openSetup() {
+    // Close the mobile agents sheet first: the setup overlay sits BELOW it in
+    // the stack, so leaving the sheet open would hide the form behind it.
+    closePicker();
     // PREDICTABLE defaults on every opening. The browser restores form-field
     // state (a "continue"/"resume" mode chosen once, an unticked worktree box, a
     // worktree cwd) — which is what silently made "create an agent" fall back
@@ -7252,6 +7300,7 @@
 
   tweakCta.addEventListener("click", async () => {
     if (tweakBusy) return;
+    closePicker(); // dismiss the mobile sheet; the tweak agent takes over the view
     // Belt and braces: the CTA is hidden as soon as a tweak channel exists, but
     // should it reappear we activate the existing one rather than open a second.
     const already = tweakTab();

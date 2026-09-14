@@ -33,9 +33,11 @@ test("a channel DISCOVERED on the server never steals the view", () => {
 });
 
 test("the callers that ARE the user asking still take the view", () => {
-  // Start-agent, the phone's "new agent" entry and the Tweak CTA call createTab
-  // with no options, so they keep the default. If one of them ever passes
-  // focus:false the button would silently do nothing visible.
+  // Start-agent and the Tweak CTA call createTab with no options, so they keep
+  // the default. If one ever passes focus:false the button would silently do
+  // nothing visible. (The phone's "new agent" no longer has its own createTab():
+  // it goes through the same setup overlay → Start-agent as the desktop, so the
+  // count is 2, not 3 — the old native <select>'s redundant createTab() is gone.)
   const bare = html.match(/createTab\(\)/g) ?? [];
-  assert.ok(bare.length >= 3, `expected the user-driven callers to keep the default, saw ${bare.length}`);
+  assert.ok(bare.length >= 2, `expected the user-driven callers to keep the default, saw ${bare.length}`);
 });
