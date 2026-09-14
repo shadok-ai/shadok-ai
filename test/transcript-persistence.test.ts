@@ -33,11 +33,14 @@ test("it is applied LAST, so no profile secret can switch the transcript off", (
     "FORCED_CLAUDE_ENV must come after ...this.opts.env, or a profile can override it",
   );
 
-  // TmuxPilot: `env` applies KEY=VALUE assignments left to right, last wins.
-  const cmd = tmux.match(/const cmd = \["env",[^\]]*\]/)?.[0];
-  assert.ok(cmd, "could not find TmuxPilot's env command");
+  // TmuxPilot: the launcher script exports in order and the shell keeps the
+  // LAST assignment, so the forced vars must be exported after the profile's.
+  // This scan guards the source; test/tmux-launcher.test.ts proves the same
+  // thing by RUNNING the script, which is the stronger of the two.
+  const body = tmux.match(/export function launcherScript[\s\S]*?\n}\n/)?.[0];
+  assert.ok(body, "could not find TmuxPilot's launcherScript");
   assert.ok(
-    cmd.lastIndexOf("...forced") > cmd.lastIndexOf("...secretEnv"),
-    "...forced must come after ...secretEnv, or a profile can override it",
+    body.indexOf("Object.entries(o.forced)") > body.indexOf("Object.entries(o.env)"),
+    "the forced vars must be exported after the profile env, or a profile can override them",
   );
 });
