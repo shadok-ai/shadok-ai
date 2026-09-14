@@ -38,16 +38,14 @@ export const TOUR_STEPS = [
       "Every agent gets its own git worktree and branch, so several never collide. " +
       "Pick one here to follow it, and “＋ New agent” starts another. One of them is this " +
       "cockpit's home agent: the only one that cannot be closed.",
-    // The column on desktop, the channel picker on a phone — never both at once.
-    //
-    // Which is also why this body says neither "at the top" nor "at the bottom",
-    // and no longer points at "Tweak Shadok-AI": those describe the COLUMN, and
-    // the phone's `<select>` holds one option per agent plus "＋ New agent" and
-    // nothing else. A tour that names a control the reader cannot find is the
-    // same failure as a spotlight on empty space, just harder to notice.
-    // (That Tweak is unreachable on a phone at all is a real gap — in the UI,
-    // not in the tour.)
-    target: ["#tabbar", "#chanSelect"],
+    // The column on desktop, the agents-picker button on a phone — never both at
+    // once. The phone's `#chanPicker` opens the SAME column as a bottom sheet, so
+    // "＋ New agent" and Tweak are reachable there too now — but the spotlight
+    // lands on the CLOSED button, whose contents aren't on screen yet. So this
+    // body still says neither "at the top" nor "at the bottom" and still doesn't
+    // point at "Tweak Shadok-AI": naming a control the reader cannot see at the
+    // moment of the spotlight is the same failure as a spotlight on empty space.
+    target: ["#tabbar", "#chanPicker"],
   },
   {
     id: "tab",
