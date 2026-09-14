@@ -2259,7 +2259,12 @@
   // every upload settles. `updateSendDisabled` re-derives the button state.
   let pendingUploads = 0;
   function updateSendDisabled() {
-    sendBtn.disabled = !active || active.status !== "ready" || !!active.pendingChoices || pendingUploads > 0;
+    // Sending is also allowed while a turn is RUNNING (`busy`): the message then
+    // interrupts the turn and is sent the moment it settles, mirroring Telegram
+    // (see preemptTurn). A pending dialog still blocks — you answer it, you don't
+    // free-type over it — and so does an in-flight upload.
+    const canType = active && (active.status === "ready" || active.status === "busy");
+    sendBtn.disabled = !canType || !!active.pendingChoices || pendingUploads > 0;
   }
   const machine = $("machine"), screenEl = $("screen");
 
@@ -5194,6 +5199,16 @@
           persistChannels();
         }
         stopTurnTimer(t);
+        // A message was typed during this turn (a takeover): the turn has just
+        // settled, so send it now. Mirrors the Telegram bridge's preempt.
+        if (t.preempting) {
+          const queued = t.preempting;
+          t.preempting = null;
+          clearTimeout(t.preemptTimer);
+          setTabState(t, "ready", "ready");
+          submitPrompt(t, queued);
+          break;
+        }
         // "unread" only when the turn produced visible text. An empty turn (e.g.
         // a cron concluding NOTHING TO SHOW) asks for no reading at all, neither
         // on the tab nor on the favicon.
@@ -5406,6 +5421,36 @@
     if (!$("setupOverlay").hidden) refreshLiveList();
   }, 5000);
 
+  // If the interrupt never lands (a wedged agent whose turn won't settle), don't
+  // lose the message: put it back in the box and say so, rather than loop.
+  const PREEMPT_TIMEOUT_MS = 8000;
+  /**
+   * Send a message WHILE a turn is running: interrupt the turn (Escape, exactly
+   * the on-screen ⎋ button), stash the text, and submit it from the `turn-done`
+   * that follows. This mirrors the Telegram bridge, which does the same on a
+   * `busy` refusal — the web used to just disable Send instead.
+   *
+   * Nothing is rendered optimistically: the queued message appears as an
+   * ordinary prompt once the interrupted turn has settled, so the transcript
+   * stays in order (interrupted output, then your message, then its answer).
+   */
+  function preemptTurn(t, text) {
+    // Socket down: leave the text in the box, like submitPrompt's own guard.
+    if (!sendTo(t, { type: "key", key: "escape" })) return;
+    t.preempting = text;
+    t.transcriptEl._stickBottom = true;
+    if (t === active) { promptInput.value = ""; promptInput.style.height = "auto"; }
+    dropDraft(t);
+    setTabState(t, "busy", "interrupting…");
+    clearTimeout(t.preemptTimer);
+    t.preemptTimer = setTimeout(() => {
+      if (t.preempting !== text) return; // already sent, or replaced by a newer one
+      t.preempting = null;
+      if (t === active && !promptInput.value) { promptInput.value = text; active.draft = text; }
+      addTurn(t, "system", "", "Couldn't interrupt the running turn — your message is back in the box. Try again, or use ⎋.");
+    }, PREEMPT_TIMEOUT_MS);
+  }
+
   function submitPrompt(t, text, force) {
     // Send BEFORE touching the UI. Everything below is optimistic — it shows the
     // turn, marks the tab busy, clears the composer and drops the draft — so on
@@ -5505,7 +5550,11 @@
     e.preventDefault();
     const t = active;
     const text = promptInput.value.trim();
-    if (!text || t.status !== "ready" || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
+    if (!text || !t || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
+    // Sending during a running turn is a takeover: interrupt it, then send the
+    // message once the turn settles. Same behaviour as Telegram.
+    if (t.status === "busy") return preemptTurn(t, text);
+    if (t.status !== "ready") return;
     // Checked here so nothing is optimistically rendered before the server
     // refuses. The server re-checks anyway — it is the authority.
     if (paceBlocked) return renderPaceConfirm(t, text, paceReason);
