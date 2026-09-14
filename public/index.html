@@ -909,6 +909,22 @@
     overflow-x: auto;
   }
   .bubble.md pre code { background: none; padding: 0; }
+  /* Copy on a fenced code block. The button sits on a WRAPPER around the <pre>,
+     not inside it: the <pre> scrolls sideways, and a button within would scroll
+     away. Always visible (a phone has no hover), small, top-right — the <pre>'s
+     own top padding keeps the first line clear of it. */
+  .bubble.md .md-code { position: relative; }
+  .bubble.md .md-code-copy {
+    position: absolute; top: 6px; right: 6px;
+    padding: 2px 7px; font-family: var(--mono); font-size: 10px; line-height: 1.4;
+    cursor: pointer; background: var(--bg-inset); border: 1px solid var(--line);
+    border-radius: 6px; color: var(--text-dim); opacity: 0.75;
+    transition: color 0.12s, border-color 0.12s, opacity 0.12s;
+  }
+  .bubble.md .md-code-copy:hover, .bubble.md .md-code-copy:focus-visible {
+    opacity: 1; color: var(--amber); border-color: var(--amber);
+  }
+  .bubble.md .md-code-copy.done { opacity: 1; color: var(--ok, #7ac77a); border-color: currentColor; }
   /* The horizontal scroll for a wide table lives on this wrapper (added in JS
      after sanitising), NOT on the <table>: `display:block` on a table breaks its
      own layout — thead and tbody stop sharing column widths, so the header row
@@ -2271,7 +2287,12 @@
   // every upload settles. `updateSendDisabled` re-derives the button state.
   let pendingUploads = 0;
   function updateSendDisabled() {
-    sendBtn.disabled = !active || active.status !== "ready" || !!active.pendingChoices || pendingUploads > 0;
+    // Sending is also allowed while a turn is RUNNING (`busy`): the message then
+    // interrupts the turn and is sent the moment it settles, mirroring Telegram
+    // (see preemptTurn). A pending dialog still blocks — you answer it, you don't
+    // free-type over it — and so does an in-flight upload.
+    const canType = active && (active.status === "ready" || active.status === "busy");
+    sendBtn.disabled = !canType || !!active.pendingChoices || pendingUploads > 0;
   }
   const machine = $("machine"), screenEl = $("screen");
 
@@ -4154,6 +4175,30 @@
         t.replaceWith(wrap);
         wrap.appendChild(t);
       }
+      // A copy button on every fenced code block — the thing you most often want
+      // to lift out of an answer. It goes on a wrapper AROUND the <pre> (the
+      // <pre> scrolls; a button inside would scroll off), and copies the code's
+      // own text, not the whole message.
+      for (const pre of bubble.querySelectorAll("pre")) {
+        const code = pre.querySelector("code") || pre;
+        const wrap = document.createElement("div");
+        wrap.className = "md-code";
+        pre.replaceWith(wrap);
+        wrap.appendChild(pre);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "md-code-copy";
+        btn.textContent = "⧉ copy";
+        btn.title = "Copy this code";
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const ok = await copyText(code.textContent.replace(/\n$/, ""));
+          btn.textContent = ok ? "✓ copied" : "⚠ failed";
+          btn.classList.toggle("done", ok);
+          setTimeout(() => { btn.textContent = "⧉ copy"; btn.classList.remove("done"); }, 1500);
+        });
+        wrap.appendChild(btn);
+      }
     } else {
       bubble.textContent = text;
     }
@@ -5209,6 +5254,16 @@
           persistChannels();
         }
         stopTurnTimer(t);
+        // A message was typed during this turn (a takeover): the turn has just
+        // settled, so send it now. Mirrors the Telegram bridge's preempt.
+        if (t.preempting) {
+          const queued = t.preempting;
+          t.preempting = null;
+          clearTimeout(t.preemptTimer);
+          setTabState(t, "ready", "ready");
+          submitPrompt(t, queued);
+          break;
+        }
         // "unread" only when the turn produced visible text. An empty turn (e.g.
         // a cron concluding NOTHING TO SHOW) asks for no reading at all, neither
         // on the tab nor on the favicon.
@@ -5421,6 +5476,36 @@
     if (!$("setupOverlay").hidden) refreshLiveList();
   }, 5000);
 
+  // If the interrupt never lands (a wedged agent whose turn won't settle), don't
+  // lose the message: put it back in the box and say so, rather than loop.
+  const PREEMPT_TIMEOUT_MS = 8000;
+  /**
+   * Send a message WHILE a turn is running: interrupt the turn (Escape, exactly
+   * the on-screen ⎋ button), stash the text, and submit it from the `turn-done`
+   * that follows. This mirrors the Telegram bridge, which does the same on a
+   * `busy` refusal — the web used to just disable Send instead.
+   *
+   * Nothing is rendered optimistically: the queued message appears as an
+   * ordinary prompt once the interrupted turn has settled, so the transcript
+   * stays in order (interrupted output, then your message, then its answer).
+   */
+  function preemptTurn(t, text) {
+    // Socket down: leave the text in the box, like submitPrompt's own guard.
+    if (!sendTo(t, { type: "key", key: "escape" })) return;
+    t.preempting = text;
+    t.transcriptEl._stickBottom = true;
+    if (t === active) { promptInput.value = ""; promptInput.style.height = "auto"; }
+    dropDraft(t);
+    setTabState(t, "busy", "interrupting…");
+    clearTimeout(t.preemptTimer);
+    t.preemptTimer = setTimeout(() => {
+      if (t.preempting !== text) return; // already sent, or replaced by a newer one
+      t.preempting = null;
+      if (t === active && !promptInput.value) { promptInput.value = text; active.draft = text; }
+      addTurn(t, "system", "", "Couldn't interrupt the running turn — your message is back in the box. Try again, or use ⎋.");
+    }, PREEMPT_TIMEOUT_MS);
+  }
+
   function submitPrompt(t, text, force) {
     // Send BEFORE touching the UI. Everything below is optimistic — it shows the
     // turn, marks the tab busy, clears the composer and drops the draft — so on
@@ -5520,7 +5605,11 @@
     e.preventDefault();
     const t = active;
     const text = promptInput.value.trim();
-    if (!text || t.status !== "ready" || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
+    if (!text || !t || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
+    // Sending during a running turn is a takeover: interrupt it, then send the
+    // message once the turn settles. Same behaviour as Telegram.
+    if (t.status === "busy") return preemptTurn(t, text);
+    if (t.status !== "ready") return;
     // Checked here so nothing is optimistically rendered before the server
     // refuses. The server re-checks anyway — it is the authority.
     if (paceBlocked) return renderPaceConfirm(t, text, paceReason);
