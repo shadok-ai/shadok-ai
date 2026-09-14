@@ -897,6 +897,22 @@
     overflow-x: auto;
   }
   .bubble.md pre code { background: none; padding: 0; }
+  /* Copy on a fenced code block. The button sits on a WRAPPER around the <pre>,
+     not inside it: the <pre> scrolls sideways, and a button within would scroll
+     away. Always visible (a phone has no hover), small, top-right — the <pre>'s
+     own top padding keeps the first line clear of it. */
+  .bubble.md .md-code { position: relative; }
+  .bubble.md .md-code-copy {
+    position: absolute; top: 6px; right: 6px;
+    padding: 2px 7px; font-family: var(--mono); font-size: 10px; line-height: 1.4;
+    cursor: pointer; background: var(--bg-inset); border: 1px solid var(--line);
+    border-radius: 6px; color: var(--text-dim); opacity: 0.75;
+    transition: color 0.12s, border-color 0.12s, opacity 0.12s;
+  }
+  .bubble.md .md-code-copy:hover, .bubble.md .md-code-copy:focus-visible {
+    opacity: 1; color: var(--amber); border-color: var(--amber);
+  }
+  .bubble.md .md-code-copy.done { opacity: 1; color: var(--ok, #7ac77a); border-color: currentColor; }
   /* The horizontal scroll for a wide table lives on this wrapper (added in JS
      after sanitising), NOT on the <table>: `display:block` on a table breaks its
      own layout — thead and tbody stop sharing column widths, so the header row
@@ -4143,6 +4159,30 @@
         wrap.className = "md-table-wrap";
         t.replaceWith(wrap);
         wrap.appendChild(t);
+      }
+      // A copy button on every fenced code block — the thing you most often want
+      // to lift out of an answer. It goes on a wrapper AROUND the <pre> (the
+      // <pre> scrolls; a button inside would scroll off), and copies the code's
+      // own text, not the whole message.
+      for (const pre of bubble.querySelectorAll("pre")) {
+        const code = pre.querySelector("code") || pre;
+        const wrap = document.createElement("div");
+        wrap.className = "md-code";
+        pre.replaceWith(wrap);
+        wrap.appendChild(pre);
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "md-code-copy";
+        btn.textContent = "⧉ copy";
+        btn.title = "Copy this code";
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          const ok = await copyText(code.textContent.replace(/\n$/, ""));
+          btn.textContent = ok ? "✓ copied" : "⚠ failed";
+          btn.classList.toggle("done", ok);
+          setTimeout(() => { btn.textContent = "⧉ copy"; btn.classList.remove("done"); }, 1500);
+        });
+        wrap.appendChild(btn);
       }
     } else {
       bubble.textContent = text;
