@@ -12,6 +12,8 @@ import {
   nativeBinCandidates,
   findClaudeBin,
   findClaudeBinWithRetry,
+  rewriteInProgress,
+  globalScopeDirs,
   type BinSample,
   type ClaudeBin,
   type FindClaudeDeps,
@@ -287,4 +289,104 @@ test("ensureClaude: the placeholder is NOT handed back as usable, and does not t
   // A placeholder means the package IS installed — reinstalling is neither the
   // missing-CLI case nor a safe move while someone else's postinstall runs.
   assert.equal(installed, false, "a placeholder must not trigger npm i -g");
+});
+
+// ---------------------------------------------------------------------------
+// Claude Code updates ITSELF with `npm install --global @anthropic-ai/claude-code@<v>`.
+// While npm reifies, the package directory is moved aside and for a few seconds
+// there is no launcher at all. On a fresh instance our find() gave up inside that
+// window, we started a SECOND install into the first one's reify, and it died on
+// ENOTEMPTY ("npm exited with code 217") — while the auto-updater's own install,
+// started two seconds earlier, succeeded. These tests replay that sequence.
+// ---------------------------------------------------------------------------
+
+test("ensureClaude: a rewrite in progress is WAITED for, never installed over", async () => {
+  // The exact fresh-instance sequence: missing now, an update is mid-flight,
+  // and two polls later the updated CLI is there.
+  let finds = 0;
+  let installed = false;
+  let inProgressChecks = 0;
+  const notes: string[] = [];
+  const r = await ensureClaude({
+    find: async () => (++finds >= 3 ? found("/usr/local/bin/claude") : { ok: false, reason: "missing" }),
+    install: async () => { installed = true; },
+    notify: (l) => notes.push(l),
+    installInProgress: () => { inProgressChecks++; return true; },
+    pollMs: 1,
+    sleep: async () => {},
+  });
+  assert.deepEqual(r, { ok: true, path: "/usr/local/bin/claude" });
+  assert.equal(installed, false, "a second npm install into someone else's reify is the bug");
+  assert.ok(inProgressChecks >= 1);
+  assert.ok(notes.some((l) => /being updated/.test(l)), "the wait must be said, not silent");
+  assert.ok(!notes.some((l) => /not found/.test(l)), "it must not claim the CLI is missing");
+});
+
+test("ensureClaude: our install losing the race is NOT a failure when the other one landed", async () => {
+  // No detection available (or it missed the window): the install throws
+  // ENOTEMPTY, but the concurrent install finished — so a CLI is there.
+  let finds = 0;
+  const r = await ensureClaude({
+    find: async () => (++finds === 1 ? { ok: false, reason: "missing" } : found("/usr/local/bin/claude")),
+    install: async () => { throw new Error("npm exited with code 217"); },
+    notify: () => {},
+  });
+  assert.deepEqual(r, { ok: true, path: "/usr/local/bin/claude" });
+});
+
+test("ensureClaude: a stale leftover cannot stall forever — the wait is bounded, then we install", async () => {
+  let installed = false;
+  let slept = 0;
+  let finds = 0;
+  const r = await ensureClaude({
+    find: async () => (installed && ++finds > 0 ? found("/g/bin/claude") : { ok: false, reason: "missing" }),
+    install: async () => { installed = true; },
+    notify: () => {},
+    installInProgress: () => true, // never clears
+    waitForOtherInstallMs: 5,
+    pollMs: 1,
+    sleep: async (ms) => { slept += ms; },
+  });
+  assert.equal(installed, true);
+  assert.deepEqual(r, { ok: true, path: "/g/bin/claude" });
+  assert.ok(slept <= 5, `waited ${slept}ms past a 5ms bound`);
+});
+
+test("ensureClaude: the wait stops as soon as the other install is gone", async () => {
+  let checks = 0;
+  let polls = 0;
+  let installed = false;
+  await ensureClaude({
+    find: async () => ({ ok: false, reason: "missing" }),
+    install: async () => { installed = true; },
+    notify: () => {},
+    installInProgress: () => ++checks <= 1, // in progress at the first look only
+    waitForOtherInstallMs: 1000,
+    pollMs: 1,
+    sleep: async () => { polls++; },
+  });
+  assert.equal(polls, 1, "no point polling a full minute once the reify directory is gone");
+  assert.equal(installed, true, "and a CLI that is genuinely missing still gets installed");
+});
+
+test("rewriteInProgress: only a RECENT npm reify directory counts", () => {
+  const now = 1_000_000_000;
+  assert.equal(rewriteInProgress([{ name: ".claude-code-1devilah", mtimeMs: now - 3_000 }], now), true);
+  // A crashed install's leftover must not make every future install wait.
+  assert.equal(rewriteInProgress([{ name: ".claude-code-1devilah", mtimeMs: now - 3_600_000 }], now), false);
+  // The package itself, and unrelated scope members, are not a rewrite.
+  assert.equal(rewriteInProgress([{ name: "claude-code", mtimeMs: now }, { name: "sdk", mtimeMs: now }], now), false);
+  assert.equal(rewriteInProgress([], now), false);
+});
+
+test("globalScopeDirs: system, nvm and Windows layouts", () => {
+  assert.deepEqual(globalScopeDirs("/usr/local/bin/node", "linux"), ["/usr/local/lib/node_modules/@anthropic-ai"]);
+  assert.deepEqual(
+    globalScopeDirs("/root/.nvm/versions/node/v22.1.0/bin/node", "linux"),
+    ["/root/.nvm/versions/node/v22.1.0/lib/node_modules/@anthropic-ai"],
+  );
+  assert.deepEqual(
+    globalScopeDirs("C:\\Program Files\\nodejs\\node.exe", "win32"),
+    ["C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai"],
+  );
 });

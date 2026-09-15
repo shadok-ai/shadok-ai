@@ -193,6 +193,7 @@ import { pctFromUsage, windowForModel } from "./context.js";
 import { startHeartbeat } from "./heartbeat.js";
 import {
   ensureClaude,
+  claudeInstallInProgress,
   claudeCommand,
   classifyBin,
   findClaudeBinWithRetry,
@@ -2543,6 +2544,9 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
     // install as broken. Nothing here runs at boot.
     find: () => findClaudeBinWithRetry(liveClaudeDeps()),
     install: installClaudeCli,
+    // Claude Code's auto-updater reinstalls the package in place; installing
+    // over it is how a fresh instance's first agent died on ENOTEMPTY.
+    installInProgress: claudeInstallInProgress,
     notify: (line) => console.log(`[shadok-ai] ${line}`),
   });
   claudeReady = p;
