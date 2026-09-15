@@ -415,6 +415,74 @@ export interface EnsureClaudeDeps {
   install: () => Promise<void>;
   /** Surface progress (server log / a line to the client). */
   notify: (line: string) => void;
+  /**
+   * Is ANOTHER install of the package rewriting it right now? Claude Code's own
+   * auto-updater is the one that actually does (see `ensureClaude`). Optional:
+   * without it we cannot avoid the race, only recover from it.
+   */
+  installInProgress?: () => boolean;
+  /** How long to wait for that other install before starting ours (default 90s). */
+  waitForOtherInstallMs?: number;
+  /** Poll interval while waiting (default 1s). */
+  pollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Has an npm install of claude-code left its reify directory in the global
+ * scope RECENTLY? While npm replaces a package it moves the old tree aside as a
+ * hidden sibling — `@anthropic-ai/.claude-code-<hash>` — and the name is derived
+ * from the path, so a second install collides on exactly that directory:
+ * `ENOTEMPTY: rename '…/claude-code' -> '…/.claude-code-1devilah'`. Its presence
+ * is therefore the observable sign that someone else is mid-install.
+ *
+ * Only a RECENT entry counts. An install that crashed leaves the directory
+ * behind forever, and treating that as "in progress" would make every future
+ * missing-CLI install wait out the full bound for nothing.
+ */
+export function rewriteInProgress(
+  entries: { name: string; mtimeMs: number }[],
+  now: number,
+  maxAgeMs = 10 * 60_000,
+): boolean {
+  return entries.some((e) => /^\.claude-code-[A-Za-z0-9]+$/.test(e.name) && now - e.mtimeMs <= maxAgeMs);
+}
+
+/**
+ * Where the global `@anthropic-ai` scope lives for the node running us. POSIX
+ * prefixes (a system install, nvm, volta's node) keep global modules in
+ * `<prefix>/lib/node_modules`, with node at `<prefix>/bin/node`; Windows keeps
+ * them next to node.exe. Pure, so both layouts are testable from anywhere.
+ */
+export function globalScopeDirs(execPath: string, platform: NodeJS.Platform): string[] {
+  const p = platform === "win32" ? path.win32 : path.posix;
+  const scope = "@anthropic-ai";
+  if (platform === "win32") return [p.join(p.dirname(execPath), "node_modules", scope)];
+  return [p.join(p.dirname(p.dirname(execPath)), "lib", "node_modules", scope)];
+}
+
+/** Live half of {@link rewriteInProgress}: reads the real global scope. */
+export function claudeInstallInProgress(): boolean {
+  const now = Date.now();
+  for (const dir of globalScopeDirs(process.execPath, process.platform)) {
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue; // no such scope — nothing installed there, nothing in progress
+    }
+    const entries: { name: string; mtimeMs: number }[] = [];
+    for (const name of names) {
+      try {
+        entries.push({ name, mtimeMs: fs.statSync(path.join(dir, name)).mtimeMs });
+      } catch {
+        // vanished between readdir and stat — which is itself a sign of churn,
+        // but not one we can date, so it does not count
+      }
+    }
+    if (rewriteInProgress(entries, now)) return true;
+  }
+  return false;
 }
 
 export type EnsureClaudeResult = { ok: true; path: string } | { ok: false; error: string };
@@ -431,14 +499,46 @@ export type EnsureClaudeResult = { ok: true; path: string } | { ok: false; error
  * someone else's postinstall is mid-rewrite. We say what is wrong instead.
  */
 export async function ensureClaude(deps: EnsureClaudeDeps): Promise<EnsureClaudeResult> {
-  const found = await deps.find();
+  let found = await deps.find();
   if (found.ok) return { ok: true, path: found.path };
   if (found.reason === "stub") return { ok: false, error: claudeStubMessage() };
+
+  // "Missing" can be a lie told by a rewrite in progress. Claude Code updates
+  // ITSELF with `npm install --global @anthropic-ai/claude-code@<version>`, and
+  // while npm reifies it the package directory is moved aside — so for a few
+  // seconds there is no launcher at all. Measured on a fresh instance: the
+  // auto-updater's install started at :28 and succeeded, ours started at :30
+  // (after the short `find` retry had given up) and died on ENOTEMPTY against
+  // the very directory the first one was using, which the user saw as "installing
+  // claude failed (npm exited with code 217)" — 217 being 256 − 39, ENOTEMPTY.
+  // Starting a second install into someone else's reify can only lose, so WAIT
+  // for it, bounded: a crashed leftover must not stall forever (and
+  // `rewriteInProgress` already ignores an old one).
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  if (deps.installInProgress?.()) {
+    deps.notify(`Claude Code is being updated right now — waiting for that to finish instead of installing over it…`);
+    const pollMs = deps.pollMs ?? 1000;
+    const deadline = (deps.waitForOtherInstallMs ?? 90_000);
+    for (let waited = 0; waited < deadline; waited += pollMs) {
+      await sleep(pollMs);
+      found = await deps.find();
+      if (found.ok) return { ok: true, path: found.path };
+      if (!deps.installInProgress()) break;
+    }
+    found = await deps.find();
+    if (found.ok) return { ok: true, path: found.path };
+    if (found.reason === "stub") return { ok: false, error: claudeStubMessage() };
+  }
 
   deps.notify(`Claude Code CLI not found — installing ${CLAUDE_PKG} (one-time, this can take a minute)…`);
   try {
     await deps.install();
   } catch (e) {
+    // Our install losing a race does not mean there is no claude: the install we
+    // collided with may just have finished. Look again before reporting failure,
+    // or a perfectly healthy CLI gets announced as uninstallable.
+    const raced = await deps.find();
+    if (raced.ok) return { ok: true, path: raced.path };
     return { ok: false, error: claudeMissingMessage(`installing it failed (${e instanceof Error ? e.message : String(e)})`) };
   }
 

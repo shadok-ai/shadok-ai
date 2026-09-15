@@ -85,7 +85,7 @@ both are silent in the DOM.
 |---|---|
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
-| `src/claude-bin.ts` | Makes sure a RUNNABLE `claude` is there before every spawn, and says which binary that is. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Since the split packaging, "a file named claude that is executable" is NOT "a claude that works": `classifyBin` recognises the npm placeholder, `findClaudeBin` falls back to the native binary behind it, and `claudeCommand` is the ONE answer to "which binary do we spawn" — the pilots, the auth probe, the sign-in and the version probe all go through it. See invariant 32. Pure cores (`classifyBin`, `platformPkg`, `nativeBinCandidates`, `findClaudeBin`, `findClaudeBinWithRetry`) tested; the placeholder is also read off a real file on disk. |
+| `src/claude-bin.ts` | Makes sure a RUNNABLE `claude` is there before every spawn, and says which binary that is. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Since the split packaging, "a file named claude that is executable" is NOT "a claude that works": `classifyBin` recognises the npm placeholder, `findClaudeBin` falls back to the native binary behind it, and `claudeCommand` is the ONE answer to "which binary do we spawn" — the pilots, the auth probe, the sign-in and the version probe all go through it. See invariant 32. It also never installs over Claude Code's own self-update: `claudeInstallInProgress` spots npm's reify directory and `ensureClaude` waits for it (bounded), then looks again after a failed install before calling the CLI missing. Pure cores (`classifyBin`, `platformPkg`, `nativeBinCandidates`, `findClaudeBin`, `findClaudeBinWithRetry`, `rewriteInProgress`, `globalScopeDirs`) tested; the placeholder is also read off a real file on disk. |
 | `src/node-pty-fix.ts` | The OTHER `posix_spawnp failed`: node-pty's prebuilt `spawn-helper` must be `chmod +x` to run. The package `postinstall` does that, but via a RELATIVE path that only holds for a dev checkout; installed as a dependency (npx / managed `~/.shadok-ai/app`) node-pty is **hoisted** to the parent `node_modules` and the chmod silently misses — so a colleague's very first agent died with `posix_spawnp` even though `claude` was fine. `ensureSpawnHelperExecutable` (called at boot in `server.ts`) chmods it from node-pty's REAL location, resolved at runtime — every install layout. `spawnHelperPaths` is pure, tested; the real chmod is covered end-to-end. |
 | `src/tmux.ts` | `TmuxPilot` — same interface as `PtyPilot`, but runs `claude` in a **detached tmux session** (`sk-<sessionId>`). **Survives server restart** (reattaches). Default transport when tmux is present. A spawn goes through `launcherScript`: secrets and prompts are written to a private one-shot script and the tmux command is just `sh <script>`, never the values themselves; `tmuxErrorMessage` keeps any tmux failure down to the subcommand and tmux's own complaint. Both pure and tested — the script is RUN by the tests. See invariant 36. |
 | `src/tmux-install.ts` | Auto-installs tmux at boot when it's missing, so the durable transport is the default without setup (node-pty agents die on every auto-update). `tmuxInstallCommand` (pure, tested) picks the package manager — `brew` on macOS (no root), `apt-get`/`apk`/`dnf`/`yum`/`pacman` on Linux (root, else non-interactive `sudo`). `ensureTmux` runs it best-effort and NEVER blocks the boot: on failure it stays on node-pty with a clear message. The boot caller (`server.ts`) flips the `let USE_TMUX` on once the install lands, so the same process picks tmux up. `SHADOK_TMUX=0` skips it. |
@@ -787,6 +787,24 @@ Auth section of `docs/architecture.md`).
     installed, and reinstalling while someone else's postinstall is mid-rewrite
     makes it worse. Say what is wrong instead (`claudeStubMessage`), in the
     spirit of `claudeMissingMessage` and `describeStuckScreen`.
+    **And "missing" can be a lie too — Claude Code updates ITSELF.** Its
+    auto-updater runs `npm install --global @anthropic-ai/claude-code@<version>`,
+    and while npm reifies it moves the package directory aside, so for a few
+    seconds there is no launcher at all. On a fresh instance (an image a few weeks
+    old, so the first `claude` it runs updates straight away) `findClaudeBinWithRetry`
+    gave up inside that window, `ensureClaude` started a SECOND `npm i -g` into the
+    first one's reify, and it died on `ENOTEMPTY` — shown to the user as "installing
+    it failed (npm exited with code 217)", 217 being 256 − 39. The auto-updater's own
+    install, started two seconds earlier, had succeeded: the npm debug logs carry
+    both command lines, which is how the second actor was identified rather than
+    guessed. Two things now stop it. `claudeInstallInProgress` looks for npm's
+    reify directory (`@anthropic-ai/.claude-code-<hash>` — the name is derived from
+    the path, which is exactly why a second install collides on it) and
+    `ensureClaude` WAITS for it, bounded at 90s and ignoring a leftover older than
+    ten minutes, so a crashed install cannot stall every future one. And a failed
+    install is followed by one more `find`: losing a race to an install that
+    landed is not a missing CLI. Same rule as the placeholder, applied to the
+    absent case — never install over someone else's rewrite.
 
 33. **A credential frozen into a process's environment cannot be refreshed — so
     it must not be one that expires.** Every agent is handed `SHADOK_AUTH`, the
