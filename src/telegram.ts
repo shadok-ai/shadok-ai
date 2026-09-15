@@ -190,21 +190,43 @@ export function dmGate(owner: number | null, from: number | undefined): "claim" 
   return owner === from ? "allow" : "deny";
 }
 
-/** The known origins and their mark. An unknown origin keeps its name: better
- *  "someone spoke" than a message that looks like it came from the agent. */
-const ORIGIN_MARKS: Record<string, string> = { web: "👤 web", cron: "⏰ cron", cli: "⌨️ cli", telegram: "👤 telegram" };
+/** The known origins: the icon that stands for them, and the word they print.
+ *  An unknown origin keeps its own name: better "someone spoke" than a message
+ *  that looks like it came from the agent. */
+const ORIGIN_MARKS: Record<string, { icon: string; word: string }> = {
+  web: { icon: "👤", word: "web" },
+  cron: { icon: "⏰", word: "cron" },
+  cli: { icon: "⌨️", word: "cli" },
+  telegram: { icon: "👤", word: "telegram" },
+};
 
 /**
  * The header of a prompt coming from ELSEWHERE — the web, a cron, the CLI.
  * Without it a Telegram channel only saw the answers: the agent looked like it
  * was talking to itself, and a cron firing was indistinguishable from a human
- * message. Pure — unit tested.
+ * message.
+ *
+ * `from` is the sender's name when the server knows it — for the web that is the
+ * account behind the session (`promptAuthor`), and it was already riding on the
+ * echo; this label simply dropped it, so a colleague writing from the cockpit
+ * arrived in Telegram as a bare "web". The web side names its authors the same
+ * way (`echoAuthor`), and the shape is deliberately identical: name first,
+ * because who spoke matters more than which surface they used.
+ *
+ * Pure — unit tested.
  */
-export function promptEchoLabel(origin: string | undefined, auto = false): string {
-  // The pace guard's resume is not someone: it comes from the server.
+export function promptEchoLabel(origin: string | undefined, auto = false, from?: string): string {
+  // The pace guard's resume is not someone: it comes from the server — whatever
+  // name happened to ride along on the prompt it is resuming.
   if (auto) return "⚙️ auto-resumed";
-  if (!origin) return "👤";
-  return ORIGIN_MARKS[origin] ?? "👤 " + origin;
+  const name = (from ?? "").trim();
+  const mark = origin ? ORIGIN_MARKS[origin] : undefined;
+  const icon = mark?.icon ?? "👤";
+  const word = mark?.word ?? origin ?? "";
+  // A blank name must never leave a dangling separator ("👤  · web" reads as a
+  // rendering bug), and a name with nowhere to attach stands on its own.
+  if (!name) return word ? `${icon} ${word}` : icon;
+  return word ? `${icon} ${name} · ${word}` : `${icon} ${name}`;
 }
 
 /**
@@ -895,7 +917,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           // The server already excludes the sender: what arrives here
           // necessarily comes from ANOTHER client. We show it, marked — a bot
           // cannot post under the user's name.
-          if (m.text?.trim()) send(b, promptEchoLabel(m.origin, m.auto) + "\n" + m.text);
+          if (m.text?.trim()) send(b, promptEchoLabel(m.origin, m.auto, m.from) + "\n" + m.text);
           break;
         case "stream-tool":
           // Hidden by default: on a slightly long turn the agent's answer
