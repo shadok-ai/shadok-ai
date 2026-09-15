@@ -94,10 +94,39 @@ test("nextToolsState: an argument that is neither on nor off just toggles", () =
   assert.equal(nextToolsState("wat", true), false);
 });
 
-test("promptEchoLabel: chaque origine a sa marque", () => {
+test("promptEchoLabel: each origin has its mark", () => {
   assert.equal(promptEchoLabel("web"), "👤 web");
   assert.equal(promptEchoLabel("cron"), "⏰ cron");
   assert.equal(promptEchoLabel("cli"), "⌨️ cli");
+});
+
+test("promptEchoLabel: a named sender is named, not reduced to their origin", () => {
+  // The server already puts the web account's name on the echo (promptAuthor);
+  // only this label dropped it, so a colleague writing from the cockpit reached
+  // Telegram as a bare "web" — the same anonymity the web side fixed months ago
+  // with echoAuthor. Name first: who spoke matters more than which surface.
+  assert.equal(promptEchoLabel("web", false, "alex"), "👤 alex · web");
+  assert.equal(promptEchoLabel("cli", false, "alex"), "⌨️ alex · cli");
+});
+
+test("promptEchoLabel: an unknown origin keeps both the name and its own word", () => {
+  assert.equal(promptEchoLabel("pilotctl", false, "alex"), "👤 alex · pilotctl");
+});
+
+test("promptEchoLabel: a name with no origin stands alone", () => {
+  // No dangling separator, and no invented place.
+  assert.equal(promptEchoLabel(undefined, false, "alex"), "👤 alex");
+});
+
+test("promptEchoLabel: a blank name is no name at all", () => {
+  // A whitespace-only name would print "👤  · web": a separator with nothing
+  // in front of it reads as a rendering bug.
+  assert.equal(promptEchoLabel("web", false, "   "), "👤 web");
+  assert.equal(promptEchoLabel("web", false, ""), "👤 web");
+});
+
+test("promptEchoLabel: the auto-resume is nobody, whatever name rode along", () => {
+  assert.equal(promptEchoLabel("web", true, "alex"), "⚙️ auto-resumed");
 });
 
 test("promptEchoLabel: an unknown origin stays marked, without lying", () => {
