@@ -225,8 +225,11 @@ shadok-ai's own source, returns the cwd to start the tweak agent in),
 (GET/PUT/DELETE). `/secrets`: GET returns NAMES only, and PUT refuses an
 existing name with 409 unless `overwrite: true`. `PUT /profiles` writes the
 GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
-`/profiles/prompt` (PUT) is the only profile write an agent can make — a
-`systemPrompt`, its own or, under the lead profile, any. `GET /profiles`
+agents get exactly two profile writes, and neither can reach a guardrail:
+`/profiles/prompt` (PUT) — a `systemPrompt`, its own or, under the lead profile,
+any — and `/profiles/secret` (PUT) — attach to ITS OWN profile a vault secret
+IT created (provenance from `secret-origin.json`; no exception for the lead,
+cf. invariant 37). `GET /profiles`
 adds a **derived** `origin` per profile (`stock` / `edited` / `custom`, never
 stored, cf. invariant 6): seeding only ever fills an EMPTY vault, so a starter
 profile edited once never catches up on a newer upstream wording — the panel
@@ -969,6 +972,28 @@ Auth section of `docs/architecture.md`).
     carrying 40 KB of secrets, the shape that used to be refused. Sabotaging the
     export order turns both that test and the source scan in
     `test/transcript-persistence.test.ts` red.
+
+37. **An agent may attach a secret it CREATED, and that word is the whole
+    security boundary.** The vault is global — one file for every profile and
+    every instance — so "let an agent attach a secret to its profile" is one
+    rule away from "any agent grants itself every credential on the machine".
+    The rule is provenance: `PUT /secrets` records the creating PROFILE in a
+    sidecar (`~/.shadok-ai/secret-origin.json`), and `PUT /profiles/secret`
+    attaches a name only when that origin equals the caller's own profile. An
+    agent therefore gains NO access it did not already have — it held that value
+    already; it only makes it survive into its next sessions. Three details
+    carry the weight. The origin is recorded **only on a creation**, never on an
+    overwrite, or an agent could clobber a human's secret to become its
+    "creator" and then claim the name. A **missing** origin means a human stored
+    it, which must read as a refusal — absence denies, it never grants. And the
+    lead profile gets **no exception**, deliberately unlike `promptEditVerdict`:
+    editing any prompt gives the lead nothing it lacks (it can already spawn a
+    full-access agent), whereas handing out vault secrets would. The value lands
+    in the env at the **next spawn**, so the skill pairs it with `shadok-reload`
+    — a live process's environment cannot be changed. Unchanged, and worth
+    repeating: this is soft isolation. An agent with a shell can still rewrite
+    `profiles.json` itself (cf. the profile-guardrail invariant).
+
 
 ## Conventions
 

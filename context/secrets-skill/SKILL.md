@@ -22,6 +22,31 @@ gh auth token | node ~/.claude/skills/shadok-secrets/scripts/secret.mjs set GITH
 node ~/.claude/skills/shadok-secrets/scripts/secret.mjs list
 ```
 
+## Keep it for yourself — attach it to your profile
+
+A stored secret reaches nobody until it is attached to a profile. You can attach
+a secret **you stored yourself** to **your own** profile, and then reload to get
+it:
+
+```bash
+gh auth token | node ~/.claude/skills/shadok-secrets/scripts/secret.mjs set GITHUB_TOKEN --stdin --attach
+node ~/.claude/skills/shadok-reload/reload.mjs    # comes back with it in the env
+```
+
+It is injected as an environment variable **at your next reload**, not into the
+process you are running now — the environment of a live process cannot change.
+
+Two limits, and they are not bugs to work around:
+
+- **Only a secret you created.** Any other name — one a human typed, one another
+  role stored — is refused. You never held that value, and the vault is shared
+  by every profile on this machine.
+- **Only your own profile.** There is no way to attach a secret to someone
+  else's role, the lead included.
+
+If you need a secret you did not create, ask the user: they attach it from the
+web Profiles panel in two clicks.
+
 ## The rules — these are the point
 
 - **Pipe the value in. Never put it in the command.** `ps` shows every
@@ -35,9 +60,9 @@ node ~/.claude/skills/shadok-secrets/scripts/secret.mjs list
 - **A name that already exists is refused.** That is deliberate: overwriting
   replaces a live credential with nothing to show it happened. Do not retry, do
   not work around it — tell the user the name is taken and let them choose.
-- **Say what you stored.** Name the secret in your reply, and add that it
-  reaches an agent only once attached to a profile in the web Profiles panel.
-  A secret stored in silence is one nobody knows to revoke.
+- **Say what you stored.** Name the secret in your reply, and say whether you
+  attached it to your profile. A secret stored in silence is one nobody knows to
+  revoke.
 
 ## Not for this
 

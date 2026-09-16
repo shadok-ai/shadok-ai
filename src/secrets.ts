@@ -94,6 +94,66 @@ export function deleteSecret(name: string): void {
   }
 }
 
+// ── Who created a secret ─────────────────────────────────────────────────
+
+/**
+ * Provenance, kept in a SIDECAR file rather than in the vault: the vault is a
+ * flat `{ NAME: value }` map read by several paths (and migrated from an older
+ * shape), and the one thing worse than losing provenance is corrupting the
+ * credentials while adding it.
+ *
+ * It exists for exactly one decision — an agent may attach to its profile a
+ * secret IT created, and nothing else (see `secretAttachVerdict`). So a missing
+ * entry must read as "a human put this here", which is the safe answer: absence
+ * denies, it never grants.
+ */
+export type SecretOrigin = { profile: string; at: number };
+export type Origins = Record<string, SecretOrigin>;
+
+const ORIGIN_FILE = path.join(os.homedir(), ".shadok-ai", "secret-origin.json");
+
+export function normalizeOrigins(raw: unknown): Origins {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Origins = {};
+  for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (!v || typeof v !== "object") continue;
+    const o = v as Record<string, unknown>;
+    const profile = typeof o.profile === "string" ? o.profile.trim() : "";
+    // A blank creator is not a creator: it would match an agent whose own
+    // profile is somehow blank, and hand it a secret it never held.
+    if (!profile) continue;
+    out[name] = { profile, at: typeof o.at === "number" ? o.at : 0 };
+  }
+  return out;
+}
+
+export function loadOrigins(): Origins {
+  try {
+    return normalizeOrigins(JSON.parse(fs.readFileSync(ORIGIN_FILE, "utf8")));
+  } catch {
+    return {};
+  }
+}
+
+/** The profile that created this secret, or null — null means "a human did". */
+export function originProfile(name: string): string | null {
+  return loadOrigins()[name]?.profile ?? null;
+}
+
+/**
+ * Record a creator. Called ONLY when a secret is created, never on an
+ * overwrite: otherwise an agent could overwrite a human's secret with junk to
+ * become its "creator", then attach the name. The value would be worthless,
+ * but the laundering path should not exist at all.
+ */
+export function recordOrigin(name: string, profile: string): void {
+  if (!profile.trim()) return;
+  const all = loadOrigins();
+  all[name] = { profile: profile.trim(), at: Date.now() };
+  fs.mkdirSync(path.dirname(ORIGIN_FILE), { recursive: true });
+  fs.writeFileSync(ORIGIN_FILE, JSON.stringify(all, null, 2), { mode: 0o600 });
+}
+
 /** The `{ NAME: value }` env for a set of referenced names (unknown ones skipped). */
 export function secretsFor(names: string[] | undefined): Record<string, string> {
   if (!names?.length) return {};

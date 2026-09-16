@@ -98,7 +98,10 @@ Enter to skip; you can add it later from the web UI).
   agent that **obtains** a credential (a CLI login, a key it just provisioned)
   can add it to the vault itself so the next agent doesn't start from nothing —
   write-only, the value piped in rather than typed as an argument, and never
-  overwriting an existing name without you saying so.
+  overwriting an existing name without you saying so. It can also **attach that
+  secret to its own profile** and reload itself to pick it up — but only a
+  secret it stored itself: a value you typed, or one another role stored, stays
+  yours to attach from the panel.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
   daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
