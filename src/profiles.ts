@@ -488,6 +488,47 @@ export function promptEditVerdict(opts: {
   return { ok: true, create: false };
 }
 
+export type AttachVerdict = { ok: boolean; error?: string };
+
+/**
+ * May this agent attach this vault secret to its own profile?
+ *
+ * The vault is GLOBAL — one file for every profile and every instance — so
+ * "an agent attaches a secret" sits one rule away from "any agent grants itself
+ * every credential in the house". The rule that keeps it honest: it may attach
+ * only a secret IT created (via the shadok-secrets skill, holding a credential
+ * it obtained itself). That grants no new access — it already has the value —
+ * it only makes it survive into its next sessions.
+ *
+ * Note the deliberate asymmetry with `promptEditVerdict`: the lead profile gets
+ * NO exception here. Editing any prompt gives it nothing it lacks (it can
+ * already spawn a full-access agent); handing out vault secrets would.
+ */
+export function secretAttachVerdict(opts: {
+  /** Profile of the calling session, null when it spawned bare. */
+  caller: string | null;
+  /** Secret name being attached. */
+  name: string;
+  inVault: boolean;
+  /** Profile that CREATED the secret; null when a human put it there. */
+  origin: string | null;
+}): AttachVerdict {
+  const name = opts.name.trim();
+  if (!name) return { ok: false, error: "secret name required" };
+  if (!opts.caller)
+    return { ok: false, error: "this agent has no profile, so it has nothing to attach a secret to" };
+  if (!opts.inVault) return { ok: false, error: `no secret named ${name} in the vault` };
+  if (opts.origin !== opts.caller)
+    return {
+      ok: false,
+      error:
+        `${name} was not created by ${opts.caller}, so it cannot be attached from here — ` +
+        `an agent may only attach a secret it stored itself. Any other secret is attached ` +
+        `by a human, from the web Profiles panel.`,
+    };
+  return { ok: true };
+}
+
 /** Where a profile's prompt comes from, seen from THIS build. */
 export type PromptOrigin = "tracked" | "edited" | "outdated" | "custom";
 

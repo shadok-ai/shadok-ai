@@ -131,7 +131,15 @@ import {
   setThemeForCwd,
   type TelegramPatch,
 } from "./config.js";
-import { secretsFor, secretNames, setSecret, deleteSecret, secretWriteVerdict } from "./secrets.js";
+import {
+  secretsFor,
+  secretNames,
+  setSecret,
+  deleteSecret,
+  secretWriteVerdict,
+  recordOrigin,
+  originProfile,
+} from "./secrets.js";
 import {
   getProfile,
   profileArgs,
@@ -145,6 +153,7 @@ import {
   upsertProfile,
   removeProfile,
   promptEditVerdict,
+  secretAttachVerdict,
   READONLY_DENY,
   TWEAK_PROFILE_NAME,
   type Profile,
@@ -905,6 +914,29 @@ function sessionForKey(key: string): string | null {
   return loadChannels().some((c) => c.sessionId === id) ? id : null;
 }
 
+/**
+ * WHICH agent is calling, from its per-session key — the header the skills
+ * send, or the body field `/profiles/prompt` has always taken. The public
+ * session id is never enough: `/live` lists every id, so it proves nothing.
+ *
+ * Returns the caller's PROFILE, which is what every agent-facing profile write
+ * is scoped by. A session that is no longer running still resolves through the
+ * channel list, exactly like `sessionForKey`.
+ */
+function callerOf(req: {
+  headers: Record<string, unknown>;
+  body?: unknown;
+}): { id: string | null; profile: string | null } {
+  const h = req.headers["x-shadok-session-key"];
+  const fromBody = (req.body as { key?: unknown } | undefined)?.key;
+  const key = typeof h === "string" && h ? h : typeof fromBody === "string" ? fromBody : "";
+  const id = key ? sessionForKey(key) : null;
+  if (!id) return { id: null, profile: null };
+  const profile =
+    sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
+  return { id, profile };
+}
+
 /** A browser on our own origin — the only caller allowed to change guardrails. */
 function requestFromBrowser(req: { headers: Record<string, unknown> }): boolean {
   return browserOrigin(
@@ -1419,6 +1451,14 @@ app.put("/secrets", (req, res) => {
   const verdict = secretWriteVerdict(secretNames().includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
   setSecret(key, value);
+  // Remember WHO created it, so the agent can later attach it to its own
+  // profile (`PUT /profiles/secret`). Only on a creation: recording an
+  // overwrite too would let an agent clobber a human's secret to become its
+  // "creator" and then claim the name.
+  if (verdict === "created") {
+    const { profile } = callerOf(req);
+    if (profile) recordOrigin(key, profile);
+  }
   res.json({ names: secretNames(), result: verdict });
 });
 app.delete("/secrets", (req, res) => {
@@ -1655,6 +1695,42 @@ app.put("/profiles/prompt", (req, res) => {
     profile: target,
     created: verdict.create,
     note: "applies at the agent's next restart — the prompt is passed at spawn",
+  });
+});
+
+/**
+ * The second — and last — profile write an agent can make: attach to its OWN
+ * profile a vault secret IT created, so the credential it obtained survives
+ * into its next sessions instead of dying with this one.
+ *
+ * Everything dangerous about this is in `secretAttachVerdict`: the vault is
+ * global, so attaching an arbitrary name would hand any agent every credential
+ * on the machine. Only provenance is accepted, and the lead gets no exception.
+ * Guardrails still cannot be reached — `deny`/`allow`/`model` are copied from
+ * the stored profile, never read from the body.
+ */
+app.put("/profiles/secret", (req, res) => {
+  const { profile: caller } = callerOf(req);
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const existing = caller ? getProfile(caller) : undefined;
+  const verdict = secretAttachVerdict({
+    caller,
+    name,
+    inVault: secretNames().includes(name),
+    origin: originProfile(name),
+  });
+  if (!verdict.ok) return res.status(403).json({ error: verdict.error });
+  if (!existing) return res.status(404).json({ error: `${caller} no longer exists` });
+  // Start from the stored profile: guardrails survive by construction, not by
+  // vigilance (same rule as /profiles/prompt).
+  const secrets = [...new Set([...(existing.secrets ?? []), name])];
+  upsertProfile({ ...existing, secrets });
+  console.log(`profile-secret: ${caller} += ${name}`);
+  res.json({
+    ok: true,
+    profile: caller,
+    secrets,
+    note: "injected as an environment variable at your next reload, not in this process",
   });
 });
 
