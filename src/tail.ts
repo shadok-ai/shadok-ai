@@ -76,17 +76,74 @@ export function newestTranscriptById(sessionId: string): string | null {
   }
   for (const d of dirs) {
     const f = path.join(root, d, sessionId + ".jsonl");
+    // `throwIfNoEntry: false`, not try/catch: the file is ABSENT from almost
+    // every directory — it lives in exactly one — so the miss is the common
+    // case, and a thrown-and-caught exception per miss was most of the cost.
+    // Measured on an instance with 224 project dirs: 3.94 ms per search with
+    // exceptions, 1.11 ms without. Other errors (EACCES…) still throw, and are
+    // still ignored, exactly as before.
+    let m: number | undefined;
     try {
-      const m = fs.statSync(f).mtimeMs;
-      if (m > bestMtime) {
-        bestMtime = m;
-        best = f;
-      }
+      m = fs.statSync(f, { throwIfNoEntry: false })?.mtimeMs;
     } catch {
-      /* no such file in this dir */
+      /* unreadable entry — not a candidate */
+    }
+    if (m !== undefined && m > bestMtime) {
+      bestMtime = m;
+      best = f;
     }
   }
   return best;
+}
+
+/** Tail ticks between two path re-resolutions: ~1s at the default 250ms. */
+export const RESOLVE_MIN_TICKS = 4;
+/** Longest gap for a SILENT transcript: ~10s at the default 250ms. */
+export const RESOLVE_MAX_TICKS = 40;
+
+export type TranscriptSeen = "missing" | "grew" | "silent";
+export interface ResolveCadence {
+  /** Current gap, in ticks, between two re-resolutions of a silent file. */
+  gap: number;
+  /** First tick at which the next re-resolution is due. */
+  next: number;
+}
+
+/**
+ * On this tail tick, should the transcript path be re-resolved?
+ *
+ * Re-resolving follows a transcript that MOVED — an agent switching worktree
+ * changes its cwd, and Claude Code re-homes the `.jsonl` under another project
+ * directory. It used to run on every 4th tick for every agent, and it is not
+ * cheap: `newestTranscriptById` lists `~/.claude/projects` and stats the
+ * session's file in each directory. Its cost is therefore AGENTS × DIRECTORIES,
+ * and both only grow on a long-lived instance — every worktree adds a
+ * directory. On the instance that develops shadok (61 agents, 224 directories)
+ * that one search was ~24% of a CPU core, half of the whole server's use.
+ *
+ * But a move can only be observed as the current file going QUIET: a file that
+ * is still being appended to has not moved. So:
+ * - `grew` — the file is live; never re-resolve, and re-arm the fast cadence so
+ *   a move right after activity is still caught within ~1s, as before;
+ * - `missing` — the file is not there yet (a new session): keep the old fast
+ *   cadence, since finding where it lands is the point;
+ * - `silent` — back off exponentially, capped at `RESOLVE_MAX_TICKS`. An agent
+ *   that sits idle and THEN moves shows its first new message up to ~10s late:
+ *   the one visible cost, accepted for a ~7.5× cut on idle agents.
+ *
+ * `seen` is what the PREVIOUS tick observed — the decision is taken before this
+ * tick's stat. Pure, so the cadence is testable without timers.
+ */
+export function resolveStep(
+  c: ResolveCadence,
+  tick: number,
+  seen: TranscriptSeen,
+): { resolve: boolean; cadence: ResolveCadence } {
+  if (seen === "grew") return { resolve: false, cadence: { gap: RESOLVE_MIN_TICKS, next: tick + RESOLVE_MIN_TICKS } };
+  if (tick < c.next) return { resolve: false, cadence: c };
+  if (seen === "missing") return { resolve: true, cadence: { gap: RESOLVE_MIN_TICKS, next: tick + RESOLVE_MIN_TICKS } };
+  const gap = Math.min(c.gap * 2, RESOLVE_MAX_TICKS);
+  return { resolve: true, cadence: { gap, next: tick + gap } };
 }
 
 /** One-line summary of a tool_use block (e.g. `Read auth.ts`, `Bash: npm test`). */
@@ -179,32 +236,43 @@ export function tailSession(
   resolve?: () => string,
 ): () => void {
   let pos = 0;
+  let seen: TranscriptSeen = "silent";
   try {
     pos = startOffset(fs.statSync(file).size, readPos(file));
   } catch {
     pos = 0; // file not written yet (new session) — stream from the start
+    seen = "missing";
   }
   let buf = "";
   let stopped = false;
   let tick = 0;
+  // `next: 0` — resolve on the very first tick, as the old `tick % 4` did.
+  let cadence: ResolveCadence = { gap: RESOLVE_MIN_TICKS, next: 0 };
 
   const read = () => {
     if (stopped) return;
-    // Follow the transcript across a cwd change (~every 1s). The moved file is
-    // the same transcript, longer — bytes up to `pos` are identical — so we keep
-    // the offset and just keep reading appended lines from the new path.
-    if (resolve && tick++ % 4 === 0) {
-      try {
-        const latest = resolve();
-        if (latest && latest !== file) file = latest;
-      } catch {
-        /* transient — retry next tick */
+    // Follow the transcript across a cwd change. The moved file is the same
+    // transcript, longer — bytes up to `pos` are identical — so we keep the
+    // offset and just keep reading appended lines from the new path. HOW OFTEN
+    // is decided by `resolveStep`, from what the last tick saw.
+    if (resolve) {
+      const step = resolveStep(cadence, tick, seen);
+      cadence = step.cadence;
+      if (step.resolve) {
+        try {
+          const latest = resolve();
+          if (latest && latest !== file) file = latest;
+        } catch {
+          /* transient — retry next time it is due */
+        }
       }
     }
+    tick++;
     let size: number;
     try {
       size = fs.statSync(file).size;
     } catch {
+      seen = "missing";
       return; // file not there yet
     }
     if (size < pos) {
@@ -212,7 +280,11 @@ export function tailSession(
       pos = 0;
       buf = "";
     }
-    if (size === pos) return;
+    if (size === pos) {
+      seen = "silent";
+      return;
+    }
+    seen = "grew";
     let chunk = "";
     try {
       const fd = fs.openSync(file, "r");
