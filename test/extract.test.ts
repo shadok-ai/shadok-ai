@@ -363,6 +363,20 @@ test("userPromptText: a real prompt yes, a technical line no", () => {
   assert.equal(userPromptText(null), null);
 });
 
+test("userPromptText: a prompt Claude Code paste-wrapped is unwrapped, not dropped", () => {
+  // A large ledger delta prepended to a prompt pushes it over Claude Code's
+  // paste threshold, so the TUI records the WHOLE thing inside <pasted_content>.
+  // Dropping it on the bare `<`-guard hid the user's message from the web
+  // history while the agent had already answered it (biosense, 2026-09-22).
+  const wrapped =
+    '\n\n<pasted_content id="71ed">\n⟦ledger · 2 updates⟧\n• [x] y — resolved\n' +
+    "⟦web · 2026-09-22 14:01 · admin⟧\ndans la page mon bilan, remplacer non/oui par oui/non\n" +
+    '</pasted_content id="71ed">\n';
+  const out = userPromptText({ type: "user", message: { content: wrapped } });
+  assert.ok(out && out.includes("dans la page mon bilan"), "the user's words survive the unwrap");
+  assert.ok(out !== null && !out.includes("pasted_content"), "the wrapper tags are gone");
+});
+
 test("lastPromptAt: the time of the LAST real prompt, not of a tool result", () => {
   const prevHome = process.env.HOME;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
