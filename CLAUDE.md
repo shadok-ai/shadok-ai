@@ -1022,6 +1022,27 @@ Auth section of `docs/architecture.md`).
     machine has ten times the agents and ten times the history — the product of
     the two is what a server that runs for weeks actually pays.
 
+39. **A LARGE prompt is recorded inside `<pasted_content>`, and the history must
+    UNWRAP it, never drop it — the ledger push is what pushes ordinary prompts
+    over that line.** Claude Code's TUI wraps a big pasted input as
+    `<pasted_content id="…">…</pasted_content>` in the transcript. `userPromptText`
+    (`src/extract.ts`) dropped any user message starting with `<` — a guard meant
+    for injected `<system-reminder>` blocks — so such a prompt vanished from the
+    web history **while the agent had answered it**: the reply is there, the
+    question is gone. Invisible until the ledger became on by default (invariant
+    for `ledgerEnabled`): the server prepends a `⟦ledger · N updates⟧` delta to
+    every prompt, and a fat delta (49 rows, ~1 KB) routinely tips an otherwise
+    small prompt over the paste threshold — so the whole assembled prompt (ledger
+    + `⟦platform·time·who⟧` meta + the user's words) lands inside one
+    `<pasted_content>`. Found on biosense, 2026-09-22: the transcript's last human
+    turn began `\n\n<pasted_content id="71ed">\n⟦ledger …`. The fix peels the
+    wrapper tags (open + close, with or without the echoed id) BEFORE the
+    `<`-guard and keeps the inner text; the ledger/meta headers it exposes are
+    stripped downstream as usual. Only `pasted_content` is unwrapped — a genuine
+    `<system-reminder>` is still dropped. Not caught by `tsc`/most tests because
+    the fixtures were small; it takes a prompt big enough to be paste-wrapped,
+    which the default-on ledger now produces constantly.
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).

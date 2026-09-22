@@ -201,6 +201,15 @@ export function userPromptText(e: any): string | null {
       .map((b: any) => b.text)
       .join("\n");
   text = text.trim();
+  // Claude Code wraps a LARGE pasted prompt as `<pasted_content id="…">…
+  // </pasted_content>` in the transcript. The server-prepended ledger delta
+  // (now on by default) routinely pushes an ordinary prompt over that paste
+  // threshold, so the recorded message starts with `<pasted_content` — and the
+  // bare `<`-guard below then dropped the WHOLE turn from the web history even
+  // though the agent had answered it. Peel the wrapper tags (open + close, with
+  // or without the echoed id) and keep the inner text; the ledger/meta headers
+  // it now exposes are stripped downstream by loadHistory as usual.
+  text = text.replace(/<\/?pasted_content(?:\s[^>]*)?>/g, "").trim();
   if (!text || text.startsWith("<") || text.startsWith("[Request interrupted")) return null;
   return text;
 }
