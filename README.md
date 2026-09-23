@@ -85,7 +85,13 @@ Enter to skip; you can add it later from the web UI).
   Telegram.
 - **Agent profiles** — a named bundle of role prompt, permission guardrails
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
-  spawn, remembered across resume. Eight roles ship with it: a lead that
+  spawn, remembered across resume.
+- **A model per agent** — the creation form picks the model this one agent runs
+  on (Opus, Sonnet, Haiku, Fable), overriding its profile's, with a **long
+  context (1M)** tick beside it. Leave it on *profile default* and nothing
+  changes: no flag is sent at all. The choice is stored on the agent, so a
+  resume or a restart keeps it, and the quota gauge meters it against the
+  window it actually asked for. Eight roles ship with it: a lead that
   delegates, a dev, a QA agent that writes the failing test and cannot fix the
   code it covers, a release agent that prepares a deployment and leaves the
   trigger to you, a product agent that writes the spec instead of the change,

@@ -660,6 +660,20 @@
   }
   input[type="text"]:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
   .radio-row { display: flex; gap: 14px; flex-wrap: wrap; }
+  #modelRow { gap: 6px; }
+  .model-chip {
+    padding: 5px 11px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+    font: inherit; font-size: 12px; line-height: 1.4;
+  }
+  .model-chip:hover { color: var(--text); border-color: var(--text-dim); }
+  /* --amber / --text-dim, NOT --accent / --dim: an undefined custom property
+     falls back to its initial value rather than failing loudly, so `background:
+     var(--accent)` stayed transparent while `color: var(--bg)` painted the text
+     the page's own background — the SELECTED chip was the one you could not
+     read. tsc and the assertions were green; only the screenshot showed it. */
+  .model-chip.on { color: var(--bg); background: var(--amber); border-color: var(--amber); }
+  #longCtxField.na { opacity: .45; }
   .radio-row label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
   input[type="radio"] { accent-color: var(--amber); }
 
@@ -1831,6 +1845,16 @@
           <div id="profileGrid" role="radiogroup" aria-label="Agent profile"></div>
           <span class="check-hint" id="profileNaNote" hidden>Applies to new sessions only.</span>
         </div>
+        <!-- The model this ONE agent runs on. Its default sends nothing at all,
+             so a form nobody touches spawns exactly as it did before. -->
+        <div class="field" id="modelField">
+          <span class="label">Model</span>
+          <div id="modelRow" class="radio-row" role="radiogroup" aria-label="Model"></div>
+          <label class="check" id="longCtxField">
+            <input type="checkbox" id="longCtxInput">
+            <span>Long context (1M)<span class="check-hint"> — needs a model above</span></span>
+          </label>
+        </div>
         <div class="field">
           <span class="label">Name</span>
           <input type="text" id="nameInput" placeholder="agent" autocomplete="off" spellcheck="false">
@@ -2194,6 +2218,9 @@
   import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js?v=__ASSET_V__";
   import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
+  import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
+  window.MODEL_CHOICES = MODEL_CHOICES;
+  window.composeModel = composeModel;
   window.pickChannelSource = pickChannelSource;
   window.dirKey = dirKey;
   window.serverSwapped = serverSwapped;
@@ -2267,6 +2294,11 @@
     bubblePlacement: () => null,
     unionRect: () => null,
     visibleSteps: (steps) => steps ?? [],
+    // A missing module must leave the picker EMPTY and silent rather than
+    // half-built: an empty list renders no chips, so the form still starts an
+    // agent on its profile's model, which is what it did before this existed.
+    MODEL_CHOICES: [],
+    composeModel: () => null,
     // Boot-critical (runs in restore before the module might land): a fulfilled
     // /channels wins even when empty; only a failed fetch uses the cache.
     pickChannelSource: (settled, cached) =>
@@ -4819,6 +4851,7 @@
    * of the conversation you were watching.
    */
   function openSetup() {
+    renderModelRow();
     // Close the mobile agents sheet first: the setup overlay sits BELOW it in
     // the stack, so leaving the sheet open would hide the form behind it.
     closePicker();
@@ -4853,6 +4886,45 @@
   function closeSetup() { $("setupOverlay").hidden = true; }
 
   /** Submits the form → THIS is where the channel is created, and not before. */
+  /**
+   * The model chips, built from the bridged list.
+   *
+   * Repainted on `shadok-bridge-ready` like everything else drawn from a
+   * module: the classic script runs during parse, the module after it, so a
+   * first paint can legitimately see the empty stub (invariant 10).
+   */
+  let selectedModel = "";
+  function renderModelRow() {
+    const row = $("modelRow");
+    if (!row) return;
+    row.replaceChildren();
+    for (const c of window.MODEL_CHOICES || []) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "model-chip" + (c.id === selectedModel ? " on" : "");
+      b.textContent = c.label;
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", c.id === selectedModel ? "true" : "false");
+      b.addEventListener("click", () => {          // never onclick=: the CSP nonce
+        selectedModel = c.id;                       // does not cover inline handlers
+        renderModelRow();
+        syncLongCtx();
+      });
+      row.appendChild(b);
+    }
+    syncLongCtx();
+  }
+  /** The long window is a SUFFIX on a model, so it cannot stand on its own. */
+  function syncLongCtx() {
+    const box = $("longCtxInput");
+    if (!box) return;
+    const off = !selectedModel;
+    box.disabled = off;
+    if (off) box.checked = false;
+    $("longCtxField").classList.toggle("na", off);
+  }
+  document.addEventListener("shadok-bridge-ready", renderModelRow);
+
   function startNewAgent() {
     const cwd = $("cwdInput").value.trim();
     const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -4864,6 +4936,10 @@
     }
     if (mode === "new" && $("worktreeInput").checked) msg.worktree = true;
     if (mode === "new" && selectedProfile) msg.profile = selectedProfile;
+    // Omitted entirely when the default is chosen — `composeModel` returns null
+    // — so the start message is byte-for-byte what it was before the picker.
+    const model = mode === "new" ? window.composeModel(selectedModel, $("longCtxInput").checked) : null;
+    if (model) msg.model = model;
     msg.mirror = $("mirrorInput").checked;
     localStorage.setItem("cp.cwd", cwd);
     if (mode === "new") {
@@ -5504,6 +5580,10 @@
       $("profileNaNote").hidden = isNew;
       $("worktreeField").classList.toggle("na", !isNew);
       $("worktreeInput").disabled = !isNew;
+      // Same rule as the profile: a resume re-applies what the channel stored,
+      // so offering to change the model there would promise something the
+      // registry overrules a moment later (invariant 1).
+      $("modelField").classList.toggle("na", !isNew);
       if (mode === "resume") refreshSessionList();
     })
   );

@@ -2060,6 +2060,11 @@ type ClientMessage =
       repo?: string;
       /** Agent profile to apply (role/guardrails/secrets) — new sessions only. */
       profile?: string;
+      /** The model THIS agent runs on, overriding its profile's: an alias with
+       *  an optional `[1m]` suffix (`public/model-choice.js` composes it).
+       *  Omitted means the profile decides — the picker's default, and what
+       *  every client that ignores this field keeps doing. */
+      model?: string;
       /** The channel that launched this one. pilotctl sends its own
        *  SHADOK_SESSION_ID here, so the link needs no configuring. Refused on a
        *  cycle / unknown parent / cap, exactly like `set-parent`. */
@@ -2174,7 +2179,13 @@ function ledgerReflex(): string | null {
  * then assumes the standard window, which `effectiveWindow` corrects if the
  * session ever proves it wrong.
  */
-function sessionModelSetting(profileName?: string | null): string | null {
+function sessionModelSetting(profileName?: string | null, agentModel?: string | null): string | null {
+  // The agent's own choice comes FIRST, and this is not cosmetic: the gauge
+  // resolves its window from this string (`windowForModel`, invariant 22), so
+  // reading the profile here would meter an agent that asked for `[1m]` against
+  // the standard window — wrong for precisely the sessions that need the bar.
+  const own = agentModel?.trim();
+  if (own) return own;
   const pinned = (profileName ? getProfile(profileName) : undefined)?.model?.trim();
   if (pinned) return pinned;
   try {
@@ -2227,7 +2238,13 @@ function installedCapabilities(): { name: string; description: string }[] {
   return out;
 }
 
-function makePilot(id: string, cwd: string, args: string[], profileName?: string | null): Pilot {
+function makePilot(
+  id: string,
+  cwd: string,
+  args: string[],
+  profileName?: string | null,
+  model?: string | null,
+): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
   ensureProjectTrusted(cwd);
@@ -2262,7 +2279,7 @@ function makePilot(id: string, cwd: string, args: string[], profileName?: string
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
-    ...profileArgs(effectiveProfile(profile)),
+    ...profileArgs(effectiveProfile(profile), model),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
@@ -2361,6 +2378,10 @@ interface Live {
    *  DESIRED one: `set-profile` without a restart changes it while the running
    *  process still carries the old one. */
   profile?: string | null;
+  /** The model this RUNNING process was given (see `Channel.model`). Kept on
+   *  the Live so a restart respawns on the same one — `restartSession` rebuilds
+   *  the pilot from these fields and nothing else. */
+  model?: string | null;
   /** The profile the RUNNING process actually got. Differs from `profile` only
    *  between a stored change and the restart that applies it — that gap is what
    *  the UI shows as "(at next reload)". */
@@ -2475,7 +2496,13 @@ async function restartSession(s: Live): Promise<void> {
   // respawns on the last known path, which is what it did before.
   const claude = await ensureClaudeOnce();
   if (!claude.ok) console.error(`[sk-${s.id}] restart: ${claude.error}`);
-  s.pilot = makePilot(s.id, s.cwd, hasTranscript ? ["--resume", s.id] : ["--session-id", s.id], s.profile);
+  s.pilot = makePilot(
+    s.id,
+    s.cwd,
+    hasTranscript ? ["--resume", s.id] : ["--session-id", s.id],
+    s.profile,
+    s.model,
+  );
   s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
   s.restarting = false;
@@ -2639,11 +2666,12 @@ async function createSession(
   args: string[],
   worktree: Worktree | null = null,
   profile: string | null = null,
+  model: string | null = null,
 ): Promise<Live> {
-  const pilot = makePilot(id, cwd, args, profile);
+  const pilot = makePilot(id, cwd, args, profile, model);
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id));
-  const contextWindow = windowForModel(sessionModelSetting(profile));
+  const contextWindow = windowForModel(sessionModelSetting(profile, model));
   const s: Live = {
     id,
     cwd,
@@ -2659,6 +2687,7 @@ async function createSession(
     contextWindow,
     // A reattached session must show its bar at once, not only after the next
     // turn writes a usage record — so seed from the transcript's last message.
+    model,
     contextPct: pctFromUsage([...seededUsage.values()].pop(), contextWindow),
     shells: 0,
     monitors: 0,
@@ -3403,6 +3432,15 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const stored = loadChannels().find((c) => c.sessionId === id)?.profile;
             if (stored != null) profile = stored; // the channel's own profile wins on resume
           }
+          // The model, resolved the same way and for the same reason: it is
+          // applied at spawn, so a resume that forgot it would quietly move a
+          // running agent onto another model — the registry has the last word
+          // (invariant 1), never the client.
+          let model: string | null = msg.model?.trim() || null;
+          if (resumed) {
+            const stored = loadChannels().find((c) => c.sessionId === id)?.model;
+            if (stored != null) model = stored;
+          }
           // Who launched this agent. Validated exactly like `set-parent` — a
           // cycle costs the same either way — but a refusal here only DROPS the
           // link instead of failing the start: the agent itself is fine, and
@@ -3414,7 +3452,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
             else parentAtStart = msg.parent ?? null;
           }
-          session = await createSession(id, effectiveCwd, args, worktree, profile);
+          session = await createSession(id, effectiveCwd, args, worktree, profile, model);
           session.clients.add(ws);
           if (resumed) {
             const turns = loadHistory(effectiveCwd, id);
@@ -3447,6 +3485,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // repository. The session's own worktree is the only source of truth.
             ...(worktree ? { branch: worktree.branch, repo: worktree.repo } : {}),
             profile,
+            // ASSERT-only, like `branch`, `repo` and `parent` (invariant 24): a
+            // client that omits the field must never erase a model the channel
+            // already carries. This line is the whole feature — `parent` was
+            // typed, sent, unit-tested and silently DROPPED here, and only an
+            // end-to-end run found it. `test/agent-model.test.ts` asserts the
+            // value comes back out of the registry, not that it compiles.
+            ...(model !== null ? { model } : {}),
             // The form's choice, recorded as soon as we're `ready` — that's
             // where the Telegram loop reads it. Absent (a client that ignores
             // the field) → decide nothing, and `isMirrored` falls back to the

@@ -32,6 +32,12 @@ export interface Channel {
   /** Agent profile applied at spawn (role/guardrails/secrets) — re-applied on
    *  resume/restart so the guardrails aren't lost. */
   profile?: string | null;
+  /** The model THIS agent runs on, overriding its profile's — an alias, with an
+   *  optional `[1m]` suffix for the long window. Stored for the same reason
+   *  `profile` is: it is applied at spawn, so a resume or a restart that forgot
+   *  it would silently move a running agent to another model. Absent means the
+   *  profile decides, which is the default and emits no flag at all. */
+  model?: string | null;
   /** The channel that spawned this one, or one attached to it by hand. Only
    *  this parent is told when the agent finishes, blocks on a question or dies
    *  — without that scoping a chatty channel would wake a boss on every turn,
@@ -59,7 +65,7 @@ export function isMirrored(c: Channel): boolean {
 }
 
 /** Fields the server owns; a browser PUT must never overwrite or drop them. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "parent", "home"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "parent", "home"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
