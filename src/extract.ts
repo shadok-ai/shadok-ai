@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { newestTranscriptById, isNothingToShow, parseTimestamp } from "./tail.js";
+import { toolFiles, fileCard } from "./download.js";
 import { isCronPrompt } from "./crons.js";
 import { isAgentPrompt } from "./kinship.js";
 import { stripPromptMeta, parsePromptMeta } from "./promptmeta.js";
@@ -215,8 +216,11 @@ export function userPromptText(e: any): string | null {
 }
 
 export interface HistoryTurn {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "file";
   text: string;
+  /** A `file` turn: the files a SendUserFile delivered, so a reload still shows
+   *  the download / inline-image card (loadHistory drops other tool blocks). */
+  files?: { path: string; name: string; image: boolean }[];
   /**
    * When the turn was written (ms epoch), taken from the .jsonl line's
    * `timestamp`. Same source as `TailEvent.at`, so a replayed turn and the same
@@ -244,17 +248,23 @@ export interface HistoryTurn {
 }
 
 /**
+ * The .jsonl a session was written to (`~/.claude/projects/<encoded cwd>/<id>`),
+ * preferring the newest <id>.jsonl anywhere so a moved/renamed worktree's history
+ * still resolves. Shared by loadHistory and GET /download (which reads the raw
+ * transcript to verify a requested file was actually sent).
+ */
+export function transcriptFilePath(cwd: string, sessionId: string): string {
+  const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
+  return newestTranscriptById(sessionId) ?? path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+}
+
+/**
  * Reads a session transcript back from its .jsonl file
  * (~/.claude/projects/<encoded cwd>/<session-id>.jsonl) so the history can
  * be replayed when resuming the session.
  */
 export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
-  // Same drift-immunity as the tail: prefer the newest <id>.jsonl anywhere, so a
-  // moved/renamed worktree's history still resolves (see sessionFilePath).
-  const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  const file =
-    newestTranscriptById(sessionId) ??
-    path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+  const file = transcriptFilePath(cwd, sessionId);
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -308,6 +318,15 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
       });
       pendingHiddenPrompt = false;
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
+      // A SendUserFile delivered files → a `file` turn survives the reload (the
+      // rest of the tool blocks are dropped, but a sent file is content, not
+      // noise). Emitted before the text of the same message, which is usually the
+      // agent's "I sent you X" line just after.
+      for (const b of e.message.content) {
+        if (b?.type !== "tool_use") continue;
+        const files = toolFiles(b.name, b.input).map(fileCard);
+        if (files.length) { turns.push({ role: "file", text: "", files, ...when }); pendingHiddenPrompt = false; }
+      }
       const text = e.message.content
         .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)
