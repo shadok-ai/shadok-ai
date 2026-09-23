@@ -362,16 +362,28 @@ export function removeProfile(name: string): void {
  * (role), inline permission settings (deny/allow), and a model. Returns [] for
  * an undefined/empty profile so a no-profile spawn is unchanged.
  */
-export function profileArgs(profile?: Profile | null): string[] {
-  if (!profile) return [];
+export function profileArgs(profile?: Profile | null, modelOverride?: string | null): string[] {
   const args: string[] = [];
-  if (profile.systemPrompt?.trim()) args.push("--append-system-prompt", profile.systemPrompt.trim());
-  const deny = profile.deny ?? [];
-  const allow = profile.allow ?? [];
-  if (deny.length || allow.length) {
-    args.push("--settings", JSON.stringify({ permissions: { deny, allow } }));
+  if (profile) {
+    if (profile.systemPrompt?.trim()) args.push("--append-system-prompt", profile.systemPrompt.trim());
+    const deny = profile.deny ?? [];
+    const allow = profile.allow ?? [];
+    if (deny.length || allow.length) {
+      args.push("--settings", JSON.stringify({ permissions: { deny, allow } }));
+    }
   }
-  if (profile.model?.trim()) args.push("--model", profile.model.trim());
+  // ONE place emits --model, and the agent's own choice wins over the role's.
+  //
+  // Both halves matter. A per-agent model is useless if the profile's silently
+  // beats it, and appending a second --model instead would leave the CLI to
+  // arbitrate a conflict we created. The profile keeps its meaning: it is the
+  // DEFAULT for every agent of that role, which is exactly what the picker's
+  // "profile default" choice selects by sending nothing.
+  //
+  // Note the early return is gone: an agent can now carry a model with NO
+  // profile at all, and returning [] on a null profile would have dropped it.
+  const model = modelOverride?.trim() || profile?.model?.trim();
+  if (model) args.push("--model", model);
   return args;
 }
 

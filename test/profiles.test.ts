@@ -434,3 +434,48 @@ test("Shadok-Boss: no claim about permissions he may not have", () => {
   assert.doesNotMatch(boss, /git writes are blocked/);
   assert.match(boss, /You do not commit/);
 });
+
+test("profileArgs: an agent's own model beats its profile's", () => {
+  // The point of the picker. A profile's model is the DEFAULT for every agent
+  // of that role; one agent asking for something else must not be quietly
+  // overruled by the role it was started under.
+  const withModel = { name: "r", model: "sonnet" };
+  assert.deepEqual(profileArgs(withModel, "opus"), ["--model", "opus"]);
+  assert.deepEqual(profileArgs(withModel, "opus[1m]"), ["--model", "opus[1m]"]);
+});
+
+test("profileArgs: no override falls back to the profile, and emits ONE flag", () => {
+  // Two --model flags would leave the CLI to arbitrate a conflict we created,
+  // so exactly one place may emit it — that is why the override is a parameter
+  // rather than a second append at the call site.
+  const args = profileArgs({ name: "r", model: "sonnet" });
+  assert.deepEqual(args, ["--model", "sonnet"]);
+  assert.equal(args.filter((a) => a === "--model").length, 1);
+  assert.equal(profileArgs({ name: "r", model: "sonnet" }, "opus")
+    .filter((a) => a === "--model").length, 1);
+});
+
+test("profileArgs: the default choice sends nothing at all", () => {
+  // What keeps this invisible to anyone who ignores the picker: an untouched
+  // choice must leave the spawn byte-for-byte as it was before it existed.
+  assert.deepEqual(profileArgs({ name: "r" }, ""), []);
+  assert.deepEqual(profileArgs({ name: "r" }, null), []);
+  assert.deepEqual(profileArgs({ name: "r" }, "   "), []);
+});
+
+test("profileArgs: an agent can carry a model with NO profile", () => {
+  // The early `if (!profile) return []` used to swallow this case. A spawn
+  // without a profile is ordinary — it is what the ＋ new agent form does when
+  // no role is picked — so the model would have vanished for exactly the
+  // simplest way of using the feature.
+  assert.deepEqual(profileArgs(null, "haiku"), ["--model", "haiku"]);
+  assert.deepEqual(profileArgs(undefined, "haiku[1m]"), ["--model", "haiku[1m]"]);
+});
+
+test("profileArgs: the override does not disturb role or guardrails", () => {
+  const p = { name: "r", systemPrompt: "be terse", deny: ["Bash(git commit:*)"] };
+  const args = profileArgs(p, "opus");
+  assert.ok(args.includes("--append-system-prompt"));
+  assert.ok(args.some((a) => a.includes("git commit")));
+  assert.deepEqual(args.slice(-2), ["--model", "opus"]);
+});
