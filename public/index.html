@@ -218,6 +218,13 @@
      still. It TURNS because a stopped hourglass and a running one look the same,
      and "is something still going?" is the whole question being answered. */
   .tab .shells, .tab .monitors { font-size: 9px; opacity: 0.75; flex: 0 0 auto; display: inline-flex; gap: 1px; align-items: center; }
+  /* Claude Code updated under this agent → reload to apply. Green (its own footer
+     is green) and pulsing so it stands out; clickable straight from the tab. */
+  .tab .update { flex: 0 0 auto; cursor: pointer; color: var(--ok); font-size: 12px; line-height: 1; font-weight: 700; animation: pulse-update 1.4s ease-in-out infinite; }
+  .tab .update.failed { color: var(--err); }   /* auto-update failed → install */
+  .tab .update:hover { color: var(--amber); }
+  @keyframes pulse-update { 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) { .tab .update { animation: none; } }
   .tab .monitors .n { font-variant-numeric: tabular-nums; }
   .tab .shells .glass { display: inline-block; animation: hourglass 2.4s ease-in-out infinite; }
   .tab .shells .n { font-variant-numeric: tabular-nums; }
@@ -1187,6 +1194,13 @@
   #chanBar button.icon { padding: 4px 8px; font-size: 14px; line-height: 1; letter-spacing: 0; }
   #chanBar button.icon.stop:hover { border-color: var(--err); color: var(--err); }
   #chanBar button.icon.on { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 15%, transparent); }
+  /* Reload-to-apply: a green, pulsing text pill (not a bare icon) so an available
+     Claude Code update is unmissable next to the quieter action icons. */
+  #chanUpdate { font-family: var(--mono); font-size: 11px; white-space: nowrap; color: var(--ok); border-color: var(--ok); animation: pulse-update 1.4s ease-in-out infinite; }
+  #chanUpdate.failed { color: var(--err); border-color: var(--err); }
+  #chanUpdate:disabled { animation: none; opacity: 0.7; }
+  #chanUpdate:hover:not(:disabled) { color: var(--amber); border-color: var(--amber); }
+  @media (prefers-reduced-motion: reduce) { #chanUpdate { animation: none; } }
   /* Status / Directory / Session / Branch : inline & compact, so the channel
      header stays a thin single line. */
   #chanBar .gauge { flex-direction: row; align-items: baseline; gap: 4px; }
@@ -2106,6 +2120,7 @@
         <span class="value" id="branchView">—</span>
       </div>
       <span class="chan-actions">
+        <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <button id="chanStop" class="icon stop" title="End session" aria-label="End session"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 4v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.5 6.8a6 6 0 1 0 7 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
@@ -2219,6 +2234,8 @@
   import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
+  import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
+  window.claudeUpdateState = claudeUpdateState;
   window.MODEL_CHOICES = MODEL_CHOICES;
   window.composeModel = composeModel;
   window.pickChannelSource = pickChannelSource;
@@ -2275,6 +2292,8 @@
   // l'arrivée du module, rend tous les sites sûrs par construction.
   // test/esm-bridge.test.ts verrouille la correspondance nom ↔ bouchon.
   const BRIDGE_STUBS = {
+    // Before the module lands, assume no update state — never a false badge.
+    claudeUpdateState: () => null,
     profileBlurb: () => "",
     profileBadges: () => [],
     defaultAgentName: (_p, cwd) => String(cwd ?? "").split("/").filter(Boolean).pop() || "agent",
@@ -2498,12 +2517,19 @@
     monitors.className = "monitors";
     monitors.hidden = true;
     monitors.innerHTML = '<span class="eye">\u{1F441}</span><span class="n"></span>';
+    // Claude Code updated (or failed to update) its binary under this agent. The
+    // icon/colour is set by setUpdateState; clicking does the right thing for the
+    // state (reload to apply, or install then reload).
+    const update = document.createElement("span");
+    update.className = "update";
+    update.hidden = true;
+    update.addEventListener("click", (e) => { e.stopPropagation(); handleClaudeUpdate(tab); });
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
     // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
     // left, context % hard right (no longer hidden behind the icons).
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(led, name, timer, mute, cron, tg, shells, monitors, close);
+    row1.append(led, name, timer, mute, cron, tg, shells, monitors, update, close);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
     row2.append(lastAt, ctxNum);
@@ -2537,8 +2563,9 @@
       crons: [],         // labels of the scheduled prompts (the ⏰ on the tab)
       shells: 0,         // background shells the pane reports (the ⏳ on the tab)
       monitors: 0,       // monitors it armed (the 👁 on the tab)
+      updateState: null, // Claude Code update: "restart" (reload to apply) | "failed" (install then reload) | null
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors,
+      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -2726,6 +2753,89 @@
     // The green hatched breathe on the whole tab: on as soon as anything is left
     // running in the background, off when the last one stops.
     tab.btnEl.classList.toggle("has-bg", tab.shells > 0 || tab.monitors > 0);
+  }
+  // Claude Code updates its OWN binary. Two states surface per agent (see
+  // update-ready.js): "restart" (installed, reload to apply) and "failed" (the
+  // auto-update failed; the cockpit installs it, then reloads). Once WE have
+  // installed it this session, even a still-"failed" agent only needs a reload.
+  let claudeUpdateInstalled = false;
+  let claudeInstalling = false;
+  /** What clicking the badge should DO for a given screen state, now. */
+  function updateAction(state) {
+    if (state === "restart") return "reload";
+    if (state === "failed") return claudeUpdateInstalled ? "reload" : "install";
+    return null;
+  }
+  /** Claude Code update state changed for this agent → repaint its tab badge and,
+   *  if it's the active one, the chanBar button. A reload spawns a fresh process
+   *  on the new binary, whose screen no longer prints the footer, so this clears
+   *  on its own after a reload. */
+  function setUpdateState(tab, state) {
+    if (tab.updateState === state) return;
+    tab.updateState = state || null;
+    paintUpdateBadge(tab);
+    if (tab === active) paintChanUpdate();
+  }
+  function paintUpdateBadge(tab) {
+    const el = tab.updateEl;
+    const act = updateAction(tab.updateState);
+    el.hidden = !act;
+    if (!act) return;
+    // "install" (a failed auto-update we haven't fixed yet) reads as a warning;
+    // anything that just needs a reload reads as the green update glyph.
+    const install = act === "install";
+    el.textContent = install ? "⚠" : "↻";
+    el.classList.toggle("failed", install);
+    el.title = install
+      ? "Claude Code auto-update failed — click to install it and reload this agent"
+      : "Claude Code updated — click to reload this agent and apply it";
+  }
+  function paintChanUpdate() {
+    const btn = $("chanUpdate");
+    const act = active ? updateAction(active.updateState) : null;
+    if (claudeInstalling) {
+      btn.hidden = false; btn.disabled = true; btn.textContent = "installing…";
+      btn.classList.remove("failed");
+      return;
+    }
+    btn.disabled = false;
+    btn.hidden = !act;
+    if (!act) return;
+    const install = act === "install";
+    btn.textContent = install ? "⤓ install update" : "↻ reload to apply";
+    btn.classList.toggle("failed", install);
+  }
+  /** The badge/button click: reload the agent, or install then reload. */
+  function handleClaudeUpdate(tab) {
+    const act = updateAction(tab.updateState);
+    if (act === "reload") return reloadTab(tab);
+    if (act === "install") return installClaudeUpdate(tab);
+  }
+  /** Install Claude Code globally (the server runs `npm i -g …`), then reload the
+   *  agent onto the new binary. One install serves every agent this session. */
+  async function installClaudeUpdate(tab) {
+    if (claudeInstalling) return;
+    claudeInstalling = true;
+    paintChanUpdate();
+    addTurn(tab, "system", "", "Installing the Claude Code update (npm i -g @anthropic-ai/claude-code)…", null, Date.now());
+    let ok = false, err = "";
+    try {
+      const r = await fetch("/claude-update", { method: "POST" });
+      const j = await r.json().catch(() => ({}));
+      ok = r.ok && j.ok;
+      err = j.error || ("HTTP " + r.status);
+    } catch (e) { err = String(e && e.message || e); }
+    claudeInstalling = false;
+    if (ok) {
+      claudeUpdateInstalled = true;
+      addTurn(tab, "system", "", "Claude Code updated. Reloading this agent to apply it — reload your other agents too (their ↻ badge).", null, Date.now());
+      // Other agents' badges flip from "install" to just "reload" now.
+      tabs.forEach(paintUpdateBadge);
+      reloadTab(tab);
+    } else {
+      addTurn(tab, "system", "", "Couldn't install the Claude Code update: " + err + ". Try again, or run it yourself: npm i -g @anthropic-ai/claude-code", null, Date.now());
+    }
+    paintChanUpdate();
   }
   function paintCount(el, n, noun) {
     if (!el) return;
@@ -3985,6 +4095,7 @@
       // talking about an agent that does not exist.
       $("chanCron").disabled = true;
       $("chanStop").disabled = true;
+      paintChanUpdate();
       // Two different truths behind the same empty panel — the server tells us
       // which (see syncFirstAgent), so a newcomer is never invited to create a
       // second lead agent while theirs is being born.
@@ -3996,6 +4107,7 @@
     $("startingState").classList.remove("visible");
     $("chanCron").disabled = !t.sessionId;
     $("chanStop").disabled = false;
+    paintChanUpdate();
     $("led").className = "led " +
       ({ setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[t.status]);
     $("state").textContent = t.stateText;
@@ -5407,6 +5519,9 @@
         t.screenText = msg.text;
         if (t === active) screenEl.textContent = msg.text;
         if (msg.working) updateLivePreview(t, msg.text);
+        // Claude Code's update footer (installed→restart, or auto-update failed)
+        // means its binary changed under this still-running agent; surface it.
+        setUpdateState(t, claudeUpdateState(msg.text));
         break;
       case "term-data":
         // Experimental raw terminal: bytes from the pane (base64) → xterm.
@@ -5999,6 +6114,7 @@
     active.termOn = !active.termOn;
     syncTerm();
   });
+  $("chanUpdate").addEventListener("click", () => { if (active) handleClaudeUpdate(active); });
   $("chanCron").addEventListener("click", () => { $("cronOverlay").hidden = false; renderCrons(); });
   $("chanStop").addEventListener("click", () => {
     sendTo(active, { type: "stop" });

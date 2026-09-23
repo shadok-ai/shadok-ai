@@ -1981,6 +1981,35 @@ app.post("/restart-all", (_req, res) => {
   res.json({ restarted });
 });
 
+// Install (or repair) the global Claude Code CLI on demand — `npm i -g
+// @anthropic-ai/claude-code`. The cockpit shows this button when an agent's TUI
+// footer reports "Auto-update failed"; running agents still need a reload
+// afterwards to pick up the new binary (the client does that). BROWSER-ONLY: a
+// deliberate operator action, not something an agent should trigger for the
+// whole machine (cf. the profile-guardrail boundary). Single-flight so two
+// clicks don't race two installs (ENOTEMPTY, see `rewriteInProgress`).
+let claudeUpdateInFlight: Promise<void> | null = null;
+app.post("/claude-update", async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "browser-only" });
+  try {
+    if (!claudeUpdateInFlight) {
+      console.log("claude-update: installing @anthropic-ai/claude-code (npm i -g)…");
+      claudeUpdateInFlight = installClaudeCli().finally(() => { claudeUpdateInFlight = null; });
+    }
+    await claudeUpdateInFlight;
+    // The cached binary path rots on any reinstall (invariant 32): drop it so the
+    // next spawn re-resolves the freshly installed launcher.
+    claudeReady = null;
+    rememberClaudeBin(null);
+    console.log("claude-update: install ok");
+    res.json({ ok: true });
+  } catch (e) {
+    const error = e instanceof Error ? e.message : String(e);
+    console.log(`claude-update: install FAILED — ${error}`);
+    res.status(500).json({ ok: false, error });
+  }
+});
+
 // The shared-ledger table for the GUI viewer (the version-menu / header button).
 // Reads the same file the `shadok-ledger` skill writes; most-recent first; an
 // absent or unreadable file → []. Read-only — agents write it via the skill.
