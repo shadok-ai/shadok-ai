@@ -19,6 +19,7 @@ import {
   setTgTools,
 } from "./channels.js";
 import { secretNames, setSecret, deleteSecret } from "./secrets.js";
+import { telegramPhotoable } from "./download.js";
 import { authStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { getProfile, profileNames } from "./profiles.js";
 import { tmuxHasSession } from "./tmux.js";
@@ -776,6 +777,25 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       return first;
     });
 
+  /** Deliver a file the AGENT sent (SendUserFile) into the topic: a PHOTO when
+   *  Telegram previews it inline, a DOCUMENT otherwise. A multipart upload of the
+   *  bytes — no public URL needed, so it works for a loopback / proxied instance.
+   *  Serialised through b.send like every other post so it keeps ordering. */
+  const sendUserFile = (b: Bridge, f: { path: string; name: string }): Promise<unknown> =>
+    b.send(async () => {
+      try {
+        const buf = await fs.promises.readFile(f.path);
+        const photo = telegramPhotoable(f.name);
+        const form = new FormData();
+        form.append("chat_id", String(b.chatId));
+        if (b.threadId) form.append("message_thread_id", String(b.threadId));
+        form.append(photo ? "photo" : "document", new Blob([buf]), f.name);
+        await fetch(`${api}/${photo ? "sendPhoto" : "sendDocument"}`, { method: "POST", body: form });
+      } catch (e: any) {
+        send(b, "⚠️ couldn't send " + f.name + " (" + (e?.message ?? e) + ")");
+      }
+    });
+
   /** Replace the content of an already sent message (the preface → the real
    *  block). Text too long for one message: the 1st part replaces, the rest
    *  follows. A failed edit → the preface stays in place, still accurate. */
@@ -920,6 +940,12 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           if (m.text?.trim()) send(b, promptEchoLabel(m.origin, m.auto, m.from) + "\n" + m.text);
           break;
         case "stream-tool":
+          // A SendUserFile is a delivered file, not tool noise: upload it (photo
+          // or document) regardless of /tools.
+          if (m.name === "SendUserFile" && Array.isArray(m.files) && m.files.length) {
+            for (const f of m.files) sendUserFile(b, f);
+            break;
+          }
           // Hidden by default: on a slightly long turn the agent's answer
           // drowns under "→ Read …" lines. /tools turns them back on per
           // channel.

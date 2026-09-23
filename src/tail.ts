@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toolFiles } from "./download.js";
 
 /** Token counts of one assistant API message (`message.usage` in the .jsonl). */
 export interface TokenUsage {
@@ -31,7 +32,7 @@ export type TailEvent =
   // `id`/`toolUseId` let a consumer pair an output with the call that produced
   // it. Necessary because one assistant message may carry several tool_use
   // blocks (parallel calls) whose results come back batched and out of order.
-  | { kind: "tool"; id: string; name: string; summary: string; at?: number }
+  | { kind: "tool"; id: string; name: string; summary: string; files?: string[]; at?: number }
   | { kind: "result"; toolUseId: string; text: string; isError: boolean; at?: number }
   | { kind: "usage"; messageId: string; usage: TokenUsage }
   /** The turn's answer was ONLY the silence placeholder. Emitted where the text
@@ -376,11 +377,15 @@ export function parseLine(line: string): TailEvent[] {
         out.push({ kind: "text", text: block.text, ...(pendingInternal ? { afterInternal: true } : {}), ...when });
         pendingInternal = false;
       } else if (block?.type === "tool_use" && typeof block.name === "string") {
+        // A SendUserFile delivers files to the user; carry their paths so the
+        // client can show a download / inline-image card and Telegram can upload.
+        const files = toolFiles(block.name, block.input);
         out.push({
           kind: "tool",
           id: typeof block.id === "string" ? block.id : "",
           name: block.name,
           summary: toolSummary(block.input),
+          ...(files.length ? { files } : {}),
           ...when,
         });
         // A tool renders as an activity block, which already breaks the group.

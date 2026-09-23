@@ -18,8 +18,10 @@ import {
   listSessions,
   loadHistory,
   resumedTurnStart,
+  transcriptFilePath,
   type TuiDialog,
 } from "./extract.js";
+import { fileCard, sentFilePaths, contentTypeFor, isImageFile } from "./download.js";
 // Same implementation as the web client's preview (plain JS, loaded as is by
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
@@ -1981,6 +1983,41 @@ app.post("/restart-all", (_req, res) => {
   res.json({ restarted });
 });
 
+// Download a file the agent delivered via SendUserFile. `session` + `path`.
+//
+// The path is NEVER trusted: it is served ONLY if it appears in that session's
+// transcript as a sent attachment (`sentFilePaths`), so the endpoint can't be
+// walked into an arbitrary file (/etc/passwd, another agent's secrets). And the
+// response is neutralised for an agent-authored HTML/SVG: `attachment`
+// disposition + `nosniff` + a `sandbox` CSP mean even navigating straight to it
+// cannot run script in the cockpit's origin (which would reach the auth cookie).
+// A raster image still renders in the chat's <img>, which ignores the
+// disposition. Behind the password gate like everything else.
+app.get("/download", (req, res) => {
+  const session = String(req.query.session ?? "");
+  const wanted = String(req.query.path ?? "");
+  if (!session || !wanted) return res.status(400).type("text").send("session and path required");
+  const chan = loadChannels().find((c) => c.sessionId === session);
+  if (!chan?.cwd) return res.status(404).type("text").send("unknown session");
+  let raw: string;
+  try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session), "utf8"); }
+  catch { return res.status(404).type("text").send("no transcript"); }
+  if (!sentFilePaths(raw).has(wanted)) return res.status(403).type("text").send("that file was not sent by this agent");
+  let stat: fs.Stats;
+  try { stat = fs.statSync(wanted); if (!stat.isFile()) throw new Error("not a file"); }
+  catch { return res.status(404).type("text").send("file no longer on disk"); }
+  const name = path.basename(wanted);
+  res.setHeader("Content-Type", contentTypeFor(name));
+  res.setHeader("Content-Length", String(stat.size));
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+  // A raster image is served inline (so opening it shows the image); everything
+  // else — including SVG/HTML — downloads. The <img> in the chat renders either.
+  const inline = isImageFile(name) && contentTypeFor(name) !== "image/svg+xml";
+  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${name.replace(/["\\]/g, "_")}"`);
+  fs.createReadStream(wanted).on("error", () => { if (!res.headersSent) res.status(500); res.end(); }).pipe(res);
+});
+
 // Install (or repair) the global Claude Code CLI on demand — `npm i -g
 // @anthropic-ai/claude-code`. The cockpit shows this button when an agent's TUI
 // footer reports "Auto-update failed"; running agents still need a reload
@@ -2783,7 +2820,12 @@ function startContentTail(s: Live): void {
       // reception.
       broadcast(s, { type: "stream-text", text: e.text, at: e.at, afterInternal });
     } else if (e.kind === "tool")
-      broadcast(s, { type: "stream-tool", id: e.id, name: e.name, summary: e.summary });
+      broadcast(s, {
+        type: "stream-tool", id: e.id, name: e.name, summary: e.summary,
+        // Files a SendUserFile delivered → the client renders a download / inline
+        // card, Telegram uploads them. {path, name, image} so neither re-derives.
+        ...(e.files?.length ? { files: e.files.map(fileCard) } : {}),
+      });
     else if (e.kind === "usage") {
       s.usage.set(e.messageId, e.usage);
       broadcast(s, { type: "tokens", tokens: tokenTotals(s) });

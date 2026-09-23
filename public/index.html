@@ -871,6 +871,18 @@
     background: var(--amber-soft);
     border: 1px solid color-mix(in srgb, var(--amber) 35%, transparent);
   }
+  /* A file the agent delivered (SendUserFile): images inline, others a download
+     card. The bubble itself is a transparent container — the cards carry the box. */
+  .bubble.file-cards { background: none !important; border: 0 !important; padding: 0 !important; white-space: normal !important; display: flex; flex-direction: column; gap: 8px; }
+  .file-img { margin: 0; display: inline-block; max-width: min(420px, 100%); }
+  .file-img img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised); }
+  .file-img figcaption { margin-top: 4px; }
+  .file-img figcaption a, .file-dl { color: var(--text-dim); text-decoration: none; font-family: var(--mono); font-size: 12px; }
+  .file-dl { display: inline-flex; align-items: center; gap: 8px; align-self: flex-start; max-width: 100%;
+    padding: 8px 12px; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px; }
+  .file-dl:hover, .file-img figcaption a:hover { color: var(--amber); border-color: var(--amber); }
+  .file-dl .file-ic { color: var(--amber); font-size: 15px; flex: none; }
+  .file-dl .file-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .turn.claude .bubble {
     background: var(--bg-inset);
     border: 1px solid var(--line);
@@ -4400,6 +4412,56 @@
     return bubble;
   }
 
+  /** The gated download URL for a file the agent SENT (SendUserFile). Relative —
+   *  the page is already on the instance's origin — and scoped to the session, so
+   *  the server can verify the path was actually sent (no arbitrary reads). */
+  function fileDownloadUrl(tab, file) {
+    return "/download?session=" + encodeURIComponent(tab.sessionId || "") +
+           "&path=" + encodeURIComponent(file.path);
+  }
+  /** A file the agent handed the user: images render inline, everything else is a
+   *  download card. Shown live (SendUserFile tool_use) and replayed from history,
+   *  so it survives a reload. */
+  function addFileCard(tab, files, at) {
+    if (!Array.isArray(files) || !files.length) return;
+    if (Number.isFinite(at)) { tab.lastMsgAt = at; renderLastAt(tab); }
+    const turn = document.createElement("div");
+    turn.className = "turn claude";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "claude";
+    const time = fmtTime(at);
+    if (time) label.appendChild(time);
+    turn.appendChild(label);
+    const bubble = document.createElement("div");
+    bubble.className = "bubble file-cards";
+    for (const f of files) {
+      const url = fileDownloadUrl(tab, f);
+      if (f.image) {
+        const fig = document.createElement("figure");
+        fig.className = "file-img";
+        const img = document.createElement("img");
+        img.src = url; img.alt = f.name; img.loading = "lazy";
+        const cap = document.createElement("figcaption");
+        const dl = document.createElement("a");
+        dl.href = url; dl.download = f.name; dl.textContent = "⭳ " + f.name;
+        cap.appendChild(dl);
+        fig.append(img, cap);
+        bubble.appendChild(fig);
+      } else {
+        const card = document.createElement("a");
+        card.className = "file-dl";
+        card.href = url; card.download = f.name;
+        card.innerHTML = '<span class="file-ic">⭳</span><span class="file-nm"></span>';
+        card.querySelector(".file-nm").textContent = f.name;
+        bubble.appendChild(card);
+      }
+    }
+    turn.appendChild(bubble);
+    tab.transcriptEl.appendChild(turn);
+    pinBottom(tab);
+  }
+
   /* ── Live preview of the in-flight text ──────────────────
      The .jsonl only writes a text block once FINISHED, so nothing shows while it
      is generated. We fill the gap with the last block read off the TUI screen
@@ -4550,6 +4612,11 @@
 
   /** A tool call: appended to the open block, condensed into a run if repeated. */
   function addToolLine(tab, msg) {
+    // A SendUserFile isn't tool noise — it's a delivered file. Render it as a
+    // download / inline-image card, not a folded activity line.
+    if (msg.name === "SendUserFile" && Array.isArray(msg.files) && msg.files.length) {
+      return addFileCard(tab, msg.files, msg.at);
+    }
     const block = tab.act || openBlock(tab);
     const name = msg.name || "tool";
 
@@ -5307,7 +5374,11 @@
         t.unreadSep = null; // the separator element went with the wipe
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
-          if (h.role === "user") {
+          if (h.role === "file") {
+            // A file the agent delivered (SendUserFile) — its card survives the
+            // reload so the download / image stays reachable.
+            addFileCard(t, h.files || [], h.at);
+          } else if (h.role === "user") {
             // Who sent it, recovered from the stripped ⟦…⟧ header, through the
             // SAME echoAuthor the live echo uses: "Ada · telegram"
             // for a Telegram message, "you" for your own web prompt.
