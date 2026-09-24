@@ -1802,6 +1802,10 @@
   <div class="vm-hint" id="vmModeHint"></div>
   <label class="vm-check"><input type="checkbox" id="ledgerChk"><span>Shared ledger</span></label>
   <div class="vm-hint" id="vmLedgerHint"></div>
+  <div class="vm-row"><span class="vm-label">Default model</span>
+    <select id="defModelSel"><option value="">Claude Code's own default</option></select>
+  </div>
+  <div class="vm-hint" id="vmModelHint"></div>
   <button class="vm-btn" id="restartAllBtn" type="button">Restart all agents</button>
   <div class="vm-hint" id="vmRestartHint">Respawn every agent (they resume with history).</div>
   <!-- Only the agents flagged as running on the OLD Claude Code binary (their ↻
@@ -1924,7 +1928,18 @@
              so a form nobody touches spawns exactly as it did before. -->
         <div class="field" id="modelField">
           <span class="label">Model</span>
-          <div id="modelRow" class="radio-row" role="radiogroup" aria-label="Model"></div>
+          <div id="modelRow" class="radio-row" role="radiogroup" aria-label="Model family"></div>
+          <!-- Exact versions, READ FROM THE INSTALLED BINARY. Hidden when the
+               scan found nothing (a mid-upgrade binary), because the family row
+               above is always enough to start an agent. -->
+          <!-- FOLDED, like Advanced below: nineteen chips is three rows of
+               visual weight for a choice almost nobody makes. A family is the
+               right answer by default — it follows Claude Code's releases —
+               and pinning a version is the exception that can afford a click. -->
+          <details class="fold" id="modelVersions" hidden>
+            <summary>Pin an exact version <span class="fold-count" id="modelVerCount"></span></summary>
+            <div id="modelVerRow" class="radio-row" role="radiogroup" aria-label="Model version"></div>
+          </details>
           <label class="check" id="longCtxField">
             <input type="checkbox" id="longCtxInput">
             <span>Long context (1M)<span class="check-hint"> — needs a model above</span></span>
@@ -5272,6 +5287,56 @@
    * first paint can legitimately see the empty stub (invariant 10).
    */
   let selectedModel = "";
+  /** What `GET /models` last told us: families, exact versions, the default. */
+  let modelInfo = { families: [], models: [], default: null };
+
+  /**
+   * Load the model list once per page.
+   *
+   * The exact versions are read from the installed binary server-side, so this
+   * list follows Claude Code's own releases with nothing to maintain here — the
+   * hardcoded alternative is what left `claude-opus-4-8` in the profile panel
+   * long after it stopped being current.
+   */
+  async function loadModels() {
+    try {
+      const r = await fetch("/models");
+      if (!r.ok) return;
+      modelInfo = await r.json();
+    } catch { /* offline: the family row still works, it needs no server */ }
+    renderModelRow();
+    renderDefaultModel();
+  }
+
+  /** The machine-wide default, in the version menu beside the permission mode. */
+  function renderDefaultModel() {
+    const sel = $("defModelSel");
+    if (!sel) return;
+    const cur = modelInfo.default || "";
+    sel.replaceChildren();
+    const none = document.createElement("option");
+    none.value = ""; none.textContent = "Claude Code's own default";
+    sel.appendChild(none);
+    for (const group of [modelInfo.families || [], modelInfo.models || []]) {
+      for (const m of group) {
+        const o = document.createElement("option");
+        o.value = m; o.textContent = m;
+        sel.appendChild(o);
+      }
+    }
+    // A default pinned before an upgrade may no longer be offered; keep showing
+    // it rather than silently snapping the box to something else.
+    if (cur && ![...sel.options].some((o) => o.value === cur)) {
+      const o = document.createElement("option");
+      o.value = cur; o.textContent = cur + " (not in this build)";
+      sel.appendChild(o);
+    }
+    sel.value = cur;
+    $("vmModelHint").textContent = cur
+      ? "Every agent without its own model starts on this. Applies at each agent's next spawn."
+      : "Agents follow Claude Code's default. Pick one to pin it for this machine.";
+  }
+
   function renderModelRow() {
     const row = $("modelRow");
     if (!row) return;
@@ -5290,8 +5355,36 @@
       });
       row.appendChild(b);
     }
+    renderModelVersions();
     syncLongCtx();
   }
+
+  /** The exact-version chips. Absent scan → the block stays hidden. */
+  function renderModelVersions() {
+    const wrap = $("modelVersions"), row = $("modelVerRow");
+    if (!wrap || !row) return;
+    const models = modelInfo.models || [];
+    wrap.hidden = models.length === 0;
+    const count = $("modelVerCount");
+    if (count) count.textContent = models.length ? `(${models.length})` : "";
+    // Opened when a version IS the current choice, so a picked version is never
+    // hidden behind a closed fold — the same trap as a spotlight on a target
+    // that is not on screen.
+    if (models.includes(selectedModel)) wrap.open = true;
+    row.replaceChildren();
+    for (const m of models) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "model-chip" + (m === selectedModel ? " on" : "");
+      b.textContent = m.replace(/^claude-/, "");
+      b.title = m;
+      b.setAttribute("role", "radio");
+      b.setAttribute("aria-checked", m === selectedModel ? "true" : "false");
+      b.addEventListener("click", () => { selectedModel = m; renderModelRow(); });
+      row.appendChild(b);
+    }
+  }
+
   /** The long window is a SUFFIX on a model, so it cannot stand on its own. */
   function syncLongCtx() {
     const box = $("longCtxInput");
@@ -5533,6 +5626,29 @@
       ledgerChk.checked = !enabled; // revert on failure
     }
   });
+  $("defModelSel").addEventListener("change", async () => {
+    const want = $("defModelSel").value || null;
+    const prev = modelInfo.default;
+    $("vmModelHint").textContent = "Saving…";
+    try {
+      const r = await fetch("/models/default", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: want }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "refused");
+      modelInfo.default = (await r.json()).default;
+      renderDefaultModel();
+    } catch (e) {
+      // Say WHY and put the box back: a select that silently snaps to its old
+      // value looks like the click never registered.
+      modelInfo.default = prev;
+      renderDefaultModel();
+      $("vmModelHint").textContent = "Could not save — " + (e.message || e);
+    }
+  });
+  loadModels();
+
   restartAllBtn.addEventListener("click", async () => {
     if (!confirm("Restart all agents? Each respawns and resumes with its history.")) return;
     restartAllBtn.disabled = true;

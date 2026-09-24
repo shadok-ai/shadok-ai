@@ -87,11 +87,20 @@ Enter to skip; you can add it later from the web UI).
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
   spawn, remembered across resume.
 - **A model per agent** — the creation form picks the model this one agent runs
-  on (Opus, Sonnet, Haiku, Fable), overriding its profile's, with a **long
-  context (1M)** tick beside it. Leave it on *profile default* and nothing
-  changes: no flag is sent at all. The choice is stored on the agent, so a
-  resume or a restart keeps it, and the quota gauge meters it against the
-  window it actually asked for. Eight roles ship with it: a lead that
+  on, overriding its profile's, with a **long context (1M)** tick beside it.
+  Pick a family (Opus, Sonnet, Haiku, Fable) and it follows Claude Code's
+  releases, or fold out **Pin an exact version** — that list is read from the
+  installed `claude` binary, so a model Anthropic ships appears on its own at
+  the next Claude Code update, with nothing to maintain here. Leave it on
+  *profile default* and nothing changes: no flag is sent at all. The choice is
+  stored on the agent, so a resume or a restart keeps it, and the quota gauge
+  meters it against the window it actually asked for.
+- **A default model for the machine** — ⋯ → the version menu → *Default model*,
+  beside the permission mode. It writes Claude Code's own `settings.json`, which
+  is already the last step of the resolution chain (**agent → profile →
+  machine**), and applies at each agent's next spawn. Agents that carry no model
+  of their own simply follow Claude Code's default, which tracks the newest
+  model — so this is for **pinning** one, not for getting the latest. Eight roles ship with it: a lead that
   delegates, a dev, a QA agent that writes the failing test and cannot fix the
   code it covers, a release agent that prepares a deployment and leaves the
   trigger to you, a product agent that writes the spec instead of the change,

@@ -255,3 +255,54 @@ function seedSettings(): void {
 export function ensureProjectTrusted(cwd: string): void {
   seed(cwd);
 }
+
+/**
+ * The machine-wide default model, read from and written to the SAME
+ * `~/.claude/settings.json` this module already owns.
+ *
+ * Deliberately here and not in a module of its own: `seedSettings` already
+ * writes that file, and two writers on one JSON file is how a `tui` seeded at
+ * boot and a model written from the GUI would eventually erase each other. One
+ * owner, one atomic write.
+ *
+ * Verified 2026-09-25 against claude 2.1.282, because the whole feature rests
+ * on it: with `model` in that file and NO `--model` flag, the run used
+ * `claude-haiku-4-5-20251001`; and it is still honoured when shadok also passes
+ * `--settings` for a profile's guardrails, so the flag MERGES rather than
+ * replacing the file. Without that second check the setting would have been
+ * silently inert for every agent that carries a profile.
+ */
+export function getDefaultModel(): string | null {
+  try {
+    const raw = fs.readFileSync(settingsFile(), "utf8");
+    const m = JSON.parse(raw)?.model;
+    return typeof m === "string" && m.trim() ? m.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write (or clear, with null) that default. Returns false if it could not. */
+export function setDefaultModel(model: string | null): boolean {
+  try {
+    const file = settingsFile();
+    let existing: ClaudeSettings = {};
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      // Hand-edited into invalid JSON, or not an object: leave it ALONE rather
+      // than "repair" it — same rule as `seed`, and for the same reason.
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      existing = parsed;
+    }
+    const next: ClaudeSettings = { ...existing };
+    if (model?.trim()) next.model = model.trim();
+    else delete next.model;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.shadok-${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+    fs.renameSync(tmp, file);
+    return true;
+  } catch {
+    return false;
+  }
+}
