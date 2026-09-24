@@ -192,6 +192,21 @@ export function channelWriteAllowed(serverKey: string, clientKey: string | undef
 }
 
 /**
+ * `profile` is SERVER_OWNED and ASSERT-only, like `branch`/`repo`/`model`
+ * (invariant 1). A start carries no profile on a resume — the browser never
+ * sends a server-owned field — so `msg.profile ?? null` resolves to null there,
+ * and writing that null ERASES the role the channel already holds. This returns
+ * the `{ profile }` to spread into the upsert: the resolved profile when there
+ * is one; `{ profile: null }` only when the client EXPLICITLY asked for no
+ * profile; and `{}` (omit, keep the stored value) for a null that is merely an
+ * omission. Nine agents lost their role this way during the 2026-09-24 restart
+ * churn.
+ */
+export function profilePatch(profile: string | null, clientSentProfile: boolean): { profile?: string | null } {
+  return profile != null || clientSentProfile ? { profile } : {};
+}
+
+/**
  * Drop a channel that is another instance's HOME (lead) — a `home` channel whose
  * cwd is a different launch directory. Its "general" has no place in this
  * instance's file; it lands there only through the stale-tab contamination

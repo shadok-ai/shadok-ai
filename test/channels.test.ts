@@ -11,8 +11,29 @@ import {
   resumeTarget,
   channelWriteAllowed,
   dropForeignHomes,
+  profilePatch,
   type Channel,
 } from "../src/channels.js";
+
+// `profile` is SERVER_OWNED and ASSERT-only, like `branch`/`repo`/`model`
+// (invariant 1): a start that carries no profile — every resume, since the
+// browser never sends a server-owned field — must never overwrite the profile
+// the channel already holds with a null-by-omission. The nine agents that lost
+// their role during the restart churn (2026-09-24) is the class this closes.
+
+test("profilePatch: a resolved profile is written", () => {
+  assert.deepEqual(profilePatch("Shadok-dev", false), { profile: "Shadok-dev" });
+});
+
+test("profilePatch: a null the client did NOT ask for is OMITTED (keeps the stored one)", () => {
+  // The bug: writing this null erased a stored profile on a start that just
+  // didn't mention one. Omitting the key leaves the registry's value intact.
+  assert.deepEqual(profilePatch(null, false), {});
+});
+
+test("profilePatch: a null the client EXPLICITLY sent is honoured (\"no profile\")", () => {
+  assert.deepEqual(profilePatch(null, true), { profile: null });
+});
 
 // A browser tab belongs to the instance it was LOADED from. When the server is
 // stopped and another instance (a different launch dir) takes the same port,
