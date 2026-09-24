@@ -56,6 +56,7 @@ import {
   removeChannel,
   mergeClientChannels,
   channelWriteAllowed,
+  profilePatch,
   loadTgGroup,
   saveTgGroup,
   isHomeChannel,
@@ -3555,7 +3556,12 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // `ensureWorktreeCheckout` would then hunt the branch in the wrong
             // repository. The session's own worktree is the only source of truth.
             ...(worktree ? { branch: worktree.branch, repo: worktree.repo } : {}),
-            profile,
+            // profile is ASSERT-only too (invariant 1): a resume sends none, so
+            // `msg.profile ?? null` resolves to null here and writing it ERASED
+            // the channel's role. Keep the stored one unless the client chose
+            // explicitly (a name, or null for "no profile"). This is exactly what
+            // nine agents lost during the 2026-09-24 restart churn.
+            ...profilePatch(profile, msg.profile !== undefined),
             // ASSERT-only, like `branch`, `repo` and `parent` (invariant 24): a
             // client that omits the field must never erase a model the channel
             // already carries. This line is the whole feature — `parent` was
