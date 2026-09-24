@@ -27,8 +27,32 @@
     --phosphor: #ffb45c;
     --ok: #7fc97f;
     --err: #e07a6a;
+    /* Floating menus (⋯, version, tab, palette) sit a touch darker than a raised
+       panel for depth; kept as tokens so light mode can flip them. */
+    --menu-bg: #14140f;
+    --menu-hover: #26261c;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  /* Light mode. An ORTHOGONAL axis to the accent palette: only the base surfaces
+     and text flip; the instance's accent (--amber/--phosphor) stays its identity.
+     Applied via `data-mode="light"` on <html>, a PER-BROWSER comfort choice set
+     from localStorage before first paint (the small head script) — default dark.
+     --phosphor darkens here: the selection bar is a 3px inset of it, invisible as
+     a pale amber on white. Accent-tinted surfaces (--amber-soft) derive from
+     --amber and follow on their own. */
+  :root[data-mode="light"] {
+    --bg: #eef0f4;
+    --bg-raised: #ffffff;
+    --bg-inset: #e5e8ee;
+    --line: #d2d7e0;
+    --text: #1b2030;
+    --text-dim: #5c6577;
+    --ok: #2f9e44;
+    --err: #cf4436;
+    --phosphor: #c77800;
+    --menu-bg: #ffffff;
+    --menu-hover: #eceff5;
   }
   /* Colour palettes, chosen per instance from the ⋯ menu and stored server-side
      (like the instance name). Only the accent family changes; the dark base
@@ -174,7 +198,7 @@
   header .ver {
     font-family: var(--mono);
     font-size: 10px;
-    color: #888;
+    color: var(--text-dim);
     letter-spacing: 0;
     cursor: pointer;
   }
@@ -182,14 +206,14 @@
   header .ver.stale { color: var(--amber); }
   #verMenu {
     position: fixed; top: 42px; left: 12px; z-index: 1001;
-    background: #14140f; border: 1px solid #3a3a30; border-radius: 6px;
+    background: var(--menu-bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 10px 12px; font-family: var(--mono); font-size: 12px;
     min-width: 210px; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
   }
   #verMenu .vm-row { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
-  #verMenu .vm-label { color: #888; }
+  #verMenu .vm-label { color: var(--text-dim); }
   #verMenu .vm-check { display: flex; align-items: center; gap: 6px; margin-top: 9px; cursor: pointer; }
-  #verMenu .vm-hint { color: #888; font-size: 10px; margin-top: 7px; line-height: 1.4; }
+  #verMenu .vm-hint { color: var(--text-dim); font-size: 10px; margin-top: 7px; line-height: 1.4; }
   #verMenu .vm-btn { margin-top: 10px; width: 100%; padding: 6px 10px; font-size: 11px; cursor: pointer;
     color: var(--text, #e8e8ea); background: transparent; border: 1px solid var(--line, #3a3d42); border-radius: 6px; }
   #verMenu .vm-btn:hover { border-color: var(--amber, #d0a000); }
@@ -198,7 +222,7 @@
      the cursor. Home for the per-channel actions. */
   #tabMenu {
     position: fixed; z-index: 1002;
-    background: #14140f; border: 1px solid #3a3a30; border-radius: 6px;
+    background: var(--menu-bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 4px; font-family: var(--mono); font-size: 12px;
     min-width: 170px; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
   }
@@ -207,7 +231,7 @@
     background: none; border: 0; color: var(--text); font: inherit;
     padding: 6px 9px; border-radius: 4px;
   }
-  #tabMenu .tm-item:hover { background: #26261c; }
+  #tabMenu .tm-item:hover { background: var(--menu-hover); }
   /* A muted channel says so on its own tab: silence must be explainable. */
   .tab .mute { font-size: 10px; opacity: 0.75; flex: 0 0 auto; }
   /* Same for the opposite: an agent with scheduled prompts can speak without
@@ -241,7 +265,7 @@
   /* Right-click menu header: the agent's identity, not an action. */
   #tabMenu .tm-head {
     padding: 5px 9px 6px; color: var(--text-dim); font-size: 11px;
-    border-bottom: 1px solid #2c2c22; margin-bottom: 4px;
+    border-bottom: 1px solid var(--line); margin-bottom: 4px;
     /* The profile name does not cut the menu in two: one line, cleanly
        truncated when it is long. */
     max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -273,7 +297,7 @@
     display: inline-block;
     width: 9px; height: 9px;
     border-radius: 50%;
-    background: #3a3f4e;
+    background: var(--line);
     vertical-align: -1px;
     margin-right: 6px;
     flex: none;
@@ -385,6 +409,15 @@
   }
   #moreMenu .mm-themes button:hover { border-color: var(--text-dim); }
   #moreMenu .mm-themes button.active { border-color: var(--text); }
+  /* Dark / Light segmented toggle. Overrides `#moreMenu button { width:100% }`. */
+  .mm-mode { display: flex; gap: 6px; padding: 2px 4px 6px; }
+  #moreMenu .mm-mode button {
+    flex: 1; width: auto; padding: 5px 8px; font-size: 11px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg-inset); color: var(--text-dim);
+  }
+  #moreMenu .mm-mode button:hover { border-color: var(--text-dim); color: var(--text); }
+  #moreMenu .mm-mode button.active { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
   button:hover { border-color: var(--amber); color: var(--amber); }
   button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
   button.primary { background: var(--amber); border-color: var(--amber); color: #1a1205; font-weight: 600; }
@@ -1616,7 +1649,7 @@
   #ledgerList .ldg-head { display: flex; align-items: baseline; gap: 8px; }
   #ledgerList .ldg-status { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .8;
     border: 1px solid var(--line, #3a3d42); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
-  #ledgerList .ldg-meta { color: #888; font-size: 10px; margin-top: 2px; }
+  #ledgerList .ldg-meta { color: var(--text-dim); font-size: 10px; margin-top: 2px; }
   #ledgerList .ldg-note { font-size: 12px; opacity: .85; margin-top: 3px; }
   #secretsPanel .sec-repo { font-size: 12px; opacity: .8; margin-bottom: 4px; word-break: break-all; }
   #secretsPanel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
@@ -1667,6 +1700,12 @@
   .sec-reload button { flex: none; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--amber); background: none; color: var(--amber); cursor: pointer; font: inherit; font-size: 12px; }
   .sec-reload button:hover { background: color-mix(in srgb, var(--amber) 15%, transparent); }
 </style>
+<!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
+     body paints — here in <head> — so a light-preferring viewer never sees a
+     flash of the dark default. Nonce'd like every inline script (invariant 12). -->
+<script nonce="__CSP_NONCE__">
+  try { if (localStorage.getItem("cp.mode") === "light") document.documentElement.setAttribute("data-mode", "light"); } catch (e) {}
+</script>
 </head>
 <body>
 
@@ -1719,6 +1758,12 @@
            pushed the icons off the row); it reappears here instead. -->
       <button id="starMenuItem">★ Star on GitHub</button>
       <div class="mm-sep"></div>
+      <div class="mm-label">Appearance</div>
+      <!-- Light / dark mode — per browser (localStorage), default dark. -->
+      <div id="modeRow" class="mm-mode">
+        <button type="button" data-mode="dark">☾ Dark</button>
+        <button type="button" data-mode="light">☀ Light</button>
+      </div>
       <div class="mm-label">Palette</div>
       <!-- Colour swatches, filled by JS from THEMES; picking one re-themes the
            whole cockpit and persists per instance. -->
@@ -3758,6 +3803,31 @@
     }
   }
   renderThemeSwatches(); // paint the swatches now; the load fetch sets the active one
+
+  // ── Light / dark mode: per BROWSER (localStorage), not per instance ─────────
+  // A comfort choice that belongs to the person, not the cockpit's identity (the
+  // accent palette is the shared one). The <head> script already set the
+  // attribute before paint; this syncs the toggle and re-paints the favicon
+  // (which reads --bg / --amber live). Default dark → no attribute.
+  function syncModeButtons() {
+    const light = document.documentElement.getAttribute("data-mode") === "light";
+    for (const b of document.querySelectorAll("#modeRow button")) {
+      b.classList.toggle("active", b.dataset.mode === (light ? "light" : "dark"));
+    }
+  }
+  function applyMode(mode) {
+    const light = mode === "light";
+    const root = document.documentElement;
+    if (light) root.setAttribute("data-mode", "light");
+    else root.removeAttribute("data-mode");
+    try { localStorage.setItem("cp.mode", light ? "light" : "dark"); } catch (e) {}
+    syncModeButtons();
+    paint(); // the favicon tile follows --bg (safe here: user click, well after init)
+  }
+  for (const b of document.querySelectorAll("#modeRow button")) {
+    b.addEventListener("click", (e) => { e.stopPropagation(); applyMode(b.dataset.mode); });
+  }
+  syncModeButtons(); // init: the <head> script already applied the attribute pre-paint
 
   /** A themed CSS custom property, read live so the favicon follows the palette.
      A standalone SVG data-URI can't see the page's variables, so we inline the
