@@ -1967,20 +1967,28 @@ app.post("/autoupdate", (req, res) => {
  * await the loop: a caller (the toggle, the button) must not hang for minutes
  * while a big fleet cycles.
  */
-function restartAllSessions(): number {
-  const live = [...sessions.values()];
+function restartAllSessions(ids?: string[]): number {
+  // A subset (e.g. only the agents flagged as needing a Claude Code reload) when
+  // `ids` is given, all live sessions otherwise. Same one-at-a-time discipline.
+  const wanted = ids && ids.length ? new Set(ids) : null;
+  const live = [...sessions.values()].filter((s) => !wanted || wanted.has(s.id));
   void (async () => {
     for (const s of live) await restartSession(s).catch(() => {});
   })();
   return live.length;
 }
 
-// Restart every agent from the GUI (they resume with history). Behind the same
+// Restart agents from the GUI (they resume with history). Behind the same
 // password gate as the other version-menu controls. Returns at once; the agents
-// cycle one by one in the background.
-app.post("/restart-all", (_req, res) => {
-  const restarted = restartAllSessions();
-  console.log(`restart-all: respawning ${restarted} agent(s), one at a time`);
+// cycle one by one in the background. An optional `{sessions:[ids]}` body limits
+// it to those agents — used by "Reload agents to apply update", which reloads only
+// the ones flagged as running on the old Claude Code binary.
+app.post("/restart-all", (req, res) => {
+  const ids = Array.isArray(req.body?.sessions)
+    ? (req.body.sessions as unknown[]).filter((x): x is string => typeof x === "string" && !!x)
+    : undefined;
+  const restarted = restartAllSessions(ids);
+  console.log(`restart-all: respawning ${restarted} agent(s)${ids ? " (filtered)" : ""}, one at a time`);
   res.json({ restarted });
 });
 

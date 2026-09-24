@@ -1804,6 +1804,10 @@
   <div class="vm-hint" id="vmLedgerHint"></div>
   <button class="vm-btn" id="restartAllBtn" type="button">Restart all agents</button>
   <div class="vm-hint" id="vmRestartHint">Respawn every agent (they resume with history).</div>
+  <!-- Only the agents flagged as running on the OLD Claude Code binary (their ↻
+       badge). Shown only when there are any. -->
+  <button class="vm-btn" id="reloadUpdatesBtn" type="button" hidden>↻ Reload agents to apply update</button>
+  <div class="vm-hint" id="vmReloadUpdatesHint" hidden></div>
 </div>
 
 <div id="secretsOverlay" class="overlay" hidden>
@@ -2832,6 +2836,20 @@
     tab.updateState = state || null;
     paintUpdateBadge(tab);
     if (tab === active) paintChanUpdate();
+    refreshReloadUpdatesBtn();
+  }
+  /** Every agent flagged as needing a Claude Code reload AND reachable now. */
+  function pendingUpdateTabs() {
+    return tabs.filter((t) => t.updateState && t.sessionId && t.ws && t.ws.readyState === WebSocket.OPEN);
+  }
+  /** The version-menu "Reload agents to apply update" button: shown only when
+   *  there ARE pending agents, labelled with the count. */
+  function refreshReloadUpdatesBtn() {
+    const btn = document.getElementById("reloadUpdatesBtn");
+    if (!btn) return;
+    const n = pendingUpdateTabs().length;
+    btn.hidden = n === 0 || claudeInstalling;
+    if (n > 0) btn.textContent = "↻ Reload " + n + " agent" + (n > 1 ? "s" : "") + " to apply update";
   }
   function paintUpdateBadge(tab) {
     const el = tab.updateEl;
@@ -2868,13 +2886,12 @@
     if (act === "reload") return reloadTab(tab);
     if (act === "install") return installClaudeUpdate(tab);
   }
-  /** Install Claude Code globally (the server runs `npm i -g …`), then reload the
-   *  agent onto the new binary. One install serves every agent this session. */
-  async function installClaudeUpdate(tab) {
-    if (claudeInstalling) return;
+  /** Run the global Claude Code install (`npm i -g …`) ONCE. Returns {ok, err}.
+   *  Shared by the single-agent path and the bulk "reload all" path — one install
+   *  serves every agent this session. */
+  async function runClaudeInstall() {
     claudeInstalling = true;
-    paintChanUpdate();
-    addTurn(tab, "system", "", "Installing the Claude Code update (npm i -g @anthropic-ai/claude-code)…", null, Date.now());
+    paintChanUpdate(); refreshReloadUpdatesBtn();
     let ok = false, err = "";
     try {
       const r = await fetch("/claude-update", { method: "POST" });
@@ -2885,14 +2902,54 @@
     claudeInstalling = false;
     if (ok) {
       claudeUpdateInstalled = true;
+      tabs.forEach(paintUpdateBadge); // flip "install" badges to just "reload"
+    }
+    paintChanUpdate(); refreshReloadUpdatesBtn();
+    return { ok, err };
+  }
+  /** Install Claude Code globally, then reload this ONE agent onto the new binary. */
+  async function installClaudeUpdate(tab) {
+    if (claudeInstalling) return;
+    addTurn(tab, "system", "", "Installing the Claude Code update (npm i -g @anthropic-ai/claude-code)…", null, Date.now());
+    const { ok, err } = await runClaudeInstall();
+    if (ok) {
       addTurn(tab, "system", "", "Claude Code updated. Reloading this agent to apply it — reload your other agents too (their ↻ badge).", null, Date.now());
-      // Other agents' badges flip from "install" to just "reload" now.
-      tabs.forEach(paintUpdateBadge);
       reloadTab(tab);
     } else {
       addTurn(tab, "system", "", "Couldn't install the Claude Code update: " + err + ". Try again, or run it yourself: npm i -g @anthropic-ai/claude-code", null, Date.now());
     }
-    paintChanUpdate();
+  }
+  /** Reload EVERY agent flagged as needing the update, one action for the fleet:
+   *  install once if any auto-update failed, then reload just the pending agents
+   *  (server-side, one at a time — never a herd of `--resume`, see /restart-all). */
+  async function reloadPendingUpdates() {
+    const pending = pendingUpdateTabs();
+    if (!pending.length || claudeInstalling) return;
+    const btn = document.getElementById("reloadUpdatesBtn");
+    const hint = document.getElementById("vmReloadUpdatesHint");
+    if (btn) btn.disabled = true;
+    if (hint) hint.hidden = false;
+    // Any agent whose auto-update FAILED needs the install first — done once.
+    if (!claudeUpdateInstalled && pending.some((t) => t.updateState === "failed")) {
+      if (hint) hint.textContent = "Installing the Claude Code update…";
+      const { ok, err } = await runClaudeInstall();
+      if (!ok) { if (hint) hint.textContent = "Install failed: " + err; if (btn) btn.disabled = false; return; }
+    }
+    const ids = pending.map((t) => t.sessionId);
+    if (hint) hint.textContent = "Reloading " + ids.length + " agent" + (ids.length > 1 ? "s" : "") + "…";
+    try {
+      const r = await (await fetch("/restart-all", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessions: ids }),
+      })).json();
+      if (hint) hint.textContent = "Reloading " + (r.restarted ?? ids.length) + " agent(s) — they resume with history.";
+    } catch {
+      if (hint) hint.textContent = "Reload failed.";
+    }
+    if (btn) btn.disabled = false;
+    // The reloaded processes drop their update footer, so their badges clear as
+    // the next screen arrives; nothing to do here but re-check the count.
+    refreshReloadUpdatesBtn();
   }
   function paintCount(el, n, noun) {
     if (!el) return;
@@ -5353,7 +5410,7 @@
 
   function toggleVerMenu(show) {
     verMenu.hidden = show === undefined ? !verMenu.hidden : !show;
-    if (!verMenu.hidden) renderVerMenu();
+    if (!verMenu.hidden) { renderVerMenu(); refreshReloadUpdatesBtn(); document.getElementById("vmReloadUpdatesHint").hidden = true; }
   }
 
   if (verView) verView.addEventListener("click", (e) => { e.stopPropagation(); toggleVerMenu(); });
@@ -5489,6 +5546,7 @@
       restartAllBtn.disabled = false;
     }
   });
+  document.getElementById("reloadUpdatesBtn").addEventListener("click", reloadPendingUpdates);
 
   function showUpdateBanner(version) {
     let el = document.getElementById("updateBanner");

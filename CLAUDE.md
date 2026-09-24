@@ -253,7 +253,10 @@ scoped by `SHADOK_SESSION_KEY` like `/profiles/prompt`, used by the
 `shadok-reload` skill), `/ledger` (GET — the table for the read-only viewer;
 POST — flip the ledger reflex from the GUI;
 **restarts all agents** when it changes so the reflex lands), `/restart-all`
-(POST — respawn every agent, the version-menu button). Both restart **one at a
+(POST — respawn every agent, the version-menu button; an optional
+`{sessions:[ids]}` body limits it to those agents, which is how *Reload N agents
+to apply update* reloads ONLY the ones flagged as running on the old Claude Code
+binary, `restartAllSessions(ids)`). Both restart **one at a
 time, in the background** (`restartAllSessions` returns at once): a concurrent
 herd of `claude --resume` trips the upstream OAuth refresh-token race (~30+
 agents) and spikes resources — the manual single reload is safe only because it
