@@ -194,14 +194,19 @@ cycle, an unknown parent or a cap),
 `set-profile` (`profile` — the profile's name or
 `null`; `restart?` to apply it right away by respawning in place. This is the
 ONLY legitimate path: `profile` is `SERVER_OWNED` on the channel, so a browser
-PUT `/channels` cannot touch it), `stop` (`sessionId?` —
-kills a specific channel, so the UI can remove a zombie).
+PUT `/channels` cannot touch it),
+`set-model` (`model` — an alias like `opus`, optionally `[1m]`-suffixed, or
+`null` = the profile's; the twin of `set-profile` for the per-agent model, shown
+and changed in the agent menu. `--model` is a spawn arg, so it ALWAYS respawns to
+apply — no "at next reload" gap. `model` is `SERVER_OWNED` too), `stop`
+(`sessionId?` — kills a specific channel, so the UI can remove a zombie).
 
 **server → client:** `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
 `stream-tool` (carries `files` — `{path,name,image}[]` — when it's a `SendUserFile`, so the client renders a download / inline-image card instead of a folded tool line, and Telegram uploads them), `stream-result`, `history` (whose turns may be `role:"file"` for a delivered file), `dialog`, `screen`, `tokens`,
 `context`, `background` (`shells` + `monitors` — what the pane reports still running; live only, never stored, like the context percentage), `parent` (the parent channel changed — broadcast, so every tab follows),
 `profile` (the `{profile, applied}` pair — desired vs the one the running process
-actually carries; their gap is what the UI shows as "at next reload"),
+actually carries; their gap is what the UI shows as "at next reload" — and it
+also carries `model`, the per-agent model the agent menu shows/changes),
 `prompt-echo`, `pace-blocked` / `pace-hold` / `pace-resumed`,
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
 `stopped`. `error` carries an optional `code` — `"busy"` (prompt refused

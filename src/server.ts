@@ -2158,6 +2158,11 @@ type ClientMessage =
    *  it right away (re-spawn in place, history kept); without it the change is
    *  stored and takes effect at the next restart. */
   | { type: "set-profile"; profile: string | null; restart?: boolean }
+  /** Change the MODEL this one agent runs on (an alias like `opus`, optionally
+   *  `[1m]`-suffixed for the long window, or null to fall back to the profile's).
+   *  Like `profile`, `model` is SERVER_OWNED on the channel, so this is the only
+   *  legitimate path. A model is a spawn arg, so this ALWAYS respawns to apply. */
+  | { type: "set-model"; model: string | null }
   /** Attach this channel under another (or detach with null), so that parent —
    *  and only that parent — is told when this agent finishes, blocks on a
    *  question, or dies. Like `profile`, `parent` is SERVER_OWNED, so this is
@@ -2594,7 +2599,13 @@ async function restartSession(s: Live): Promise<void> {
 /** Tells every attached client (other tabs, other devices) both the desired and
  *  the running profile — the pair is what lets the UI show "(at next reload)". */
 function broadcastProfile(s: Live) {
-  broadcast(s, { type: "profile", profile: s.profile ?? null, applied: s.appliedProfile ?? null });
+  broadcast(s, {
+    type: "profile", profile: s.profile ?? null, applied: s.appliedProfile ?? null,
+    // The model this agent runs on (an alias / `[1m]` setting / full name, or
+    // null = the profile's). Carried on the same identity message so the tab menu
+    // can show and change it.
+    model: s.model ?? null,
+  });
 }
 
 function destroySession(s: Live) {
@@ -3868,6 +3879,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           upsertChannel({ sessionId: s.id, profile: name });
           broadcastProfile(s);            // even without a restart: the gap shows everywhere
           if (msg.restart) await restartSession(s);
+          break;
+        }
+        case "set-model": {
+          // Change what model this agent runs on. `--model` is a spawn arg, so a
+          // running process can't switch mid-flight: this ALWAYS respawns (a
+          // "set desired, apply later" would show a model as running that isn't).
+          // The old process is cut short like Reload agent — catching an agent on
+          // the wrong model is exactly the point.
+          if (!session) return fail("no session started");
+          const s = session;
+          const model = msg.model?.trim() || null;
+          s.model = model ?? undefined;
+          upsertChannel({ sessionId: s.id, model });
+          await restartSession(s);        // respawns with the new --model (s.model)
+          broadcastProfile(s);            // running == desired now
           break;
         }
         case "set-parent": {
