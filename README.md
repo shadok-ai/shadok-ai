@@ -604,7 +604,10 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
-key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default),
+key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default.
+Light/dark **mode** is an orthogonal, **per-browser** choice in the same menu
+(default dark; stored in `localStorage`, applied before first paint) and needs no
+endpoint — the accent is the instance's shared identity, the mode is personal),
 `/profiles`, `/secrets`, `/telegram`, `/defaults`, `/first-agent` (GET —
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
