@@ -3079,6 +3079,13 @@
       pend.textContent = "at next reload — running: " + (tab.appliedProfile || "No profile");
       head.appendChild(pend);
     }
+    // The model this agent runs on — the thing the user asked to be able to see.
+    if (tab.sessionId) {
+      const ms = document.createElement("span");
+      ms.className = "tm-sub";
+      ms.textContent = "🧠 " + modelLabel(tab.model);
+      head.appendChild(ms);
+    }
     if (tab.crons && tab.crons.length) {
       const sub = document.createElement("span");
       sub.className = "tm-sub";
@@ -3096,6 +3103,7 @@
     // The profile is only set here for a launched agent: otherwise the creation
     // box carries it, and there is no session to restart.
     if (tab.sessionId) items.push(["👤 Change profile…", () => openProfileSwitcher(tab)]);
+    if (tab.sessionId) items.push(["🧠 Change model…", () => openModelSubmenu(tab)]);
     // Scheduled prompts (crons) for this agent — the panel targets the active
     // channel, so switch to it first (this menu can be opened on any tab).
     if (tab.sessionId) items.push(["⏰ Schedule…", () => { activate(tab); $("cronOverlay").hidden = false; renderCrons(); }]);
@@ -3128,9 +3136,13 @@
       b.addEventListener("click", (e) => { e.stopPropagation(); closeTabMenu(); run(); });
       tabMenu.appendChild(b);
     }
-    // Paint offscreen first: the menu must be measured before it can be kept
-    // inside the viewport (right-click near the bottom/right edge otherwise
-    // opens a menu you can't reach).
+    placeTabMenu(x, y);
+  }
+  let lastMenuX = 0, lastMenuY = 0;
+  // Paint offscreen first: the menu must be measured before it can be kept inside
+  // the viewport (opened near the bottom/right edge it would otherwise fall off).
+  function placeTabMenu(x, y) {
+    lastMenuX = x; lastMenuY = y;
     tabMenu.style.left = "0px";
     tabMenu.style.top = "0px";
     tabMenu.hidden = false;
@@ -3138,6 +3150,66 @@
     const r = tabMenu.getBoundingClientRect();
     tabMenu.style.left = Math.max(4, Math.min(x, window.innerWidth - r.width - 4)) + "px";
     tabMenu.style.top = Math.max(4, Math.min(y, window.innerHeight - r.height - 4)) + "px";
+  }
+  /** A friendly label for a per-agent model setting: an alias → its picker label
+   *  ("opus" → "Opus"), a `[1m]` suffix → "· 1M", a full name shown as-is, and
+   *  empty/null → "profile default". */
+  function modelLabel(model) {
+    const m = String(model ?? "").trim();
+    if (!m) return "profile default";
+    const long = window.isLongContext ? window.isLongContext(m) : /\[1m\]/i.test(m);
+    const alias = m.replace(/\[1m\]/i, "").trim();
+    const choice = (window.MODEL_CHOICES || []).find((c) => c.id && c.id.toLowerCase() === alias.toLowerCase());
+    const base = choice ? choice.label : alias;
+    return long ? base + " · 1M" : base;
+  }
+  /** The per-agent model picker, shown as a SUBMENU of the agent menu (the list
+   *  is short). Picking one changes the model, which — being a spawn arg — always
+   *  restarts the agent (history kept), exactly like Reload. */
+  function openModelSubmenu(tab) {
+    tabMenu.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "tm-head";
+    const who = document.createElement("b");
+    who.textContent = "🧠 Model";
+    head.appendChild(who);
+    const sub = document.createElement("span");
+    sub.className = "tm-sub";
+    sub.textContent = "Picking one restarts the agent — history is kept.";
+    head.appendChild(sub);
+    tabMenu.appendChild(head);
+    // Long-context (1M) modifier, seeded from the current setting.
+    let long = window.isLongContext ? window.isLongContext(tab.model) : false;
+    const toggle = document.createElement("button");
+    toggle.className = "tm-item";
+    const renderToggle = () => { toggle.textContent = (long ? "☑ " : "☐ ") + "Long context (1M)"; };
+    renderToggle();
+    toggle.addEventListener("click", (e) => { e.stopPropagation(); long = !long; renderToggle(); placeTabMenu(lastMenuX, lastMenuY); });
+    tabMenu.appendChild(toggle);
+    const current = String(tab.model ?? "").replace(/\[1m\]/i, "").trim().toLowerCase();
+    for (const c of (window.MODEL_CHOICES || [])) {
+      const b = document.createElement("button");
+      b.className = "tm-item";
+      b.textContent = ((c.id || "").toLowerCase() === current ? "● " : "○ ") + c.label;
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeTabMenu();
+        const model = window.composeModel ? window.composeModel(c.id, long) : (c.id || null);
+        if (!tab.ws || tab.ws.readyState !== WebSocket.OPEN) {
+          addTurn(tab, "system", "", "Agent isn't connected — model unchanged.", null, Date.now());
+          return;
+        }
+        sendTo(tab, { type: "set-model", model });
+        addTurn(tab, "system", "", "Model → " + modelLabel(model) + ". Restarting the agent; history is kept.", null, Date.now());
+      });
+      tabMenu.appendChild(b);
+    }
+    const back = document.createElement("button");
+    back.className = "tm-item";
+    back.textContent = "‹ Back";
+    back.addEventListener("click", (e) => { e.stopPropagation(); openTabMenu(tab, lastMenuX, lastMenuY); });
+    tabMenu.appendChild(back);
+    placeTabMenu(lastMenuX, lastMenuY);
   }
 
   // The main channel of an environment (bound to the Telegram forum's General
@@ -5564,6 +5636,8 @@
         // profile from one tab updates the others with no reload.
         t.profile = msg.profile;
         t.appliedProfile = msg.applied;
+        // The model this agent runs on (shown / changed in the agent menu).
+        t.model = msg.model ?? null;
         break;
       case "parent":
         // Broadcast to every client, like `profile`: attaching from one tab
