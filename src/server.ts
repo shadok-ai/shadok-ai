@@ -28,7 +28,10 @@ import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 import { backgroundTasks, screenShowsWork, moveToOption } from "./detect.js";
 import { PtyPilot } from "./session.js";
-import { ensureClaudeHome, ensureProjectTrusted } from "./claude-home.js";
+import { ensureClaudeHome, ensureProjectTrusted,
+  getDefaultModel,
+  setDefaultModel,
+} from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { starCount } from "./stars.js";
 import {
@@ -202,6 +205,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
   browserOrigin,
 } from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
+import { availableModels, MODEL_FAMILIES } from "./claude-models.js";
 import { startHeartbeat } from "./heartbeat.js";
 import {
   ensureClaude,
@@ -2120,6 +2124,39 @@ app.post("/permission-mode", (req, res) => {
   saveConfig(cfg);
   broadcastAll(versionMessage());
   res.json({ permissionMode });
+});
+
+/**
+ * What models this build offers, and which one is the machine-wide default.
+ *
+ * `families` is never empty and never depends on the scan: an alias always
+ * works, so a binary that is mid-upgrade (invariant 32) costs discoverability
+ * of exact versions, never the ability to choose a model at all.
+ */
+app.get("/models", (_req, res) => {
+  res.json({
+    families: MODEL_FAMILIES,
+    models: availableModels(claudeCommand()),
+    default: getDefaultModel(),
+  });
+});
+
+// Writing it touches `~/.claude/settings.json`, which is MACHINE-wide, so this
+// is browser-only for the same reason `PUT /profiles` is (invariant 26): an
+// agent must not be able to move every other agent onto another model.
+app.post("/models/default", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "browser only" });
+  const raw = req.body?.model;
+  const model = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+  // Accept an alias or a model this build actually knows — never free text.
+  // A typo here would not fail loudly: the agent spawns and Claude Code picks
+  // its own default, so the cockpit would show a pin that does nothing.
+  const known = new Set<string>([...MODEL_FAMILIES, ...availableModels(claudeCommand())]);
+  const bare = model?.replace(/\[1m\]$/i, "") ?? null;
+  if (bare && !known.has(bare)) return res.status(400).json({ error: `unknown model: ${bare}` });
+  if (!setDefaultModel(model)) return res.status(500).json({ error: "could not write settings.json" });
+  console.log(`models: default is now ${model ?? "(none)"} — applies at each agent's next spawn`);
+  res.json({ default: getDefaultModel() });
 });
 
 type ClientMessage =
