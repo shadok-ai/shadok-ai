@@ -1107,13 +1107,13 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
 
   // `from`: who typed it, carried so the OTHER clients (the web cockpit) can
   // name the author instead of showing an anonymous "pilot (elsewhere)".
-  const promptTo = (b: Bridge, text: string, from?: string, resend = false) => {
+  const promptTo = (b: Bridge, text: string, from?: string, resend = false, voice = false) => {
     b.lastSent = text;
     // Un message NEUF rouvre le droit d'interrompre ; un renvoi, non — sinon
     // deux clients qui se disputent la session se relancent indéfiniment.
     if (!resend) b.lastRetried = undefined;
     if (b.ready && b.ws.readyState === WebSocket.OPEN)
-      b.ws.send(JSON.stringify({ type: "prompt", text, ...(from ? { from } : {}) }));
+      b.ws.send(JSON.stringify({ type: "prompt", text, ...(from ? { from } : {}), ...(voice ? { voice: true } : {}) }));
     else b.pending.push(text);
   };
 
@@ -1541,7 +1541,11 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             return;
           }
           await reply(chat.id, threadId, heardNotice(out.text));
-          promptTo(b, caption ? `${out.text}\n\n${caption}` : out.text, senderName(msg.from));
+          // `voice` travels with the prompt so the agent's context header says
+          // the words were SPOKEN. A transcription can mishear a homophone, a
+          // proper noun or a command, and an agent that knows it is reading
+          // speech asks about an odd word instead of executing it.
+          promptTo(b, caption ? `${out.text}\n\n${caption}` : out.text, senderName(msg.from), false, true);
           return;
         }
         promptTo(b, attachmentPrompt([{ path: p, kind: att.kind }], caption), senderName(msg.from));

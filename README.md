@@ -142,7 +142,9 @@ Enter to skip; you can add it later from the web UI).
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
 - **Voice notes on Telegram** — send a voice message to an agent's topic and it
   is transcribed locally, then acted on. What was understood is echoed back
-  first (`🎙 « … »`), so a misheard instruction is visible before it runs.
+  first (`🎙 « … »`), so a misheard instruction is visible before it runs —
+  and the agent is told the words were **spoken**, so it asks about an odd
+  file name or branch instead of acting on a mishearing.
   Transcription is installed **on first use** — a static ffmpeg, whisper.cpp and
   a 181 MB model — and the topic says so rather than going quiet for minutes.
   `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.

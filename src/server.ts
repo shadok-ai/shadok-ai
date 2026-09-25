@@ -2254,7 +2254,13 @@ type ClientMessage =
   /** `from`: display name of whoever typed it, when a client knows it (the
    *  Telegram bridge does). Echoed to the OTHER clients so the web can name the
    *  author instead of an anonymous "pilot (elsewhere)". */
-  | { type: "prompt"; text: string; force?: boolean; from?: string }
+  | {
+      type: "prompt"; text: string; force?: boolean; from?: string;
+      /** This text is the TRANSCRIPTION of a voice message, not something the
+       *  human typed. Surfaced in the context header so the agent reads it as
+       *  speech rather than as typing — see context/pilot-prompt.md. */
+      voice?: boolean;
+    }
   | { type: "choose"; n: number }
   | { type: "toggle"; n: number }
   | { type: "confirm" }
@@ -3765,7 +3771,14 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // speaking", so they get no header.
             let submitText = text;
             if (origin === "web" || origin === "telegram" || origin === "cli") {
-              submitText = markPromptMeta(text, promptMetaHeader(origin, new Date(), author, defaultTimeZone()));
+              // A transcribed voice note says so IN the platform field rather than
+              // through a different `origin`: the gate just above matches the origin
+              // EXACTLY, so an origin of "telegram vocal" would drop the header
+              // entirely — losing the time and the sender to gain one word.
+              // `parsePromptMeta` reads the platform as the first field and the
+              // sender as everything past the time, so this widens neither.
+              const platform = msg.voice === true ? `${origin} vocal` : origin;
+              submitText = markPromptMeta(text, promptMetaHeader(platform, new Date(), author, defaultTimeZone()));
             }
             // Push the ledger DELTA ahead of the message: rows changed since this
             // agent last saw the ledger, so it learns what siblings resolved /
