@@ -20,6 +20,7 @@ import {
 } from "./channels.js";
 import { secretNames, setSecret, deleteSecret } from "./secrets.js";
 import { telegramPhotoable } from "./download.js";
+import { transcribe, heardNotice } from "./whisper.js";
 import { authStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { getProfile, profileNames } from "./profiles.js";
 import { tmuxHasSession } from "./tmux.js";
@@ -246,7 +247,10 @@ export function migratedGroupId(msg: any, currentBound: number | null): number |
 export interface TgAttachment {
   fileId: string;
   fileUniqueId: string;
-  kind: "image" | "file";
+  /** `voice` is spoken input, not a file to hand the agent: it is transcribed
+   *  and the TEXT becomes the prompt. Keeping it a separate kind is what stops
+   *  an .ogg being dropped on an agent that cannot read audio. */
+  kind: "image" | "file" | "voice";
   fileName?: string; // original name (documents only)
   fileSize?: number; // bytes, when Telegram provides it
 }
@@ -255,6 +259,18 @@ export interface TgAttachment {
  *  sorts sizes small → large) or any document (PDF, zip, image sent as
  *  file…). Text-only messages → null. */
 export function attachmentOf(msg: any): TgAttachment | null {
+  // Voice FIRST: a voice note also carries no photo and no document, and used
+  // to fall through to `null` — so the message was dropped in silence, which is
+  // exactly the failure this codebase keeps paying for.
+  const v = msg.voice;
+  if (v?.file_id) {
+    return {
+      fileId: v.file_id,
+      fileUniqueId: v.file_unique_id,
+      kind: "voice",
+      ...(v.file_size != null ? { fileSize: v.file_size } : {}),
+    };
+  }
   if (Array.isArray(msg.photo) && msg.photo.length) {
     const p = msg.photo[msg.photo.length - 1];
     return { fileId: p.file_id, fileUniqueId: p.file_unique_id, kind: "image", fileSize: p.file_size };
@@ -1132,6 +1148,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     const failed: string[] = [];
     for (const i of items) {
       try {
+        // Telegram does not put a voice note in a media group, so this cannot
+        // happen — but the album prompt hands PATHS to an agent that cannot
+        // read audio, and a defensive skip is cheaper than finding out.
+        if (i.att.kind === "voice") continue;
         ok.push({ path: await downloadAttachment(i.att), kind: i.att.kind });
       } catch (e: any) {
         failed.push(`${i.att.fileName ?? i.att.fileUniqueId} (${e?.message ?? e})`);
@@ -1508,6 +1528,22 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       }
       try {
         const p = await downloadAttachment(att);
+        if (att.kind === "voice") {
+          // Transcribe, ECHO WHAT WAS UNDERSTOOD, then act on it. The echo is
+          // load-bearing: a transcription can be wrong, and an instruction that
+          // was misheard and then acted on in silence is far worse than a voice
+          // message that was ignored. The user sees what the agent received
+          // while there is still time to correct it.
+          const out = await transcribe(p, (line) => { void reply(chat.id, threadId, line); });
+          if (!out.ok) {
+            b.typing.stop();
+            await reply(chat.id, threadId, out.notice);
+            return;
+          }
+          await reply(chat.id, threadId, heardNotice(out.text));
+          promptTo(b, caption ? `${out.text}\n\n${caption}` : out.text, senderName(msg.from));
+          return;
+        }
         promptTo(b, attachmentPrompt([{ path: p, kind: att.kind }], caption), senderName(msg.from));
       } catch (e: any) {
         b.typing.stop();

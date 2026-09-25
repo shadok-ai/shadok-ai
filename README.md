@@ -140,6 +140,14 @@ Enter to skip; you can add it later from the web UI).
 - **Engine room** — the raw TUI screen, live, with clickable keys, for anything
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
+- **Voice notes on Telegram** — send a voice message to an agent's topic and it
+  is transcribed locally, then acted on. What was understood is echoed back
+  first (`🎙 « … »`), so a misheard instruction is visible before it runs.
+  Transcription is installed **on first use** — a static ffmpeg, whisper.cpp and
+  a 181 MB model — and the topic says so rather than going quiet for minutes.
+  `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
+  Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
+  serves them all.
 - **Files an agent hands you** — when an agent's result IS a file (a report, an
   export, a screenshot, an archive) it arrives as a download card in the chat,
   inline if it is an image, and as an upload in the Telegram topic. It goes

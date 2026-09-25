@@ -691,3 +691,25 @@ test("shouldPreempt: the same message is never interrupted for twice", () => {
   assert.equal(shouldPreempt({ code: "busy", text: "same", lastRetried: "same" }), false);
   assert.equal(shouldPreempt({ code: "busy", text: "other", lastRetried: "same" }), true);
 });
+
+test("a voice message is recognised, and not as a file", () => {
+  // It used to fall through to `null`: a voice note carries no photo and no
+  // document, so the message was dropped IN SILENCE — you spoke and nothing
+  // whatsoever happened. Its own kind is what stops an .ogg being handed to an
+  // agent that cannot read audio; the transcription becomes the prompt instead.
+  const att = attachmentOf({ voice: { file_id: "v1", file_unique_id: "u1", duration: 3, file_size: 4096 } });
+  assert.ok(att, "a voice message must not be dropped");
+  assert.equal(att!.kind, "voice");
+  assert.equal(att!.fileId, "v1");
+  assert.equal(att!.fileSize, 4096);
+});
+
+test("voice wins over nothing, and never shadows a real attachment", () => {
+  // Order matters: a caption-bearing photo must stay a photo.
+  const photo = attachmentOf({ photo: [{ file_id: "p", file_unique_id: "pu", file_size: 9 }] });
+  assert.equal(photo!.kind, "image");
+  const doc = attachmentOf({ document: { file_id: "d", file_unique_id: "du", mime_type: "application/pdf" } });
+  assert.equal(doc!.kind, "file");
+  // And a message with neither is still nothing to act on.
+  assert.equal(attachmentOf({ text: "hello" }), null);
+});
