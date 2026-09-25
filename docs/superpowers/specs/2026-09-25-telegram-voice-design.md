@@ -28,7 +28,7 @@ Taken by the user, 2026-09-25:
 
 | | |
 |---|---|
-| Model | `ggml-medium-q5_0.bin`, **514 MB** (measured, not recalled) |
+| Model | `ggml-small-q5_1.bin`, **181 MB** — changed from medium-q5_0 after measuring (below) |
 | Provisioning | **on demand**, at the first voice message — never at boot |
 | Feedback | the first use says an install is running |
 | Model location | **shared** between containers |
@@ -80,8 +80,10 @@ turn each voice note into a failed 514 MB download.
 
 First voice message, before anything else:
 
-> 🎙 première fois : j'installe la transcription (~500 Mo), je te réponds dès
+> 🎙 première fois : j'installe la transcription (~270 Mo), je te réponds dès
 > que c'est prêt.
+
+The size is computed from the chosen model, never written into the sentence.
 
 Then, on every voice message, **what was understood, echoed back**:
 
