@@ -4190,7 +4190,14 @@
   // Coming back must stop the blink at once, not at the next tick. Both signals
   // matter: switching tabs fires visibilitychange, switching application only
   // fires focus/blur.
-  const repaintOnReturn = () => { blinkPhase = 0; paint(); };
+  const repaintOnReturn = () => {
+    blinkPhase = 0;
+    // Back in front of the cockpit → the channel you're VIEWING is no longer
+    // "unread": clear the away-completion flag turn-done may have set on it.
+    const away = document.hidden || !document.hasFocus();
+    if (!away && active && active.btnEl.classList.contains("unread")) setTabMood(active, null);
+    paint();
+  };
   document.addEventListener("visibilitychange", repaintOnReturn);
   window.addEventListener("focus", repaintOnReturn);
   window.addEventListener("blur", repaintOnReturn);
@@ -5894,7 +5901,18 @@
         // "unread" only when the turn produced visible text. An empty turn (e.g.
         // a cron concluding NOTHING TO SHOW) asks for no reading at all, neither
         // on the tab nor on the favicon.
-        setTabMood(t, (t === active || !t.turnHadText) ? null : "unread");
+        //
+        // The channel you're VIEWING normally stays quiet — you can see it finish.
+        // But only if you're actually there: with the window in the background
+        // (you're in your terminal), the agent you were watching finishes with NO
+        // signal at all — no tab colour, no favicon "?". So it flags even the
+        // active tab when you're AWAY; `repaintOnReturn` clears it the moment you
+        // come back to the cockpit.
+        {
+          const away = document.hidden || !document.hasFocus();
+          const flag = t.turnHadText && (t !== active || away);
+          setTabMood(t, flag ? "unread" : null);
+        }
         setTabState(t, "ready", "ready");
         break;
       case "dialog":
