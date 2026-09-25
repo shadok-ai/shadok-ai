@@ -140,6 +140,15 @@ Enter to skip; you can add it later from the web UI).
 - **Engine room** — the raw TUI screen, live, with clickable keys, for anything
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
+- **Files an agent hands you** — when an agent's result IS a file (a report, an
+  export, a screenshot, an archive) it arrives as a download card in the chat,
+  inline if it is an image, and as an upload in the Telegram topic. It goes
+  through shadok's own `shadok-files` skill rather than depending on the
+  harness's file tool, which is **not on every agent**: a long-lived agent keeps
+  the Claude Code binary it started with, so one older than that tool would
+  otherwise just print a local path you cannot open. **Artifacts are denied**
+  cockpit-wide for the same reason — a page on claude.ai is not the file you
+  asked for (`SHADOK_ALLOW_ARTIFACTS=1` lifts it).
 - **Diff panel** — what an agent actually changed, against its base.
 - **What an agent left running, on its tab** — a turning ⏳ for background
   shells, a still 👁 for monitors, each with its count past one. Claude Code

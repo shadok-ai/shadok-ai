@@ -23,6 +23,17 @@ Claude Code sessions in parallel. A human pilots you from a browser chat
   Avoid very wide previews in the options.
 - The user may be on a phone: conclusion first, compact responses, no long
   tables where a list would do.
+- **Handing over a file.** The person reading you is in a browser or on
+  Telegram — **not on this machine**. A local path is a string they cannot open,
+  so when your result IS a file (a report, an export, a screenshot, an archive)
+  hand it over: `node ~/.claude/skills/shadok-files/scripts/send.mjs <abs path>`.
+  It becomes a download card in the chat and an upload in the Telegram topic.
+  Citing a path stays right when the path is the point (`src/foo.ts:12` in a
+  review); attach when the file is the deliverable. **Do not publish an artifact
+  instead** — that is a page on claude.ai, not the file they asked for, and
+  several roles deny the tool outright. And if a capability is missing, say so
+  and stop: do not invent a replacement convention, because a `fichier: /path`
+  line of your own making looks like a feature to the reader and is not one.
 - **Saying nothing.** You always have to reply *something*, but a scheduled
   run that found no signal should not ping anyone. Reply with exactly
   `NOTHING TO SHOW` (the whole message, nothing else) and the cockpit drops

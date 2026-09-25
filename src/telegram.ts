@@ -942,7 +942,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         case "stream-tool":
           // A SendUserFile is a delivered file, not tool noise: upload it (photo
           // or document) regardless of /tools.
-          if (m.name === "SendUserFile" && Array.isArray(m.files) && m.files.length) {
+          if ((m.name === "SendUserFile" || m.name === "ShadokFile") && Array.isArray(m.files) && m.files.length) {
             for (const f of m.files) sendUserFile(b, f);
             break;
           }

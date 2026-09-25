@@ -4828,7 +4828,9 @@
   function addToolLine(tab, msg) {
     // A SendUserFile isn't tool noise — it's a delivered file. Render it as a
     // download / inline-image card, not a folded activity line.
-    if (msg.name === "SendUserFile" && Array.isArray(msg.files) && msg.files.length) {
+    // Two producers, one card: the harness tool, and shadok's own /files offer
+    // (the skill, which works on Claude Code builds that never had the tool).
+    if ((msg.name === "SendUserFile" || msg.name === "ShadokFile") && Array.isArray(msg.files) && msg.files.length) {
       return addFileCard(tab, msg.files, msg.at);
     }
     const block = tab.act || openBlock(tab);
