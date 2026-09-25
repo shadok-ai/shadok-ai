@@ -362,15 +362,36 @@ export function removeProfile(name: string): void {
  * (role), inline permission settings (deny/allow), and a model. Returns [] for
  * an undefined/empty profile so a no-profile spawn is unchanged.
  */
+/**
+ * Denied for EVERY agent, whatever its role — a cockpit policy, not a guardrail.
+ *
+ * An artifact is a page on claude.ai. The person driving this cockpit asked for
+ * a file, and gets a link to something else; they said so plainly ("j'en ai
+ * marre qu'il utilise les artefacts"). The `shadok-files` skill is the answer,
+ * and a capability that is merely discouraged loses to one that is available.
+ *
+ * Here rather than in the shipped roles' `deny`, for two reasons that are both
+ * load-bearing. `Shadok-dev` — the most used role — carries NO deny list at
+ * all, and neither does an agent spawned without a profile, so a per-role rule
+ * would miss exactly the common cases. And `profileBadges` derives a role's
+ * access badge from its deny list, so adding this there would label a
+ * full-access role as restricted over something that has nothing to do with
+ * files or git.
+ *
+ * `SHADOK_ALLOW_ARTIFACTS=1` lifts it, for whoever decides otherwise.
+ */
+export const COCKPIT_DENY = ["Artifact"] as const;
+
 export function profileArgs(profile?: Profile | null, modelOverride?: string | null): string[] {
   const args: string[] = [];
-  if (profile) {
-    if (profile.systemPrompt?.trim()) args.push("--append-system-prompt", profile.systemPrompt.trim());
-    const deny = profile.deny ?? [];
-    const allow = profile.allow ?? [];
-    if (deny.length || allow.length) {
-      args.push("--settings", JSON.stringify({ permissions: { deny, allow } }));
-    }
+  if (profile?.systemPrompt?.trim()) args.push("--append-system-prompt", profile.systemPrompt.trim());
+  const deny = [
+    ...(process.env.SHADOK_ALLOW_ARTIFACTS === "1" ? [] : COCKPIT_DENY),
+    ...(profile?.deny ?? []),
+  ];
+  const allow = profile?.allow ?? [];
+  if (deny.length || allow.length) {
+    args.push("--settings", JSON.stringify({ permissions: { deny, allow } }));
   }
   // ONE place emits --model, and the agent's own choice wins over the role's.
   //

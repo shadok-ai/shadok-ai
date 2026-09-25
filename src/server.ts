@@ -22,6 +22,10 @@ import {
   type TuiDialog,
 } from "./extract.js";
 import { fileCard, sentFilePaths, contentTypeFor, isImageFile } from "./download.js";
+import {
+  OFFER_TOOL, filesFileFor, loadOffers, saveOffers, offerVerdict, withOffer,
+  offeredPaths, refusalMessage, statForOffer, type OfferedFile,
+} from "./files.js";
 // Same implementation as the web client's preview (plain JS, loaded as is by
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
@@ -2006,16 +2010,74 @@ app.post("/restart-all", (req, res) => {
 // cannot run script in the cockpit's origin (which would reach the auth cookie).
 // A raster image still renders in the chat's <img>, which ignores the
 // disposition. Behind the password gate like everything else.
+/**
+ * An agent hands the user a file — shadok's own path, beside `SendUserFile`.
+ *
+ * It exists because the harness tool is NOT on every agent: a tmux agent keeps
+ * the Claude Code binary it was spawned with, so one older than the tool never
+ * sees it however the request is phrased. Authenticated by the per-session key
+ * (invariant 33), which is derived and cannot age out — the cookie every agent
+ * also carries expires after a week and nothing can refresh it in a running
+ * process, which is precisely the failure this feature must not inherit.
+ */
+app.post("/files", (req, res) => {
+  const key = String(req.headers["x-shadok-session-key"] ?? "");
+  const id = key ? sessionForKey(key) : null;
+  if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  const body = req.body ?? {};
+  const raw = Array.isArray(body.paths) ? body.paths : body.path ? [body.path] : [];
+  const paths = raw.filter((p: unknown): p is string => typeof p === "string" && !!p.trim());
+  if (!paths.length) return res.status(400).json({ error: "give at least one path" });
+  const caption = typeof body.caption === "string" ? body.caption : undefined;
+
+  const file = filesFileFor(process.cwd());
+  let rows = loadOffers(file);
+  const accepted: OfferedFile[] = [];
+  const refused: string[] = [];
+  for (const p of paths) {
+    const v = offerVerdict(id, p, statForOffer(p), Date.now(), caption);
+    if (v.ok) { accepted.push(v.file); rows = withOffer(rows, v.file); }
+    else refused.push(refusalMessage(v));
+  }
+  // Partial success is reported as such rather than collapsed either way: an
+  // agent that sent three files and got one refused has to know WHICH.
+  if (accepted.length) {
+    saveOffers(file, rows);
+    const s = sessions.get(id);
+    if (s)
+      broadcast(s, {
+        type: "stream-tool",
+        id: `file-${Date.now()}`,
+        name: OFFER_TOOL,
+        summary: caption?.trim() || accepted.map((f) => f.name).join(", "),
+        files: accepted.map((f) => fileCard(f.path)),
+      });
+    console.log(`files: ${id.slice(0, 8)} offered ${accepted.map((f) => f.name).join(", ")}`);
+  }
+  if (!accepted.length) return res.status(400).json({ error: refused.join("; ") });
+  res.json({ ok: true, sent: accepted.map((f) => ({ path: f.path, name: f.name, size: f.size })), refused });
+});
+
 app.get("/download", (req, res) => {
   const session = String(req.query.session ?? "");
   const wanted = String(req.query.path ?? "");
   if (!session || !wanted) return res.status(400).type("text").send("session and path required");
   const chan = loadChannels().find((c) => c.sessionId === session);
   if (!chan?.cwd) return res.status(404).type("text").send("unknown session");
-  let raw: string;
-  try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session), "utf8"); }
-  catch { return res.status(404).type("text").send("no transcript"); }
-  if (!sentFilePaths(raw).has(wanted)) return res.status(403).type("text").send("that file was not sent by this agent");
+  // TWO sources, one rule: a path is servable only if THIS session offered it,
+  // through the harness tool (the transcript) or through POST /files (the
+  // registry). Checking the registry FIRST costs one small JSON read and spares
+  // the transcript read entirely for a skill-delivered file — which on a long
+  // session is megabytes. A missing transcript is therefore no longer fatal:
+  // an agent can hand over a file before it has written one.
+  let allowed = offeredPaths(loadOffers(filesFileFor(process.cwd())), session).has(wanted);
+  if (!allowed) {
+    let raw: string;
+    try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session), "utf8"); }
+    catch { return res.status(403).type("text").send("that file was not sent by this agent"); }
+    allowed = sentFilePaths(raw).has(wanted);
+  }
+  if (!allowed) return res.status(403).type("text").send("that file was not sent by this agent");
   let stat: fs.Stats;
   try { stat = fs.statSync(wanted); if (!stat.isFile()) throw new Error("not a file"); }
   catch { return res.status(404).type("text").send("file no longer on disk"); }
@@ -4098,6 +4160,29 @@ function seedLedgerSkill(): void {
   }
 }
 seedLedgerSkill();
+
+/**
+ * The `shadok-files` skill — handing a file to the person driving the cockpit.
+ *
+ * Seeded like its siblings, and the seeding is the point: `copyFileSync` runs
+ * at EVERY boot, so this reaches agents that already exist without a reload.
+ * The pilot prompt cannot do that (it is fixed at spawn), which is exactly why
+ * the capability lives in a skill and only its rationale lives in the prompt.
+ */
+function seedFilesSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "files-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-files");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "send.mjs"), path.join(dst, "scripts", "send.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "send.mjs"), 0o755);
+  } catch {
+    /* best effort — a missing skill means paths get printed, not a broken boot */
+  }
+}
+seedFilesSkill();
 
 // Install/refresh the bundled "shadok-ai-agents" skill so an agent in ANY repo
 // (not just this one) can spawn/pilot other agents via pilotctl. It used to live
