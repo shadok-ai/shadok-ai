@@ -65,3 +65,17 @@ test("parsePromptMeta: round-trips promptMetaHeader, and a name with ' · ' surv
   // Everything past the time is the name, so a separator inside it is kept.
   assert.equal(parsePromptMeta("⟦telegram · 2026-08-25 14:30 · A · B⟧\nx")?.who, "A · B");
 });
+
+test("a voice note is marked in the PLATFORM, and parsing stays intact", () => {
+  // The platform field carries it, not a different origin: the server only adds
+  // a header when the origin is exactly web / telegram / cli, so an origin of
+  // "telegram vocal" would have dropped the header — time and sender included.
+  // What must hold: the sender still parses out whole, and the mark is visible.
+  const h = promptMetaHeader("telegram vocal", new Date("2026-09-25T21:06:00Z"), "Alexandre", "Europe/Paris");
+  assert.match(h, /telegram vocal/);
+  const parsed = parsePromptMeta(markPromptMeta("ajoute un test", h));
+  assert.equal(parsed?.platform, "telegram vocal");
+  assert.equal(parsed?.who, "Alexandre", "the sender must survive the extra word");
+  // And the display still strips it: the human sees their words, not the header.
+  assert.equal(stripPromptMeta(markPromptMeta("ajoute un test", h)), "ajoute un test");
+});

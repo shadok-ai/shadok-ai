@@ -60,3 +60,13 @@ test("the pilot prompt carries it too, for an agent that loaded no skill", () =>
   assert.match(prompt, /x-shadok-session-key/);
   assert.match(prompt, /SHADOK_PORT/);
 });
+
+test("the pilot prompt says what a `vocal` mark means, and to ask", () => {
+  // The mark alone gives the agent a fact; this line gives it the behaviour.
+  // Without it an agent sees "vocal" and executes a misheard branch name
+  // anyway. No code change can make this go red, which is why it has a test.
+  const prompt = read("context/pilot-prompt.md");
+  assert.match(prompt, /vocal/);
+  assert.match(prompt, /transcription/i);
+  assert.match(prompt, /ask instead of guessing/i);
+});
