@@ -90,6 +90,17 @@ import {
 import { migrateTgBindings } from "./channels.js";
 import { instanceKey } from "./paths.js";
 import {
+  peerFileFor,
+  loadPeers,
+  savePeers,
+  peerFromToken,
+  signPeerToken,
+  normPeerName,
+  addPeer,
+  removePeer,
+  ownedByPeer,
+} from "./peers.js";
+import {
   loadCrons,
   saveCrons,
   upsertCron,
@@ -824,6 +835,19 @@ function currentAccount(req: { headers: Record<string, unknown> }): { name: stri
 function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
   return currentAccount(req) !== null;
 }
+
+/**
+ * The PEER a request authenticates as (`x-shadok-peer`), or null. A peer is a
+ * DISTINCT principal from a web account — a remote instance/harness, scoped to
+ * the agents it created (`Channel.createdByPeer`), never B's whole fleet. The
+ * registry is re-read every call, so a `DELETE /peers` takes effect at once
+ * (the invariant-33 pattern: no session store, revocation lives on disk).
+ */
+function peerName(req: { headers: Record<string, unknown> }): string | null {
+  const tok = req.headers["x-shadok-peer"];
+  if (typeof tok !== "string" || !tok) return null;
+  return peerFromToken(tok, signingSecret(), loadPeers(peerFileFor()));
+}
 function passwordMatches(input: string): boolean {
   const a = Buffer.from(input);
   const b = Buffer.from(GUI_PASSWORD);
@@ -1053,6 +1077,11 @@ app.get("/me", (req, res) => {
 // for itself: it must return 401, not the login page.
 app.use((req, res, next) => {
   if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || requestAuthed(req)) return next();
+  // A peer is a NARROW principal, not a member: over HTTP it may reach ONLY
+  // `GET /diff` (of its own agents — the handler ownership-checks). Everything
+  // else stays denied, so a peer never touches B's vault, profiles, crons, other
+  // agents or the account routes. Its spawn/drive path is the WS (verifyClient).
+  if (req.method === "GET" && req.path === "/diff" && peerName(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
     return sendLogin(res);
   return res.status(401).json({ error: "unauthorized" });
@@ -1210,6 +1239,10 @@ app.get("/diff", (req, res) => {
   // exists for — has certainly been resumed by then, so fall back to the
   // channel's own `repo`, as endChannel already does.
   const ch = loadChannels().find((c) => c.sessionId === s.id);
+  // A peer sees the diff of ITS OWN agents only — never another peer's or a
+  // local one's. (Accounts, which passed the gate above, see any.)
+  const peer = peerName(req);
+  if (peer && !ownedByPeer(ch, peer)) return res.status(403).json({ error: "not your agent" });
   res.json(gitDiff(s.cwd, s.worktree?.repo ?? ch?.repo ?? null));
 });
 // Past worktree sessions of a repo (for reopening unfinished work).
@@ -1604,6 +1637,60 @@ app.post("/users/role", (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Peers: other instances/harnesses allowed to reach THIS one's agents ──────
+// Admin-only, like /users — a peer credential is a grant of remote code
+// execution on this machine (a peer can `spawn`), so it is deliberately made
+// by an admin, named, and revocable. See src/peers.ts and the design spec.
+app.get("/peers", (req, res) => {
+  if (!accountAdmin(req, res, false)) return;
+  res.json(
+    loadPeers(peerFileFor()).map((p) => ({
+      name: p.name,
+      createdAt: p.createdAt,
+      note: p.note ?? null,
+    })),
+  );
+});
+app.post("/peers", (req, res) => {
+  const me = accountAdmin(req, res);
+  if (!me) return;
+  const name = normPeerName(req.body?.name);
+  if (!name) return res.status(400).json({ error: "a peer name is required" });
+  const note = typeof req.body?.note === "string" ? req.body.note.trim() || undefined : undefined;
+  const file = peerFileFor();
+  savePeers(file, addPeer(loadPeers(file), name, Date.now(), note));
+  console.log(`peers: ${me.name} added peer ${name}`);
+  // The token is shown ONCE. It is derived (HMAC), so re-adding the peer re-mints
+  // the SAME token — it is never stored to hand back later, like an invitation.
+  res.json({ ok: true, name, token: signPeerToken(name, signingSecret()) });
+});
+app.delete("/peers", (req, res) => {
+  const me = accountAdmin(req, res);
+  if (!me) return;
+  const name = normPeerName(req.query.name);
+  if (!name) return res.status(400).json({ error: "a peer name is required" });
+  const file = peerFileFor();
+  savePeers(file, removePeer(loadPeers(file), name));
+  // Revocation is immediate AND total: future auth fails (the registry check in
+  // peerFromToken), and the peer's LIVE connections are dropped now — an open
+  // pilotctl link must stop at once. The agents it spawned are LEFT for this
+  // instance's admin to keep or stop (killing another party's in-flight work
+  // silently is worse than orphaning it under local control).
+  let dropped = 0;
+  for (const c of wss.clients) {
+    if ((c as WebSocket & { __peer?: string }).__peer === name) {
+      try {
+        c.terminate();
+        dropped++;
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+  console.log(`peers: ${me.name} revoked peer ${name} (${dropped} live connection(s) dropped)`);
+  res.json({ ok: true, dropped });
+});
+
 app.get("/profiles", (_req, res) =>
   res.json(
     loadProfiles().map((p) => ({
@@ -1830,7 +1917,8 @@ const wss = new WebSocketServer({
   // The origin check matters AS MUCH as the cookie: a WebSocket ignores the
   // same-origin policy, so without it any page the user visits could open a
   // session and drive an agent.
-  verifyClient: (info, cb) => cb(requestOriginOk(info.req) && requestAuthed(info.req)),
+  verifyClient: (info, cb) =>
+    cb(requestOriginOk(info.req) && (requestAuthed(info.req) || peerName(info.req) !== null)),
 });
 // The ws server re-emits the http server's listen error; let the http server's
 // own handler drive the port fallback instead of crashing on the re-emit.
@@ -3418,6 +3506,12 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // able to claim someone else's name by editing a frame, so THIS — not
   // `msg.from` — is what a web prompt is attributed to.
   const me = currentAccount(req);
+  // A PEER principal (a remote instance/harness via `x-shadok-peer`), resolved
+  // ONCE at connect and stamped on the socket: revocation (`DELETE /peers`) drops
+  // it, and the `start` handler tags what it spawns so a peer only ever touches
+  // its own agents.
+  const callerPeer = peerName(req);
+  (ws as WebSocket & { __peer?: string | null }).__peer = callerPeer;
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -3521,6 +3615,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           } else {
             id = randomUUID();
             args.push("--session-id", id);
+          }
+
+          // A peer only ever touches agents IT created: refuse a resume/continue
+          // onto a channel it does not own (a fresh spawn below becomes its own).
+          // This is the ownership boundary — without it a peer could attach to any
+          // of B's live agents by naming its id (which `/live` publishes).
+          if (callerPeer && resumed) {
+            const ch = loadChannels().find((c) => c.sessionId === id);
+            if (!ownedByPeer(ch, callerPeer))
+              return fail("a peer may only resume its own agents", "peer-scope");
           }
 
           // Isolation: run a NEW session inside a fresh git worktree so the
@@ -3704,6 +3808,12 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // exists. Validated for the same reasons `set-parent` validates —
             // a cycle here would be just as expensive.
             ...(parentAtStart !== undefined ? { parent: parentAtStart } : {}),
+            // The remote peer that created this agent — the ownership key. Set
+            // whenever the caller is a peer (idempotent on its own resume); never
+            // written for a local caller, so a plain agent has no owner. Like
+            // `parent`, this is a field that must be PROVEN stored, not merely
+            // accepted (invariant 24) — the e2e checks the channel carries it.
+            ...(callerPeer ? { createdByPeer: callerPeer } : {}),
           });
           send({ type: "tokens", tokens: tokenTotals(session) });
           send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });
@@ -4044,6 +4154,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // web ✕. Falls back to this connection's attached session.
           const id = msg.sessionId ?? session?.id;
           if (!id) return;
+          // A peer may only stop ITS OWN agents — not another peer's or a local
+          // one's. Its bound `session` is already its own; the guard is for an
+          // explicit `sessionId` naming someone else's.
+          if (callerPeer) {
+            const ch = loadChannels().find((c) => c.sessionId === id);
+            if (!ownedByPeer(ch, callerPeer)) return fail("a peer may only stop its own agents", "peer-scope");
+          }
           await endChannel(id);
           if (session?.id === id) session = null;
           break;
