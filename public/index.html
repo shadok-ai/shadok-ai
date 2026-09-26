@@ -701,6 +701,17 @@
   input[type="text"]:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
   .radio-row { display: flex; gap: 14px; flex-wrap: wrap; }
   #modelRow { gap: 6px; }
+  .bang-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .bang-btn {
+    font: inherit; font-size: 12px; cursor: pointer; max-width: 100%;
+    padding: 4px 10px; border-radius: 6px; border: 1px solid var(--amber);
+    background: var(--amber-soft); color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
+  }
+  .bang-btn:disabled { opacity: .5; cursor: default; }
+  .bang-card { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 0; }
+  .bang-card .bang-cmd { color: var(--amber); }
+  .bang-card .bang-out.err { color: var(--err); }
   .model-chip {
     padding: 5px 11px; border-radius: 999px; cursor: pointer;
     border: 1px solid var(--line); background: transparent; color: var(--text-dim);
@@ -2310,6 +2321,8 @@
   import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
+  import { bangCommands } from "/bang.js?v=__ASSET_V__";
+  window.bangCommands = bangCommands;
   import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
   window.claudeUpdateState = claudeUpdateState;
   window.MODEL_CHOICES = MODEL_CHOICES;
@@ -2394,6 +2407,8 @@
     // agent on its profile's model, which is what it did before this existed.
     MODEL_CHOICES: [],
     composeModel: () => null,
+    // No module, no buttons: an agent's message renders exactly as before.
+    bangCommands: () => [],
     // Boot-critical (runs in restore before the module might land): a fulfilled
     // /channels wins even when empty; only a failed fetch uses the cache.
     pickChannelSource: (settled, cached) =>
@@ -4640,6 +4655,70 @@
     return "/download?session=" + encodeURIComponent(tab.sessionId || "") +
            "&path=" + encodeURIComponent(file.path);
   }
+  /**
+   * Buttons under an agent's message for each `! cmd` it asks YOU to run.
+   *
+   * One click, one confirmation, one command in the agent's pane shell mode.
+   * The confirmation is not ceremony: shell mode is not the agent's Bash tool,
+   * so a profile's guardrails do not apply to it (measured) — this is the human
+   * choosing to run something the agent could not, and the dialog is where the
+   * human sees exactly what that is.
+   */
+  function decorateBang(tab, bubble, text) {
+    const cmds = window.bangCommands(text);
+    if (!cmds.length || !bubble) return;
+    const row = document.createElement("div");
+    row.className = "bang-row";
+    for (const cmd of cmds) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "bang-btn";
+      b.textContent = "▶ " + cmd;
+      b.title = "Run in this agent's shell: " + cmd;
+      // never onclick=: the CSP nonce does not cover inline handlers
+      b.addEventListener("click", () => {
+        if (!confirm("Run this command in the agent's shell?\n\n" + cmd +
+            "\n\nIt runs on the machine, outside the agent's guardrails.")) return;
+        sendTo(tab, { type: "run", command: cmd });
+      });
+      row.appendChild(b);
+    }
+    bubble.appendChild(row);
+  }
+
+  /** A shell-mode exchange: the command, then its output once it arrives. */
+  function addBashCard(tab, h, at) {
+    if (h.command !== undefined || !tab.lastBashCard) {
+      const turn = document.createElement("div");
+      turn.className = "turn user";
+      const label = document.createElement("span");
+      label.className = "label";
+      label.textContent = "you · shell";
+      const time = fmtTime(at);
+      if (time) label.appendChild(time);
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      const pre = document.createElement("pre");
+      pre.className = "bang-card";
+      const c = document.createElement("span");
+      c.className = "bang-cmd";
+      c.textContent = "$ " + (h.command ?? "");
+      pre.appendChild(c);
+      bubble.appendChild(pre);
+      turn.append(label, bubble);
+      tab.transcriptEl.appendChild(turn);
+      tab.lastBashCard = pre;
+    }
+    if (h.output !== undefined && tab.lastBashCard) {
+      const o = document.createElement("span");
+      o.className = "bang-out" + (h.isError ? " err" : "");
+      o.textContent = "\n" + (h.output || "(no output)");
+      tab.lastBashCard.appendChild(o);
+      tab.lastBashCard = null;
+    }
+    if (tab === active) updateJumpButton();
+  }
+
   /** A file the agent handed the user: images render inline, everything else is a
    *  download card. Shown live (SendUserFile tool_use) and replayed from history,
    *  so it survives a reload. */
@@ -5699,7 +5778,9 @@
         t.unreadSep = null; // the separator element went with the wipe
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
-          if (h.role === "file") {
+          if (h.role === "bash") {
+            addBashCard(t, h, h.at);
+          } else if (h.role === "file") {
             // A file the agent delivered (SendUserFile) — its card survives the
             // reload so the download / image stays reachable.
             addFileCard(t, h.files || [], h.at);
@@ -5710,6 +5791,7 @@
             addTurn(t, "user", echoAuthorLabel({ from: h.from, origin: h.origin }), h.text, "hist", h.at);
           } else {
             const b = addTurn(t, "claude", "claude", h.text, "hist", h.at);
+            decorateBang(t, b, h.text);
             // A hidden prompt (cron / notification) ran before this turn: keep
             // its own label instead of merging it onto the previous answer
             // (same `.after-gap` boundary the live stream uses).
@@ -5838,6 +5920,10 @@
         t.contextPct = msg.pct;
         renderContext(t);
         break;
+      case "stream-bash":
+        // A shell-mode exchange, from the transcript like every other content.
+        addBashCard(t, msg, msg.at ?? Date.now());
+        break;
       case "stream-text":
         // A complete assistant text block, streamed from the transcript.
         // Text ends the current activity block: the next tool call opens a new
@@ -5865,6 +5951,7 @@
           // gluing the two bubbles into one wordless run (the CSS group rule
           // spares `.after-gap`).
           if (msg.afterInternal) b.parentElement.classList.add("after-gap");
+          decorateBang(t, b, msg.text);
           markUnreadBoundary(t, b.parentElement);
         }
         if (t === active) updateJumpButton();

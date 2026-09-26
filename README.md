@@ -150,6 +150,12 @@ Enter to skip; you can add it later from the web UI).
   `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
+- **Run the command an agent asks you to** — when an agent writes `! cmd` for
+  you to run (typically because it cannot), a ▶ button under its message runs it
+  in the agent's shell after a confirmation showing the exact command. It is
+  refused for anything but your browser, since shell mode sits outside the
+  agent's guardrails. The command and its output stay in the chat, reload
+  included — as does one you typed yourself in the terminal view.
 - **Files an agent hands you** — when an agent's result IS a file (a report, an
   export, a screenshot, an archive) it arrives as a download card in the chat,
   inline if it is an image, and as an upload in the Telegram topic. It goes

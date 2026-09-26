@@ -123,6 +123,7 @@ import {
   type DriveReason,
 } from "./crons.js";
 import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { runRefusal, isShellMode } from "./bang.js";
 import {
   ledgerFileFor,
   ensureLedgerFile,
@@ -2349,6 +2350,10 @@ type ClientMessage =
        *  speech rather than as typing — see context/pilot-prompt.md. */
       voice?: boolean;
     }
+  /** Run a one-line command in the pane's SHELL MODE on the human's behalf —
+   *  a browser connection only (see src/bang.ts for why it cannot be a prompt,
+   *  and why an agent must never reach it). */
+  | { type: "run"; command: string }
   | { type: "choose"; n: number }
   | { type: "toggle"; n: number }
   | { type: "confirm" }
@@ -3039,6 +3044,14 @@ function startContentTail(s: Live): void {
         // card, Telegram uploads them. {path, name, image} so neither re-derives.
         ...(e.files?.length ? { files: e.files.map(fileCard) } : {}),
       });
+    else if (e.kind === "bash")
+      broadcast(s, {
+        type: "stream-bash",
+        ...(e.command !== undefined ? { command: e.command } : {}),
+        ...(e.output !== undefined ? { output: e.output } : {}),
+        ...(e.isError ? { isError: true } : {}),
+        ...(e.at ? { at: e.at } : {}),
+      });
     else if (e.kind === "usage") {
       s.usage.set(e.messageId, e.usage);
       broadcast(s, { type: "tokens", tokens: tokenTotals(s) });
@@ -3512,6 +3525,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // its own agents.
   const callerPeer = peerName(req);
   (ws as WebSocket & { __peer?: string | null }).__peer = callerPeer;
+  // A same-origin browser, decided ONCE at connect from the upgrade's headers —
+  // not from anything a frame says. `run` is gated on it: shell mode bypasses a
+  // profile's `deny` (measured), so pilotctl and the agents, which connect with
+  // no Origin at all (invariant 11), must not be able to reach it.
+  const fromBrowser = requestFromBrowser(req);
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -3930,6 +3948,40 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           } finally {
             session.busy = false;
           }
+          await finishTurn(session);
+          break;
+        }
+
+        case "run": {
+          if (!session) return fail("no session started");
+          if (!fromBrowser) return fail("running a shell-mode command is reserved to the cockpit's browser");
+          const refusal = runRefusal(msg.command);
+          if (refusal) return fail(refusal);
+          if (session.busy) return fail("a response is already in progress", "busy");
+          const command = String(msg.command).trim();
+          console.log(`run: ${session.id.slice(0, 8)} ${me?.name ?? "?"} → ${command.slice(0, 120)}`);
+          session.busy = true;
+          session.turnStartedAt = Date.now();
+          broadcast(session, workingMessage(session));
+          try {
+            // `!` alone first, then WAIT for the pane to show shell mode — never
+            // a fixed delay (invariant 3: a tmux screen is a mirror refreshed on a
+            // poll, so a sleep races it). Only then does the robust `submit` type
+            // the command: `inputText` already reads the "! …" line, so its
+            // "did the text appear?" check holds in shell mode too.
+            session.pilot.write("!");
+            await session.pilot.waitFor(isShellMode, { timeoutMs: 5_000 });
+            await session.pilot.submit(command);
+          } catch (e) {
+            // Leave no stray `!` behind: a half-entered shell mode would turn the
+            // NEXT prompt into a command.
+            try { session.pilot.press("escape"); } catch { /* pane gone */ }
+            session.busy = false;
+            return fail(`the command could not be run: ${e instanceof Error ? e.message : e}`);
+          } finally {
+            session.busy = false;
+          }
+          // The agent reacts to the output like to any turn; finishTurn settles it.
           await finishTurn(session);
           break;
         }
