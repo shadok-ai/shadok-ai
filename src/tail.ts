@@ -1,3 +1,4 @@
+import { parseBashMessage, userMessageText } from "./bang.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -40,7 +41,10 @@ export type TailEvent =
    *  honours the silence unreachable: the parent notification reads the last
    *  STREAMED block, and this one never became one — so a quiet agent still woke
    *  its parent, with an empty message or with a stray earlier thought. */
-  | { kind: "silent"; at?: number };
+  | { kind: "silent"; at?: number }
+  /** A shell-mode exchange (`!` in the pane): the command, then its output.
+   *  User messages the TUI writes itself — see `parseBashMessage`. */
+  | { kind: "bash"; command?: string; output?: string; isError?: boolean; at?: number };
 
 /** Max characters of a tool result to stream (long outputs are truncated). */
 const MAX_RESULT = 4000;
@@ -352,7 +356,13 @@ export function parseLine(line: string): TailEvent[] {
   } catch {
     return [];
   }
-  if (e.isMeta || !Array.isArray(e.message?.content)) return [];
+  // A USER message may carry plain-string content: that is how the TUI writes a
+  // shell-mode exchange (`<bash-input>…`). Rejecting every non-array here made
+  // the bash branch below unreachable — the command ran, the history showed it
+  // on reload, and the LIVE stream said nothing. An assistant message is always
+  // an array of blocks.
+  const content = e.message?.content;
+  if (e.isMeta || !(Array.isArray(content) || (e.type === "user" && typeof content === "string"))) return [];
   const out: TailEvent[] = [];
   // Spread: the key stays ABSENT when the line has no timestamp, rather than
   // present as `undefined` (a consumer cannot confuse the two).
@@ -397,9 +407,18 @@ export function parseLine(line: string): TailEvent[] {
       }
     }
   } else if (e.type === "user") {
+    // A shell-mode exchange is written by the TUI as two USER messages. It is
+    // content, not a prompt the server already echoed, so it is streamed — the
+    // same way whether it came from the cockpit's button or was typed by hand
+    // in the terminal view.
+    const bash = parseBashMessage(userMessageText(e.message.content));
+    if (bash) {
+      out.push({ kind: "bash", ...bash, ...when });
+      return out;
+    }
     // User events carry tool results (command output, file reads…). The real
     // user prompt is echoed by the server itself, so only results are emitted.
-    for (const block of e.message.content) {
+    for (const block of Array.isArray(e.message.content) ? e.message.content : []) {
       if (block?.type !== "tool_result") continue;
       const text = resultText(block.content);
       if (text) {

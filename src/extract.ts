@@ -1,3 +1,4 @@
+import { parseBashMessage, userMessageText } from "./bang.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -216,7 +217,11 @@ export function userPromptText(e: any): string | null {
 }
 
 export interface HistoryTurn {
-  role: "user" | "assistant" | "file";
+  role: "user" | "assistant" | "file" | "bash";
+  /** A `bash` turn: a shell-mode command and, once it ran, its output. */
+  command?: string;
+  output?: string;
+  isError?: boolean;
   text: string;
   /** A `file` turn: the files a SendUserFile delivered, so a reload still shows
    *  the download / inline-image card (loadHistory drops other tool blocks). */
@@ -289,6 +294,21 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
     const at = parseTimestamp(e.timestamp);
     const when = at === null ? {} : { at };
     if (e.type === "user") {
+      // A shell-mode exchange BEFORE the `<` guard below, which took it for an
+      // injected system block and dropped it — the command vanished on reload
+      // while the agent's comment on its output stayed.
+      const bash = parseBashMessage(userMessageText(e.message.content));
+      if (bash) {
+        const last = turns[turns.length - 1];
+        if ("output" in bash && last?.role === "bash" && last.output === undefined) {
+          last.output = bash.output;
+          if (bash.isError) last.isError = true;
+        } else {
+          turns.push({ role: "bash", text: "", ...bash, ...when });
+        }
+        pendingHiddenPrompt = false;
+        continue;
+      }
       const text = userPromptText(e);
       if (text === null) continue; // tool result, system reminder, interruption
       // A pushed ledger delta may ride ahead of ANY prompt — human, cron, or an
