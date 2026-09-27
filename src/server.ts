@@ -99,6 +99,7 @@ import {
   addPeer,
   removePeer,
   ownedByPeer,
+  peersOutFileFor,
 } from "./peers.js";
 import {
   loadCrons,
@@ -2545,6 +2546,9 @@ function makePilot(
   // The PER-INSTANCE ledger file: an agent's cwd is a worktree, not the launch
   // dir, so it cannot derive the scope itself — hand it the path the skill writes.
   env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
+  // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
+  // reads it to reach another instance's agents. See src/peers.ts.
+  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd());
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.

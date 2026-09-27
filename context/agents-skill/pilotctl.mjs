@@ -30,8 +30,45 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
 export const port = () => Number(process.env.SHADOK_PORT ?? 3789);
-export const httpBase = () => `http://localhost:${port()}`;
-export const wsUrl = () => `ws://localhost:${port()}/ws`;
+
+// A REMOTE peer to target for this command, set from `--peer <alias>` (or
+// `--peer-url`/`--peer-token`). When set, every call goes to the peer's URL and
+// authenticates with `x-shadok-peer` instead of the local session key — an agent
+// on THIS instance driving an agent on ANOTHER. Null = the local server, as ever.
+let PEER = null; // { url, token }
+export function setPeer(p) { PEER = p; }
+
+export const httpBase = () => (PEER ? PEER.url : `http://localhost:${port()}`);
+export const wsUrl = () =>
+  PEER ? PEER.url.replace(/^http/, "ws") + "/ws" : `ws://localhost:${port()}/ws`;
+
+// The per-instance outbound-peers file the server hands us as SHADOK_PEERS_FILE
+// (a plain agent's cwd is a worktree, so it cannot derive its launch dir). A
+// hand-run pilotctl with no such env falls back to a machine-global file.
+export const peersFile = () =>
+  (process.env.SHADOK_PEERS_FILE || "").trim() ||
+  path.join(os.homedir(), ".shadok-ai", "peers-out.json");
+export function loadPeersOut() {
+  try {
+    const j = JSON.parse(fs.readFileSync(peersFile(), "utf8"));
+    return j && typeof j === "object" ? j : {};
+  } catch {
+    return {};
+  }
+}
+export function savePeersOut(map) {
+  fs.mkdirSync(path.dirname(peersFile()), { recursive: true });
+  const tmp = peersFile() + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(map, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, peersFile());
+}
+/** Pure: the {url, token} for an alias, or null. Trailing slashes trimmed so
+ *  `${url}/ws` and `${url}/diff` never double up. */
+export function resolvePeer(peersOut, alias) {
+  const p = peersOut && peersOut[alias];
+  if (!p || typeof p.url !== "string" || typeof p.token !== "string" || !p.url || !p.token) return null;
+  return { url: p.url.replace(/\/+$/, ""), token: p.token };
+}
 // When a GUI password is set, the server injects SHADOK_AUTH=sk_auth=<token>
 // into every agent's env; loopback HTTP + WS calls must present it as the cookie
 // or the password gate 401s them — exactly what secret.py / schedule.py and the
@@ -43,12 +80,17 @@ export const wsUrl = () => `ws://localhost:${port()}/ws`;
 // session id, verifies for as long as the agent runs, and grants exactly what
 // the cookie did. Both are sent: the cookie still works, and an older server
 // that does not know the header simply ignores it.
-export const authHeaders = () => ({
-  ...(process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {}),
-  ...(process.env.SHADOK_SESSION_KEY
-    ? { "x-shadok-session-key": process.env.SHADOK_SESSION_KEY }
-    : {}),
-});
+export const authHeaders = () =>
+  PEER
+    ? // Targeting a remote peer: the ONLY credential it accepts is the peer token.
+      // Never leak the local cookie/session key to another instance.
+      { "x-shadok-peer": PEER.token }
+    : {
+        ...(process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {}),
+        ...(process.env.SHADOK_SESSION_KEY
+          ? { "x-shadok-session-key": process.env.SHADOK_SESSION_KEY }
+          : {}),
+      };
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The built-in WebSocket is WHATWG (addEventListener + event.data); the rest of
@@ -113,7 +155,10 @@ export function parseArgs(argv) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--worktree" || a === "--continue" || a === "--readonly") flags[a.slice(2)] = true;
-    else if (a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent") flags[a.slice(2)] = rest[++i];
+    else if (
+      a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent" ||
+      a === "--peer" || a === "--peer-url" || a === "--peer-token"
+    ) flags[a.slice(2)] = rest[++i];
     else pos.push(a);
   }
   return { cmd, pos, flags };
@@ -221,6 +266,10 @@ async function serverUp() {
 }
 
 export async function ensureServer() {
+  // Targeting a remote peer (`--peer`): it is someone else's server — never probe
+  // or auto-start a local one. If the peer is unreachable the connection fails
+  // with a clear error, which is the honest outcome.
+  if (PEER) return;
   if (await serverUp()) return;
   if (process.env.SHADOK_NO_AUTOSTART)
     throw new Error(`shadok-ai server unreachable on :${port()}`);
@@ -263,7 +312,10 @@ export async function ensureHolder(id, cwd) {
   const child = spawnChild(process.execPath, args, {
     detached: true,
     stdio: ["ignore", "pipe", "ignore"],
-    env: process.env,
+    // A holder for a REMOTE agent must connect to the peer, not the local server.
+    // The detached child gets no `--peer` flag, so carry it in the ENV (never
+    // argv — a token in argv is world-readable via `ps`); `run()` reads it back.
+    env: PEER ? { ...process.env, SHADOK_PEER_URL: PEER.url, SHADOK_PEER_TOKEN: PEER.token } : process.env,
   });
   try {
     await new Promise((resolve, reject) => {
@@ -504,10 +556,59 @@ async function cmdScreen(id, flags) {
 }
 
 const HELP =
-  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt> …";
+  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt|peer> …\n" +
+  "       add --peer <alias> to any command to run it against another instance's agents\n" +
+  "       pilotctl peer <add <alias> <url> <token>|list|rm <alias>>";
+
+// Manage the outbound-peers file: aliases → { url, token }. The token is minted by
+// the REMOTE instance's admin (POST /peers there) and pasted in here once. Local
+// only, no server involved. `list` never prints tokens.
+export function cmdPeer(pos) {
+  const [sub, alias, url, token] = pos;
+  const map = loadPeersOut();
+  if (sub === "add") {
+    if (!alias || !url || !token) throw new Error("usage: pilotctl peer add <alias> <url> <token>");
+    map[alias] = { url, token };
+    savePeersOut(map);
+    return { ok: true, alias, url };
+  }
+  if (sub === "rm") {
+    if (!alias) throw new Error("usage: pilotctl peer rm <alias>");
+    delete map[alias];
+    savePeersOut(map);
+    return { ok: true, alias };
+  }
+  if (sub === "list" || sub === undefined)
+    return { peers: Object.entries(map).map(([a, p]) => ({ alias: a, url: p?.url })) };
+  throw new Error("usage: pilotctl peer <add|rm|list> …");
+}
 
 export async function run(argv) {
   const { cmd, pos, flags } = parseArgs(argv);
+  // Manage the outbound-peers file (local, no server).
+  if (cmd === "peer") return cmdPeer(pos);
+  // Target a REMOTE peer for this command — every call then goes to its URL with
+  // the peer token instead of the local session key. `--peer <alias>` resolves
+  // the outbound file; `--peer-url/--peer-token` is a one-off; SHADOK_PEER_URL/
+  // _TOKEN in the env is how a detached holder child inherits the peer.
+  if (flags.peer || flags["peer-url"] || process.env.SHADOK_PEER_URL) {
+    const target = flags["peer-url"]
+      ? flags["peer-token"]
+        ? { url: flags["peer-url"].replace(/\/+$/, ""), token: flags["peer-token"] }
+        : null
+      : flags.peer
+        ? resolvePeer(loadPeersOut(), flags.peer)
+        : process.env.SHADOK_PEER_URL && process.env.SHADOK_PEER_TOKEN
+          ? { url: process.env.SHADOK_PEER_URL.replace(/\/+$/, ""), token: process.env.SHADOK_PEER_TOKEN }
+          : null;
+    if (!target)
+      throw new Error(
+        flags["peer-url"]
+          ? "--peer-url needs a --peer-token"
+          : `unknown peer "${flags.peer}" — add it with: pilotctl peer add <alias> <url> <token>`,
+      );
+    setPeer(target);
+  }
   switch (cmd) {
     case "spawn":
       return cmdSpawn(flags);

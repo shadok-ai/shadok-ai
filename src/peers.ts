@@ -27,9 +27,18 @@ export interface Peer {
   note?: string;
 }
 
-/** Per-launch-dir registry, 600, like accounts/channels. */
+/** INBOUND registry, per launch dir, 600 — peers allowed to reach THIS instance. */
 export function peerFileFor(cwd: string = process.cwd()): string {
   return path.join(os.homedir(), ".shadok-ai", "peers", instanceKey(cwd) + ".json");
+}
+
+/** OUTBOUND registry, per launch dir, 600 — peers THIS instance can reach
+ *  (`{ alias: { url, token } }`, managed by `pilotctl peer add`). The server
+ *  hands its path to every agent as SHADOK_PEERS_FILE (twin of the ledger file),
+ *  since an agent's cwd is a worktree, not the launch dir. Read by the client
+ *  (pilotctl); the server only needs to compute the path. */
+export function peersOutFileFor(cwd: string = process.cwd()): string {
+  return path.join(os.homedir(), ".shadok-ai", "peers-out", instanceKey(cwd) + ".json");
 }
 
 export function loadPeers(file: string): Peer[] {

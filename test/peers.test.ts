@@ -9,6 +9,8 @@ import {
   addPeer,
   removePeer,
   ownedByPeer,
+  peerFileFor,
+  peersOutFileFor,
 } from "../src/peers.js";
 
 const secret = randomBytes(32);
@@ -61,4 +63,10 @@ test("ownedByPeer: only the peer that created an agent owns it", () => {
   assert.equal(ownedByPeer({ createdByPeer: "brasdroit2" }, "brasdroit1"), false); // another peer's
   assert.equal(ownedByPeer({}, "brasdroit1"), false); // a local agent (no owner)
   assert.equal(ownedByPeer(undefined, "brasdroit1"), false); // no such channel
+});
+
+test("peerFileFor / peersOutFileFor: distinct per-instance paths under ~/.shadok-ai", () => {
+  assert.match(peerFileFor("/a/b"), /\.shadok-ai\/peers\/-a-b\.json$/);
+  assert.match(peersOutFileFor("/a/b"), /\.shadok-ai\/peers-out\/-a-b\.json$/);
+  assert.notEqual(peerFileFor("/a"), peersOutFileFor("/a")); // inbound vs outbound never collide
 });
