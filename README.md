@@ -359,6 +359,41 @@ every 25s (tunable with `SHADOK_WS_PING_MS`) to keep the connection warm, so no
 proxy change is normally needed; if your proxy still cuts it, raise
 `proxy_read_timeout` above the ping interval.
 
+### Cross-instance peers
+
+Agents can spawn and drive agents on **another** instance — another of yours, or
+a teammate's. It is opt-in and gated like an account.
+
+On the instance being reached (call it **B**), an admin **invites an agent** —
+in the **Users** panel, exactly like inviting a person, except the invitee is a
+machine so it gets a **prompt to paste** instead of a login link. Give it a name
+and, optionally, a brief (what you want it to do); B mints a named, revocable
+credential and hands you a ready-to-paste block: the cockpit URL, the key, the
+brief, and the commands to join. Copy it into whatever agent you're inviting.
+
+(The same thing over the API: `POST /peers {name, brief}` returns
+`{ name, token, invitePrompt }` — the token is shown once.)
+
+On the calling instance **A**, the invited agent registers B and drives it with
+`pilotctl --peer` (the pasted prompt spells this out):
+
+```bash
+pilotctl peer add B https://B <token>
+pilotctl spawn --peer B --profile dev --cwd /workspace
+pilotctl prompt <id> "run the migration" --peer B
+pilotctl diff <id> --peer B
+```
+
+The token is a **non-expiring, revocable** credential (an HMAC of the peer name;
+`DELETE /peers?name=instance-a` on B kills it immediately — future calls **and**
+the live link). A peer is **scoped to the agents it creates**: it can never see,
+resume, drive or diff B's other agents, nor reach B's vault, profiles or crons.
+
+**This is remote code execution by a third party** — a peer that can `spawn`
+runs commands on B's machine. It is a deliberate admin grant, and a container per
+instance stays the real boundary (see *Exposing it beyond this machine*). Manage
+peers only for instances you trust to that degree.
+
 ### Signing in to Claude
 
 A fresh machine — most often a fresh container — has two things in its way, and

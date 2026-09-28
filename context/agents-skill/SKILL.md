@@ -113,10 +113,36 @@ time, and the information comes to you.
 `--parent none` spawns an agent deliberately unattached; `--parent <id>`
 attaches it elsewhere.
 
+## Driving agents on ANOTHER instance (`--peer`)
+
+You can spawn and drive agents on a **different** shadok instance — another one
+of your own, or a teammate's — over an authenticated link. Add `--peer <alias>`
+**after the command** (like `--profile`/`--cwd`) and it runs against that
+instance instead of this one:
+
+```
+pilotctl peer add brasdroit1 https://brasdroit1.example.com <token>   # once
+pilotctl spawn --peer brasdroit1 --profile dev --cwd /workspace       # spawn there
+pilotctl prompt <id> "run the migration" --peer brasdroit1            # drive it
+pilotctl diff <id> --peer brasdroit1                                  # read its work
+pilotctl stop <id> --peer brasdroit1
+```
+
+- The **token** is minted by the REMOTE instance's admin (a human, in its
+  cockpit — `POST /peers`). Paste it in once with `peer add`; it is kept in a
+  600 file, `peer list` never prints it. You cannot mint your own — that is the
+  point: the other instance decides who may reach it.
+- A peer is **scoped to the agents it creates**: `--peer X` can only resume /
+  drive / diff / stop agents YOU spawned on X, never its other agents. A refusal
+  comes back as `peer-scope`.
+- `list` is not available over `--peer` (a peer sees only its own agents) — track
+  the ids you `spawn` and drive them by id.
+
 ## Guardrails
 
 - NEVER `stop` a session this conversation did not create: it may belong to the
-  user in the web UI. `stop` ends the session for all its clients.
+  user in the web UI. `stop` ends the session for all its clients. (Over `--peer`
+  the server enforces this for you: you can only touch your own remote agents.)
 - Every agent consumes the Claude quota like an ordinary session. Do not
   multiply agents without an explicit request from the user.
 - `prompt` on a session whose turn is already running → the error "a response is

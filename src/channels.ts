@@ -49,6 +49,12 @@ export interface Channel {
    *  blink, chime). Client-owned like `name`/`group`, stored here so the mute
    *  survives a reload and follows the user's other devices. */
   muted?: boolean;
+  /** The PEER (another instance/harness) that spawned this agent, when a remote
+   *  party created it via `x-shadok-peer`. A peer is scoped to agents it created,
+   *  so this is the ownership key: only that peer may resume/drive/diff it, and
+   *  this instance's admin sees who is driving what. Server-owned; absent for a
+   *  locally-spawned agent. See `src/peers.ts`. */
+  createdByPeer?: string;
 }
 
 /**
