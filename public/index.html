@@ -4840,6 +4840,29 @@
     tab.livePreviewBubble = null;
   }
 
+  /**
+   * The message an agent writes just BEFORE it asks a question lives only on the
+   * TUI screen until the turn finalises — which, for a turn suspended ON that
+   * question, is only AFTER you answer. So the dialog appeared with nothing above
+   * it, and the message "came back" once a choice was made (the reported bug).
+   *
+   * On a dialog we therefore PROMOTE that in-flight text (the grey live preview)
+   * into a persistent bubble, rendered just before the question, instead of
+   * clearing it. When `stream-text` later delivers the authoritative block it is
+   * de-duplicated against this (a screen window is a substring of the full text),
+   * so it is not shown twice. Mirrors the Telegram bridge's `preface`.
+   */
+  function promotePreface(tab) {
+    if (tab.prefaceEl) return;                 // already promoted (multi-select re-render)
+    const txt = tab.livePreviewBubble ? tab.livePreviewBubble.textContent : "";
+    const nT = normPreview(txt);
+    if (!nT || isFinalizedBlock(tab, nT)) return; // nothing new to show (already a real block)
+    const b = addTurn(tab, "claude", "claude", txt, "live", Date.now());
+    tab.prefaceEl = b.parentElement;
+    tab.prefaceNorm = nT;
+  }
+  function clearPreface(tab) { tab.prefaceEl = null; tab.prefaceNorm = null; }
+
   /* ── Activity log ────────────────────────────────────────
      Tool traffic is grouped instead of stacked. A *block* is a run of tool
      events between two pieces of assistant text; inside it, consecutive calls
@@ -5937,6 +5960,15 @@
         {
           const fin = normPreview(msg.text);
           if (fin) (t.finalizedNorms ||= []).push(fin);
+          // This authoritative block IS the preface we promoted for a pending
+          // question: drop the promoted copy so the addTurn below re-adds it once,
+          // clean (markdown, not the screen's plain wrap). Either contains the
+          // other — the screen window can be a truncated substring of the full
+          // block, or carry a transient trailing char (a cursor) the block lacks.
+          if (t.prefaceEl && t.prefaceNorm && (fin.includes(t.prefaceNorm) || t.prefaceNorm.includes(fin))) {
+            t.prefaceEl.remove();
+            clearPreface(t);
+          }
         }
         clearLivePreview(t);
         // Visible text arrived (NOTHING TO SHOW is filtered by the tail before
@@ -5967,6 +5999,9 @@
       case "turn-done":
         retireChoices(t);
         clearLivePreview(t);
+        // A promoted preface that was never matched by a stream-text stays as the
+        // shown text; just stop tracking it so the next turn starts clean.
+        clearPreface(t);
         // Activity recedes now the turn is over — errors excepted.
         sealTurn(t);
         if (msg.sessionId && msg.sessionId !== t.sessionId) {
@@ -6005,6 +6040,9 @@
       case "dialog":
         // Re-rendered in place when a dialog is already shown (multi toggle).
         closeActivity(t);
+        // Keep the message the agent wrote BEFORE the question visible — promote
+        // the in-flight preview into a real bubble instead of dropping it.
+        promotePreface(t);
         clearLivePreview(t);
         renderDialog(t, msg);
         stopTurnTimer(t);
