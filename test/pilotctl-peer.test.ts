@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   parseArgs,
   resolvePeer,
@@ -54,20 +56,62 @@ test("peersFile honours SHADOK_PEERS_FILE, else a global fallback", () => {
   if (saved !== undefined) process.env.SHADOK_PEERS_FILE = saved;
 });
 
-test("cmdPeer add/list/rm round-trips a file, and list never prints tokens", () => {
+test("cmdPeer add/list/rm round-trips a file, and list never prints tokens", async () => {
   const saved = process.env.SHADOK_PEERS_FILE;
   const f = `/tmp/pilotctl-peer-${process.pid}.json`;
   process.env.SHADOK_PEERS_FILE = f;
   try {
-    cmdPeer(["add", "brasdroit1", "https://b.example", "secret-token"]);
-    const listed = cmdPeer(["list"]);
+    // `--token` stores a credential issued some other way: no network.
+    await cmdPeer(["add", "brasdroit1", "https://b.example", "secret-token"], { token: true });
+    const listed = await cmdPeer(["list"]);
     assert.deepEqual(listed, { peers: [{ alias: "brasdroit1", url: "https://b.example" }] });
     assert.ok(!JSON.stringify(listed).includes("secret-token")); // token never surfaced
-    cmdPeer(["rm", "brasdroit1"]);
-    assert.deepEqual(cmdPeer(["list"]), { peers: [] });
+    await cmdPeer(["rm", "brasdroit1"]);
+    assert.deepEqual(await cmdPeer(["list"]), { peers: [] });
   } finally {
     try { fs.unlinkSync(f); } catch {}
     if (saved !== undefined) process.env.SHADOK_PEERS_FILE = saved;
     else delete process.env.SHADOK_PEERS_FILE;
+  }
+});
+
+
+test("cmdPeer add ENROLS: the ticket is exchanged, and a refusal stores nothing", async () => {
+  // The point of the exchange: what lands in the outbound file is the durable
+  // token the remote handed back, never the ticket that was pasted around.
+  const http = await import("node:http");
+  let seen: unknown = null;
+  const srv = http.createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      seen = JSON.parse(body || "{}");
+      const ok = (seen as { ticket?: string }).ticket === "good-ticket";
+      res.writeHead(ok ? 200 : 400, { "content-type": "application/json" });
+      res.end(JSON.stringify(ok ? { ok: true, name: "host", token: "durable-token" } : { error: "this invitation is no longer valid" }));
+    });
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const url = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pc-enrol-"));
+  const prev = process.env.SHADOK_PEERS_FILE;
+  process.env.SHADOK_PEERS_FILE = path.join(dir, "out.json");
+  try {
+    const r = await cmdPeer(["add", "host", url, "good-ticket"]);
+    assert.equal((r as { enrolled?: boolean }).enrolled, true);
+    assert.deepEqual(seen, { ticket: "good-ticket" }, "only the ticket is sent");
+    const saved = JSON.parse(fs.readFileSync(process.env.SHADOK_PEERS_FILE!, "utf8"));
+    assert.equal(saved.host.token, "durable-token", "the DURABLE token is stored");
+    assert.notEqual(saved.host.token, "good-ticket", "never the ticket");
+
+    // A dead ticket: refused, and nothing is written for it.
+    await assert.rejects(() => cmdPeer(["add", "other", url, "dead-ticket"]), /no longer valid/);
+    const after = JSON.parse(fs.readFileSync(process.env.SHADOK_PEERS_FILE!, "utf8"));
+    assert.equal(after.other, undefined, "a refused enrolment stores nothing");
+  } finally {
+    if (prev === undefined) delete process.env.SHADOK_PEERS_FILE;
+    else process.env.SHADOK_PEERS_FILE = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
+    srv.close();
   }
 });

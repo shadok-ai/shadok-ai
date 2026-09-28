@@ -558,19 +558,45 @@ async function cmdScreen(id, flags) {
 const HELP =
   "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt|peer> …\n" +
   "       add --peer <alias> to any command to run it against another instance's agents\n" +
-  "       pilotctl peer <add <alias> <url> <token>|list|rm <alias>>";
+  "       pilotctl peer <add <alias> <url> <ticket> [--token]|list|rm <alias>>";
 
-// Manage the outbound-peers file: aliases → { url, token }. The token is minted by
-// the REMOTE instance's admin (POST /peers there) and pasted in here once. Local
-// only, no server involved. `list` never prints tokens.
-export function cmdPeer(pos) {
-  const [sub, alias, url, token] = pos;
+/**
+ * Manage the outbound-peers file: aliases → { url, token }.
+ *
+ * `add` takes the single-use TICKET from the invitation and ENROLS with it: it
+ * posts the ticket to the remote `POST /peers/enrol`, which consumes it and
+ * returns the durable token stored here. So the credential we keep is one this
+ * side obtained itself — the invitation, which gets pasted into a session and
+ * lives on in a transcript, only ever held something that dies on first use.
+ *
+ * A ticket that has already been redeemed, expired or never existed is refused
+ * by the remote with one indistinguishable message, and we store NOTHING: a
+ * saved credential that does not authenticate is worse than a clear error.
+ *
+ * `--token` skips the exchange and stores the value as a durable token, for a
+ * credential issued some other way. `list` never prints either.
+ */
+export async function cmdPeer(pos, flags = {}) {
+  const [sub, alias, url, secret] = pos;
   const map = loadPeersOut();
   if (sub === "add") {
-    if (!alias || !url || !token) throw new Error("usage: pilotctl peer add <alias> <url> <token>");
-    map[alias] = { url, token };
+    if (!alias || !url || !secret)
+      throw new Error("usage: pilotctl peer add <alias> <url> <ticket> [--token]");
+    const base = String(url).replace(/\/+$/, "");
+    let token = secret;
+    if (!flags.token) {
+      const r = await fetch(`${base}/peers/enrol`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ticket: secret }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.token) throw new Error(j?.error || `enrolment refused (HTTP ${r.status})`);
+      token = j.token;
+    }
+    map[alias] = { url: base, token };
     savePeersOut(map);
-    return { ok: true, alias, url };
+    return { ok: true, alias, url: base, enrolled: !flags.token };
   }
   if (sub === "rm") {
     if (!alias) throw new Error("usage: pilotctl peer rm <alias>");
@@ -586,7 +612,7 @@ export function cmdPeer(pos) {
 export async function run(argv) {
   const { cmd, pos, flags } = parseArgs(argv);
   // Manage the outbound-peers file (local, no server).
-  if (cmd === "peer") return cmdPeer(pos);
+  if (cmd === "peer") return cmdPeer(pos, flags);
   // Target a REMOTE peer for this command — every call then goes to its URL with
   // the peer token instead of the local session key. `--peer <alias>` resolves
   // the outbound file; `--peer-url/--peer-token` is a one-off; SHADOK_PEER_URL/

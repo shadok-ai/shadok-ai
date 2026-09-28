@@ -95,8 +95,11 @@ import {
   savePeers,
   peerFromToken,
   signPeerToken,
+  newPeer,
+  withSalts,
+  redeemVerdict,
+  redeemPeer,
   normPeerName,
-  addPeer,
   removePeer,
   ownedByPeer,
   peersOutFileFor,
@@ -849,7 +852,9 @@ function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
 function peerName(req: { headers: Record<string, unknown> }): string | null {
   const tok = req.headers["x-shadok-peer"];
   if (typeof tok !== "string" || !tok) return null;
-  return peerFromToken(tok, signingSecret(), loadPeers(peerFileFor()));
+  // `withSalts` so a row written before salts existed is verified against a
+  // backfilled one — i.e. its old deterministic token is refused, not honoured.
+  return peerFromToken(tok, signingSecret(), withSalts(loadPeers(peerFileFor())));
 }
 function passwordMatches(input: string): boolean {
   const a = Buffer.from(input);
@@ -1067,6 +1072,30 @@ app.post("/invite/:token", (req, res) => {
 app.post("/logout", (_req, res) => {
   res.setHeader("Set-Cookie", "sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
   res.json({ ok: true });
+});
+
+/**
+ * Redeem a peer invitation: a single-use ticket in, a durable token out.
+ *
+ * BEFORE the password gate on purpose, and it is the only peer route that is: an
+ * invitee has no credential yet, which is the whole point of enrolling. The
+ * surface is deliberately one field — the ticket authenticates the call and
+ * nothing else is read — and it is narrow in three more ways: the ticket is
+ * consumed on success (so a replay fails), it expires, and an unknown, used or
+ * expired ticket all get the SAME refusal, so a guesser learns nothing about
+ * which tickets ever existed.
+ *
+ * Twin of `POST /invite/:token` for humans.
+ */
+app.post("/peers/enrol", (req, res) => {
+  const file = peerFileFor();
+  const peers = withSalts(loadPeers(file));
+  const v = redeemVerdict(peers, req.body?.ticket, Date.now());
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const row = peers.find((p) => p.name === v.name)!;
+  savePeers(file, redeemPeer(peers, v.name, Date.now()));
+  console.log(`peers: ${v.name} enrolled (ticket consumed)`);
+  res.json({ ok: true, name: v.name, token: signPeerToken(v.name, signingSecret(), row.salt!) });
 });
 
 // Who am I? The client labels itself with this, and a tab whose session expired
@@ -1662,17 +1691,19 @@ app.post("/peers", (req, res) => {
   const note = typeof req.body?.note === "string" ? req.body.note.trim() || undefined : undefined;
   const brief = typeof req.body?.brief === "string" ? req.body.brief : "";
   const file = peerFileFor();
-  savePeers(file, addPeer(loadPeers(file), name, Date.now(), note));
-  console.log(`peers: ${me.name} added peer ${name}`);
-  // The token is shown ONCE. It is derived (HMAC), so re-adding the peer re-mints
-  // the SAME token — it is never stored to hand back later, like an invitation.
-  // `invitePrompt` is the "invite an agent like a user" gesture: a ready-to-paste
-  // brief the invitee drops into its own session (endpoint + key + task + how to
-  // join). Its URL is the one the ADMIN is reaching us at (their browser origin),
-  // which is the public URL an external agent would use too.
-  const token = signPeerToken(name, signingSecret());
+  const { peers, ticket } = newPeer(loadPeers(file), name, Date.now(), note);
+  savePeers(file, peers);
+  console.log(`peers: ${me.name} invited peer ${name}`);
+  // What is handed out is a SINGLE-USE TICKET, not the credential — the peer
+  // exchanges it at `POST /peers/enrol` for a durable token it then keeps. So the
+  // long-lived credential never travels through this response, the invite prompt,
+  // a chat, or the invitee's transcript; only a ticket that dies on first use
+  // does. Exactly how a user's invitation link works (`/invite/:token`).
+  // Re-inviting the same name re-rolls the salt, so any earlier token is dead.
+  // The URL is the one the ADMIN is reaching us at (their browser origin), which
+  // is the public URL an external agent would use too.
   const url = ((req.headers.origin as string | undefined)?.trim() || `http://${req.headers.host ?? "localhost"}`).replace(/\/+$/, "");
-  res.json({ ok: true, name, token, invitePrompt: agentInvitePrompt({ url, token, brief }) });
+  res.json({ ok: true, name, ticket, invitePrompt: agentInvitePrompt({ url, ticket, brief }) });
 });
 app.delete("/peers", (req, res) => {
   const me = accountAdmin(req, res);
