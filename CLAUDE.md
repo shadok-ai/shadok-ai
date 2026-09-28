@@ -278,12 +278,25 @@ path so the next spawn re-resolves it; the GUI shows the button when an agent's
 TUI footer reports `Auto-update failed`, and reloads the agent afterwards. Not an
 agent-reachable action: it touches the whole machine's CLI). `/login`,
 `/vendor/marked.js`,
-`/paste` (POST — ANY file pasted into the composer, not just images; lands
-in the same `MEDIA_DIR` as Telegram attachments, keeps the original name via
-the `x-filename` header so the extension stays truthful, and returns the
-ready-made `[Image jointe : …]` / `[Fichier joint : …]` line. Accepts every
-content type (`express.raw({type:()=>true})`). Browser-origin only: it writes
-a file).
+`/paste` (POST — ANY file pasted OR dropped into the composer, not just images;
+lands in the same `MEDIA_DIR` as Telegram attachments, keeps the original name
+via the `x-filename` header so the extension stays truthful, and returns
+`{path, line}` — `line` is the ready-made `[Attached image: …]` / `[Attached
+file: …]` from `attachmentPrompt`, the ONE format for the agent whatever the
+surface. Accepts every content type (`express.raw({type:()=>true})`).
+Browser-origin only: it writes a file. The client no longer types `line` into
+the textarea: a paste/drop becomes a **chip** in the composer strip
+(`#composerAtts`, thumbnail for an image via `GET /media`, named tag otherwise),
+and the `[Attached …: path]` line is composed back from the ready chips only at
+submit — so the agent reads exactly what it always did while the user sees a
+preview, and an image renders inline in their own message bubble
+(`renderUserAttachments`, invariant 13's twin: the path is trusted server output,
+not agent Markdown)),
+`/media/:name` (GET — serves a file back from `MEDIA_DIR` for inline display in
+the chat and the composer chip. Basename only + a `sandbox` CSP and
+`nosniff`, like `/download`; a raster image is `inline`, everything else
+`attachment`. No transcript check because these are files the USER supplied, not
+paths an agent named — the traversal guard is the whole gate),
 `/files` (POST — an agent offers a file through shadok's own path, authenticated by `x-shadok-session-key`; refusals name the path and say why, and a partial success reports WHICH file did not make it),
 `/download` (GET — `session` + `path`: streams back a file the agent DELIVERED via `SendUserFile` **or offered through `POST /files`** — two sources, one rule. The path is verified against that session's transcript
 (`sentFilePaths`), so it can never be walked into an arbitrary file; the response
