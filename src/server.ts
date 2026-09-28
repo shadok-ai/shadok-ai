@@ -20,6 +20,7 @@ import {
   resumedTurnStart,
   transcriptFilePath,
   type TuiDialog,
+  type HistoryTurn,
 } from "./extract.js";
 import { fileCard, sentFilePaths, contentTypeFor, isImageFile } from "./download.js";
 import {
@@ -2156,6 +2157,37 @@ app.post("/files", (req, res) => {
   res.json({ ok: true, sent: accepted.map((f) => ({ path: f.path, name: f.name, size: f.size })), refused });
 });
 
+/**
+ * The session's history for the web, WITH the files it handed over via POST
+ * /files (`ShadokFile`) merged back in as `file` turns.
+ *
+ * Those offers live in the offers REGISTRY, not the transcript — unlike
+ * SendUserFile, which `loadHistory` already replays as `file` turns. So without
+ * this a skill-delivered image showed once, LIVE, and then vanished on the next
+ * reload (or when the agent's tab was reopened), while Telegram — which uploaded
+ * the bytes — kept it. That mismatch is the reported "images show on Telegram but
+ * not on the web". Interleaved by timestamp so a file lands where it was sent.
+ */
+function historyWithOffers(turns: HistoryTurn[], sessionId: string): HistoryTurn[] {
+  const offers = loadOffers(filesFileFor(process.cwd())).filter((o) => o.sessionId === sessionId);
+  if (!offers.length) return turns;
+  const fileTurns: HistoryTurn[] = offers
+    .slice()
+    .sort((a, b) => (a.at ?? 0) - (b.at ?? 0))
+    .map((o) => ({ role: "file", text: "", files: [fileCard(o.path)], ...(o.at ? { at: o.at } : {}) }));
+  // Stable merge into the (chronological) transcript turns: an offer goes before
+  // the first turn it does not predate; a turn with no timestamp keeps its place.
+  const out: HistoryTurn[] = [];
+  let oi = 0;
+  for (const t of turns) {
+    const tAt = t.at ?? Number.POSITIVE_INFINITY;
+    while (oi < fileTurns.length && (fileTurns[oi].at ?? 0) <= tAt) out.push(fileTurns[oi++]);
+    out.push(t);
+  }
+  while (oi < fileTurns.length) out.push(fileTurns[oi++]);
+  return out;
+}
+
 app.get("/download", (req, res) => {
   const session = String(req.query.session ?? "");
   const wanted = String(req.query.path ?? "");
@@ -3716,7 +3748,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               session.idleTimer = null;
             }
             session.clients.add(ws);
-            const turns = loadHistory(session.cwd, id);
+            const turns = historyWithOffers(loadHistory(session.cwd, id), id);
             if (turns.length) send({ type: "history", turns });
             send({
               type: "ready",
@@ -3785,7 +3817,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           session = await createSession(id, effectiveCwd, args, worktree, profile, model);
           session.clients.add(ws);
           if (resumed) {
-            const turns = loadHistory(effectiveCwd, id);
+            const turns = historyWithOffers(loadHistory(effectiveCwd, id), id);
             if (turns.length) send({ type: "history", turns });
           }
           send({
