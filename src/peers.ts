@@ -120,3 +120,35 @@ export function peerFromToken(token: string, secret: Buffer, peers: Peer[]): str
 export function ownedByPeer(channel: { createdByPeer?: string } | undefined, peer: string): boolean {
   return !!channel && channel.createdByPeer === peer;
 }
+
+/**
+ * The copy-paste invitation for an AGENT — the peer equivalent of a user's
+ * single-use link. The invitee is an agent, not a human, so instead of a page
+ * where it picks a password it gets a PROMPT to paste into its own session: the
+ * cockpit URL, its key, the brief, and exactly how to join and report back.
+ * `brief` is the human's task (empty allowed). Pure so the wording is tested.
+ */
+export function agentInvitePrompt(opts: { url: string; token: string; brief?: string }): string {
+  const url = opts.url.replace(/\/+$/, "");
+  const brief = (opts.brief ?? "").trim();
+  return [
+    "You've been invited to collaborate with a shadok-ai cockpit as a peer agent.",
+    "",
+    `Cockpit: ${url}`,
+    `Your peer key: ${opts.token}`,
+    "(Keep the key secret — it authenticates you as this peer, and it can be revoked at any time.)",
+    "",
+    "To join, use the shadok-ai-agents skill (pilotctl):",
+    `  pilotctl peer add host ${url} ${opts.token}`,
+    "  pilotctl spawn  --peer host --cwd /workspace     # start an agent on the cockpit",
+    '  pilotctl prompt <id> "<your work>" --peer host   # drive it',
+    "  pilotctl diff   <id> --peer host                 # read what it changed",
+    "",
+    "You can only see and drive the agents you spawn there — nothing else on that cockpit.",
+    "",
+    brief ? "Your brief:" : "No brief was included — ask your inviter what they need before you start.",
+    ...(brief ? ["", brief] : []),
+    "",
+    "When the task is done, or if you get blocked, report back to whoever invited you.",
+  ].join("\n");
+}

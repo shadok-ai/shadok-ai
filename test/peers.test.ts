@@ -11,6 +11,7 @@ import {
   ownedByPeer,
   peerFileFor,
   peersOutFileFor,
+  agentInvitePrompt,
 } from "../src/peers.js";
 
 const secret = randomBytes(32);
@@ -69,4 +70,17 @@ test("peerFileFor / peersOutFileFor: distinct per-instance paths under ~/.shadok
   assert.match(peerFileFor("/a/b"), /\.shadok-ai\/peers\/-a-b\.json$/);
   assert.match(peersOutFileFor("/a/b"), /\.shadok-ai\/peers-out\/-a-b\.json$/);
   assert.notEqual(peerFileFor("/a"), peersOutFileFor("/a")); // inbound vs outbound never collide
+});
+
+test("agentInvitePrompt: carries the endpoint, the key and the brief; trims the URL", () => {
+  const p = agentInvitePrompt({ url: "https://cockpit.example/", token: "tok123", brief: "  audit module X  " });
+  assert.match(p, /Cockpit: https:\/\/cockpit\.example$/m); // trailing slash trimmed
+  assert.match(p, /Your peer key: tok123/);
+  assert.match(p, /peer add host https:\/\/cockpit\.example tok123/);
+  assert.match(p, /Your brief:/);
+  assert.match(p, /audit module X/); // trimmed, present
+  // no brief → an explicit "ask your inviter" line, never a dangling "Your brief:"
+  const none = agentInvitePrompt({ url: "http://h", token: "t" });
+  assert.match(none, /No brief was included/);
+  assert.ok(!none.includes("Your brief:"));
 });

@@ -364,16 +364,18 @@ proxy change is normally needed; if your proxy still cuts it, raise
 Agents can spawn and drive agents on **another** instance — another of yours, or
 a teammate's. It is opt-in and gated like an account.
 
-On the instance being reached (call it **B**), an admin invites a **peer** — a
-named, revocable credential for a machine, not a person:
+On the instance being reached (call it **B**), an admin **invites an agent** —
+in the **Users** panel, exactly like inviting a person, except the invitee is a
+machine so it gets a **prompt to paste** instead of a login link. Give it a name
+and, optionally, a brief (what you want it to do); B mints a named, revocable
+credential and hands you a ready-to-paste block: the cockpit URL, the key, the
+brief, and the commands to join. Copy it into whatever agent you're inviting.
 
-```bash
-curl -sS -X POST -H "cookie: $B_ADMIN_COOKIE" -H "origin: https://B" \
-  -H "content-type: application/json" -d '{"name":"instance-a"}' https://B/peers
-# → { "name": "instance-a", "token": "…" }   (shown once)
-```
+(The same thing over the API: `POST /peers {name, brief}` returns
+`{ name, token, invitePrompt }` — the token is shown once.)
 
-On the calling instance **A**, register B and drive it with `pilotctl --peer`:
+On the calling instance **A**, the invited agent registers B and drives it with
+`pilotctl --peer` (the pasted prompt spells this out):
 
 ```bash
 pilotctl peer add B https://B <token>

@@ -100,6 +100,7 @@ import {
   removePeer,
   ownedByPeer,
   peersOutFileFor,
+  agentInvitePrompt,
 } from "./peers.js";
 import {
   loadCrons,
@@ -1659,12 +1660,19 @@ app.post("/peers", (req, res) => {
   const name = normPeerName(req.body?.name);
   if (!name) return res.status(400).json({ error: "a peer name is required" });
   const note = typeof req.body?.note === "string" ? req.body.note.trim() || undefined : undefined;
+  const brief = typeof req.body?.brief === "string" ? req.body.brief : "";
   const file = peerFileFor();
   savePeers(file, addPeer(loadPeers(file), name, Date.now(), note));
   console.log(`peers: ${me.name} added peer ${name}`);
   // The token is shown ONCE. It is derived (HMAC), so re-adding the peer re-mints
   // the SAME token — it is never stored to hand back later, like an invitation.
-  res.json({ ok: true, name, token: signPeerToken(name, signingSecret()) });
+  // `invitePrompt` is the "invite an agent like a user" gesture: a ready-to-paste
+  // brief the invitee drops into its own session (endpoint + key + task + how to
+  // join). Its URL is the one the ADMIN is reaching us at (their browser origin),
+  // which is the public URL an external agent would use too.
+  const token = signPeerToken(name, signingSecret());
+  const url = ((req.headers.origin as string | undefined)?.trim() || `http://${req.headers.host ?? "localhost"}`).replace(/\/+$/, "");
+  res.json({ ok: true, name, token, invitePrompt: agentInvitePrompt({ url, token, brief }) });
 });
 app.delete("/peers", (req, res) => {
   const me = accountAdmin(req, res);

@@ -1693,6 +1693,20 @@
   #inviteBox .ib-url { margin-top: 6px; font-family: var(--mono); font-size: 12px; line-height: 1.45; word-break: break-all; user-select: all; }
   #inviteBox button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; flex: none; }
   #inviteBox button:hover { border-color: var(--amber); color: var(--amber); }
+  .peers-sep { border: none; border-top: 1px solid rgba(255,255,255,.1); margin: 14px 0; }
+  #peersList { list-style: none; padding: 0; margin: 0 0 10px; }
+  #peersList li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
+  #peersList li:nth-child(odd) { background: rgba(255,255,255,.04); }
+  #peersList .pmeta { font-size: 12px; opacity: .7; }
+  #peersList button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; }
+  #peersAdd { display: flex; gap: 8px; flex-wrap: wrap; }
+  #peersAdd input { flex: 1; min-width: 120px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; }
+  #peersAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
+  #peerInviteBox { margin-top: 12px; border: 1px solid var(--amber); border-radius: 8px; padding: 10px 12px; background: rgba(224,164,74,.06); }
+  #peerInviteBox .ib-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text-dim); }
+  #peerInviteBox .ib-prompt { margin-top: 6px; font-family: var(--mono); font-size: 12px; line-height: 1.45; white-space: pre-wrap; max-height: 260px; overflow: auto; user-select: all; }
+  #peerInviteBox button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; flex: none; }
+  #peerInviteBox button:hover { border-color: var(--amber); color: var(--amber); }
   #secretsAdd { display: flex; flex-direction: column; gap: 8px; }
   #secretsAdd .sec-add-row { display: flex; gap: 8px; }
   #secretsAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-size: 16px; }
@@ -2051,6 +2065,18 @@
     <div id="inviteBox" hidden>
       <div class="ib-head"><span id="inviteWho"></span><button type="button" id="inviteCopy">Copy</button></div>
       <div class="ib-url" id="inviteUrl"></div>
+    </div>
+    <hr class="peers-sep">
+    <p class="sec-note"><b>Invite an agent</b> — of yours, or a teammate's — to collaborate here. Like a user, but instead of a login it gets a <b>prompt to paste</b> into its own session. It can only see and drive the agents it spawns here.</p>
+    <ul id="peersList"></ul>
+    <form id="peersAdd">
+      <input id="peerName" placeholder="peer name (e.g. brasdroit1)" autocomplete="off" spellcheck="false">
+      <input id="peerBrief" placeholder="brief — what should it do? (optional)" autocomplete="off">
+      <button type="submit">Invite agent</button>
+    </form>
+    <div id="peerInviteBox" hidden>
+      <div class="ib-head"><span id="peerInviteWho"></span><button type="button" id="peerInviteCopy">Copy</button></div>
+      <div class="ib-prompt" id="peerInvitePrompt"></div>
     </div>
   </div>
 </div>
@@ -7667,7 +7693,9 @@
 
   $("usersBtn").addEventListener("click", async () => {
     $("inviteBox").hidden = true;
+    $("peerInviteBox").hidden = true;
     await renderUsers();
+    await renderPeers();
     $("usersOverlay").hidden = false;
   });
   $("usersClose").addEventListener("click", () => { $("usersOverlay").hidden = true; });
@@ -7687,6 +7715,68 @@
     showInvite(name, location.origin + out.inviteUrl);
     $("userName").value = "";
     renderUsers();
+  });
+
+  // ── Invite an agent (peers): like a user, but the output is a prompt to paste ──
+  async function renderPeers() {
+    const ul = $("peersList");
+    ul.innerHTML = "";
+    let list = null;
+    try { const r = await fetch("/peers"); if (r.ok) list = await r.json(); } catch {}
+    if (!Array.isArray(list)) { ul.innerHTML = '<li><span style="opacity:.6">couldn\'t load the invited agents</span></li>'; return; }
+    if (!list.length) { ul.innerHTML = '<li><span style="opacity:.6">no agents invited yet</span></li>'; return; }
+    for (const p of list) {
+      const li = document.createElement("li");
+      const meta = document.createElement("div");
+      const who = document.createElement("b"); who.textContent = p.name;
+      const sub = document.createElement("div"); sub.className = "pmeta"; sub.textContent = p.note || "peer agent";
+      meta.append(who, sub);
+      const del = document.createElement("button");
+      del.textContent = "revoke"; del.style.color = "#e26";
+      del.addEventListener("click", async () => {
+        if (!confirm("Revoke " + p.name + "?\n\nIts key stops working immediately and its live link is cut. The agents it spawned here stay for you to keep or stop.")) return;
+        await fetch("/peers?name=" + encodeURIComponent(p.name), { method: "DELETE" });
+        renderPeers();
+      });
+      const btns = document.createElement("div"); btns.className = "u-actions"; btns.append(del);
+      li.append(meta, btns);
+      ul.appendChild(li);
+    }
+  }
+  /** The prompt is the whole invitation and is shown once, so it gets its own
+   *  selectable, copyable block — pre-wrapped, since it is multi-line. */
+  function showPeerInvite(name, prompt) {
+    $("peerInviteWho").textContent = "Prompt for " + name + " — paste it into the agent you're inviting";
+    $("peerInvitePrompt").textContent = prompt;
+    $("peerInviteCopy").textContent = "Copy";
+    $("peerInviteBox").hidden = false;
+  }
+  $("peerInviteCopy").addEventListener("click", async () => {
+    const txt = $("peerInvitePrompt").textContent;
+    try {
+      if (!navigator.clipboard) throw new Error("no clipboard");
+      await navigator.clipboard.writeText(txt);
+      $("peerInviteCopy").textContent = "Copied";
+      setTimeout(() => { $("peerInviteCopy").textContent = "Copy"; }, 1500);
+    } catch {
+      const r = document.createRange(); r.selectNodeContents($("peerInvitePrompt"));
+      const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      $("peerInviteCopy").textContent = navigator.platform.includes("Mac") ? "Press ⌘C" : "Press Ctrl+C";
+    }
+  });
+  $("peersAdd").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("peerName").value.trim();
+    if (!name) return;
+    const r = await fetch("/peers", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, brief: $("peerBrief").value }),
+    });
+    const out = await r.json().catch(() => ({}));
+    if (!r.ok) { alert(out.error || "failed"); return; }
+    showPeerInvite(out.name, out.invitePrompt || "");
+    $("peerName").value = ""; $("peerBrief").value = "";
+    renderPeers();
   });
   loadMe();
 
