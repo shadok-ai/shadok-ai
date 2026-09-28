@@ -388,7 +388,7 @@ On the calling instance **A**, the invited agent registers B and drives it with
 
 ```bash
 pilotctl peer add B https://B <token>
-pilotctl spawn --peer B --profile dev --cwd /workspace
+pilotctl spawn --peer B --profile dev --name "migration bot" --cwd /workspace
 pilotctl prompt <id> "run the migration" --peer B
 pilotctl diff <id> --peer B
 ```

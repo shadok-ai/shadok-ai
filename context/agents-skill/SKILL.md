@@ -20,7 +20,7 @@ and automatically starts the shadok-ai server when it is not running (port
 
 | Command | Effect |
 |---|---|
-| `spawn [--cwd DIR] [--worktree] [--profile NAME] [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`). `--profile` gives it a role + its guardrails + its secrets (see below) |
+| `spawn [--cwd DIR] [--worktree] [--profile NAME] [--name LABEL] [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`). `--profile` gives it a role + its guardrails + its secrets (see below). `--name` sets the agent's tab name in the cockpit (spawn only; a later rename in the UI is kept) — without it the name is derived from the profile/directory, so several agents look alike |
 | `prompt <id> "text" [--timeout s]` | sends a prompt, waits for the end of the turn → `{status:"answer", text, tools}` or `{status:"dialog", question, options, multi}` or `{status:"timeout", screen}` or `{status:"pace-blocked", reason}` |
 | `dialog <id>` | queries the state → `{status:"idle"}` or the pending dialog |
 | `choose <id> <n>` | single-select dialog: picks and commits option n |

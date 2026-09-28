@@ -193,7 +193,9 @@ there, so the link needs no configuring. A refused link is DROPPED and logged,
 never fatal to the spawn: killing an agent over a bad link would be worse than an
 agent that reports to nobody./
 `origin` — "web"/"cron"/"telegram"…, echoed back in `prompt-echo` to say WHO
-spoke),
+spoke/
+`name` — the tab name for a NEW agent (pilotctl `--name`); ASSERT-only and applied
+on a spawn ONLY, so a resume never clobbers a rename made in the UI),
 `prompt` (text, `force?`), `run` (`command` — a one-line command typed into the pane's SHELL MODE on the human's behalf; **browser connections only**, since shell mode bypasses a profile's `deny`; see `src/bang.ts`), `choose` n, `toggle` n, `confirm`, `freetext` n
 text, `key`, `settle`, `restart`, `set-parent` (`parent` — the channel told when
 this one finishes, blocks or dies; `null` detaches. Refused **explicitly** on a
