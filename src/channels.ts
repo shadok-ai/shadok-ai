@@ -70,8 +70,14 @@ export function isMirrored(c: Channel): boolean {
   return c.mirror ?? !!c.telegram;
 }
 
-/** Fields the server owns; a browser PUT must never overwrite or drop them. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "parent", "home"] as const;
+/** Fields the server owns; a browser PUT must never overwrite or drop them.
+ * `createdByPeer` is the peer-ownership key (invariant 24): the browser never
+ * carries it, so leaving it out here let every `PUT /channels` STRIP it, and the
+ * next resume by the peer failed `ownedByPeer` on its own agent — "a peer may
+ * only resume its own agents" — which broke any multi-step remote exchange
+ * (the holder's first resume ran; the browser's next sync wiped the owner). Same
+ * loss as `profile`/`parent` before they were listed here. */
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "parent", "home", "createdByPeer"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
