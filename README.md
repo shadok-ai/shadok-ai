@@ -156,6 +156,15 @@ Enter to skip; you can add it later from the web UI).
   refused for anything but your browser, since shell mode sits outside the
   agent's guardrails. The command and its output stay in the chat, reload
   included — as does one you typed yourself in the terminal view.
+- **Files you hand an agent** — paste or drop a file into the composer (an
+  image, a PDF, a CSV…) and it becomes a **chip** above the text box: a
+  thumbnail for an image, a named tag for anything else, each with a ✕ to
+  remove it. On send, an image shows **inline in your own message bubble**;
+  under the hood the agent still receives it as an `[Attached …: path]` line,
+  the same format Telegram uses, so nothing about how the agent reads it
+  changes. A message can be attachments alone, with no words. The files are
+  served back to the browser by `GET /media/<name>` from the same directory
+  Telegram attachments land in.
 - **Files an agent hands you** — when an agent's result IS a file (a report, an
   export, a screenshot, an archive) it arrives as a download card in the chat,
   inline if it is an image, and as an upload in the Telegram topic. It goes
@@ -690,7 +699,9 @@ endpoint — the accent is the instance's shared identity, the mode is personal)
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
 `/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
-returns the cwd to start the tweak agent in), and the sign-in group: `/auth` (GET
+returns the cwd to start the tweak agent in), `/media/<name>` (GET — serves a
+pasted/dropped or Telegram attachment back for inline display; sandboxed, basename
+only), and the sign-in group: `/auth` (GET
 — `{loggedIn, email?, subscriptionType?}`), `/auth/login` (POST — start a flow,
 returns `{url}`; DELETE — cancel it), `/auth/code` (POST `{code}`).
 

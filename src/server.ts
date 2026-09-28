@@ -2254,6 +2254,31 @@ app.get("/download", (req, res) => {
   fs.createReadStream(wanted).on("error", () => { if (!res.headersSent) res.status(500); res.end(); }).pipe(res);
 });
 
+// Serve a file the USER dropped / pasted (or a Telegram attachment) — they all
+// land in MEDIA_DIR, referenced in the chat as `[Attached image: <path>]`. The
+// web renders that inline instead of the raw path (both surfaces then SHOW the
+// image). Scoped to MEDIA_DIR by BASENAME, so it can never be walked into another
+// file: `path.basename` strips any directory, and the resolved path is checked to
+// stay inside MEDIA_DIR. Behind the same password gate as everything else; the
+// same `nosniff` + `sandbox` CSP as /download neutralises an SVG opened directly.
+app.get("/media/:name", (req, res) => {
+  const base = path.basename(String(req.params.name ?? ""));
+  const file = path.join(MEDIA_DIR, base);
+  if (!file.startsWith(path.join(MEDIA_DIR, path.sep)) && path.dirname(file) !== MEDIA_DIR) {
+    return res.status(400).type("text").send("bad name");
+  }
+  let stat: fs.Stats;
+  try { stat = fs.statSync(file); if (!stat.isFile()) throw new Error("not a file"); }
+  catch { return res.status(404).type("text").send("no such media"); }
+  res.setHeader("Content-Type", contentTypeFor(base));
+  res.setHeader("Content-Length", String(stat.size));
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+  const inline = isImageFile(base) && contentTypeFor(base) !== "image/svg+xml";
+  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${base.replace(/["\\]/g, "_")}"`);
+  fs.createReadStream(file).on("error", () => { if (!res.headersSent) res.status(500); res.end(); }).pipe(res);
+});
+
 // Install (or repair) the global Claude Code CLI on demand — `npm i -g
 // @anthropic-ai/claude-code`. The cockpit shows this button when an agent's TUI
 // footer reports "Auto-update failed"; running agents still need a reload

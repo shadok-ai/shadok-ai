@@ -927,6 +927,35 @@
   .file-dl:hover, .file-img figcaption a:hover { color: var(--amber); border-color: var(--amber); }
   .file-dl .file-ic { color: var(--amber); font-size: 15px; flex: none; }
   .file-dl .file-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A user message's dropped / pasted / Telegram attachments: images inline,
+     files as chips — shown in the chat AND mirrored in the composer strip. */
+  .att-text { white-space: pre-wrap; }
+  .att-strip { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .att-img { display: inline-block; max-width: 220px; line-height: 0; }
+  .att-img img { max-width: 100%; max-height: 200px; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+  .att-file { display: inline-flex; align-items: center; gap: 8px; max-width: 220px;
+    padding: 6px 10px; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--text-dim); text-decoration: none; font-family: var(--mono); font-size: 12px; }
+  .att-file:hover { color: var(--amber); border-color: var(--amber); }
+  .att-file .att-ic { color: var(--amber); flex: none; }
+  .att-file .att-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Composer attachment strip: the SAME dropped/pasted files, previewed above the
+     input so you see the image instead of a `[Attached …]` line. Full width so it
+     sits on its own row above the textarea (composer is flex-wrap). */
+  .cmp-atts { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 8px; }
+  .cmp-atts[hidden] { display: none; }
+  .cmp-att { position: relative; display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px; max-width: 200px; }
+  .cmp-att img { width: 46px; height: 46px; object-fit: cover; border-radius: 5px; display: block; }
+  .cmp-att .cmp-ic { font-size: 16px; padding: 0 4px; }
+  .cmp-att .cmp-nm { font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px; }
+  .cmp-att.uploading { opacity: 0.6; }
+  .cmp-att.error { border-color: var(--err); }
+  .cmp-att.error .cmp-nm { color: var(--err); }
+  .cmp-att .cmp-x { position: absolute; top: -6px; right: -6px; border: none; background: #333c;
+    color: #fff; border-radius: 50%; width: 16px; height: 16px; font-size: 9px; line-height: 1; cursor: pointer; padding: 0; }
+  .cmp-att .cmp-x:hover { background: var(--err); }
   .turn.claude .bubble {
     background: var(--bg-inset);
     border: 1px solid var(--line);
@@ -1175,6 +1204,7 @@
   /* Composer */
   #composer {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     /* The bottom padding absorbs the home indicator (viewport-fit=cover): without
        it the field slides under it and half the text becomes unreadable. */
@@ -2279,6 +2309,8 @@
     </button>
 
     <form id="composer" hidden>
+      <!-- Thumbnails of the files dropped / pasted into this agent's composer. -->
+      <div id="composerAtts" class="cmp-atts" hidden></div>
       <textarea id="promptInput" rows="1"
         placeholder="Write your prompt — Enter to send, Shift+Enter for a new line"></textarea>
       <button type="submit" class="primary" id="sendBtn">Send</button>
@@ -3880,6 +3912,7 @@
     });
     promptInput.value = tab.draft;
     autosizePrompt();
+    renderAttachments(tab); // each tab keeps its own pending chips
     refreshChrome();
     // Picking an agent from the mobile sheet dismisses it.
     closePicker();
@@ -4666,6 +4699,12 @@
         });
         wrap.appendChild(btn);
       }
+    } else if (role === "user" && /\[Attached (?:image|file): /.test(text)) {
+      // A message the USER sent with a dropped / pasted file (or a Telegram
+      // attachment): show images inline and files as chips instead of the raw
+      // `[Attached …: <path>]` path. Only the DISPLAY changes — the path stays in
+      // the message (the agent still reads the image from it).
+      renderUserAttachments(bubble, text);
     } else {
       bubble.textContent = text;
     }
@@ -4676,6 +4715,54 @@
     tab.transcriptEl.appendChild(turn);
     pinBottom(tab);
     return bubble;
+  }
+
+  /** The URL that serves a dropped / pasted / Telegram media file, by basename
+   *  (the server scopes it to MEDIA_DIR). */
+  function mediaUrl(p) {
+    const base = String(p || "").split(/[/\\]/).pop() || "";
+    return "/media/" + encodeURIComponent(base);
+  }
+  /** Render a user message's `[Attached image/file: <path>]` markers as inline
+   *  images / download chips, with any typed prose kept above them. */
+  function renderUserAttachments(bubble, text) {
+    const re = /\[Attached (image|file): ([^\]]+)\]/g;
+    const atts = [];
+    let prose = "", last = 0, m;
+    while ((m = re.exec(text))) {
+      prose += text.slice(last, m.index);
+      atts.push({ kind: m[1], path: m[2].trim() });
+      last = m.index + m[0].length;
+    }
+    prose += text.slice(last);
+    prose = prose.replace(/\n{2,}/g, "\n").trim();
+    if (prose) {
+      const p = document.createElement("div");
+      p.className = "att-text";
+      p.textContent = prose;
+      bubble.appendChild(p);
+    }
+    const strip = document.createElement("div");
+    strip.className = "att-strip";
+    for (const a of atts) {
+      const url = mediaUrl(a.path);
+      const name = a.path.split(/[/\\]/).pop() || a.path;
+      if (a.kind === "image") {
+        const link = document.createElement("a");
+        link.className = "att-img"; link.href = url; link.target = "_blank"; link.rel = "noopener";
+        const img = document.createElement("img");
+        img.src = url; img.alt = name;   // NOT lazy: these are few and the user wants to see them
+        link.appendChild(img);
+        strip.appendChild(link);
+      } else {
+        const chip = document.createElement("a");
+        chip.className = "att-file"; chip.href = url; chip.download = name;
+        chip.innerHTML = '<span class="att-ic">⭳</span><span class="att-nm"></span>';
+        chip.querySelector(".att-nm").textContent = name;
+        strip.appendChild(chip);
+      }
+    }
+    bubble.appendChild(strip);
   }
 
   /** The gated download URL for a file the agent SENT (SendUserFile). Relative —
@@ -6303,6 +6390,7 @@
     t.transcriptEl._stickBottom = true;
     if (t === active) { promptInput.value = ""; promptInput.style.height = "auto"; }
     dropDraft(t);
+    clearAttachments(t); // their paths are already folded into `text`
     setTabState(t, "busy", "interrupting…");
     clearTimeout(t.preemptTimer);
     t.preemptTimer = setTimeout(() => {
@@ -6344,6 +6432,7 @@
       promptInput.style.height = "auto";
     }
     dropDraft(t);
+    clearAttachments(t); // their paths are already folded into `text`
   }
 
   /**
@@ -6411,8 +6500,18 @@
   composer.addEventListener("submit", (e) => {
     e.preventDefault();
     const t = active;
-    const text = promptInput.value.trim();
-    if (!text || !t || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
+    const typed = promptInput.value.trim();
+    // Only READY attachments are sent; an upload still in flight is held by the
+    // pendingUploads guard below, and a failed one is left for the user to drop.
+    const ready = ((t && t.attachments) || []).filter((a) => a.state === "ready" && a.path);
+    // A message may be attachments alone (just a screenshot, no words).
+    if ((!typed && !ready.length) || !t || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
+    // Fold each attachment back into the "[Attached …: path]" line the agent
+    // reads — the chip is only the composer's presentation of it.
+    const lines = ready
+      .map((a) => "[Attached " + (a.isImage ? "image" : "file") + ": " + a.path + "]")
+      .join("\n");
+    const text = [typed, lines].filter(Boolean).join("\n");
     // Sending during a running turn is a takeover: interrupt it, then send the
     // message once the turn settles. Same behaviour as Telegram.
     if (t.status === "busy") return preemptTurn(t, text);
@@ -6430,32 +6529,48 @@
    * its path by hand.
    *
    * The file goes to the server, which drops it where Telegram attachments
-   * already land, and returns the ready-made line (`[Attached image: …]` or
-   * `[Attached file: …]`): one format for the agent, whatever the surface. We
-   * INSERT it into the composer instead of sending right away — the user sees
-   * what is going out and can still write their instruction.
+   * already land, and returns its stored path. We show it as a CHIP (a
+   * thumbnail for an image, a named tag for a file) in the composer strip
+   * instead of sending right away — the user sees what is going out and can
+   * still write their instruction. The `[Attached …: path]` line the agent
+   * reads is composed back only at submit time (see the composer handler).
    */
-  let pasteSeq = 0; // makes each placeholder unique so N attachments don't collide
-  // Upload ONE file to /paste and swap its placeholder for the ready-made line.
+  let pasteSeq = 0; // makes each attachment id unique so N attachments don't collide
   // Shared by paste and drag-and-drop so both behave identically.
+  // A dropped/pasted file becomes a CHIP in the composer strip, not a
+  // "[Attached …: path]" line typed into the textarea. The line is still what
+  // reaches the agent — it is composed back at submit time (see the composer
+  // handler) — but the user sees a thumbnail (an image) or a named chip (a
+  // file) instead of a path, and the image renders inline in the chat bubble
+  // via renderUserAttachments. Held per-tab so switching agents keeps each
+  // one's pending attachments.
   async function attachFile(file) {
     if (!file) return;
+    const t = active;
+    if (!t) return;
     const isImg = (file.type || "").startsWith("image/");
-    const name = file.name || "";
-    const label = name || (isImg ? "image" : "file");
-    // Zero-width spaces keep the visible label clean while making the marker
-    // unique — replace() only hits the first match, so identical labels
-    // (two screenshots are both "image.png") must not share a placeholder.
-    const mark = "⏳ " + label + "…" + "​".repeat(++pasteSeq);
-    insertAtCursor(promptInput, mark + "\n");
+    const name = file.name || (isImg ? "image" : "file");
+    // The thumbnail is served from /media once the upload lands (same path the
+    // chat bubble uses) — NOT an object/blob URL, which the CSP (img-src 'self'
+    // data:) would block. Until then the chip shows a spinner-styled icon.
+    const att = {
+      id: "att" + (++pasteSeq),
+      name,
+      isImage: isImg,
+      state: "uploading",
+      path: null,
+      url: null,
+    };
+    (t.attachments ||= []).push(att);
     pendingUploads++;      // Send stays inert until this settles (success OR error)
+    renderAttachments(t);
     updateSendDisabled();
     try {
       const r = await fetch("/paste", {
         method: "POST",
         headers: {
           "content-type": file.type || "application/octet-stream",
-          "x-filename": encodeURIComponent(name),
+          "x-filename": encodeURIComponent(file.name || ""),
         },
         body: file,
       });
@@ -6466,17 +6581,72 @@
       const fail = window.uploadFailure(r.status, r.headers.get("content-type"));
       if (fail) throw new Error(fail);
       const j = await r.json();
-      if (!r.ok || !j.line) throw new Error(j.error || `HTTP ${r.status}`);
-      promptInput.value = promptInput.value.replace(mark, j.line);
+      if (!r.ok || !j.path) throw new Error(j.error || `HTTP ${r.status}`);
+      att.path = j.path;
+      if (att.isImage) att.url = mediaUrl(j.path);
+      att.state = "ready";
     } catch (err) {
-      // Say it in the composer: a marker left with no explanation would look
-      // like an upload in progress that will never arrive.
-      promptInput.value = promptInput.value.replace(mark, `⚠️ ${label} not sent (${err.message})`);
+      // Keep the chip but mark it failed: a silently dropped attachment would
+      // look like it went out. The user removes it; it is never submitted.
+      att.state = "error";
+      att.name = name + " — not sent (" + err.message + ")";
     } finally {
       pendingUploads--;
+      renderAttachments(t);
       updateSendDisabled();
     }
-    promptInput.dispatchEvent(new Event("input")); // height + draft
+  }
+
+  // Paint the active tab's attachment chips. Only the active tab's strip is
+  // ever shown — a background tab's pending attachments ride on its own
+  // tab.attachments until it is activated again.
+  function renderAttachments(tab) {
+    if (tab !== active) return;
+    const strip = $("composerAtts");
+    if (!strip) return;
+    const atts = (active && active.attachments) || [];
+    strip.replaceChildren();
+    strip.hidden = atts.length === 0;
+    for (const a of atts) {
+      const chip = document.createElement("div");
+      chip.className =
+        "cmp-att" +
+        (a.state === "error" ? " error" : "") +
+        (a.state === "uploading" ? " uploading" : "");
+      if (a.isImage && a.url && a.state !== "error") {
+        const img = document.createElement("img");
+        img.src = a.url;
+        img.alt = a.name;
+        chip.appendChild(img);
+      } else {
+        const ic = document.createElement("span");
+        ic.className = "cmp-ic";
+        ic.textContent = a.state === "error" ? "⚠" : "📎";
+        chip.appendChild(ic);
+        const nm = document.createElement("span");
+        nm.className = "cmp-nm";
+        nm.textContent = a.name;
+        chip.appendChild(nm);
+      }
+      const x = document.createElement("button");
+      x.type = "button";
+      x.className = "cmp-x";
+      x.textContent = "✕";
+      x.title = "Remove";
+      x.addEventListener("click", (e) => {
+        e.preventDefault();
+        if (active) active.attachments = (active.attachments || []).filter((z) => z !== a);
+        renderAttachments(active);
+        updateSendDisabled();
+      });
+      chip.appendChild(x);
+      strip.appendChild(chip);
+    }
+  }
+
+  function clearAttachments(tab) {
+    tab.attachments = [];
+    if (tab === active) renderAttachments(tab);
   }
 
   promptInput.addEventListener("paste", async (e) => {
