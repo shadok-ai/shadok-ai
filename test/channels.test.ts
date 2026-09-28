@@ -145,6 +145,17 @@ test("mergeChannels: a client can neither change nor clear a channel's profile",
   assert.equal(mergeChannels(stored, dropped, new Set())[0].profile, "Shadok-Support");
 });
 
+test("mergeChannels: a browser sync must not strip a peer's ownership of its agent", () => {
+  // `createdByPeer` is the peer-ownership key (invariant 24). The browser never
+  // carries it, so a `PUT /channels` sends the channel back without it; if it
+  // weren't SERVER_OWNED the merge would drop it, and the peer's next resume
+  // would fail `ownedByPeer` on its OWN agent — the reported break of any
+  // multi-step remote exchange.
+  const stored: Channel[] = [{ sessionId: "a", cwd: "/real", createdByPeer: "probe" }];
+  const client: Channel[] = [{ sessionId: "a", cwd: "/real", name: "renamed" }];
+  assert.equal(mergeChannels(stored, client, new Set())[0].createdByPeer, "probe");
+});
+
 test("mergeChannels: a client omission of a Telegram session does NOT drop it", () => {
   const stored: Channel[] = [
     { sessionId: "web", cwd: "/w" },
