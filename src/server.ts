@@ -2410,6 +2410,10 @@ type ClientMessage =
       /** Should this channel be mirrored into Telegram? Chosen at creation
        *  (the form's checkbox); afterwards the channel menu decides. */
       mirror?: boolean;
+      /** The tab name to give a NEW agent (pilotctl `--name`). Applied only on a
+       *  spawn — never on a resume, so it can't clobber a rename made in the UI.
+       *  Omitted → the client derives a default from the profile/directory. */
+      name?: string;
     }
   /** `force`: send despite a pace overrun. Applies to this message only. */
   /** `from`: display name of whoever typed it, when a client knows it (the
@@ -3845,6 +3849,14 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
             else parentAtStart = msg.parent ?? null;
           }
+          // The tab name for a NEW agent (pilotctl `--name`). Applied only on a
+          // spawn — a resume must never overwrite a name the user changed in the
+          // UI. Trimmed and capped; blank falls back to the client's derived
+          // default. ASSERT-only in the upsert below, like `parent` (invariant 24).
+          const initialName =
+            !resumed && typeof msg.name === "string" && msg.name.trim()
+              ? msg.name.trim().slice(0, 80)
+              : undefined;
           session = await createSession(id, effectiveCwd, args, worktree, profile, model);
           session.clients.add(ws);
           if (resumed) {
@@ -3907,6 +3919,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // `parent`, this is a field that must be PROVEN stored, not merely
             // accepted (invariant 24) — the e2e checks the channel carries it.
             ...(callerPeer ? { createdByPeer: callerPeer } : {}),
+            // The spawn-time name (pilotctl `--name`). ASSERT-only and computed
+            // above so it can never fire on a resume — a UI rename must win.
+            ...(initialName ? { name: initialName } : {}),
           });
           send({ type: "tokens", tokens: tokenTotals(session) });
           send({ type: "profile", profile: session.profile ?? null, applied: session.appliedProfile ?? null });

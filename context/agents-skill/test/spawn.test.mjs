@@ -57,6 +57,24 @@ test("spawn --profile passes the profile to the server", async () => {
   }
 });
 
+test("spawn --name passes the tab name to the server", async () => {
+  const mock = await startMockServer({
+    start: [{ type: "ready", sessionId: "named-1", cwd: "/tmp/x", branch: "shadok-ai/named1" }],
+  });
+  process.env.SHADOK_PORT = String(mock.port);
+  try {
+    await run(["spawn", "--cwd", "/tmp/x", "--worktree", "--name", "release bot"]);
+    assert.deepEqual(mock.received[0], {
+      type: "start",
+      cwd: "/tmp/x",
+      worktree: true,
+      name: "release bot",
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
 test("spawn --resume keeps the existing branch/baseSha when the server sends none", async () => {
   const mock = await startMockServer({
     start: [{ type: "ready", sessionId: "abc-123", cwd: "/tmp/x" }],
@@ -114,4 +132,9 @@ test("buildStartMsg still forwards the other spawn flags", () => {
   assert.equal(m.cwd, "/w");
   assert.equal(m.worktree, true);
   assert.equal(m.profile, "Shadok-dev");
+});
+
+test("buildStartMsg forwards --name, and omits it when absent", () => {
+  assert.equal(buildStartMsg({ name: "release bot" }, {}).name, "release bot");
+  assert.equal("name" in buildStartMsg({ worktree: true }, {}), false);
 });

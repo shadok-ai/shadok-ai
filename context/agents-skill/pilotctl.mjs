@@ -157,7 +157,7 @@ export function parseArgs(argv) {
     if (a === "--worktree" || a === "--continue" || a === "--readonly") flags[a.slice(2)] = true;
     else if (
       a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent" ||
-      a === "--peer" || a === "--peer-url" || a === "--peer-token"
+      a === "--name" || a === "--peer" || a === "--peer-url" || a === "--peer-token"
     ) flags[a.slice(2)] = rest[++i];
     else pos.push(a);
   }
@@ -357,6 +357,10 @@ export function buildStartMsg(flags, env = process.env) {
   // guardrail, no secrets. The server only applies it to new sessions (not on a
   // resume).
   if (flags.profile) startMsg.profile = flags.profile;
+  // The tab name for the new agent. Applied by the server only on a spawn, so a
+  // later resume never overwrites a rename made in the cockpit. Omitted → the
+  // cockpit derives a default from the profile/directory.
+  if (flags.name) startMsg.name = flags.name;
   // "none" is the escape hatch: spawn something deliberately unlinked.
   if (flags.parent === "none") startMsg.parent = null;
   else if (flags.parent) startMsg.parent = flags.parent;
