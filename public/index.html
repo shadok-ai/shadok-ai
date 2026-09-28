@@ -2351,6 +2351,8 @@
   window.bangCommands = bangCommands;
   import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
   window.claudeUpdateState = claudeUpdateState;
+  import { uploadFailure } from "/upload.js?v=__ASSET_V__";
+  window.uploadFailure = uploadFailure;
   window.MODEL_CHOICES = MODEL_CHOICES;
   window.composeModel = composeModel;
   window.pickChannelSource = pickChannelSource;
@@ -2446,6 +2448,8 @@
     // cache. instanceKey is stamped synchronously, so the stub can namespace.
     dirKey: (base) => (instanceKey ? base + ":" + instanceKey : base),
     serverSwapped: (pageKey, serverKey) => !!pageKey && !!serverKey && pageKey !== serverKey,
+    uploadFailure: (status, contentType) =>
+      /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -6455,6 +6459,12 @@
         },
         body: file,
       });
+      // A proxy rejects an oversized body with a 413 text/html page that never
+      // reaches /paste — parsing THAT as JSON is what showed the user
+      // "Unexpected token '<'" instead of "too large". Decide from the status
+      // first; only parse when the response is actually ours (JSON).
+      const fail = window.uploadFailure(r.status, r.headers.get("content-type"));
+      if (fail) throw new Error(fail);
       const j = await r.json();
       if (!r.ok || !j.line) throw new Error(j.error || `HTTP ${r.status}`);
       promptInput.value = promptInput.value.replace(mark, j.line);
