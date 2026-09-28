@@ -345,11 +345,20 @@ location / {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
+    client_max_body_size 50m;   # match the server's paste limit
 }
 ```
 
 The client picks `wss://` on its own when the page is HTTPS, so there is nothing
 to configure on that side.
+
+**Upload size.** The server accepts a pasted/dropped file up to 50 MB, but
+nginx's default `client_max_body_size` is **1 MB** — a full-page screenshot
+sails past that, and nginx answers its OWN `413` HTML page **before** the request
+reaches the cockpit. Raise the limit to match (`client_max_body_size 50m;`),
+or a paste larger than 1 MB fails at the proxy. The cockpit now shows a plain
+"too large" instead of a JSON parser error, but the file still won't go through
+until the proxy allows it.
 
 **Idle timeout.** A resting agent's `/ws` carries no traffic, and proxies
 idle-close a quiet socket (nginx `proxy_read_timeout`, 60s by default;
