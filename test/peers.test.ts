@@ -16,6 +16,7 @@ import {
   peerFileFor,
   peersOutFileFor,
   agentInvitePrompt,
+  peerScope,
 } from "../src/peers.js";
 
 const secret = randomBytes(32);
@@ -175,4 +176,30 @@ test("agentInvitePrompt never carries a durable token", () => {
   const p = agentInvitePrompt({ url: "http://h", ticket: "tkt" });
   assert.ok(!/peer key:/i.test(p), "no durable key in an invitation");
   assert.match(p, /exchanges it for your own durable key/);
+});
+
+test("peerScope: defaults to member; restricted only when set", () => {
+  assert.equal(peerScope(undefined), "member");
+  assert.equal(peerScope({}), "member");
+  assert.equal(peerScope({ scope: "member" }), "member");
+  assert.equal(peerScope({ scope: "restricted" }), "restricted");
+});
+
+test("newPeer / addPeer store the scope; default member", () => {
+  const a = newPeer([], "brasdroit1", 1000).peers[0];
+  assert.equal(a.scope, "member"); // default
+  const b = newPeer([], "brasdroit2", 1000, undefined, "restricted").peers[0];
+  assert.equal(b.scope, "restricted");
+});
+
+test("agentInvitePrompt: member says full member, restricted says own-agents-only", () => {
+  const m = agentInvitePrompt({ url: "http://h", ticket: "t", scope: "member" });
+  assert.match(m, /full member of that cockpit/);
+  assert.match(m, /EVERY agent/);
+  assert.match(m, /cannot manage its accounts or its peers/);
+  const r = agentInvitePrompt({ url: "http://h", ticket: "t", scope: "restricted" });
+  assert.match(r, /only see and drive the agents you spawn/);
+  assert.ok(!/full member/.test(r));
+  // default (no scope) is member — the owner's request
+  assert.match(agentInvitePrompt({ url: "http://h", ticket: "t" }), /full member/);
 });

@@ -1701,7 +1701,7 @@
   #peersList button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; }
   #peersAdd { display: flex; gap: 8px; flex-wrap: wrap; }
   #peersAdd input { flex: 1; min-width: 120px; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; }
-  #peersAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
+  #peersAdd select, #peersAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
   #peerInviteBox { margin-top: 12px; border: 1px solid var(--amber); border-radius: 8px; padding: 10px 12px; background: rgba(224,164,74,.06); }
   #peerInviteBox .ib-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; color: var(--text-dim); }
   #peerInviteBox .ib-prompt { margin-top: 6px; font-family: var(--mono); font-size: 12px; line-height: 1.45; white-space: pre-wrap; max-height: 260px; overflow: auto; user-select: all; }
@@ -2067,11 +2067,15 @@
       <div class="ib-url" id="inviteUrl"></div>
     </div>
     <hr class="peers-sep">
-    <p class="sec-note"><b>Invite an agent</b> — of yours, or a teammate's — to collaborate here. Like a user, but instead of a login it gets a <b>prompt to paste</b> into its own session. It can only see and drive the agents it spawns here.</p>
+    <p class="sec-note"><b>Invite an agent</b> — of yours, or a teammate's — to collaborate here. Like a user, but instead of a login it gets a <b>prompt to paste</b> into its own session. <b>member</b> acts like a user (sees and drives the whole cockpit, never admin); <b>restricted</b> only touches the agents it spawns.</p>
     <ul id="peersList"></ul>
     <form id="peersAdd">
       <input id="peerName" placeholder="peer name (e.g. brasdroit1)" autocomplete="off" spellcheck="false">
       <input id="peerBrief" placeholder="brief — what should it do? (optional)" autocomplete="off">
+      <select id="peerScope" title="member: acts like a user (whole cockpit). restricted: only the agents it spawns.">
+        <option value="member">member (whole cockpit)</option>
+        <option value="restricted">restricted (own agents)</option>
+      </select>
       <button type="submit">Invite agent</button>
     </form>
     <div id="peerInviteBox" hidden>
@@ -7767,7 +7771,10 @@
       const li = document.createElement("li");
       const meta = document.createElement("div");
       const who = document.createElement("b"); who.textContent = p.name;
-      const sub = document.createElement("div"); sub.className = "pmeta"; sub.textContent = p.note || "peer agent";
+      const sub = document.createElement("div"); sub.className = "pmeta";
+      sub.textContent = (p.scope === "restricted" ? "restricted" : "member")
+        + (p.note ? " · " + p.note : "")
+        + (p.pending ? " · not enrolled yet" : "");
       meta.append(who, sub);
       const del = document.createElement("button");
       del.textContent = "revoke"; del.style.color = "#e26";
@@ -7808,7 +7815,7 @@
     if (!name) return;
     const r = await fetch("/peers", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, brief: $("peerBrief").value }),
+      body: JSON.stringify({ name, brief: $("peerBrief").value, scope: $("peerScope").value }),
     });
     const out = await r.json().catch(() => ({}));
     if (!r.ok) { alert(out.error || "failed"); return; }
