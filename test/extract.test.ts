@@ -149,6 +149,99 @@ test("stacked dialogs: a previous dialog left in the scrollback is ignored — o
   assert.match(d!.question, /How should the token/);
 });
 
+// A faithful extract of a permission prompt captured from a real Claude Code
+// 2.1.286 in tmux (130 columns; only the scratch path is shortened). That
+// release frames the command block with a DASHED rule (U+254C) where earlier
+// ones used the solid frame characters.
+const permissionPrompt = (rule: string) =>
+  [
+    "  Creating empty file a.txt in lab directory",
+    "  ⎿  $ touch /tmp/scratchpad/lab/a.txt",
+    "",
+    "─".repeat(130),
+    " Bash command",
+    ' Tip: auto mode handles these prompts for you — choose "switch to auto mode" below',
+    " Create empty file a.txt in lab directory",
+    rule.repeat(130),
+    " │ touch /tmp/scratchpad/lab/a.txt",
+    rule.repeat(130),
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and always allow access to",
+    "      /tmp/scratchpad/lab from this",
+    "      project",
+    "   3. Yes, and switch to auto mode · auto mode handles these prompts for you",
+    "   4. No",
+    "",
+    " Esc to cancel · Tab to amend",
+  ].join("\n");
+
+test("permission prompt (2.1.286): the dashed frame around the command is not part of the question", () => {
+  const d = detectDialog(permissionPrompt("╌"));
+  assert.ok(d);
+  assert.equal(d!.question, "Do you want to proceed?");
+});
+
+test("permission prompt: every box-drawing dash the TUI could frame with is décor", () => {
+  // Pinning one character is how the next release catches us again.
+  for (const rule of ["╌", "╍", "┄", "┅", "┈", "┉"]) {
+    const d = detectDialog(permissionPrompt(rule));
+    assert.equal(d?.question, "Do you want to proceed?", `U+${rule.codePointAt(0)!.toString(16)}`);
+  }
+});
+
+test("permission prompt: options, indices and multi are the same whatever frames the command", () => {
+  const expected = detectDialog(permissionPrompt("─"));
+  assert.ok(expected);
+  assert.equal(expected!.multi, false);
+  assert.deepEqual(
+    expected!.options.map((o) => [o.n, o.label]),
+    [
+      [1, "Yes"],
+      [2, "Yes, and always allow access to"],
+      [3, "Yes, and switch to auto mode · auto mode handles these prompts for you"],
+      [4, "No"],
+    ],
+  );
+  assert.deepEqual(detectDialog(permissionPrompt("╌"))!.options, expected!.options);
+});
+
+test("a multi-line question is kept whole, including a line that merely CONTAINS a dash", () => {
+  // Décor is a line that STARTS with a frame character. Prose that carries one
+  // further in is content and must survive.
+  const screen = [
+    "╌".repeat(40),
+    "Which range should the export cover?",
+    "Dates are inclusive ╌ both ends count.",
+    "Pick one:",
+    "❯ 1. Last week",
+    "  2. Last month",
+  ].join("\n");
+  const d = detectDialog(screen);
+  assert.ok(d);
+  assert.equal(
+    d!.question,
+    "Which range should the export cover? Dates are inclusive ╌ both ends count. Pick one:",
+  );
+});
+
+test("two-column dialog under a dashed rule: the preview column is still stripped", () => {
+  const screen = [
+    "╌".repeat(80),
+    "Which visualisation style do you want?",
+    "❯ 1. Horizontal bars              ┌─────────────────────────────────────┐",
+    "  2. Time sparklines              │   Session   ████████░░░░  67%         │",
+    "  3. Dials / arcs                 │   Week      ██████░░░░░░  42%         │",
+  ].join("\n");
+  const d = detectDialog(screen);
+  assert.ok(d);
+  assert.equal(d!.question, "Which visualisation style do you want?");
+  assert.deepEqual(
+    d!.options.map((o) => o.label),
+    ["Horizontal bars", "Time sparklines", "Dials / arcs"],
+  );
+});
+
 // ── extractResponse ──────────────────────────────────────────────────────
 
 test("extractResponse takes the ⏺ answer after the prompt echo, dropping status", () => {
