@@ -254,11 +254,13 @@ export async function moveToOption(pilot: DialogPilot, n: number): Promise<boole
   return cur === n;
 }
 
-/** The slice of a pilot `typeIntoBox` needs: put text in the box, clear the box,
- *  and wait until the screen satisfies a predicate. Both PtyPilot and TmuxPilot
- *  match it; a fake one lets the doubled-prompt regression be tested without a
- *  real TUI. */
+/** The slice of a pilot `typeIntoBox` needs: read the screen, put text in the
+ *  box, clear the box, and wait until the screen satisfies a predicate. Both
+ *  PtyPilot and TmuxPilot match it; a fake one lets the doubled-prompt
+ *  regression be tested without a real TUI. */
 export interface TypingPilot {
+  /** The screen as it is NOW — read before each paste, as the baseline. */
+  screen(): string;
   /** Bracketed-paste the text into the input box — never submits it. */
   paste(text: string): void;
   /** Ctrl-U: clear whatever is in the input box. */
@@ -295,6 +297,19 @@ export interface TypeOptions {
  * before pasting again. A box that will not clear is left to the next attempt
  * rather than pasted into blindly.
  *
+ * "Landed" means the box DIFFERS from what it showed just before the paste, not
+ * that it is non-empty: an empty box is not always blank. Before the first
+ * prompt of a session, Claude Code (seen on 2.1.285) fills it with an example —
+ * `❯ Try "refactor <filepath>"` — which `inputText` reads like typed text, so
+ * "non-empty" was true before anything was pasted, and a paste the TUI dropped
+ * was followed by Enter on a box holding nothing. The example also comes back
+ * after a Ctrl-U, so "cleared" likewise means "back to that resting state".
+ * Comparing with the state read just before is still content-agnostic (a
+ * collapsed "[Pasted text +N lines]" differs from it as well as the text would)
+ * and needs no list of hint strings, which would rot with the next release. The
+ * baseline is re-read on every attempt, after the recovery has run, so a retry
+ * that pastes the same text again is compared with the box it pastes into.
+ *
  * It lives here, next to `idleStep` and `moveToOption`, for the reason those do:
  * it was written twice (node-pty and tmux), and could only be exercised by
  * spawning a real process.
@@ -305,18 +320,24 @@ export async function typeIntoBox(
   { attempts = 6, appearMs = 2_000, settleMs = 400, clearMs = 1_000 }: TypeOptions = {},
 ): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt++) {
+    // Only "" and the resting state count as an empty box; anything else the
+    // box shows once we paste is our paste (whole, or collapsed).
+    const before = inputText(pilot.screen());
     pilot.paste(text);
     try {
-      // Content-agnostic: the box just needs to be non-empty. A big paste is
-      // collapsed to "[Pasted text +N lines]", so looking for the literal text
-      // fails — which used to abort before Enter was ever pressed.
-      await pilot.waitFor((s) => inputText(s) !== "", { timeoutMs: appearMs });
+      await pilot.waitFor((s) => {
+        const now = inputText(s);
+        return now !== "" && now !== before;
+      }, { timeoutMs: appearMs });
       return true;
     } catch {
       await delay(settleMs); // let a paste that is still in flight land
       pilot.clearInput();
       try {
-        await pilot.waitFor((s) => inputText(s) === "", { timeoutMs: clearMs });
+        await pilot.waitFor((s) => {
+          const now = inputText(s);
+          return now === "" || now === before;
+        }, { timeoutMs: clearMs });
       } catch {
         pilot.clearInput(); // stubborn — clear once more, then try again
         await delay(settleMs);

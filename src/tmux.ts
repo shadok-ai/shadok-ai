@@ -452,8 +452,22 @@ export class TmuxPilot {
     }
   }
 
+  /**
+   * The screen captured right now rather than the poller's mirror, for the one
+   * read that has no predicate to wait on: `typeIntoBox`'s baseline. A mirror
+   * that lags a change by one poll would hand it a box that is no longer there.
+   */
+  private freshScreen(): string {
+    this.capture();
+    return this._screen;
+  }
+
   /** Pastes text with bracketed-paste framing (reliable for the TUI input). */
   private paste(text: string): void {
+    // Like every write to the pane: an idle pane's poller has backed off to
+    // SCREEN_SLOW_MS, as long as the whole window typeIntoBox gives a paste
+    // to show up in.
+    this.wake();
     tmux(["load-buffer", "-b", "cp", "-"], text);
     tmux(["paste-buffer", "-t", this.name, "-b", "cp", "-p", "-d"]);
   }
@@ -485,6 +499,7 @@ export class TmuxPilot {
   async submit(text: string): Promise<void> {
     const typed = await typeIntoBox(
       {
+        screen: () => this.freshScreen(),
         paste: (t) => this.paste(t),
         clearInput: () => this.write("\x15"), // Ctrl-U
         waitFor: (p, o) => this.waitFor(p, o),

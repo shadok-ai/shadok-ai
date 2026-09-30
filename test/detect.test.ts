@@ -151,25 +151,35 @@ test("nextScreenDelay: the delay never shrinks as stillness grows", () => {
 });
 
 // A fake input box for typeIntoBox: `paste` may land LATE (per-call delay, to
-// model a slow/freshly-respawned pane), `clearInput` empties it, and `waitFor`
-// polls a rendered "❯ <box>" screen — exactly what inputText reads.
-function fakeBox(landDelays: number[]) {
-  const st = { box: "", pastes: 0 };
+// model a slow/freshly-respawned pane) or never (`null`, a paste the TUI
+// flushed), `clearInput` empties it, and `waitFor` polls a rendered "❯ <box>"
+// screen — exactly what inputText reads. `rest` is what the box DISPLAYS while
+// empty: Claude Code 2.1.285 shows a rotating example there before the first
+// prompt of a session (`❯ Try "refactor <filepath>"`), and puts it back after a
+// Ctrl-U. `restAfterClear` models it coming back as a DIFFERENT example.
+function fakeBox(landDelays: (number | null)[], { rest = "", restAfterClear }: { rest?: string; restAfterClear?: string } = {}) {
+  const st = { box: "", rest, pastes: 0, clears: 0 };
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const render = () => "❯ " + (st.box || st.rest);
   return {
     st,
     paste(text: string) {
-      const d = landDelays[st.pastes++] ?? 0;
+      const d = st.pastes < landDelays.length ? landDelays[st.pastes] : 0;
+      st.pastes++;
+      if (d === null) return;
       if (d <= 0) st.box += text;
       else setTimeout(() => (st.box += text), d);
     },
     clearInput() {
       st.box = "";
+      st.clears++;
+      if (restAfterClear !== undefined) st.rest = restAfterClear;
     },
+    screen: render,
     async waitFor(pred: (s: string) => boolean, opts?: { timeoutMs?: number }) {
       const deadline = Date.now() + (opts?.timeoutMs ?? 1000);
       while (Date.now() < deadline) {
-        const screen = "❯ " + st.box;
+        const screen = render();
         if (pred(screen)) return screen;
         await sleep(2);
       }
@@ -194,4 +204,49 @@ test("typeIntoBox: a prompt that appears at once is typed exactly once", async (
   assert.equal(ok, true);
   assert.equal(p.st.box, "HI");
   assert.equal(p.st.pastes, 1); // no needless retry on the happy path
+});
+
+const HINT = 'Try "refactor <filepath>"';
+const FAST = { appearMs: 15, settleMs: 10, clearMs: 20 };
+
+test("typeIntoBox: a paste that never lands is reported, even when the box shows a hint", async () => {
+  // The pinned bug: the box read `Try "…"` BEFORE anything was pasted, the old
+  // "box is non-empty" check took that for the paste, and Enter was pressed on
+  // a box holding nothing — the agent received nothing, in silence.
+  const p = fakeBox([null, null, null], { rest: HINT });
+  const ok = await typeIntoBox(p, "HELLO", { ...FAST, attempts: 3 });
+  assert.equal(ok, false);
+  assert.equal(p.st.pastes, 3); // every attempt was really made
+});
+
+test("typeIntoBox: a paste that never lands into an EMPTY box is reported", async () => {
+  const p = fakeBox([null, null], { rest: "" });
+  assert.equal(await typeIntoBox(p, "HELLO", { ...FAST, attempts: 2 }), false);
+});
+
+test("typeIntoBox: a paste replacing the hint is recognised at once", async () => {
+  const p = fakeBox([0], { rest: HINT });
+  assert.equal(await typeIntoBox(p, "HELLO", FAST), true);
+  assert.equal(p.st.box, "HELLO");
+  assert.equal(p.st.pastes, 1);
+  assert.equal(p.st.clears, 0);
+});
+
+test("typeIntoBox: a SLOW paste into a hinted box lands on the 2nd attempt, once", async () => {
+  // Paste 1 lands after its appear window; the recovery must let it land,
+  // clear it — and accept the hint coming back as "cleared" — then paste
+  // again. The same text pasted twice must still read as "landed".
+  const p = fakeBox([30, 0], { rest: HINT });
+  const ok = await typeIntoBox(p, "HELLO", { appearMs: 15, settleMs: 45, clearMs: 45, attempts: 3 });
+  assert.equal(ok, true);
+  assert.equal(p.st.box, "HELLO"); // one copy, not "HELLOHELLO"
+  assert.equal(p.st.pastes, 2);
+  assert.equal(p.st.clears, 1); // the hint's return confirmed the clear — no "stubborn" second Ctrl-U
+});
+
+test("typeIntoBox: a hint that changes across a clear is not mistaken for the paste", async () => {
+  // Not observed (the example stayed put across a Ctrl-U on 2.1.285), but the
+  // baseline is re-read on every attempt so that it cannot matter.
+  const p = fakeBox([null, null], { rest: HINT, restAfterClear: 'Try "how does <filepath> work?"' });
+  assert.equal(await typeIntoBox(p, "HELLO", { ...FAST, attempts: 2 }), false);
 });
