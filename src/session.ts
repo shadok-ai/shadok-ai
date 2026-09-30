@@ -184,6 +184,7 @@ export class PtyPilot {
   async submit(text: string): Promise<void> {
     const typed = await typeIntoBox(
       {
+        screen: () => this.screen(),
         paste: (t) => this.write(`\x1b[200~${t}\x1b[201~`),
         clearInput: () => this.write("\x15"), // Ctrl-U
         waitFor: (p, o) => this.waitFor(p, o),
