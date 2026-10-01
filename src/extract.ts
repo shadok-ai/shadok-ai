@@ -95,6 +95,23 @@ export function isResumeSummaryDialog(d: TuiDialog): boolean {
 }
 
 /**
+ * A line that is décor rather than question text: it STARTS (once trimmed) with
+ * a frame, rule or marker character.
+ *
+ * The dashes are the whole family, not one character: Claude Code 2.1.286
+ * began framing a permission prompt's command block with a rule of `╌`
+ * (U+254C) where earlier releases used the solid characters, and since that
+ * rule sits directly above "Do you want to proceed?" it was read as content —
+ * the question reached the web card and Telegram behind a full row of dashes.
+ * Which dash the TUI draws with is a styling choice it can change again, so
+ * listing only the one we saw would be caught out by the next release.
+ *
+ * Anchored on purpose: a sentence that merely CONTAINS a dash is prose, and
+ * must stay in the question.
+ */
+const FRAME_LINE = /^[─═╌╍┄┅┈┉╭╮╰╯│□⏺←→]/u;
+
+/**
  * Detects an interactive TUI dialog (multiple-choice question, permission
  * prompt…): numbered options, one of which carries the "❯" selector.
  */
@@ -174,7 +191,7 @@ export function detectDialog(screen: string): TuiDialog | null {
   const questionLines: string[] = [];
   for (let i = firstOptionLine - 1; i >= 0; i--) {
     const t = lines[i].trim();
-    if (t === "" || /^[─═╭╮╰╯│□⏺←→]/.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
+    if (t === "" || FRAME_LINE.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
       if (questionLines.length) break;
       continue;
     }

@@ -286,6 +286,13 @@ channel reachable from the mobile channel selector like any other.
 right-hand preview column, and returns `{question, options[], multi}`. The UI
 renders clickable buttons; Telegram renders an inline keyboard.
 
+The question is read by walking up from the first option and stopping at the
+first line of décor (`FRAME_LINE`: a line that *starts* with a frame, rule or
+marker character). Rules include every box-drawing dash, because the TUI's
+choice of one is styling that changes between releases — 2.1.286 switched the
+permission prompt's command frame to `╌` and the question arrived behind a row
+of them (CLAUDE.md, invariant 2).
+
 - **single-select** (`choose n`): server moves the `❯` cursor with arrow keys to
   option n, then Enter. Digit keys don't work for preview-style dialogs.
 - **multi-select** (`toggle n`, then `confirm`): digit toggles the checkbox;
