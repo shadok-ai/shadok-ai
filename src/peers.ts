@@ -57,6 +57,24 @@ export interface Peer {
   invite?: PeerInvite;
   /** When the ticket was redeemed and the durable token handed over. */
   enrolledAt?: number;
+  /**
+   * How much of this cockpit the peer may touch:
+   *  - `member` (default) — everything a web MEMBER can: see and drive EVERY
+   *    agent, read `/usage` / `/live`, spawn, the lot. Not admin (no account or
+   *    peer management). "Invite an agent like a user."
+   *  - `restricted` — only the agents IT created (`ownedByPeer`), and only
+   *    `GET /diff` over HTTP. For a collaborator you want cloistered.
+   * Absent on a row from before scopes existed → treated as `member` by
+   * `peerScope` (the behaviour the owner asked for; a saltless legacy row is
+   * re-invited anyway).
+   */
+  scope?: "member" | "restricted";
+}
+
+/** The scope of a peer row, defaulting to `member`. The one place the default
+ *  lives, so a stored row and a bare token agree. */
+export function peerScope(peer: { scope?: "member" | "restricted" } | undefined): "member" | "restricted" {
+  return peer?.scope === "restricted" ? "restricted" : "member";
 }
 
 /** How long a ticket stays redeemable. Long enough to reach an agent that is
@@ -120,6 +138,7 @@ export function addPeer(
   salt: string,
   ticket: string,
   ttlMs: number = PEER_INVITE_TTL_MS,
+  scope: "member" | "restricted" = "member",
 ): Peer[] {
   const row: Peer = {
     name,
@@ -127,14 +146,24 @@ export function addPeer(
     ...(note ? { note } : {}),
     salt,
     invite: { ticket, expiresAt: now + ttlMs },
+    scope,
   };
   return [...peers.filter((p) => p.name !== name), row];
 }
 
 /** Impure twin of `addPeer`: draws the salt and the ticket. */
-export function newPeer(peers: Peer[], name: string, now: number, note?: string): { peers: Peer[]; ticket: string } {
+export function newPeer(
+  peers: Peer[],
+  name: string,
+  now: number,
+  note?: string,
+  scope: "member" | "restricted" = "member",
+): { peers: Peer[]; ticket: string } {
   const ticket = randomBytes(32).toString("base64url");
-  return { peers: addPeer(peers, name, now, note, randomBytes(16).toString("hex"), ticket), ticket };
+  return {
+    peers: addPeer(peers, name, now, note, randomBytes(16).toString("hex"), ticket, PEER_INVITE_TTL_MS, scope),
+    ticket,
+  };
 }
 
 /**
@@ -256,9 +285,21 @@ export function ownedByPeer(channel: { createdByPeer?: string } | undefined, pee
  * be worthless once used.
  * `brief` is the human's task (empty allowed). Pure so the wording is tested.
  */
-export function agentInvitePrompt(opts: { url: string; ticket: string; brief?: string }): string {
+export function agentInvitePrompt(opts: {
+  url: string;
+  ticket: string;
+  brief?: string;
+  scope?: "member" | "restricted";
+}): string {
   const url = opts.url.replace(/\/+$/, "");
   const brief = (opts.brief ?? "").trim();
+  const member = peerScope({ scope: opts.scope }) === "member";
+  const accessLine = member
+    ? "You act as a full member of that cockpit: you can see, drive and measure EVERY agent on it, spawn more, and read its usage — everything a person you invite could. (You cannot manage its accounts or its peers — that stays with an admin.)"
+    : "You can only see and drive the agents you spawn there — nothing else on that cockpit.";
+  const listHint = member
+    ? "  pilotctl list   --peer host                     # every agent on the cockpit"
+    : "  # (you only see the agents you spawn; track their ids)";
   return [
     "You've been invited to collaborate with a shadok-ai cockpit as a peer agent.",
     "",
@@ -273,8 +314,9 @@ export function agentInvitePrompt(opts: { url: string; ticket: string; brief?: s
     "  pilotctl spawn  --peer host --cwd /workspace     # start an agent on the cockpit",
     '  pilotctl prompt <id> "<your work>" --peer host   # drive it',
     "  pilotctl diff   <id> --peer host                 # read what it changed",
+    listHint,
     "",
-    "You can only see and drive the agents you spawn there — nothing else on that cockpit.",
+    accessLine,
     "",
     brief ? "Your brief:" : "No brief was included — ask your inviter what they need before you start.",
     ...(brief ? ["", brief] : []),

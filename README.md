@@ -402,15 +402,22 @@ pilotctl prompt <id> "run the migration" --peer B
 pilotctl diff <id> --peer B
 ```
 
-The token is a **non-expiring, revocable** credential (an HMAC of the peer name;
-`DELETE /peers?name=instance-a` on B kills it immediately — future calls **and**
-the live link). A peer is **scoped to the agents it creates**: it can never see,
-resume, drive or diff B's other agents, nor reach B's vault, profiles or crons.
+The credential is **non-expiring and revocable** (`DELETE /peers?name=instance-a`
+on B kills it immediately — future calls **and** the live link). Each invitation
+carries a **scope**, chosen when you invite:
 
-**This is remote code execution by a third party** — a peer that can `spawn`
-runs commands on B's machine. It is a deliberate admin grant, and a container per
-instance stays the real boundary (see *Exposing it beyond this machine*). Manage
-peers only for instances you trust to that degree.
+- **member** (the default) — the invited agent acts **like a person you invite**:
+  it sees, drives and measures **every** agent on B, spawns more, reads its usage.
+  It is not an admin (no account or peer management).
+- **restricted** — only the agents it creates on B; it can never see, resume,
+  drive or diff B's other agents.
+
+**This is remote code execution by a third party** — a peer that can `spawn` runs
+commands on B's machine, and a **member**-scope peer has a member's full reach. It
+is a deliberate admin grant (you trust an invited agent exactly as much as an
+invited person), and a container per instance stays the real boundary (see
+*Exposing it beyond this machine*). Even a member cannot read secret **values**
+(`/secrets` returns names only) — the vault's floor holds.
 
 ### Signing in to Claude
 

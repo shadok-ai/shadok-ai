@@ -132,17 +132,21 @@ pilotctl stop <id> --peer brasdroit1
   cockpit — `POST /peers`). Paste it in once with `peer add`; it is kept in a
   600 file, `peer list` never prints it. You cannot mint your own — that is the
   point: the other instance decides who may reach it.
-- A peer is **scoped to the agents it creates**: `--peer X` can only resume /
-  drive / diff / stop agents YOU spawned on X, never its other agents. A refusal
-  comes back as `peer-scope`.
-- `list` is not available over `--peer` (a peer sees only its own agents) — track
-  the ids you `spawn` and drive them by id.
+- What you may touch on X depends on the **scope** its admin gave you when they
+  invited you:
+  - **member** (the default) — you act like an invited user: `list`, `diff`,
+    resume/drive/stop **any** agent on X, spawn more, read its usage. You are not
+    an admin (no account or peer management).
+  - **restricted** — only the agents YOU spawned on X; `--peer X list` and a diff
+    of someone else's agent come back refused (`peer-scope` / `403`).
+  Track the ids you `spawn` either way and drive them by id.
 
 ## Guardrails
 
 - NEVER `stop` a session this conversation did not create: it may belong to the
   user in the web UI. `stop` ends the session for all its clients. (Over `--peer`
-  the server enforces this for you: you can only touch your own remote agents.)
+  a **restricted** scope enforces this for you; a **member** scope does not — you
+  have a member's reach on that cockpit, so mind whose agent you stop.)
 - Every agent consumes the Claude quota like an ordinary session. Do not
   multiply agents without an explicit request from the user.
 - `prompt` on a session whose turn is already running → the error "a response is
