@@ -10,7 +10,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { upsertEntry, searchEntries, ageDays, resolveId, normEntity } from "./ledger-core.mjs";
+import { upsertEntry, searchEntries, ageDays, resolveId, normEntity, rowKind, KINDS } from "./ledger-core.mjs";
 
 const FILE =
   (process.env.SHADOK_LEDGER_FILE || "").trim() ||
@@ -42,11 +42,17 @@ function mintId(rows) {
   return crypto.randomBytes(4).toString("hex");
 }
 
+/** Flags that take NO value, listed rather than guessed: inferring "the next arg
+ *  starts with -- so this one is a boolean" would misread `--note "--foo"`. */
+const BOOL_FLAGS = new Set(["verified"]);
+
 /** `--key value` pairs → object. Values may be quoted by the shell already. */
 function parseFlags(args) {
   const out = {};
   for (let i = 0; i < args.length; i++) {
-    if (args[i].startsWith("--")) out[args[i].slice(2)] = args[++i] ?? "";
+    if (!args[i].startsWith("--")) continue;
+    const key = args[i].slice(2);
+    out[key] = BOOL_FLAGS.has(key) ? true : (args[++i] ?? "");
   }
   return out;
 }
@@ -54,8 +60,17 @@ function parseFlags(args) {
 function fmt(e, now) {
   const age = ageDays(e, now);
   const when = age <= 0 ? "today" : age === 1 ? "1d ago" : `${age}d ago`;
+  const kind = rowKind(e);
+  // Say "verified" wherever the two clocks have parted company — and always for
+  // a fact, whose whole state IS its freshness. A bare age next to a row last
+  // confirmed a month ago but reworded yesterday is the lie this removes.
+  const parted = e.verifiedAt && e.updatedAt && e.verifiedAt !== e.updatedAt;
+  const stamp = kind === "fact" || parted ? `verified ${when}` : when;
+  // `task` is the default and the overwhelming majority: tagging it would be
+  // noise on every line. The two that change how a status must be READ are named.
+  const tag = kind === "task" ? "" : ` · ${kind}`;
   const handle = e.id ? `[${e.id}] ` : "";
-  const head = `• ${handle}${e.entity} — ${e.status} (${when}${e.source ? ` · ${e.source}` : ""})`;
+  const head = `• ${handle}${e.entity} — ${e.status}${tag} (${stamp}${e.source ? ` · ${e.source}` : ""})`;
   return e.note ? `${head}\n    ${e.note}` : head;
 }
 
@@ -89,11 +104,18 @@ if (cmd === "check") {
   // Two shapes: create/supersede by --entity (+ --status), or update an existing
   // row by its --id handle (change any of status/note/source; entity optional).
   const byId = f.id != null && String(f.id).trim();
-  const idHasNoFields = f.status == null && f.note == null && f.source == null && f.entity == null;
-  if (byId ? idHasNoFields : !f.entity || !f.status) {
+  const idHasNoFields =
+    f.status == null && f.note == null && f.source == null && f.entity == null &&
+    f.kind == null && f.verified == null;
+  // A fact or a decision has no lifecycle, so `--kind` stands in for `--status`:
+  // requiring one would only invite an invented word.
+  const hasStatus = !!f.status || !!f.kind;
+  if (byId ? idHasNoFields : !f.entity || !hasStatus) {
     console.error(
       'usage: ledger record --entity "<name>" --status <resolved|open|in-progress|decided> [--note "<line>"] [--source "<ref>"]\n' +
-        '   or: ledger record --id <handle> [--status <…>] [--note "<line>"] [--source "<ref>"]',
+        `   or: ledger record --entity "<name>" --kind <${KINDS.join("|")}> [--note "<line>"] [--source "<ref>"]\n` +
+        '   or: ledger record --id <handle> [--status <…>] [--kind <…>] [--note "<line>"] [--source "<ref>"]\n' +
+        '   or: ledger record --id <handle> --verified     (still true/current — nothing else changed)',
     );
     process.exit(2);
   }
@@ -102,7 +124,15 @@ if (cmd === "check") {
   try {
     rows = upsertEntry(
       rows0,
-      { id: f.id, entity: f.entity, status: f.status, note: f.note, source: f.source },
+      {
+        id: f.id,
+        entity: f.entity,
+        status: f.status,
+        kind: f.kind,
+        verified: f.verified === true,
+        note: f.note,
+        source: f.source,
+      },
       now,
       mintId(rows0),
     );
@@ -112,7 +142,8 @@ if (cmd === "check") {
   }
   save(rows);
   const row = byId ? resolveId(rows, f.id) : rows.find((r) => normEntity(r.entity) === normEntity(f.entity));
-  console.log(`recorded: ${row.entity} — ${row.status} [${row.id}]`);
+  const k = rowKind(row);
+  console.log(`recorded: ${row.entity} — ${row.status}${k === "task" ? "" : ` · ${k}`} [${row.id}]`);
 } else if (cmd === "list") {
   const rows = searchEntries(load(), "").strong;
   console.log(rows.length ? rows.map((e) => fmt(e, now)).join("\n") : "(ledger empty)");

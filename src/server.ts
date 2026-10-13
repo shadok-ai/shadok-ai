@@ -142,6 +142,9 @@ import {
   seenFor,
   recordSeen,
 } from "./ledger.js";
+// The skill's pure core is the single source of the ledger's logic (CLAUDE.md):
+// the server imports it rather than keeping a second copy of the kind inference.
+import { rowKind } from "../context/ledger-skill/ledger-core.mjs";
 import {
   childrenOf,
   linkRefusal,
@@ -2315,8 +2318,13 @@ app.post("/claude-update", async (req, res) => {
 app.get("/ledger", (_req, res) => {
   // This instance's own ledger (keyed by the launch dir), the same file agents
   // write through SHADOK_LEDGER_FILE.
-  const entries = loadLedger(ledgerFileFor(process.cwd()));
-  entries.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
+  const rows = loadLedger(ledgerFileFor(process.cwd()));
+  rows.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
+  // `kind` is DERIVED here, never stored (cf. the derived `crons` on /channels
+  // and `origin` on /profiles): the rows recorded before kinds existed carry
+  // none, and the inference belongs to the skill's core — one source, so the
+  // client needs no copy of it.
+  const entries = rows.map((r) => ({ ...r, kind: rowKind(r) }));
   res.json({ entries, enabled: ledgerEnabled });
 });
 

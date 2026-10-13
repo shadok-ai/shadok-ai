@@ -1690,6 +1690,8 @@
   #ledgerList .ldg-head { display: flex; align-items: baseline; gap: 8px; }
   #ledgerList .ldg-status { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .8;
     border: 1px solid var(--line, #3a3d42); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
+  #ledgerList .ldg-kind { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .55;
+    border: 1px solid currentColor; border-radius: 3px; padding: 0 4px; }
   #ledgerList .ldg-meta { color: var(--text-dim); font-size: 10px; margin-top: 2px; }
   #ledgerList .ldg-note { font-size: 12px; opacity: .85; margin-top: 3px; }
   #secretsPanel .sec-repo { font-size: 12px; opacity: .8; margin-bottom: 4px; word-break: break-all; }
@@ -7192,8 +7194,18 @@
       const ent = document.createElement("strong"); ent.textContent = e.entity || "?";
       head.appendChild(ent);
       if (e.status) { const st = document.createElement("span"); st.className = "ldg-status"; st.textContent = e.status; head.appendChild(st); }
+      // `kind` is DERIVED server-side (/ledger), never stored. Only the two that
+      // change how a status must be read are shown: a FACT has no lifecycle (it
+      // is current or stale, never "done") and a DECISION is not a phase of one.
+      // `task` is the default and nearly the whole table — tagging it would be
+      // noise on every row.
+      if (e.kind && e.kind !== "task") { const kd = document.createElement("span"); kd.className = "ldg-kind"; kd.textContent = e.kind; head.appendChild(kd); }
       const meta = document.createElement("div"); meta.className = "ldg-meta";
-      meta.textContent = ldgWhen(e.updatedAt) + (e.source ? " · " + e.source : "");
+      // Two clocks, shown apart only where they have parted company: an edit
+      // moves `updatedAt`, while `verifiedAt` is when the claim was last
+      // CONFIRMED — and that is the one a staleness judgement rests on.
+      const verified = e.verifiedAt && e.verifiedAt !== e.updatedAt ? " · verified " + ldgWhen(e.verifiedAt) : "";
+      meta.textContent = ldgWhen(e.updatedAt) + verified + (e.source ? " · " + e.source : "");
       if (e.updatedAt) meta.title = new Date(e.updatedAt).toLocaleString();
       li.append(head, meta);
       if (e.note) { const n = document.createElement("div"); n.className = "ldg-note"; n.textContent = e.note; li.appendChild(n); }

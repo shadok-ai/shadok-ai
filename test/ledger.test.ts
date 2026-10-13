@@ -7,6 +7,8 @@ import {
   searchEntries,
   ageDays,
   resolveId,
+  rowKind,
+  normKind,
 } from "../context/ledger-skill/ledger-core.mjs";
 
 test("upsert SUPERSEDES by normalised entity — never a twin", () => {
@@ -149,4 +151,100 @@ test("normEntity collapses case and whitespace", () => {
 test("ageDays is whole days since updatedAt", () => {
   assert.equal(ageDays({ updatedAt: 0 }, 3 * 86_400_000 + 5), 3);
   assert.equal(ageDays({ updatedAt: 100 }, 100), 0);
+});
+
+/* ---------------------------------------------------------------- *
+ * kind: a task, a fact, or a decision — and the two clocks that go with it.
+ * Spec: docs/superpowers/specs/2026-10-13-ledger-kind-and-headline.md
+ * ---------------------------------------------------------------- */
+
+test("kind is READ off an old row, never written back into it", () => {
+  // The rows recorded before kinds existed carry none. `decided` was always a
+  // kind wearing a status's clothes, so that is what it reads as; everything
+  // else is a task. Nothing is rewritten — 138 rows keep their bytes.
+  assert.equal(rowKind({ entity: "x", status: "decided" }), "decision");
+  assert.equal(rowKind({ entity: "x", status: "resolved" }), "task");
+  assert.equal(rowKind({ entity: "x", status: "open" }), "task");
+  assert.equal(rowKind({ entity: "x", status: "resolved", kind: "fact" }), "fact");
+  // an unparseable stored kind must not invent a fourth one
+  assert.equal(rowKind({ entity: "x", status: "open", kind: "nonsense" }), "task");
+});
+
+test("an unknown kind is REFUSED, not stored", () => {
+  // A typo that silently became a fourth kind would be invisible for exactly as
+  // long as nobody went looking.
+  assert.throws(() => normKind("fakt"));
+  assert.throws(() => upsertEntry([], { entity: "x", status: "open", kind: "fakt" }, 1, "aa"));
+  assert.equal(normKind(""), null); // absent is fine — the inference covers it
+  assert.equal(normKind("  FACT "), "fact");
+});
+
+test("a lifecycle-less kind supplies its own status, so none has to be invented", () => {
+  const f = upsertEntry([], { entity: "nightly window", kind: "fact", note: "03:00 Paris" }, 1000, "bb");
+  assert.equal(f[0].status, "current"); // not "" — every reader still sees a status
+  assert.equal(f[0].kind, "fact");
+  const d = upsertEntry([], { entity: "supersede, not append", kind: "decision" }, 1000, "cc");
+  assert.equal(d[0].status, "decided");
+  // an explicit status still wins
+  const e = upsertEntry([], { entity: "z", kind: "fact", status: "stale" }, 1000, "dd");
+  assert.equal(e[0].status, "stale");
+});
+
+test("kind belongs to the ENTITY: a supersede keeps it, like the id", () => {
+  let rows: any[] = upsertEntry([], { entity: "nightly window", kind: "fact" }, 1000, "bb");
+  rows = upsertEntry(rows, { entity: "nightly window", status: "stale" }, 2000, "zz");
+  assert.equal(rows[0].kind, "fact"); // not silently demoted to a task
+  assert.equal(rows[0].status, "stale");
+});
+
+test("promoting a row by id to a lifecycle-less kind drops its stale lifecycle word", () => {
+  // `--id X --kind fact` must not leave "resolved" sitting on a fact.
+  let rows: any[] = upsertEntry([], { entity: "nightly window", status: "resolved" }, 1000, "bb");
+  rows = upsertEntry(rows, { id: "bb", kind: "fact" }, 2000);
+  assert.equal(rows[0].kind, "fact");
+  assert.equal(rows[0].status, "current");
+});
+
+test("an EDIT moves updatedAt; only an OBSERVATION moves verifiedAt", () => {
+  // The defect this fixes: `ageDays` read `updatedAt`, so rewording a note
+  // rejuvenated a row nobody had re-checked in a month — which silently
+  // switched off the reflex's "a stale record → confirm before acting" hedge.
+  let rows: any[] = upsertEntry([], { entity: "x", status: "open" }, 1000, "aa");
+  assert.equal(rows[0].verifiedAt, 1000);
+
+  rows = upsertEntry(rows, { id: "aa", note: "reworded, nothing re-checked" }, 9000);
+  assert.equal(rows[0].updatedAt, 9000);
+  assert.equal(rows[0].verifiedAt, 1000); // NOT rejuvenated
+
+  // re-asserting a status IS confirming it, even when the value is unchanged
+  rows = upsertEntry(rows, { id: "aa", status: "open" }, 20_000);
+  assert.equal(rows[0].updatedAt, 20_000);
+  assert.equal(rows[0].verifiedAt, 20_000);
+});
+
+test("--verified alone moves verifiedAt and leaves updatedAt put — so it stays OUT of the delta", () => {
+  // Deliberate: the pushed delta selects on `updatedAt`, and "I re-checked,
+  // nothing changed" is not news. Pushing it to every sibling agent is exactly
+  // the noise a state table exists to avoid.
+  let rows: any[] = upsertEntry([], { entity: "x", status: "current", kind: "fact" }, 1000, "aa");
+  rows = upsertEntry(rows, { id: "aa", verified: true }, 50_000);
+  assert.equal(rows[0].updatedAt, 1000); // unmoved → not in anyone's delta
+  assert.equal(rows[0].verifiedAt, 50_000);
+  assert.equal(rows[0].status, "current"); // nothing else touched
+});
+
+test("a row that predates verifiedAt inherits its old updatedAt as the last observation", () => {
+  // The migration, lazy and per row: the row WAS last observed when it was last
+  // written, so that is the truth to freeze — never `now`, which would claim a
+  // check that never happened.
+  const legacy = [{ id: "aa", entity: "x", status: "open", updatedAt: 1000 }];
+  const rows: any[] = upsertEntry(legacy, { id: "aa", note: "reworded" }, 9000);
+  assert.equal(rows[0].verifiedAt, 1000);
+});
+
+test("ageDays is days since the claim was CONFIRMED, not since it was written", () => {
+  const day = 86_400_000;
+  assert.equal(ageDays({ updatedAt: 9 * day, verifiedAt: 2 * day }, 10 * day), 8);
+  // no verifiedAt → fall back to updatedAt, so older rows are unaffected
+  assert.equal(ageDays({ updatedAt: 7 * day }, 10 * day), 3);
 });

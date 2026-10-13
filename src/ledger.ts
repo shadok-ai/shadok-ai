@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { rowKind } from "../context/ledger-skill/ledger-core.mjs";
 
 /**
  * Server side of the shared ledger. Two jobs the `shadok-ledger` skill's own
@@ -24,9 +25,16 @@ export interface LedgerRow {
   id?: string;
   entity: string;
   status: string;
+  /** `task` | `fact` | `decision` — absent on every row recorded before it
+   *  existed, which `rowKind` reads rather than rewriting them. */
+  kind?: string;
   note?: string;
   source?: string;
+  /** When the row was last WRITTEN. */
   updatedAt?: number;
+  /** When its claim was last CONFIRMED — the freshness, which an edit must not
+   *  move. Absent on older rows; `ageDays` falls back to `updatedAt`. */
+  verifiedAt?: number;
 }
 
 /** The per-instance ledger file, keyed by the launch dir (same encoding as
@@ -121,42 +129,148 @@ export function deltaSince(
 }
 
 const LEDGER_HEAD = "⟦ledger · ";
+/* ------------------------------------------------------------------ *
+ * The block is ONE LINE, and that is a correctness requirement, not a style.
+ *
+ * `pilot.submit` puts the text into the TUI as a bracketed PASTE, and Claude
+ * Code collapses a paste past a threshold into a `<pasted_content>` wrapper —
+ * which its own system prompt tells the model is material the user pasted from
+ * somewhere else, to be acted on only where the user's own message asks. With a
+ * multi-line block the human's message is INSIDE that wrapper, so it stops being
+ * an instruction. Measured end to end: an agent answered "your last message
+ * contained only pasted text, with no request of your own alongside it… I
+ * haven't acted on that line", and refused a direct order.
+ *
+ * Both thresholds measured against a live agent and confirmed on 486 real human
+ * prompts from this machine's transcripts:
+ *
+ *   lines  1–3 → 0 of 324 wrapped        chars  430 on one line → not wrapped
+ *   lines  4+  → ~30% of 162 wrapped     chars  910 on one line → wrapped
+ *
+ * A prompt is `⟦web⟧ header` + the message, so a one-line human message leaves
+ * the block exactly one line of room. The old multi-line block spent 2+ and put
+ * EVERY non-empty delta over the cliff: 85 real prompts, 24% of those carrying a
+ * block, had the human's message neutralised this way. Hence: one line, and a
+ * character budget inside it.
+ * ------------------------------------------------------------------ */
 
-/** The delta block the agent sees ahead of a human prompt. English (it is
- *  written into the transcript — repo side). One line per row: `• [id] entity —
- *  status (source)`; an overflow line when capped. */
-export function formatLedgerBlock(rows: LedgerRow[], total: number): string {
-  const head = `${LEDGER_HEAD}${total} update${total === 1 ? "" : "s"} since your last message⟧`;
-  const lines = rows.map((r) => {
-    const handle = r.id ? `[${r.id}] ` : "";
-    const src = r.source ? ` (${r.source})` : "";
-    return `• ${handle}${r.entity} — ${r.status}${src}`;
-  });
-  if (rows.length < total) lines.push(`• (+${total - rows.length} more — run: ledger list)`);
-  return [head, ...lines].join("\n");
+/** Marks what follows the row, inline: "and here is what happened". */
+const CONT_MARK = "↳";
+/** Historical multi-line blocks, still replayed out of old transcripts. */
+const CONT_LINE = /^\s*↳ /;
+/** How much of a note reaches the block. */
+const HEADLINE_MAX = 120;
+/** Below this, a sentence boundary is not believed — see `headline`. */
+const HEADLINE_MIN = 24;
+/**
+ * The whole block's character ceiling. Chosen from the measurement above with
+ * room left for the ⟦web⟧ header and an ordinary message: a long enough single
+ * line collapses into a paste just as a fourth line does, so the budget is what
+ * keeps the one-line rule from being defeated by content. Rows that do not fit
+ * collapse into the overflow pointer, which is what it has always been for.
+ */
+const BLOCK_MAX = 320;
+
+/**
+ * The one line of the note that says WHAT happened, DERIVED rather than asked
+ * for. The block used to carry `[id] entity — status` and nothing else, so the
+ * entity *label* was the whole payload — and a label written as a topic name
+ * ("report regeneration, 15 test accounts") cannot say what changed about it.
+ * That is how work finished on the 9th was still believed pending on the 12th.
+ *
+ * Derived, because the alternative — a mandatory `--headline` — asks every agent
+ * for writing discipline (which nothing enforces) and covers none of the rows
+ * already recorded. The note's first sentence needs neither.
+ */
+export function headline(note: string | undefined, max: number = HEADLINE_MAX): string {
+  const flat = String(note ?? "").replace(/\s+/g, " ").trim();
+  if (!flat) return "";
+  // A period ends a sentence only when whitespace follows it: this table is full
+  // of "claude-code-2.1.285" and "PR#259 / v0.13.4", and splitting on a bare dot
+  // would cut every one of them in half. And a boundary that would leave almost
+  // nothing is not one — "e.g. the nightly job" is one sentence, not "e.g.".
+  let first = flat;
+  const bound = /[.!?](?=\s)/g;
+  for (let m = bound.exec(flat); m; m = bound.exec(flat)) {
+    if (m.index + 1 >= HEADLINE_MIN) {
+      first = flat.slice(0, m.index + 1);
+      break;
+    }
+  }
+  first = first.trim();
+  if (first.length <= max) return first;
+  const cut = first.slice(0, max);
+  const sp = cut.lastIndexOf(" ");
+  // Break on a word unless that would throw away most of the line.
+  return (sp > max * 0.6 ? cut.slice(0, sp) : cut).trimEnd() + "…";
 }
 
-/** Prepend the block as its own leading lines. Idempotent. */
+/**
+ * The delta block the agent sees ahead of a prompt. English (it is written into
+ * the transcript — repo side). ONE line, within `BLOCK_MAX` (see above): per row
+ * `• [id] entity — status (source)`, the kind when it is not the default `task`,
+ * and `↳ <headline>` for what actually happened. Rows that do not fit the budget
+ * become the overflow pointer rather than a second line.
+ */
+export function formatLedgerBlock(rows: LedgerRow[], total: number): string {
+  let line = `${LEDGER_HEAD}${total} update${total === 1 ? "" : "s"}⟧`;
+  let shown = 0;
+  for (const r of rows) {
+    const handle = r.id ? `[${r.id}] ` : "";
+    const src = r.source ? ` (${r.source})` : "";
+    // A `fact` has no lifecycle and a `decision` is not a phase of one, so the
+    // reader must not take their status for a position in open → resolved.
+    // `task` is the default and nearly the whole table: tagging it would be noise.
+    const kind = rowKind(r);
+    const tag = kind === "task" ? "" : ` · ${kind}`;
+    const bare = ` • ${handle}${r.entity} — ${r.status}${tag}${src}`;
+    // Always carry at least one row: an empty block would say a delta arrived
+    // and name nothing, which is worse than a long line.
+    if (shown > 0 && line.length + bare.length > BLOCK_MAX) break;
+    line += bare;
+    shown++;
+    const h = headline(r.note);
+    if (h && line.length + h.length + 3 <= BLOCK_MAX) line += ` ${CONT_MARK} ${h}`;
+  }
+  if (shown < total) line += ` • (+${total - shown} more — run: ledger list)`;
+  // Defensive: one oversized entity must not be able to defeat the one-line rule
+  // by length, which costs exactly as much as a second line would.
+  return line.length > BLOCK_MAX * 2 ? line.slice(0, BLOCK_MAX * 2 - 1) + "…" : line;
+}
+
+/** Prepend the block as its own leading line. Idempotent. */
 export function markLedgerBlock(text: string, block: string): string {
   if (hasLedgerBlock(text)) return text;
   return `${block}\n${text}`;
 }
 
-/** Does this text open with a pushed ledger block? */
+/** Does this text open with a pushed ledger block?
+ *
+ *  `⟧` CLOSES the header, it no longer ENDS the line: a one-line block continues
+ *  with its rows after it. Testing `endsWith` here was the first thing the
+ *  one-line format broke, and it fails open — detection returns false, nothing
+ *  is stripped, and the whole block is shown to the user in the chat. The old
+ *  multi-line shape satisfies this test too, so replayed transcripts are
+ *  unaffected. */
 export function hasLedgerBlock(text: string): boolean {
   if (typeof text !== "string") return false;
   const first = text.split("\n", 1)[0];
-  return first.startsWith(LEDGER_HEAD) && first.endsWith("⟧");
+  return first.startsWith(LEDGER_HEAD) && first.includes("⟧");
 }
 
-/** Remove a leading ledger block — its header line and the contiguous `• ` bullet
- *  lines that follow it — leaving whatever came after (e.g. the ⟦platform⟧ header
- *  and the user's message). A plain message is returned untouched. */
+/** Remove a leading ledger block, leaving whatever came after (the ⟦platform⟧
+ *  header and the user's message). A plain message is returned untouched.
+ *
+ *  The block is one line now, so that is usually all this drops — but it must
+ *  keep understanding the HISTORICAL multi-line shape (header, `• ` bullets,
+ *  indented `↳` headlines), because `loadHistory` replays transcripts written
+ *  before the format changed and a block it fails to strip is a block the user
+ *  reads in the chat. */
 export function stripLedgerBlock(text: string): string {
   if (!hasLedgerBlock(text)) return text;
   const lines = text.split("\n");
   let i = 1; // drop the header line
-  while (i < lines.length && lines[i].startsWith("• ")) i++;
+  while (i < lines.length && (lines[i].startsWith("• ") || CONT_LINE.test(lines[i]))) i++;
   return lines.slice(i).join("\n");
 }
 

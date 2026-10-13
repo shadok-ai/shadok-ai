@@ -26,6 +26,52 @@ export function resolveId(entries, idOrPrefix) {
   return pre.length === 1 ? pre[0] : null;
 }
 
+/* --------------------------------------------------------------------- *
+ * A row's KIND: a task, a fact, or a decision.
+ *
+ * The table used to treat all three identically, and they are not the same
+ * object. A TASK has a lifecycle, so a status is the right thing to carry and
+ * closing it is normal. A FACT has no lifecycle — only a date on which someone
+ * last confirmed it — so closing it makes it DISAPPEAR WHILE IT STAYS TRUE,
+ * which is how a finished job was still believed pending three days later. And
+ * `decided` was never a phase of the open → in-progress → resolved lifecycle it
+ * sat next to: it is a kind wearing a status's clothes.
+ *
+ * Design: docs/superpowers/specs/2026-10-13-ledger-kind-and-headline.md
+ * --------------------------------------------------------------------- */
+
+export const KINDS = ["task", "fact", "decision"];
+
+/** The status a kind with NO lifecycle gets when none is given, so an agent is
+ *  never pushed into inventing a word for a thing that has no phases. Keeping
+ *  `status` always present is what leaves every existing reader — the pushed
+ *  delta, the GUI viewer, a consumer's recap filter — working untouched. */
+const KIND_STATUS = { fact: "current", decision: "decided" };
+
+/**
+ * Validate a `--kind`: one of KINDS, or null when absent. An unknown one THROWS
+ * rather than being stored — a typo that silently became a fourth kind would be
+ * invisible for exactly as long as nobody went looking.
+ */
+export function normKind(k) {
+  const s = String(k ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (!KINDS.includes(s)) throw new Error(`unknown kind "${k}" — use one of: ${KINDS.join(", ")}`);
+  return s;
+}
+
+/**
+ * What kind a row IS — read, never written back. An absent `kind` reads as
+ * `decision` when the status is `decided` (that is what the word already meant)
+ * and as `task` otherwise, so the rows recorded before this existed keep their
+ * bytes and still render correctly. Assert only what you saw.
+ */
+export function rowKind(entry) {
+  const k = String(entry?.kind ?? "").trim().toLowerCase();
+  if (KINDS.includes(k)) return k;
+  return normEntity(entry?.status) === "decided" ? "decision" : "task";
+}
+
 /**
  * Upsert a row, two ways:
  *  - `patch.id` present → UPDATE that exact row in place (resolved via resolveId),
@@ -35,20 +81,54 @@ export function resolveId(entries, idOrPrefix) {
  *    its id (the handle is durable across every write), or create a new row with
  *    `newId`.
  * `now` (epoch ms) and `newId` are injected so the core stays pure/testable.
+ *
+ * Two clocks, because an EDIT is not an OBSERVATION. `updatedAt` is when the row
+ * was last written; `verifiedAt` is when its claim was last confirmed, and it is
+ * what the staleness hedge reads. Rewriting a note used to rejuvenate a row
+ * nobody had re-checked in a month, which silently switched that hedge off:
+ *
+ *   create ................................ both move
+ *   --status given (even the same value) .. both move — re-asserting a status
+ *                                           IS confirming it
+ *   --note / --source / --entity only ..... updatedAt moves, verifiedAt does NOT
+ *   --verified alone ...................... verifiedAt moves, updatedAt does NOT
+ *
+ * That last line is deliberate: a row whose `updatedAt` does not move stays out
+ * of every sibling's pushed delta, and "I re-checked, nothing changed" is not
+ * news — pushing it to every agent is the noise a state table exists to avoid.
+ * A row that predates `verifiedAt` inherits its old `updatedAt` as the moment it
+ * was last observed, which is the truth and makes the migration lazy, per row.
  */
 export function upsertEntry(entries, patch, now, newId) {
+  const kind = normKind(patch.kind); // refuses an unknown kind before anything is written
+  const statusGiven = patch.status != null && String(patch.status).trim() !== "";
+
   if (patch.id != null && String(patch.id).trim()) {
     const cur = resolveId(entries, patch.id);
     if (!cur) throw new Error(`no ledger entry with id "${patch.id}"`);
+    // `kind` is a property of the ENTITY, not of this write: keep the stored one
+    // when none is given, like the id.
+    const effKind = kind ?? normKind(cur.kind);
+    // Promoting a row to a lifecycle-less kind supplies that kind's status, so
+    // `--id X --kind fact` does not leave a stale `resolved` on a fact.
+    const status = statusGiven
+      ? String(patch.status).trim()
+      : kind && kind !== rowKind(cur) && KIND_STATUS[kind]
+        ? KIND_STATUS[kind]
+        : cur.status;
+    const edited =
+      statusGiven || kind != null || patch.note != null || patch.source != null || patch.entity != null;
+    const observed = statusGiven || patch.verified === true || status !== cur.status;
     const row = {
       id: cur.id,
       entity:
         patch.entity != null && String(patch.entity).trim() ? String(patch.entity).trim() : cur.entity,
-      status:
-        patch.status != null && String(patch.status).trim() ? String(patch.status).trim() : cur.status,
+      status,
+      ...(effKind ? { kind: effKind } : {}),
       ...((patch.note ?? cur.note) ? { note: String(patch.note ?? cur.note).trim() } : {}),
       ...((patch.source ?? cur.source) ? { source: String(patch.source ?? cur.source).trim() } : {}),
-      updatedAt: now,
+      updatedAt: edited ? now : (cur.updatedAt ?? now),
+      verifiedAt: observed ? now : (cur.verifiedAt ?? cur.updatedAt ?? now),
     };
     return [...entries.filter((e) => e.id !== cur.id), row];
   }
@@ -56,13 +136,20 @@ export function upsertEntry(entries, patch, now, newId) {
   const key = normEntity(patch.entity);
   if (!key) throw new Error("entity is required");
   const existing = entries.find((e) => normEntity(e.entity) === key);
+  const effKind = kind ?? normKind(existing?.kind);
+  const status = statusGiven
+    ? String(patch.status).trim()
+    : (effKind && KIND_STATUS[effKind]) || String(patch.status ?? "").trim();
+  const observed = statusGiven || patch.verified === true || status !== existing?.status;
   const row = {
     id: existing?.id ?? newId,
     entity: String(patch.entity).trim(),
-    status: String(patch.status ?? "").trim(),
+    status,
+    ...(effKind ? { kind: effKind } : {}),
     ...(patch.note ? { note: String(patch.note).trim() } : {}),
     ...(patch.source ? { source: String(patch.source).trim() } : {}),
     updatedAt: now,
+    verifiedAt: observed ? now : (existing?.verifiedAt ?? existing?.updatedAt ?? now),
   };
   return [...entries.filter((e) => normEntity(e.entity) !== key), row];
 }
@@ -181,7 +268,12 @@ export function searchEntries(entries, query, opts = {}) {
   };
 }
 
-/** Whole days since a row was last touched — the freshness the reflex hedges on. */
+/**
+ * Whole days since the row's claim was last CONFIRMED — the freshness the reflex
+ * hedges on. `verifiedAt` first: reading `updatedAt` meant any edit, down to a
+ * reworded note, reset the age of a row nobody had re-checked. Falls back to
+ * `updatedAt` for the rows recorded before the field existed.
+ */
 export function ageDays(entry, now) {
-  return Math.floor((now - (entry.updatedAt ?? now)) / 86_400_000);
+  return Math.floor((now - (entry.verifiedAt ?? entry.updatedAt ?? now)) / 86_400_000);
 }
