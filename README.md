@@ -346,6 +346,41 @@ know before opening it up:
   else you do. Accounts belong to **one instance** (one launch directory), like
   its channels and its scheduled prompts. With no password there are no
   accounts and no login screen — nothing changes for a machine you use alone.
+- **Two-factor sign-in (passkeys).** From the **Users** panel, anyone signed in
+  with a named account can register a passkey on their device — the
+  fingerprint / face / PIN unlock of the phone or laptop (WebAuthn, user
+  verification required). An admin can then turn **Two-factor sign-in** on for
+  this instance. From then on a correct password only opens a second step, and
+  the session exists once the passkey answers.
+  - Switching it on needs **at least 2 named admins, each with a passkey** —
+    recovery is "another admin resets you", so a lone admin who lost their phone
+    would lock the cockpit for good. The acting admin confirms with their
+    passkey.
+  - **Adding a device from another one**: on a signed-in device, *Add another
+    device (code)* shows an 8-character code valid 10 minutes, single use. On the
+    new device, sign in with the password, choose *use a code*, register. A
+    password alone never registers a passkey — that is what stops a stolen
+    password from enrolling the thief's phone.
+  - **Lost password or lost device**: another admin clicks *reset access* on your
+    row (confirming with their own passkey). Your password and every passkey are
+    removed and they hand you a fresh invitation link, on which you choose a new
+    password and register the device you have. Nobody can reset themselves. An
+    admin can also hand a member a *device code* directly.
+  - While it is on, the instance password (`admin`) **cannot sign in to the
+    browser** — it lives in every agent's environment and no one could reset it;
+    use a named account. Agents, Telegram and peers are unaffected (they never use
+    the login), but account and two-factor management is reserved to a signed-in
+    person: an agent's key can no longer create or reset accounts.
+  - Passkeys need a **secure context**: `https://` (see "Behind TLS") or
+    `localhost`. They are bound to the hostname — one made on
+    `cockpit.example.com` does not work on `localhost`.
+  - **Break-glass**, if every admin loses everything at once: on the machine,
+    remove the instance's entry under `twoFactor` in `~/.shadok-ai/config.json`
+    and restart. Whoever has that shell could read every secret anyway.
+  - What it protects against: a leaked password used over the network, and every
+    session issued before it was switched on (they stop working). What it does
+    not: anything already running as the machine's user — same soft isolation as
+    profiles.
 - Once people are named, **a prompt carries its sender**: the agent sees who
   asked, and the other browsers show the name above the message instead of
   "pilot (elsewhere)". The server takes that name from the session, never from

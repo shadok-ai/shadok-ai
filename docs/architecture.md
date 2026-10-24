@@ -794,6 +794,40 @@ alive, `/live` empty, key refused. Keying on the channel list, which is on disk
 and loses its entry when the agent is closed, revokes at the right moment and
 survives the restart.
 
+### Two-factor sign-in (`src/twofactor.ts`)
+
+Opt-in per instance (`config.twoFactor[<cwd>]`), on the Users panel. A passkey
+(WebAuthn through `@simplewebauthn/server`; the browser half is served from
+`/vendor/simplewebauthn.js`, before the gate, because the login page needs it).
+Design and threat model: `docs/superpowers/specs/2026-10-21-passkey-2fa-design.md`.
+
+- **The cookie carries a second-factor flag** (`<user>.<issuedAt>.<mfa>.<mac>`).
+  With 2FA on, `cookieAccount` refuses a cookie without it — so switching it on
+  kills every earlier session, leaked ones included. The pre-2FA three-field
+  shape still reads, as `mfa: false`.
+- **A password alone yields a pending cookie, not a session** (`sk_pending`, 5
+  min, signed with a key DERIVED for that purpose so it can never be replayed
+  as `sk_auth`). `/login/passkey*` turns it into a session.
+- **A password alone never registers a passkey.** `/login/enroll*` needs an
+  enrollment code (8 chars, 10 min, single use) minted by a verified session —
+  yours (*add another device*) or an admin's (*device code*, *reset access*,
+  and a redeemed invitation, which vouches the same way).
+- **Actions that could undo the second factor for someone** — reset, a code for
+  another person, switching 2FA on/off, removing another's passkey — require a
+  FRESH passkey assertion from the actor (`stepUpOk`), not just a session.
+- **Only a person manages accounts while it is on**: `accountAdmin` and the
+  `/2fa/*` routes read `cookieAccount`, which never accepts an agent's session
+  key or a peer. The key IS the bootstrap admin; without this an agent could
+  reset anyone.
+- **The bootstrap admin has no browser session under 2FA.** It is
+  `SHADOK_GUI_PASSWORD`, present in every agent's env, and resettable by no one.
+- The rules are pure and tested: `twoFactorEnableVerdict` (≥ 2 named admins
+  with a passkey), `keepsTwoAdminsVerdict` (no deletion/demotion/passkey removal
+  that would drop below that), `resetVerdict` (never yourself),
+  `enrollCodeVerdict` (one refusal wording for every failure).
+- Challenges live in memory, single use, bound to a user AND a purpose, 2 min. A
+  restart only costs an in-flight ceremony.
+
 ## Where it listens, and who may talk to it (`src/net.ts`)
 
 The cockpit runs arbitrary commands on the host, so the network surface is
