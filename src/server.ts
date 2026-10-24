@@ -162,6 +162,8 @@ import {
   setTitleForCwd,
   themeForCwd,
   setThemeForCwd,
+  twoFactorForCwd,
+  setTwoFactorForCwd,
   type TelegramPatch,
 } from "./config.js";
 import {
@@ -203,7 +205,7 @@ import {
   verifyPassword,
   sessionSecret,
   signSession,
-  readSession,
+  readSessionFull,
   saveAccounts,
   userWriteVerdict,
   newInvite,
@@ -213,7 +215,29 @@ import {
   type Role,
   signSessionKey,
   readSessionKey,
+  type Account,
 } from "./accounts.js";
+import {
+  admins2fa,
+  authenticationOptions,
+  enrollCodeVerdict,
+  isInternalClient,
+  keepsTwoAdminsVerdict,
+  loginNext,
+  newEnrollCode,
+  publicPasskey,
+  putChallenge,
+  readPending,
+  registrationOptions,
+  resetVerdict,
+  signPending,
+  takeChallenge,
+  twoFactorEnableVerdict,
+  verifyAuthentication,
+  verifyRegistration,
+  PENDING_TTL_MS,
+  type Rp,
+} from "./twofactor.js";
 import { ensureSelfRepo } from "./selfrepo.js";
 import {
   createWorktree,
@@ -313,9 +337,19 @@ const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 // never creates a key file it will not use.
 let sessionKeyCache: Buffer | null = null;
 const signingSecret = (): Buffer => (sessionKeyCache ??= sessionSecret());
-/** The Telegram bridge and the agents authenticate as the bootstrap admin. */
-const adminCookie = (): string | undefined =>
-  GUI_PASSWORD ? `sk_auth=${signSession(BOOTSTRAP_ADMIN, Date.now(), signingSecret())}` : undefined;
+/**
+ * The Telegram bridge and the agents authenticate as the bootstrap admin.
+ *
+ * `mfa` marks the cookie as second-factor verified. The BRIDGE gets it and an
+ * agent does not, and that is not a privilege, it is what the flag means:
+ * minting it takes the signing secret, which never leaves the server, so a
+ * cookie carrying it IS the server (`isInternalClient`). An agent's
+ * `SHADOK_AUTH` is a dated token sitting in a process env, which under 2FA must
+ * read as what it is — a password-grade credential, not a second factor. Agents
+ * lose nothing: they authenticate with `x-shadok-session-key`.
+ */
+const adminCookie = (mfa = false): string | undefined =>
+  GUI_PASSWORD ? `sk_auth=${signSession(BOOTSTRAP_ADMIN, Date.now(), signingSecret(), mfa)}` : undefined;
 
 // The live Telegram bridge handle + the port we actually bound, so the
 // /telegram endpoint can tear it down and recreate it hot (no server restart).
@@ -325,7 +359,10 @@ let tgBridge: TelegramHandle = {
   status: () => ({ username: null, tokenError: null }),
 };
 let boundPort = 0;
-const tgCookie = adminCookie;
+// The bridge is in-process and reaches us over the loopback WS: it is the
+// server's own client, so its cookie says so. Without that, switching 2FA on
+// refused it at the gate and Telegram went silent.
+const tgCookie = (): string | undefined => adminCookie(true);
 
 /**
  * Start the instance's lead agent when it has no channel at all.
@@ -811,6 +848,11 @@ function cookieToken(cookieHeader: string | undefined): string | null {
   const m = /(?:^|;\s*)sk_auth=([^;]+)/.exec(cookieHeader ?? "");
   return m ? decodeURIComponent(m[1]) : null;
 }
+/** The session a request's cookie carries, verified, or null. */
+function cookieSession(req: { headers: Record<string, unknown> }): { user: string; mfa: boolean } | null {
+  const tok = cookieToken(req.headers.cookie as string | undefined);
+  return tok ? readSessionFull(tok, signingSecret(), Date.now(), SESSION_TTL_MS) : null;
+}
 /**
  * Who this request is, or null. Re-reads the account file every time, so
  * deleting an account or changing a role takes effect at once — that is what
@@ -841,15 +883,93 @@ function currentAccount(req: { headers: Record<string, unknown> }): { name: stri
   // principal that `peerName`/the `peer-scope` checks handle.
   const prow = peerRow(req);
   if (prow && peerScope(prow) === "member") return { name: prow.name, role: "member" };
-  const tok = cookieToken(req.headers.cookie as string | undefined);
-  if (!tok) return null;
-  const user = readSession(tok, signingSecret(), Date.now(), SESSION_TTL_MS);
-  if (!user) return null;
-  if (user === BOOTSTRAP_ADMIN) return { name: BOOTSTRAP_ADMIN, role: "admin" };
-  const acct = loadAccounts().find((a) => a.name === user);
+  // The server's own in-process client (the Telegram bridge) — a machine, not a
+  // person, so it is recognised HERE and stays refused by `cookieAccount`.
+  if (isInternalClient(cookieSession(req))) return { name: BOOTSTRAP_ADMIN, role: "admin" };
+  return cookieAccount(req);
+}
+
+/** Is two-factor sign-in on for this instance? Meaningless with no password. */
+function twoFactorOn(): boolean {
+  return !!GUI_PASSWORD && twoFactorForCwd(loadConfig(), process.cwd());
+}
+
+/**
+ * The PERSON behind a request: the signed-in browser session, and nothing else
+ * — not an agent's session key, not a peer. Account and two-factor management
+ * goes through this while 2FA is on, so an agent (whose key IS the bootstrap
+ * admin) cannot reset anyone or switch the second factor off.
+ *
+ * With 2FA on, a cookie must carry the second-factor flag — which kills every
+ * session issued before activation — and the bootstrap admin has no browser
+ * session at all: it is the instance password, in every agent's env, and no
+ * other admin can reset it.
+ */
+function cookieAccount(req: { headers: Record<string, unknown> }): { name: string; role: Role } | null {
+  if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
+  const sess = cookieSession(req);
+  if (!sess) return null;
+  const tfa = twoFactorOn();
+  if (tfa && !sess.mfa) return null;
+  if (sess.user === BOOTSTRAP_ADMIN) return tfa ? null : { name: BOOTSTRAP_ADMIN, role: "admin" };
+  const acct = loadAccounts().find((a) => a.name === sess.user);
   // No hash means an invitation that was never redeemed: not a login yet.
   if (!acct?.passwordHash) return null;
   return { name: acct.name, role: acct.role };
+}
+
+/** The WebAuthn relying party for this request: the hostname the browser
+ *  reached, and the page's own origin (already same-origin-checked). */
+function rpFor(req: { headers: Record<string, unknown> }): Rp | null {
+  const origin = req.headers.origin;
+  if (typeof origin !== "string") return null;
+  try {
+    const u = new URL(origin);
+    return { id: u.hostname, origin: u.origin };
+  } catch {
+    return null;
+  }
+}
+
+function sessionCookie(name: string, mfa: boolean): string {
+  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+}
+function pendingCookie(name: string): string {
+  return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}`;
+}
+const CLEAR_PENDING = "sk_pending=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+function pendingUser(req: { headers: Record<string, unknown> }): string | null {
+  const m = /(?:^|;\s*)sk_pending=([^;]+)/.exec((req.headers.cookie as string | undefined) ?? "");
+  return m ? readPending(decodeURIComponent(m[1]), signingSecret(), Date.now()) : null;
+}
+
+/** Write back one account (a passkey added / used, a code issued or burnt). */
+function updateAccount(name: string, f: (a: Account) => Account): void {
+  saveAccounts(loadAccounts().map((a) => (a.name === name ? f(a) : a)));
+}
+
+/**
+ * A FRESH passkey confirmation from the acting admin — not merely their
+ * session. Asked for the actions that would undo the second factor for
+ * someone (reset, an enrollment code for another person, switching 2FA on or
+ * off): a session can be ridden by a forged request, a biometric cannot.
+ * Answers the refusal itself and returns false.
+ */
+async function stepUpOk(req: express.Request, res: express.Response, me: { name: string }): Promise<boolean> {
+  const rp = rpFor(req);
+  const acct = loadAccounts().find((a) => a.name === me.name);
+  const challenge = takeChallenge(req.body?.challengeId, me.name, "stepup");
+  if (!rp || !acct || !challenge) {
+    res.status(403).json({ error: "confirm with your passkey first" });
+    return false;
+  }
+  const used = await verifyAuthentication(rp, challenge, req.body?.assertion, acct, Date.now());
+  if (!used) {
+    res.status(403).json({ error: "passkey confirmation failed" });
+    return false;
+  }
+  updateAccount(me.name, (a) => ({ ...a, passkeys: (a.passkeys ?? []).map((p) => (p.id === used.id ? used : p)) }));
+  return true;
 }
 
 function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
@@ -895,10 +1015,27 @@ const LOGIN_HTML = `<!doctype html><meta charset=utf8><meta name=viewport conten
 <title>shadok-ai — login</title><style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#14161a;color:#e8e8ea;font-family:system-ui}
 form{background:#1b1d22;padding:28px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5);width:min(320px,90vw)}
 h1{font-size:16px;margin:0 0 14px;color:#e0a44a}input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:7px;border:1px solid #333;background:#0d0f12;color:inherit;font-size:14px}
-button{margin-top:12px;width:100%;padding:9px;border-radius:7px;border:none;background:#e0a44a;color:#14161a;font-weight:600;cursor:pointer}.err{color:#e26;font-size:12px;margin-top:8px;min-height:14px}</style>
+button{margin-top:12px;width:100%;padding:9px;border-radius:7px;border:none;background:#e0a44a;color:#14161a;font-weight:600;cursor:pointer}.err{color:#e26;font-size:12px;margin-top:8px;min-height:14px}
+input+input{margin-top:8px}.hint{font-size:13px;color:#aab;margin:0 0 10px}.alt{display:block;margin-top:12px;font-size:12px;color:#aab}</style>
 <form id=f data-action="/login">
 <h1>◆ shadok-ai</h1><input id=u placeholder="User (blank = admin)" autocomplete=username><input id=pw type=password placeholder="Password" autofocus autocomplete=current-password><button>Enter</button><div class=err></div></form>
+<form id=pk hidden><h1>◆ second step</h1><p class=hint>Confirm with this device's passkey (fingerprint, face, or device PIN).</p><button id=pkGo type=button>Use my passkey</button><a href=# id=pkCode class=alt>New device? Use a code from another one</a><div class=err></div></form>
+<form id=en hidden><h1>◆ register this device</h1><p class=hint>Enter the code shown on a device already signed in (Users panel → Add a device), or the one an admin gave you.</p><input id=enCode placeholder="Code" autocomplete=one-time-code autocapitalize=characters><input id=enLabel placeholder="Name this device (e.g. MacBook)"><button>Register with my fingerprint / face</button><div class=err></div></form>
+<script src="/vendor/simplewebauthn.js"></script>
 <script nonce="${NONCE_PLACEHOLDER}">
+const $ = (id) => document.getElementById(id);
+const post = (url, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) })
+  .then(async (r) => ({ ok: r.ok, j: await r.json().catch(() => ({})) }));
+const show = (id) => { for (const f of ["f", "pk", "en"]) $(f).hidden = f !== id; };
+const fail = (form, msg) => { $(form).querySelector(".err").textContent = msg; };
+// No WebAuthn outside a secure context (https or localhost): say so rather
+// than throw an opaque TypeError at the second step.
+const webauthn = () => window.isSecureContext && window.SimpleWebAuthnBrowser && window.PublicKeyCredential;
+function nextStep(j) {
+  if (j.next === "passkey") return show("pk");
+  if (j.next === "enroll") { show("en"); if (j.code) $("enCode").value = j.code; return; }
+  location.assign("/" + location.hash);
+}
 document.getElementById("f").addEventListener("submit", (e) => {
   e.preventDefault();
   const f = e.currentTarget;
@@ -908,15 +1045,35 @@ document.getElementById("f").addEventListener("submit", (e) => {
   const body = u
     ? { user: u.value, password: document.getElementById("pw").value }
     : { password: document.getElementById("pw").value };
-  fetch(f.dataset.action, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  }).then(async (r) => {
-    if (r.ok) return location.assign("/");
-    const j = await r.json().catch(() => ({}));
-    document.querySelector(".err").textContent = j.error || "Wrong username or password";
+  post(f.dataset.action, body).then(({ ok, j }) => {
+    if (ok) return nextStep(j);
+    fail("f", j.error || "Wrong username or password");
   });
+});
+$("pkGo").addEventListener("click", async () => {
+  if (!webauthn()) return fail("pk", "Passkeys need https:// (or localhost) and a recent browser.");
+  const o = await post("/login/passkey/options");
+  if (!o.ok) return fail("pk", o.j.error || "Start again");
+  let response;
+  try { response = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: o.j.options }); }
+  catch (err) { return fail("pk", "Cancelled or not available: " + (err && err.message || err)); }
+  const r = await post("/login/passkey", { challengeId: o.j.challengeId, response });
+  if (r.ok) return location.assign("/" + location.hash);
+  fail("pk", r.j.error || "Not accepted");
+});
+$("pkCode").addEventListener("click", (e) => { e.preventDefault(); show("en"); });
+$("en").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!webauthn()) return fail("en", "Passkeys need https:// (or localhost) and a recent browser.");
+  const code = $("enCode").value;
+  const o = await post("/login/enroll/options", { code });
+  if (!o.ok) return fail("en", o.j.error || "Start again");
+  let response;
+  try { response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: o.j.options }); }
+  catch (err) { return fail("en", "Cancelled or not available: " + (err && err.message || err)); }
+  const r = await post("/login/enroll", { challengeId: o.j.challengeId, response, code, label: $("enLabel").value });
+  if (r.ok) return location.assign("/" + location.hash);
+  fail("en", r.j.error || "Not registered");
 });
 </script>`;
 
@@ -1030,6 +1187,17 @@ app.use((req, res, next) => {
   res.status(403).json({ error: "cross-origin request refused" });
 });
 
+// The WebAuthn browser helper. BEFORE the gate: the login page needs it for the
+// passkey step, i.e. before any session exists. A public library, nothing more.
+// Resolved from the package's main entry: its `exports` hide `package.json`.
+const webauthnUmd = path.join(
+  path.dirname(path.dirname(createRequire(import.meta.url).resolve("@simplewebauthn/browser"))),
+  "dist",
+  "bundle",
+  "index.umd.min.js",
+);
+app.get("/vendor/simplewebauthn.js", (_req, res) => res.sendFile(webauthnUmd, { dotfiles: "allow" }));
+
 // Login endpoint (always reachable) — sets an HttpOnly cookie naming the user.
 app.post("/login", (req, res) => {
   if (!GUI_PASSWORD) return res.json({ ok: true });
@@ -1046,11 +1214,76 @@ app.post("/login", (req, res) => {
         })();
   if (!ok) return res.status(401).json({ error: "wrong username or password" });
   const name = user || BOOTSTRAP_ADMIN;
-  res.setHeader(
-    "Set-Cookie",
-    `sk_auth=${signSession(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
-  );
+  if (twoFactorOn()) {
+    // Only AFTER the password checked out, so this says nothing to a guesser.
+    if (name === BOOTSTRAP_ADMIN)
+      return res.status(403).json({ error: "two-factor sign-in is on — sign in with your own named account" });
+    // The password is half: a short-lived pending cookie carries it to the
+    // passkey step, and no session exists until that step succeeds.
+    const next = loginNext(loadAccounts().find((a) => a.name === name), true);
+    res.setHeader("Set-Cookie", pendingCookie(name));
+    return res.json({ ok: true, user: name, next });
+  }
+  res.setHeader("Set-Cookie", sessionCookie(name, false));
   return res.json({ ok: true, user: name });
+});
+
+// ── The second step of a sign-in (before the gate: no session exists yet) ────
+
+app.post("/login/passkey/options", async (req, res) => {
+  const name = pendingUser(req);
+  const rp = rpFor(req);
+  const acct = name ? loadAccounts().find((a) => a.name === name) : undefined;
+  if (!name || !rp || !acct?.passkeys?.length) return res.status(401).json({ error: "sign in with your password again" });
+  const options = await authenticationOptions(rp, acct);
+  res.json({ options, challengeId: putChallenge(options.challenge, name, "login") });
+});
+
+app.post("/login/passkey", async (req, res) => {
+  const name = pendingUser(req);
+  const rp = rpFor(req);
+  const acct = name ? loadAccounts().find((a) => a.name === name) : undefined;
+  const challenge = name ? takeChallenge(req.body?.challengeId, name, "login") : null;
+  if (!name || !rp || !acct || !challenge) return res.status(401).json({ error: "sign in with your password again" });
+  const used = await verifyAuthentication(rp, challenge, req.body?.response, acct, Date.now());
+  if (!used) return res.status(401).json({ error: "the passkey was not accepted" });
+  updateAccount(name, (a) => ({ ...a, passkeys: (a.passkeys ?? []).map((p) => (p.id === used.id ? used : p)) }));
+  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.json({ ok: true, user: name });
+});
+
+// Registering a passkey during sign-in: the password is not enough — it needs
+// an enrollment code minted by a verified device (yours, or an admin's). That
+// is the rule the whole feature stands on (src/twofactor.ts).
+app.post("/login/enroll/options", async (req, res) => {
+  const name = pendingUser(req);
+  const rp = rpFor(req);
+  const acct = name ? loadAccounts().find((a) => a.name === name) : undefined;
+  if (!name || !rp || !acct) return res.status(401).json({ error: "sign in with your password again" });
+  const v = enrollCodeVerdict(acct, req.body?.code, Date.now());
+  if (!v.ok) return res.status(403).json({ error: v.error });
+  const options = await registrationOptions(rp, acct);
+  res.json({ options, challengeId: putChallenge(options.challenge, name, "register") });
+});
+
+app.post("/login/enroll", async (req, res) => {
+  const name = pendingUser(req);
+  const rp = rpFor(req);
+  const acct = name ? loadAccounts().find((a) => a.name === name) : undefined;
+  const challenge = name ? takeChallenge(req.body?.challengeId, name, "register") : null;
+  if (!name || !rp || !acct || !challenge) return res.status(401).json({ error: "sign in with your password again" });
+  // Checked AGAIN here: the code is consumed only by a registration that lands.
+  const v = enrollCodeVerdict(acct, req.body?.code, Date.now());
+  if (!v.ok) return res.status(403).json({ error: v.error });
+  const pk = await verifyRegistration(rp, challenge, req.body?.response, req.body?.label, Date.now());
+  if (!pk) return res.status(400).json({ error: "the passkey could not be registered" });
+  updateAccount(name, (a) => {
+    const { enroll: _used, ...rest } = a;
+    return { ...rest, passkeys: [...(a.passkeys ?? []), pk] };
+  });
+  console.log(`2fa: ${name} registered a passkey (${pk.label}) with an enrollment code from ${acct.enroll?.by}`);
+  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.json({ ok: true, user: name });
 });
 
 // Redeeming an invitation happens WITHOUT a session: the whole point is that
@@ -1073,14 +1306,30 @@ app.post("/invite/:token", (req, res) => {
   if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
   // Redeeming DROPS the invite and sets the hash: the link is single-use by
   // construction, not by a flag someone could forget to check.
+  // With two-factor on, the invitation ALSO authorises registering a passkey:
+  // the admin who issued it vouched for this person, which is exactly what an
+  // enrollment code says. Handed straight to the page, which runs the step.
+  const tfa = twoFactorOn();
+  const enroll = tfa ? newEnrollCode(Date.now(), "invitation") : undefined;
   saveAccounts(
     list.map((a) =>
       a.name === acct!.name
-        ? { name: a.name, role: a.role, createdAt: a.createdAt, passwordHash: hashPassword(password) }
+        ? {
+            name: a.name,
+            role: a.role,
+            createdAt: a.createdAt,
+            passwordHash: hashPassword(password),
+            ...(a.passkeys?.length ? { passkeys: a.passkeys } : {}),
+            ...(enroll ? { enroll } : {}),
+          }
         : a,
     ),
   );
   console.log(`users: ${acct!.name} redeemed their invitation`);
+  if (tfa) {
+    res.setHeader("Set-Cookie", pendingCookie(acct!.name));
+    return res.json({ ok: true, user: acct!.name, next: "enroll", code: enroll!.code });
+  }
   // Redeeming SIGNS YOU IN. Holding the link and choosing the password is an
   // authentication, and without this the browser keeps whatever session it
   // already had — an admin who invites someone from their own browser lands
@@ -1096,7 +1345,7 @@ app.post("/invite/:token", (req, res) => {
 // session must work even when that session is already invalid, otherwise a
 // stale cookie would leave you stuck on a 401 with no way to clear it.
 app.post("/logout", (_req, res) => {
-  res.setHeader("Set-Cookie", "sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0");
+  res.setHeader("Set-Cookie", ["sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0", CLEAR_PENDING]);
   res.json({ ok: true });
 });
 
@@ -1618,7 +1867,9 @@ function accountAdmin(
     res.status(403).json({ error: "same-origin browser only" });
     return null;
   }
-  const me = currentAccount(req);
+  // With two-factor on, only a PERSON manages accounts: an agent's session key
+  // is the bootstrap admin, and must not be able to reset anyone.
+  const me = twoFactorOn() ? cookieAccount(req) : currentAccount(req);
   if (me?.role !== "admin") {
     res.status(403).json({ error: "only an admin can manage accounts" });
     return null;
@@ -1635,6 +1886,7 @@ app.get("/users", (req, res) => {
       name: a.name,
       role: a.role,
       pending: !a.passwordHash,
+      passkeys: a.passkeys?.length ?? 0,
       expiresAt: a.invite?.expiresAt ?? null,
     })),
   );
@@ -1673,6 +1925,8 @@ app.delete("/users", (req, res) => {
     exists: list.some((a) => a.name === name),
   });
   if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
+  const keep = keepsTwoAdminsVerdict(twoFactorOn(), list.filter((a) => a.name !== name));
+  if (!keep.ok) return res.status(400).json({ error: keep.error });
   saveAccounts(list.filter((a) => a.name !== name));
   console.log(`users: ${me!.name} removed ${name}`);
   res.json({ ok: true });
@@ -1691,8 +1945,171 @@ app.post("/users/role", (req, res) => {
     exists: list.some((a) => a.name === name),
   });
   if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
-  saveAccounts(list.map((a) => (a.name === name ? { ...a, role } : a)));
+  const after = list.map((a) => (a.name === name ? { ...a, role } : a));
+  const keep = keepsTwoAdminsVerdict(twoFactorOn(), after);
+  if (!keep.ok) return res.status(400).json({ error: keep.error });
+  saveAccounts(after);
   res.json({ ok: true });
+});
+
+// ── Two-factor management (behind the gate) ──────────────────────────────────
+// Every route here is for a PERSON (`cookieAccount`), never an agent's key or a
+// peer, and every write is browser-only — same CSRF rule as the account routes.
+
+/** The signed-in person, or answers 403. Writes require a same-origin browser. */
+function tfaPerson(req: express.Request, res: express.Response, write: boolean): { name: string; role: Role } | null {
+  if (write && !requestFromBrowser(req)) {
+    res.status(403).json({ error: "same-origin browser only" });
+    return null;
+  }
+  const me = cookieAccount(req);
+  if (!me) {
+    res.status(403).json({ error: "sign in with your own account" });
+    return null;
+  }
+  return me;
+}
+
+app.get("/2fa", (req, res) => {
+  const me = tfaPerson(req, res, false);
+  if (!me) return;
+  const accounts = loadAccounts();
+  const acct = accounts.find((a) => a.name === me.name);
+  const verdict = twoFactorEnableVerdict({ passwordSet: !!GUI_PASSWORD, actor: me, accounts });
+  res.json({
+    enabled: twoFactorOn(),
+    me: me.name,
+    named: me.name !== BOOTSTRAP_ADMIN,
+    passkeys: (acct?.passkeys ?? []).map(publicPasskey),
+    canEnable: verdict.ok ? null : verdict.error,
+    adminsReady: admins2fa(accounts).length,
+  });
+});
+
+/** A challenge for a fresh passkey confirmation (see `stepUpOk`). */
+app.post("/2fa/confirm/options", async (req, res) => {
+  const me = tfaPerson(req, res, true);
+  if (!me) return;
+  const rp = rpFor(req);
+  const acct = loadAccounts().find((a) => a.name === me.name);
+  if (!rp || !acct?.passkeys?.length) return res.status(400).json({ error: "you have no passkey on this account yet" });
+  const options = await authenticationOptions(rp, acct);
+  res.json({ options, challengeId: putChallenge(options.challenge, me.name, "stepup") });
+});
+
+/** Register a passkey on THIS device for the signed-in person. Allowed with 2FA
+ *  off (setting up before switching on) and with a verified session. */
+app.post("/2fa/register/options", async (req, res) => {
+  const me = tfaPerson(req, res, true);
+  if (!me) return;
+  if (me.name === BOOTSTRAP_ADMIN) return res.status(400).json({ error: "the instance password cannot hold a passkey — use your own named account" });
+  const rp = rpFor(req);
+  const acct = loadAccounts().find((a) => a.name === me.name);
+  if (!rp || !acct) return res.status(400).json({ error: "no such account" });
+  const options = await registrationOptions(rp, acct);
+  res.json({ options, challengeId: putChallenge(options.challenge, me.name, "register") });
+});
+
+app.post("/2fa/register", async (req, res) => {
+  const me = tfaPerson(req, res, true);
+  if (!me) return;
+  const rp = rpFor(req);
+  const challenge = takeChallenge(req.body?.challengeId, me.name, "register");
+  if (!rp || !challenge) return res.status(400).json({ error: "start again" });
+  const pk = await verifyRegistration(rp, challenge, req.body?.response, req.body?.label, Date.now());
+  if (!pk) return res.status(400).json({ error: "the passkey could not be registered" });
+  updateAccount(me.name, (a) => ({ ...a, passkeys: [...(a.passkeys ?? []), pk] }));
+  console.log(`2fa: ${me.name} registered a passkey (${pk.label})`);
+  res.json({ ok: true, passkey: publicPasskey(pk) });
+});
+
+/** Remove one of your passkeys — or, as an admin with a fresh confirmation,
+ *  someone else's (a lost device). */
+app.post("/2fa/passkey/delete", async (req, res) => {
+  const me = tfaPerson(req, res, true);
+  if (!me) return;
+  const owner = String(req.body?.user ?? me.name);
+  const id = String(req.body?.id ?? "");
+  if (owner !== me.name) {
+    if (me.role !== "admin") return res.status(403).json({ error: "only an admin can remove someone else's passkey" });
+    if (!(await stepUpOk(req, res, me))) return;
+  }
+  const list = loadAccounts();
+  const after = list.map((a) => (a.name === owner ? { ...a, passkeys: (a.passkeys ?? []).filter((p) => p.id !== id) } : a));
+  const keep = keepsTwoAdminsVerdict(twoFactorOn(), after);
+  if (!keep.ok) return res.status(400).json({ error: keep.error });
+  if (twoFactorOn() && owner === me.name && !after.find((a) => a.name === owner)?.passkeys?.length)
+    return res.status(400).json({ error: "that is your last passkey — with two-factor on you could no longer sign in" });
+  saveAccounts(after);
+  console.log(`2fa: ${me.name} removed a passkey of ${owner}`);
+  res.json({ ok: true });
+});
+
+/**
+ * An enrollment code — what lets ANOTHER device register a passkey while 2FA is
+ * on. For yourself: your verified session is enough (you are adding your own
+ * laptop from your phone). For someone else: an admin, with a fresh passkey
+ * confirmation.
+ */
+app.post("/2fa/enroll-code", async (req, res) => {
+  const me = tfaPerson(req, res, true);
+  if (!me) return;
+  const target = String(req.body?.user ?? me.name);
+  if (target === BOOTSTRAP_ADMIN) return res.status(400).json({ error: "the instance password cannot hold a passkey" });
+  if (target !== me.name) {
+    if (me.role !== "admin") return res.status(403).json({ error: "only an admin can issue a code for someone else" });
+    if (!(await stepUpOk(req, res, me))) return;
+  } else if (!loadAccounts().find((a) => a.name === me.name)?.passkeys?.length) {
+    return res.status(400).json({ error: "register a passkey on this device first" });
+  }
+  if (!loadAccounts().some((a) => a.name === target)) return res.status(400).json({ error: `no such account: ${target}` });
+  const enroll = newEnrollCode(Date.now(), me.name);
+  updateAccount(target, (a) => ({ ...a, enroll }));
+  console.log(`2fa: ${me.name} issued an enrollment code for ${target}`);
+  res.json({ ok: true, user: target, code: enroll.code, expiresAt: enroll.expiresAt });
+});
+
+/**
+ * Lost password or lost device: ANOTHER admin resets the person. Their password
+ * and every passkey go; they get a fresh invitation link, which also authorises
+ * registering a new passkey. Needs a fresh passkey confirmation from the admin.
+ */
+app.post("/2fa/reset", async (req, res) => {
+  const me = tfaPerson(req, res, true);
+  if (!me) return;
+  const target = String(req.body?.user ?? "").trim();
+  const list = loadAccounts();
+  const v = resetVerdict({ actor: me, target, accounts: list });
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  if (!(await stepUpOk(req, res, me))) return;
+  const invite = newInvite(Date.now());
+  saveAccounts(
+    loadAccounts().map((a) =>
+      a.name === target ? { name: a.name, role: a.role, createdAt: a.createdAt, invite } : a,
+    ),
+  );
+  console.log(`2fa: ${me.name} reset the access of ${target}`);
+  res.json({ ok: true, user: target, inviteUrl: `/invite/${invite.token}` });
+});
+
+/** Switch two-factor on or off — an admin, with a fresh passkey confirmation. */
+app.post("/2fa/enabled", async (req, res) => {
+  const me = tfaPerson(req, res, true);
+  if (!me) return;
+  const on = req.body?.enabled === true;
+  if (on) {
+    const v = twoFactorEnableVerdict({ passwordSet: !!GUI_PASSWORD, actor: me, accounts: loadAccounts() });
+    if (!v.ok) return res.status(400).json({ error: v.error });
+  } else if (me.role !== "admin") {
+    return res.status(403).json({ error: "only an admin can change two-factor sign-in" });
+  }
+  if (!(await stepUpOk(req, res, me))) return;
+  setTwoFactorForCwd(loadConfig(), process.cwd(), on);
+  console.log(`2fa: ${me.name} turned two-factor sign-in ${on ? "ON" : "off"}`);
+  // Re-issue the actor's cookie with the second-factor flag: they just proved
+  // it, and the switch would otherwise sign them out of their own tab.
+  res.setHeader("Set-Cookie", sessionCookie(me.name, true));
+  res.json({ ok: true, enabled: on });
 });
 
 // ── Peers: other instances/harnesses allowed to reach THIS one's agents ──────

@@ -1806,6 +1806,17 @@
   #usersList button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; }
   #usersList .u-actions { display: flex; gap: 6px; flex: none; }
   #usersAdd { display: flex; gap: 8px; }
+  /* Two-factor: one block on top of the panel, for everyone signed in. */
+  #tfaBox { border: 1px solid rgba(255,255,255,.12); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+  #tfaBox .tfa-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  #tfaBox .tfa-why { font-size: 12px; opacity: .7; margin: 6px 0 0; }
+  #tfaBox ul { list-style: none; padding: 0; margin: 8px 0; }
+  #tfaBox li { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; padding: 3px 0; }
+  #tfaBox button { background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 3px 9px; }
+  #tfaBox .tfa-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  #tfaCode { margin-top: 10px; border: 1px solid var(--amber); border-radius: 8px; padding: 8px 10px; background: rgba(224,164,74,.06); font-size: 12px; }
+  #tfaCode b { font-family: ui-monospace, monospace; font-size: 18px; letter-spacing: .12em; display: block; margin-top: 4px; user-select: all; }
+  #tfaErr { color: #e26; font-size: 12px; min-height: 0; margin-top: 6px; }
   #usersAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; }
   #usersAdd select, #usersAdd button { padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
   /* L'invitation est un OBJET à transmettre, pas une phrase : un encadré, une
@@ -2187,6 +2198,18 @@
       <strong>Users</strong>
       <button id="usersClose" title="Close">✕</button>
     </div>
+    <div id="tfaBox">
+      <div class="tfa-head"><span>Two-factor sign-in: <b id="tfaState">…</b></span><button type="button" id="tfaToggle" hidden></button></div>
+      <p class="tfa-why" id="tfaWhy" hidden></p>
+      <ul id="tfaKeys"></ul>
+      <div class="tfa-row">
+        <button type="button" id="tfaAdd">Add a passkey on this device</button>
+        <button type="button" id="tfaOther">Add another device (code)</button>
+      </div>
+      <div id="tfaCode" hidden></div>
+      <div id="tfaErr"></div>
+    </div>
+    <div id="usersAdmin">
     <p class="sec-note">Accounts for <b>this instance</b> — another instance on this machine has its own. A member does everything you do; only an admin manages accounts. The instance password is the <code>admin</code> account.</p>
     <ul id="usersList"></ul>
     <form id="usersAdd">
@@ -2216,6 +2239,7 @@
     <div id="peerInviteBox" hidden>
       <div class="ib-head"><span id="peerInviteWho"></span><button type="button" id="peerInviteCopy">Copy</button></div>
       <div class="ib-prompt" id="peerInvitePrompt"></div>
+    </div>
     </div>
   </div>
 </div>
@@ -2471,6 +2495,7 @@
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
 <script src="/vendor/marked.js"></script>
+<script src="/vendor/simplewebauthn.js"></script>
 <script src="/vendor/purify.js"></script>
 <!-- The inline blocks carry the CSP nonce, injected by the server on every
      request (src/csp.ts). A block without it does not run — which is what makes
@@ -8225,7 +8250,9 @@
   async function loadMe() {
     try { me = await (await fetch("/me")).json(); } catch { me = null; }
     const b = $("usersBtn");
-    if (b) b.hidden = me?.role !== "admin";
+    // Every signed-in PERSON opens it — a member manages their own passkeys
+    // there; only an admin sees the accounts below.
+    if (b) b.hidden = !(me?.role === "admin" || me?.name);
     // No password on this instance means no session at all: nothing to name and
     // nothing to leave. Showing "Sign out" there would promise a door that does
     // not exist.
@@ -8270,7 +8297,7 @@
       who.textContent = u.name;
       const sub = document.createElement("div");
       sub.className = "pmeta";
-      sub.textContent = u.role + (u.pending ? " · invitation pending" : "");
+      sub.textContent = u.role + (u.pending ? " · invitation pending" : "") + (u.passkeys ? " · " + u.passkeys + " passkey" + (u.passkeys > 1 ? "s" : "") : "");
       meta.append(who, sub);
       const btns = document.createElement("div");
       const flip = document.createElement("button");
@@ -8290,6 +8317,27 @@
         renderUsers();
       });
       btns.className = "u-actions";
+      // Lost password or lost device: another admin resets, or hands a code
+      // for a new device. Both need THIS admin's passkey, right now.
+      const reset = document.createElement("button");
+      reset.textContent = "reset access";
+      reset.title = "Lost password or device: wipe their password and passkeys, and give them a new invitation link";
+      reset.addEventListener("click", async () => {
+        if (!confirm("Reset " + u.name + "'s access?\n\nTheir password and every passkey are removed. You will get a new invitation link to hand them.")) return;
+        const r = await tfaPost("/2fa/reset", { user: u.name }, true);
+        if (r) showInvite(u.name, location.origin + r.inviteUrl);
+        renderUsers();
+      });
+      const code = document.createElement("button");
+      code.textContent = "device code";
+      code.title = "A 10-minute code that lets them register a passkey on a device";
+      code.addEventListener("click", async () => {
+        const r = await tfaPost("/2fa/enroll-code", { user: u.name }, true);
+        if (r) showTfaCode(r, "for " + u.name);
+      });
+      // Never on your own row: resetting yourself is refused by design.
+      if (!u.pending) btns.append(code);
+      if (!u.pending && u.name !== me?.name) btns.append(reset);
       btns.append(flip, del);
       li.append(meta, btns);
       ul.appendChild(li);
@@ -8324,11 +8372,120 @@
     }
   });
 
+  // ── Two-factor (passkeys) ────────────────────────────────────────────────
+  // The ceremony runs in the browser (@simplewebauthn/browser, served by us);
+  // every rule is on the server (src/twofactor.ts). WebAuthn exists only in a
+  // secure context — https or localhost — so say that instead of throwing.
+  function tfaAvailable() {
+    return window.isSecureContext && window.SimpleWebAuthnBrowser && window.PublicKeyCredential;
+  }
+  function tfaError(msg) { $("tfaErr").textContent = msg || ""; }
+  async function postJson(url, body) {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    return { ok: r.ok, j: await r.json().catch(() => ({})) };
+  }
+  /** A fresh passkey confirmation, for the actions that could undo the second
+   *  factor for someone. Returns the fields the server expects, or null. */
+  async function confirmPasskey() {
+    if (!tfaAvailable()) { tfaError("Passkeys need https:// (or localhost) and a recent browser."); return null; }
+    const o = await postJson("/2fa/confirm/options");
+    if (!o.ok) { tfaError(o.j.error); return null; }
+    try {
+      const assertion = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: o.j.options });
+      return { challengeId: o.j.challengeId, assertion };
+    } catch (err) { tfaError("Passkey cancelled: " + (err?.message || err)); return null; }
+  }
+  /** POST, with a passkey confirmation first when `stepUp`. Shows the refusal. */
+  async function tfaPost(url, body, stepUp) {
+    tfaError("");
+    const extra = stepUp ? await confirmPasskey() : {};
+    if (!extra) return null;
+    const r = await postJson(url, { ...body, ...extra });
+    if (!r.ok) { tfaError(r.j.error || "refused"); return null; }
+    return r.j;
+  }
+  function showTfaCode(r, who) {
+    const box = $("tfaCode");
+    box.textContent = "";
+    const mins = Math.max(1, Math.round((r.expiresAt - Date.now()) / 60000));
+    box.append("Device code " + who + " — valid " + mins + " min, single use. On the other device: sign in with the password, then “use a code”.");
+    const b = document.createElement("b");
+    b.textContent = r.code.slice(0, 4) + "-" + r.code.slice(4);
+    box.append(b);
+    box.hidden = false;
+  }
+  async function renderTfa() {
+    tfaError("");
+    $("tfaCode").hidden = true;
+    let st = null;
+    try { const r = await fetch("/2fa"); if (r.ok) st = await r.json(); } catch {}
+    $("tfaBox").hidden = !st;
+    if (!st) return;
+    $("tfaState").textContent = st.enabled ? "on" : "off";
+    const admin = me?.role === "admin";
+    const t = $("tfaToggle");
+    t.hidden = !admin || !st.named;
+    t.textContent = st.enabled ? "Turn off" : "Turn on";
+    t.disabled = !st.enabled && !!st.canEnable;
+    $("tfaWhy").hidden = st.enabled || !st.canEnable || !admin;
+    $("tfaWhy").textContent = st.canEnable || "";
+    const ul = $("tfaKeys");
+    ul.innerHTML = "";
+    if (!st.named) {
+      ul.innerHTML = '<li><span style="opacity:.6">the instance password cannot hold a passkey — sign in with your own named account</span></li>';
+    } else if (!st.passkeys.length) {
+      ul.innerHTML = '<li><span style="opacity:.6">no passkey yet</span></li>';
+    }
+    for (const k of st.passkeys) {
+      const li = document.createElement("li");
+      const label = document.createElement("span");
+      label.textContent = "🔑 " + k.label + " · added " + new Date(k.createdAt).toLocaleDateString() + (k.lastUsedAt ? " · used " + new Date(k.lastUsedAt).toLocaleDateString() : "");
+      const del = document.createElement("button");
+      del.textContent = "remove";
+      del.addEventListener("click", async () => {
+        if (!confirm("Remove the passkey “" + k.label + "”?")) return;
+        if (await tfaPost("/2fa/passkey/delete", { id: k.id }, false)) renderTfa();
+      });
+      li.append(label, del);
+      ul.appendChild(li);
+    }
+    $("tfaAdd").hidden = !st.named;
+    $("tfaOther").hidden = !st.named || !st.passkeys.length;
+  }
+  $("tfaAdd").addEventListener("click", async () => {
+    if (!tfaAvailable()) return tfaError("Passkeys need https:// (or localhost) and a recent browser.");
+    const label = prompt("Name this device (e.g. MacBook, iPhone):", "");
+    if (label === null) return;
+    const o = await postJson("/2fa/register/options");
+    if (!o.ok) return tfaError(o.j.error);
+    let response;
+    try { response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: o.j.options }); }
+    catch (err) { return tfaError("Cancelled or not available: " + (err?.message || err)); }
+    const r = await postJson("/2fa/register", { challengeId: o.j.challengeId, response, label });
+    if (!r.ok) return tfaError(r.j.error);
+    renderTfa();
+    if (me?.role === "admin") renderUsers();
+  });
+  $("tfaOther").addEventListener("click", async () => {
+    const r = await tfaPost("/2fa/enroll-code", {}, false);
+    if (r) showTfaCode(r, "for you");
+  });
+  $("tfaToggle").addEventListener("click", async () => {
+    const st = $("tfaState").textContent === "on";
+    if (st && !confirm("Turn two-factor sign-in OFF? A password alone will open the cockpit again.")) return;
+    if (await tfaPost("/2fa/enabled", { enabled: !st }, true)) renderTfa();
+  });
+
   $("usersBtn").addEventListener("click", async () => {
     $("inviteBox").hidden = true;
     $("peerInviteBox").hidden = true;
-    await renderUsers();
-    await renderPeers();
+    const admin = me?.role === "admin";
+    $("usersAdmin").hidden = !admin;
+    await renderTfa();
+    if (admin) {
+      await renderUsers();
+      await renderPeers();
+    }
     $("usersOverlay").hidden = false;
   });
   $("usersClose").addEventListener("click", () => { $("usersOverlay").hidden = true; });

@@ -22,6 +22,24 @@ export interface Account {
   createdAt: number;
   /** Present only while the invitation is outstanding. */
   invite?: { token: string; expiresAt: number };
+  /** Registered passkeys — the second factor (see `src/twofactor.ts`). */
+  passkeys?: Passkey[];
+  /** An outstanding enrollment code: what lets a device register a passkey
+   *  while two-factor is on. Single use, short-lived. */
+  enroll?: { code: string; expiresAt: number; by: string };
+}
+
+export interface Passkey {
+  /** Credential id, base64url. */
+  id: string;
+  /** COSE public key, base64url. */
+  publicKey: string;
+  counter: number;
+  transports?: string[];
+  /** Named by the user at enrollment ("iPhone", "MacBook"). */
+  label: string;
+  createdAt: number;
+  lastUsedAt?: number;
 }
 
 /** The account that lives in SHADOK_GUI_PASSWORD, never in the file. */
@@ -113,36 +131,51 @@ export function sessionSecret(): Buffer {
   return secret;
 }
 
-/** `<user base64url>.<issuedAt>.<hmac>` — the name is encoded so a dot in it
- *  cannot shift the fields. The ROLE is deliberately absent: it is re-read from
- *  the account file at use time, so a demotion takes effect immediately instead
- *  of riding in a stale cookie. */
-export function signSession(user: string, issuedAt: number, secret: Buffer): string {
+/** `<user base64url>.<issuedAt>.<mfa>.<hmac>` — the name is encoded so a dot in
+ *  it cannot shift the fields. The ROLE is deliberately absent: it is re-read
+ *  from the account file at use time, so a demotion takes effect immediately
+ *  instead of riding in a stale cookie. `mfa` says the second factor was
+ *  presented when the cookie was issued: once two-factor is switched on, a
+ *  cookie without it is refused, which kills every session issued before. */
+export function signSession(user: string, issuedAt: number, secret: Buffer, mfa = false): string {
   const u = Buffer.from(user, "utf8").toString("base64url");
-  const body = `${u}.${issuedAt}`;
+  const body = `${u}.${issuedAt}.${mfa ? 1 : 0}`;
   return `${body}.${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
-export function readSession(
+/**
+ * The user and second-factor flag a session cookie carries, or null. Reads the
+ * pre-2FA three-field shape too — as `mfa: false`, which is what it was.
+ */
+export function readSessionFull(
   token: string,
   secret: Buffer,
   now: number,
   maxAgeMs: number,
-): string | null {
+): { user: string; mfa: boolean } | null {
   const parts = String(token ?? "").split(".");
-  if (parts.length !== 3) return null;
-  const [u, at, mac] = parts;
+  if (parts.length !== 3 && parts.length !== 4) return null;
+  const mac = parts[parts.length - 1];
+  const body = parts.slice(0, -1).join(".");
+  const [u, at] = parts;
+  const mfa = parts.length === 4 ? parts[2] : "0";
+  if (mfa !== "0" && mfa !== "1") return null;
   const issuedAt = Number(at);
   if (!at || !Number.isFinite(issuedAt)) return null;
-  const want = createHmac("sha256", secret).update(`${u}.${at}`).digest("hex");
+  const want = createHmac("sha256", secret).update(body).digest("hex");
   if (mac.length !== want.length) return null;
   if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
   if (now - issuedAt > maxAgeMs) return null;
   try {
-    return Buffer.from(u, "base64url").toString("utf8") || null;
+    const user = Buffer.from(u, "base64url").toString("utf8");
+    return user ? { user, mfa: mfa === "1" } : null;
   } catch {
     return null;
   }
+}
+
+export function readSession(token: string, secret: Buffer, now: number, maxAgeMs: number): string | null {
+  return readSessionFull(token, secret, now, maxAgeMs)?.user ?? null;
 }
 
 /** A week: long enough to hand the link over by another channel, short enough

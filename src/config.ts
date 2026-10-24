@@ -71,6 +71,13 @@ export interface Config {
    * this instance and survives a reload.
    */
   cockpitTheme?: Record<string, string>;
+  /**
+   * Per launch-directory two-factor sign-in (a passkey after the password),
+   * keyed by absolute cwd. Absent = off. Turned on from the Users panel, under
+   * the rules of `twoFactorEnableVerdict`; removing the key by hand IS the
+   * break-glass when every admin has lost their device (README).
+   */
+  twoFactor?: Record<string, true>;
 }
 
 export const SHADOK_DIR = path.join(os.homedir(), ".shadok-ai");
@@ -148,6 +155,18 @@ export function setThemeForCwd(cfg: Config, cwd: string, theme: string): void {
   cfg.cockpitTheme ??= {};
   if (t && t !== "amber" && (COCKPIT_THEMES as readonly string[]).includes(t)) cfg.cockpitTheme[cwd] = t;
   else delete cfg.cockpitTheme[cwd];
+  saveConfig(cfg);
+}
+
+/** Is two-factor sign-in on for the instance launched in `cwd`? */
+export function twoFactorForCwd(cfg: Config, cwd: string): boolean {
+  return cfg.twoFactor?.[cwd] === true;
+}
+
+export function setTwoFactorForCwd(cfg: Config, cwd: string, on: boolean): void {
+  cfg.twoFactor ??= {};
+  if (on) cfg.twoFactor[cwd] = true;
+  else delete cfg.twoFactor[cwd];
   saveConfig(cfg);
 }
 

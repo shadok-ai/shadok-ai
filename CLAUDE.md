@@ -136,6 +136,7 @@ both are silent in the DOM.
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600; deliberately deleted starter roles are remembered in `profiles-declined.json` — the seed installs the shipped roles a vault is MISSING, including ones a later release added, so it must not resurrect what you removed): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow) + secrets + model, applied at spawn via `profileArgs`. **A shipped role stores NO prompt until the user edits it** — `effectiveProfile` resolves it from the build at spawn, so it cannot go stale; `promptOrigin` reports `tracked` / `edited` / `outdated` (their fork, and the build has moved since — `promptBase` records what they forked from) / `custom`. `adoptTracking` + `migrateToTracking` drop a stored copy that merely repeats the build, which is how pre-tracking instances catch up. Restoring DROPS the stored prompt rather than copying today's text, or the fresh snapshot would start going stale immediately. Stored on the channel (`profile`) → re-applied on resume/restart. SOFT (same OS user, not a sandbox). `COCKPIT_DENY` is a cockpit POLICY rather than a role guardrail — `"Artifact"` is denied for **every** agent, profile or not. It lives in `profileArgs` and not in the shipped roles for two reasons: `Shadok-dev` carries no deny list and a bare spawn carries no profile, so a per-role rule would miss exactly the common cases; and `profileBadges` derives a role's access badge from its deny list, so putting it there would label a full-access role restricted over something unrelated to files or git. An artifact is a page on claude.ai when the person asked for a file. Verified WITH A CONTROL on real agents (a settings-validator probe proved nothing — a bogus tool name warns no differently): deny active → the agent reports the tool ABSENT, `SHADOK_ALLOW_ARTIFACTS=1` → PRESENT. It does not reproduce under `claude -p`, which never offers the tool at all (invariant 29's trap, again). A shipped role **earns its place on guardrails, secrets or method — never on topic** (two roles differing only in subject matter are one role with two briefs), so the catalogue is really a set of guardrail SHAPES: no `deny` at all (`Shadok-dev`), `READONLY_DENY` (git blocked, files open — the roles whose deliverable IS a file), `SOURCE_WRITE_DENY` (the mirror image: the source blocked, git open, so `Shadok-QA` delivers a branch carrying a failing test it cannot then make pass), and both at once (`Shadok-Product`; `Shadok-Release` adds the bare `Write`/`Edit` denies — it may run the deployment path and may not edit what that path ships, since changing the source while shipping it means what went out is not what was verified). `SOURCE_WRITE_DENY` enumerates `src`/`lib`/`app` twice each (anchored and `**/`-prefixed, for a monorepo) and stops there: every extra entry is a directory some other ecosystem uses for something else, and on a SOFT layer a false block costs more than a missed one. `READ_THE_GROUND` is the shared paragraph every role that lands in an unknown project opens with — one constant, not a copy per prompt, because it is the fix for a bug (a role naming THIS repository's convention files as if every project had them, cf. `src/ground.ts`) and three copies of a fix drift back one at a time. `test/role-catalogue.test.ts` locks that prose for the whole catalogue the way `test/boss-role.test.ts` locks the lead's. |
 | `src/peers.ts` | PEERS — other instances allowed to reach this one's agents, the cross-instance twin of a web account. A peer **enrols like a user**: `POST /peers` hands out a **single-use ticket**, `POST /peers/enrol` (the only peer route BEFORE the password gate, since an invitee has no credential yet) consumes it and returns the durable token the peer then keeps — so the long-lived credential never travels through an invitation, a chat or the invitee's transcript, only a ticket that dies on first use does. The token is **salted per peer** (`Peer.salt`, in the MAC): it used to be `hmac(secret, "peer:"+name)`, which is deterministic, so revoking a row and re-inviting the same name minted the IDENTICAL token and handed a leaked credential back — revocation was not rotation. `withSalts` backfills a pre-salt row, deliberately invalidating its old token. Non-expiring once enrolled (a cross-instance link must not hit the 7-day cookie cliff) and revocable by the registry: `peerFromToken` requires the name listed, the row ENROLLED (a pending `invite` authenticates nothing) and the MAC to match that row's salt. `redeemVerdict` refuses an unknown, used or expired ticket with ONE wording, so a guesser learns nothing. Each peer has a **scope** (`Peer.scope`, `peerScope` defaults it to `restricted` — the SAFE default, so a row written before scopes existed, or a `POST /peers` that omits the key, can never widen a credential that is already out there; `member` only ever comes from a caller that spelled it out): a **member** peer acts as a web MEMBER — `currentAccount` returns it as `{name, role:"member"}`, so it passes the general gate and sees/drives EVERY agent, `/live`, spawn, the lot (never admin); a **restricted** peer is the boxed principal, only `GET /diff` over HTTP and only its own agents. `ownedByPeer` (`Channel.createdByPeer`, tagged at `start`) is the check behind the restricted scope — applied ONLY when the caller is restricted (the WS resume/stop guards gate on `callerPeerRestricted`, `/diff` on `peerScopeFor`). A member peer can drive the human's own web sessions too — the deliberate "invite an agent like a user"; even so it cannot read secret VALUES (`/secrets` returns names only). `agentInvitePrompt` (carries the ticket, never a token) reads the scope to say what the invitee may do. Scope is chosen at invite (`POST /peers {scope}`, a dropdown in the Users panel whose first — hence selected — option is `restricted`); the member-vs-restricted boundary is proven end-to-end, pure parts in `test/peers.test.ts`. |
 | `src/accounts.ts` | Web accounts, PER INSTANCE (`~/.shadok-ai/users/<key>.json`, 600): roles (`admin`/`member`), salted scrypt hashes, single-use invitations, and the signed session token. The signing secret (`<key>.key`) is per instance and **never exported into an agent's env** — the GUI password is, so signing with it would let an agent mint a cookie for anyone. `SHADOK_GUI_PASSWORD` stays the door and IS the `admin` account; with no password everything is dormant. `promptAuthor` is where the web's author comes from the SESSION and never from the frame. Also `signSessionKey` / `readSessionKey` — the per-session key an AGENT authenticates with (`x-shadok-session-key`), DERIVED from the session id by HMAC so it needs no server state and carries no issue time. See invariant 33. Pure cores tested. |
+| `src/twofactor.ts` | Two-factor sign-in with a passkey (WebAuthn via `@simplewebauthn/server`), opt-in per instance (`config.twoFactor[<cwd>]`, `twoFactorForCwd`). Pure rules, tested: `twoFactorEnableVerdict` (≥ 2 NAMED admins, each with a passkey — the recovery rule is "another admin resets you"), `keepsTwoAdminsVerdict`, `resetVerdict` (never yourself, never the bootstrap admin), `loginNext`, `enrollCodeVerdict`; the pending sign-in token (`signPending`, a key DERIVED from the session secret so it can never pass as `sk_auth`); single-use challenges bound to user + purpose. The routes live in `server.ts` (`/login/passkey*`, `/login/enroll*` before the gate; `/2fa*` behind it, all through `cookieAccount`, never an agent key or a peer). `isInternalClient` is the one exception and says so: a bootstrap cookie marked `mfa` can only have been minted in-process with the signing secret, so it is the SERVER (the Telegram bridge) — `currentAccount` accepts it, `cookieAccount` still does not. See invariant 43. |
 | `src/paths.ts` | `instanceKey(cwd)` — the launch directory encoded as a filename, for anything stored per instance. |
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
 | `public/index.html` | The entire web client (no framework, no build). Agents (creation is a **popin**, `#setupOverlay`, profile-first: a grid of cards, the rest folded away; the channel is only born at "Start agent", see invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. UI copy says **agent**; the code, endpoints and storage keys still say `channel`. |
@@ -266,7 +267,15 @@ survive, exactly as `withManagedPrompt` does for the managed role.
 the token ONCE); a peer authenticates the WS and `GET /diff` with `x-shadok-peer`,
 scoped to its own agents (`src/peers.ts`);
 `/invite/:token` (GET/POST) — redeeming an invitation, reachable WITHOUT a
-session; `/me` — who the caller is;
+session (with 2FA on it answers `{next:"enroll", code}` and a pending cookie
+instead of a session); `/me` — who the caller is;
+`/login/passkey/options` `/login/passkey` `/login/enroll/options` `/login/enroll`
+(POST, before the gate, need the `sk_pending` cookie — the second step of a
+sign-in, and registering a device with an enrollment code);
+`/2fa` (GET — status, my passkeys, why it cannot be enabled), `/2fa/register*`,
+`/2fa/passkey/delete`, `/2fa/enroll-code`, `/2fa/reset`, `/2fa/enabled`,
+`/2fa/confirm/options` (POST, browser-only, a signed-in PERSON — see invariant
+42); `/vendor/simplewebauthn.js` (before the gate, the login page needs it);
 `/models` (GET — the families, the versions discovered in the binary, and the machine-wide default; POST `/models/default` — pin it, **browser-only** like `PUT /profiles`, since it writes a key every agent on the machine reads), `/telegram` (GET/PUT — bot config from the GUI), `/version`,
 `/autoupdate`, `/permission-mode`, `/reload` (POST — an agent respawns ITSELF,
 scoped by `SHADOK_SESSION_KEY` like `/profiles/prompt`, used by the
@@ -1340,6 +1349,42 @@ Auth section of `docs/architecture.md`).
     (local username replaced by one of the same length, so every wrap lands
     where it did). The card shows the body as first published, so a countdown
     in it is frozen at that second — still the right warning, not a live clock.
+
+43. **A password alone must never register a passkey — and two-factor is only
+    as strong as the weakest door around it.** Three doors were open the day it
+    was designed, and each would have made the second factor decoration.
+    *Enrollment by password*: if a correct password could register a passkey
+    while 2FA is on, a thief with the password enrolls their own phone. So
+    registering during sign-in needs an enrollment code minted by a verified
+    session (yours, an admin's, or a redeemed invitation). *The bootstrap
+    admin*: `SHADOK_GUI_PASSWORD` is in every agent's env and nobody can reset
+    it, so under 2FA it has no browser session at all. *The agent's key*:
+    `x-shadok-session-key` IS the bootstrap admin, so while 2FA is on every
+    account and `/2fa` route goes through `cookieAccount`, which accepts neither
+    a session key nor a peer — otherwise an agent (or a prompt injection
+    driving one) could reset anyone. Actions that would undo the factor for
+    someone (reset, a code for another person, switching on/off) also need a
+    FRESH passkey assertion, not a session: a session can be ridden, a
+    biometric cannot. Switching it on kills every session issued before (the
+    cookie's `mfa` field). And the rest stays true: anything running as the
+    machine's user can read the account file — soft isolation, as invariant 26.
+    Verified end to end in Chromium with a CDP virtual authenticator.
+    **A fourth door was shut from the inside: our own Telegram bridge.** It is
+    the one caller that authenticates with a cookie and is not a person — a WS
+    to our own server carrying `adminCookie()` — so "no `mfa` flag, no entry"
+    plus "the instance password cannot sign in" refused it too: with 2FA on,
+    `GET /live` and the WS upgrade both answered 401, the bot kept long-polling
+    Telegram, and every message died at the gate with nothing in the log. The
+    spec had listed it as unaffected, next to the peers (which really are:
+    `x-shadok-peer` is read before the cookie). A browser-shaped rule judges
+    every machine that speaks the same credential, so each one needs a named
+    principal: the bridge's cookie is minted `mfa=1` and `currentAccount`
+    recognises it through `isInternalClient` BEFORE `cookieAccount`, which still
+    refuses the bootstrap admin — Telegram works, `/2fa*` stays person-only. The
+    flag stays meaningful because minting it needs the signing secret, which no
+    login path uses for the instance password and which never reaches an agent's
+    env (`SHADOK_AUTH` keeps `mfa=0`, hence refused). Measured both ways on a
+    real instance, not reasoned: 401/401 before, 200 + `/2fa` 403 after.
 
 ## Conventions
 
