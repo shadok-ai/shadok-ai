@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { backendEnv, backendFor, isCustomBaseUrl, parseContextWindow } from "../src/backend.js";
+import {
+  BACKEND_PRESETS,
+  backendEnv,
+  backendFor,
+  backendSaveVerdict,
+  configuredBackendEnv,
+  instanceEnv,
+  isCustomBaseUrl,
+  joinUrl,
+  looksLikeMessage,
+  parseContextWindow,
+  parseModelList,
+  testFailure,
+} from "../src/backend.js";
 import { firstAgentPlan } from "../src/first-agent.js";
 
 test("only a parseable URL off Anthropic is a custom backend", () => {
@@ -97,4 +110,82 @@ test("a custom-backend instance gets its lead agent without signing in", () => {
   assert.equal(p.spawn, true);
   // …but a cockpit in use is still left alone.
   assert.equal(firstAgentPlan({ channelCount: 2, authState: "unknown", customBackend: true }).spawn, false);
+});
+
+test("a backend saved in the cockpit REPLACES shadok's env, never merges with it", () => {
+  // Merging would hand the shell's Anthropic key to whatever third-party
+  // server was just configured.
+  const env = instanceEnv(
+    { ANTHROPIC_API_KEY: "sk-ant-secret", ANTHROPIC_BASE_URL: "http://other:1" },
+    { baseUrl: "https://api.deepseek.com/anthropic", model: "deepseek-chat", authToken: "ds-key" },
+  );
+  assert.equal(env.ANTHROPIC_API_KEY, undefined);
+  assert.equal(env.ANTHROPIC_BASE_URL, "https://api.deepseek.com/anthropic");
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, "ds-key");
+  const agent = backendEnv(env, {});
+  assert.equal(agent.ANTHROPIC_API_KEY, undefined);
+  assert.equal(agent.ANTHROPIC_DEFAULT_OPUS_MODEL, "deepseek-chat");
+});
+
+test("without a saved backend, the env is the source as before", () => {
+  const pe = { ANTHROPIC_BASE_URL: "http://localhost:11434" };
+  assert.equal(instanceEnv(pe, null), pe);
+});
+
+test("a keyless local backend still hands Claude Code a token", () => {
+  // Claude Code wants SOME credential to skip its own sign-in.
+  assert.equal(configuredBackendEnv({ baseUrl: "http://localhost:11434", model: "m" }).ANTHROPIC_AUTH_TOKEN, "none");
+  assert.equal(configuredBackendEnv({ baseUrl: "http://x:1", model: "m", contextWindow: 64000 }).SHADOK_CONTEXT_WINDOW, "64000");
+});
+
+test("saving validates the address, the model and the window", () => {
+  assert.equal(backendSaveVerdict({ baseUrl: "https://api.anthropic.com", model: "m" }).ok, false);
+  assert.equal(backendSaveVerdict({ baseUrl: "localhost:11434", model: "m" }).ok, false);
+  assert.equal(backendSaveVerdict({ baseUrl: "http://localhost:11434", model: " " }).ok, false);
+  assert.equal(backendSaveVerdict({ baseUrl: "http://localhost:11434", model: "m", contextWindow: "lots" }).ok, false);
+  const v = backendSaveVerdict({ baseUrl: "http://localhost:11434/", model: "m", contextWindow: "64k" });
+  assert.deepEqual(v, { ok: true, value: { baseUrl: "http://localhost:11434", model: "m", contextWindow: 64000 } });
+});
+
+test("an empty key field keeps the saved key — for the same server only", () => {
+  const saved = { baseUrl: "https://api.z.ai/api/anthropic", model: "glm", authToken: "k1" };
+  const same = backendSaveVerdict({ baseUrl: "https://api.z.ai/api/anthropic", model: "glm-4.6" }, saved);
+  assert.equal(same.ok && same.value.authToken, "k1");
+  // A key never follows the user to ANOTHER server.
+  const other = backendSaveVerdict({ baseUrl: "https://api.deepseek.com/anthropic", model: "x" }, saved);
+  assert.equal(other.ok && other.value.authToken, undefined);
+  const typed = backendSaveVerdict({ baseUrl: saved.baseUrl, model: "glm", authToken: "k2" }, saved);
+  assert.equal(typed.ok && typed.value.authToken, "k2");
+});
+
+test("every preset but 'custom' is a custom backend address", () => {
+  for (const p of BACKEND_PRESETS) {
+    if (p.id === "custom") continue;
+    assert.equal(isCustomBaseUrl(p.baseUrl), true, p.id);
+  }
+});
+
+test("model lists are read from Ollama and OpenAI-style answers", () => {
+  assert.deepEqual(parseModelList({ models: [{ name: "qwen3-coder:30b" }, { name: "gpt-oss:20b" }] }), ["gpt-oss:20b", "qwen3-coder:30b"]);
+  assert.deepEqual(parseModelList({ data: [{ id: "glm-4.6" }, { id: "glm-4.6" }] }), ["glm-4.6"]);
+  assert.deepEqual(parseModelList({ error: "nope" }), []);
+  assert.deepEqual(parseModelList(null), []);
+});
+
+test("a failed test says what to change", () => {
+  assert.match(testFailure(401, '{"error":{"message":"invalid key"}}'), /refused the API key/);
+  assert.match(testFailure(404, "Not Found"), /LiteLLM/);
+  assert.match(testFailure(404, '{"error":{"message":"model \'x\' not found"}}'), /does not know this model/);
+  assert.match(testFailure(500, '{"error":"boom"}'), /500: boom/);
+});
+
+test("only an Anthropic message counts as a passed test", () => {
+  assert.equal(looksLikeMessage({ type: "message", content: [{ type: "text", text: "ok" }] }), true);
+  // An OpenAI chat completion is a server that answered in the wrong format.
+  assert.equal(looksLikeMessage({ object: "chat.completion", choices: [] }), false);
+});
+
+test("joinUrl neither doubles nor drops a slash", () => {
+  assert.equal(joinUrl("http://h:1/", "/v1/messages"), "http://h:1/v1/messages");
+  assert.equal(joinUrl("https://api.deepseek.com/anthropic", "v1/messages"), "https://api.deepseek.com/anthropic/v1/messages");
 });

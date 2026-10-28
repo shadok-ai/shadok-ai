@@ -165,6 +165,8 @@ import {
   setThemeForCwd,
   twoFactorForCwd,
   setTwoFactorForCwd,
+  backendForCwd,
+  setBackendForCwd,
   type TelegramPatch,
 } from "./config.js";
 import {
@@ -258,7 +260,19 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
   browserOrigin,
 } from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
-import { backendEnv, backendFor, type Backend } from "./backend.js";
+import {
+  BACKEND_PRESETS,
+  backendEnv,
+  backendFor,
+  backendSaveVerdict,
+  instanceEnv,
+  joinUrl,
+  looksLikeMessage,
+  parseModelList,
+  testFailure,
+  testRequestBody,
+  type Backend,
+} from "./backend.js";
 import { availableModels, MODEL_FAMILIES } from "./claude-models.js";
 import { startHeartbeat } from "./heartbeat.js";
 import {
@@ -445,6 +459,7 @@ async function startFirstAgent(): Promise<void> {
       port: boundPort,
       cookie: tgCookie(),
       cwd: process.cwd(),
+      customBackend: instanceBackend().kind === "custom",
       // `start` carries no name, so the channel is named once the server has
       // told us its session id.
       onReady: (sessionId, name) => {
@@ -1623,9 +1638,14 @@ app.get("/auth", async (_req, res) =>
   res.json({
     ...(await authStatus()),
     ...readTokenExpiry(),
-    ...(backendFor(process.env).kind === "custom" ? { backend: "custom" } : {}),
+    ...customBackendFields(),
   }),
 );
+
+function customBackendFields(): { backend?: "custom"; backendModel?: string | null } {
+  const b = instanceBackend();
+  return b.kind === "custom" ? { backend: "custom", backendModel: b.model } : {};
+}
 
 app.post("/auth/login", async (req, res) => {
   // `force` is a deliberate "re-login now" from a signed-in instance (the
@@ -1652,6 +1672,133 @@ app.post("/auth/code", async (req, res) => {
 app.delete("/auth/login", (_req, res) => {
   cancelLogin();
   res.json({ ok: true });
+});
+
+// --- Model backend (src/backend.ts) ---------------------------------------
+// The instance-wide source for every agent's backend variables: the backend
+// chosen in the cockpit if any, else shadok's own environment. Read on every
+// spawn, so a change applies to the next agent started without a restart.
+function instanceBackendSource(): Record<string, string | undefined> {
+  return instanceEnv(process.env, backendForCwd(loadConfig(), process.cwd()));
+}
+function instanceBackend(): Backend {
+  return backendFor(backendEnv(instanceBackendSource(), {}));
+}
+
+// What is configured, WITHOUT the key (only whether there is one), and the
+// presets the onboarding card offers. `source` tells the card whether a change
+// here can take effect: an env-launched backend is shadowed by nothing but a
+// saved one, and the card says so rather than pretend.
+app.get("/backend", (_req, res) => {
+  const saved = backendForCwd(loadConfig(), process.cwd());
+  const b = instanceBackend();
+  res.json({
+    presets: BACKEND_PRESETS,
+    source: saved ? "cockpit" : b.kind === "custom" ? "environment" : null,
+    current:
+      b.kind === "custom"
+        ? { baseUrl: b.baseUrl, model: b.model, contextWindow: b.contextWindow, hasKey: !!saved?.authToken }
+        : null,
+  });
+});
+
+// Save (or, with {clear:true}, forget) the backend. Admin, browser only: it
+// decides where every future agent sends its prompts — and with them, the
+// code it reads. Running agents keep the backend they were spawned with.
+app.put("/backend", (req, res) => {
+  if (!accountAdmin(req, res)) return;
+  const cfg = loadConfig();
+  if (req.body?.clear === true) {
+    setBackendForCwd(cfg, process.cwd(), null);
+    console.log("backend: back to the Claude subscription");
+    return res.json({ ok: true, current: null });
+  }
+  const v = backendSaveVerdict(req.body, backendForCwd(cfg, process.cwd()));
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  setBackendForCwd(cfg, process.cwd(), v.value);
+  console.log(`backend: ${v.value.baseUrl} · ${v.value.model}`);
+  // The sign-in card may have started a `claude auth login` child before the
+  // user chose another model: it would wait on stdin for ever.
+  cancelLogin();
+  res.json({ ok: true, current: { baseUrl: v.value.baseUrl, model: v.value.model } });
+  // A brand-new instance had no way to start its lead agent until now.
+  void startFirstAgent();
+});
+
+/** A server-side request with a deadline: a backend that never answers must
+ *  not hang the card. */
+async function backendFetch(url: string, init: RequestInit = {}, ms = 20_000): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+}
+
+/** The key to test with: the one typed, else the saved one for the SAME server. */
+function backendKey(body: { authToken?: unknown; baseUrl?: unknown }): string {
+  const typed = typeof body.authToken === "string" ? body.authToken.trim() : "";
+  if (typed) return typed;
+  const saved = backendForCwd(loadConfig(), process.cwd());
+  const url = typeof body.baseUrl === "string" ? body.baseUrl.trim().replace(/\/+$/, "") : "";
+  return saved && saved.baseUrl === url ? saved.authToken ?? "" : "";
+}
+
+// One real round trip — URL, key, model AND the Anthropic format — before
+// anything is saved. Otherwise a wrong address shows up only as the first
+// agent sitting on an error, which is exactly the opaque failure to avoid.
+app.post("/backend/test", async (req, res) => {
+  if (!accountAdmin(req, res)) return;
+  const v = backendSaveVerdict(req.body);
+  if (!v.ok) return res.json({ ok: false, error: v.error });
+  const key = backendKey(req.body ?? {});
+  const started = Date.now();
+  try {
+    const r = await backendFetch(joinUrl(v.value.baseUrl, "/v1/messages"), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        // Exactly what Claude Code sends with ANTHROPIC_AUTH_TOKEN — a bearer
+        // and nothing else — so a test that passes predicts an agent that works.
+        ...(key ? { authorization: `Bearer ${key}` } : {}),
+      },
+      body: JSON.stringify(testRequestBody(v.value.model)),
+    }, 60_000);
+    const text = await r.text();
+    if (!r.ok) return res.json({ ok: false, error: testFailure(r.status, text) });
+    let json: unknown = null;
+    try { json = JSON.parse(text); } catch { /* judged below */ }
+    if (!looksLikeMessage(json))
+      return res.json({ ok: false, error: "the server answered, but not in the Anthropic format — an OpenAI-only server needs a proxy such as LiteLLM in front" });
+    const reply = ((json as { content: { type?: string; text?: string }[] }).content.find((c) => c.type === "text")?.text ?? "").trim();
+    res.json({ ok: true, ms: Date.now() - started, reply: reply.slice(0, 80) });
+  } catch (e) {
+    const err = e as Error & { cause?: { code?: string } };
+    const why =
+      err.name === "TimeoutError" ? "no answer within 60 s"
+      : err.cause?.code === "ECONNREFUSED" ? "nothing is listening at this address — is the server started?"
+      : err.cause?.code === "ENOTFOUND" ? "this host name does not resolve"
+      : err.message;
+    res.json({ ok: false, error: why });
+  }
+});
+
+// The models a server offers, for the card's picker: Ollama's /api/tags first
+// (it lists what is PULLED, which is the useful answer), then the OpenAI-style
+// /v1/models most others serve. Nothing found is an empty list, never an
+// error — the model field stays free text.
+app.post("/backend/models", async (req, res) => {
+  if (!accountAdmin(req, res)) return;
+  const base = typeof req.body?.baseUrl === "string" ? req.body.baseUrl.trim() : "";
+  if (!/^https?:\/\//i.test(base)) return res.json({ models: [] });
+  const key = backendKey(req.body ?? {});
+  const headers: Record<string, string> = key ? { authorization: `Bearer ${key}`, "x-api-key": key } : {};
+  for (const p of ["/api/tags", "/v1/models"]) {
+    try {
+      const r = await backendFetch(joinUrl(base, p), { headers }, 5_000);
+      if (!r.ok) continue;
+      const models = parseModelList(await r.json());
+      if (models.length) return res.json({ models });
+    } catch { /* try the next shape */ }
+  }
+  res.json({ models: [] });
 });
 
 // The header's GitHub button. Proxied through us so the browser never talks to
@@ -3055,7 +3202,7 @@ function ledgerReflex(): string | null {
 function sessionBackend(profileName?: string | null): Backend {
   const profile = profileName ? getProfile(profileName) : undefined;
   const secretEnv = secretsFor(profile?.secrets);
-  return backendFor({ ...backendEnv(process.env, secretEnv), ...secretEnv });
+  return backendFor({ ...backendEnv(instanceBackendSource(), secretEnv), ...secretEnv });
 }
 
 /** The profile a `start` will run with, known BEFORE the spawn resolves its
@@ -3151,7 +3298,7 @@ function makePilot(
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
   // point off Anthropic, and maps the model aliases. See src/backend.ts.
-  const env: Record<string, string> = { ...backendEnv(process.env, secretEnv), ...secretEnv };
+  const env: Record<string, string> = { ...backendEnv(instanceBackendSource(), secretEnv), ...secretEnv };
   // Self-scheduling context: lets the shadok-scheduler skill register/list/remove
   // crons on THIS channel via the local API (so the user can set up monitoring in
   // plain language just by asking the agent).

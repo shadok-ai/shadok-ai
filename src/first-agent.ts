@@ -1,6 +1,5 @@
 import WebSocket from "ws";
 import { loadChannels } from "./channels.js";
-import { backendFor } from "./backend.js";
 import { authStatus, type AuthState } from "./claude-auth.js";
 import { BOSS_PROFILE_NAME } from "./profiles.js";
 
@@ -119,13 +118,16 @@ export async function ensureFirstAgent(deps: {
   port: number;
   cookie?: string;
   cwd: string;
+  /** The instance runs on a custom model backend (src/backend.ts) — decided by
+   *  the server, which owns both the env and the saved choice. */
+  customBackend?: boolean;
   /** Called with the new session id once the server reports it ready. */
   onReady: (sessionId: string, name: string) => void;
 }): Promise<FirstAgentPlan["reason"]> {
   if (inFlight) return "channels-exist";
   // Instance-wide only: the lead agent's profile is not consulted, so a custom
-  // backend reaches it through shadok's own environment.
-  const customBackend = backendFor(process.env).kind === "custom";
+  // backend reaches it through the instance's source (env or saved choice).
+  const customBackend = deps.customBackend ?? false;
   const plan = firstAgentPlan({
     channelCount: loadChannels().length,
     // No probe when it cannot change the answer (~850ms, and a process spawn).

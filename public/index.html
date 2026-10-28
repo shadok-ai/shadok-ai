@@ -864,7 +864,7 @@
   }
 
   .field { display: flex; flex-direction: column; gap: 6px; }
-  input[type="text"] {
+  input[type="text"], input[type="password"] {
     font-family: var(--sans);
     font-size: 13px;
     background: var(--bg-inset);
@@ -873,7 +873,7 @@
     color: var(--text);
     padding: 9px 10px;
   }
-  input[type="text"]:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+  input[type="text"]:focus-visible, input[type="password"]:focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
   .radio-row { display: flex; gap: 14px; flex-wrap: wrap; }
   #modelRow { gap: 6px; }
   .bang-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -1946,7 +1946,7 @@
   .cron-when { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
   .cron-when input[type=number] { width: 76px; }
   .sec-panel .field { margin: 8px 0; }
-  .sec-panel textarea, .sec-panel input[type=text], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-family: inherit; }
+  .sec-panel textarea, .sec-panel input[type=text], .sec-panel input[type=password], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-family: inherit; }
   #profilesList { list-style: none; padding: 0; margin: 0 0 8px; }
   #profilesList li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
   #profilesList li:nth-child(odd) { background: rgba(255,255,255,.04); }
@@ -1958,6 +1958,23 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
+  /* Backend choice on the sign-in card (src/backend.ts). */
+  .auth-modes { display: flex; gap: 6px; margin: 4px 0 10px; }
+  .auth-modes button {
+    flex: 1; padding: 6px 10px; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg-inset); color: var(--text-dim);
+  }
+  .auth-modes button.active { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .bk-form .field { margin: 10px 0; }
+  .bk-form .bk-opt { opacity: .6; font-weight: normal; }
+  .bk-form .bk-hint { font-size: 11px; color: var(--text-dim); min-height: 1em; }
+  .bk-actions { display: flex; gap: 8px; align-items: center; margin-top: 14px; }
+  .bk-actions .spacer { flex: 1; }
+  .bk-msg { font-size: 12px; margin: 10px 0 0; padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line); }
+  .bk-msg.ok { border-color: color-mix(in srgb, #3c9 60%, transparent); color: #3c9; }
+  .bk-msg.bad { border-color: color-mix(in srgb, #e55 60%, transparent); color: #e77; }
+  .bk-foot { margin-top: 14px; }
   #ledgerList { list-style: none; margin: 0; padding: 0; }
   #ledgerList li { padding: 8px 0; border-bottom: 1px solid var(--line, #2a2d32); }
   #ledgerList li:last-child { border-bottom: none; }
@@ -2168,6 +2185,7 @@
   <!-- Re-login to Claude without waiting for the token to lapse. Shown only
        when signed in (when signed out the sign-in card opens on its own). -->
   <button class="vm-btn" id="reloginBtn" type="button" hidden>↻ Re-login to Claude</button>
+  <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
   <div class="vm-row"><span class="vm-label">Channel</span>
@@ -2553,19 +2571,50 @@
            to make the instance usable, so it stays a funnel. -->
       <button id="authClose" type="button" title="Cancel" hidden aria-label="Cancel">✕</button>
     </div>
-    <p class="sec-note" id="authNote">This instance isn't signed in to Claude, so it can't start any agent.</p>
-    <div class="field">
-      <span class="label">1 — Open this link and authorise</span>
-      <a id="authLink" target="_blank" rel="noopener">starting…</a>
+    <!-- Where agents get their model: the Claude subscription, or any server
+         that speaks the Anthropic Messages API (src/backend.ts). -->
+    <div class="auth-modes" id="authModes" role="tablist">
+      <button type="button" role="tab" data-mode="claude" class="active">Claude subscription</button>
+      <button type="button" role="tab" data-mode="other">Another model</button>
     </div>
-    <div class="field">
-      <span class="label">2 — Paste the code you get back</span>
-      <form id="authCodeForm" style="display:flex;gap:8px">
-        <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
-        <button type="submit">Sign in</button>
-      </form>
+    <div id="authClaudeBox">
+      <p class="sec-note" id="authNote">This instance isn't signed in to Claude, so it can't start any agent.</p>
+      <div class="field">
+        <span class="label">1 — Open this link and authorise</span>
+        <a id="authLink" target="_blank" rel="noopener">starting…</a>
+      </div>
+      <div class="field">
+        <span class="label">2 — Paste the code you get back</span>
+        <form id="authCodeForm" style="display:flex;gap:8px">
+          <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
+          <button type="submit">Sign in</button>
+        </form>
+      </div>
+      <p class="sec-note" id="authMsg" hidden></p>
     </div>
-    <p class="sec-note" id="authMsg" hidden></p>
+    <form id="authOtherBox" class="bk-form" hidden autocomplete="off">
+      <p class="sec-note">A model on this machine or a hosted provider. Agents on it need no Claude sign-in and spend none of your subscription.</p>
+      <label class="field"><span class="label">Provider</span>
+        <select id="bkPreset"></select></label>
+      <label class="field"><span class="label">Server address</span>
+        <input id="bkUrl" placeholder="http://localhost:11434" spellcheck="false"></label>
+      <label class="field"><span class="label">API key <span class="bk-opt" id="bkKeyOpt">— optional for a local server</span></span>
+        <input id="bkKey" type="password" placeholder="none" spellcheck="false"></label>
+      <label class="field"><span class="label">Model</span>
+        <input id="bkModel" list="bkModels" placeholder="qwen3-coder:30b" spellcheck="false">
+        <datalist id="bkModels"></datalist>
+        <span class="bk-hint" id="bkModelsHint"></span></label>
+      <label class="field"><span class="label">Context window <span class="bk-opt">— optional, for the gauge</span></span>
+        <input id="bkWindow" placeholder="64k" spellcheck="false"></label>
+      <div class="bk-actions">
+        <button type="button" id="bkClear" hidden>Back to the Claude subscription</button>
+        <span class="spacer"></span>
+        <button type="button" id="bkTest">Test</button>
+        <button type="submit" id="bkSave" class="primary" disabled>Use this model</button>
+      </div>
+      <p class="bk-msg" id="bkMsg" hidden></p>
+      <p class="sec-note bk-foot">Claude Code speaks only the Anthropic API. Hugging Face, Together, Groq and other OpenAI-only services need a proxy such as LiteLLM in front — then choose “Another Anthropic-compatible server”.</p>
+    </form>
   </div>
 </div>
 
@@ -6789,7 +6838,8 @@
     // probe ("unknown") or a signed-out state is the sign-in card's job.
     if (relBtn) relBtn.hidden = true;
     if (a && a.backend === "custom" && a.state !== "signed-in") {
-      accEl.textContent = "custom model backend"; accEl.title = "";
+      accEl.textContent = a.backendModel ? a.backendModel + " · custom backend" : "custom model backend";
+      accEl.title = "";
       tokEl.textContent = "—"; tokEl.title = "";
       return;
     }
@@ -7022,6 +7072,12 @@
   document.getElementById("reloginBtn").addEventListener("click", () => {
     toggleVerMenu(false);
     openAuthCard(true);
+  });
+  // Change where agents get their model, any time — the same card, opened on
+  // its "Another model" side, and dismissable since nothing is broken.
+  document.getElementById("backendBtn").addEventListener("click", () => {
+    toggleVerMenu(false);
+    openAuthCard(true, "other");
   });
 
   function showUpdateBanner(version) {
@@ -9677,18 +9733,47 @@
     $("authOverlay").hidden = true;
   }
 
-  async function openAuthCard(force = false) {
+  // The card has two sides: the Claude sign-in, and "Another model" (a
+  // self-hosted or hosted backend, src/backend.ts). The sign-in child is only
+  // started when its side is actually shown — choosing another model must not
+  // leave a `claude auth login` waiting on stdin.
+  let authForce = false;
+  let authLoginStarted = false;
+  function setAuthMode(mode) {
+    for (const b of $("authModes").querySelectorAll("button"))
+      b.classList.toggle("active", b.dataset.mode === mode);
+    $("authClaudeBox").hidden = mode !== "claude";
+    $("authOtherBox").hidden = mode !== "other";
+    if (mode === "claude") {
+      $("authTitle").textContent = authForce ? "Re-login to Claude" : "Sign in to Claude";
+      if (!authLoginStarted) { authLoginStarted = true; startClaudeLogin(authForce); }
+    } else {
+      $("authTitle").textContent = "Run agents on another model";
+      loadBackendForm();
+    }
+  }
+  $("authModes").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-mode]");
+    if (b) setAuthMode(b.dataset.mode);
+  });
+
+  async function openAuthCard(force = false, mode = "claude") {
     if (!$("authOverlay").hidden) return;   // a flow is already on screen
     authDismissable = force;
+    authForce = force;
+    authLoginStarted = false;
     $("authClose").hidden = !force;
     // A forced re-login comes from a SIGNED-IN instance, so the "not signed in"
     // copy would be wrong there; say what the card actually does.
-    $("authTitle").textContent = force ? "Re-login to Claude" : "Sign in to Claude";
     $("authNote").textContent = force
       ? "Renew this instance's Claude sign-in. Your agents keep running in the meantime."
       : "This instance isn't signed in to Claude, so it can't start any agent.";
     $("authOverlay").hidden = false;
     $("authMsg").hidden = true;
+    setAuthMode(mode);
+  }
+
+  async function startClaudeLogin(force) {
     const link = $("authLink");
     link.textContent = "starting…";
     link.removeAttribute("href");
@@ -9707,6 +9792,148 @@
       link.textContent = "could not start the sign-in";
     }
   }
+
+  // --- "Another model" (src/backend.ts) ---------------------------------
+  // Nothing is saved before a Test has gone through: a wrong address would
+  // otherwise surface only as the first agent sitting on an error.
+  let bkPresets = [];
+  let bkHasKey = false;
+  let bkSavedUrl = "";
+  let bkModelsTimer = null;
+  function bkMsg(text, kind) {
+    const m = $("bkMsg");
+    m.textContent = text || "";
+    m.className = "bk-msg" + (kind ? " " + kind : "");
+    m.hidden = !text;
+  }
+  function bkInvalidate() { $("bkSave").disabled = true; }
+  function bkBody() {
+    return {
+      baseUrl: $("bkUrl").value.trim(),
+      authToken: $("bkKey").value.trim(),
+      model: $("bkModel").value.trim(),
+      contextWindow: $("bkWindow").value.trim(),
+    };
+  }
+  async function bkPost(path, body, method = "POST") {
+    const r = await fetch(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    let j = {};
+    try { j = await r.json(); } catch {}
+    if (!r.ok && !j.error) j.error = "the cockpit answered " + r.status;
+    return j;
+  }
+  function bkKeyHint() {
+    const p = bkPresets.find((x) => x.id === $("bkPreset").value);
+    $("bkKeyOpt").textContent = p && p.needsKey ? "" : "— optional for a local server";
+    const same = bkHasKey && $("bkUrl").value.trim().replace(/\/+$/, "") === bkSavedUrl;
+    $("bkKey").placeholder = same ? "saved — leave empty to keep it" : (p && p.needsKey ? "paste your API key" : "none");
+  }
+  function applyPreset(id) {
+    const p = bkPresets.find((x) => x.id === id);
+    if (!p) return;
+    $("bkPreset").value = id;
+    $("bkUrl").value = p.baseUrl;
+    $("bkModel").value = p.model;
+    bkKeyHint();
+    bkInvalidate();
+    bkMsg("");
+    listBackendModels();
+  }
+  // Ask the server which models it serves (Ollama lists what is pulled), so
+  // the field offers real names; nothing found leaves it as free text.
+  function listBackendModels() {
+    clearTimeout(bkModelsTimer);
+    bkModelsTimer = setTimeout(async () => {
+      const dl = $("bkModels");
+      dl.replaceChildren();
+      $("bkModelsHint").textContent = "";
+      const b = bkBody();
+      if (!/^https?:\/\//i.test(b.baseUrl)) return;
+      let j = {};
+      try { j = await bkPost("/backend/models", b); } catch {}
+      const models = Array.isArray(j.models) ? j.models : [];
+      for (const name of models) {
+        const o = document.createElement("option");
+        o.value = name;
+        dl.append(o);
+      }
+      if (models.length) {
+        $("bkModelsHint").textContent = models.length + " model" + (models.length > 1 ? "s" : "") + " on this server — pick one or type a name";
+        if (!$("bkModel").value.trim()) $("bkModel").value = models[0];
+      }
+    }, 350);
+  }
+  async function loadBackendForm() {
+    let info = {};
+    try { info = await (await fetch("/backend")).json(); } catch {}
+    bkPresets = Array.isArray(info.presets) ? info.presets : [];
+    const sel = $("bkPreset");
+    sel.replaceChildren();
+    for (const p of bkPresets) {
+      const o = document.createElement("option");
+      o.value = p.id;
+      o.textContent = p.label;
+      sel.append(o);
+    }
+    const cur = info.current;
+    bkHasKey = !!(cur && cur.hasKey);
+    bkSavedUrl = cur ? cur.baseUrl : "";
+    $("bkClear").hidden = info.source !== "cockpit";
+    $("bkKey").value = "";
+    bkMsg("");
+    if (cur) {
+      const p = bkPresets.find((x) => x.baseUrl && x.baseUrl === cur.baseUrl);
+      sel.value = p ? p.id : "custom";
+      $("bkUrl").value = cur.baseUrl;
+      $("bkModel").value = cur.model || "";
+      $("bkWindow").value = cur.contextWindow ? String(cur.contextWindow) : "";
+      bkKeyHint();
+      bkInvalidate();
+      if (info.source === "environment")
+        bkMsg("Set by the environment shadok was launched with. Saving here takes precedence over it.");
+      listBackendModels();
+    } else {
+      $("bkWindow").value = "";
+      applyPreset("ollama");
+    }
+  }
+  $("bkPreset").addEventListener("change", (e) => applyPreset(e.target.value));
+  $("bkUrl").addEventListener("input", () => { bkInvalidate(); bkKeyHint(); listBackendModels(); });
+  $("bkKey").addEventListener("input", () => { bkInvalidate(); listBackendModels(); });
+  $("bkModel").addEventListener("input", bkInvalidate);
+  $("bkWindow").addEventListener("input", bkInvalidate);
+  $("bkTest").addEventListener("click", async () => {
+    const btn = $("bkTest");
+    btn.disabled = true;
+    bkMsg("Testing — a first request to a local model can take a while to load it…");
+    let r;
+    try { r = await bkPost("/backend/test", bkBody()); }
+    catch { r = { ok: false, error: "the cockpit did not answer" }; }
+    btn.disabled = false;
+    if (r && r.ok) {
+      const secs = (r.ms / 1000).toFixed(1);
+      bkMsg("✓ The model answered in " + secs + " s" + (r.reply ? ": “" + r.reply + "”" : "") + ".", "ok");
+      $("bkSave").disabled = false;
+    } else {
+      bkMsg("✗ " + ((r && r.error) || "the test failed"), "bad");
+    }
+  });
+  $("authOtherBox").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if ($("bkSave").disabled) return;
+    const r = await bkPost("/backend", bkBody(), "PUT").catch(() => ({ error: "the cockpit did not answer" }));
+    if (!r.ok) return bkMsg("✗ " + (r.error || "could not save"), "bad");
+    bkMsg("✓ Saved. New agents run on " + r.current.model + "; running ones keep their model until they are reloaded.", "ok");
+    refreshAuthRows();
+    setTimeout(() => { authDismissable = false; $("authClose").hidden = true; $("authOverlay").hidden = true; }, 1800);
+  });
+  $("bkClear").addEventListener("click", async () => {
+    const r = await bkPost("/backend", { clear: true }, "PUT").catch(() => ({ error: "the cockpit did not answer" }));
+    if (!r.ok) return bkMsg("✗ " + (r.error || "could not reset"), "bad");
+    bkMsg("✓ New agents run on the Claude subscription again.", "ok");
+    $("bkClear").hidden = true;
+    refreshAuthRows();
+  });
 
   $("authCodeForm").addEventListener("submit", async (e) => {
     e.preventDefault();

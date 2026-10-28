@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { ConfiguredBackend } from "./backend.js";
 
 /**
  * Global CLI config at ~/.shadok-ai/config.json (mode 600). The Telegram bot
@@ -78,6 +79,14 @@ export interface Config {
    * break-glass when every admin has lost their device (README).
    */
   twoFactor?: Record<string, true>;
+  /**
+   * Per launch-directory model backend chosen at onboarding (or from the
+   * version menu), keyed by absolute cwd. Absent = the Claude subscription, or
+   * whatever ANTHROPIC_BASE_URL shadok was launched with. When present it is
+   * authoritative and REPLACES the environment wholesale — see src/backend.ts.
+   * May hold an API key, which is one more reason this file is 600.
+   */
+  modelBackend?: Record<string, ConfiguredBackend>;
 }
 
 export const SHADOK_DIR = path.join(os.homedir(), ".shadok-ai");
@@ -155,6 +164,19 @@ export function setThemeForCwd(cfg: Config, cwd: string, theme: string): void {
   cfg.cockpitTheme ??= {};
   if (t && t !== "amber" && (COCKPIT_THEMES as readonly string[]).includes(t)) cfg.cockpitTheme[cwd] = t;
   else delete cfg.cockpitTheme[cwd];
+  saveConfig(cfg);
+}
+
+/** The model backend chosen for the instance launched in `cwd`, or null. */
+export function backendForCwd(cfg: Config, cwd: string): ConfiguredBackend | null {
+  return cfg.modelBackend?.[cwd] ?? null;
+}
+
+/** Set (or clear, with null) that backend and persist. */
+export function setBackendForCwd(cfg: Config, cwd: string, b: ConfiguredBackend | null): void {
+  cfg.modelBackend ??= {};
+  if (b) cfg.modelBackend[cwd] = b;
+  else delete cfg.modelBackend[cwd];
   saveConfig(cfg);
 }
 
