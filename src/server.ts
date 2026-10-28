@@ -258,6 +258,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
   browserOrigin,
 } from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
+import { backendEnv, backendFor, type Backend } from "./backend.js";
 import { availableModels, MODEL_FAMILIES } from "./claude-models.js";
 import { startHeartbeat } from "./heartbeat.js";
 import {
@@ -1614,7 +1615,17 @@ app.get("/version", (_req, res) => res.json(versionState()));
 // account login comes from `claude auth status`; the token expiry is read from
 // the credentials store (never the token itself) and merged in, so the version
 // menu can show WHO is signed in and WHEN a re-login will be needed.
-app.get("/auth", async (_req, res) => res.json({ ...(await authStatus()), ...readTokenExpiry() }));
+// `backend: "custom"` when the whole instance runs on a custom model backend
+// (src/backend.ts): the page then never opens the sign-in card, since no agent
+// here needs the subscription. The probe still runs — a mixed setup's
+// subscription agents still need to know.
+app.get("/auth", async (_req, res) =>
+  res.json({
+    ...(await authStatus()),
+    ...readTokenExpiry(),
+    ...(backendFor(process.env).kind === "custom" ? { backend: "custom" } : {}),
+  }),
+);
 
 app.post("/auth/login", async (req, res) => {
   // `force` is a deliberate "re-login now" from a signed-in instance (the
@@ -3039,6 +3050,28 @@ function ledgerReflex(): string | null {
  * then assumes the standard window, which `effectiveWindow` corrects if the
  * session ever proves it wrong.
  */
+/** The backend an agent on this profile talks to — the same inputs
+ *  `makePilot` hands the process, so the verdict cannot disagree with it. */
+function sessionBackend(profileName?: string | null): Backend {
+  const profile = profileName ? getProfile(profileName) : undefined;
+  const secretEnv = secretsFor(profile?.secrets);
+  return backendFor({ ...backendEnv(process.env, secretEnv), ...secretEnv });
+}
+
+/** The profile a `start` will run with, known BEFORE the spawn resolves its
+ *  id — only for the sign-in gate. Mirrors the later resolution: on a resume
+ *  the channel's stored profile wins over the message's. */
+function gateProfile(msg: { profile?: string | null; resume?: string }): string | null {
+  if (msg.resume) {
+    const found = resolveResumeId(loadChannels().map((c) => c.sessionId), msg.resume);
+    if (found.ok) {
+      const stored = loadChannels().find((c) => c.sessionId === found.id)?.profile;
+      if (stored != null) return stored;
+    }
+  }
+  return msg.profile ?? null;
+}
+
 function sessionModelSetting(profileName?: string | null, agentModel?: string | null): string | null {
   // The agent's own choice comes FIRST, and this is not cosmetic: the gauge
   // resolves its window from this string (`windowForModel`, invariant 22), so
@@ -3115,7 +3148,10 @@ function makePilot(
   // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
   // must never print" was noise that buried the real ones.
   const secretEnv = secretsFor(profile?.secrets);
-  const env: Record<string, string> = { ...secretEnv };
+  // A custom model backend (a self-hosted open model, a gateway) first, then
+  // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
+  // point off Anthropic, and maps the model aliases. See src/backend.ts.
+  const env: Record<string, string> = { ...backendEnv(process.env, secretEnv), ...secretEnv };
   // Self-scheduling context: lets the shadok-scheduler skill register/list/remove
   // crons on THIS channel via the local API (so the user can set up monitoring in
   // plain language just by asking the agent).
@@ -3214,6 +3250,10 @@ interface Live {
   monitors: number;
   /** The window this session's model setting asks for (see `windowForModel`). */
   contextWindow: number;
+  /** Subscription or a custom backend, decided AT SPAWN from the same env the
+   *  process got. A custom agent spends no subscription quota, so the pace
+   *  guard must never hold it back. See src/backend.ts. */
+  backend: Backend["kind"];
   /** The last assistant block of this turn was the silence placeholder. */
   lastTurnSilent: boolean;
   /** A hidden prompt (a `cron` fire or a parent notification) was just
@@ -3583,7 +3623,13 @@ async function createSession(
   const pilot = makePilot(id, cwd, args, profile, model, effort);
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id));
-  const contextWindow = windowForModel(sessionModelSetting(profile, model));
+  const backend = sessionBackend(profile);
+  // A custom backend's window is whatever its server was started with, which
+  // no model name can tell us: SHADOK_CONTEXT_WINDOW says it, and without it
+  // the usual assumption stands (and `effectiveWindow` still promotes on proof).
+  const contextWindow =
+    (backend.kind === "custom" ? backend.contextWindow : null) ??
+    windowForModel(sessionModelSetting(profile, model));
   const s: Live = {
     id,
     cwd,
@@ -3598,6 +3644,7 @@ async function createSession(
     lastScreen: "",
     lastDialogKey: null,
     contextWindow,
+    backend: backend.kind,
     // A reattached session must show its bar at once, not only after the next
     // turn writes a usage record — so seed from the transcript's last message.
     model,
@@ -4189,7 +4236,11 @@ function maybeScheduleRetry(s: Live) {
     // A failed usage read must never block: paceBlock(null, …) reports
     // "not blocked", so a rejection degrades to letting the retry through
     // rather than wedging the chain on an unhandled rejection.
-    const verdict = paceBlock(await getUsage().catch(() => null), Date.now());
+    // A custom backend spends no subscription quota, so it is never parked.
+    const verdict =
+      s.backend === "custom"
+        ? paceBlock(null, Date.now())
+        : paceBlock(await getUsage().catch(() => null), Date.now());
     // A takeover (or teardown) replaced or cleared our timer while we were
     // fetching: this chain is no longer the live one, so stand down — and
     // leave s.retryTimer alone, it now belongs to whoever replaced us.
@@ -4316,18 +4367,26 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // "unknown", and the spawn itself would throw "posix_spawnp failed".
           const claude = await ensureClaudeOnce();
           if (!claude.ok) return fail(claude.error);
-          const auth = await authStatus();
-          if (auth.state === "unknown")
-            console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
-          if (auth.state === "signed-out") {
-            // Telling the user is the whole point: a cron refused at 4am must
-            // not be discovered a day later. Deduplicated inside, so a
-            // five-minute cron does not turn one sign-out into a flood.
-            announceLoggedOut();
-            return fail(
-              "this shadok-ai instance is not signed in to Claude — sign in from the cockpit",
-              "logged-out",
-            );
+          // An agent on a custom backend authenticates with its own token and
+          // never touches the subscription, so the instance's sign-in is not
+          // its business. The profile is resolved early (and cheaply) for this
+          // alone; a resume we cannot match falls back to the probe as before.
+          if (sessionBackend(gateProfile(msg)).kind === "custom") {
+            console.log(`auth: custom model backend, sign-in not required`);
+          } else {
+            const auth = await authStatus();
+            if (auth.state === "unknown")
+              console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
+            if (auth.state === "signed-out") {
+              // Telling the user is the whole point: a cron refused at 4am must
+              // not be discovered a day later. Deduplicated inside, so a
+              // five-minute cron does not turn one sign-out into a flood.
+              announceLoggedOut();
+              return fail(
+                "this shadok-ai instance is not signed in to Claude — sign in from the cockpit",
+                "logged-out",
+              );
+            }
           }
           if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
           const cwd = msg.cwd?.trim() || process.cwd();
@@ -4618,7 +4677,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
-          if (!msg.force) {
+          // A custom backend spends no subscription quota: nothing to pace.
+          if (!msg.force && session.backend !== "custom") {
             const verdict = paceBlock(await getUsage(), Date.now());
             if (verdict.blocked) return send({ type: "pace-blocked", reason: verdict.reason, text });
             // The busy test above is now stale: a parked fire() (or another

@@ -6788,6 +6788,11 @@
     // Only offer a re-login when we KNOW the account is signed in — a failed
     // probe ("unknown") or a signed-out state is the sign-in card's job.
     if (relBtn) relBtn.hidden = true;
+    if (a && a.backend === "custom" && a.state !== "signed-in") {
+      accEl.textContent = "custom model backend"; accEl.title = "";
+      tokEl.textContent = "—"; tokEl.title = "";
+      return;
+    }
     if (!a || a.state === "unknown") {
       accEl.textContent = "—"; accEl.title = "";
       tokEl.textContent = "—"; tokEl.title = "";
@@ -9644,7 +9649,9 @@
       // means the probe failed, and treating that as signed out is what made
       // the card pop — and a `claude auth login` child spawn — on instances
       // that were signed in the whole time.
-      if (s && s.state === "signed-out") openAuthCard();
+      // A custom model backend (self-hosted model, gateway) needs no Claude
+      // sign-in at all, so a signed-out probe means nothing there.
+      if (s && s.state === "signed-out" && s.backend !== "custom") openAuthCard();
       else $("authOverlay").hidden = true;
     } catch {
       // A failed check must not block a cockpit that is in fact working.

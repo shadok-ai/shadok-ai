@@ -1,5 +1,6 @@
 import WebSocket from "ws";
 import { loadChannels } from "./channels.js";
+import { backendFor } from "./backend.js";
 import { authStatus, type AuthState } from "./claude-auth.js";
 import { BOSS_PROFILE_NAME } from "./profiles.js";
 
@@ -36,8 +37,13 @@ export interface FirstAgentPlan {
 export function firstAgentPlan(input: {
   channelCount: number;
   authState: AuthState;
+  /** The whole instance runs on a custom model backend (src/backend.ts): its
+   *  agents carry their own token, so the Claude sign-in is irrelevant. */
+  customBackend?: boolean;
 }): FirstAgentPlan {
   if (input.channelCount > 0) return { spawn: false, reason: "channels-exist" };
+  if (input.customBackend)
+    return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
   // "unknown" is not "signed in": the probe failed. Waiting costs one boot,
   // guessing costs an agent with no credentials — the zombie shape (invariant 27).
   if (input.authState !== "signed-in") return { spawn: false, reason: "not-signed-in" };
@@ -117,9 +123,14 @@ export async function ensureFirstAgent(deps: {
   onReady: (sessionId: string, name: string) => void;
 }): Promise<FirstAgentPlan["reason"]> {
   if (inFlight) return "channels-exist";
+  // Instance-wide only: the lead agent's profile is not consulted, so a custom
+  // backend reaches it through shadok's own environment.
+  const customBackend = backendFor(process.env).kind === "custom";
   const plan = firstAgentPlan({
     channelCount: loadChannels().length,
-    authState: (await authStatus()).state,
+    // No probe when it cannot change the answer (~850ms, and a process spawn).
+    authState: customBackend ? "unknown" : (await authStatus()).state,
+    customBackend,
   });
   if (!plan.spawn) {
     settleFirstAgent(plan.reason);
