@@ -7081,51 +7081,45 @@
   // off. Bounded so an update that never lands doesn't leave us hammering.
   let reloadExpectedUntil = 0;
 
-  /** Reconnect every dropped tab immediately (no backoff wait) — fired when the
-   *  machine/tab comes back (online / visible), the common laptop-wake case.
-   *  `force` replaces even a socket that still reports OPEN: after a laptop
-   *  sleep the TCP connection is usually dead while the browser has seen no
-   *  `close`, so `readyState` lies "OPEN" and the gentle path would skip the
-   *  tab — leaving it stranded until the browser's own TCP timeout fires
-   *  (tens of seconds to minutes), which is exactly the "stuck reconnecting,
-   *  very slow" symptom. A CONNECTING socket is always left alone: a link is
-   *  already in flight, and tearing it down would only restart the clock. */
+  /** Revive the tabs whose link actually DROPPED — fired when the machine/tab
+   *  comes back (online / visible). It resets the backoff and reconnects at
+   *  once, so a genuinely-closed socket comes back promptly instead of waiting
+   *  out an exponential delay that climbed while we were away.
+   *
+   *  It deliberately does NOT touch a socket that still reports OPEN. An earlier
+   *  version force-replaced OPEN sockets too (to catch a laptop-sleep "zombie" —
+   *  OPEN on the client, dead on the wire). But `online` fires on EVERY network
+   *  blip (wifi roam, VPN, interface change), and force-closing every healthy
+   *  link on each blip reconnected all N agents at once — tripping the upstream
+   *  OAuth refresh-token race (single-use tokens, concurrent `claude --resume`,
+   *  biting at ~10–30 agents) so a whole batch stuck on "connecting…". That mass
+   *  churn was worse than the zombie it chased: a slept socket is terminated by
+   *  the server heartbeat (~50s) and the resulting `close` reconnects it anyway,
+   *  no force needed. `force` is kept ONLY for a bfcache `pageshow`, where the
+   *  restored page's old sockets are genuinely dead and fire no `close`. */
   function reconnectAllNow(force) {
     for (const t of tabs) {
       if (t.closing || !t.sessionId) continue;
       const st = t.ws && t.ws.readyState;
       if (st === WebSocket.CONNECTING) continue;      // a link is already on its way
-      if (st === WebSocket.OPEN && !force) continue;  // healthy and no reason to doubt it
+      if (st === WebSocket.OPEN && !force) continue;  // healthy — leave it, a blip is not a death
       if (t.reconnectTimer) clearTimeout(t.reconnectTimer);
-      t.reconnectAttempts = 0;
+      t.reconnectAttempts = 0;                        // reset the backoff: reconnect promptly, not after a climbed delay
       const old = t.ws;
       openLink(t);                                    // replaces t.ws with the fresh socket
-      // Close the suspected-zombie only after openLink swapped t.ws, so its
+      // Close a forced (bfcache) zombie only after openLink swapped t.ws, so its
       // `close` handler sees `t.ws !== ws` and does not schedule a competing
       // reconnect. A no-op when `old` was already closed.
       if (old && old !== t.ws) { try { old.close(); } catch {} }
     }
   }
 
-  // A real wake (laptop sleep, bfcache restore, a network change) must force a
-  // fresh link; a quick tab switch must not — forcing there would flash
-  // "reconnecting" and pay a resume round-trip every time you glance away.
-  // The tell is how long we were hidden: seconds for an alt-tab, minutes for a
-  // sleep. `online` and a bfcache `pageshow` are forced outright — the network
-  // or the page itself just changed under us.
-  const STALE_WAKE_MS = 10_000;
-  let hiddenAt = 0;
-  function wokeAfterLongAway() {
-    const away = hiddenAt ? Date.now() - hiddenAt : 0;
-    hiddenAt = 0;
-    return away > STALE_WAKE_MS;
-  }
-  window.addEventListener("online", () => reconnectAllNow(true));
-  window.addEventListener("pageshow", (e) => reconnectAllNow(!!e.persisted || wokeAfterLongAway()));
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden) { hiddenAt = Date.now(); return; }
-    reconnectAllNow(wokeAfterLongAway());
-  });
+  // Reconnect the links that dropped while we were away — but never disturb a
+  // healthy one (see reconnectAllNow). Only a bfcache restore forces, because
+  // there the old sockets are dead yet fire no `close`.
+  window.addEventListener("online", () => reconnectAllNow(false));
+  window.addEventListener("pageshow", (e) => reconnectAllNow(!!e.persisted));
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) reconnectAllNow(false); });
 
   /**
    * Lists the agents alive in the server right now — including ones spawned
