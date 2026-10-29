@@ -4604,12 +4604,18 @@
 
   // A single click on a group's icon SELECTS the group (when the rail is
   // collapsed to icons the icon is almost the whole row, so this is the primary
-  // action); a double-click opens the icon picker. The stamp has to live out
-  // here, not on the element: selecting a non-active group rebuilds the rail
-  // (renderRail keys on the active view) and replaces the very icon between the
-  // two clicks, so a native `dblclick` never fires and an element-local timer
-  // would be thrown away with it.
-  let lastIconClick = { view: null, t: 0 };
+  // action); a double-click opens the icon picker, and a double-click on the
+  // name renames it. Neither may rely on a native `dblclick` or on state kept on
+  // the element: the rail is REBUILT under the pointer — by the first click
+  // itself (selecting a group changes the active view) and, with live agents,
+  // by any mood change in between — and a dblclick whose two clicks land on two
+  // different nodes never fires. The browser's own click count (`e.detail`)
+  // follows the pointer, not the node, and the OS double-click speed with it.
+  const isSecondClick = (e) => e.detail >= 2;
+  // While a click is under way, a rebuild that only repaints moods waits: it
+  // would swap the node between mousedown and mouseup and swallow the click.
+  let railHoldUntil = 0;
+  railList.addEventListener("pointerdown", () => { railHoldUntil = Date.now() + 700; }, true);
 
   function railItem({ view, icon, name, group }) {
     const members = tabsInView(view);
@@ -4659,16 +4665,13 @@
         // and so the document-level close-on-click doesn't shut the picker we
         // may be about to open with this very click.
         e.stopPropagation();
-        const now = Date.now();
-        if (lastIconClick.view === view && now - lastIconClick.t < 350) {
-          lastIconClick = { view: null, t: 0 };
-          openIconPicker(group, ic);
-        } else {
-          lastIconClick = { view, t: now };
-          setView(view);
-        }
+        if (isSecondClick(e)) openIconPicker(group, ic);
+        else setView(view);
       });
-      nm.addEventListener("dblclick", (e) => {
+      nm.addEventListener("click", (e) => {
+        if (!isSecondClick(e)) return; // the item's own click selects the group
+        // Not to the item: its setView could move the focus to the composer
+        // and blur (= close) the field we are opening.
         e.stopPropagation();
         inlineRename(item, nm, (v) => {
           group.nameEl.textContent = v;
@@ -4741,6 +4744,13 @@
       return [e.view, e.icon, e.name, members.length, members.map(moodOf).join(",")].join("/");
     }).join("|");
     if (sig !== railSig) {
+      // Same view → nothing the user did; it can wait for the click to finish.
+      const wait = railHoldUntil - Date.now();
+      if (wait > 0 && railSig.startsWith(v + "|")) {
+        clearTimeout(renderRail.retry);
+        renderRail.retry = setTimeout(renderRail, wait);
+        return;
+      }
       railSig = sig;
       railList.replaceChildren(...entries.map(railItem));
     }
