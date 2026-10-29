@@ -531,16 +531,19 @@ every 25s (tunable with `SHADOK_WS_PING_MS`) to keep the connection warm, so no
 proxy change is normally needed; if your proxy still cuts it, raise
 `proxy_read_timeout` above the ping interval.
 
-**Sleep / wake.** When a laptop sleeps, the socket's TCP connection usually dies
-without the browser ever seeing a `close`, so it keeps reporting the link as
-"open" while nothing flows. On wake the cockpit no longer trusts that stale
-state: a real wake — the page becoming visible after more than ~10s away, a
-network change (`online`), or a page restored from the back/forward cache —
-tears the suspect socket down and opens a fresh one at once, reattaching to the
-same session. A quick tab switch is left alone (the link is almost certainly
-fine), so you don't pay a reconnect every time you glance away. Previously a
-woken tab waited out the browser's own TCP timeout, tens of seconds to minutes,
-stuck on "reconnecting…".
+**Sleep / wake / network blips.** When the machine comes back (an `online`
+event, the tab becoming visible, a back/forward-cache restore), the cockpit
+revives the links that actually **dropped** — resetting their backoff so a
+genuinely-closed socket reconnects promptly instead of waiting out a delay that
+climbed while you were away. A socket that still reports "open" is left alone:
+`online` fires on every network blip (wifi roam, VPN, interface change), and
+force-reconnecting healthy links on each one reconnected all your agents at
+once — tripping the upstream single-use-token OAuth refresh race so a batch
+stuck on "connecting…". A slept socket that looks "open" but is dead is
+terminated by the server heartbeat (~50s) and reconnects on the resulting
+`close` without that churn. Only a back/forward-cache restore force-replaces an
+"open" socket, because there the restored page's old sockets are dead yet fire
+no `close`.
 
 ### Cross-instance peers
 
