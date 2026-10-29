@@ -2277,11 +2277,15 @@
      `.tab.active` above comes later at the same weight, so the agent you are
      watching — the one most likely to be working — went plain white. The tint
      is mixed INTO the surface (opaque) and the selectors outweigh both
-     `.tab.active` rules, so the active tab keeps its state colour in either mode. */
+     `.tab.active` rules, so the active tab keeps its state colour in either mode.
+     `background-COLOR`, never the shorthand: `background` expands to
+     `background-image: none`, and these selectors outweigh `.tab.has-bg`, so the
+     shorthand silently erased the green hatch of an agent with background work
+     still running (measured: light mode, a working non-active row lost it). */
   :root[data-mode="light"] .tab.working,
-  :root[data-mode="light"] .rail-item.working { background: color-mix(in srgb, var(--amber) 22%, var(--bg-raised)); }
-  :root[data-mode="light"] .tab.working.active { background: color-mix(in srgb, var(--amber) 18%, var(--bg-raised)); }
-  :root:not([data-mode="light"]) .tab.working.active { background: color-mix(in srgb, var(--amber) 16%, var(--bg-inset)); }
+  :root[data-mode="light"] .rail-item.working { background-color: color-mix(in srgb, var(--amber) 22%, var(--bg-raised)); }
+  :root[data-mode="light"] .tab.working.active { background-color: color-mix(in srgb, var(--amber) 18%, var(--bg-raised)); }
+  :root:not([data-mode="light"]) .tab.working.active { background-color: color-mix(in srgb, var(--amber) 16%, var(--bg-inset)); }
   .tab.active .tav .led { border-color: var(--bg-raised); }
   .tab.unread { border-left: 0; border-radius: 6px; font-weight: 700; }
   .group-head { gap: 10px; padding: 8px; font-size: 14px; color: var(--text); border-radius: 6px; }
