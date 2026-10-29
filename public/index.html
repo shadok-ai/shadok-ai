@@ -943,6 +943,12 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left;
   }
   .bang-btn:disabled { opacity: .5; cursor: default; }
+  .env-plus {
+    font: inherit; font-size: 11px; line-height: 1; cursor: pointer; vertical-align: 1px;
+    margin-left: 3px; padding: 2px 5px; border-radius: 5px;
+    border: 1px solid var(--amber); background: var(--amber-soft); color: var(--text);
+  }
+  .env-plus:hover, .env-plus:focus-visible { background: var(--amber); color: var(--bg); }
   .bang-card { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-word; margin: 0; }
   .bang-card .bang-cmd { color: var(--amber); }
   .bang-card .bang-out.err { color: var(--err); }
@@ -3155,6 +3161,8 @@
   import { bangCommands, blockCommand } from "/bang.js?v=__ASSET_V__";
   window.bangCommands = bangCommands;
   window.blockCommand = blockCommand;
+  import { envVarAsks } from "/env-ask.js?v=__ASSET_V__";
+  window.envVarAsks = envVarAsks;
   import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
   window.claudeUpdateState = claudeUpdateState;
   import { buildMessageLink, parseMessageLink, samePrompt } from "/deep-link.js?v=__ASSET_V__";
@@ -3283,6 +3291,8 @@
     bangCommands: () => [],
     // No module → no block is runnable, so no inline run button (copy only).
     blockCommand: () => null,
+    // No module → no "+" next to an env var name; the vault is still one click away.
+    envVarAsks: () => [],
     // Boot-critical (runs in restore before the module might land): a fulfilled
     // /channels wins even when empty; only a failed fetch uses the cache.
     pickChannelSource: (settled, cached) =>
@@ -6388,6 +6398,43 @@
     bubble.appendChild(row);
   }
 
+  /**
+   * Put a "+" next to each env var an agent asks for (`HUBSPOT_TOKEN missing…`),
+   * so providing it is one click instead of a trip to the vault and a retyped
+   * name. Placed right after the inline code that names it; a name with no
+   * inline span of its own (a fenced `export X=…`) falls back to a row below.
+   */
+  function decorateEnvAsks(tab, bubble, text) {
+    const names = window.envVarAsks(text);
+    if (!names.length || !bubble) return;
+    const placed = new Set();
+    const plus = (name, cls, label) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = cls;
+      b.textContent = label;
+      b.title = "Add " + name + " to the secret vault" + (tab.profile ? " and inject it into " + tab.profile : "");
+      // never onclick=: the CSP nonce does not cover inline handlers
+      b.addEventListener("click", (e) => { e.stopPropagation(); openSecretFor(tab, name); });
+      return b;
+    };
+    for (const code of bubble.querySelectorAll("code")) {
+      if (code.closest("pre")) continue;
+      for (const name of names) {
+        if (placed.has(name) || !new RegExp("\\b" + name + "\\b").test(code.textContent)) continue;
+        code.after(plus(name, "env-plus", "+"));
+        placed.add(name);
+        break;
+      }
+    }
+    const rest = names.filter((n) => !placed.has(n));
+    if (!rest.length) return;
+    const row = document.createElement("div");
+    row.className = "bang-row";
+    for (const name of rest) row.appendChild(plus(name, "bang-btn env-btn", "+ " + name));
+    bubble.appendChild(row);
+  }
+
   /** A shell-mode exchange: the command, then its output once it arrives. */
   function addBashCard(tab, h, at) {
     if (h.command !== undefined || !tab.lastBashCard) {
@@ -7658,6 +7705,7 @@
           } else {
             const b = addTurn(t, "claude", "claude", h.text, "hist", h.at);
             decorateBang(t, b, h.text);
+            decorateEnvAsks(t, b, h.text);
             stampMsgIds(t, b.parentElement, h.ids);
             // A hidden prompt (cron / notification) ran before this turn: keep
             // its own label instead of merging it onto the previous answer
@@ -7848,6 +7896,7 @@
           // spares `.after-gap`).
           if (msg.afterInternal) b.parentElement.classList.add("after-gap");
           decorateBang(t, b, msg.text);
+          decorateEnvAsks(t, b, msg.text);
           if (msg.msgId) stampMsgIds(t, b.parentElement, [msg.msgId]);
           markUnreadBoundary(t, b.parentElement);
         }
@@ -8980,6 +9029,26 @@
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
   });
+  /** The vault, opened on ONE name an agent asked for: the name filled in (or the
+   *  existing secret in edit mode), the asking agent's profile pre-ticked so the
+   *  value actually reaches it, the cursor on the value. Saving then goes through
+   *  the ordinary submit — and its reload offer, since a value lands at spawn. */
+  async function openSecretFor(tab, name) {
+    await Promise.all([loadVault(), loadProfilesInto()]);
+    renderSecrets();
+    $("secretsReload").hidden = true;
+    if (vaultNames.includes(name)) startEditSecret(name);
+    else {
+      resetSecretForm();
+      $("secretKey").value = name;
+    }
+    const cb = tab && tab.profile
+      ? [...$("secretProfiles").querySelectorAll("input")].find((c) => c.value === tab.profile)
+      : null;
+    if (cb) cb.checked = true;
+    $("secretsOverlay").hidden = false;
+    $("secretVal").focus();
+  }
   $("secretEditCancel").addEventListener("click", resetSecretForm);
   // The missing link: from the secrets, go and attach them to a profile.
   $("secretsToProfiles").addEventListener("click", () => {
