@@ -17,7 +17,9 @@ import {
   addTgTopic,
   tgToolsEnabled,
   setTgTools,
+  loadGroups,
 } from "./channels.js";
+import { privateGroupOf } from "./private-groups.js";
 import { secretNames, setSecret, deleteSecret } from "./secrets.js";
 import { telegramPhotoable } from "./download.js";
 import { transcribe, heardNotice } from "./whisper.js";
@@ -2183,6 +2185,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     const group = loadTgGroup();
     if (group === null) return;
     const bridged = new Set([...bridges.values()].map((b) => b.sessionId).filter(Boolean));
+    const groups = loadGroups();
     for (const c of loadChannels()) {
       // A binding to a GROUP that isn't our board (a stray /setup on a second
       // group, or a leftover from before this instance re-bound) is what shows
@@ -2195,7 +2198,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       // Mirroring is a CHOICE (see the 2026-07-30 spec). Both directions, and
       // the loop converges: the web only flips `mirror`, we catch up here.
       // Declarative on purpose — a lost POST would leave a ghost topic.
-      const wanted = isMirrored(c);
+      // A board group is shared with everyone in it, so an agent of a PRIVATE
+      // group is never mirrored, whatever its flag says (spec:
+      // 2026-10-29-private-groups-design.md).
+      const wanted = isMirrored(c) && !privateGroupOf(c, groups);
       // Un-mirroring DELETES a topic, so we demand an EXPLICIT `mirror ===
       // false`, never `isMirrored`'s fallback. A client that ignores the field —
       // an old tab, a script — must not be able to destroy a conversation by

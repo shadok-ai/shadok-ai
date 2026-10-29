@@ -794,6 +794,9 @@
       color: var(--text); padding: 2px 5px;
     }
     .rail-count { flex: none; font-family: var(--sans); font-size: 10px; color: var(--text-dim); }
+    #privPeople { display: flex; flex-direction: column; gap: 6px; padding: 4px 16px 12px; max-height: 40vh; overflow: auto; }
+    #privPeople label { display: flex; gap: 8px; align-items: center; font-size: 13px; }
+    #privPeople .me { color: var(--text-dim); font-size: 11px; }
     /* What a group that is not on screen asks of you — the single place it shows. */
     .rail-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; display: none; }
     .rail-item.needs-answer .rail-dot { display: block; background: var(--amber); animation: breathe 1.2s ease-in-out infinite; }
@@ -817,6 +820,19 @@
     .rail-item:hover .rail-count { display: none; }
     .rail-add:hover { color: var(--amber); }
     .rail-del:hover { color: var(--err); }
+    /* Private groups: a lock on the row; the access button shows on hover for a
+       group you can manage, and always for one that is already private. */
+    .rail-lock { flex: none; font-size: 10px; opacity: .8; }
+    .rail-priv {
+      flex: none; display: none; border: none; background: none;
+      padding: 0 3px; font-size: 11px; line-height: 1; color: var(--text-dim);
+    }
+    .rail-item:hover .rail-priv { display: inline-block; }
+    .rail-priv:hover { color: var(--amber); }
+    .rail-item.locked { opacity: .6; }
+    .rail-item.locked .rail-name { font-style: italic; }
+    .rail-item.locked:hover .rail-count { display: inline; }
+    body.rail-mini .rail-priv, body.rail-mini .rail-lock { display: none !important; }
     #groupRail #newGroup {
       margin-top: 6px; border-color: transparent; text-align: left;
       font-size: 13px; color: var(--text-dim); padding: 8px 10px;
@@ -2606,6 +2622,23 @@
   </div>
 </div>
 
+<div id="privOverlay" class="overlay" hidden>
+  <div class="sec-panel modal">
+    <div class="sec-head">
+      <strong>🔒 Private group — <span id="privWho">group</span></strong>
+      <button id="privClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note" id="privNote"></p>
+    <div id="privPeople"></div>
+    <p class="sec-note warn" id="privErr" hidden></p>
+    <div class="modal-foot">
+      <button id="privPublic" hidden>Make public</button>
+      <button id="privCancel">Cancel</button>
+      <button class="primary" id="privSave">Save</button>
+    </div>
+  </div>
+</div>
+
 <div id="profConfirmOverlay" class="overlay" hidden>
   <div class="sec-panel modal">
     <div class="sec-head">
@@ -3536,6 +3569,7 @@
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", "tab");
       dragTabEl = btn;
+      dragTabFrom = btn.parentNode;
       document.body.classList.add("dragging-tab");
       requestAnimationFrame(() => btn.classList.add("dragging"));
     });
@@ -4439,6 +4473,7 @@
     if (!opts.icon) groupIconsMinted = true;
     const group = { id, el, headEl: head, bodyEl: body, nameEl: gname, icon, iconDrawn: !opts.icon };
     el._group = group;
+    setGroupAccess(group, opts);
     const paintCaret = () => {
       caret.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
     };
@@ -4469,8 +4504,110 @@
     return group;
   }
 
+  /**
+   * What the server says about a group's privacy (src/private-groups.ts) —
+   * never written back: `persistGroups` sends the cosmetic fields only, and the
+   * server keeps the access fields whatever a client says. A LOCKED group is one
+   * we may only know exists: no agents of it ever reach this page.
+   */
+  function setGroupAccess(group, o) {
+    group.access = o && o.private
+      ? { private: true, locked: !!o.locked, members: o.members || [], owner: o.owner || null, agentCount: o.agentCount || 0 }
+      : null;
+    const locked = !!group.access?.locked;
+    group.el.classList.toggle("private", !!group.access);
+    group.el.classList.toggle("locked", locked);
+    group.headEl.querySelector(".gadd").hidden = locked;
+    group.headEl.querySelector(".gclose").hidden = locked;
+  }
+
+  let privateGroupsOn = false;
+  let privTarget = null;
+  /** The members popin: make a group private (you become its first member),
+   *  choose who else is in it, or make it public again. */
+  async function openPrivate(group) {
+    privTarget = group;
+    const acc = group.access;
+    $("privWho").textContent = group.nameEl.textContent;
+    $("privErr").hidden = true;
+    $("privPublic").hidden = !acc;
+    $("privSave").textContent = acc ? "Save members" : "Make private";
+    $("privNote").textContent = acc
+      ? "Only these people see this group's agents. Everyone else — admins included — sees that the group exists, who is in it and how many agents it holds, never what they say."
+      : "Only the people you tick will see this group's agents. Everyone else — admins included — will see that the group exists, who is in it and how many agents it holds, never what they say. You are always a member. Agents mirrored to Telegram must be un-mirrored first. Note: anyone with a shell on this machine can still read transcripts on disk.";
+    let people = [];
+    try { people = await (await fetch("/groups/people")).json(); } catch { /* shown empty */ }
+    const ticked = new Set(acc ? acc.members : [me?.name]);
+    $("privPeople").replaceChildren(
+      ...people.map((n) => {
+        const l = document.createElement("label");
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = n;
+        cb.checked = ticked.has(n);
+        // You can leave a group you are in, but not by mistake while creating it.
+        if (!acc && n === me?.name) cb.disabled = true;
+        l.append(cb, document.createTextNode(n));
+        if (n === me?.name) {
+          const you = document.createElement("span");
+          you.className = "me";
+          you.textContent = "(you)";
+          l.append(you);
+        }
+        return l;
+      }),
+    );
+    $("privOverlay").hidden = false;
+  }
+  function closePrivate() { $("privOverlay").hidden = true; privTarget = null; }
+  /** Adopt the server's answer (a `groupsView` list) for every group we hold. */
+  function applyGroupsAccess(list) {
+    for (const row of Array.isArray(list) ? list : []) {
+      const g = groups.find((x) => x.id === row.id);
+      if (g) setGroupAccess(g, row);
+    }
+    applyView();
+  }
+  async function privPost(url, body) {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || "refused (" + r.status + ")");
+    return j;
+  }
+  $("privSave").addEventListener("click", async () => {
+    const g = privTarget;
+    if (!g) return;
+    const members = [...$("privPeople").querySelectorAll("input:checked")].map((cb) => cb.value);
+    try {
+      if (!g.access) applyGroupsAccess(await privPost("/groups/private", { id: g.id, private: true }));
+      applyGroupsAccess(await privPost("/groups/members", { id: g.id, members }));
+      closePrivate();
+    } catch (e) {
+      $("privErr").textContent = e.message;
+      $("privErr").hidden = false;
+    }
+  });
+  $("privPublic").addEventListener("click", async () => {
+    const g = privTarget;
+    if (!g || !confirm(`Make "${g.nameEl.textContent}" public? Its agents become visible to everyone.`)) return;
+    try {
+      applyGroupsAccess(await privPost("/groups/private", { id: g.id, private: false }));
+      closePrivate();
+    } catch (e) {
+      $("privErr").textContent = e.message;
+      $("privErr").hidden = false;
+    }
+  });
+  $("privClose").addEventListener("click", closePrivate);
+  $("privCancel").addEventListener("click", closePrivate);
+  $("privOverlay").addEventListener("click", (e) => { if (e.target === $("privOverlay")) closePrivate(); });
+
   /** Removes a group; its tabs move back to the ungrouped zone. */
   function dissolveGroup(group) {
+    if (group.access?.locked) return;
+    if (group.access?.private &&
+        !confirm(`"${group.nameEl.textContent}" is private. Ungrouping it makes its agents visible to everyone. Continue?`))
+      return;
     while (group.bodyEl.firstChild) ungroupedEl.appendChild(group.bodyEl.firstChild);
     group.el.remove();
     groups = groups.filter((g) => g !== group);
@@ -4479,9 +4616,27 @@
 
   // ── Drag & drop (tabs + groups, live-sort while dragging) ──
   let dragTabEl = null;
+  let dragTabFrom = null;
   let dragGroupEl = null;
 
   function endDrag() {
+    // A drop the server would refuse is undone here, so the column never shows
+    // what the registry does not hold: a private group you are not in, or a
+    // Telegram-mirrored agent going private (a board group is shared).
+    if (dragTabEl && dragTabFrom && dragTabEl.parentNode !== dragTabFrom) {
+      const g = dragTabEl.closest(".group")?._group;
+      const t = tabs.find((x) => x.btnEl === dragTabEl);
+      const why = g?.access?.locked
+        ? "you are not a member of that private group"
+        : g?.access?.private && t?.mirror
+          ? "this agent is mirrored to Telegram — stop mirroring it before making it private"
+          : null;
+      if (why) {
+        dragTabFrom.appendChild(dragTabEl);
+        alert("Can't move it there: " + why + ".");
+      }
+    }
+    dragTabFrom = null;
     const wasGroup = !!dragGroupEl;
     if (dragTabEl) dragTabEl.classList.remove("dragging");
     if (dragGroupEl) dragGroupEl.classList.remove("dragging");
@@ -4595,7 +4750,12 @@
     }
     const g = groups.find((x) => String(x.id) === v);
     $("viewLabel").textContent = g ? `${g.icon} ${g.nameEl.textContent}` : "Main";
-    $("viewEmpty").hidden = tabsInView(v).length > 0 || v === "ungrouped";
+    const locked = g?.access?.locked;
+    $("viewEmpty").textContent = locked
+      ? `🔒 Private group — only its members see its agents. Members: ${g.access.members.join(", ") || "none"} · ${g.access.agentCount} agent${g.access.agentCount === 1 ? "" : "s"}.`
+      : "No agent in this group yet — create one, or drag one onto the group.";
+    $("viewEmpty").hidden = !locked && (tabsInView(v).length > 0 || v === "ungrouped");
+    newTabBtn.hidden = !!locked;
     renderRail();
   }
 
@@ -4641,6 +4801,32 @@
     add.textContent = "＋";
     add.title = "New agent in " + name;
     item.append(ic, nm, dot, count, add);
+    const access = group?.access;
+    if (access) {
+      const lock = document.createElement("span");
+      lock.className = "rail-lock";
+      lock.textContent = "🔒";
+      nm.after(lock);
+    }
+    if (access?.locked) {
+      // Existence only: its name, who is in it, how many agents. Nothing to
+      // open, rename, drop into or delete.
+      item.classList.add("locked");
+      add.remove();
+      count.textContent = access.agentCount || "";
+      item.title = `${name} — private. Members: ${access.members.join(", ") || "none"}. You are not a member.`;
+      item.addEventListener("click", () => setView(view));
+      return item;
+    }
+    if (group && privateGroupsOn) {
+      const priv = document.createElement("button");
+      priv.type = "button";
+      priv.className = "rail-priv";
+      priv.textContent = access ? "👥" : "🔓";
+      priv.title = access ? "Members of this private group" : "Make this group private";
+      item.insertBefore(priv, add);
+      priv.addEventListener("click", (e) => { e.stopPropagation(); openPrivate(group); });
+    }
     if (group) {
       const del = document.createElement("button");
       del.type = "button";
@@ -4738,7 +4924,9 @@
     const v = currentView();
     const sig = v + "|" + entries.map((e) => {
       const members = tabsInView(e.view);
-      return [e.view, e.icon, e.name, members.length, members.map(moodOf).join(",")].join("/");
+      const acc = e.group?.access;
+      return [e.view, e.icon, e.name, members.length, members.map(moodOf).join(","),
+        acc ? (acc.locked ? "L" : "P") + acc.members.join("+") + acc.agentCount : ""].join("/");
     }).join("|");
     if (sig !== railSig) {
       railSig = sig;
@@ -4965,6 +5153,16 @@
     let chans;
     try { chans = await (await fetch("/channels")).json(); } catch { return; }
     if (!Array.isArray(chans)) return;
+    // Privacy is decided by other people too: a member who invites you, a group
+    // made private under you. Adopt it before placing tabs, so a newly visible
+    // agent lands in a group that already reads as open.
+    try {
+      const gl = await (await fetch("/groups")).json();
+      if (Array.isArray(gl)) {
+        for (const row of gl) if (row && !groups.some((g) => g.id === row.id)) createGroup(row);
+        applyGroupsAccess(gl);
+      }
+    } catch { /* keep what we have */ }
     const current = new Set(chans.map((c) => c.sessionId).filter(Boolean));
     const tabById = new Map(tabs.filter((t) => t.sessionId).map((t) => [t.sessionId, t]));
     // The main channel = bound to the Telegram General (no threadId).
@@ -6742,7 +6940,12 @@
       t.reconnectAttempts = 0;
       // Reattach to the SAME session once we know its id; a brand-new tab still
       // starts fresh (no sessionId yet).
-      const start = t.sessionId ? { ...t.launchMsg, resume: t.sessionId } : t.launchMsg;
+      // A NEW agent names its group, so the server files it there at spawn — an
+      // agent born in a private group is never public, not even until our next
+      // PUT /channels.
+      const start = t.sessionId
+        ? { ...t.launchMsg, resume: t.sessionId }
+        : { ...t.launchMsg, group: groupIdOf(t.btnEl) ?? undefined };
       ws.send(JSON.stringify({ type: "start", origin: "web", ...start }));
     });
     ws.addEventListener("close", () => {
@@ -9571,6 +9774,12 @@
     $("signOut").hidden = !named;
     $("whoSep").hidden = !named;
     if (named) $("whoAmI").textContent = "Signed in as " + me.name + " · " + me.role;
+    // Private groups are for NAMED accounts: the instance password (`admin`) is
+    // in every agent's env, and with no password there are no accounts at all.
+    // The server refuses either way; this only spares a button that cannot work.
+    privateGroupsOn = !!me?.name && me.name !== "admin";
+    railSig = "";
+    applyView();
     // Prompts drawn before we knew who you are get their side now.
     resideAllPrompts();
     // Security: for a signed-in person (or the lone admin of a no-password

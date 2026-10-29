@@ -88,6 +88,15 @@ Enter to skip; you can add it later from the web UI).
   whole cockpit is skinned like Microsoft Teams (grey light mode / near-black dark
   mode, the Shadok mark in the header). On a phone the tools sit in the ⋯ menu and
   the agents sheet lists every group.
+- **Private groups** — with accounts on (a GUI password and named users), the 🔓
+  on a group's row makes it private and 👥 picks who is in it. Only members see
+  its agents; everyone else, admins included, sees a locked row: the group's
+  name, its members and how many agents it holds, never what they say. An agent
+  spawned from inside a private group lands in it. The instance password
+  (`admin`) cannot hold one, since it sits in every agent's environment, and a
+  private agent is never mirrored to Telegram. This is a visibility layer: agents
+  share the server's OS user, so anything with a shell on the machine can still
+  read transcripts on disk.
 - **Worktree isolation** — spawned agents get their own git worktree and branch
   by default, so parallel agents never collide. Work is never auto-discarded:
   an empty worktree is reclaimed on close, anything with changes or commits
@@ -888,7 +897,10 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
-`/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/title` (GET/PUT — the
+`/channel` (DELETE), `/groups` (a private group you are not in comes back as a
+locked stub), `/groups/private` and `/groups/members` (POST — the only writers of
+a group's privacy, members only), `/groups/people` (the names you can invite),
+`/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent

@@ -99,6 +99,22 @@ import {
 import { migrateTgBindings } from "./channels.js";
 import { instanceKey } from "./paths.js";
 import {
+  canHoldPrivate,
+  canSeeSession,
+  dropMember,
+  groupsView,
+  guardClientChannels,
+  mergeClientGroups,
+  moveVerdict,
+  privateGroupOf,
+  setMembers,
+  setPrivate,
+  spawnGroup,
+  visibleChannels,
+  type Group,
+  type Viewer,
+} from "./private-groups.js";
+import {
   peerFileFor,
   loadPeers,
   savePeers,
@@ -913,6 +929,32 @@ function currentAccount(req: { headers: Record<string, unknown> }): { name: stri
   return cookieAccount(req);
 }
 
+/**
+ * WHO is looking, for private groups (src/private-groups.ts). Not the same
+ * question as `currentAccount`: an agent's key resolves to the bootstrap admin
+ * there, but here it must be judged as ITSELF — an agent sees its own private
+ * group and nothing else private, whatever cookie it also carries. The server's
+ * own loopbacks see everything; with no password there are no accounts, so no
+ * privacy either.
+ */
+function viewerOf(req: { headers: Record<string, unknown> }): Viewer {
+  if (!GUI_PASSWORD) return { kind: "all" };
+  const skey = req.headers["x-shadok-session-key"];
+  if (typeof skey === "string" && skey) {
+    const id = sessionForKey(skey);
+    if (id) return { kind: "agent", sessionId: id };
+  }
+  if (isInternalClient(cookieSession(req))) return { kind: "all" };
+  const peer = peerName(req);
+  if (peer) return { kind: "person", name: peer };
+  return { kind: "person", name: currentAccount(req)?.name ?? "" };
+}
+/** May this request see (and so drive) the agent with this id? */
+function seesSession(req: { headers: Record<string, unknown> }, id: string): boolean {
+  return canSeeSession(viewerOf(req), id, loadGroups(), loadChannels());
+}
+const PRIVATE_REFUSAL = "this agent is in a private group you are not a member of";
+
 /** Is two-factor sign-in on for this instance? Meaningless with no password. */
 function twoFactorOn(): boolean {
   return !!GUI_PASSWORD && twoFactorForCwd(loadConfig(), process.cwd());
@@ -1547,15 +1589,16 @@ app.get("/vendor/addon-fit.js", (_req, res) =>
 // Resumable sessions of a directory (for the "resume by id" picker).
 app.get("/sessions", (req, res) => {
   const cwd = String(req.query.cwd ?? "").trim() || process.cwd();
-  res.json(listSessions(cwd));
+  // A preview is the session's first prompt: a private agent's must not show.
+  res.json(listSessions(cwd).filter((x) => seesSession(req, x.id)));
 });
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
 // /sessions cannot see them — this is the only way the UI can list them.
-app.get("/live", (_req, res) => {
+app.get("/live", (req, res) => {
   res.json(
     [...sessions.values()]
-      .filter((s) => !s.pilot.hasExited)
+      .filter((s) => !s.pilot.hasExited && seesSession(req, s.id))
       .map((s) => ({
         id: s.id,
         cwd: s.cwd,
@@ -1596,6 +1639,7 @@ app.get("/diff", (req, res) => {
   // any account) passed the gate as a member and sees any.
   if (peerScopeFor(req) === "restricted" && !ownedByPeer(ch, peerName(req)!))
     return res.status(403).json({ error: "not your agent" });
+  if (!seesSession(req, s.id)) return res.status(403).json({ error: PRIVATE_REFUSAL });
   res.json(gitDiff(s.cwd, s.worktree?.repo ?? ch?.repo ?? null));
 });
 // Past worktree sessions of a repo (for reopening unfinished work).
@@ -1843,10 +1887,10 @@ app.get("/stars", async (_req, res) => res.json({ count: await starCount() }));
  * (see invariant 6), so this field cannot pollute the registry. And it is what
  * avoids a second poll — `/channels` is already re-read every 4 s.
  */
-app.get("/channels", (_req, res) => {
+app.get("/channels", (req, res) => {
   const active = loadCrons().filter((c) => c.enabled);
   res.json(
-    loadChannels().map((ch) => {
+    visibleChannels(viewerOf(req), loadChannels(), loadGroups()).map((ch) => {
       const mine = active.filter((c) => c.sessionId === ch.sessionId);
       return mine.length ? { ...ch, crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : ch;
     }),
@@ -1854,7 +1898,7 @@ app.get("/channels", (_req, res) => {
 });
 
 // ── Crons (scheduled channel prompts) ───────────────────────────────────────
-app.get("/crons", (_req, res) => res.json(loadCrons()));
+app.get("/crons", (req, res) => res.json(loadCrons().filter((c) => seesSession(req, c.sessionId))));
 // Create (no id) or update (id present). Body: { id?, sessionId, prompt,
 // schedule:{kind,...}, enabled? }.
 app.post("/crons", (req, res) => {
@@ -1862,6 +1906,9 @@ app.post("/crons", (req, res) => {
   const sessionId = String(b.sessionId ?? "").trim();
   const prompt = String(b.prompt ?? "").trim();
   const existing = b.id ? loadCrons().find((c) => c.id === b.id) : undefined;
+  // Both ends: the agent it fires into, and (on an update) the one it fired into.
+  if ((sessionId && !seesSession(req, sessionId)) || (existing && !seesSession(req, existing.sessionId)))
+    return res.status(403).json({ error: PRIVATE_REFUSAL });
   // The zone is resolved BEFORE the schedule: a one-shot dated as a wall clock
   // ("2026-08-25T08:42") means nothing without it.
   //
@@ -1927,7 +1974,9 @@ app.delete("/crons", (req, res) => {
   // Accepts a prefix (that is all the `list` views show) and tells the truth:
   // an unconditional `{ok:true}` made a deletion that deleted nothing look like
   // a success — the cron stayed, and nothing said so.
-  const r = resolveCronId(loadCrons(), String(req.query.id ?? ""));
+  // Resolved over the crons this caller can see, so a prefix never lands on a
+  // private agent's schedule.
+  const r = resolveCronId(loadCrons().filter((c) => seesSession(req, c.sessionId)), String(req.query.id ?? ""));
   if (!r.ok) {
     const status = r.error === "empty" ? 400 : r.error === "ambiguous" ? 409 : 404;
     return res.status(status).json({
@@ -1954,8 +2003,13 @@ app.put("/channels", (req, res) => {
   // Merge, don't overwrite: the browser owns order + name/group, but must never
   // drop a live or Telegram-bound session or strip server-owned fields.
   const live = new Set([...sessions.values()].filter((s) => !s.pilot.hasExited).map((s) => s.id));
-  const before = new Map(loadChannels().map((c) => [c.sessionId, c.name]));
-  const merged = mergeClientChannels(Array.isArray(req.body) ? req.body : [], live);
+  const stored = loadChannels();
+  const before = new Map(stored.map((c) => [c.sessionId, c.name]));
+  // The merge drops what a client omits, and a non-member's list never carries
+  // a private agent: `keep` is what stops that PUT from erasing them.
+  const viewer = viewerOf(req);
+  const { body, keep } = guardClientChannels(viewer, stored, loadGroups(), req.body);
+  const merged = visibleChannels(viewer, mergeClientChannels(body, new Set([...live, ...keep])), loadGroups());
   // A web-side rename of a Telegram-bound channel → rename its topic too.
   for (const c of merged) {
     if (c.telegram?.threadId && c.name && c.name !== before.get(c.sessionId)) {
@@ -1970,19 +2024,45 @@ app.put("/channels", (req, res) => {
 app.delete("/channel", async (req, res) => {
   const id = String(req.query.session ?? "").trim();
   if (!id) return res.status(400).json({ error: "session required" });
+  if (!seesSession(req, id)) return res.status(403).json({ ok: false, error: PRIVATE_REFUSAL });
   const ok = await endChannel(id);
   // 409, not 200: the caller asked for something the server will not do, and a
   // client that believes it succeeded removes a tab the registry still has.
   res.status(ok ? 200 : 409).json(ok ? { ok } : { ok, error: "the home channel can't be closed" });
 });
-app.get("/groups", (_req, res) => res.json(loadGroups()));
+// A private group the caller is not in comes back as a locked stub: it exists,
+// these are its members, it holds N agents — and nothing else.
+app.get("/groups", (req, res) => res.json(groupsView(viewerOf(req), loadGroups(), loadChannels())));
 app.put("/groups", (req, res) => {
   if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
     return res.status(409).json({ error: "instance-mismatch" });
   }
-  saveGroups(Array.isArray(req.body) ? req.body : []);
+  saveGroups(mergeClientGroups(viewerOf(req), loadGroups(), req.body, loadChannels()));
   res.json({ ok: true });
 });
+// The ONLY writers of a group's access fields — a `PUT /groups` never touches
+// them. Person-only and member-only (`setPrivate` / `setMembers`).
+app.post("/groups/private", (req, res) => {
+  const id = Number(req.body?.id);
+  const r = setPrivate(viewerOf(req), loadGroups(), loadChannels(), id, req.body?.private === true, !!GUI_PASSWORD);
+  if (!r.ok) return res.status(403).json({ error: r.error });
+  saveGroups(r.groups);
+  console.log(`groups: ${id} made ${req.body?.private === true ? "private" : "public"} by ${currentAccount(req)?.name}`);
+  res.json(groupsView(viewerOf(req), r.groups, loadChannels()));
+});
+app.post("/groups/members", (req, res) => {
+  const id = Number(req.body?.id);
+  const names = loadAccounts().map((a) => a.name);
+  const r = setMembers(viewerOf(req), loadGroups(), loadChannels(), id, req.body?.members, names);
+  if (!r.ok) return res.status(403).json({ error: r.error });
+  saveGroups(r.groups);
+  res.json(groupsView(viewerOf(req), r.groups, loadChannels()));
+});
+// The names a member can invite. Not `/users` (admin-only, and carrying roles,
+// passkeys and invitations): just who exists.
+app.get("/groups/people", (_req, res) =>
+  res.json(GUI_PASSWORD ? loadAccounts().map((a) => a.name).filter(canHoldPrivate) : []),
+);
 
 // Central secret vault (global, stored 600 outside any repo). Values are NEVER
 // returned — only names. A profile references names to inject them.
@@ -2128,6 +2208,8 @@ app.delete("/users", async (req, res) => {
   if (!keep.ok) return res.status(400).json({ error: keep.error });
   if (!(await stepUpIfTwoFactor(req, res, me!))) return;
   saveAccounts(loadAccounts().filter((a) => a.name !== name));
+  // The name leaves every private group: re-inviting it must not walk back in.
+  saveGroups(dropMember(loadGroups(), name));
   console.log(`users: ${me!.name} removed ${name}`);
   recordEvent({ kind: "removed", actor: me!.name, target: name });
   res.json({ ok: true });
@@ -3148,6 +3230,7 @@ app.get("/download", (req, res) => {
   if (!session || !wanted) return res.status(400).type("text").send("session and path required");
   const chan = loadChannels().find((c) => c.sessionId === session);
   if (!chan?.cwd) return res.status(404).type("text").send("unknown session");
+  if (!seesSession(req, session)) return res.status(403).type("text").send(PRIVATE_REFUSAL);
   // TWO sources, one rule: a path is servable only if THIS session offered it,
   // through the harness tool (the transcript) or through POST /files (the
   // registry). Checking the registry FIRST costs one small JSON read and spares
@@ -3363,6 +3446,11 @@ type ClientMessage =
        *  SHADOK_SESSION_ID here, so the link needs no configuring. Refused on a
        *  cycle / unknown parent / cap, exactly like `set-parent`. */
       parent?: string | null;
+      /** The tab group a NEW agent lands in. Written at spawn rather than by
+       *  the client's next PUT, so an agent born in a private group is never
+       *  public, not even for the seconds in between. Without it, an agent
+       *  spawned by a member of a private group lands in that group. */
+      group?: number | null;
       /** Who drives this client: "web", "cron", "telegram", "cli"… Travels with
        *  the prompt echo so other clients can say who spoke. */
       origin?: string;
@@ -4853,6 +4941,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // profile's `deny` (measured), so pilotctl and the agents, which connect with
   // no Origin at all (invariant 11), must not be able to reach it.
   const fromBrowser = requestFromBrowser(req);
+  // Who is looking, for private groups — resolved once like `me`, while the
+  // membership it is checked against is re-read at every check.
+  const viewer = viewerOf(req);
+  const sees = (id: string) => canSeeSession(viewer, id, loadGroups(), loadChannels());
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -4985,6 +5077,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             if (!ownedByPeer(ch, callerPeer))
               return fail("a restricted peer may only resume its own agents", "peer-scope");
           }
+          // Covers `continue` too, which picks the newest session of a directory
+          // and may well pick a private one.
+          if (resumed && !sees(id)) return fail(PRIVATE_REFUSAL, "private");
 
           // Isolation: run a NEW session inside a fresh git worktree so the
           // agent's edits stay contained until the user merges them.
@@ -5124,7 +5219,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // that reports to nobody. Logged so it isn't a silent loss.
           let parentAtStart: string | null | undefined;
           if (msg.parent !== undefined) {
-            const refusal = linkRefusal(loadChannels(), id, msg.parent ?? null);
+            const refusal =
+              msg.parent && !sees(msg.parent) ? "unknown parent" : linkRefusal(loadChannels(), id, msg.parent ?? null);
             if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
             else parentAtStart = msg.parent ?? null;
           }
@@ -5136,6 +5232,12 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             !resumed && typeof msg.name === "string" && msg.name.trim()
               ? msg.name.trim().slice(0, 80)
               : undefined;
+          // Before the spawn: the session is listed by `/live` the moment it
+          // exists, and an id the registry does not know reads as public.
+          const groupAtSpawn = resumed
+            ? undefined
+            : spawnGroup(viewer, typeof msg.group === "number" ? msg.group : undefined, parentAtStart ?? null, loadGroups(), loadChannels());
+          if (groupAtSpawn != null) upsertChannel({ sessionId: id, cwd: effectiveCwd, group: groupAtSpawn });
           session = await createSession(id, effectiveCwd, args, worktree, profile, model, effort);
           session.clients.add(ws);
           if (resumed) {
@@ -5604,7 +5706,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           if (!session) return fail("no session started");
           const s = session;
           const wanted = msg.parent ?? null;
-          const refusal = linkRefusal(loadChannels(), s.id, wanted);
+          // A hidden parent is answered like a missing one: no existence oracle.
+          const refusal = wanted && !sees(wanted) ? "unknown parent" : linkRefusal(loadChannels(), s.id, wanted);
           // Refuse out loud. Dropping the link silently would leave the parent
           // believing it will be notified, waiting for a child it isn't linked to.
           if (refusal) return fail(`cannot attach: ${refusal}`, "link-refused");
@@ -5626,6 +5729,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const ch = loadChannels().find((c) => c.sessionId === id);
             if (!ownedByPeer(ch, callerPeer)) return fail("a restricted peer may only stop its own agents", "peer-scope");
           }
+          if (!sees(id)) return fail(PRIVATE_REFUSAL, "private");
           await endChannel(id);
           if (session?.id === id) session = null;
           break;

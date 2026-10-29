@@ -894,6 +894,37 @@ Design and threat model: `docs/superpowers/specs/2026-10-21-passkey-2fa-design.m
 - Challenges live in memory, single use, bound to a user AND a purpose, 2 min. A
   restart only costs an in-flight ceremony.
 
+## Private groups (`src/private-groups.ts`)
+
+A tab group can be private: only its members see the agents in it, others see a
+locked stub (name, members, agent count). Spec:
+`docs/superpowers/specs/2026-10-29-private-groups-design.md`.
+
+- **Who is looking** is a `Viewer`, resolved by `viewerOf` (server.ts), and it is
+  a different question from `currentAccount`: an agent's session key resolves to
+  the bootstrap admin there, but here an agent is judged as ITSELF (it sees its
+  own private group). The server's own loopbacks (`isInternalClient`) and a
+  password-less instance see everything.
+- **The bootstrap admin never holds a private group** (`canHoldPrivate`): its
+  cookie is `SHADOK_AUTH`, in every agent's env, so membership would mean "every
+  agent". Privacy needs named accounts.
+- **Access fields are server-owned** (`private`, `members`, `owner`): `PUT
+  /groups` goes through `mergeClientGroups`, which never takes them from the
+  client and keeps a private group the caller is not in exactly as stored.
+- **A non-member's `PUT /channels` must not erase what it cannot see** — the merge
+  drops what a client omits. `guardClientChannels` returns those ids as `keep`,
+  passed beside the live ids to `mergeChannels`.
+- **A new agent's group is written at spawn** (`start.group`, `spawnGroup`),
+  before the process exists, because `/live` lists a session immediately and an id
+  the registry does not know reads as public. A child of a private agent inherits
+  its group.
+- Enforcement points: `/channels`, `/groups`, `/live`, `/sessions`, `/crons`,
+  `/diff`, `/download`, `DELETE /channel`, WS `start` (resume AND `continue`),
+  `parent`/`set-parent`, `stop`; Telegram never mirrors a private agent.
+- Deleting an account drops it from every group (`dropMember`), or re-inviting the
+  name would walk back in. The 2FA full-reset path still hands an admin an
+  invitation for the target: audited, two-admin, and the one break-glass left.
+
 ## Where it listens, and who may talk to it (`src/net.ts`)
 
 The cockpit runs arbitrary commands on the host, so the network surface is
