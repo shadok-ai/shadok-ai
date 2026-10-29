@@ -528,6 +528,9 @@
     overflow-y: auto;
   }
   #tabbar .side-label { padding: 0 8px 8px; font-size: 13px; font-weight: 600; color: var(--text); }
+  #tabbar .side-label #viewLabel.editable { cursor: text; border-radius: 4px; padding: 1px 3px; margin: -1px -3px; }
+  #tabbar .side-label #viewLabel.editable:hover { background: var(--bg-inset); box-shadow: inset 0 0 0 1px var(--line); }
+  #tabbar .side-label input.rename { font: inherit; width: calc(100% - 2em); }
   .tab {
     position: relative;
     display: flex;
@@ -3035,7 +3038,7 @@
     <div id="iconEmpty" class="icon-empty" hidden>No emoji for that word.</div>
   </div>
   <nav id="tabbar" aria-label="Agents">
-    <div class="label side-label"><span class="sl-all">Agents</span><span class="sl-view" id="viewLabel"></span></div>
+    <div class="label side-label"><span class="sl-all">Agents</span><span class="sl-view"><span id="viewIcon"></span> <span id="viewLabel"></span></span></div>
     <div id="ungrouped"></div>
     <div id="groups"></div>
     <p id="viewEmpty" class="check-hint" hidden>No agent in this group yet — create one, or drag one onto the group.</p>
@@ -3427,6 +3430,7 @@
 
   const $ = (id) => document.getElementById(id);
   const tabbar = $("tabbar"), newTabBtn = $("newTab"), newGroupBtn = $("newGroup");
+  const viewLabelEl = $("viewLabel");
   const ungroupedEl = $("ungrouped"), groupsEl = $("groups");
   const transcripts = $("transcripts"), thinking = $("thinking");
   const composer = $("composer"), promptInput = $("promptInput"), sendBtn = $("sendBtn");
@@ -4813,10 +4817,33 @@
       if (gi && gi.textContent !== g.icon) gi.textContent = g.icon;
     }
     const g = groups.find((x) => String(x.id) === v);
-    $("viewLabel").textContent = g ? `${g.icon} ${g.nameEl.textContent}` : "Main";
+    $("viewIcon").textContent = g ? g.icon : "";
+    // A cached reference, never $("viewLabel"): while it is being renamed the
+    // span is swapped out for the input, and a lookup by id would return null
+    // and throw on the very next sync.
+    viewLabelEl.textContent = g ? g.nameEl.textContent : "Main";
+    // Only a real group can be renamed here: "Main" is the ungrouped view, not
+    // a group, and has no name of its own to store.
+    viewLabelEl.classList.toggle("editable", !!g);
+    viewLabelEl.title = g ? "Click to rename this group" : "";
     $("viewEmpty").hidden = tabsInView(v).length > 0 || v === "ungrouped";
     renderRail();
   }
+
+  // The column's title names the group you are looking at, so it is where one
+  // reaches to rename it — the rail item needs a double-click and, collapsed to
+  // icons, shows no name at all. Wired ONCE on the stable span: applyView
+  // rewrites its text, never the element.
+  viewLabelEl.addEventListener("click", (e) => {
+    const g = groups.find((x) => String(x.id) === currentView());
+    if (!g) return;
+    e.stopPropagation();
+    inlineRename(tabbar, viewLabelEl, (v) => {
+      g.nameEl.textContent = v;
+      persistGroups();
+      applyView();
+    });
+  });
 
   const moodOf = (t) =>
     ["needs-answer", "unread", "working"].find((m) => t.btnEl.classList.contains(m)) || null;

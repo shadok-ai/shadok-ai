@@ -84,7 +84,8 @@ Enter to skip; you can add it later from the web UI).
   emoji, or **type a word** (`rocket`, `bug`, `money`…) to search for one; its
   **＋** creates the new agent straight into that group. Dragging an agent onto a
   group files it there, dragging groups reorders them, and double-clicking a name
-  renames it. A question the agent asks shows as an *Approval requested* card. The
+  renames it — a group can also be renamed by clicking its name at the top of the
+  agents column. A question the agent asks shows as an *Approval requested* card. The
   whole cockpit is skinned like Microsoft Teams (grey light mode / near-black dark
   mode, the Shadok mark in the header). On a phone the tools sit in the ⋯ menu and
   the agents sheet lists every group.
