@@ -2253,6 +2253,71 @@
   #composer { background: transparent; padding: 8px 20px calc(16px + env(safe-area-inset-bottom, 0px)); }
   #composer textarea { background: var(--bg-raised); border: 1px solid var(--line); border-bottom: 2px solid var(--amber); border-radius: 6px; }
   #composer textarea:focus-visible { box-shadow: none; border-color: var(--line); border-bottom-color: var(--amber); }
+
+  /* ── Motion: switching views, and what loading looks like ──────────────
+     Short on purpose (≤ 220ms, staggers capped): a transition that makes you
+     wait for the list you just asked for is worse than none. Everything here
+     is decoration — the content is in place from the first frame, the
+     animation only eases it in — and all of it is off under reduced motion. */
+  :root { --ease-out: cubic-bezier(.2, .8, .2, 1); }
+  @keyframes view-in-down { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes view-in-up { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes chat-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  /* Picking a group: its agents slide in from the side the group sits on in
+     the rail (below → up, above → down), one after the other. */
+  #tabbar.view-in-down :is(#ungrouped, #groups) .tab { animation: view-in-down 200ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 22ms); }
+  #tabbar.view-in-up :is(#ungrouped, #groups) .tab { animation: view-in-up 200ms var(--ease-out) both; animation-delay: calc(var(--i, 0) * 22ms); }
+  #tabbar.view-in-down .side-label, #tabbar.view-in-up .side-label,
+  #tabbar.view-in-down #viewEmpty, #tabbar.view-in-up #viewEmpty { animation: fade-in 160ms ease-out both; }
+  /* Picking an agent: its conversation eases in instead of snapping. */
+  .transcript.chat-in { animation: chat-in 170ms var(--ease-out) both; }
+  /* The rail's selection is ONE pill that glides to the picked group, instead
+     of a highlight that blinks from one row to the next. */
+  #railList { position: relative; }
+  #railList .rail-item { z-index: 1; transition: color 160ms ease; }
+  #railList.has-pill .rail-item.active { background: transparent; border-color: transparent; }
+  .rail-pill {
+    position: absolute; left: 0; right: 0; top: 0; z-index: 0; pointer-events: none;
+    background: var(--bg-raised); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, .12);
+    transition: transform 200ms var(--ease-out), height 200ms var(--ease-out);
+  }
+  .rail-pill.no-anim { transition: none; }
+
+  /* Skeletons: the SHAPE of what is coming, shimmering, in place of a bare
+     "loading…" — the layout does not jump when the real content lands. */
+  @keyframes skel-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+  .skel {
+    display: block; border-radius: 6px; height: 12px;
+    /* Fallback first: a browser without color-mix() drops the gradient below
+       and would otherwise draw no skeleton at all. */
+    background: linear-gradient(90deg, rgba(128,128,128,.13) 25%, rgba(128,128,128,.26) 50%, rgba(128,128,128,.13) 75%);
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--text-dim) 12%, transparent) 25%,
+      color-mix(in srgb, var(--text-dim) 24%, transparent) 50%,
+      color-mix(in srgb, var(--text-dim) 12%, transparent) 75%);
+    background-size: 300% 100%;
+    animation: skel-shimmer 1.3s linear infinite;
+  }
+  .skel-chat { display: flex; flex-direction: column; gap: 18px; padding-top: 4px; animation: fade-in 200ms ease-out both; }
+  .skel-turn { display: flex; flex-direction: column; gap: 7px; max-width: 70%; }
+  .skel-turn.mine { align-self: flex-end; align-items: flex-end; width: 42%; }
+  .skel-turn .skel-label { width: 64px; height: 9px; }
+  .skel-turn .skel-bubble { width: 100%; height: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; background: rgba(128,128,128,.07); background: color-mix(in srgb, var(--text-dim) 7%, transparent); animation: none; border-radius: 10px; }
+  .skel-turn .skel-bubble .skel { height: 10px; }
+  .skel-row { display: flex; flex-direction: column; gap: 7px; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  .skel-row:last-child { border-bottom: none; }
+  .skel-card { height: 92px; border-radius: 8px; }
+  .skel-diff { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
+  .skel-diff .skel { height: 10px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #tabbar.view-in-down .tab, #tabbar.view-in-up .tab, #tabbar .side-label, #tabbar #viewEmpty,
+    .transcript.chat-in, .skel-chat { animation: none !important; }
+    .rail-pill { transition: none; }
+    .skel { animation: none; }
+  }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a light-preferring viewer never sees a
@@ -2495,7 +2560,7 @@
             <span class="label">Which agent?</span>
             <button type="button" class="linkish" id="editProfilesLink" title="Create or edit agent profiles">✎ edit profiles</button>
           </div>
-          <div id="profileGrid" role="radiogroup" aria-label="Agent profile"></div>
+          <div id="profileGrid" role="radiogroup" aria-label="Agent profile" aria-busy="true"><span class="skel skel-card"></span><span class="skel skel-card"></span><span class="skel skel-card"></span><span class="skel skel-card"></span></div>
           <span class="check-hint" id="profileNaNote" hidden>Applies to new sessions only.</span>
         </div>
         <!-- The model this ONE agent runs on. Its default sends nothing at all,
@@ -3325,6 +3390,37 @@
     avatar.style.setProperty("--ac", AVATAR_COLORS[h % AVATAR_COLORS.length]);
     const text = avatarInitials(name);
     if (label.textContent !== text) label.textContent = text;
+  }
+
+  // ── Skeletons: the shape of what is loading ─────────────
+  // Static markup only (no user data), so innerHTML is safe here.
+  const skelLine = (w) => `<span class="skel" style="width:${w}%"></span>`;
+  function skeletonHTML(kind, n = 3) {
+    if (kind === "chat") {
+      const turn = (mine, widths) =>
+        `<div class="skel-turn${mine ? " mine" : ""}"><span class="skel skel-label"></span>` +
+        `<div class="skel skel-bubble">${widths.map(skelLine).join("")}</div></div>`;
+      return `<div class="skel-chat" aria-busy="true" aria-label="Loading the conversation">` +
+        turn(true, [80]) + turn(false, [92, 78, 54]) + turn(true, [64]) + turn(false, [88, 60]) + `</div>`;
+    }
+    if (kind === "cards") return Array.from({ length: n }, () => `<span class="skel skel-card"></span>`).join("");
+    if (kind === "diff") {
+      const w = [38, 72, 64, 85, 30, 58, 77, 46, 69, 52];
+      return `<div class="skel-diff" aria-busy="true">${w.map(skelLine).join("")}</div>`;
+    }
+    // "rows": a list of two-line entries (sessions, ledger).
+    return Array.from({ length: n }, (_, i) =>
+      `<div class="skel-row" aria-busy="true">${skelLine(30 + (i * 17) % 25)}${skelLine(60 + (i * 23) % 35)}</div>`).join("");
+  }
+  /** A tab waiting for its history shows a chat skeleton — only when it has
+   *  nothing at all yet (a reconnect keeps what is already on screen). */
+  function showChatSkeleton(t) {
+    if (t.transcriptEl.childElementCount) return;
+    t.transcriptEl.innerHTML = skeletonHTML("chat");
+  }
+  function clearChatSkeleton(t) {
+    const s = t.transcriptEl.querySelector(":scope > .skel-chat");
+    if (s) s.remove();
   }
 
   function createTab(groupId, { focus = true } = {}) {
@@ -4534,10 +4630,29 @@
   const tabsInView = (v) =>
     tabs.filter((t) => !t.btnEl.closest("#tweakSlot") && viewOfTab(t) === v);
 
+  /** Eases the newly shown agents in, from the side the picked group sits on
+   *  in the rail. Purely cosmetic: the list is already correct underneath. */
+  let viewAnimTimer = 0;
+  function animateViewSwitch(from, to) {
+    if (from === to || !railShown()) return;
+    const order = [...railList.querySelectorAll(".rail-item")].map((i) => i.dataset.view);
+    const dir = order.indexOf(to) >= order.indexOf(from) ? "view-in-down" : "view-in-up";
+    const shown = [...tabbar.querySelectorAll("#ungrouped .tab, #groups .group.in-view .tab")];
+    // Cap the stagger: past ~8 agents the tail would only make you wait.
+    shown.forEach((el, i) => el.style.setProperty("--i", Math.min(i, 8)));
+    tabbar.classList.remove("view-in-down", "view-in-up");
+    void tabbar.offsetWidth; // restart the animation on a quick re-click
+    tabbar.classList.add(dir);
+    clearTimeout(viewAnimTimer);
+    viewAnimTimer = setTimeout(() => tabbar.classList.remove("view-in-down", "view-in-up"), 420);
+  }
+
   function setView(v, { follow = true } = {}) {
+    const from = currentView();
     groupView = String(v);
     localStorage.setItem(VIEW_KEY(), groupView);
     applyView();
+    animateViewSwitch(from, currentView());
     // Picking a group shows one of ITS agents: staying on an agent that is no
     // longer in the list would leave the chat and the list disagreeing.
     if (follow && active && !active.btnEl.closest("#tweakSlot") && viewOfTab(active) !== currentView()) {
@@ -4690,6 +4805,33 @@
     return item;
   }
 
+  // The selection pill: one element that GLIDES to the active group (the rows
+  // themselves are rebuilt on every change, so they cannot transition).
+  const railPill = document.createElement("div");
+  railPill.className = "rail-pill";
+  railPill.setAttribute("aria-hidden", "true");
+  let pillView = null;
+  function placeRailPill({ animate = true } = {}) {
+    const item = railList.querySelector(".rail-item.active");
+    if (!item || !item.offsetHeight) {
+      railList.classList.remove("has-pill");
+      railPill.hidden = true;
+      pillView = null;
+      return;
+    }
+    // First placement (or a layout change) jumps; only a change of group glides.
+    const glide = animate && pillView !== null && pillView !== item.dataset.view;
+    railPill.classList.toggle("no-anim", !glide);
+    railPill.hidden = false;
+    railPill.style.height = item.offsetHeight + "px";
+    railPill.style.transform = `translateY(${item.offsetTop}px)`;
+    railList.classList.add("has-pill");
+    pillView = item.dataset.view;
+  }
+  // Collapsing the rail, resizing the window, or a group renamed to a longer
+  // name moves the rows: follow without gliding.
+  if (window.ResizeObserver) new ResizeObserver(() => placeRailPill({ animate: false })).observe(railList);
+
   let railFrame = 0;
   let railSig = "";
   function renderRail() {
@@ -4711,8 +4853,9 @@
     }).join("|");
     if (sig !== railSig) {
       railSig = sig;
-      railList.replaceChildren(...entries.map(railItem));
+      railList.replaceChildren(...entries.map(railItem), railPill);
     }
+    placeRailPill();
     if (groupIconsMinted && !restoring) {
       groupIconsMinted = false;
       persistGroups();
@@ -5051,6 +5194,7 @@
   }
 
   function activate(tab) {
+    const prev = active;
     if (active && active !== tab) {
       active.draft = promptInput.value;
       persistDraft(active);
@@ -5062,10 +5206,19 @@
     if (!restoring && tab.sessionId) localStorage.setItem("cp.activeSession", tab.sessionId);
     // Viewing the channel clears its "unread response" highlight.
     if (tab.btnEl.classList.contains("unread")) setTabMood(tab, null);
+    const switched = !!prev && prev !== tab && !restoring;
     tabs.forEach((t) => {
       t.btnEl.classList.toggle("active", t === tab);
       t.transcriptEl.hidden = t !== tab;
     });
+    // Ease the new conversation in rather than snapping (only on a real switch).
+    if (switched) {
+      const el = tab.transcriptEl;
+      el.classList.remove("chat-in");
+      void el.offsetWidth;
+      el.classList.add("chat-in");
+      el.addEventListener("animationend", () => el.classList.remove("chat-in"), { once: true });
+    }
     promptInput.value = tab.draft;
     autosizePrompt();
     renderAttachments(tab); // each tab keeps its own pending chips
@@ -5897,6 +6050,7 @@
   }
 
   function addTurn(tab, role, who, text, extraClass, at) {
+    clearChatSkeleton(tab);
     // Time of the last message in the channel list, relative ("3m ago"). Every
     // message (replayed history or live) carries `at`; the last one wins.
     if (Number.isFinite(at)) {
@@ -6686,6 +6840,7 @@
       // Reattach to the SAME session once we know its id; a brand-new tab still
       // starts fresh (no sessionId yet).
       const start = t.sessionId ? { ...t.launchMsg, resume: t.sessionId } : t.launchMsg;
+      if (t.sessionId) showChatSkeleton(t); // a resume has history on its way
       ws.send(JSON.stringify({ type: "start", origin: "web", ...start }));
     });
     ws.addEventListener("close", () => {
@@ -7369,6 +7524,9 @@
   }
 
   function handleMessage(t, msg) {
+    // `history` comes BEFORE `ready` when there is one, so by `ready` (or any
+    // ending) the skeleton has nothing left to stand in for.
+    if (["ready", "error", "exited", "gone", "stopped"].includes(msg.type)) clearChatSkeleton(t);
     switch (msg.type) {
       case "version":
         handleVersion(msg);
@@ -7801,7 +7959,7 @@
   /** Lists the directory's resumable sessions; a click fills the id field. */
   async function refreshSessionList() {
     const listEl = $("sessionList");
-    listEl.innerHTML = '<div class="empty">loading…</div>';
+    listEl.innerHTML = skeletonHTML("rows", 4);
     let sessions = [];
     try {
       const cwd = $("cwdInput").value.trim();
@@ -8492,7 +8650,7 @@
     if (!t || !t.sessionId) return;
     $("diffBranch").textContent = t.branch || "working tree";
     $("diffStatus").textContent = "loading…";
-    $("diffBody").innerHTML = "";
+    $("diffBody").innerHTML = skeletonHTML("diff");
     try {
       const d = await (await fetch("/diff?session=" + encodeURIComponent(t.sessionId))).json();
       $("diffStatus").textContent = d.status || (d.diff ? "" : "no changes");
@@ -8848,6 +9006,11 @@
     applyLedgerFilters();
   });
   $("ledgerBtn").addEventListener("click", async () => {
+    // Open at once on a skeleton: the table can be hundreds of rows, and a
+    // click that does nothing until it lands reads as a dead button.
+    $("ledgerList").innerHTML = skeletonHTML("rows", 6);
+    $("ledgerCount").textContent = "";
+    $("ledgerOverlay").hidden = false;
     try { ledgerAll = (await (await fetch("/ledger")).json()).entries || []; } catch { ledgerAll = []; }
     // The option lists come from the module, so the control and the filter it
     // drives cannot drift apart.
@@ -9124,6 +9287,7 @@
    *  keyboard) lives here only, in a single copy. */
   function renderProfileCards(container, selected, onPick, failed) {
     container.innerHTML = "";
+    container.removeAttribute("aria-busy"); // the boot skeleton, if still there
     if (failed) {
       const note = document.createElement("div");
       note.className = "grid-note";
