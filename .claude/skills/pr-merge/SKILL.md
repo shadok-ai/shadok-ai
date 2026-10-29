@@ -268,26 +268,45 @@ the next agent asserting the whole thing is covered.
 was **measured, not assumed**, and the measurement is why they are shaped the
 way they are.
 
-**An allow rule works — but only when it names the SCRIPT, not a command
-family.** This was measured twice, and the first reading was wrong.
+**An allow rule naming the SCRIPT helps a lot — and is still not a pass.** Three
+readings were taken, and the first two were both wrong. Record what was
+observed, not the rule you want it to be.
 
-`~/.claude/settings.json` carried `Bash(gh pr merge:*)` through a whole session
-in which `gh pr merge` was refused three times by the auto-mode classifier and
-allowed twice — both times immediately after the human had named that merge. The
-conclusion drawn from that, and written here, was "an allow rule is not a pass;
-do not bother". **That was false.** Adding one rule naming this script by
-absolute path —
+1. `~/.claude/settings.json` carried `Bash(gh pr merge:*)` through a whole
+   session in which `gh pr merge` was refused three times by the auto-mode
+   classifier and allowed twice — both times immediately after the human had
+   named that merge. The conclusion written here was "an allow rule is not a
+   pass; do not bother wrapping the merge in a script". **Too strong.**
+2. One rule naming this script by absolute path was then added —
 
-```json
-"permissions": { "allow": ["Bash(/Users/<you>/.shadok-ai/bin/pr-merge.sh:*)"] }
-```
+   ```json
+   "permissions": { "allow": ["Bash(/Users/<you>/.shadok-ai/bin/pr-merge.sh:*)"] }
+   ```
 
-— let the loop merge **three PRs in a row, unprompted**, publishing 0.16.1,
-0.16.2 and 0.16.3. So the distinction is not "rules versus the classifier": a
-rule naming a **specific audited entry point** is honoured where a rule naming a
-whole family of commands (`gh pr merge` with any arguments, any repo, any flags
-including `--admin`) is not. That is a coherent line, and it is the reason these
-scripts exist at all rather than being a convenience wrapper.
+   — and the loop merged **three PRs in a row, unprompted**, publishing 0.16.1,
+   0.16.2 and 0.16.3. The conclusion written here was "a rule naming a specific
+   entry point is honoured". **Also too strong.**
+3. The **fourth** call, same script, same shape, was **refused** — for a PR the
+   agent had just authored itself.
+
+So the honest statement is the narrow one: naming a single audited entry point
+appears to carry far more weight than naming a whole family of commands
+(`gh pr merge` with any arguments, any repo, `--admin` included), and it is
+plainly not a deterministic pass. The classifier still weighs the surrounding
+intent, and the run of three fell in the window right after the human set the
+rule up and asked for it to be tested. One visible difference at the fourth
+call, offered as an observation and not a law: the PR being merged was the
+agent's own, minutes old, rather than a sibling's reviewed work.
+
+**Practical consequence: write the code as if the rule were not there.** Keep
+handing the human the `!` line, because the refusal will come back; and treat
+every unattended merge the rule does let through as one where the script's
+refusals ARE the review — nothing else stands between the loop and `main`. Every
+guard below is therefore load-bearing, and widening the rule (to `gh pr merge`,
+or to a script taking the subject as an argument) hands back exactly the
+latitude the narrow one withholds. `--fork-ok` exists and the rule does not
+distinguish it: a fork still needs the human's word by convention, not by
+mechanism.
 
 Two things were also measured on the way and are worth keeping:
 
@@ -299,14 +318,6 @@ Two things were also measured on the way and are worth keeping:
 - A probe that tried to build a permissive sub-environment (a throwaway project
   settings file plus a nested `claude -p`) to measure the classifier directly was
   itself refused as `[Auto-Mode Bypass]`. Do not retry that shape.
-
-**The consequence to hold on to: once that rule is in place, the script's
-refusals ARE the review.** Nothing else stands between the loop and `main`. So
-every guard below is load-bearing, and widening the rule — to `gh pr merge`, or
-to a script that takes the subject as an argument — gives back exactly the
-latitude the narrow rule withholds. Note also that `--fork-ok` exists and the
-rule does not distinguish it: a fork still needs the human's word by convention,
-not by mechanism.
 
 Without the rule, the fallback stays: the line the **human** types in the
 composer. A `!` command is their hand, not the agent's, so nothing gates it.
