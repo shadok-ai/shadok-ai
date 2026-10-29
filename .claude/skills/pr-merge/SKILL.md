@@ -333,6 +333,13 @@ version lines, commit, push, open the PR) and deliberately does **not** write
 the body: a promotion's text is the only honest summary of a whole generation
 and has to be read off the merges. Pass it with `--body`, title on line 1.
 
+It also **refuses a generation with no merges in it**, which is the one guard
+that was missing when it was first run: it opened a promotion to 0.17 ten
+minutes after 0.16 landed, with nothing behind it. `--force` is there for a
+human who has a reason. That accidental run did prove the happy path end to
+end — branch, bump, commit, push, PR, and the pinned `pr-merge.sh` line printed
+at the end.
+
 Both scripts **resolve** the repo and the worktree instead of assuming them.
 `$HOME` is not the launch directory on this host — it is `/root` while the
 checkout lives under `/Users/…`, and both `.shadok-ai` directories exist — which
