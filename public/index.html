@@ -7059,10 +7059,27 @@
       addTurn(t, "system", "", "Your unsent message is back in the box — the link dropped before it was sent.");
     }
     const n = t.reconnectAttempts++;
-    const delay = Math.min(15000, 1000 * 2 ** n) + Math.floor(Math.random() * 500);
-    setTabState(t, "dead", "link lost — reconnecting…");
+    // An auto-update installs the new version in the BACKGROUND and the
+    // supervisor respawns it in ~1s, so the server is only briefly gone — but
+    // the exponential backoff below climbs while it is (1→2→4→8→15s), so a tab
+    // that drops mid-update can sit idle 8–15s AFTER the server is already back
+    // before it retries. The server tells us this is coming (`server-reload`),
+    // so in that window we retry on a tight fixed interval and catch it the
+    // instant it returns — then the fresh `version` triggers the page reload.
+    // The window is bounded (`reloadExpectedUntil`), so a failed/aborted update
+    // falls back to normal backoff instead of hammering forever.
+    const eager = Date.now() < reloadExpectedUntil;
+    const delay = eager
+      ? 600 + Math.floor(Math.random() * 300)   // ~0.6–0.9s, no growth
+      : Math.min(15000, 1000 * 2 ** n) + Math.floor(Math.random() * 500);
+    setTabState(t, "dead", eager ? "updating — reconnecting…" : "link lost — reconnecting…");
     t.reconnectTimer = setTimeout(() => { if (!t.closing) openLink(t); }, delay);
   }
+
+  // Set when the server announces an imminent restart (`server-reload`): until
+  // this instant, `scheduleReconnect` reconnects eagerly rather than backing
+  // off. Bounded so an update that never lands doesn't leave us hammering.
+  let reloadExpectedUntil = 0;
 
   /** Reconnect every dropped tab immediately (no backoff wait) — fired when the
    *  machine/tab comes back (online / visible), the common laptop-wake case.
@@ -7758,6 +7775,10 @@
         break;
       case "server-reload":
         showUpdateBanner(msg.version);
+        // The server is installing a new version and will be back in ~1s;
+        // reconnect eagerly (not backed off) for the next 90s so the page
+        // reloads onto the new build quickly instead of waiting out a backoff.
+        reloadExpectedUntil = Date.now() + 90_000;
         break;
       case "history":
         // Full replay from the transcript (source of truth). Clear first so a
