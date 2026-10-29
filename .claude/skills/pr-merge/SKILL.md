@@ -268,45 +268,86 @@ the next agent asserting the whole thing is covered.
 was **measured, not assumed**, and the measurement is why they are shaped the
 way they are.
 
-**An allow rule is not a pass in auto mode.** `~/.claude/settings.json` carried
-`Bash(gh pr merge:*)` for the whole of a session in which `gh pr merge` was
-refused three times by the auto-mode classifier and allowed twice — both times
-immediately after the human had named that merge. Two hypotheses were tested
-with a throwaway project settings file and a nested `claude -p`:
+**An allow rule naming the SCRIPT helps a lot — and is still not a pass.** Three
+readings were taken, and the first two were both wrong. Record what was
+observed, not the rule you want it to be.
+
+1. `~/.claude/settings.json` carried `Bash(gh pr merge:*)` through a whole
+   session in which `gh pr merge` was refused three times by the auto-mode
+   classifier and allowed twice — both times immediately after the human had
+   named that merge. The conclusion written here was "an allow rule is not a
+   pass; do not bother wrapping the merge in a script". **Too strong.**
+2. One rule naming this script by absolute path was then added —
+
+   ```json
+   "permissions": { "allow": ["Bash(/Users/<you>/.shadok-ai/bin/pr-merge.sh:*)"] }
+   ```
+
+   — and the loop merged **three PRs in a row, unprompted**, publishing 0.16.1,
+   0.16.2 and 0.16.3. The conclusion written here was "a rule naming a specific
+   entry point is honoured". **Also too strong.**
+3. The **fourth** call, same script, same shape, was **refused** — for a PR the
+   agent had just authored itself.
+
+So the honest statement is the narrow one: naming a single audited entry point
+appears to carry far more weight than naming a whole family of commands
+(`gh pr merge` with any arguments, any repo, `--admin` included), and it is
+plainly not a deterministic pass. The classifier still weighs the surrounding
+intent, and the run of three fell in the window right after the human set the
+rule up and asked for it to be tested. One visible difference at the fourth
+call, offered as an observation and not a law: the PR being merged was the
+agent's own, minutes old, rather than a sibling's reviewed work.
+
+**Practical consequence: write the code as if the rule were not there.** Keep
+handing the human the `!` line, because the refusal will come back; and treat
+every unattended merge the rule does let through as one where the script's
+refusals ARE the review — nothing else stands between the loop and `main`. Every
+guard below is therefore load-bearing, and widening the rule (to `gh pr merge`,
+or to a script taking the subject as an argument) hands back exactly the
+latitude the narrow one withholds. `--fork-ok` exists and the rule does not
+distinguish it: a fork still needs the human's word by convention, not by
+mechanism.
+
+Two things were also measured on the way and are worth keeping:
 
 - *A command-line `--settings` replaces the permissions block, so shadok's
   `allow: []` erases the rule.* **False.** A project-level `deny` still bit
   through a `--settings` that never mentioned it: the blocks **merge**. There is
   no bug in `profileArgs` to fix here, and an earlier claim that there was one
-  was wrong.
-- *The classifier judges the intent it reads in the conversation.* Consistent
-  with everything observed — and the third probe, which tried to build a
-  permissive sub-environment to measure it directly, was itself refused as
-  `[Auto-Mode Bypass]`.
+  was also wrong.
+- A probe that tried to build a permissive sub-environment (a throwaway project
+  settings file plus a nested `claude -p`) to measure the classifier directly was
+  itself refused as `[Auto-Mode Bypass]`. Do not retry that shape.
 
-So **do not** propose wrapping the merge in an allowlisted script to make the
-loop self-service: that is the same shape the classifier just refused, and
-granting the agent its own merge right is what invariant 26 exists to prevent.
-
-What a script CAN do is make the line the **human** types short and stricter
-than the raw command. A `!` command in the composer is their hand, not the
-agent's, so nothing gates it:
+Without the rule, the fallback stays: the line the **human** types in the
+composer. A `!` command is their hand, not the agent's, so nothing gates it.
 
 ```
-! ~/.shadok-ai/bin/pr-merge.sh 341 --head 9f2ab1c
-! ~/.shadok-ai/bin/promote.sh --body /path/to/body.md
+! /Users/<you>/.shadok-ai/bin/pr-merge.sh 341 --head 9f2ab1c
+! /Users/<you>/.shadok-ai/bin/promote.sh --body /path/to/body.md
 ```
 
-**The copy that gets typed lives OUTSIDE the repo**, in `~/.shadok-ai/bin/`,
+**Write that path in full; never `~`.** On this host `$HOME` is `/root` while the
+installed copies live under `/Users/<you>/`, so a tilde form fails outright with
+`No such file or directory` — it did, on the very first line handed to the human
+after this file first documented it. The allow rule above names the absolute
+path too, so a tilde invocation would not match it even where the file exists.
+This is the same trap the scripts themselves guard against internally (they
+resolve the repo and the worktree rather than trusting `$HOME`), and it was left
+standing in the one place a human reads.
+
+**The copy that gets typed lives OUTSIDE the repo**, in the shadok data dir's
+`bin/` (here `/Users/<you>/.shadok-ai/bin/`),
 for the same reason `check-open-prs.sh` is copied to `~/.shadok-ai/checks/`: a
 versioned path disappears the moment the root checkout sits on a commit that
 predates the file — which is not hypothetical, the root checkout is routinely
 dozens of commits behind. Source of truth stays here; re-copy after editing:
 
 ```sh
-mkdir -p ~/.shadok-ai/bin
-cp .claude/skills/pr-merge/scripts/pr-merge.sh .claude/skills/pr-merge/scripts/promote.sh ~/.shadok-ai/bin/
-chmod +x ~/.shadok-ai/bin/pr-merge.sh ~/.shadok-ai/bin/promote.sh
+BIN=/Users/<you>/.shadok-ai/bin        # the real path, not ~ (see above)
+mkdir -p "$BIN"
+cp .claude/skills/pr-merge/scripts/pr-merge.sh .claude/skills/pr-merge/scripts/promote.sh "$BIN/"
+chmod +x "$BIN/pr-merge.sh" "$BIN/promote.sh"
 ```
 
 `pr-merge.sh` re-runs the whole entry filter and refuses rather than merges: a
