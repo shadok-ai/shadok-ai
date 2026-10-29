@@ -323,20 +323,31 @@ Without the rule, the fallback stays: the line the **human** types in the
 composer. A `!` command is their hand, not the agent's, so nothing gates it.
 
 ```
-! ~/.shadok-ai/bin/pr-merge.sh 341 --head 9f2ab1c
-! ~/.shadok-ai/bin/promote.sh --body /path/to/body.md
+! /Users/<you>/.shadok-ai/bin/pr-merge.sh 341 --head 9f2ab1c
+! /Users/<you>/.shadok-ai/bin/promote.sh --body /path/to/body.md
 ```
 
-**The copy that gets typed lives OUTSIDE the repo**, in `~/.shadok-ai/bin/`,
+**Write that path in full; never `~`.** On this host `$HOME` is `/root` while the
+installed copies live under `/Users/<you>/`, so a tilde form fails outright with
+`No such file or directory` — it did, on the very first line handed to the human
+after this file first documented it. The allow rule above names the absolute
+path too, so a tilde invocation would not match it even where the file exists.
+This is the same trap the scripts themselves guard against internally (they
+resolve the repo and the worktree rather than trusting `$HOME`), and it was left
+standing in the one place a human reads.
+
+**The copy that gets typed lives OUTSIDE the repo**, in the shadok data dir's
+`bin/` (here `/Users/<you>/.shadok-ai/bin/`),
 for the same reason `check-open-prs.sh` is copied to `~/.shadok-ai/checks/`: a
 versioned path disappears the moment the root checkout sits on a commit that
 predates the file — which is not hypothetical, the root checkout is routinely
 dozens of commits behind. Source of truth stays here; re-copy after editing:
 
 ```sh
-mkdir -p ~/.shadok-ai/bin
-cp .claude/skills/pr-merge/scripts/pr-merge.sh .claude/skills/pr-merge/scripts/promote.sh ~/.shadok-ai/bin/
-chmod +x ~/.shadok-ai/bin/pr-merge.sh ~/.shadok-ai/bin/promote.sh
+BIN=/Users/<you>/.shadok-ai/bin        # the real path, not ~ (see above)
+mkdir -p "$BIN"
+cp .claude/skills/pr-merge/scripts/pr-merge.sh .claude/skills/pr-merge/scripts/promote.sh "$BIN/"
+chmod +x "$BIN/pr-merge.sh" "$BIN/promote.sh"
 ```
 
 `pr-merge.sh` re-runs the whole entry filter and refuses rather than merges: a
