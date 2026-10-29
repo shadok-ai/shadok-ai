@@ -980,6 +980,12 @@ restarts it on a dedicated exit code.
 - The server polls npm for a newer version; if `autoUpdate` is on it downloads
   in the background (to shrink the reload gap), then exits with the update code.
   The supervisor restarts it and connected browsers reload via `server-reload`.
+  That broadcast also flips the client into **eager reconnect** for ~90s: the
+  restart is a single process respawn (the new version is already on disk), so
+  the server is back in ~1s — the client retries on a tight ~0.7s interval
+  instead of its usual exponential backoff, which would otherwise have climbed to
+  8–15s during the gap and left the page waiting that long after the server was
+  already back before reloading onto the new build.
 - `autoUpdate` is a GUI checkbox persisted in `config.json`, and **config wins
   over env once set** — `SHADOK_AUTOUPDATE=0` alone will not stop it.
 - CI publishes on every merge to main; the version is `major.minor.<commit
