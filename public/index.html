@@ -2099,7 +2099,22 @@
     border: 1px solid var(--line, #3a3d42); border-radius: 3px; padding: 0 4px; cursor: pointer; }
   #ledgerList .ldg-id:hover { opacity: .95; }
   #ledgerList .ldg-stale { color: #e9a23b; }
-  #ledgerTools { margin-bottom: 10px; }
+  #ledgerTools, #secAuditTools { margin-bottom: 10px; }
+  #secAuditTools .ldg-row { display: flex; gap: 6px; flex-wrap: wrap; }
+  #secAuditTools input, #secAuditTools select { background: rgba(255,255,255,.04); border: 1px solid var(--line, #3a3d42);
+    border-radius: 6px; color: inherit; font-family: inherit; padding: 5px 8px; }
+  /* Same fine-pointer gate as the ledger's tools (invariant 28). */
+  @media (pointer: fine) { #secAuditTools input, #secAuditTools select { font-size: 13px; } }
+  #secAuditTools input { flex: 1 1 120px; min-width: 100px; }
+  #secAuditTools .ldg-count { color: var(--text-dim); font-size: 11px; margin-top: 7px; }
+  #secAuditList { list-style: none; margin: 0; padding: 0; }
+  #secAuditList li { padding: 7px 0; border-bottom: 1px solid var(--line, #3a3d42); font-size: 12px; }
+  #secAuditList .sa-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  #secAuditList .sa-action { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; opacity: .8;
+    border: 1px solid currentColor; border-radius: 4px; padding: 0 4px; }
+  #secAuditList .sa-action.injected, #secAuditList .sa-action.cron-check { color: #e9a23b; }
+  #secAuditList .sa-action.deleted, #secAuditList .sa-action.detached { opacity: .55; }
+  #secAuditList .sa-meta { color: var(--text-dim); font-size: 10px; margin-top: 2px; }
   #ledgerTools .ldg-row { display: flex; gap: 6px; flex-wrap: wrap; }
   #ledgerTools input, #ledgerTools select { background: rgba(255,255,255,.04); border: 1px solid var(--line, #3a3d42);
     border-radius: 6px; color: inherit; font-family: inherit; padding: 5px 8px; }
@@ -2523,6 +2538,31 @@
         </div>
       </form>
       <div id="secretsReload" class="sec-reload" hidden></div>
+      <p class="sec-note"><button type="button" class="linkish" id="secretsToAudit">Audit log — who used which secret →</button></p>
+    </div>
+  </div>
+</div>
+
+<div id="secAuditOverlay" class="overlay" hidden>
+  <div class="sec-panel pinned">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong>Secret audit log</strong>
+        <button id="secAuditClose" title="Close">✕</button>
+      </div>
+      <p class="sec-note">Who wrote, attached and <b>received</b> each vault secret — names only, never a value. “Injected” means a freshly spawned agent got it in its environment; what the agent did with it afterwards is outside what shadok can see.</p>
+      <div id="secAuditTools">
+        <div class="ldg-row">
+          <select id="secAuditSecret" title="Secret"></select>
+          <select id="secAuditAction" title="Action"></select>
+          <input id="secAuditWho" type="search" placeholder="who (person, agent id, telegram…)" autocomplete="off" />
+          <input id="secAuditAgent" type="search" placeholder="agent name or id" autocomplete="off" />
+        </div>
+        <div id="secAuditCount" class="ldg-count"></div>
+      </div>
+    </div>
+    <div class="pin-body">
+      <ul id="secAuditList"></ul>
     </div>
   </div>
 </div>
@@ -8800,6 +8840,7 @@
     if (!$("profConfirmOverlay").hidden) { closeProfConfirm(); e.preventDefault(); return; }
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
@@ -8878,7 +8919,11 @@
         if (editingSecret === k) resetSecretForm();
         await loadVault(); renderSecrets();
       });
-      actions.append(edit, del);
+      const hist = document.createElement("button");
+      hist.type = "button"; hist.className = "s-edit"; hist.textContent = "🕘";
+      hist.title = "Audit log for this secret — who wrote it and which agents received it";
+      hist.addEventListener("click", () => openSecretAudit(k));
+      actions.append(hist, edit, del);
       li.append(code, actions);
       ul.appendChild(li);
     }
@@ -8988,6 +9033,66 @@
   });
   $("secretsClose").addEventListener("click", () => { $("secretsOverlay").hidden = true; });
   $("secretsOverlay").addEventListener("click", (e) => { if (e.target === $("secretsOverlay")) $("secretsOverlay").hidden = true; });
+
+  // ── Secret audit log (read-only, admins) ─────────────────────────────
+  // Filtering is server-side (`GET /secrets/audit`): the log can hold tens of
+  // thousands of rows, unlike the ledger, so it is not sent whole.
+  const SA_ACTIONS = ["created", "updated", "deleted", "attached", "detached", "injected", "cron-check"];
+  function fillSelect(sel, first, values) {
+    const keep = sel.value;
+    sel.replaceChildren();
+    const o0 = document.createElement("option"); o0.value = ""; o0.textContent = first; sel.appendChild(o0);
+    for (const v of values) { const o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o); }
+    if ([...sel.options].some((o) => o.value === keep)) sel.value = keep;
+  }
+  let saTimer = null;
+  async function loadSecretAudit() {
+    const q = new URLSearchParams({ limit: "500" });
+    const add = (k, id) => { const v = $(id).value.trim(); if (v) q.set(k, v); };
+    add("secret", "secAuditSecret"); add("action", "secAuditAction"); add("actor", "secAuditWho"); add("agent", "secAuditAgent");
+    const ul = $("secAuditList");
+    let rows;
+    try {
+      const r = await fetch("/secrets/audit?" + q);
+      if (r.status === 403) { ul.innerHTML = '<li style="opacity:.6">Only an admin can read the audit log.</li>'; $("secAuditCount").textContent = ""; return; }
+      rows = (await r.json()).rows || [];
+    } catch { ul.innerHTML = '<li style="opacity:.6">could not load the audit log</li>'; return; }
+    ul.replaceChildren();
+    $("secAuditCount").textContent = rows.length >= 500 ? "500 newest rows shown — narrow the filters to see older ones" : rows.length + " row" + (rows.length === 1 ? "" : "s");
+    if (!rows.length) { ul.innerHTML = '<li style="opacity:.6">nothing recorded for these filters</li>'; return; }
+    for (const e of rows) {
+      const li = document.createElement("li");
+      const head = document.createElement("div"); head.className = "sa-head";
+      const act = document.createElement("span"); act.className = "sa-action " + e.action; act.textContent = e.action;
+      const names = document.createElement("code"); names.textContent = e.secrets.join(", ");
+      const who = document.createElement("span");
+      // Agent rows say who RECEIVED it and who caused it; vault rows who did it.
+      const agent = e.agent ? (e.agentName ? `${e.agentName} (${e.agent.slice(0, 8)})` : e.agent.slice(0, 8)) : "";
+      who.textContent = (e.action === "injected" || e.action === "cron-check")
+        ? `→ ${agent || "?"} · by ${e.actor}`
+        : `by ${e.actor}${e.profile ? " · profile " + e.profile : ""}`;
+      head.append(act, names, who);
+      const meta = document.createElement("div"); meta.className = "sa-meta";
+      meta.textContent = [new Date(e.at).toLocaleString(), e.via, e.profile && (e.action === "injected" || e.action === "cron-check") ? "profile " + e.profile : "", e.detail, e.instance].filter(Boolean).join(" · ");
+      li.append(head, meta);
+      ul.appendChild(li);
+    }
+  }
+  async function openSecretAudit(secret) {
+    if (!vaultNames.length) await loadVault();
+    fillSelect($("secAuditSecret"), "all secrets", vaultNames);
+    fillSelect($("secAuditAction"), "all actions", SA_ACTIONS);
+    if (secret !== undefined) $("secAuditSecret").value = secret;
+    $("secretsOverlay").hidden = true;
+    $("secAuditOverlay").hidden = false;
+    await loadSecretAudit();
+  }
+  $("secretsToAudit").addEventListener("click", () => openSecretAudit());
+  for (const id of ["secAuditSecret", "secAuditAction"]) $(id).addEventListener("change", loadSecretAudit);
+  for (const id of ["secAuditWho", "secAuditAgent"])
+    $(id).addEventListener("input", () => { clearTimeout(saTimer); saTimer = setTimeout(loadSecretAudit, 250); });
+  $("secAuditClose").addEventListener("click", () => { $("secAuditOverlay").hidden = true; });
+  $("secAuditOverlay").addEventListener("click", (e) => { if (e.target === $("secAuditOverlay")) $("secAuditOverlay").hidden = true; });
 
   // ── Shared ledger viewer (read-only) ──────────────────────────────────
   // An ACTUAL date + time, not just "today/Nd ago" — a ledger filled today

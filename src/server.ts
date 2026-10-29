@@ -185,6 +185,15 @@ import {
   originProfile,
 } from "./secrets.js";
 import {
+  recordSecretAudit,
+  readSecretAudit,
+  filterAudit,
+  spawnActor,
+  httpActor,
+  profileSecretDiff,
+  type SecretAuditVia,
+} from "./secret-audit.js";
+import {
   getProfile,
   profileArgs,
   permissionModeArgs,
@@ -529,7 +538,18 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
   if (!c.check?.trim()) return Promise.resolve({ kind: "quiet" }); // no guard → the agent always runs
   return new Promise((resolve) => {
     const profile = target.profile ? getProfile(target.profile) : undefined;
-    const env = { ...process.env, ...secretsFor(profile?.secrets) };
+    const secretEnv = secretsFor(profile?.secrets);
+    const env = { ...process.env, ...secretEnv };
+    recordSecretAudit({
+      action: "cron-check",
+      secrets: Object.keys(secretEnv),
+      actor: `cron ${c.id.slice(0, 8)}`,
+      via: "cron",
+      agent: c.sessionId,
+      agentName: loadChannels().find((ch) => ch.sessionId === c.sessionId)?.name,
+      ...(target.profile ? { profile: target.profile } : {}),
+      instance: process.cwd(),
+    });
     execFile(
       "sh",
       ["-c", c.check!],
@@ -1197,6 +1217,32 @@ function callerOf(req: {
   const profile =
     sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
   return { id, profile };
+}
+
+/** Who an HTTP call to the vault/profile routes is, for the secret audit log. */
+function auditActorOf(req: { headers: Record<string, unknown>; body?: unknown }): {
+  actor: string;
+  via: SecretAuditVia;
+  agent?: string;
+} {
+  return httpActor({
+    agentId: callerOf(req).id,
+    account: currentAccount(req)?.name ?? null,
+    browser: requestFromBrowser(req),
+  });
+}
+
+/** One audit row per direction of a profile's secret list change. */
+function auditProfileSecrets(
+  req: { headers: Record<string, unknown>; body?: unknown },
+  profile: string,
+  diff: { added: string[]; removed: string[] },
+  detail?: string,
+): void {
+  const who = auditActorOf(req);
+  const base = { ...who, profile, instance: process.cwd(), ...(detail ? { detail } : {}) };
+  recordSecretAudit({ action: "attached", secrets: diff.added, ...base });
+  recordSecretAudit({ action: "detached", secrets: diff.removed, ...base });
 }
 
 /** A browser on our own origin — the only caller allowed to change guardrails. */
@@ -1998,6 +2044,7 @@ app.put("/secrets", (req, res) => {
   const verdict = secretWriteVerdict(secretNames().includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
   setSecret(key, value);
+  recordSecretAudit({ action: verdict, secrets: [key], ...auditActorOf(req), instance: process.cwd() });
   // Remember WHO created it, so the agent can later attach it to its own
   // profile (`PUT /profiles/secret`). Only on a creation: recording an
   // overwrite too would let an agent clobber a human's secret to become its
@@ -2008,9 +2055,32 @@ app.put("/secrets", (req, res) => {
   }
   res.json({ names: secretNames(), result: verdict });
 });
+// Who wrote, attached and RECEIVED which secret (names only). Admin only: it
+// maps every credential to the agents and people that held it. See
+// src/secret-audit.ts.
+app.get("/secrets/audit", (req, res) => {
+  if (currentAccount(req)?.role !== "admin") return res.status(403).json({ error: "admins only" });
+  const q = req.query;
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+  const limit = Math.min(Math.max(Number(q.limit) || 500, 1), 5000);
+  const since = Number(q.since) || undefined;
+  res.json({
+    rows: filterAudit(readSecretAudit(), {
+      secret: str(q.secret),
+      actor: str(q.actor),
+      agent: str(q.agent),
+      action: str(q.action),
+      since,
+      limit,
+    }),
+  });
+});
 app.delete("/secrets", (req, res) => {
   const name = String(req.query.name ?? req.body?.name ?? "").trim();
-  if (name) deleteSecret(name);
+  if (name && secretNames().includes(name)) {
+    deleteSecret(name);
+    recordSecretAudit({ action: "deleted", secrets: [name], ...auditActorOf(req), instance: process.cwd() });
+  }
   res.json({ names: secretNames() });
 });
 
@@ -2710,7 +2780,9 @@ app.put("/profiles", (req, res) => {
   };
   if (b.effort !== undefined && b.effort !== "" && !isEffortLevel(b.effort))
     return res.status(400).json({ error: `unknown effort level: ${String(b.effort)}` });
+  const secretDiff = profileSecretDiff(getProfile(name)?.secrets, p.secrets);
   upsertProfile(p);
+  auditProfileSecrets(req, name, secretDiff);
   res.json(loadProfiles().map((x) => ({ ...x, origin: promptOrigin(x, shippedProfile(x.name)) })));
 });
 
@@ -2785,6 +2857,8 @@ app.put("/profiles/secret", (req, res) => {
   const secrets = [...new Set([...(existing.secrets ?? []), name])];
   upsertProfile({ ...existing, secrets });
   console.log(`profile-secret: ${caller} += ${name}`);
+  if (!(existing.secrets ?? []).includes(name))
+    recordSecretAudit({ action: "attached", secrets: [name], ...auditActorOf(req), profile: caller!, instance: process.cwd() });
   res.json({
     ok: true,
     profile: caller,
@@ -2810,14 +2884,18 @@ app.post("/reload", (req, res) => {
   // new process is ready so it carries on. Scoped to the SELF-reload only — not
   // the GUI reload, restart-all, or an auto-update respawn (those touch many/all
   // agents at once, and waking every idle one would be a token storm).
-  void restartSession(s)
+  void restartSession(s, { actor: `agent ${id.slice(0, 8)}`, via: "agent" })
     .then(() => continueAfterReload(s.id))
     .catch(() => {});
 });
 
 app.delete("/profiles", (req, res) => {
   const name = String(req.query.name ?? req.body?.name ?? "").trim();
-  if (name) removeProfile(name);
+  if (name) {
+    const before = getProfile(name)?.secrets;
+    removeProfile(name);
+    auditProfileSecrets(req, name, profileSecretDiff(before, []), "profile deleted");
+  }
   res.json(loadProfiles());
 });
 
@@ -3028,13 +3106,13 @@ app.post("/autoupdate", (req, res) => {
  * await the loop: a caller (the toggle, the button) must not hang for minutes
  * while a big fleet cycles.
  */
-function restartAllSessions(ids?: string[]): number {
+function restartAllSessions(ids?: string[], by: SpawnBy = SYSTEM_SPAWN): number {
   // A subset (e.g. only the agents flagged as needing a Claude Code reload) when
   // `ids` is given, all live sessions otherwise. Same one-at-a-time discipline.
   const wanted = ids && ids.length ? new Set(ids) : null;
   const live = [...sessions.values()].filter((s) => !wanted || wanted.has(s.id));
   void (async () => {
-    for (const s of live) await restartSession(s).catch(() => {});
+    for (const s of live) await restartSession(s, by).catch(() => {});
   })();
   return live.length;
 }
@@ -3048,7 +3126,7 @@ app.post("/restart-all", (req, res) => {
   const ids = Array.isArray(req.body?.sessions)
     ? (req.body.sessions as unknown[]).filter((x): x is string => typeof x === "string" && !!x)
     : undefined;
-  const restarted = restartAllSessions(ids);
+  const restarted = restartAllSessions(ids, auditActorOf(req));
   console.log(`restart-all: respawning ${restarted} agent(s)${ids ? " (filtered)" : ""}, one at a time`);
   res.json({ restarted });
 });
@@ -3260,7 +3338,7 @@ app.post("/ledger", (req, res) => {
   cfg.ledgerEnabled = ledgerEnabled;
   saveConfig(cfg);
   broadcastAll(versionMessage());
-  const restarted = changed ? restartAllSessions() : 0;
+  const restarted = changed ? restartAllSessions(undefined, auditActorOf(req)) : 0;
   res.json({ ledgerEnabled, restarted });
 });
 
@@ -3853,7 +3931,7 @@ function broadcast(s: Live, msg: object, except?: WebSocket) {
  * preserved (resume reads the transcript); every attached client keeps its ref.
  * Shared by the `restart` message and by `set-profile` with `restart: true`.
  */
-async function restartSession(s: Live): Promise<void> {
+async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void> {
   s.restarting = true;
   // The raw pipe is bound to the pilot we're about to replace — close it;
   // clients re-attach on the next "ready" if the terminal is open.
@@ -3916,6 +3994,7 @@ async function restartSession(s: Live): Promise<void> {
   // A restart spawns a brand-new process, so its anchor is current: re-record
   // it (clearing `legacy`), which is what makes the reload indicator go dark.
   recordSpawnFingerprint(s);
+  recordSecretInjection(s, by, "restart");
   s.lastStaleSig = undefined;
   // `lastTurnMs`, like the connect-path `ready`: the transient "working" above
   // started the client's turn timer, and this "ready" is what stops it — without
@@ -3980,6 +4059,30 @@ function broadcastProfile(s: Live) {
  *  spawned. An adopted pane is the OLD process: its stored fingerprint must be
  *  left alone (or seeded as `legacy` the first time, so a pre-feature agent
  *  reads as stale until reloaded). Called once after `attachPilot`. */
+/** Who caused a spawn, for the secret audit log. */
+type SpawnBy = { actor: string; via: SecretAuditVia };
+const SYSTEM_SPAWN: SpawnBy = { actor: "system", via: "system" };
+
+/**
+ * Audit which vault secrets a FRESH process just received. An adopted tmux
+ * pane got its env when it was first spawned (already logged then), so a
+ * reattach records nothing — it hands no value to anyone.
+ */
+function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
+  if (s.pilot instanceof TmuxPilot && s.pilot.attached) return;
+  const profile = s.profile ? getProfile(s.profile) : undefined;
+  recordSecretAudit({
+    action: "injected",
+    secrets: Object.keys(secretsFor(profile?.secrets)),
+    ...by,
+    agent: s.id,
+    agentName: loadChannels().find((c) => c.sessionId === s.id)?.name,
+    ...(s.profile ? { profile: s.profile } : {}),
+    instance: process.cwd(),
+    detail,
+  });
+}
+
 function recordSpawnFingerprint(s: Live): void {
   const adopted = s.pilot instanceof TmuxPilot && s.pilot.attached;
   if (adopted) {
@@ -4164,6 +4267,7 @@ async function createSession(
   profile: string | null = null,
   model: string | null = null,
   effort: string | null = null,
+  by: SpawnBy = SYSTEM_SPAWN,
 ): Promise<Live> {
   const pilot = makePilot(id, cwd, args, profile, model, effort);
   // Resumed sessions start with what the transcript already consumed.
@@ -4214,6 +4318,7 @@ async function createSession(
   // tell whether it drifted. No-op-safe for an adopted pane (keeps the old
   // anchor); seeds `legacy` the first time a pre-feature agent is adopted.
   recordSpawnFingerprint(s);
+  recordSecretInjection(s, by, args.includes("--resume") ? "resume" : "spawn");
   return s;
 }
 
@@ -4853,6 +4958,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // profile's `deny` (measured), so pilotctl and the agents, which connect with
   // no Origin at all (invariant 11), must not be able to reach it.
   const fromBrowser = requestFromBrowser(req);
+  // Who a respawn asked from this socket is credited to in the secret audit
+  // log. A function, not a value: `origin` is only known once `start` arrives.
+  const wsBy = (): SpawnBy => spawnActor({ account: me?.name, origin, peer: callerPeer });
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -5136,7 +5244,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             !resumed && typeof msg.name === "string" && msg.name.trim()
               ? msg.name.trim().slice(0, 80)
               : undefined;
-          session = await createSession(id, effectiveCwd, args, worktree, profile, model, effort);
+          session = await createSession(
+            id, effectiveCwd, args, worktree, profile, model, effort,
+            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
+          );
           session.clients.add(ws);
           if (resumed) {
             const turns = historyWithOffers(loadHistory(effectiveCwd, id), id);
@@ -5544,7 +5655,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
 
         case "restart": {
           if (!session) return fail("no session started");
-          await restartSession(session);
+          await restartSession(session, wsBy());
           break;
         }
         case "set-profile": {
@@ -5560,7 +5671,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           s.profile = name;
           upsertChannel({ sessionId: s.id, profile: name });
           broadcastProfile(s);            // even without a restart: the gap shows everywhere
-          if (msg.restart) await restartSession(s);
+          if (msg.restart) await restartSession(s, wsBy());
           break;
         }
         case "set-model": {
@@ -5574,7 +5685,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           const model = msg.model?.trim() || null;
           s.model = model ?? undefined;
           upsertChannel({ sessionId: s.id, model });
-          await restartSession(s);        // respawns with the new --model (s.model)
+          await restartSession(s, wsBy()); // respawns with the new --model (s.model)
           broadcastProfile(s);            // running == desired now
           break;
         }
@@ -5593,7 +5704,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             return fail(`unknown effort level: ${wanted}`);
           s.effort = wanted ?? undefined;
           upsertChannel({ sessionId: s.id, effort: wanted });
-          await restartSession(s);        // respawns with the new --effort
+          await restartSession(s, wsBy()); // respawns with the new --effort
           broadcastProfile(s);            // running == desired now
           break;
         }

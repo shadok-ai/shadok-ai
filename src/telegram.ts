@@ -19,6 +19,7 @@ import {
   setTgTools,
 } from "./channels.js";
 import { secretNames, setSecret, deleteSecret } from "./secrets.js";
+import { recordSecretAudit } from "./secret-audit.js";
 import { telegramPhotoable } from "./download.js";
 import { transcribe, heardNotice } from "./whisper.js";
 import { clock, lookAtVideo, MAX_FRAMES, ALBUM_FRAMES } from "./video.js";
@@ -1886,7 +1887,15 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             await reply(chat.id, threadId, "Usage: /secret NAME value");
             return;
           }
+          const existed = secretNames().includes(skey.trim());
           setSecret(skey.trim(), sval);
+          recordSecretAudit({
+            action: existed ? "updated" : "created",
+            secrets: [skey.trim()],
+            actor: `telegram ${senderName(msg.from) ?? "?"}`,
+            via: "telegram",
+            instance: process.cwd(),
+          });
           const del = await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
           await reply(
             chat.id,
@@ -1901,7 +1910,16 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             await reply(chat.id, threadId, "Usage: /unsecret NAME");
             return;
           }
-          deleteSecret(skey);
+          if (secretNames().includes(skey)) {
+            deleteSecret(skey);
+            recordSecretAudit({
+              action: "deleted",
+              secrets: [skey],
+              actor: `telegram ${senderName(msg.from) ?? "?"}`,
+              via: "telegram",
+              instance: process.cwd(),
+            });
+          }
           await reply(chat.id, threadId, `🔐 ${skey} removed from the vault.`);
           return;
         }

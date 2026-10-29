@@ -899,7 +899,12 @@ mode a neutral near-black.
 Light/dark **mode** is an orthogonal, **per-browser** choice in the same menu
 (default dark; stored in `localStorage`, applied before first paint) and needs no
 endpoint — the accent is the instance's shared identity, the mode is personal),
-`/profiles`, `/secrets`, `/telegram`, `/defaults`, `/first-agent` (GET —
+`/profiles`, `/secrets`, `/secrets/audit` (GET, **admin only** — the secret
+audit log: who created/updated/deleted a secret, which profile it was attached
+to, and which agent **received** it at spawn or in a cron guard, with the person
+or door that caused it; names only, never a value; filters `secret`, `action`,
+`actor`, `agent`, `since`, `limit`. Also in the vault panel → *Audit log*, and
+🕘 on each secret), `/telegram`, `/defaults`, `/first-agent` (GET —
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
 `/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,

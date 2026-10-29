@@ -481,6 +481,18 @@ Without this gate a public bot username is an open shell.
 
 - **Secret vault** (`src/secrets.ts`, `~/.shadok-ai/secrets.json`, mode 600) —
   central, name→value. Values live outside any repo.
+- **Secret audit log** (`src/secret-audit.ts`, `~/.shadok-ai/secret-audit.jsonl`,
+  mode 600) — one JSON line per event, names only: `created` / `updated` /
+  `deleted` (web, agent, Telegram), `attached` / `detached` (a profile's list
+  changed), `injected` (a FRESH process received it at spawn — an adopted tmux
+  pane is not logged again, it got its env when it was first spawned) and
+  `cron-check` (a guard's shell received it). Each row credits the most specific
+  principal: a peer, then the parent agent (pilotctl authenticates as the
+  bootstrap admin, so the account alone would credit a person who did nothing),
+  then cron/Telegram, then the signed-in web account. Global like the vault,
+  with the launch dir on every row; append-only, rotated at 8 MB keeping one
+  `.1`. "Use" means injection: what a process does with the value afterwards is
+  outside what shadok sees. `GET /secrets/audit` (admin) serves it.
 - **Profiles** (`src/profiles.ts`, `~/.shadok-ai/profiles.json`, mode 600) —
   a named bundle of: a role (`--append-system-prompt`), permission guardrails
   (`--settings` deny/allow, e.g. forbid `git commit`), a model, and a list of
@@ -1057,7 +1069,8 @@ and are never touched.
 - **Global config**: `~/.shadok-ai/config.json` (600) — port, per-launch-dir
   Telegram token/allowed chats/enabled, GUI password, `autoUpdate`,
   `permissionMode`, `timezone`.
-- **Vault & profiles**: `~/.shadok-ai/secrets.json`, `profiles.json` (both 600).
+- **Vault & profiles**: `~/.shadok-ai/secrets.json`, `profiles.json` (both 600);
+  `secret-audit.jsonl` (600) beside them.
 - **Crons**: `~/.shadok-ai/crons/<encoded cwd>.json`, per launch directory like
   the channel list.
 - **Telegram DM owner**: `~/.shadok-ai/<encoded cwd>-telegram-owner.json` — the
