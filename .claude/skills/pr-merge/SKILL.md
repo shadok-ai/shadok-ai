@@ -262,6 +262,86 @@ decision. Not worth one: an isolated cosmetic tweak.
 Say what stays OPEN too. "Merged, but macOS is only unit-tested" is what stops
 the next agent asserting the whole thing is covered.
 
+## Two scripts for the human's one line
+
+`scripts/pr-merge.sh` and `scripts/promote.sh` exist because of something that
+was **measured, not assumed**, and the measurement is why they are shaped the
+way they are.
+
+**An allow rule is not a pass in auto mode.** `~/.claude/settings.json` carried
+`Bash(gh pr merge:*)` for the whole of a session in which `gh pr merge` was
+refused three times by the auto-mode classifier and allowed twice — both times
+immediately after the human had named that merge. Two hypotheses were tested
+with a throwaway project settings file and a nested `claude -p`:
+
+- *A command-line `--settings` replaces the permissions block, so shadok's
+  `allow: []` erases the rule.* **False.** A project-level `deny` still bit
+  through a `--settings` that never mentioned it: the blocks **merge**. There is
+  no bug in `profileArgs` to fix here, and an earlier claim that there was one
+  was wrong.
+- *The classifier judges the intent it reads in the conversation.* Consistent
+  with everything observed — and the third probe, which tried to build a
+  permissive sub-environment to measure it directly, was itself refused as
+  `[Auto-Mode Bypass]`.
+
+So **do not** propose wrapping the merge in an allowlisted script to make the
+loop self-service: that is the same shape the classifier just refused, and
+granting the agent its own merge right is what invariant 26 exists to prevent.
+
+What a script CAN do is make the line the **human** types short and stricter
+than the raw command. A `!` command in the composer is their hand, not the
+agent's, so nothing gates it:
+
+```
+! ~/.shadok-ai/bin/pr-merge.sh 341 --head 9f2ab1c
+! ~/.shadok-ai/bin/promote.sh --body /path/to/body.md
+```
+
+**The copy that gets typed lives OUTSIDE the repo**, in `~/.shadok-ai/bin/`,
+for the same reason `check-open-prs.sh` is copied to `~/.shadok-ai/checks/`: a
+versioned path disappears the moment the root checkout sits on a commit that
+predates the file — which is not hypothetical, the root checkout is routinely
+dozens of commits behind. Source of truth stays here; re-copy after editing:
+
+```sh
+mkdir -p ~/.shadok-ai/bin
+cp .claude/skills/pr-merge/scripts/pr-merge.sh .claude/skills/pr-merge/scripts/promote.sh ~/.shadok-ai/bin/
+chmod +x ~/.shadok-ai/bin/pr-merge.sh ~/.shadok-ai/bin/promote.sh
+```
+
+`pr-merge.sh` re-runs the whole entry filter and refuses rather than merges: a
+draft, a base other than `main`, a `hold` label, an author off the whitelist, a
+fork without `--fork-ok`, anything under `.github/`, a state that is not
+`CLEAN` — and, the one guard a human cannot hold in their head, a head that no
+longer matches `--head`. **That pin is the point.** A PR can grow between the
+review and the merge, and then what lands is not what anyone read; the agent
+prints the sha it verified, the human pastes it back, and the script compares.
+It takes the subject from the PR itself, so a hand-typed title cannot drift,
+and it reads the published version off the publish run instead of recomputing
+CI's rule.
+
+One rule inside it is worth keeping: **nothing after `gh pr merge` may fail the
+script.** The merge is the irreversible act and everything past it is
+reporting, so a failed `git fetch` would otherwise exit non-zero on a PR that
+*did* merge — the one wrong answer available at that moment. The test suite
+found that, not a reviewer.
+
+`promote.sh` does the fifteen mechanical steps of a promotion (read the minor
+off `origin/main`, read `latest` off the **registry** exactly as CI does and
+refuse when nothing is due, branch in the dedicated worktree, bump the two
+version lines, commit, push, open the PR) and deliberately does **not** write
+the body: a promotion's text is the only honest summary of a whole generation
+and has to be read off the merges. Pass it with `--body`, title on line 1.
+
+Both scripts **resolve** the repo and the worktree instead of assuming them.
+`$HOME` is not the launch directory on this host — it is `/root` while the
+checkout lives under `/Users/…`, and both `.shadok-ai` directories exist — which
+is why a hardcoded `$HOME` path made the first runs refuse to work at all.
+
+`test/pr-merge-script.test.ts` drives every refusal against a fake `gh`, the way
+`test/tweak-pr-check.test.ts` drives the cron guard: none of these states can be
+reproduced on demand against the real API.
+
 ## Red flags — stop and ask the human
 
 - The PR touches `.github/workflows/` — **always**, even if the rest is clean.
