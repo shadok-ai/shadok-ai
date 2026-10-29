@@ -47,13 +47,48 @@ behaviour are untouched.
 - **The favicon is not touched.** It already reads `--amber` and `--bg` live,
   so it follows the new colours on its own.
 
-## Not in this change
+## Layout: Teams
 
-The structural parts of the mockups are not included:
+The owner then asked for the cockpit itself to match the mockups, not only its
+colours. One layout serves both modes, and the colours stay the theme. Two
+layouts selected by the theme would mean maintaining two interfaces in one
+10k-line page.
 
-- Teams' app bar and collapsible group sections;
-- presence dots;
-- adaptive-card dialogs.
+- **Title bar.** It holds the brand mark and name, a search box
+  (`#agentSearch`), the quota dials and the ⋯ menu.
+  - The search narrows the agents list as you type and unfolds collapsed groups
+    while a query is present.
+  - Enter opens the first match, Escape clears.
+  - Under 1100px the GitHub star moves into the ⋯ menu.
+- **App bar (`#appBar`).**
+  - *Activity* shows how many agents wait for an answer, and a click cycles
+    through them.
+  - *Agents* focuses the search.
+  - The global tools follow. `reflowHeaderTools` moves the real buttons there
+    on a desktop, so their handlers come along. On a phone it moves them to the
+    ⋯ menu, as before.
+- **Agents pane.** `#groupRail` is hidden. Every group is a collapsible section
+  of `#tabbar`, exactly as the phone sheet already showed them. The group's
+  icon sits on a tile:
+  - a click on the icon opens the icon picker, which used to be reachable only
+    from the rail;
+  - its `＋` opens the setup popin for that group (`openSetup(groupId)`).
+- **Agents.** Each tab gets a round avatar (`paintTabAvatar`): initials, plus a
+  colour from the Teams persona palette hashed from the name, so it needs no
+  storage. The state LED rides its corner as a presence dot: green when ready,
+  red while working, hollow when the process is dead.
+- **Channel header.** The bar has:
+  - the avatar and name;
+  - Chat / Changes tabs, which drive the terminal mode and the diff panel's
+    existing toggle;
+  - Schedule and Terminal as labelled tabs.
+- **Messages.** Bubbles get 6px corners. Your messages sit on an accent tint,
+  the agent's on a white card. A dialog becomes an *Approval requested* card
+  with an accent top border.
+- **Composer.** A card with the accent underline.
 
-They would turn a theme switch into a layout fork, so they are left for a
-follow-up if wanted.
+Everything lives in a "Teams layer" at the end of the stylesheet, so the older
+rules underneath stay readable and the phone layout (≤640px) keeps its own
+behaviour. On a phone the mark is dropped from the one-row header: there is no
+room for it beside the name, the version and the dials, and the favicon
+carries it there.

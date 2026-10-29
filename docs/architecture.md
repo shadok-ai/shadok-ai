@@ -1034,8 +1034,10 @@ and are never touched.
   History and streaming both read these. Keyed by cwd — see invariant #1.
 - **Channel + group lists**: `~/.shadok-ai/channels/<encoded server cwd>.json`
   and `…-groups.json` (`{id, name, icon, collapsed}`, in display order), via
-  `src/channels.ts`. On a desktop the groups are shown as their own column
-  (`#groupRail`), but that column is a VIEW: it is rebuilt from the agents
+  `src/channels.ts`. Since the Teams layout (2026-10-29) the desktop shows every
+  group as a collapsible section of the agents pane, exactly like the phone
+  sheet, and `#groupRail` is hidden; the rail code below still runs (and is what
+  a future layout could bring back). That column was a VIEW: it is rebuilt from the agents
   column's DOM — which still holds every group, its order and its members, and
   is what `persistGroups` / `persistChannels` read — and it writes back through
   those same calls. Filtering the agents column to the selected group is pure

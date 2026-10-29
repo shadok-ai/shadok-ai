@@ -2120,6 +2120,165 @@
   .sec-reload span { flex: 1; }
   .sec-reload button { flex: none; padding: 5px 11px; border-radius: 6px; border: 1px solid var(--amber); background: none; color: var(--amber); cursor: pointer; font: inherit; font-size: 12px; }
   .sec-reload button:hover { background: color-mix(in srgb, var(--amber) 15%, transparent); }
+
+  /* ══ Teams layer ═════════════════════════════════════════════════════════
+     The cockpit's shape follows Microsoft Teams: a title bar with search, an app
+     bar on the left, every group as a collapsible section of the agents pane,
+     round avatars with a presence dot, a channel header with tabs, bubbles, and
+     dialogs as approval cards. Colours stay tokens, so light mode reads as Teams
+     and dark mode as the neutral near-black. Placed LAST so it wins on equal
+     specificity; the phone layout (≤640px) keeps its sheet and its ⋯ menu. */
+  :root { --mine: color-mix(in srgb, var(--amber) 20%, var(--bg-raised)); --pane-main: color-mix(in srgb, var(--bg) 55%, var(--bg-raised)); }
+  :root[data-mode="light"] { --mine: color-mix(in srgb, var(--amber) 13%, #fff); }
+
+  /* Title bar */
+  header { padding: 8px 14px; gap: 14px; }
+  #agentSearch {
+    flex: 0 1 520px; margin: 0 auto; display: flex; align-items: center; gap: 8px;
+    height: 32px; padding: 0 12px; border-radius: 6px; cursor: text;
+    background: var(--bg-raised); color: var(--text-dim); border: 1px solid var(--line);
+  }
+  #agentSearch:focus-within { border-color: var(--amber); }
+  #agentSearch input { flex: 1; min-width: 0; border: 0; outline: none; background: none; color: var(--text); font: inherit; font-size: 13.5px; padding: 0; }
+  #agentSearch input::placeholder { color: var(--text-dim); }
+  #agentSearch + .spacer { display: none; }
+  @media (max-width: 640px) { #agentSearch { display: none; } #agentSearch + .spacer { display: block; } }
+  @media (min-width: 641px) { header { flex-wrap: nowrap; } }
+  /* The star pill is the widest tool; under 1100px it lives in the ⋯ menu. */
+  @media (min-width: 641px) and (max-width: 1100px) { #starBtn { display: none; } #moreMenu #starMenuItem { display: block; } }
+  /* Close buttons appear on hover, as in Teams' lists. */
+  .tab .close, .group-head .gclose, .group-head .gadd { visibility: hidden; }
+  .tab:hover .close, .group-head:hover .gclose, .group-head:hover .gadd { visibility: visible; }
+  .group-head .gadd { flex: none; font-size: 14px; padding: 0 4px; line-height: 1; }
+  .group-head .gadd:hover { color: var(--amber); }
+  .group-head .gicon { cursor: pointer; }
+  .group-head .caret { font-size: 10px; width: 10px; color: var(--text-dim); }
+
+  /* Presence: Teams' four dots. Working = busy (red), ready = available (green),
+     dead = offline (hollow). */
+  .led.on { background: var(--ok); box-shadow: none; }
+  .led.busy { background: var(--err); box-shadow: none; }
+  .led.off { background: transparent; box-shadow: inset 0 0 0 2px var(--text-dim); }
+  .tav {
+    position: relative; flex: none; width: 32px; height: 32px; border-radius: 50%;
+    display: grid; place-items: center; background: var(--ac, var(--amber));
+    color: #fff; font-size: 12px; font-weight: 600; letter-spacing: 0;
+  }
+  .tav .led { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; margin: 0; border: 2px solid var(--bg); }
+  .ab-txt, .ct-txt { display: none; }
+  #appBar { display: none; }
+  @media (max-width: 640px) {
+    /* A phone's single header row has no room for the mark beside the name,
+       the version and the dials; the favicon carries it there. */
+    header .brand-logo { display: none; }
+  }
+
+  /* Agents list: avatar on the left, two rows of text beside it. */
+  .tab {
+    display: grid; grid-template-columns: 32px minmax(0, 1fr); column-gap: 10px; row-gap: 1px;
+    align-items: center; padding: 7px 8px 9px; border-left: 0; border-radius: 6px; color: var(--text);
+  }
+  .tab > .tav { grid-row: 1 / 3; }
+  .tab-row1, .tab-row2 { grid-column: 2; min-width: 0; }
+  .tab .ctxbar { left: 50px; right: 8px; }
+  .tab .lastat, .tab .ctxnum { font-size: 11px; color: var(--text-dim); }
+  .tab.active { border-left: 0; border-radius: 6px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); background: var(--bg-raised); font-weight: 600; }
+  :root:not([data-mode="light"]) .tab.active { background: var(--bg-inset); box-shadow: inset 0 0 0 1px var(--line); }
+  .tab.active .tav .led { border-color: var(--bg-raised); }
+  .tab.unread { border-left: 0; border-radius: 6px; font-weight: 700; }
+  .tab.filtered-out { display: none !important; }
+  body.filtering .group.collapsed .group-body { display: flex !important; }
+  .group-head { gap: 10px; padding: 8px; font-size: 14px; color: var(--text); border-radius: 6px; }
+  .group-head .gicon {
+    flex: none; width: 30px; height: 30px; border-radius: 6px; display: grid; place-items: center;
+    background: color-mix(in srgb, var(--amber) 16%, var(--bg-raised)); font-size: 16px; line-height: 1;
+  }
+  .group-head .gicon:empty { display: none; }
+  .group-body { padding-left: 20px; }
+
+  @media (min-width: 641px) {
+    main { padding: 0; gap: 0; }
+    /* App bar */
+    #appBar { width: 68px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0 12px; background: var(--page); overflow-y: auto; }
+    #appTools { display: contents; }
+    #appBar button {
+      position: relative; width: 62px; padding: 8px 0 6px; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      border: 0; border-radius: 6px; background: none; color: var(--text-dim); font-size: 10.5px; line-height: 1.1;
+    }
+    #appBar button:hover { color: var(--amber); background: none; }
+    #appBar button.on { color: var(--amber); font-weight: 600; }
+    #appBar button.on::before { content: ""; position: absolute; left: -2px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--amber); }
+    #appBar button[hidden] { display: none; }
+    #appBar svg { width: 20px !important; height: 20px !important; vertical-align: 0 !important; }
+    #appBar .ab-txt { display: block; }
+    #appBar .ab-n, #appBar .sec-badge {
+      position: absolute; top: 3px; right: 12px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px;
+      background: var(--err); color: #fff; font-size: 10px; font-weight: 600; line-height: 16px; text-align: center;
+    }
+    #appBar .ab-n[hidden] { display: none; }
+
+    /* Every group is a section of the agents pane; the rail goes. */
+    body.has-groups #groupRail { display: none; }
+    #tabbar, body.has-groups #tabbar {
+      width: 300px; border: 0; border-radius: 8px 0 0 0; background: var(--bg); padding: 12px 8px;
+    }
+    #tabbar .side-label { font-size: 18px; font-weight: 700; padding: 4px 8px 12px; }
+    body.has-groups #tabbar .side-label .sl-all { display: inline; }
+    #tabbar .side-label .sl-view, #viewEmpty { display: none !important; }
+    #tabbar .group-head { display: flex; }
+    #tabbar .group { margin-top: 6px; }
+    #tabbar .group-body { padding-left: 20px; }
+    #tabbar .group.collapsed .group-body { display: none; }
+    #tabbar:not([data-view="ungrouped"]) #ungrouped,
+    #tabbar[data-view="ungrouped"] #groups { display: flex; flex-direction: column; }
+    #tabbar .group:not(.in-view) { display: flex; }
+    #newGroupBare, body.has-groups #newGroupBare { display: block; }
+
+    /* Conversation */
+    .chat-pane { border: 0; border-radius: 0; background: var(--pane-main); }
+    #machine, #diffpanel { border-radius: 0; border-top: 0; border-bottom: 0; border-right: 0; }
+  }
+
+  /* Channel header: avatar, name, status, then tabs. */
+  #chanBar { gap: 12px; padding: 0 20px; min-height: 58px; background: var(--bg-raised); border-bottom: 1px solid var(--line); }
+  #chanBar .tav { width: 36px; height: 36px; font-size: 13px; }
+  #chanBar #chanBarName { font-size: 16px; font-weight: 700; }
+  #chanBar .gauge .label { display: none; }
+  #chanBar .gauge .value { color: var(--text-dim); font-size: 12px; }
+  #chanBar .gauge:nth-of-type(3) { display: none; } /* the session id: in the tooltip of the menu */
+  .chan-tabs { display: flex; align-self: stretch; gap: 2px; margin-left: 10px; }
+  .chan-tabs button, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm {
+    position: relative; align-self: stretch; display: inline-flex; align-items: center; gap: 6px;
+    border: 0; border-radius: 0; background: none; padding: 0 10px; color: var(--text-dim); font-size: 14px;
+  }
+  .chan-tabs button:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover { color: var(--text); background: none; }
+  .chan-tabs button.on, #chanBar .chan-actions #chanTerm.on { color: var(--text); font-weight: 600; background: none; border: 0; }
+  .chan-tabs button.on::after, #chanBar .chan-actions #chanTerm.on::after {
+    content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--amber);
+  }
+  #chanBar .chan-actions { align-self: stretch; }
+  #chanBar .chan-actions .ct-txt { display: inline; }
+  #chanBar .chan-actions #chanStop, #chanBar .chan-actions #chanMenu { align-self: center; }
+  @media (max-width: 640px) {
+    #chanBar { min-height: 0; padding: 8px 12px; }
+    #chanBar .tav, .chan-tabs, #chanBar .chan-actions .ct-txt { display: none; }
+  }
+
+  /* Messages: Teams bubbles. */
+  .bubble { border-radius: 6px; }
+  .turn.user .bubble { background: var(--mine); border: 0; }
+  .turn.claude .bubble { background: var(--bg-raised); border: 0; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+  .turn.dialog .bubble {
+    background: var(--bg-raised); border: 0; border-top: 4px solid var(--amber); border-radius: 6px;
+    box-shadow: 0 0 0 1px var(--line), 0 2px 6px rgba(0, 0, 0, 0.08); padding-top: 12px;
+  }
+  .turn.dialog .bubble::before { content: "Approval requested"; font-size: 12px; font-weight: 600; color: var(--phosphor); margin-bottom: -6px; }
+  .turn.dialog.spent .bubble { border-top-color: var(--line); }
+
+  /* Composer: a card with the accent underline. */
+  #composer { background: transparent; padding: 8px 20px calc(16px + env(safe-area-inset-bottom, 0px)); }
+  #composer textarea { background: var(--bg-raised); border: 1px solid var(--line); border-bottom: 2px solid var(--amber); border-radius: 6px; }
+  #composer textarea:focus-visible { box-shadow: none; border-color: var(--line); border-bottom-color: var(--amber); }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a light-preferring viewer never sees a
@@ -2132,6 +2291,8 @@
 
 <header>
   <span class="brand"><span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 40 40"><g fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="17" cy="17" rx="10" ry="8.5"/><path d="M25 12.5c3-3 7.5-3 10-1.2-2.8.4-5 1.9-6.6 4"/><path d="M14 25.3l-2.4 10M20 25.3l1.6 10"/></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
+  <!-- Teams-style search: filters the agents list as you type (desktop). -->
+  <label id="agentSearch"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15 15l5 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><input id="agentFilter" type="search" placeholder="Search agents" autocomplete="off" spellcheck="false" aria-label="Search agents"></label>
   <span class="spacer"></span>
   <div class="gauge quota" id="quota5h" data-window="5h" title="5h rolling limit">
     <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="5h rolling limit">
@@ -2157,15 +2318,15 @@
        against the right edge (the 🔑 was there, 16px from it — out of sight at
        the slightest zoom). -->
   <div class="hdr-tools">
-  <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)" aria-label="Secrets"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l7.5 7.5M15.5 15.5l1.8-1.8M17.8 17.8l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-  <button id="ledgerBtn" class="icon" title="Shared ledger — what agents have resolved / decided" aria-label="Ledger"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-  <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)" aria-label="Profiles"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+  <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)" aria-label="Secrets"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l7.5 7.5M15.5 15.5l1.8-1.8M17.8 17.8l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="ab-txt">Secrets</span></button>
+  <button id="ledgerBtn" class="icon" title="Shared ledger — what agents have resolved / decided" aria-label="Ledger"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Ledger</span></button>
+  <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)" aria-label="Profiles"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Profiles</span></button>
   <!-- Security: what was done to accounts and second factors, and "this wasn't
        me". Kept out of the ⋯ overflow on a phone: its badge is the point. -->
-  <button id="securityBtn" class="icon" title="Security — what happened to your account" aria-label="Security" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6l7-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span id="securityBadge" class="sec-badge" hidden></span></button>
-  <button id="usersBtn" class="icon" title="Users — accounts for this instance" aria-label="Users" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 19a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 6.2a3.2 3.2 0 0 1 0 6.1M17.5 19a6 6 0 0 0-2.2-4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-  <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg></button>
-  <button id="muteNotif" class="icon" title="Mute the notification sound" aria-label="Notification sound"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 16.5h12c-1.3-1.1-2-2.7-2-4.5v-1.2a4 4 0 0 0-8 0v1.2c0 1.8-.7 3.4-2 4.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.4 19a1.7 1.7 0 0 0 3.2 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line class="mute-slash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+  <button id="securityBtn" class="icon" title="Security — what happened to your account" aria-label="Security" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6l7-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span id="securityBadge" class="sec-badge" hidden></span><span class="ab-txt">Security</span></button>
+  <button id="usersBtn" class="icon" title="Users — accounts for this instance" aria-label="Users" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 19a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 6.2a3.2 3.2 0 0 1 0 6.1M17.5 19a6 6 0 0 0-2.2-4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Users</span></button>
+  <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg><span class="ab-txt">Telegram</span></button>
+  <button id="muteNotif" class="icon" title="Mute the notification sound" aria-label="Notification sound"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 16.5h12c-1.3-1.1-2-2.7-2-4.5v-1.2a4 4 0 0 0-8 0v1.2c0 1.8-.7 3.4-2 4.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.4 19a1.7 1.7 0 0 0 3.2 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line class="mute-slash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Sound</span></button>
   <div class="more-wrap">
     <button id="moreBtn" class="icon" title="More">⋯</button>
     <div id="moreMenu" hidden>
@@ -2663,6 +2824,14 @@
 </div>
 
 <main>
+  <!-- The app bar (desktop): Teams' left column. Activity jumps to an agent that
+       waits for you; the global tools are MOVED here by reflowHeaderTools (the
+       real buttons, handlers included) and back to the header/⋯ on a phone. -->
+  <nav id="appBar" aria-label="Apps">
+    <button id="abActivity" type="button" title="Jump to an agent waiting for you"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/></svg><span class="ab-txt">Activity</span><span id="abActivityN" class="ab-n" hidden></span></button>
+    <button id="abAgents" type="button" class="on" title="Agents"><svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="9" cy="9" r="3.2"/><circle cx="17" cy="10" r="2.4"/><path d="M3.5 19c.6-3 2.8-4.6 5.5-4.6s4.9 1.6 5.5 4.6M14.5 15c2.6-.6 5 .6 5.8 3.4"/></g></svg><span class="ab-txt">Agents</span></button>
+    <div id="appTools"></div>
+  </nav>
   <!-- The groups column (desktop only): a VIEW over the agents column beside it,
        which still holds the groups, their order and their members — that is what
        is persisted. Picking a group narrows the agents column to it. On a phone
@@ -2708,6 +2877,7 @@
          modes — the terminal is just another view of the same channel, not a
          separate place, so its actions have no reason to appear with it. -->
     <div id="chanBar" hidden>
+      <span class="tav" id="chanAvatar" aria-hidden="true"></span>
       <span class="label" id="chanBarName"></span>
       <!-- Mobile: the sidebar is hidden → this button opens the very same rich
            agent tabs (LED, state, background-work hatch, context bar) as a bottom
@@ -2731,11 +2901,15 @@
         <span class="label">Branch</span>
         <span class="value" id="branchView">—</span>
       </div>
+      <span class="chan-tabs" role="tablist">
+        <button id="chanChat" type="button" role="tab">Chat</button>
+        <button id="chanDiff" type="button" role="tab">Changes</button>
+      </span>
       <span class="chan-actions">
         <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
-        <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ct-txt">Schedule</span></button>
         <button id="chanStop" class="icon stop" title="End session" aria-label="End session"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 4v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.5 6.8a6 6 0 1 0 7 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-        <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ct-txt">Terminal</span></button>
         <!-- The per-agent menu (rename, profile, mirror, report to, close). It's
              the same menu a right-click / long-press on a tab opens — but with the
              sidebar hidden on a phone there was no way to reach it, so it lives
@@ -3144,6 +3318,23 @@
    * Delegating is this product's central action; it must not cost the user
    * their place in the conversation they are having.
    */
+  // ── Teams layer: avatars ───────────────────────────────────────────────────
+  // Avatar colours: the Teams persona palette. Picked from the NAME, so an agent
+  // keeps its colour across reloads and devices without storing anything.
+  const AVATAR_COLORS = ["#5b5fc7", "#0078d4", "#038387", "#498205", "#c4314b", "#ca5010", "#8764b8", "#986f0b", "#00727c", "#b146c2"];
+  function avatarInitials(name) {
+    const words = String(name || "").replace(/[^\p{L}\p{N}]+/gu, " ").trim().split(" ").filter(Boolean);
+    if (!words.length) return "?";
+    return (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase();
+  }
+  function paintTabAvatar(avatar, label, name) {
+    let h = 0;
+    for (const c of String(name || "")) h = (h * 31 + c.codePointAt(0)) >>> 0;
+    avatar.style.setProperty("--ac", AVATAR_COLORS[h % AVATAR_COLORS.length]);
+    const text = avatarInitials(name);
+    if (label.textContent !== text) label.textContent = text;
+  }
+
   function createTab(groupId, { focus = true } = {}) {
     seq++;
     const el = document.createElement("div");
@@ -3226,13 +3417,22 @@
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
     // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
     // left, context % hard right (no longer hidden behind the icons).
+    // Teams-style avatar: initials on a colour derived from the name, with the
+    // state LED riding its corner as a presence dot. Follows renames.
+    const avatar = document.createElement("span");
+    avatar.className = "tav";
+    const initials = document.createElement("span");
+    avatar.append(initials, led);
+    const paintAvatar = () => paintTabAvatar(avatar, initials, name.textContent);
+    new MutationObserver(paintAvatar).observe(name, { childList: true, characterData: true, subtree: true });
+    paintAvatar();
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(led, name, timer, mute, cron, tg, shells, monitors, update, close);
+    row1.append(name, timer, mute, cron, tg, shells, monitors, update, close);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
     row2.append(lastAt, ctxNum);
-    btn.append(row1, row2);
+    btn.append(avatar, row1, row2);
     // Context-window usage: a thin progress bar at the bottom of the tab.
     const ctxBar = document.createElement("div");
     ctxBar.className = "ctxbar";
@@ -4185,7 +4385,14 @@
     gclose.className = "gclose";
     gclose.textContent = "×";
     gclose.title = "Ungroup (tabs are kept)";
-    head.append(caret, gname, gclose);
+    const gicon = document.createElement("span");
+    gicon.className = "gicon";
+    gicon.title = "Change the group's icon";
+    const gadd = document.createElement("span");
+    gadd.className = "gadd";
+    gadd.textContent = "＋";
+    gadd.title = "New agent in this group";
+    head.append(caret, gicon, gname, gadd, gclose);
     const body = document.createElement("div");
     body.className = "group-body";
     el.append(head, body);
@@ -4203,6 +4410,8 @@
     paintCaret();
     head.addEventListener("click", (e) => {
       if (e.target === gclose) return dissolveGroup(group);
+      if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
+      if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
       el.classList.toggle("collapsed");
       paintCaret();
       persistGroups();
@@ -4305,7 +4514,11 @@
     return window.resolveGroupView(groupView, groups.map((g) => g.id));
   }
   /** The group a new agent goes into: the one on screen, none on a phone. */
+  // The Teams layout has no rail: a group's own ＋ names the group the next
+  // agent goes into, and every other opening of the setup popin clears it.
+  let setupGroup = null;
   function viewGroupId() {
+    if (setupGroup != null) return setupGroup;
     if (!railShown()) return null;
     const v = currentView();
     return v === "ungrouped" ? null : Number(v);
@@ -4340,7 +4553,11 @@
     // No group → no column (invariant: the rail earns its space, see the CSS).
     document.body.classList.toggle("has-groups", groups.length > 0);
     tabbar.dataset.view = v;
-    for (const g of groups) g.el.classList.toggle("in-view", String(g.id) === v);
+    for (const g of groups) {
+      g.el.classList.toggle("in-view", String(g.id) === v);
+      const gi = g.headEl.querySelector(".gicon");
+      if (gi && gi.textContent !== g.icon) gi.textContent = g.icon;
+    }
     const g = groups.find((x) => String(x.id) === v);
     $("viewLabel").textContent = g ? `${g.icon} ${g.nameEl.textContent}` : "Ungrouped";
     $("viewEmpty").hidden = tabsInView(v).length > 0 || v === "ungrouped";
@@ -5369,6 +5586,7 @@
     $("chanBar").hidden = false;
     $("chanBarName").textContent = t.nameEl ? t.nameEl.textContent : "";
     $("chanBarName").title = t.cwd || "";
+    paintTabAvatar($("chanAvatar"), $("chanAvatar"), t.nameEl ? t.nameEl.textContent : "");
     updateSendDisabled(); // t === active here; also honours a pending upload
     thinking.classList.toggle("visible", t.status === "busy");
     // Showing/hiding "Shadok is pumping" changes the transcript area's height:
@@ -6605,7 +6823,8 @@
    * than a stillborn tab — it became the active channel, with its form in place
    * of the conversation you were watching.
    */
-  function openSetup() {
+  function openSetup(groupId = null) {
+    setupGroup = groupId;
     renderModelRow();
     // Close the mobile agents sheet first: the setup overlay sits BELOW it in
     // the stack, so leaving the sheet open would hide the form behind it.
@@ -7612,7 +7831,7 @@
   $("setupClose").addEventListener("click", closeSetup);
   $("setupCancel").addEventListener("click", closeSetup);
   $("setupOverlay").addEventListener("click", (e) => { if (e.target === $("setupOverlay")) closeSetup(); });
-  $("emptyNewBtn").addEventListener("click", openSetup);
+  $("emptyNewBtn").addEventListener("click", () => openSetup());
   document.querySelectorAll('input[name="mode"]').forEach((r) =>
     r.addEventListener("change", () => {
       const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -8213,17 +8432,21 @@
   // the real button elements, so their click handlers travel with them.
   // Recomputed on load, on resize, and when the instance name changes.
   const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "profilesBtn", "telegramBtn", "muteNotif"];
+  // Every tool the desktop app bar carries, in its order.
+  const APP_TOOLS = ["profilesBtn", "ledgerBtn", "secretsBtn", "usersBtn", "securityBtn", "telegramBtn", "muteNotif"];
   function reflowHeaderTools() {
     const hdrTools = document.querySelector(".hdr-tools");
     const moreWrap = document.querySelector(".more-wrap");
     const overflow = $("overflowTools");
     if (!hdrTools || !moreWrap || !overflow) return;
     const mobile = matchMedia("(max-width: 640px)").matches;
-    for (const id of OVERFLOW_TOOLS) {
+    const appTools = $("appTools");
+    for (const id of APP_TOOLS) {
       const el = $(id);
       if (!el) continue;
-      if (mobile) overflow.appendChild(el);          // all into the ⋯ menu
-      else hdrTools.insertBefore(el, moreWrap);       // back in the header, in order
+      if (!mobile && appTools) appTools.appendChild(el);              // desktop: the app bar
+      else if (mobile && OVERFLOW_TOOLS.includes(id)) overflow.appendChild(el); // phone: the ⋯ menu
+      else hdrTools.insertBefore(el, moreWrap);                       // phone: stays in the header
     }
   }
   let reflowPending = false;
@@ -8235,6 +8458,57 @@
   window.addEventListener("resize", scheduleReflow);
   document.addEventListener("DOMContentLoaded", reflowHeaderTools);
   reflowHeaderTools();
+
+  // ── Teams layer: app bar, search, channel tabs ─────────────────────────────
+  // Activity: how many agents wait for an answer; a click opens the next one.
+  function paintActivity() {
+    const n = tabs.filter((t) => t.btnEl.classList.contains("needs-answer")).length;
+    const badge = $("abActivityN");
+    badge.hidden = !n;
+    badge.textContent = n || "";
+  }
+  new MutationObserver(paintActivity).observe($("tabbar"), { subtree: true, attributes: true, attributeFilter: ["class"], childList: true });
+  $("abActivity").addEventListener("click", () => {
+    const waiting = tabs.filter((t) => t.btnEl.classList.contains("needs-answer"));
+    if (!waiting.length) return;
+    activate(waiting[(waiting.indexOf(active) + 1) % waiting.length]);
+  });
+  $("abAgents").addEventListener("click", () => $("agentFilter").focus());
+
+  // Search: narrows the agents list to the names that match; groups unfold
+  // while a query is typed so nothing matching hides in a collapsed one.
+  function applyAgentFilter() {
+    const q = $("agentFilter").value.trim().toLowerCase();
+    document.body.classList.toggle("filtering", !!q);
+    for (const t of tabs) {
+      const hit = !q || (t.nameEl ? t.nameEl.textContent : "").toLowerCase().includes(q);
+      t.btnEl.classList.toggle("filtered-out", !hit);
+    }
+  }
+  $("agentFilter").addEventListener("input", applyAgentFilter);
+  $("agentFilter").addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.target.value = ""; applyAgentFilter(); e.target.blur(); }
+    if (e.key === "Enter") {
+      const first = tabs.find((t) => !t.btnEl.classList.contains("filtered-out"));
+      if (first) { activate(first); e.target.value = ""; applyAgentFilter(); }
+    }
+  });
+
+  // Channel tabs: Chat leaves the terminal and the diff; Changes toggles the diff.
+  $("chanChat").addEventListener("click", () => {
+    if (chatPane.classList.contains("terminal-mode")) $("chanTerm").click();
+    if ($("diffpanel").classList.contains("open")) $("toggleDiff").click();
+  });
+  $("chanDiff").addEventListener("click", () => $("toggleDiff").click());
+  const paintChanTabs = () => {
+    const term = chatPane.classList.contains("terminal-mode");
+    const diff = $("diffpanel").classList.contains("open");
+    $("chanChat").classList.toggle("on", !term && !diff);
+    $("chanDiff").classList.toggle("on", diff);
+  };
+  new MutationObserver(paintChanTabs).observe(chatPane, { attributes: true, attributeFilter: ["class"] });
+  new MutationObserver(paintChanTabs).observe($("diffpanel"), { attributes: true, attributeFilter: ["class"] });
+  paintChanTabs();
 
   // ── Diff panel ──────────────────────────────────────────
   function colorDiff(text) {
@@ -10030,7 +10304,7 @@
     el.value = "";
   });
 
-  newTabBtn.addEventListener("click", openSetup);
+  newTabBtn.addEventListener("click", () => openSetup());
 
   // One click starts an agent on shadok-ai's own source: the directory, the
   // worktree and the role are all decided already, so a form would only ask you
