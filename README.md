@@ -848,6 +848,9 @@ cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
 key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default.
+The default palette (stored key `amber`, labelled *Shadok*) is the Teams purple in
+light mode and an indigo in dark mode; light mode follows Microsoft Teams, dark
+mode a neutral near-black.
 Light/dark **mode** is an orthogonal, **per-browser** choice in the same menu
 (default dark; stored in `localStorage`, applied before first paint) and needs no
 endpoint — the accent is the instance's shared identity, the mode is personal),

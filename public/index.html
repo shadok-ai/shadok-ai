@@ -16,25 +16,30 @@
   :root {
     /* The page the panels sit on: a shade darker than --bg, so the nav and the
        conversation read as cards (the "sober" pass, 2026-10-28). */
-    --page: #0d0f14;
-    --radius: 12px;
-    --bg: #14161d;
-    --bg-raised: #1b1e27;
-    --bg-inset: #0e1015;
-    --line: #2a2e3b;
-    --text: #d8dae2;
-    --text-dim: #7d8293;
-    --amber: #f0a848;
+    --page: #0c0c0e;
+    --radius: 8px;
+    --bg: #131315;
+    --bg-raised: #1c1c1f;
+    --bg-inset: #0e0e10;
+    --line: #2a2a2e;
+    --text: #ececef;
+    --text-dim: #a1a1aa;
+    /* The token keeps its historical name; the default accent is the Shadok
+       indigo now, not amber (see the light block for its Teams purple twin). */
+    --amber: #7b93ff;
     /* Accent tints derive from --amber via color-mix, so a palette only has to
        redefine --amber (and --phosphor) and every tinted surface follows. */
     --amber-soft: color-mix(in srgb, var(--amber) 12%, transparent);
-    --phosphor: #ffb45c;
-    --ok: #7fc97f;
-    --err: #e07a6a;
+    --phosphor: #9aadff;
+    /* Text set ON an accent fill (primary button, banners). Dark on the pale
+       dark-mode accents, white on the deep light-mode purple. */
+    --on-accent: #0b0b0d;
+    --ok: #4ade80;
+    --err: #f87171;
     /* Floating menus (⋯, version, tab, palette) sit a touch darker than a raised
        panel for depth; kept as tokens so light mode can flip them. */
-    --menu-bg: #14140f;
-    --menu-hover: #26261c;
+    --menu-bg: #18181b;
+    --menu-hover: #26262a;
     --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     /* One sans for the whole interface; the mono is kept for what IS code —
        code blocks, session ids, the terminal. */
@@ -48,24 +53,33 @@
      a pale amber on white. Accent-tinted surfaces (--amber-soft) derive from
      --amber and follow on their own. */
   :root[data-mode="light"] {
-    --page: #eef0f4;
-    --bg: #f7f8fa;
+    /* Light mode follows Microsoft Teams: grey chrome, white cards, Segoe UI,
+       tighter corners, and the Teams purple as the default accent. */
+    --page: #ebebeb;
+    --bg: #f5f5f5;
     --bg-raised: #ffffff;
-    --bg-inset: #e5e8ee;
-    --line: #d2d7e0;
-    --text: #1b2030;
-    --text-dim: #5c6577;
-    --ok: #2f9e44;
-    --err: #cf4436;
-    --phosphor: #c77800;
+    --bg-inset: #f0f0f0;
+    --line: #e0e0e0;
+    --text: #242424;
+    --text-dim: #616161;
+    --ok: #13a10e;
+    --err: #c4314b;
+    /* Darkened from the accent itself, so it reads on white whatever palette. */
+    --phosphor: color-mix(in srgb, var(--amber) 75%, #000);
+    --on-accent: #ffffff;
     --menu-bg: #ffffff;
-    --menu-hover: #eceff5;
+    --menu-hover: #f0f0f0;
+    --radius: 6px;
+    --sans: "Segoe UI", "Segoe UI Web (West European)", -apple-system, BlinkMacSystemFont, "Inter", system-ui, Roboto, "Helvetica Neue", Arial, sans-serif;
   }
+  :root[data-mode="light"]:not([data-theme]) { --amber: #5b5fc7; }
   /* Colour palettes, chosen per instance from the ⋯ menu and stored server-side
      (like the instance name). Only the accent family changes; the dark base
      stays constant for readability, and every tinted surface follows because it
      derives from --amber (color-mix). The default (amber) needs no attribute.
      Accents are 6-digit hex on purpose — the favicon appends an alpha byte. */
+  /* A palette's pale accent would vanish under white text: keep dark text on it. */
+  :root[data-mode="light"][data-theme] { --on-accent: #0b0b0d; }
   :root[data-theme="emerald"] { --amber: #45c58a; --phosphor: #6fe3ab; }
   :root[data-theme="azure"]   { --amber: #5aa9f0; --phosphor: #86c4ff; }
   :root[data-theme="violet"]  { --amber: #b98cf0; --phosphor: #d0b0ff; }
@@ -166,8 +180,14 @@
     font-weight: 700;
     color: var(--text);
   }
-  header .brand::before { color: var(--amber); }
-  header .brand::before { content: "◆ "; }
+  /* The mark: the Shadok's line drawing on an accent tile. */
+  header .brand { display: inline-flex; align-items: center; gap: 4px; }
+  header .brand-logo {
+    width: 26px; height: 26px; flex: none; border-radius: 6px;
+    background: var(--amber); color: var(--on-accent);
+    display: grid; place-items: center; margin-right: 4px;
+  }
+  header .brand-logo svg { width: 19px; height: 19px; }
   /* The brand name doubles as the cockpit's editable title: click to rename,
      Enter/blur commits, Escape cancels. A dashed outline + pencil on hover make
      the affordance obvious; the outline turns solid amber while editing. */
@@ -303,7 +323,7 @@
   }
   #updateBanner {
     position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
-    background: var(--amber); color: #1a1200;
+    background: var(--amber); color: var(--on-accent);
     font-family: var(--sans); font-size: 12px; text-align: center;
     padding: 6px 12px;
   }
@@ -311,7 +331,7 @@
      update banner; its own id so the two never share styling by accident. */
   #expiryBanner {
     position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
-    background: var(--amber); color: #1a1200;
+    background: var(--amber); color: var(--on-accent);
     font-family: var(--sans); font-size: 12px;
     padding: 6px 12px;
     display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
@@ -460,8 +480,8 @@
   #moreMenu .mm-mode button.active { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
   button:hover { background: var(--bg-inset); border-color: var(--line); color: var(--text); }
   button:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
-  button.primary { background: var(--amber); border-color: var(--amber); color: #1a1205; font-weight: 600; }
-  button.primary:hover { background: var(--amber); border-color: var(--amber); color: #1a1205; }
+  button.primary { background: var(--amber); border-color: var(--amber); color: var(--on-accent); font-weight: 600; }
+  button.primary:hover { background: var(--amber); border-color: var(--amber); color: var(--on-accent); }
   button.primary:hover { filter: brightness(1.1); }
   button:disabled { opacity: 0.4; cursor: default; }
 
@@ -2111,7 +2131,7 @@
 <body>
 
 <header>
-  <span class="brand"><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
+  <span class="brand"><span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 40 40"><g fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="17" cy="17" rx="10" ry="8.5"/><path d="M25 12.5c3-3 7.5-3 10-1.2-2.8.4-5 1.9-6.6 4"/><path d="M14 25.3l-2.4 10M20 25.3l1.6 10"/></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
   <span class="spacer"></span>
   <div class="gauge quota" id="quota5h" data-window="5h" title="5h rolling limit">
     <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="5h rolling limit">
@@ -4891,7 +4911,7 @@
   // accent family and everything tinted follows. "amber" is the default and
   // carries NO attribute, so it falls back to :root.
   const THEMES = [
-    { key: "amber",   label: "Amber",   color: "#f0a848" },
+    { key: "amber",   label: "Shadok",  color: "#7b93ff" }, // the default key keeps its stored name
     { key: "emerald", label: "Emerald", color: "#45c58a" },
     { key: "azure",   label: "Azure",   color: "#5aa9f0" },
     { key: "violet",  label: "Violet",  color: "#b98cf0" },
