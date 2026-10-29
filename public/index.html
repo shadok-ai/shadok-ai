@@ -1129,7 +1129,8 @@
      wordless boundary the reader would otherwise never see. */
   .turn.user { align-self: flex-end; align-items: flex-end; }
   /* Someone else's prompt (a teammate, a Telegram sender, a cron): on the
-     agent's side, still a human bubble, tinted with that person's colour. */
+     agent's side, still a human bubble — same tint as yours, only the agent is
+     white. The side and the name say who; a colour per person read as noise. */
   .turn.user.other { align-self: flex-start; align-items: flex-start; }
   .turn.user + .turn.user.new-speaker > .label { display: block; }
   .turn.claude { align-self: flex-start; }
@@ -2245,8 +2246,6 @@
   /* Messages: Teams bubbles. */
   .bubble { border-radius: 6px; }
   .turn.user .bubble { background: var(--mine); border: 0; }
-  .turn.user.other .bubble { background: color-mix(in srgb, var(--who, var(--amber)) 14%, var(--bg-raised)); }
-  :root[data-mode="light"] .turn.user.other .bubble { background: color-mix(in srgb, var(--who, var(--amber)) 11%, #fff); }
   .turn.claude .bubble { background: var(--bg-raised); border: 0; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
   .turn.dialog .bubble {
     background: var(--bg-raised); border: 0; border-top: 4px solid var(--amber); border-radius: 6px;
@@ -5905,9 +5904,9 @@
   }
 
   /** Which side a human prompt sits on: yours on the right, anyone else's on
-   *  the left, tinted with that person's colour (the tab-avatar palette) — only
-   *  the agent is white. The author is kept on the turn so the side can be
-   *  re-decided once `/me` answers (`resideAllPrompts`). */
+   *  the left — still a tinted human bubble, only the agent is white. The author
+   *  is kept on the turn so the side can be re-decided once `/me` answers
+   *  (`resideAllPrompts`). */
   function markPromptSide(bubble, msg) {
     const turn = bubble.parentElement;
     turn.dataset.from = msg?.from ?? "";
@@ -5924,11 +5923,6 @@
     const msg = { from: turn.dataset.from, origin: turn.dataset.origin, auto: turn.dataset.auto === "1" };
     const own = window.isOwnPrompt ? window.isOwnPrompt(msg, me?.name) : true;
     turn.classList.toggle("other", !own);
-    if (own) { turn.style.removeProperty("--who"); return; }
-    const key = msg.from || msg.origin || "auto";
-    let h = 0;
-    for (const c of key) h = (h * 31 + c.codePointAt(0)) >>> 0;
-    turn.style.setProperty("--who", AVATAR_COLORS[h % AVATAR_COLORS.length]);
   }
   function resideAllPrompts() {
     for (const turn of document.querySelectorAll(".turn.user[data-origin]")) applyPromptSide(turn);
