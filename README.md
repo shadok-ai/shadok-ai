@@ -531,6 +531,17 @@ every 25s (tunable with `SHADOK_WS_PING_MS`) to keep the connection warm, so no
 proxy change is normally needed; if your proxy still cuts it, raise
 `proxy_read_timeout` above the ping interval.
 
+**Sleep / wake.** When a laptop sleeps, the socket's TCP connection usually dies
+without the browser ever seeing a `close`, so it keeps reporting the link as
+"open" while nothing flows. On wake the cockpit no longer trusts that stale
+state: a real wake — the page becoming visible after more than ~10s away, a
+network change (`online`), or a page restored from the back/forward cache —
+tears the suspect socket down and opens a fresh one at once, reattaching to the
+same session. A quick tab switch is left alone (the link is almost certainly
+fine), so you don't pay a reconnect every time you glance away. Previously a
+woken tab waited out the browser's own TCP timeout, tens of seconds to minutes,
+stuck on "reconnecting…".
+
 ### Cross-instance peers
 
 Agents can spawn and drive agents on **another** instance — another of yours, or
