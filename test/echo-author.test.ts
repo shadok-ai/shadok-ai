@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { echoAuthor } from "../public/echo-author.js";
+import { echoAuthor, isOwnPrompt } from "../public/echo-author.js";
 
 test("echoAuthor: a Telegram sender is named", () => {
   assert.equal(echoAuthor({ from: "Alexandre Cognard", origin: "telegram" }), "Alexandre Cognard · telegram");
@@ -32,4 +32,22 @@ test("echoAuthor: the pace guard's auto-continue is nobody", () => {
 test("echoAuthor: blank fields never produce a blank author", () => {
   // An empty label above a bubble reads as a bug, not as "unknown".
   assert.equal(echoAuthor({ from: "   ", origin: "  " }), "you");
+});
+
+test("isOwnPrompt: only a web prompt from the signed-in person is yours", () => {
+  assert.equal(isOwnPrompt({ origin: "web", from: "admin" }, "admin"), true);
+  assert.equal(isOwnPrompt({ origin: "web", from: "Ada" }, "admin"), false);
+  assert.equal(isOwnPrompt({}, "admin"), true);
+  assert.equal(isOwnPrompt({ origin: "web" }, "admin"), true);
+});
+
+test("isOwnPrompt: another platform, a cron or the auto-retry is never yours", () => {
+  assert.equal(isOwnPrompt({ origin: "telegram", from: "admin" }, "admin"), false);
+  assert.equal(isOwnPrompt({ origin: "cron" }, "admin"), false);
+  assert.equal(isOwnPrompt({ auto: true }, "admin"), false);
+});
+
+test("isOwnPrompt: before /me answers, a named web prompt stays on your side", () => {
+  // Guessing "someone else" would flash your own history to the left on reload.
+  assert.equal(isOwnPrompt({ origin: "web", from: "admin" }, null), true);
 });
