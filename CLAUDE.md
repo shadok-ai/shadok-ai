@@ -308,7 +308,7 @@ path so the next spawn re-resolves it; the GUI shows the button when an agent's
 TUI footer reports `Auto-update failed`, and reloads the agent afterwards. Not an
 agent-reachable action: it touches the whole machine's CLI). `/login`,
 `/vendor/marked.js`,
-`/paste` (POST — ANY file pasted OR dropped into the composer, not just images;
+`/paste` (POST — ANY file pasted, dropped, or picked with the composer's 📎 button (`#attachBtn`, one `attachFile` path for all three), not just images;
 lands in the same `MEDIA_DIR` as Telegram attachments, keeps the original name
 via the `x-filename` header so the extension stays truthful, and returns
 `{path, line}` — `line` is the ready-made `[Attached image: …]` / `[Attached
