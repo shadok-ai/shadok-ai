@@ -2201,7 +2201,8 @@
   #peerInviteBox button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; flex: none; }
   #peerInviteBox button:hover { border-color: var(--amber); color: var(--amber); }
   #secretsAdd { display: flex; flex-direction: column; gap: 8px; }
-  #secretsAdd .sec-add-row { display: flex; gap: 8px; }
+  #secretsAdd .sec-add-row, #relayForm { display: flex; gap: 8px; }
+  #relayForm input { flex: 1; min-width: 0; }
   #secretsAdd input { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-size: 16px; }
   #secretsAdd #secretSubmit { flex: none; padding: 6px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(255,255,255,.08); color: inherit; cursor: pointer; }
   #secretsAdd #secretEditCancel { flex: none; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: none; color: var(--text-dim); cursor: pointer; font-size: 14px; line-height: 1; }
@@ -2544,6 +2545,15 @@
         </div>
       </form>
       <div id="secretsReload" class="sec-reload" hidden></div>
+      <details class="sec-relay">
+        <summary>Finish a sign-in for an agent (OAuth)</summary>
+        <p class="sec-note">A sign-in that ends on <code>http://localhost:PORT/…</code> cannot reach the agents' machine from your browser, so the page fails to load. Copy that address from the address bar and paste it here: the cockpit opens it where the agent is listening.</p>
+        <form id="relayForm" class="sec-add-row">
+          <input id="relayUrl" placeholder="http://localhost:PORT/callback?code=…" autocomplete="off" spellcheck="false" />
+          <button type="submit">Relay</button>
+        </form>
+        <p id="relayResult" class="sec-note" hidden></p>
+      </details>
       <p class="sec-note"><button type="button" class="linkish" id="secretsToAudit">Audit log — who used which secret →</button></p>
     </div>
   </div>
@@ -2860,6 +2870,7 @@
     <div class="field"><span class="label">Model (optional)</span><input id="profModel" placeholder="claude-opus-4-8" autocomplete="off" spellcheck="false"></div>
     <div class="field"><span class="label">Thinking effort <span class="check-hint">— how hard agents of this role think before answering; higher costs more tokens</span></span><select id="profEffort"></select></div>
     <div class="field"><span class="label">Secrets to inject <span class="check-hint">— tick which vault secrets this profile passes to its agents</span></span><ul id="profSecretsList"></ul></div>
+    <div class="field"><span class="label">MCP servers (JSON, optional) <span class="check-hint">— passed to its agents at spawn; write a secret as <code>${NAME}</code> and tick NAME above, never its value</span></span><textarea id="profMcp" rows="4" spellcheck="false" placeholder='{ "matomo": { "type": "http", "url": "https://…", "headers": { "Authorization": "Bearer ${MATOMO_TOKEN}" } } }'></textarea></div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button id="profSave" class="primary">Save profile</button>
       <button id="profReset">Clear form</button>
@@ -9036,7 +9047,7 @@
       const secrets = want.has(p.name)
         ? [...(p.secrets || []), name]
         : (p.secrets || []).filter((s) => s !== name);
-      const body = { name: p.name, deny: p.deny, allow: p.allow, model: p.model, effort: p.effort, secrets };
+      const body = { name: p.name, deny: p.deny, allow: p.allow, model: p.model, effort: p.effort, secrets, mcpServers: p.mcpServers };
       if (typeof p.systemPrompt === "string") body.systemPrompt = p.systemPrompt; // keep an edited prompt
       await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       changed.push(p.name);
@@ -9317,6 +9328,15 @@
   $("ledgerClose").addEventListener("click", () => { $("ledgerOverlay").hidden = true; });
   $("ledgerOverlay").addEventListener("click", (e) => { if (e.target === $("ledgerOverlay")) $("ledgerOverlay").hidden = true; });
 
+  $("relayForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const out = $("relayResult");
+    const r = await fetch("/oauth-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("relayUrl").value }) })
+      .then((x) => x.json()).catch(() => ({ ok: false, error: "the cockpit did not answer" }));
+    out.hidden = false;
+    out.textContent = r.ok ? `Relayed (HTTP ${r.status})${r.text ? " — " + r.text : ""}` : r.error;
+    if (r.ok) $("relayUrl").value = "";   // a one-time code: nothing to keep
+  });
   $("secretsAdd").addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = $("secretKey").value.trim();
@@ -9833,6 +9853,7 @@
     syncReadonlyBox();   // the box follows the real deny, no longer stuck at false
     editSecretRefs = [...(p.secrets || [])];
     renderProfSecrets();
+    $("profMcp").value = p.mcpServers ? JSON.stringify(p.mcpServers, null, 2) : "";
   }
   /** Fills an effort <select> from the shared choices and selects `current`.
    *  Built from EFFORT_CHOICES rather than hardcoded <option>s so the picker and
@@ -9851,7 +9872,7 @@
   function clearProfileForm() {
     editTracked = false; editForked = false;
     $("profEditTitle").textContent = "New profile";
-    $("profName").value = ""; $("profRole").value = ""; $("profDeny").value = ""; $("profModel").value = "";
+    $("profName").value = ""; $("profRole").value = ""; $("profDeny").value = ""; $("profModel").value = ""; $("profMcp").value = "";
     fillEffortSelect($("profEffort"), "");
     $("profReadonly").checked = false; editSecretRefs = [];   // deny area cleared just above
     renderProfSecrets();
@@ -9895,6 +9916,9 @@
   $("profDeny").addEventListener("input", syncReadonlyBox);
   $("profSave").addEventListener("click", async () => {
     const name = $("profName").value.trim(); if (!name) return alert("Name required.");
+    let mcpServers;
+    try { mcpServers = $("profMcp").value.trim() ? JSON.parse($("profMcp").value) : undefined; }
+    catch (e) { return alert("MCP servers: invalid JSON — " + e.message); }
     // profileSaveBody OMET systemPrompt tant que le rôle est suivi et non
     // bifurqué : le renvoyer épinglerait le texte du jour, et renvoyer un champ
     // vide laisserait l'agent sans rôle. C'est ce qui a vidé quatre profils.
@@ -9906,10 +9930,12 @@
         model: $("profModel").value.trim(),
         effort: $("profEffort").value,
         secrets: editSecretRefs,   // referenced vault NAMES
+        mcpServers,
       },
       { tracked: editTracked, forked: editForked },
     );
-    await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    if (!r.ok) return alert((await r.json().catch(() => ({}))).error || "Save failed.");
     await loadProfilesInto(); renderProfilesList(); clearProfileForm();
   });
   // Bifurquer = assumer le texte : à partir de là il est à toi et ne suivra plus.

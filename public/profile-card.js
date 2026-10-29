@@ -204,6 +204,9 @@ export function profileSaveBody(form, state) {
     // that is neither that nor a known level.
     effort: form.effort ?? "",
     secrets: form.secrets ?? [],
+    // Always sent: PUT /profiles rebuilds the profile from the body, so an
+    // absent field would silently drop the role's MCP servers.
+    mcpServers: form.mcpServers,
   };
   if (!state.tracked || state.forked) body.systemPrompt = form.prompt ?? "";
   return body;

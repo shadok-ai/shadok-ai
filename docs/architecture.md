@@ -567,6 +567,25 @@ Telegram needs no guard: `/secret NAME value` calls `setSecret()` directly, in
 the server's own process. HTTP is the only door an agent has, which is why
 guarding the endpoint guards precisely the machine path.
 
+**MCP servers ride on the same rule.** A profile's `mcpServers` is emitted as
+`--mcp-config` by `profileArgs`, and a credential in it is a `${NAME}`
+reference: the CLI expands it from the env the profile's secrets already put
+there (measured on an interactive agent for stdio `args`/`env` and http
+`headers`). The tmux launcher single-quotes every argument, so `sh` passes the
+reference through untouched (`test/profile-mcp.test.ts` runs that script). The
+alternative — an agent running `claude mcp add` with the token — wrote it in
+clear into `~/.claude.json`, which is what this replaces. Two details:
+`--mcp-config` is variadic, so it is emitted BEFORE `--settings` (always
+present) and can never swallow a following word; and `mcpServersVerdict`
+refuses a config that contains a vault value verbatim.
+
+**OAuth callbacks are relayed, not proxied** (`src/oauth-relay.ts`). An MCP
+sign-in listens on a loopback port of the agents' machine and expects the
+browser to land there; in a container the browser is elsewhere. `POST
+/oauth-relay` takes the address that failed to load and GETs it from the
+cockpit — loopback, http, explicit port, no credentials, nothing else — so it
+cannot be turned into a general fetch.
+
 ## Permission mode
 
 Spawned agents start in `acceptEdits` (the Shift+Tab auto-accept-edits mode) by

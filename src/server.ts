@@ -52,6 +52,7 @@ import {
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
+import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
 import {
   parseSkillMeta, prepromptParts, prepromptFingerprint, stalenessReasons,
@@ -199,6 +200,7 @@ import {
   permissionModeArgs,
   isPermissionMode,
   isEffortLevel,
+  mcpServersVerdict,
   envVarsNote,
   seedDefaultProfiles,
   migrateToTracking,
@@ -2084,6 +2086,16 @@ app.delete("/secrets", (req, res) => {
   res.json({ names: secretNames() });
 });
 
+// Finish an OAuth sign-in whose redirect points at an agent's localhost port,
+// unreachable from a browser on another machine (container, remote box). The
+// person pastes the address that failed to load; we open it from here. Browser
+// only: the address carries a one-time sign-in code. See src/oauth-relay.ts.
+app.post("/oauth-relay", async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "web UI only" });
+  const r = await relayOAuthCallback(req.body?.url);
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
 // Agent profiles (global): role + permission guardrails + referenced secrets,
 // applied at spawn. `secrets` is a list of vault NAMES (not values).
 // `origin` is DERIVED, never stored (like `crons` on /channels, cf. invariant 6):
@@ -2780,6 +2792,9 @@ app.put("/profiles", (req, res) => {
   };
   if (b.effort !== undefined && b.effort !== "" && !isEffortLevel(b.effort))
     return res.status(400).json({ error: `unknown effort level: ${String(b.effort)}` });
+  const mcp = mcpServersVerdict(b.mcpServers, Object.values(secretsFor(secretNames())));
+  if (!mcp.ok) return res.status(400).json({ error: mcp.error });
+  p.mcpServers = mcp.servers;
   const secretDiff = profileSecretDiff(getProfile(name)?.secrets, p.secrets);
   upsertProfile(p);
   auditProfileSecrets(req, name, secretDiff);

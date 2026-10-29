@@ -31,6 +31,10 @@ export interface Profile {
   allow?: string[];
   /** Names of vault secrets to inject as env (references, not values). */
   secrets?: string[];
+  /** MCP servers handed to every agent of this role (`--mcp-config`). A secret
+   *  is written `${NAME}` and expanded by the CLI from the env `secrets` puts
+   *  there — so the value is never in this file, in argv, or in ~/.claude.json. */
+  mcpServers?: Record<string, McpServerConfig>;
   model?: string;
   /** How hard agents of this role think before answering (`--effort`). One of
    *  `EFFORT_LEVELS`; absent means pass no flag and take the CLI's default. */
@@ -41,6 +45,74 @@ export interface Profile {
    *  as an ambient right it would make the guardrail that forces delegation
    *  bypassable BY delegating. */
   canAnswerChildren?: boolean;
+}
+
+/** One MCP server, in the CLI's own `--mcp-config` shape (stdio, http or sse). */
+export interface McpServerConfig {
+  type?: "stdio" | "http" | "sse";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+export type McpVerdict =
+  | { ok: true; servers: Record<string, McpServerConfig> | undefined }
+  | { ok: false; error: string };
+
+const MCP_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const MCP_TYPES = ["stdio", "http", "sse"];
+
+function stringMap(v: unknown): v is Record<string, string> {
+  return !!v && typeof v === "object" && !Array.isArray(v) &&
+    Object.values(v).every((x) => typeof x === "string");
+}
+
+/**
+ * Validate a profile's `mcpServers` as typed in the panel. Empty → none.
+ *
+ * `vaultValues` closes the one way the feature could undo its own point: a
+ * token PASTED into the config instead of referenced as `${NAME}` would sit in
+ * profiles.json and in every agent's argv. Refused, with the fix in the error.
+ * Values under 8 chars are skipped — too short to match on without false hits.
+ */
+export function mcpServersVerdict(raw: unknown, vaultValues: string[] = []): McpVerdict {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, servers: undefined };
+  if (typeof raw !== "object" || Array.isArray(raw))
+    return { ok: false, error: "mcpServers must be an object: { \"name\": { … } }" };
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, s] of Object.entries(raw as Record<string, unknown>)) {
+    if (!MCP_NAME.test(name)) return { ok: false, error: `invalid MCP server name: ${name}` };
+    if (!s || typeof s !== "object" || Array.isArray(s))
+      return { ok: false, error: `${name}: must be an object` };
+    const c = s as Record<string, unknown>;
+    const type = c.type === undefined ? "stdio" : c.type;
+    if (typeof type !== "string" || !MCP_TYPES.includes(type))
+      return { ok: false, error: `${name}: type must be stdio, http or sse` };
+    if (type === "stdio" && (typeof c.command !== "string" || !c.command.trim()))
+      return { ok: false, error: `${name}: a stdio server needs a command` };
+    if (type !== "stdio" && (typeof c.url !== "string" || !c.url.trim()))
+      return { ok: false, error: `${name}: an ${type} server needs a url` };
+    if (c.args !== undefined && !(Array.isArray(c.args) && c.args.every((x) => typeof x === "string")))
+      return { ok: false, error: `${name}: args must be a list of strings` };
+    if (c.env !== undefined && !stringMap(c.env)) return { ok: false, error: `${name}: env values must be strings` };
+    if (c.headers !== undefined && !stringMap(c.headers))
+      return { ok: false, error: `${name}: header values must be strings` };
+    out[name] = {
+      ...(c.type !== undefined ? { type: type as McpServerConfig["type"] } : {}),
+      ...(typeof c.command === "string" ? { command: c.command } : {}),
+      ...(c.args !== undefined ? { args: c.args as string[] } : {}),
+      ...(c.env !== undefined ? { env: c.env as Record<string, string> } : {}),
+      ...(typeof c.url === "string" ? { url: c.url } : {}),
+      ...(c.headers !== undefined ? { headers: c.headers as Record<string, string> } : {}),
+    };
+  }
+  if (!Object.keys(out).length) return { ok: true, servers: undefined };
+  const text = JSON.stringify(out);
+  if (vaultValues.some((v) => v.length >= 8 && text.includes(v)))
+    return { ok: false, error: "a vault secret's value is pasted in — write ${NAME} instead and tick NAME under Secrets" };
+  return { ok: true, servers: out };
 }
 
 /** Deny patterns that keep an agent from writing to git — the read-only preset. */
@@ -424,6 +496,10 @@ export function profileArgs(
     ...(profile?.deny ?? []),
   ];
   const allow = profile?.allow ?? [];
+  // Before --settings on purpose: --mcp-config is VARIADIC and swallows every
+  // following non-flag word, and --settings is always emitted (CROSS_SESSION_DENY).
+  if (profile?.mcpServers && Object.keys(profile.mcpServers).length)
+    args.push("--mcp-config", JSON.stringify({ mcpServers: profile.mcpServers }));
   if (deny.length || allow.length) {
     args.push("--settings", JSON.stringify({ permissions: { deny, allow } }));
   }

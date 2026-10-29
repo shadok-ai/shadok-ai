@@ -105,7 +105,12 @@ Enter to skip; you can add it later from the web UI).
   disable it are ignored by them — a toggle would change nothing.
 - **Agent profiles** — a named bundle of role prompt, permission guardrails
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
-  spawn, remembered across resume.
+  spawn, remembered across resume. A profile can also carry **MCP servers**
+  (JSON, the CLI's `--mcp-config` shape): write a token as `${NAME}` and tick
+  `NAME` under its secrets — the CLI expands it from the agent's env, so the
+  value is never in the profile, in argv or in `~/.claude.json`. Put references
+  in `env` or `headers`, not `args`: an expanded arg shows in the MCP server's
+  own command line. Pasting a vault value instead of its name is refused.
 - **A model per agent** — the creation form picks the model this one agent runs
   on, overriding its profile's, with a **long context (1M)** tick beside it.
   Pick a family (Opus, Sonnet, Haiku, Fable) and it follows Claude Code's
@@ -147,6 +152,11 @@ Enter to skip; you can add it later from the web UI).
   secret to its own profile** and reload itself to pick it up — but only a
   secret it stored itself: a value you typed, or one another role stored, stays
   yours to attach from the panel.
+- **OAuth sign-ins from another machine** — an MCP or CLI sign-in ends on
+  `http://localhost:PORT/…`, which your browser cannot reach when the agents run
+  in a container or on a remote box. Paste that failed address under *Finish a
+  sign-in* in the Secrets panel (`POST /oauth-relay`, web UI only): the cockpit
+  opens it on the agents' machine. Loopback http addresses with a port only.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
   daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
