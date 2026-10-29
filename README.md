@@ -204,8 +204,8 @@ Enter to skip; you can add it later from the web UI).
   browser, since shell mode sits outside the agent's guardrails. The command and
   its output stay in the chat, reload included — as does one you typed yourself
   in the terminal view.
-- **Files you hand an agent** — paste or drop a file into the composer (an
-  image, a PDF, a CSV…) and it becomes a **chip** above the text box: a
+- **Files you hand an agent** — paste or drop a file into the composer, or pick
+  one with the 📎 button beside it (an image, a PDF, a CSV…), and it becomes a **chip** above the text box: a
   thumbnail for an image, a named tag for anything else, each with a ✕ to
   remove it. On send, an image shows **inline in your own message bubble**;
   under the hood the agent still receives it as an `[Attached …: path]` line,

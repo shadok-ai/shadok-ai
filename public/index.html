@@ -1535,6 +1535,25 @@
     line-height: 1.45;
   }
   #composer textarea:focus-visible { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+  /* The paperclip: a square as tall as the one-line textarea, aligned to its
+     bottom so it stays beside the last line while the field grows. */
+  .cmp-attach {
+    flex: none;
+    align-self: flex-end;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .cmp-attach:hover:not(:disabled) { color: var(--amber); border-color: var(--amber); }
+  .cmp-attach:disabled { opacity: 0.4; cursor: default; }
 
   /* ── Engine room (live terminal) ─────────────────────── */
   #machine {
@@ -2946,6 +2965,11 @@
     <form id="composer" hidden>
       <!-- Thumbnails of the files dropped / pasted into this agent's composer. -->
       <div id="composerAtts" class="cmp-atts" hidden></div>
+      <!-- Pick a file to send: the same path as a paste or a drop (attachFile). -->
+      <button type="button" id="attachBtn" class="cmp-attach" title="Attach a file" aria-label="Attach a file">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <input type="file" id="attachInput" multiple hidden>
       <textarea id="promptInput" rows="1"
         placeholder="Write your prompt — Enter to send, Shift+Enter for a new line"></textarea>
       <button type="submit" class="primary" id="sendBtn">Send</button>
@@ -8214,6 +8238,17 @@
     if (!items.length) return;
     e.preventDefault();
     for (const item of items) await attachFile(item.getAsFile());
+  });
+
+  // The paperclip opens the OS file picker; what is picked goes through
+  // attachFile exactly like a paste or a drop.
+  const attachInput = $("attachInput");
+  $("attachBtn").addEventListener("click", () => { if (active) attachInput.click(); });
+  attachInput.addEventListener("change", async () => {
+    const files = [...(attachInput.files || [])];
+    attachInput.value = ""; // picking the same file again must fire `change` again
+    for (const f of files) await attachFile(f);
+    promptInput.focus();
   });
 
   // Drag-and-drop files anywhere on the chat pane → attach them, same path as
