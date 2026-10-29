@@ -12,10 +12,12 @@
 # merges. Pass it in.
 #
 # Usage:
-#   promote.sh --body <file>
+#   promote.sh --body <file> [--force]
 #
 #   <file>  line 1 is the PR title, then a blank line, then the body.
 #           Mirrors `git commit -F`, so the same file is the commit message.
+#   --force   promote a generation that holds no merges yet. Off by default:
+#             that is how a pointless 0.17 PR got opened minutes after 0.16.
 set -eu
 
 # Resolve the worktree, never assume it: this host has BOTH /root/.shadok-ai
@@ -33,11 +35,12 @@ PKG="shadok-ai"
 
 die() { printf '%s\n' "REFUSED: $*" >&2; exit 1; }
 
-BODY=""
+BODY=""; FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --body) BODY="${2:-}"; shift 2 ;;
     --worktree) WORKTREE="${2:-}"; shift 2 ;;
+    --force) FORCE=1; shift ;;
     *) die "unknown argument $1" ;;
   esac
 done
@@ -69,6 +72,27 @@ LATEST_BASE=$(printf '%s' "$LATEST" | cut -d. -f1,2)
 # Read the verdict from the REGISTRY, exactly as CI does, so this script and
 # the workflow can never disagree about whether a promotion is due.
 [ "$BASE" = "$LATEST_BASE" ] || die "nothing to promote: package.json is $BASE and latest is already $LATEST"
+
+# Refuse an EMPTY generation. This guard is here because its absence opened a
+# promotion to 0.17 ten minutes after 0.16 landed, with no merges behind it: a
+# promotion's body is a summary of a generation, and there is nothing honest to
+# write about zero merges. The minor's starting commit is found the way
+# publish.yml finds it, so the two cannot disagree.
+PROM=""
+for c in $(git log --format=%H origin/main -- package.json); do
+  v=$(git show "$c:package.json" 2>/dev/null \
+        | python3 -c 'import json,sys
+try: print(json.load(sys.stdin)["version"])
+except Exception: print("")' )
+  if [ "$(printf '%s' "$v" | cut -d. -f1,2)" = "$BASE" ]; then PROM="$c"; else break; fi
+done
+if [ -n "$PROM" ]; then
+  MERGES=$(git rev-list --count "$PROM..origin/main")
+  if [ "$MERGES" -eq 0 ] && [ "$FORCE" -eq 0 ]; then
+    die "generation $BASE has no merges yet - nothing to summarise (pass --force to override)"
+  fi
+  printf 'generation %s holds %s merge(s)\n' "$BASE" "$MERGES"
+fi
 
 MAJOR=$(printf '%s' "$BASE" | cut -d. -f1)
 MINOR=$(printf '%s' "$BASE" | cut -d. -f2)
