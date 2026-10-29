@@ -10581,12 +10581,44 @@
     const pos = window.dialPos(w.usedPercentage, w.idealPacePct);
     needle.setAttribute("visibility", "visible");
     needle.style.transform = "rotate(" + (pos * window.SWEEP_DEG).toFixed(1) + "deg)";
+    needle.dataset.angle = pos * window.SWEEP_DEG;
     // Without a reset time there is no ideal pace, so there is nothing for the
     // tick to mark — drawing it would assert a reference we do not have.
     tick.setAttribute("visibility", w.idealPacePct == null ? "hidden" : "visible");
     pct.textContent = Math.round(w.usedPercentage) + "%";
     pct.style.fill = window.dialColor(pos);
   }
+
+  /** Race-car tachometer feel: the needles never sit perfectly still. A small
+   *  idle wobble plus the odd throttle blip, laid on top of the real reading
+   *  through the CSS `rotate` PROPERTY — it composes with the `transform` that
+   *  paintGauge sets (and its transition) without fighting it. Purely
+   *  decorative: a few degrees, never past the ends of the 240° sweep. */
+  function startNeedleIdle() {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const IDLE_DEG = 1.2, BLIP_DEG = 4;
+    const needles = [...document.querySelectorAll(".quota .dial .needle")].map((el, i) => ({
+      el, phase: i * 2.3, blip: 0, nextBlip: performance.now() + 1500 + Math.random() * 4000,
+    }));
+    const frame = (now) => {
+      const t = now / 1000;
+      for (const n of needles) {
+        if (now > n.nextBlip) {
+          n.blip = BLIP_DEG * (0.5 + Math.random() * 0.5);
+          n.nextBlip = now + 2000 + Math.random() * 5000;
+        }
+        n.blip *= 0.94;
+        const wobble = IDLE_DEG * (0.6 * Math.sin(t * 5.1 + n.phase) + 0.4 * Math.sin(t * 13.7 + n.phase * 1.7));
+        const base = Number(n.el.dataset.angle) || 0;
+        const max = window.SWEEP_DEG || 120;
+        const total = Math.min(max, Math.max(-max, base + wobble + n.blip));
+        n.el.style.rotate = (total - base).toFixed(2) + "deg";
+      }
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }
+  startNeedleIdle();
 
   async function refreshUsage() {
     try {
