@@ -1131,7 +1131,9 @@ For each window (5h, 7d): `idealPace = fraction of the window elapsed`;
 i.e. `used > idealPace + PACE_EPSILON` (currently 2). It's dynamic: as time
 passes the ideal rises, so a block clears on its own once you're back within
 budget. `/usage` returns the verdict; a `prompt` bypasses with `force: true`.
-The UI shows two-bar gauges (consumed vs elapsed) and a per-message force path.
+The UI shows a flat bar per window — its length is the quota consumed, with a
+marker at the elapsed-time pace — plus a per-message force path. See
+`docs/superpowers/specs/2026-10-30-quota-bar-design.md`.
 
 The OAuth token backing `/usage` is read **live** (keychain first) rather than
 captured at boot, so the gauges self-heal when the token rotates instead of
