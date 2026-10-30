@@ -113,18 +113,27 @@ scopes.
 
 ### Creating, moving, membership
 
-- **[DECIDED]** **Anyone can create a group** (restricted or public). Because
-  creating a group **provisions a new isolated OS user**, this is a **privileged
-  server operation performed on the user's behalf** — the server is the only
-  actor that touches OS users; no user ever gets shell or sudo. A guardrail is
-  needed so a single person cannot spin up unbounded OS users on a click
-  (**[OPEN]** cap / quota / approval — see Open decisions).
+- **[DECIDED]** **Anyone can create a group** (restricted or public), **free and
+  unlimited in v1**. Because creating a group **provisions a new isolated OS
+  user**, this is a **privileged server operation performed on the user's
+  behalf** — the server is the only actor that touches OS users; no user ever gets
+  shell or sudo. The operation itself is cheap: `useradd` + HOME is sub-second;
+  the perceptible cost is one-time HOME seeding (Claude config/skills, the
+  `~/shared/` mount, an optional first `clone`) — seconds, not minutes. A
+  guardrail (cap / quota / approval) is **deliberately deferred**: the reason to
+  add one later is not latency but the accumulating privileged surface and
+  leftover orphan OS users / HOMEs, which v1 accepts.
 - **[DECIDED]** **Membership is many-to-many** — a person can be in several
   groups (e.g. COMEX *and* TECH). Their visibility is the **union** of their
   private group ∪ every restricted group they belong to ∪ every public group.
 - **[DECIDED]** In a **restricted** group, **any member may invite** other people
-  (flat, Slack-like — not reserved to an admin or the creator). **[OPEN]** Whether
-  a member may also **remove** others, and how a person **leaves** a group.
+  (flat, Slack-like — not reserved to an admin or the creator).
+- **[DECIDED]** **Leaving and removal are asymmetric with invitation.** A member
+  may **leave** a restricted group on their own (self-leave). **Removing** someone
+  else is reserved to a user whose **account role is `admin`** (`src/accounts.ts`,
+  `admin` vs `member`; there may be several) — **not** any member, unlike invite.
+  This concerns **restricted** groups only: a private group has a single member
+  and no invites, and `Main` (public) has no list.
 - **[DECIDED]** A **"user"** is an **existing web account** (`src/accounts.ts`),
   not a new identity to invent.
 - **[DECIDED] Moving an agent from one group to another is removed.** Today it is
@@ -256,9 +265,13 @@ level, not inside the cockpit.
   browser filtering is cosmetic only.
 - **[DECIDED]** A **private** group is fully private: invisible **and**
   non-pilotable **even to an admin**, with **no break-glass**.
-- **[OPEN]** Whether an admin sees **restricted** groups they are not a member of
-  (private is settled: no). Default assumption: an admin is still just a member —
-  they see a restricted group only if invited — but this is worth confirming.
+- **[DECIDED]** An **`admin`-role** user **sees and manages the member list of
+  every restricted group**, even ones they do not belong to — this is what lets
+  an admin remove members (above). A **member** (non-admin) still sees a
+  restricted group only if invited. The private group is the one exception: it
+  stays invisible and unmanageable **even to an admin** (no break-glass, per the
+  line above). So admin reach is: all public ∪ all restricted — never any
+  private.
 
 ## Collaboration across boundaries
 
@@ -367,13 +380,6 @@ reference any name) does not survive groups. It becomes **per-group**:
 
 ## Open decisions to revisit
 
-- **Group-creation guardrail** — "anyone can create a group" needs a bound: a cap
-  per person, a quota, or an approval step, so OS users cannot be spun up without
-  limit. **Not yet decided.**
-- **Membership removal / leaving** — invite is settled (any member); removal and
-  self-leave are not.
-- **Admin over restricted groups** — settled for private (no); confirm an admin is
-  just a member elsewhere.
 - **Secret resolution precedence** — own group → `Main` fallback; whether a
   profile may pin a group.
 - **Claude auth refresh** — keep one-at-a-time, or add a small auth broker.
