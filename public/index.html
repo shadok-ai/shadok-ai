@@ -7887,11 +7887,25 @@
         // reloads onto the new build quickly instead of waiting out a backoff.
         reloadExpectedUntil = Date.now() + 90_000;
         break;
-      case "history":
+      case "history": {
         // Full replay from the transcript (source of truth). Clear first so a
         // reconnect (laptop wake / dropped link) rebuilds the transcript instead
         // of appending a second copy of the whole history.
-        t.transcriptEl.innerHTML = "";
+        //
+        // Hold the reader's place across the wipe+rebuild. On a RECONNECT the
+        // transcript already carries the conversation, and tearing it down to
+        // rebuild it snaps the view to the top UNLESS the browser's scroll
+        // anchoring happens to save us — which it does not when the tab was in
+        // the background while the replay ran (anchoring needs a live layout),
+        // and does not in Safari. That is the reported "the chat jumps back up
+        // when I come back". The replay is the same messages in the same order,
+        // appended bottom-first, so we restore deterministically: pinned to the
+        // bottom if they were following live, otherwise holding the same
+        // distance from the bottom so what they were reading stays in view.
+        const el = t.transcriptEl;
+        const wasStick = el._stickBottom !== false;
+        const fromBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+        el.innerHTML = "";
         t.unreadSep = null; // the separator element went with the wipe
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
@@ -7923,7 +7937,14 @@
             if (h.afterInternal) b.parentElement.classList.add("after-gap");
           }
         }
+        // Restore the reader's place deterministically — never trust the
+        // browser's implicit scroll anchoring for a full teardown.
+        el._stickBottom = wasStick;
+        el.scrollTop = wasStick
+          ? el.scrollHeight
+          : Math.max(0, el.scrollHeight - el.clientHeight - fromBottom);
         break;
+      }
       case "ready":
         // The server just named the instance it is. If it's not the one this
         // page was loaded from, the port was taken over — stop writing, prompt a
