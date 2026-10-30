@@ -134,6 +134,15 @@ test("mergeChannels: client drives name/group; server-owned fields preserved", (
   ]);
 });
 
+test("mergeChannels: an omitted group keeps the stored one, an explicit null ungroups", () => {
+  // A tab that did not move the agent omits `group`: it must not undo a move
+  // another tab just made (the agent used to jump back to its old group).
+  const stored: Channel[] = [{ sessionId: "a", cwd: "/r", group: 5 }];
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", name: "x" }], new Set())[0].group, 5);
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: 2 }], new Set())[0].group, 2);
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: null }], new Set())[0].group, null);
+});
+
 test("mergeChannels: a client can neither change nor clear a channel's profile", () => {
   // This is the invariant the dedicated `set-profile` path protects: a stale
   // client must not be able to strip an agent of its guardrails just by

@@ -298,6 +298,12 @@ export function channelForTelegram(chatId: number, threadId?: number): Channel |
  * sessionId, and any stored channel the client omitted is kept when its session
  * is live or it has a Telegram binding — so persistence never drops a
  * live/Telegram session (invariant #6).
+ *
+ * `group` is sent only by the tab that CHANGED it. Every open tab PUTs its whole
+ * list on unrelated events (an agent's `ready`, a rename, a mute), so a tab that
+ * had not seen a move made elsewhere used to write its old group back and the
+ * agent jumped home. An omitted key therefore keeps the stored value — omit,
+ * never null-by-omission (invariant 1); an explicit null still ungroups.
  */
 export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds: Set<string>): Channel[] {
   const byId = new Map(stored.map((c) => [c.sessionId, c]));
@@ -314,6 +320,7 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
     }
     const merged: Channel = { ...c };
     for (const k of SERVER_OWNED) if (prev[k] !== undefined) (merged as any)[k] = prev[k];
+    if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;
     result.push(merged);
   }
   for (const c of stored) {

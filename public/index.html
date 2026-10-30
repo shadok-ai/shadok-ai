@@ -3161,13 +3161,15 @@
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
   window.samePrompt = samePrompt;
-  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon } from "/group-nav.js?v=__ASSET_V__";
+  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty } from "/group-nav.js?v=__ASSET_V__";
   window.GROUP_ICONS = GROUP_ICONS;
   window.UNGROUPED = UNGROUPED;
   window.randomGroupIcon = randomGroupIcon;
   window.resolveGroupView = resolveGroupView;
   window.groupMood = groupMood;
   window.cleanGroupIcon = cleanGroupIcon;
+  window.reconcileTabGroup = reconcileTabGroup;
+  window.groupIsDirty = groupIsDirty;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
@@ -3309,6 +3311,15 @@
     resolveGroupView: (saved, ids) => ((ids || []).map(String).includes(String(saved)) ? String(saved) : "ungrouped"),
     groupMood: (moods) => ["needs-answer", "unread", "working"].find((m) => (moods || []).includes(m)) || null,
     cleanGroupIcon: (t) => String(t ?? "").trim() || null,
+    // Mirror the module, not neutral: a persist can run before it lands, and a
+    // stub that always sent `group` would write a stale tab's old group back.
+    reconcileTabGroup: (local, synced, server) => {
+      const srv = server ?? null;
+      if ((local ?? null) === srv) return { move: false, synced: srv };
+      if (synced === undefined || (local ?? null) !== synced) return { move: false, synced };
+      return { move: true, synced: srv };
+    },
+    groupIsDirty: (local, synced) => synced === undefined || (local ?? null) !== synced,
     // The emoji keyword search feeds the icon picker, which opens well after
     // load; before the module lands, no suggestions (and typed text is treated
     // as a word, not an emoji) — both harmless, repainted on bridge-ready.
@@ -4428,10 +4439,10 @@
    * DOM order is the source of truth for tab & group ordering.
    */
   function persistChannels() {
-    const list = [...tabbar.querySelectorAll(".tab")]
+    const shown = [...tabbar.querySelectorAll(".tab")]
       .map((el) => el._tab)
-      .filter((t) => t && t.sessionId)
-      .map((t) => ({
+      .filter((t) => t && t.sessionId);
+    const list = shown.map((t) => ({
         sessionId: t.sessionId,
         cwd: t.cwd && t.cwd.startsWith("/") ? t.cwd : "",
         name: t.nameEl.textContent,
@@ -4446,8 +4457,16 @@
         mirror: !!t.mirror,
       }));
     localStorage.setItem(dirKey("cp.channels", instanceKey), JSON.stringify(list));
-    persistGroups();
-    pushChannels(list);
+    // The server gets `group` only from the tab that moved the agent: every tab
+    // pushes on unrelated events (an agent's `ready`, a rename), and one that
+    // had not seen a move made elsewhere wrote the old group back.
+    // No persistGroups() here either, for the same reason: the group LIST is
+    // pushed by the gestures that change it, never as a side effect.
+    pushChannels(list.map((c, i) => {
+      if (window.groupIsDirty(c.group, shown[i].syncedGroup)) return c;
+      const { group, ...rest } = c;
+      return rest;
+    }));
   }
 
   // The channel list is mirrored server-side (keyed by the server's launch
@@ -4483,7 +4502,17 @@
         method: "PUT",
         headers: { "Content-Type": "application/json", "x-shadok-instance": instanceKey },
         body: JSON.stringify(list),
-      }).then((r) => { if (r.status === 409) handleSwap(); }).catch(() => {});
+      }).then((r) => {
+        if (r.status === 409) return handleSwap();
+        if (!r.ok) return;
+        // The group we sent is now the server's: record it, or moving the agent
+        // BACK before the next poll would read as "unchanged" and never be sent.
+        for (const c of list) {
+          if (!("group" in c)) continue;
+          const t = tabs.find((x) => x.sessionId === c.sessionId);
+          if (t) t.syncedGroup = c.group ?? null;
+        }
+      }).catch(() => {});
     }, 400);
   }
 
@@ -4600,6 +4629,7 @@
     group.el.remove();
     groups = groups.filter((g) => g !== group);
     persistChannels();
+    persistGroups();
   }
 
   // ── Drag & drop (tabs + groups, live-sort while dragging) ──
@@ -5144,9 +5174,28 @@
   let lastChannelIds = new Set();
   async function syncChannels() {
     if (restoring) return;
-    let chans;
-    try { chans = await (await fetch("/channels")).json(); } catch { return; }
+    let chans, srvGroups;
+    try {
+      [chans, srvGroups] = await Promise.all([
+        fetch("/channels").then((r) => r.json()),
+        fetch("/groups").then((r) => r.json()).catch(() => null),
+      ]);
+    } catch { return; }
     if (!Array.isArray(chans)) return;
+    // A group created on another device must exist here before an agent can be
+    // filed into it. Additive only: a group missing from the server may be one
+    // this tab just made and has not pushed yet.
+    if (Array.isArray(srvGroups)) {
+      for (const sg of srvGroups) {
+        if (sg == null || sg.id == null) continue;
+        const g = groups.find((x) => x.id === sg.id);
+        if (!g) { createGroup(sg); continue; }
+        if (sg.name && sg.name !== g.nameEl.textContent && !g.headEl.querySelector("input"))
+          g.nameEl.textContent = sg.name;
+        if (sg.icon && sg.icon !== g.icon) g.icon = sg.icon;
+      }
+      renderRail(); // an icon lives outside the column, so no observer sees it
+    }
     const current = new Set(chans.map((c) => c.sessionId).filter(Boolean));
     const tabById = new Map(tabs.filter((t) => t.sessionId).map((t) => [t.sessionId, t]));
     // The main channel = bound to the Telegram General (no threadId).
@@ -5185,6 +5234,14 @@
           t.nameEl.textContent = c.name;
           saveName(t, c.name);
         }
+        // An agent moved to another group elsewhere follows here — never mid-drag,
+        // and never over a move of this tab's own that has not landed yet.
+        if (!dragTabEl && !t.btnEl.closest("#tweakSlot")) {
+          const r = window.reconcileTabGroup(groupIdOf(t.btnEl), t.syncedGroup, c.group);
+          const dest = r.move && (c.group == null ? ungroupedEl : groups.find((g) => g.id === c.group)?.bodyEl);
+          if (dest) dest.appendChild(t.btnEl);
+          if (!r.move || dest) t.syncedGroup = r.synced;
+        }
       } else if (!dismissedChannels.has(c.sessionId)) {
         // Discovered, not asked for: never steal the view. The one exception is
         // an empty cockpit — with `active === null` the user is looking at
@@ -5192,6 +5249,7 @@
         // channel beats leaving them in front of nothing.
         const nt = createTab(c.group, { focus: !active });
         nt.sessionId = c.sessionId;
+        nt.syncedGroup = c.group ?? null;
         nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
@@ -10956,6 +11014,7 @@
       const pending = [];
       for (const s of uniqueChannels) {
         const t = createTab(s.group);
+        t.syncedGroup = s.group ?? null;
         // Know the session id from the start, so a slow or failed reattach never
         // drops the channel from a persist (which eroded the list to one).
         t.sessionId = s.sessionId;
