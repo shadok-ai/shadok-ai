@@ -350,8 +350,13 @@
     display: block; margin-top: 3px; opacity: 0.8;
     white-space: normal; line-height: 1.45;
   }
+  /* Top banners sit ABOVE the header, not over it: they are flow items at the
+     very top of the fixed flex chassis (inserted as body's first child), so they
+     push the header and everything below down instead of overlapping it. A
+     `position:fixed; top:0` strip used to float over the header and hide the
+     brand/gauges underneath. */
   #updateBanner {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    flex: 0 0 auto; width: 100%; z-index: 1000;
     background: var(--amber); color: var(--on-accent);
     font-family: var(--sans); font-size: 12px; text-align: center;
     padding: 6px 12px;
@@ -359,7 +364,7 @@
   /* The re-login reminder (sign-in within 48h / expired). Same top strip as the
      update banner; its own id so the two never share styling by accident. */
   #expiryBanner {
-    position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
+    flex: 0 0 auto; width: 100%; z-index: 1000;
     background: var(--amber); color: var(--on-accent);
     font-family: var(--sans); font-size: 12px;
     padding: 6px 12px;
@@ -4562,8 +4567,10 @@
     swapped = true;
     restoring = true; // freezes pushChannels AND persistGroups (both bail on it)
     const bar = document.createElement("div");
+    // A flow strip at the very top (first child) so it sits ABOVE the header
+    // rather than floating over it — same placement as the update/expiry banners.
     bar.style.cssText =
-      "position:fixed;top:0;left:0;right:0;z-index:99999;background:#b23b3b;color:#fff;" +
+      "flex:0 0 auto;width:100%;z-index:99999;background:#b23b3b;color:#fff;" +
       "padding:10px 14px;font:14px system-ui;text-align:center";
     bar.textContent = "This cockpit was replaced by another instance on this port — reload to reconnect. ";
     const btn = document.createElement("button");
@@ -4571,7 +4578,7 @@
     btn.style.cssText = "margin-left:8px;padding:3px 10px;cursor:pointer";
     btn.addEventListener("click", () => location.reload());
     bar.appendChild(btn);
-    document.body.appendChild(bar);
+    document.body.insertBefore(bar, document.body.firstChild);
   }
   function pushChannels(list) {
     if (restoring || swapped) return; // never overwrite the server list with a partial one, nor a foreign instance's
@@ -7660,7 +7667,8 @@
       btn.textContent = "Re-login now";
       btn.addEventListener("click", () => openAuthCard(true));
       el.append(span, btn);
-      document.body.appendChild(el);
+      // First child → above the header in the flex chassis, not floating over it.
+      document.body.insertBefore(el, document.body.firstChild);
     }
     // Expired is an escalation, not just a reminder — turn the strip red.
     el.style.background = w.expired ? "var(--err)" : "";
@@ -7853,7 +7861,8 @@
     if (!el) {
       el = document.createElement("div");
       el.id = "updateBanner";
-      document.body.appendChild(el);
+      // First child → above the header in the flex chassis, not floating over it.
+      document.body.insertBefore(el, document.body.firstChild);
     }
     el.textContent = "Updating to v" + version + "… the page will reload automatically.";
   }
