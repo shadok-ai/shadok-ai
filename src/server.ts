@@ -97,6 +97,7 @@ import {
   MEDIA_DIR,
   type TelegramHandle,
 } from "./telegram.js";
+import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
 import { instanceKey } from "./paths.js";
 import {
@@ -2988,6 +2989,35 @@ app.put("/telegram", async (req, res) => {
     restartTelegram();
   }
   res.json(await telegramState());
+});
+
+// Pairing code for the bot (`src/tg-pairing.ts`): binding the board group or
+// owning the DMs needs a code only this admin-only panel shows. POST issues a
+// fresh one (revoking any previous code) and is the ONE response that carries
+// it; GET reports whether one is live, never the code itself. Browser-only
+// writes, like the rest of the Telegram config: an agent must not be able to
+// mint a code and pair a Telegram account of its choosing.
+app.get("/telegram/pairing", (req, res) => {
+  if (!accountAdmin(req, res, false, "pair the Telegram bot")) return;
+  res.json(pairingStatus());
+});
+app.post("/telegram/pairing", async (req, res) => {
+  if (!accountAdmin(req, res, true, "pair the Telegram bot")) return;
+  const p = issuePairingCode();
+  const username = (await telegramState()).username;
+  const bot = username ? String(username).replace(/^@/, "") : null;
+  res.json({
+    code: p.code,
+    expiresAt: p.expiresAt,
+    // Deep links: Telegram delivers `/start <code>` by itself, so one tap pairs.
+    groupLink: bot ? `https://t.me/${bot}?startgroup=${p.code}` : null,
+    dmLink: bot ? `https://t.me/${bot}?start=${p.code}` : null,
+  });
+});
+app.delete("/telegram/pairing", (req, res) => {
+  if (!accountAdmin(req, res, true, "pair the Telegram bot")) return;
+  cancelPairingCode();
+  res.json(pairingStatus());
 });
 
 const server = http.createServer(app);

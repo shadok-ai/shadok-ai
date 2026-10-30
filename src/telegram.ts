@@ -43,6 +43,7 @@ import {
 import { SHADOK_DIR, loadConfig, telegramConfig } from "./config.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
+import { pairingRefusal, redeemPairingCode } from "./tg-pairing.js";
 
 /**
  * Telegram control bridge. Runs inside the server process (only when
@@ -180,18 +181,31 @@ export function nextToolsState(arg: string, current: boolean): boolean {
 /**
  * Who may write to the bot in private?
  *
- * A group is already bounded to the bound group; a DM was not: with no
- * allowlist configured, anyone who found the bot got a Claude session on the
- * machine. So the first to write claims DMs, and everyone else is refused.
+ * With no allowlist configured, anyone who found the bot would get a Claude
+ * session on the machine. DMs therefore belong to ONE owner, and with no owner
+ * yet the sender must `pair` — present the code the web cockpit shows
+ * (`src/tg-pairing.ts`). It used to be "the first to write claims DMs", which
+ * handed the machine to whichever stranger got there first.
  *
- * A sender with no id is refused even when nobody has claimed yet: there is
- * nothing to store, hence nothing that would keep the next one out.
+ * A sender with no id is refused outright: there is nothing to store as owner.
  * Pure — unit tested.
  */
-export function dmGate(owner: number | null, from: number | undefined): "claim" | "allow" | "deny" {
+export function dmGate(owner: number | null, from: number | undefined): "pair" | "allow" | "deny" {
   if (typeof from !== "number") return "deny";
-  if (owner === null) return "claim";
+  if (owner === null) return "pair";
   return owner === from ? "allow" : "deny";
+}
+
+/**
+ * The code a message presents to pair the bot, or null. `/setup <code>` is the
+ * typed form; `/start <code>` is what Telegram sends by itself when the bot is
+ * reached through a `?start=` / `?startgroup=` deep link. Pure — unit tested.
+ */
+export function pairingCodeOf(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  const cmd = parseCommand(text);
+  if (!cmd || (cmd.cmd !== "setup" && cmd.cmd !== "start") || !cmd.arg) return null;
+  return cmd.arg;
 }
 
 /** How much of a quoted message rides along. It is prepended to EVERY reply, so
@@ -1594,10 +1608,20 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     const from = msg.from?.id as number | undefined;
     const verdict = dmGate(loadTgOwner(), from);
     if (verdict === "allow") return true;
-    if (verdict === "claim") {
-      saveTgOwner(from!);
-      console.log(`telegram: DM claimed by user ${from} — others will be refused`);
-      return true;
+    if (verdict === "pair") {
+      // No owner yet: the only message that gets anywhere is a valid code, and
+      // it is consumed — it is a pairing, not a prompt for an agent.
+      const code = pairingCodeOf(msg.text);
+      const v = code ? redeemPairingCode(code) : "none";
+      if (v === "ok") {
+        saveTgOwner(from!);
+        console.log(`telegram: DM paired with user ${from} — others will be refused`);
+        await reply(msg.chat.id, undefined, "✅ Paired — this bot's DMs are now yours. Send a message to talk to your agent.");
+      } else {
+        if (code) console.log(`telegram: DM pairing refused for user ${from} (${v})`);
+        await reply(msg.chat.id, undefined, pairingRefusal(v));
+      }
+      return false;
     }
     console.log(`telegram: refused DM from user ${from ?? "?"} (not the owner)`);
     await reply(msg.chat.id, undefined, "⛔ This bot is private.");
@@ -1612,9 +1636,9 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       await reply(chat.id, msg.message_thread_id, "⛔ this bot is restricted.");
       return;
     }
-    // DMs belong to whoever wrote first. An explicit allowlist still wins (it
-    // has already filtered above): this is the default guard, for an install
-    // that configures none.
+    // DMs belong to ONE owner, paired with the cockpit's code. An explicit
+    // allowlist still wins (it has already filtered above): this is the
+    // default guard, for an install that configures none.
     if (chat.type === "private" && !(await guardDm(msg))) return;
     const threadId = msg.message_thread_id as number | undefined;
     const isGroup = chat.type === "group" || chat.type === "supergroup";
@@ -1625,11 +1649,26 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     if (isGroup) {
       const bound = loadTgGroup();
       if (bound === null) {
-        if (cmd?.cmd === "setup") {
-          saveTgGroup(chat.id);
-          await reply(chat.id, threadId, "✅ This group is now shadok-ai's board. Use /spawn <name> to create an agent (a forum topic). Enable Topics + make me admin if /spawn fails.");
+        // Binding the board needs the pairing code from the web cockpit: a
+        // bare /setup used to bind ANY group that sent it, so anyone who found
+        // the bot could add it to their own group and drive agents.
+        const code = pairingCodeOf(msg.text);
+        if (code) {
+          const v = redeemPairingCode(code);
+          if (v === "ok") {
+            saveTgGroup(chat.id);
+            // Whoever typed a code only the cockpit's admin can see is the
+            // legitimate owner; DMs follow them unless someone already owns them.
+            const from = msg.from?.id;
+            if (loadTgOwner() === null && typeof from === "number" && !msg.from?.is_bot) saveTgOwner(from);
+            console.log(`telegram: board group ${chat.id} paired by user ${from ?? "?"}`);
+            await reply(chat.id, threadId, "✅ This group is now shadok-ai's board. Use /spawn <name> to create an agent (a forum topic). Enable Topics + make me admin if /spawn fails.");
+          } else {
+            console.log(`telegram: board pairing refused in chat ${chat.id} (${v})`);
+            await reply(chat.id, threadId, pairingRefusal(v));
+          }
         } else {
-          await reply(chat.id, threadId, "Run /setup here to bind this group as shadok-ai's board (one group per instance).");
+          await reply(chat.id, threadId, "To bind this group as shadok-ai's board, send /setup <code> here. Get the code from the cockpit's Telegram panel (“Pair Telegram”).");
         }
         return;
       }
@@ -1645,7 +1684,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       switch (cmd.cmd) {
         case "start":
         case "help":
-          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in");
+          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in\n/setup <code> — pair the bot (code from the cockpit's Telegram panel)");
           return;
         case "setup":
           if (isGroup) await reply(chat.id, threadId, "✅ already this instance's board.");
@@ -2039,8 +2078,8 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     if (!action || !msg) return;
     // A keyboard can only appear after an accepted message, so in principle a
     // stranger cannot reach this path — we close it anyway rather than depend
-    // on that assumption. Never a "claim" here: DMs are claimed by writing, not
-    // by clicking.
+    // on that assumption. Never a pairing here: DMs are paired by a typed code,
+    // not by clicking.
     if (msg.chat?.type === "private" && dmGate(loadTgOwner(), cq.from?.id) !== "allow") {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ This bot is private." });
       return;
@@ -2313,20 +2352,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         return;
       }
     }
-    // No DM binding — the case of an installation driven only from the group.
-    // The bound group's CREATOR is whoever set that board up: they are the
-    // legitimate owner. Without this, the first stranger to write to the bot
-    // after the update would claim DMs in their place.
-    const group = loadTgGroup();
-    if (group === null) return;
-    const admins = await tg("getChatAdministrators", { chat_id: group });
-    const creator = admins?.ok && Array.isArray(admins.result)
-      ? admins.result.find((a: any) => a.status === "creator" && !a.user?.is_bot)
-      : null;
-    if (creator?.user?.id) {
-      saveTgOwner(creator.user.id);
-      console.log(`telegram: DM owner adopted from the board group's creator (user ${creator.user.id})`);
-    }
+    // No DM binding: DMs stay unowned until someone pairs with the cockpit's
+    // code. Adopting the bound group's CREATOR used to fill this gap, but
+    // nothing proved who had bound that group — with a bare /setup it could be
+    // a stranger, who was then handed the DMs on top.
   };
 
   const reconcileOnBoot = async () => {

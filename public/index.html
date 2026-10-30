@@ -1066,6 +1066,9 @@
   .tg-guide ol { margin: 8px 0 0; padding-left: 20px; font-size: 13px; line-height: 1.5; }
   .tg-guide li { margin-bottom: 4px; }
   .tg-guide code { font-size: 12px; }
+  .tg-pair { margin-bottom: 12px; }
+  .tg-pair-code { font: 600 26px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 3px; margin: 6px 0; user-select: all; }
+  .tg-pair-links { display: flex; gap: 8px; flex-wrap: wrap; margin: 6px 0; }
   /* A field with no effect in the current mode (resume/continue) — visible but inert. */
   .na { opacity: .45; pointer-events: none; }
 
@@ -2958,11 +2961,23 @@
         <li>Paste that token below and click <b>Save</b>. The status above turns 🟢 with the bot's name.</li>
         <li>Create a Telegram <b>group</b>, open its settings and turn on <b>Topics</b>.</li>
         <li>Add your bot to the group and make it an <b>admin</b> with <i>Manage topics</i> (and <i>Delete messages</i>, so <code>/secret</code> can scrub values).</li>
-        <li>In the group, send <code>/setup</code>. The status above now shows the bound group.</li>
+        <li>Click <b>Pair Telegram</b> below, then send <code>/setup &lt;code&gt;</code> in the group (or use the one-click link). The status above now shows the bound group, and you own the bot's DMs.</li>
         <li>Send <code>/spawn &lt;name&gt;</code> (or create a topic by hand): each topic is one agent, also visible here as a tab.</li>
       </ol>
       <p class="check-hint">Optional: list chat ids under <i>Allowed chats</i> so only they can reach the bot.</p>
     </details>
+    <div class="tg-pair">
+      <button id="tgPair" title="Show a one-time code: only the Telegram account that enters it can bind the board group or own the bot's DMs">Pair Telegram</button>
+      <div id="tgPairBox" hidden>
+        <div class="tg-pair-code" id="tgPairCode"></div>
+        <p class="check-hint">Send <code>/setup <span id="tgPairCodeInline"></span></code> in the group to make it the board, or in a private chat with the bot to own its DMs. Single use · <span id="tgPairLeft"></span></p>
+        <div class="tg-pair-links">
+          <a id="tgPairGroup" target="_blank" rel="noopener noreferrer" hidden>Add to a group ↗</a>
+          <a id="tgPairDm" target="_blank" rel="noopener noreferrer" hidden>Open a private chat ↗</a>
+          <button id="tgPairCancel">Cancel code</button>
+        </div>
+      </div>
+    </div>
     <button id="tgUnbind" hidden title="Unbind the board group so you can /setup a fresh one (e.g. after it became a supergroup)">Unbind group</button>
     <label class="check"><input type="checkbox" id="tgEnabled"><span>Bot enabled</span></label>
     <div class="field">
@@ -10750,7 +10765,7 @@
     tgAllowed = s.allowedChats.slice();
     const dot = s.running && s.username ? "🟢" : s.tokenError ? "🟠" : "⚪";
     const who = s.username ? s.username : s.hasToken ? "(token set)" : "no token";
-    const grp = s.boundGroup ? ` · group ${s.boundGroup.chatId}` : " · no group bound (run /setup in Telegram)";
+    const grp = s.boundGroup ? ` · group ${s.boundGroup.chatId}` : " · no group bound (pair it below)";
     const err = s.tokenError ? ` — ${s.tokenError}` : "";
     $("tgStatus").textContent = `${dot} ${who}${grp}${err}`;
     $("tgUnbind").hidden = !s.boundGroup; // only offer unbind when a group is bound
@@ -10776,6 +10791,41 @@
       li.appendChild(x);
       ul.appendChild(li);
     }
+  }
+  // Pairing code: shown once, as issued — the server never returns it again.
+  let tgPairTimer = null;
+  function hidePairing() {
+    clearInterval(tgPairTimer);
+    tgPairTimer = null;
+    $("tgPairBox").hidden = true;
+  }
+  function showPairing(p) {
+    $("tgPairCode").textContent = p.code.slice(0, 4) + " " + p.code.slice(4);
+    $("tgPairCodeInline").textContent = p.code;
+    for (const [id, href] of [["tgPairGroup", p.groupLink], ["tgPairDm", p.dmLink]]) {
+      const a = $(id);
+      a.hidden = !href;
+      if (href) a.href = href;
+    }
+    $("tgPairBox").hidden = false;
+    const tick = () => {
+      const left = Math.max(0, p.expiresAt - Date.now());
+      if (left === 0) { hidePairing(); return; }
+      const m = Math.floor(left / 60000), sec = Math.floor((left % 60000) / 1000);
+      $("tgPairLeft").textContent = `expires in ${m}:${String(sec).padStart(2, "0")}`;
+    };
+    clearInterval(tgPairTimer);
+    tick();
+    tgPairTimer = setInterval(tick, 1000);
+  }
+  async function issuePairing() {
+    const r = await fetch("/telegram/pairing", { method: "POST" });
+    if (r.ok) showPairing(await r.json());
+    else alert((await r.json().catch(() => ({}))).error || "could not issue a pairing code");
+  }
+  async function cancelPairing() {
+    await fetch("/telegram/pairing", { method: "DELETE" });
+    hidePairing();
   }
   async function loadTelegram() {
     delete $("tgGuide").dataset.auto; // each opening of the panel re-decides the fold
@@ -11184,7 +11234,9 @@
   // Backdrop click closes a dismissable (voluntary) card; the panel itself does not.
   $("authOverlay").addEventListener("click", (e) => { if (e.target === $("authOverlay")) closeAuthCard(); });
 
-  $("tgUnbind").addEventListener("click", () => { if (confirm("Unbind the current board group? You'll need to /setup a group again in Telegram.")) putTelegram({ unbindGroup: true }); });
+  $("tgPair").addEventListener("click", issuePairing);
+  $("tgPairCancel").addEventListener("click", cancelPairing);
+  $("tgUnbind").addEventListener("click", () => { if (confirm("Unbind the current board group? You'll need to pair a group again (Pair Telegram, then /setup <code>).")) putTelegram({ unbindGroup: true }); });
   $("telegramBtn").addEventListener("click", () => { $("telegramOverlay").hidden = false; loadTelegram(); });
   $("telegramClose").addEventListener("click", () => { $("telegramOverlay").hidden = true; });
   $("telegramOverlay").addEventListener("click", (e) => { if (e.target === $("telegramOverlay")) $("telegramOverlay").hidden = true; });

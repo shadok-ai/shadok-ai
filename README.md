@@ -341,12 +341,21 @@ Enter to skip; you can add it later from the web UI).
 The Telegram panel (header icon) carries a folded *How to set it up, step by step*
 guide, open until a token is saved and a group is bound.
 
+**Pairing.** The bot answers nobody until it is paired from the cockpit. In the
+Telegram panel (admin only), click **Pair Telegram**: it shows an 8-digit code,
+valid 10 minutes, single-use, cancelled after 5 wrong tries. Send `/setup <code>`
+in the group to make it the board, or in a private chat with the bot to make its
+DMs yours — or use the panel's one-click links, which pass the code for you.
+Whoever enters the code becomes the owner of the bot's DMs. A group bound before
+pairing existed stays bound; to move to another group, unbind it in the panel
+and pair again.
+
 Add your bot to a group with **Topics** enabled, make it an admin with *Manage
 topics* (and *Delete messages* so `/secret` can scrub values), then in the group:
 
 | Command | |
 |---|---|
-| `/setup` | bind this group as the board (one group per instance) |
+| `/setup <code>` | bind this group as the board (one group per instance), with the code from the panel's **Pair Telegram** |
 | `/spawn [profile] <name>` | new isolated agent in its own topic (also a web tab) |
 | `/stop` (alias `/esc`) | interrupt the current turn — does **not** end the session |
 | `/new` · `/end` | reset · kill the session |
