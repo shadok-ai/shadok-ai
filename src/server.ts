@@ -2003,7 +2003,23 @@ app.put("/channels", (req, res) => {
   // drop a live or Telegram-bound session or strip server-owned fields.
   const live = new Set([...sessions.values()].filter((s) => !s.pilot.hasExited).map((s) => s.id));
   const before = new Map(loadChannels().map((c) => [c.sessionId, c.name]));
-  const merged = mergeClientChannels(Array.isArray(req.body) ? req.body : [], live);
+  const body = (Array.isArray(req.body) ? req.body : []) as any[];
+  // Mirroring is admin-managed (cf. the Telegram config gate and the `start`
+  // handler): a non-admin may reorder / rename / regroup their agents, but must
+  // not flip an agent's Telegram mirror through a channel write (the agent-menu
+  // toggle persists via this endpoint). Pin each incoming `mirror` to its stored
+  // value for a non-admin; a brand-new channel they create is left un-mirrored.
+  // Admins — and agents, who authenticate as the bootstrap admin — pass through.
+  if (currentAccount(req)?.role !== "admin") {
+    const storedMirror = new Map(loadChannels().map((c) => [c.sessionId, c.mirror]));
+    for (const c of body) {
+      if (!c || typeof c.sessionId !== "string") { if (c) delete c.mirror; continue; }
+      const prev = storedMirror.get(c.sessionId);
+      if (prev === undefined) delete c.mirror;
+      else c.mirror = prev;
+    }
+  }
+  const merged = mergeClientChannels(body, live);
   // A web-side rename of a Telegram-bound channel → rename its topic too.
   for (const c of merged) {
     if (c.telegram?.threadId && c.name && c.name !== before.get(c.sessionId)) {
@@ -2140,6 +2156,9 @@ function accountAdmin(
    * admin-only, which is what it was designed to be.
    */
   browserOnly = true,
+  /** What the 403 says the caller is not allowed to do. The guard is reused
+   *  beyond accounts (e.g. the Telegram config), so the message names the act. */
+  what = "manage accounts",
 ): { name: string; role: Role } | null {
   if (browserOnly && !requestFromBrowser(req)) {
     res.status(403).json({ error: "same-origin browser only" });
@@ -2149,7 +2168,7 @@ function accountAdmin(
   // is the bootstrap admin, and must not be able to reset anyone.
   const me = twoFactorOn() ? cookieAccount(req) : currentAccount(req);
   if (me?.role !== "admin") {
-    res.status(403).json({ error: "only an admin can manage accounts" });
+    res.status(403).json({ error: `only an admin can ${what}` });
     return null;
   }
   return me;
@@ -2934,8 +2953,17 @@ async function telegramState() {
 // Telegram bot config — token/on-off/allowed-chats, applied hot (no restart).
 // Behind the GUI password gate like the rest. The token is write-only: never
 // returned here, only set/removed.
-app.get("/telegram", async (_req, res) => res.json(await telegramState()));
+// The Telegram bot config is an instance-wide integration (one bot, one board,
+// owned by whoever runs the cockpit), so reading or changing it is ADMIN-ONLY —
+// a `member` has no business touching the bot token, the allowed chats or the
+// on/off switch. GET is browserOnly:false (a same-origin read sends no Origin);
+// PUT keeps the write-side CSRF guard.
+app.get("/telegram", async (req, res) => {
+  if (!accountAdmin(req, res, false, "view or change the Telegram configuration")) return;
+  res.json(await telegramState());
+});
 app.put("/telegram", async (req, res) => {
+  if (!accountAdmin(req, res, true, "view or change the Telegram configuration")) return;
   const b = req.body ?? {};
   const patch: TelegramPatch = {};
   if (typeof b.token === "string" || b.token === null) patch.token = b.token;
@@ -5277,6 +5305,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             cwd: effectiveCwd,
             branch: worktree?.branch ?? null,
           });
+          // Mirroring drops an agent into the (admin-owned) Telegram board, so
+          // only an admin may enable it. A non-admin's `true` is DROPPED (not a
+          // spawn failure — same spirit as a refused parent link); an explicit
+          // `false`, or an absent field, is left untouched. Agents authenticate
+          // as the bootstrap admin (session key), so pilotctl-driven mirroring
+          // is unaffected.
+          const effMirror =
+            typeof msg.mirror === "boolean" ? msg.mirror && me?.role === "admin" : undefined;
+          if (msg.mirror === true && me?.role !== "admin")
+            console.log(`mirror: refused for non-admin ${me?.name ?? "anon"} on ${id.slice(0, 8)}`);
           upsertChannel({
             sessionId: id,
             cwd: effectiveCwd,
@@ -5315,8 +5353,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // The form's choice, recorded as soon as we're `ready` — that's
             // where the Telegram loop reads it. Absent (a client that ignores
             // the field) → decide nothing, and `isMirrored` falls back to the
-            // binding.
-            ...(typeof msg.mirror === "boolean" ? { mirror: msg.mirror } : {}),
+            // binding. Admin-gated just above (`effMirror`).
+            ...(effMirror !== undefined ? { mirror: effMirror } : {}),
             // Who launched this agent, sent by pilotctl from its own
             // SHADOK_SESSION_ID. ASSERT-only, like `branch` and `repo`: a
             // client that omits the key must not erase a link that already

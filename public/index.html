@@ -4319,7 +4319,9 @@
     // The Telegram mirror. The label states the action AND its cost: turning it
     // off deletes the topic, hence the conversation on the phone — so we confirm.
     // The main channel (the General) is the board's home base: not un-mirrorable.
-    if (!tab.isMain) {
+    // Admin-only, like the rest of the Telegram surface (the server refuses a
+    // member's mirror write regardless; this just doesn't offer it).
+    if (!tab.isMain && me?.role === "admin") {
       items.push([
         tab.mirror ? "✈️ Stop mirroring (deletes the topic)" : "✈️ Mirror to Telegram",
         () => {
@@ -10240,6 +10242,14 @@
     // Every signed-in PERSON opens it — a member manages their own passkeys
     // there; only an admin sees the accounts below.
     if (b) b.hidden = !(me?.role === "admin" || me?.name);
+    // The Telegram bot config (header ✈️ button) and the "Mirror to Telegram"
+    // creation checkbox are ADMIN-ONLY — the server enforces it (GET/PUT
+    // /telegram, and the `start` / PUT /channels mirror gate); hiding the
+    // controls just avoids offering a member a door that 403s. The agent-menu
+    // mirror item is gated where that menu is built.
+    const amAdmin = me?.role === "admin";
+    const tgb = $("telegramBtn"); if (tgb) tgb.hidden = !amAdmin;
+    const mf = $("mirrorField"); if (mf) mf.hidden = !amAdmin;
     // No password on this instance means no session at all: nothing to name and
     // nothing to leave. Showing "Sign out" there would promise a door that does
     // not exist.
