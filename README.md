@@ -294,7 +294,7 @@ Enter to skip; you can add it later from the web UI).
   card back. Desktop only: the agents column is hidden on phones.
 - **Guided tour** — on a browser's first visit, a welcome card explains what
   shadok-ai is, then a spotlight walks the real controls: the agents list, an
-  agent's ⋯ menu, scheduled prompts, the toolbar, the quota dials. Skip and
+  agent's ⋯ menu, scheduled prompts, the toolbar, the quota bars. Skip and
   Escape end it at any point; ⋯ → *Guided tour* replays it. A step whose target
   isn't on screen is **dropped rather than faked** — an empty cockpit has no
   agent menu, so it gets a shorter tour instead of a spotlight on nothing. The
