@@ -110,6 +110,12 @@ scopes.
 - **[DECIDED]** **`Main`** (the former "Ungrouped", renamed by PR #325) is itself
   a **public, isolated group**. It is where the `general`/lead agent lives and
   where anyone without a more specific group lands by default.
+- **[DECIDED]** **Only `Main` has a lead agent. Every other group starts empty** —
+  including the private group auto-provisioned at onboarding. Creating a group
+  provisions its OS user and HOME but **spawns no agent**; the user launches the
+  first one on demand. Concretely, today's "no channel at all → spawn the lead"
+  rule (`firstAgentPlan`, `src/first-agent.ts`) becomes scoped to `Main`, not
+  applied per group.
 
 ### Creating, moving, membership
 
@@ -205,6 +211,25 @@ server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
   whole vault (the `600` mode does nothing between same-user processes). Under
   per-group users, the vault file is unreadable from a different OS user; the
   server injects only the due secrets as env.
+
+### Where it runs (the host model)
+
+- **[DECIDED] The server provisions OS users in-place — in its own runtime
+  environment — with no nested per-group containers.** We do **not** add a second
+  containerization layer: creating a group is a `useradd` in the environment the
+  server already runs in.
+- **The blast-radius boundary comes for free from the standard deployment.** A
+  shadok instance installed on a VPS **already runs inside one Docker container**
+  (the official image). So "bare host" here means the server's own environment —
+  which, in the default VPS install, *is* that container — and the outer Docker
+  bounds the blast radius without any extra design. On a bare-metal install (no
+  Docker) the environment is the host itself, and the operator accepts that.
+- **[builder] Persistence across `docker recreate`.** OS users (`/etc/passwd`,
+  `/etc/shadow`) and their HOMEs are created **inside** that container and are
+  **lost on a recreate** unless pinned to the mounted volume — the same trap as
+  `~/.claude.json` and the SSH identity (invariants 19, 23). The builder must
+  either place the user DB + HOMEs on the `shadok-data` volume or rebuild them at
+  boot. Flagged, not designed here.
 
 ### Cost, stated honestly
 
@@ -308,9 +333,13 @@ reference any name) does not survive groups. It becomes **per-group**:
   references a secret *name* (e.g. `OPENAI_API_KEY`); at spawn, the agent's
   **group** supplies the value. The same role used by COMEX resolves
   `OPENAI_API_KEY` to COMEX's key; used by SALES, to SALES's key. **Names are
-  unique per group, not globally.** **[OPEN]** Lookup precedence: the agent's own
-  group first, then a **public/`Main`** fallback — confirm, and whether a profile
-  may pin a group explicitly rather than rely on fallback.
+  unique per group, not globally.** **[DECIDED]** Lookup precedence: the agent's
+  **own group first, then a `Main` fallback** — a shared "house" key placed in
+  `Main` serves any group that has not defined its own, and a group overrides it
+  by defining the same name. **A profile may NOT pin another group's secrets**
+  (resolution is always *own group → `Main`*, never "the group next door") —
+  pinning would let a role reach across the isolation wall. (My call on the
+  pin question; the fallback is the user's.)
 - **Isolation**: the server is the **only reader**; it injects only the agent's
   group's secrets as env; the OS-user wall means an agent cannot read another
   group's vault file. Physically splitting the vault into per-group files is
@@ -380,19 +409,11 @@ reference any name) does not survive groups. It becomes **per-group**:
 
 ## Open decisions to revisit
 
-- **Secret resolution precedence** — own group → `Main` fallback; whether a
-  profile may pin a group.
 - **Claude auth refresh** — keep one-at-a-time, or add a small auth broker.
-- **Deployment host model** — bare privileged host vs a single container holding
-  ~55 users (vs today's one-container-per-instance).
 - **Telegram multi-tenancy** — the bridge is single-owner today; a merged spec
   (PR #338, Telegram person ↔ web account link) now moves identity in this area —
   reconcile with it. Recommendation unchanged: **web-first in v1, Telegram
   deferred.**
-- **Lead/home agent per group** — does each group get its own lead, or only
-  `Main`?
-- **Per-person disk quota** — **out of scope** (handled at the Docker/infra
-  level, per the Files section), not a cockpit concern.
 
 ## Left to the builder
 
