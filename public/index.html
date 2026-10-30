@@ -1206,6 +1206,38 @@
     padding: 6px 10px; background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px;
     color: var(--text-dim); text-decoration: none; font-family: var(--mono); font-size: 12px; }
   .att-file:hover { color: var(--amber); border-color: var(--amber); }
+  /* Any image in the chat (agent file card, user attachment, markdown image)
+     opens full-size in the lightbox on click. */
+  .file-img img, .att-img img, .bubble.md img { cursor: zoom-in; }
+  #lightbox {
+    position: fixed; inset: 0; z-index: 5000;
+    display: flex; align-items: center; justify-content: center;
+    padding: 40px; background: rgba(6, 7, 10, 0.85);
+    -webkit-backdrop-filter: blur(2px); backdrop-filter: blur(2px);
+  }
+  #lightbox[hidden] { display: none; }
+  #lightbox img {
+    max-width: 94vw; max-height: 86vh; object-fit: contain;
+    border-radius: 8px; box-shadow: 0 16px 50px rgba(0, 0, 0, 0.6);
+    cursor: default; background: var(--bg-raised);
+  }
+  #lightboxClose {
+    position: absolute; top: 14px; right: 16px;
+    width: 40px; height: 40px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; line-height: 1; color: #fff; cursor: pointer;
+    background: rgba(0, 0, 0, 0.45); border: 1px solid rgba(255, 255, 255, 0.3);
+  }
+  #lightboxClose:hover { background: rgba(0, 0, 0, 0.7); }
+  #lightboxBar { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); max-width: 90vw; }
+  #lightboxDl {
+    display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: #fff; text-decoration: none;
+    font-family: var(--mono); font-size: 12px;
+    background: rgba(0, 0, 0, 0.5); border: 1px solid rgba(255, 255, 255, 0.25);
+    border-radius: 8px; padding: 7px 14px;
+  }
+  #lightboxDl:hover { background: rgba(0, 0, 0, 0.75); }
   .att-file .att-ic { color: var(--amber); flex: none; }
   .att-file .att-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Composer attachment strip: the SAME dropped/pasted files, previewed above the
@@ -3188,6 +3220,13 @@
     <pre id="diffBody"></pre>
   </aside>
 </main>
+
+<!-- Full-size image viewer: click any chat image to open it here. -->
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Image preview" hidden>
+  <button id="lightboxClose" type="button" aria-label="Close image preview">×</button>
+  <img id="lightboxImg" alt="">
+  <div id="lightboxBar"><a id="lightboxDl" download>⭳ Download</a></div>
+</div>
 
 <link rel="stylesheet" href="/vendor/xterm.css">
 <script src="/vendor/xterm.js"></script>
@@ -9028,6 +9067,44 @@
       sendTo(active, { type: "key", key: b.dataset.key });
     })
   );
+  // ── Image lightbox: click any chat image to view it full-size ───────────
+  // One viewer for every image in the chat — agent file cards (`.file-img`), the
+  // user's own attachments (`.att-img`, whose <a> would otherwise open a new
+  // tab) and images inside rendered markdown (`.bubble.md img`). A delegated
+  // click on the transcripts container covers every tab with one listener.
+  const lightbox = $("lightbox"), lightboxImg = $("lightboxImg"), lightboxDl = $("lightboxDl");
+  let lightboxReturnFocus = null;
+  function openLightbox(src, name) {
+    if (!src) return;
+    lightboxImg.src = src;
+    lightboxImg.alt = name || "";
+    lightboxDl.href = src;
+    lightboxDl.download = name || "image";
+    lightboxDl.textContent = name ? "⭳ " + name : "⭳ Download";
+    lightboxReturnFocus = document.activeElement;
+    lightbox.hidden = false;
+    $("lightboxClose").focus();
+  }
+  function closeLightbox() {
+    if (lightbox.hidden) return;
+    lightbox.hidden = true;
+    lightboxImg.removeAttribute("src"); // stop the load, drop the decode
+    if (lightboxReturnFocus && lightboxReturnFocus.focus) lightboxReturnFocus.focus();
+    lightboxReturnFocus = null;
+  }
+  transcripts.addEventListener("click", (e) => {
+    const img = e.target.closest("img");
+    if (!img || !img.closest(".file-img, .att-img, .bubble.md")) return;
+    e.preventDefault(); // an .att-img image sits in an <a target="_blank">
+    openLightbox(img.currentSrc || img.src, img.alt || "");
+  });
+  lightbox.addEventListener("click", (e) => {
+    // A click anywhere but the image itself (or the download link) closes it.
+    if (e.target === lightboxImg || e.target.closest("#lightboxDl")) return;
+    closeLightbox();
+  });
+  $("lightboxClose").addEventListener("click", closeLightbox);
+
   // The Escape key sends esc to the active session (like the engine room's Esc
   // button). Precedence: an open overlay/panel is closed first (Escape does not
   // reach down to the session); a pending clickable dialog is left intact;
@@ -9036,6 +9113,9 @@
   // The inline edit calls stopPropagation, so this handler never sees it.
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    // The image viewer sits on top of everything, including the terminal, so it
+    // is closed before any other Escape handling.
+    if (!lightbox.hidden) { closeLightbox(); e.preventDefault(); return; }
     // In the interactive terminal, xterm owns every key (incl. Esc) — the raw
     // keystroke already flows to the pane via term.onData; don't double-handle.
     if (active && active.termOn) return;
