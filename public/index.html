@@ -5273,6 +5273,20 @@
   // source of truth. A new session (e.g. a Telegram /spawn) shows up as a tab
   // live; a renamed channel renames its tab; a channel that left the registry
   // (ended elsewhere) closes its tab.
+  /** Is a group name being TYPED right now, anywhere? The server→client name
+   *  sync must not overwrite the field under the cursor, and there are three
+   *  places to rename a group: its head in the agents column, its row in the
+   *  rail, and — since the column title became editable — that title. Keying
+   *  the guard on the group HEAD alone missed the last two: `inlineRename`
+   *  swaps the span it was given for the input, so the input is wherever the
+   *  gesture started, not inside `headEl`. One query over all three, and the
+   *  name is simply left alone for one poll (4 s), which costs nothing. */
+  function renamingAGroup() {
+    return !!document.querySelector(
+      "#groups input.rename, #railList input.rename, #tabbar .side-label input.rename",
+    );
+  }
+
   let lastChannelIds = new Set();
   async function syncChannels() {
     if (restoring) return;
@@ -5292,7 +5306,7 @@
         if (sg == null || sg.id == null) continue;
         const g = groups.find((x) => x.id === sg.id);
         if (!g) { createGroup(sg); continue; }
-        if (sg.name && sg.name !== g.nameEl.textContent && !g.headEl.querySelector("input"))
+        if (sg.name && sg.name !== g.nameEl.textContent && !renamingAGroup())
           g.nameEl.textContent = sg.name;
         if (sg.icon && sg.icon !== g.icon) g.icon = sg.icon;
       }
