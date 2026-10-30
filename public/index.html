@@ -396,48 +396,58 @@
   @keyframes sheet-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
   @media (prefers-reduced-motion: reduce) { .led.busy { animation: none; } body.picker-open #tabbar { animation: none; } }
   header .spacer { flex: 1; }
-  /* Quota dials (5h / 7d subscription usage).
-     A 240° speedometer whose CENTRE is the ideal pace and whose RIGHT END is
-     exhaustion — see docs/superpowers/specs/2026-07-30-quota-dial-design.md.
-     Position AND colour carry the reading, never colour alone. */
-  .quota { min-width: 56px; }
-  .dial { display: block; width: 56px; height: 44px; }
-  /* opacity on the GROUP, not each path: 24 overlapping-alpha strokes would
-     composite twice at every join and brighten the seams instead of hiding
-     them. One group opacity leaves the marks flat and evenly graduated. */
-  .dial .arc { opacity: 0.6; }
-  .dial .arc path { fill: none; stroke-width: 4; }
-  /* No data: the scale stays, as a ghost, so the widget does not vanish. */
-  .dial.nodata .arc { opacity: 0.18; }
-  /* The "on pace" reference, just outside the arc. The needle's tip meets it
-     exactly when the consumption is on pace — they read as one line. */
-  .dial .tick { stroke: var(--text); stroke-width: 1.5; opacity: 0.75; }
-  .dial .needle {
-    stroke: var(--text);
-    stroke-width: 2;
-    stroke-linecap: round;
-    /* Rotated through the CSS transform PROPERTY, not the SVG attribute: only
-       the property transitions reliably. transform-box/-origin put the pivot on
-       the hub in viewBox units. */
-    transform-box: view-box;
-    transform-origin: 28px 25px;
-    transition: transform 0.4s ease;
+  /* Quota meters (5h / 7d subscription usage).
+     A flat bar per window: its LENGTH is the quota consumed, and a white marker
+     sits at the ideal pace (the share of the window's time already elapsed).
+     Fill short of the marker = ahead of the clock (green); past it = burning
+     faster (red). Position AND colour carry the reading, never colour alone —
+     see docs/superpowers/specs/2026-10-30-quota-bar-design.md. */
+  .quotas { display: flex; flex-direction: column; gap: 5px; }
+  .quota {
+    display: grid; grid-template-columns: 18px 96px 32px;
+    align-items: center; column-gap: 9px; min-width: 0;
   }
-  .dial .pct {
-    font-family: var(--mono);
-    font-size: 12px;
-    font-weight: 600;
-    fill: var(--text);
-    transition: fill 0.4s ease;
+  .quota .q-lbl {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    color: var(--text-dim); letter-spacing: 0.04em;
   }
-  .dial .unit {
-    font-family: var(--mono);
-    font-size: 8px;
-    fill: var(--text-dim);
-    letter-spacing: 0.08em;
+  .quota .q-pct {
+    font-family: var(--mono); font-size: 12px; font-weight: 600;
+    text-align: right; color: var(--text);
+    font-variant-numeric: tabular-nums; transition: color 0.4s ease;
+  }
+  /* The track is theme-aware (a faint wash of the text ink) so it reads on both
+     the dark and the light palette; the fill colour is set per reading from JS. */
+  .q-track {
+    position: relative; height: 7px; border-radius: 999px;
+    background: color-mix(in oklab, var(--text) 12%, transparent);
+  }
+  .quota.nodata .q-track { background: color-mix(in oklab, var(--text) 7%, transparent); }
+  .q-fill {
+    position: absolute; left: 0; top: 0; height: 100%; width: 0;
+    border-radius: 999px;
+    /* A soft top sheen over the per-reading colour (`--c`), for a bit of depth. */
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0) 60%),
+                var(--c, var(--text-dim));
+    transition: width 0.4s ease, background-color 0.4s ease;
+  }
+  /* The ideal-pace marker: a line that stands proud of the bar with a small cap,
+     so it reads on any fill colour. `var(--text)` (near-white on dark, dark on
+     light) + a page-coloured outline keep it legible in both themes. Hidden when
+     there is no reset time, i.e. no pace to mark. */
+  .q-mark {
+    position: absolute; top: -4px; height: 15px; width: 2px; left: 0;
+    border-radius: 1px; background: var(--text); transform: translateX(-1px);
+    filter: drop-shadow(0 0 1px var(--page));
+    transition: left 0.4s ease;
+  }
+  .q-mark::before {
+    content: ""; position: absolute; top: -3px; left: 50%; transform: translateX(-50%);
+    border-left: 3px solid transparent; border-right: 3px solid transparent;
+    border-top: 3px solid var(--text);
   }
   @media (prefers-reduced-motion: reduce) {
-    .dial .needle, .dial .pct { transition: none; }
+    .q-fill, .q-pct, .q-mark { transition: none; }
   }
   button {
     font-family: var(--sans);
@@ -1731,8 +1741,12 @@
        phone it moves into the ⋯ menu (#starMenuItem) instead. */
     #starBtn { display: none; }
     #moreMenu #starMenuItem { display: block; }
-    .quota { min-width: 46px; }
-    .dial { width: 46px; height: 36px; }
+    /* Narrower bar + smaller label column so the two stacked meters fit the
+       nowrap header beside the brand and the ⋯ menu. */
+    .quotas { gap: 4px; }
+    .quota { grid-template-columns: 16px 62px 28px; column-gap: 6px; }
+    .quota .q-lbl { font-size: 10px; }
+    .quota .q-pct { font-size: 11px; }
     /* A bit more room for a thumb, a bit less margin wasted on a narrow screen. */
     .transcript { padding: 14px 14px 6px; }
     #composer { padding: 10px 14px calc(12px + env(safe-area-inset-bottom, 0px)); gap: 8px; }
@@ -2423,23 +2437,17 @@
 <header>
   <span class="brand"><span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 32 32"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><g class="sk-leg sk-leg-l"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/></g><g class="sk-leg sk-leg-r"><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/></g><g class="sk-bob"><line class="sk-arm" x1="21.6" y1="17.2" x2="26" y2="20.4"/><g class="sk-ant sk-ant-l" stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/></g><g class="sk-ant sk-ant-r" stroke-width="0.9"><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><path d="M14.4 18.2 L17.6 18.2 L16 21.6 Z" stroke="none"/><g class="sk-eyes" stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><g class="sk-pupils"><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></g></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
   <span class="spacer"></span>
-  <div class="gauge quota" id="quota5h" data-window="5h" title="5h rolling limit">
-    <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="5h rolling limit">
-      <g class="arc"></g>
-      <line class="tick" x1="28" y1="5" x2="28" y2="2" visibility="hidden"></line>
-      <line class="needle" x1="28" y1="13" x2="28" y2="5" visibility="hidden"></line>
-      <text class="pct" x="28" y="28" text-anchor="middle">—</text>
-      <text class="unit" x="28" y="41" text-anchor="middle">5h</text>
-    </svg>
-  </div>
-  <div class="gauge quota" id="quota7d" data-window="7d" title="7d rolling limit">
-    <svg class="dial" viewBox="0 0 56 44" role="img" aria-label="7d rolling limit">
-      <g class="arc"></g>
-      <line class="tick" x1="28" y1="5" x2="28" y2="2" visibility="hidden"></line>
-      <line class="needle" x1="28" y1="13" x2="28" y2="5" visibility="hidden"></line>
-      <text class="pct" x="28" y="28" text-anchor="middle">—</text>
-      <text class="unit" x="28" y="41" text-anchor="middle">7d</text>
-    </svg>
+  <div class="quotas">
+    <div class="quota" id="quota5h" data-window="5h" role="img" aria-label="5h rolling limit" title="5h rolling limit">
+      <span class="q-lbl">5h</span>
+      <div class="q-track"><div class="q-fill"></div><div class="q-mark" hidden></div></div>
+      <span class="q-pct">—</span>
+    </div>
+    <div class="quota" id="quota7d" data-window="7d" role="img" aria-label="7d rolling limit" title="7d rolling limit">
+      <span class="q-lbl">7d</span>
+      <div class="q-track"><div class="q-fill"></div><div class="q-mark" hidden></div></div>
+      <span class="q-pct">—</span>
+    </div>
   </div>
   <!-- The global actions, in ONE container. `display: contents` on desktop: they
        stay direct items of the bar and the layout does not move a pixel. On a
@@ -3221,7 +3229,7 @@
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
-  import { dialPos, dialColor, arcSegments, dialTitle, SWEEP_DEG } from "/gauge-dial.js?v=__ASSET_V__";
+  import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
   import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
@@ -3287,9 +3295,7 @@
   window.BLINK_MS = BLINK_MS;
   window.dialPos = dialPos;
   window.dialColor = dialColor;
-  window.arcSegments = arcSegments;
   window.dialTitle = dialTitle;
-  window.SWEEP_DEG = SWEEP_DEG;
   // Les bouchons du script classique sont maintenant remplacés par les vraies
   // fonctions : tout ce qui a pu être peint entre-temps est incomplet.
   window.dispatchEvent(new Event("shadok-bridge-ready"));
@@ -3336,7 +3342,6 @@
     notifyState: () => ({ color: null, badge: "", blink: false }),
     dialPos: () => 0,
     dialColor: () => "",
-    arcSegments: () => [],
     dialTitle: () => "",
     bubblePlacement: () => null,
     unionRect: () => null,
@@ -11161,55 +11166,42 @@
   /** Last verdict from /usage — read by the composer before sending. */
   let paceBlocked = false, paceReason = null;
 
-  /** Paints the static gradient arc of every dial. Runs once: the scale never
-   *  changes, only the needle on top of it does. */
-  function buildDialArcs() {
-    if (!window.arcSegments) return;
-    const NS = "http://www.w3.org/2000/svg";
-    for (const g of document.querySelectorAll(".quota .dial .arc")) {
-      g.replaceChildren(
-        ...window.arcSegments().map(({ d, color }) => {
-          const p = document.createElementNS(NS, "path");
-          p.setAttribute("d", d);
-          // Via the style PROPERTY: color-mix() is not reliably parsed as an
-          // SVG presentation attribute.
-          p.style.stroke = color;
-          return p;
-        }),
-      );
-    }
-  }
-
   function paintGauge(el, w) {
-    const svg = el.querySelector(".dial");
-    const needle = svg.querySelector(".needle");
-    const tick = svg.querySelector(".tick");
-    const pct = svg.querySelector(".pct");
+    const fill = el.querySelector(".q-fill");
+    const mark = el.querySelector(".q-mark");
+    const pct = el.querySelector(".q-pct");
     const label = el.dataset.window;
     const title = window.dialTitle
       ? window.dialTitle(label, w, w ? fmtReset(w.resetsAt) : "")
       : label + " rolling limit";
     el.title = title;
-    svg.setAttribute("aria-label", title);
-    svg.classList.toggle("nodata", !w);
-    // Guard on the ESM bridge (invariant 10): this function can be reached
-    // before the module has run. Degrade to the number rather than paint a
-    // needle at a wrong angle.
-    if (!w || !window.dialPos) {
-      needle.setAttribute("visibility", "hidden");
-      tick.setAttribute("visibility", "hidden");
-      pct.textContent = w ? Math.round(w.usedPercentage) + "%" : "—";
-      pct.style.fill = "var(--text-dim)";
+    el.setAttribute("aria-label", title);
+    el.classList.toggle("nodata", !w);
+    if (!w) {
+      fill.style.width = "0%";
+      mark.hidden = true;
+      pct.textContent = "—";
+      pct.style.color = "var(--text-dim)";
       return;
     }
-    const pos = window.dialPos(w.usedPercentage, w.idealPacePct);
-    needle.setAttribute("visibility", "visible");
-    needle.style.transform = "rotate(" + (pos * window.SWEEP_DEG).toFixed(1) + "deg)";
-    // Without a reset time there is no ideal pace, so there is nothing for the
-    // tick to mark — drawing it would assert a reference we do not have.
-    tick.setAttribute("visibility", w.idealPacePct == null ? "hidden" : "visible");
+    // Bar LENGTH is the consumption, straight from the number (no maths).
+    const used = Math.max(0, Math.min(100, w.usedPercentage));
+    fill.style.width = used + "%";
+    // The fill COLOUR encodes ahead-of / behind-the-clock. That needs the
+    // piecewise pace position; without the ESM bridge (invariant 10) this paint
+    // can run before the module lands — fall back to a neutral bar (still the
+    // right length) rather than a wrong tint.
+    const color = window.dialPos
+      ? window.dialColor(window.dialPos(w.usedPercentage, w.idealPacePct))
+      : "var(--text-dim)";
+    fill.style.setProperty("--c", color);
     pct.textContent = Math.round(w.usedPercentage) + "%";
-    pct.style.fill = window.dialColor(pos);
+    pct.style.color = color;
+    // The marker is the ideal pace (the window's elapsed-time share). No reset
+    // time → no pace → hide it rather than assert a reference we do not have.
+    const hasPace = w.idealPacePct != null;
+    mark.hidden = !hasPace;
+    if (hasPace) mark.style.left = Math.max(0, Math.min(100, w.idealPacePct)) + "%";
   }
 
   async function refreshUsage() {
@@ -11228,10 +11220,11 @@
       paceReason = null;
     }
   }
-  // The ESM bridge (window.dialPos & co) runs AFTER this classic script — see
-  // invariant 10 in CLAUDE.md. Painting now would leave blank dials in silence.
+  // A deferred module script runs after parsing but BEFORE DOMContentLoaded, so
+  // window.dialPos & co (the ESM bridge, invariant 10) are ready by here and the
+  // first paint gets the right colour; paintGauge still degrades to a neutral bar
+  // if that ever fails to hold.
   document.addEventListener("DOMContentLoaded", () => {
-    buildDialArcs();
     refreshUsage();
     refreshAuthRows();  // paints the re-login reminder banner if the token is due
     maybeStartTour();   // the tour runs first; it calls checkAuth() when it ends

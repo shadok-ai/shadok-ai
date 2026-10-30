@@ -118,10 +118,10 @@ export const TOUR_STEPS = [
     id: "quota",
     title: "Watch your quota",
     body:
-      "Your 5h and 7d subscription usage. The needle's centre is the pace that would " +
-      "spend the window exactly on time, so leaning right means you're burning faster. " +
-      "To the left, the cockpit's name is yours to change, and the version beside it opens " +
-      "updates and the permission mode.",
+      "Your 5h and 7d subscription usage. Each bar fills with what you've spent, and the " +
+      "white marker is the pace that would spend the window exactly on time — a fill past " +
+      "the marker means you're burning faster. To the left, the cockpit's name is yours to " +
+      "change, and the version beside it opens updates and the permission mode.",
     target: ["#quota5h", "#quota7d"],
   },
 ];
