@@ -58,3 +58,28 @@ export function cleanGroupIcon(text) {
   }
   return [...s].slice(0, 2).join("");
 }
+
+/**
+ * Which group an agent should sit in after a /channels poll, and what this tab
+ * now believes the server holds. `local` is where the tab shows it, `synced` the
+ * group last agreed with the server (undefined = never agreed: a tab this page
+ * just created), `server` what /channels says.
+ *
+ * A tab whose `local` differs from `synced` has a move of its own the server
+ * has not confirmed yet — keep it, the push will land. Otherwise a different
+ * `server` is a move made in ANOTHER tab or device, and this tab follows it:
+ * without that, it kept the old group for ever and wrote it back on its next
+ * push, which is how a dragged agent "went back" to where it was.
+ */
+export function reconcileTabGroup(local, synced, server) {
+  const srv = server ?? null;
+  if ((local ?? null) === srv) return { move: false, synced: srv };
+  if (synced === undefined || (local ?? null) !== synced) return { move: false, synced };
+  return { move: true, synced: srv };
+}
+
+/** Does this tab's push carry `group`? Only when it moved the agent itself —
+ *  an omitted key leaves the server's value alone (mergeChannels). */
+export function groupIsDirty(local, synced) {
+  return synced === undefined || (local ?? null) !== synced;
+}

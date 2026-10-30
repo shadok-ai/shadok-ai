@@ -1091,6 +1091,18 @@ and are never touched.
   key is namespaced by launch dir — because localStorage is scoped by origin,
   not by directory, two cockpits sharing a port would otherwise share it. See
   invariant #6 for the erosion trap and invariant #34 for the cross-dir leak.
+  **Several tabs, one list.** Every open tab PUTs its WHOLE channel list on
+  unrelated events (an agent's `ready`, a rename, a mute), so a tab that had not
+  seen a move made in another tab or device wrote its old `group` back and the
+  agent jumped home. Each tab therefore remembers the group it last agreed with
+  the server (`syncedGroup`) and sends `group` only for an agent IT moved
+  (`groupIsDirty`); `mergeChannels` keeps the stored group when the key is
+  omitted. The 4 s `syncChannels` poll makes the tabs converge
+  (`reconcileTabGroup`, `public/group-nav.js`): a move made elsewhere is
+  followed, a move of this tab's own that has not landed is kept. Groups created
+  elsewhere are added there too (additive only), and `persistChannels` no
+  longer pushes the group LIST as a side effect — only the gestures that change
+  it do.
 - **Global config**: `~/.shadok-ai/config.json` (600) — port, per-launch-dir
   Telegram token/allowed chats/enabled, GUI password, `autoUpdate`,
   `permissionMode`, `timezone`.
