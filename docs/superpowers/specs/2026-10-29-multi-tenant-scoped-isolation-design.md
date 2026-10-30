@@ -208,25 +208,39 @@ server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
 - The "no container, shared binaries" benefit holds throughout — this is *more
   users*, not *more installs*.
 
-## Files, folders and permissions (a chantier of its own)
+## Files, folders and permissions
 
-**[OPEN — flagged by the user as the next big topic, to design once the group
-model is locked.]** Once each group runs as its own OS user with its own HOME, a
-file an agent writes is **owned by that group's OS user** and unreadable by
-another group — which is the point, but it opens a whole area the user wants
-treated as a dedicated section:
+Once each group runs as its own OS user with its own HOME, a file an agent writes
+is **owned by that group's OS user** and unreadable by another group — which is
+the point. The design then has to answer how anything legitimately crosses that
+wall. **[DECIDED]** There are exactly two doors, and nothing else traverses:
 
-- **Where produced files land** (per-group HOME? a per-group work dir? the media
-  dir?) and the **folder layout** under each HOME.
-- **Permissions**: default ownership/mode of files agents create; what, if
-  anything, is deliberately **shared** (the git repo's `.git` object store, the
-  `MEDIA_DIR` for pasted/produced artifacts, a dependency cache).
-- **Cleanup and lifecycle**: who removes a group's files when it is deleted;
-  worktree pruning (invariant 5) under per-group ownership.
-- **Quotas**: see Disk / footprint.
+- **Code circulates by `origin`, never by the disk.** Each group holds its **own
+  clone** of a given project inside its HOME. Two groups working the same project
+  are two separate clones that meet **only at the remote**: a group commits
+  locally and pushes a feature branch; the pont is `origin`, never a shared
+  checkout on disk. This supersedes any notion of a `.git` object store shared
+  *across* groups — the OS-user wall forbids it. (Within a *single* group, the
+  group's own agents still share that group's clone via worktrees, as shadok does
+  today — the sharing is just scoped to the group now.)
+- **Everything that is not code circulates by one shared common pot.** A single
+  `~/shared/` directory is mounted into **every** group's HOME, **readable and
+  writable by all groups**. It is where produced artifacts, exports and pasted
+  files go when they must leave a group. Dropping a file there is a deliberate
+  "make this public" gesture: **anything placed in `~/shared/` is visible to
+  everyone**, including from a private group. Two trade-offs are accepted as the
+  price of simplicity: there is **no per-file guardrail** — any group can
+  overwrite or delete another group's file in the pot — and a private group that
+  drops a file into it has, by that act, made that file no longer private. The
+  rest of the group's HOME stays fully walled.
 
-This section is intentionally left to be filled in next; the decisions above do
-not depend on it, but it must be resolved before building.
+**Permissions** follow from the OS-user model: a group's own files are owned by
+its OS user (default private to the group); the shared pot is group-writable to
+all. **Cleanup / lifecycle** (removing a group's HOME when the group is deleted,
+and what becomes of its share of `~/shared/`) and **worktree pruning**
+(invariant 5) under per-group ownership are left to the builder. **Disk space /
+quotas are out of this spec's scope** — handled at the Docker/infrastructure
+level, not inside the cockpit.
 
 ## Visibility / access control (the Slack-channel layer)
 
@@ -301,18 +315,21 @@ reference any name) does not survive groups. It becomes **per-group**:
 
 ## Disk / footprint
 
-- The disk driver is the **worktree** (+ project dependencies), not the group
-  distinction. `git worktree` shares the repo's `.git` object store (history is
-  not duplicated); only the working tree + index cost. `node_modules` is where it
-  balloons — mitigate with a **shared symlink / cache per repo** (as shadok
-  already does for its own dev). Transcripts (`.jsonl`) are small per unit but
-  accumulate.
-- Per-group HOMEs are modest (skills + config + transcripts + their worktrees);
+- The disk driver is the **clone + worktree** (+ project dependencies). Since
+  each group now holds its **own clone** of a project (Files section), a repo
+  worked by N groups costs N `.git` object stores — the price of the OS-user wall.
+  *Within* a group, `git worktree` still shares that group's `.git` (history not
+  duplicated per worktree); only the working tree + index cost. `node_modules` is
+  where it balloons — mitigate with a **shared symlink / cache per repo**, scoped
+  to a group (as shadok does for its own dev). Transcripts (`.jsonl`) are small
+  per unit but accumulate.
+- Per-group HOMEs are modest (skills + config + transcripts + their clones);
   never the binary.
 - Watch item: **worktree proliferation** with many ephemeral personal agents.
   Amortized by shadok's existing empty-worktree pruning (invariant 5) and the
-  shared dependency cache. **[OPEN]** Per-person disk **quota** — not present
-  today, not required; add later only as a deliberate choice.
+  per-group dependency cache.
+- **Disk space / quotas are out of scope** — managed at the Docker/infrastructure
+  level, not inside the cockpit.
 
 ## Goals / non-goals / anti-goals
 
@@ -355,7 +372,6 @@ reference any name) does not survive groups. It becomes **per-group**:
   limit. **Not yet decided.**
 - **Membership removal / leaving** — invite is settled (any member); removal and
   self-leave are not.
-- **Files, folders & permissions** — the dedicated chantier above, to design next.
 - **Admin over restricted groups** — settled for private (no); confirm an admin is
   just a member elsewhere.
 - **Secret resolution precedence** — own group → `Main` fallback; whether a
@@ -369,7 +385,8 @@ reference any name) does not survive groups. It becomes **per-group**:
   deferred.**
 - **Lead/home agent per group** — does each group get its own lead, or only
   `Main`?
-- **Per-person disk quota** — deferred.
+- **Per-person disk quota** — **out of scope** (handled at the Docker/infra
+  level, per the Files section), not a cockpit concern.
 
 ## Left to the builder
 
