@@ -1,7 +1,9 @@
 # Multi-tenant cockpit: isolated groups, per-group OS users, scoped secrets
 
-Status: **Draft for review** — revised 2026-10-29 (evening). Written from an
-ongoing brainstorming conversation. Points settled in that conversation are
+Status: **Draft for review** — revised 2026-10-30 (secrets UX folded in; the
+secrets section now covers share-by-reference, the per-group panel and the
+profile-link move). Written from an ongoing brainstorming conversation. Points
+settled in that conversation are
 marked **[DECIDED]**; a call the author made that a builder could not settle
 alone is marked **[CALL]**; points deliberately left open are **[OPEN]**.
 Nothing here is built yet; this document is the thing to approve before a plan.
@@ -326,34 +328,128 @@ feature branch (never merge to `main`). This is a cleaner flow regardless.
 ## Secrets model evolution
 
 The single flat per-instance vault (one file, global names, any profile may
-reference any name) does not survive groups. It becomes **per-group**:
+reference any name) does not survive groups. It becomes **per-group**, and the
+whole panel is reorganised around the group. The guiding worry the user named is
+that per-group secrets "can quickly become a mess" — so the model below is
+deliberately the *simplest* thing that still isolates: one owner per secret, no
+new hierarchy, and sharing by reference rather than by copy.
 
-- **Each secret belongs to a group** (the group's slice).
-- **Resolution — profile names it, the group supplies the value.** A profile
-  references a secret *name* (e.g. `OPENAI_API_KEY`); at spawn, the agent's
-  **group** supplies the value. The same role used by COMEX resolves
-  `OPENAI_API_KEY` to COMEX's key; used by SALES, to SALES's key. **Names are
-  unique per group, not globally.** **[DECIDED]** Lookup precedence: the agent's
-  **own group first, then a `Main` fallback** — a shared "house" key placed in
-  `Main` serves any group that has not defined its own, and a group overrides it
-  by defining the same name. **A profile may NOT pin another group's secrets**
-  (resolution is always *own group → `Main`*, never "the group next door") —
-  pinning would let a role reach across the isolation wall. (My call on the
-  pin question; the fallback is the user's.)
-- **Isolation**: the server is the **only reader**; it injects only the agent's
-  group's secrets as env; the OS-user wall means an agent cannot read another
-  group's vault file. Physically splitting the vault into per-group files is
-  optional belt-and-braces — scoping can live as **server-side policy** over a
-  single server-owned file, since the OS wall + env-injection already isolate.
-- **Scoped management API**: `GET /secrets` lists only the names in the caller's
-  group(s); creating/overwriting a group secret requires membership of that group;
-  a private-group secret, only its owner. When an **agent** stores a secret it
-  obtained (the `shadok-secrets` skill `set`, which has no `get`), the value lands
-  in **that agent's group**, stamped **server-side** from its session (like
-  `SHADOK_SESSION_KEY`), never from anything the client claims.
-- **Migration**: today's flat vault becomes the **`Main`** (public) group's
-  slice. People and teams add their own on top. No big-bang; a single-user
-  instance with no extra groups behaves exactly as today.
+### Ownership, and sharing by reference — not by copy
+
+- **[DECIDED] Each secret has exactly ONE owner group** (the group whose slice it
+  lives in). There is no new "level" hierarchy to learn: the three "kinds" of
+  secret a person thinks in — *personal*, *per-team*, *general* — are just the
+  three group **natures** already in the model (personal = **private** group,
+  team = **restricted** group, general = **`Main`**). A secret is defined in a
+  group, full stop.
+- **[DECIDED] A secret may be SHARED, read-only, with other specific groups — by
+  reference, not by copy.** When one key must serve two teams, the owner group
+  adds the other groups to the secret's **"shared read with"** list. The value
+  **lives once**, in the owner's slice; the shared-with groups get **read access
+  to that same value**, never a copy. Rotating or revoking happens in **one
+  place** and every consumer follows immediately. (The user and I weighed
+  duplicating the value into each group — rejected: a copy is a second place the
+  value sits, a second thing to rotate, and a silent drift when one copy changes.
+  The copy is **not** a security win — the plaintext is equally present either
+  way, and the server is the only reader in both designs — so the reference model
+  is strictly simpler with no downside here.)
+- **[DECIDED] Resolution precedence — profile names it, the group supplies the
+  value**, now four steps:
+  **own group → shared-in → `Main` → absent.**
+  A profile references a secret *name* (e.g. `OPENAI_API_KEY`); at spawn the
+  agent's **own group** is tried first, then any secret **shared into** its group
+  by reference, then a **`Main`** "house" fallback, and if none match the name
+  resolves to nothing (the env var is simply not set). The same role used by
+  COMEX resolves `OPENAI_API_KEY` to COMEX's key; used by SALES, to SALES's.
+  **Names are unique per group, not globally.**
+- **[DECIDED] A profile may NOT pin another group's secrets.** Resolution is
+  always the precedence chain above, never "reach into the group next door" —
+  pinning would let a role step around the isolation wall. (My call on the pin;
+  the `Main` fallback and the share-by-reference model are the user's.)
+
+### Isolation
+
+The server is the **only reader**; it injects only the secrets the agent's group
+resolves (own + shared-in + `Main`) as env; the OS-user wall means an agent
+cannot read another group's vault file directly. A **value is never returned to
+any client** — `GET /secrets` is names-only today and stays so. Sharing is a
+server-side grant (the owner group's slice gains a "readable by group X" flag);
+because the value is never copied or sent back, there is no path by which a
+shared-in group obtains the plaintext except the same env injection every agent
+already gets. Physically splitting the vault into per-group files is optional
+belt-and-braces — scoping can live as **server-side policy** over one
+server-owned file, since the OS wall + env-injection already isolate.
+
+### The secrets panel is managed group by group
+
+- **[DECIDED]** The `#secretsOverlay` is **scoped to one group at a time**. For
+  the selected group it shows **three sections**, by source:
+  - **Its own secrets** — defined here, **editable** (add / overwrite / delete),
+    each with a **"shared read with: …"** control to add or drop other groups.
+  - **Shared with this group (read-only)** — secrets another group owns and has
+    shared in. Listed by name, with the **owner group** shown (e.g.
+    `HUBSPOT_TOKEN — owned by MARKETING`); this group cannot edit, rotate, or
+    re-share them.
+  - **Inherited from `Main` (read-only)** — the house fallback names, shown so a
+    group sees what it gets for free and can shadow a name by defining its own.
+- **[DECIDED] A 🔑 icon per group in the groups bar** opens that group's secrets
+  panel directly — the quick path to "manage the secrets of *this* group" without
+  going through a global panel and selecting.
+- **[DECIDED] Write permission** follows group membership: a group's own secrets
+  are writable by its **members**; a **private** group's, by its single owner
+  only; **`Main`**'s, by an **`admin`** only (a house key is an admin act).
+  An **`admin`** may manage any **restricted** group's secrets (consistent with
+  admin reach over restricted member lists), but **never a private group's** (no
+  break-glass, per the visibility section). **Only the owner group's members (or
+  an admin, for a restricted/`Main` group) may change a secret's share list** — a
+  shared-in group cannot re-share onward.
+- **[DECIDED] Audit, per secret: `createdBy` / `createdAt` / `updatedAt`.** The
+  panel shows who added a secret and when, and when it was last changed. Values
+  are **never re-displayed** after entry (write-only field, as today).
+- **[DECIDED] Degradation — an instance with no groups looks exactly like today.**
+  With only the virtual `Main`, the panel is a **single flat list** with no group
+  header and no "inherited" / "shared-with" sections. The group machinery appears
+  only once a second group exists. This keeps the common (single-tenant) case
+  unchanged.
+
+### The secret ↔ profile link lives on the secrets side
+
+Today the binding is edited from the **profile** side (`profSecretsList` in the
+profile editor). Under groups that is the wrong home: a profile is group-agnostic
+(the same `dev` runs in every team), while *which secrets exist* is a per-group
+fact. So the link moves:
+
+- **[DECIDED]** The **secrets panel** owns the binding. Each secret shows
+  **"used by profiles: X, Y"**, and the **add-secret form** has an **"attach to
+  profiles"** control. This is the one place the name↔profile link is edited.
+- **[DECIDED]** The **profile editor becomes read-only on secrets.** It shows the
+  **names** that will be injected (so a role's needs are still visible) with a
+  note that **values resolve per group at spawn**, plus a **"→ Manage secrets"**
+  link into the panel. It no longer edits the binding — which removes the
+  "alambiqué" (convoluted) double-editing the user flagged, where secrets were
+  managed from two places at once.
+
+### Scoped management API
+
+`GET /secrets` lists only the names the caller's group(s) resolve (own +
+shared-in + `Main`), each tagged with its source and, for shared-in, its owner
+group; creating/overwriting a secret requires membership of its **owner** group
+(a private-group secret, only its owner; a `Main` secret, an admin); changing a
+share list, the same. When an **agent** stores a secret it obtained (the
+`shadok-secrets` skill `set`, which has no `get`), the value lands in **that
+agent's group**, stamped **server-side** from its session (like
+`SHADOK_SESSION_KEY`), never from anything the client claims — and `createdBy`
+records the agent.
+
+### Migration
+
+Today's flat vault becomes the **`Main`** (public) group's slice; existing
+profile↔secret bindings carry over unchanged (names are preserved). People and
+teams add their own on top, and share by reference where a key must span teams.
+No big-bang; a single-user instance with no extra groups behaves exactly as
+today (the degradation rule above). The full migration of a running instance is
+its own topic — see "Left to the builder" and the migration discussion still to
+be folded in.
 
 ## Disk / footprint
 
@@ -426,11 +522,21 @@ reference any name) does not survive groups. It becomes **per-group**:
   seed `~/.claude` and the credential symlink, from the privileged server.
 - **Schema changes**: the group gains membership + a visibility nature + an OS
   identity (today's cosmetic `channel.group` / `/groups` is promoted to a
-  server-owned object); channels carry their group; secrets gain a group.
+  server-owned object); channels carry their group; secrets gain an **owner
+  group**, a **"shared read with" group list**, a **profile binding** (moved off
+  the profile side), and **audit fields** (`createdBy` / `createdAt` /
+  `updatedAt`).
 - **Enumerated ACL enforcement points**: `GET`/`PUT /channels`, `/groups`, every
   WS broadcast carrying channels, Telegram listings and command dispatch, each
   action handler (resume/prompt/stop/set-parent/set-profile), and `/secrets`
-  (GET/PUT/DELETE).
+  (GET/PUT/DELETE) — including the new **share-list** edit and the
+  **profile-binding** edit, both gated on owner-group membership (or admin for a
+  restricted/`Main` group).
+- **The secrets UI**: a group-scoped `#secretsOverlay` with its three sections
+  (own / shared-in / inherited-from-`Main`), the per-group 🔑 entry point in the
+  groups bar, the write-only value field with audit display, and the single-flat-
+  list degradation when only `Main` exists; plus the profile editor turned
+  read-only on secrets with a "→ Manage secrets" link.
 - **Migration scripts**: flat vault → `Main` group slice; existing channels →
   `Main` (or a person's private group, if derivable); every existing account gets
   its auto-provisioned private group.
