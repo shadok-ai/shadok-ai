@@ -398,7 +398,7 @@ function. `tsc` and the tests were green; only the browser showed it.
 
 ## The Telegram bridge (`src/telegram.ts`)
 
-One board **group** per instance (`/setup` binds it), one **topic** per agent.
+One board **group** per instance (`/setup <code>` binds it, the code coming from the cockpit), one **topic** per agent.
 A topic created by hand auto-spawns an agent and keeps its own name; `/spawn`
 creates the topic and the agent together.
 
@@ -410,12 +410,22 @@ test is load-bearing: a **DM** binding also has no thread id, and forcing every
 thread-less binding to `general` produced a bogus second "general" next to the
 real one. DMs keep their own name.
 
-**DMs belong to exactly one person.** `dmGate(owner, from)` returns
-`claim` / `allow` / `deny`: the first private user claims ownership (persisted in
-`…-telegram-owner.json`), everyone else is denied. At boot the owner is adopted
-from an existing DM binding, or failing that from the board group's creator — so
-an instance that already had a DM doesn't hand itself to whoever messages next.
-Without this gate a public bot username is an open shell.
+**DMs belong to exactly one person, and the board to a group the cockpit
+vouched for.** Both are bound by a **pairing code** (`src/tg-pairing.ts`): the
+admin-only Telegram panel issues 8 digits (`POST /telegram/pairing`), valid 10
+minutes, single-use, cancelled after 5 wrong guesses, one live at a time. The
+code is presented as `/setup <code>` — or `/start <code>`, which is what
+Telegram sends by itself through the panel's `?startgroup=` / `?start=` deep
+links. `dmGate(owner, from)` returns `pair` / `allow` / `deny`: with no owner,
+a DM gets nowhere until it carries a valid code, and the sender who redeems it
+becomes the owner (persisted in `…-telegram-owner.json`); pairing the board
+group also makes its pairer the DM owner when there is none. At boot the owner
+is still adopted from an existing DM binding, so a paired-in-practice install
+doesn't need to pair again — but no longer from the board group's creator.
+Both earlier rules were first-come: a bare `/setup` bound whichever group sent
+it, and the first private sender claimed DMs, so anyone who found a public bot
+username could add it to their own group and drive agents — an open shell. A
+group already bound before this change stays bound.
 
 - **Binding** = `{chat, thread} → WebSocket to our own server`, persisted on
   the channel record so it survives a restart.

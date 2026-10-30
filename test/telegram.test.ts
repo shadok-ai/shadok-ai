@@ -34,6 +34,7 @@ import {
   isStalePreface,
   promptEchoLabel,
   dmGate,
+  pairingCodeOf,
   makeSendQueue,
   nextToolsState,
   isFreetextOption,
@@ -152,8 +153,23 @@ test("promptEchoLabel: the pace guard's auto-resume is not a human", () => {
   assert.equal(promptEchoLabel(undefined, true), "⚙️ auto-resumed");
 });
 
-test("dmGate: the first to write in a DM becomes the owner", () => {
-  assert.equal(dmGate(null, 4242), "claim");
+test("dmGate: with no owner, a DM must pair — writing first no longer claims it", () => {
+  assert.equal(dmGate(null, 4242), "pair");
+});
+
+test("pairingCodeOf: /setup <code> and the deep link's /start <code> carry a code", () => {
+  assert.equal(pairingCodeOf("/setup 12345678"), "12345678");
+  assert.equal(pairingCodeOf("/setup@shadok_bot 1234 5678"), "1234 5678");
+  assert.equal(pairingCodeOf("/start 12345678"), "12345678");
+});
+
+test("pairingCodeOf: a bare /setup, another command or plain text carries none", () => {
+  // A bare /setup used to bind the group outright — it must now get nowhere.
+  assert.equal(pairingCodeOf("/setup"), null);
+  assert.equal(pairingCodeOf("/start"), null);
+  assert.equal(pairingCodeOf("/spawn 12345678"), null);
+  assert.equal(pairingCodeOf("12345678"), null);
+  assert.equal(pairingCodeOf(undefined), null);
 });
 
 test("dmGate: the owner gets through, everyone else is refused", () => {
