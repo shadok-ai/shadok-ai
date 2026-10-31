@@ -10,6 +10,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
+import { factoryRoot, loadRegistry, MAIN_GROUP, pluginArgs, resolveAttachments } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -276,6 +278,8 @@ import {
   seedDefaultProfiles,
   migrateToTracking,
   seedTweakProfile,
+  seedSkillsmithProfile,
+  MANAGED_PROFILE_NAMES,
   loadProfiles,
   upsertProfile,
   removeProfile,
@@ -2614,6 +2618,9 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // exactly what bit a migrated instance. test/system-skills.test.ts pins that
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
+  // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
+  // group's own OS user reads only this tier.
+  ["factory-skill", "shadok-factory"],
 ];
 
 /** Claude Code's machine-wide ("Enterprise"/managed) skills directory — read by
@@ -3151,6 +3158,23 @@ app.get("/secrets", (req, res) => {
   // `names` stays a string[] for the existing client; `secrets` carries the tags.
   res.json({ names: list.map((s) => s.name), secrets: list });
 });
+// The Skill Factory: co-written skills, frozen releases, attached per agent.
+// Behind the password gate like everything else; see src/factory-routes.ts.
+mountFactory(app, {
+  requestFromBrowser: (req) => requestFromBrowser(req),
+  personName: (req) => currentAccount(req)?.name ?? null,
+  requireAdmin: (req, res, what) => accountAdmin(req, res, true, what),
+  callerOf: (req) => callerOf(req),
+  vault: () => secretsFor(secretNames()),
+  loadChannels: () => loadChannels(),
+  upsertChannel: (patch) => upsertChannel(patch),
+  onAttachmentsChanged: (id) => {
+    const s = sessions.get(id);
+    if (s) broadcastStaleness(s);
+  },
+  audit: factoryAudit,
+});
+
 app.put("/secrets", (req, res) => {
   const { name, value, overwrite } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
@@ -4049,7 +4073,7 @@ app.put("/profiles/prompt", (req, res) => {
     caller,
     target,
     targetExists: !!existing,
-    managed: target === TWEAK_PROFILE_NAME,
+    managed: MANAGED_PROFILE_NAMES.includes(target),
   });
   if (!verdict.ok) return res.status(403).json({ error: verdict.error });
   const systemPrompt = typeof b.systemPrompt === "string" ? b.systemPrompt : "";
@@ -5117,7 +5141,21 @@ function installedCapabilities(): { name: string; description: string }[] {
  * byte-identical: a difference always means the agent's context actually
  * changed, never that two code paths spelled it differently.
  */
-function buildPreprompt(profileName?: string | null, groupId?: string | null): PrepromptPart[] {
+/**
+ * The Skill Factory releases an agent runs, as its next spawn would resolve them
+ * (attached on its channel, existing, accepted for the group). Read-only: the
+ * plugin directories themselves are materialised by `makePilot`, never by the
+ * staleness sweep.
+ */
+function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
+  if (!sessionId) return [];
+  const ch = loadChannels().find((c) => c.sessionId === sessionId);
+  if (!ch?.skills?.length) return [];
+  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, ch.skills, MAIN_GROUP);
+  return ok.map(({ skill, release }) => ({ name: skill.name, release: release.n, tree: release.tree }));
+}
+
+function buildPreprompt(profileName?: string | null, groupId?: string | null, sessionId?: string | null): PrepromptPart[] {
   const profile = profileName ? getProfile(profileName) : undefined;
   const resolved = effectiveProfile(profile);
   return prepromptParts({
@@ -5131,6 +5169,7 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null): P
     capabilities: installedCapabilities(),
     pilotPrompt: pilotPrompt() ?? undefined,
     ledgerReflex: ledgerEnabled ? ledgerReflex() : null,
+    factorySkills: factorySkillsFor(sessionId),
   });
 }
 
@@ -5351,9 +5390,18 @@ function makePilot(
   const sp = pilotPrompt();
   // Opt-in only: a live agent gains the reflex at its next (re)spawn.
   const lr = ledgerEnabled ? ledgerReflex() : null;
+  // Skill Factory releases attached to THIS agent, one `--plugin-dir` each
+  // (measured 2026-10-31 on 2.1.309: loaded for this process only, gone on a
+  // resume without it). A dropped attachment is said, never silently skipped.
+  const factory = pluginArgs(factoryRoot(), loadChannels().find((c) => c.sessionId === id)?.skills, MAIN_GROUP);
+  for (const d of factory.dropped)
+    console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
+    // A flag+value pair, before the profile's flags: nothing here can land
+    // after `--mcp-config`'s variadic JSON as a bare word.
+    ...factory.args,
     ...profileArgs(effectiveProfile(profile), model, effort),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
@@ -5362,7 +5410,7 @@ function makePilot(
   // NAMES only: the values are in `env`, and never travel to a client. Built
   // through the shared `buildPreprompt`, so this spawn snapshot is comparable
   // byte-for-byte with the one the staleness check recomputes later.
-  prepromptById.set(id, buildPreprompt(profileName, group));
+  prepromptById.set(id, buildPreprompt(profileName, group, id));
   // Spawn the binary `claudeCommand` resolved, not the bare name `claude`. They
   // differ exactly when the npm launcher is the fallback placeholder: spawning
   // by name would then run the 500-byte stub, which exits 1 on stderr and looks
@@ -5786,7 +5834,7 @@ function sessionStaleness(s: Live, channels?: Channel[]): StaleReason[] {
   if (!ch || ch.spawnFp === undefined) return []; // no anchor yet (brand-new, pre-first-record)
   return stalenessReasons({
     spawnFp: ch.spawnFp,
-    currentFp: prepromptFingerprint(buildPreprompt(s.profile, s.group)),
+    currentFp: prepromptFingerprint(buildPreprompt(s.profile, s.group, s.id)),
     hasPassword: !!GUI_PASSWORD,
     spawnedAt: ch.spawnAt ?? null,
     now: Date.now(),
@@ -7727,6 +7775,13 @@ try {
 } catch {
   /* best effort — the CTA still starts an agent, just without the role */
 }
+// Same for the Skill Factory's managed Shadok-Skillsmith role.
+try {
+  const smith = fs.readFileSync(path.join(__dirname, "..", "context", "skillsmith-prompt.md"), "utf8").trim();
+  if (smith) seedSkillsmithProfile(smith);
+} catch {
+  /* best effort — "Work on it" still starts an agent, just without the role */
+}
 
 // Install/refresh the bundled "shadok-scheduler" skill so agents can set up
 // their own channel's crons in plain language. Server-owned, overwritten each
@@ -7835,6 +7890,22 @@ function seedFilesSkill(): void {
   }
 }
 seedFilesSkill();
+
+// The Skill Factory's agent side (pull / push / scan of a factory skill's clone).
+function seedFactorySkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "factory-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-factory");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "factory.mjs"), path.join(dst, "scripts", "factory.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "factory.mjs"), 0o755);
+  } catch {
+    /* best effort — without it a Skillsmith can still be driven by hand */
+  }
+}
+seedFactorySkill();
 
 // Install/refresh the bundled "shadok-ai-agents" skill so an agent in ANY repo
 // (not just this one) can spawn/pilot other agents via pilotctl. It used to live

@@ -304,15 +304,18 @@ is no wall" rule, not a leak. Private and restricted groups keep the real wall.
 
 **[DECIDED] v1 attaches to agents only.** `Channel.skills: [{skill, release}]`,
 `SERVER_OWNED`, assert-only like `model` (a resume that omits it never erases it,
-invariants 1 / 24), changed through a WS `set-skills` (twin of `set-model`).
+invariants 1 / 24). Phase 2 writes it only through `POST /factory/attach`, from
+the Skills panel. A WS `set-skills` in the agent's own menu (twin of
+`set-model`) is a later convenience.
 
 - The attachment set is part of the **spawn fingerprint** (`prepromptParts` /
   `stalenessReasons`, invariant 40), so a new attachment, a newly accepted release
   or a revoked right lights the existing reload indicator — "started without
   `kpi-export@5`".
-- **Nothing respawns implicitly.** Attaching from the agent's own menu respawns
-  it like `set-model` (the person is on that agent and asked). Attaching from the
-  factory panel, accepting a release, or a revocation only marks the agent stale;
+- **Nothing respawns implicitly.** Attaching from the factory panel, accepting a
+  release, or a revocation only marks the agent stale (a future `set-skills` from
+  the agent's own menu may respawn like `set-model`, since the person is on that
+  agent and asked);
   the reload is the person's click. Killing a working agent because someone saved
   something elsewhere is exactly what the reload indicator exists to avoid.
 
@@ -401,7 +404,9 @@ before the multi-tenant work and become multi-group by filling in the lists.
 - `PUT /factory/skills/:id/share` — `{editors, users}`, browser only.
 - `POST /factory/skills/:id/accept` — `{group, release}`, browser only, a person
   in that group.
-- WS `set-skills` — attachments on an agent.
+- `POST /factory/attach` — `{sessionId, skill, release | null}`, browser only;
+  marks the agent stale (built). WS `set-skills` — later.
+- `POST /factory/skills/:id/workspace` — prepares the Skillsmith's clone (built).
 
 Every route derives the caller's groups server-side (account cookie, or the
 agent's session key → its channel → its group and profile). None trusts a group
@@ -412,9 +417,12 @@ named in the body.
 1. ~~**Measure `--plugin-dir`**~~ — **done 2026-10-31** (see "The mechanism"):
    the main path holds on 2.1.309. Re-run the probe whenever a Claude Code
    upgrade touches plugins.
-2. **Local factory, single-tenant** — bare repos, push-time scan, browser editor,
-   Skillsmith + `shadok-factory` skill, releases, acceptance, agent attachments,
-   fingerprint wiring, audit rows.
+2. **Local factory, single-tenant** — **built 2026-10-31**: bare repos, push-time
+   scan, browser editor, Skillsmith + `shadok-factory` skill, releases,
+   acceptance, agent attachments, fingerprint wiring, audit rows. Verified end
+   to end on a side-by-side build. A Skillsmith wrote and pushed a skill, a
+   person released, accepted and attached it, and the agent it was attached to
+   triggered it after a reload.
 3. **Groups** — owner / editors / users, the per-group panel and 🧩 in the groups
    bar, revocation, owner-destruction transfer. With (or after) the multi-tenant
    work.
