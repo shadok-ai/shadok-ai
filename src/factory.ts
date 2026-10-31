@@ -40,6 +40,78 @@ import {
 /** The one group of a single-tenant instance (the multi-tenant spec's `Main`). */
 export const MAIN_GROUP = "main";
 
+/**
+ * WHO a skill is for, chosen at creation — its `owner`:
+ * - `user:<account>`: only that person sees and edits it, and it runs only on
+ *   agents that person created;
+ * - `group:<id>`: it runs only on agents of that cockpit group;
+ * - `main`: the whole organisation.
+ * Until the multi-tenant work gives groups members, a group skill is VISIBLE to
+ * every person (groups are not private yet); what the scope enforces is where
+ * it RUNS. The acceptance gate stays the instance's (`MAIN_GROUP`).
+ */
+export type Scope = string;
+export const DEFAULT_CREATOR = "admin"; // accounts.ts BOOTSTRAP_ADMIN: an agent nobody signed for
+
+/** Who an agent is, for scope checks: its cockpit group and the person who created it. */
+export interface AgentCtx {
+  group?: number | null;
+  createdBy?: string | null;
+}
+
+export function scopeError(scope: unknown, groupIds: number[]): string | null {
+  if (scope === MAIN_GROUP) return null;
+  if (typeof scope !== "string") return "scope required";
+  if (/^user:[^\s:]{1,80}$/.test(scope)) return null;
+  const ids = scopeGroups(scope);
+  if (ids) {
+    if (!ids.length) return "pick at least one group";
+    return ids.every((i) => groupIds.includes(i)) ? null : "one of those groups does not exist";
+  }
+  return "share it with you, some groups, or everyone";
+}
+
+/** The group ids of a `groups:1,3` (or legacy `group:1`) scope, else null. Pure. */
+export function scopeGroups(owner: string | undefined): number[] | null {
+  const m = /^groups?:([\d,]*)$/.exec(owner ?? "");
+  if (!m) return null;
+  return [...new Set(m[1].split(",").filter(Boolean).map(Number))].sort((a, b) => a - b);
+}
+
+/** Build the stored scope from what the form sends. Pure. */
+export function groupsScope(ids: number[]): string {
+  return `groups:${[...new Set(ids)].sort((a, b) => a - b).join(",")}`;
+}
+
+/** Pure: may this skill run on this agent? (Its scope, not the acceptance.) */
+export function scopeAllowsAgent(owner: Scope, agent: AgentCtx): boolean {
+  if (!owner || owner === MAIN_GROUP) return true;
+  const ids = scopeGroups(owner);
+  if (ids) return agent.group != null && ids.includes(Number(agent.group));
+  const u = /^user:(.+)$/.exec(owner);
+  if (u) return (agent.createdBy || DEFAULT_CREATOR) === u[1];
+  return false;
+}
+
+/** Pure: may this person see (and therefore edit) this skill? */
+export function scopeVisibleTo(owner: Scope, person: string | null): boolean {
+  const u = /^user:(.+)$/.exec(owner ?? "");
+  return u ? (person || DEFAULT_CREATOR) === u[1] : true;
+}
+
+/** A human title → the skill's technical name (also its plugin name). Pure. */
+export function slugify(title: string): string {
+  return String(title ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .replace(/^shadok-/, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+}
+
 export interface Release {
   n: number;
   /** Tree hash of the tagged commit — what an acceptance pins. */
@@ -70,6 +142,12 @@ export interface Acceptance {
 export interface FactorySkill {
   id: string;
   name: string;
+  /** The human name it was created with ("Daily marketing summary"). */
+  title?: string;
+  /** Free tags, for filtering ("reporting", "slack"). */
+  tags?: string[];
+  /** Archived: hidden by default, never given to a new agent; existing attachments keep running. */
+  archived?: boolean;
   description: string;
   owner: string;
   editors: string[];
@@ -321,7 +399,7 @@ finds its own files from \`$(dirname "$0")\`.)
 
 export function createSkill(
   root: string,
-  input: { name: string; description?: string; by: string },
+  input: { name: string; title?: string; description?: string; by: string; owner?: Scope },
 ): FactorySkill {
   const err = skillNameError(input.name);
   if (err) throw new FactoryError(err);
@@ -336,8 +414,9 @@ export function createSkill(
   const skill: FactorySkill = {
     id,
     name: input.name,
+    ...(input.title?.trim() ? { title: input.title.trim().slice(0, 80) } : {}),
     description,
-    owner: MAIN_GROUP,
+    owner: input.owner || MAIN_GROUP,
     editors: [MAIN_GROUP],
     users: [MAIN_GROUP],
     createdBy: input.by,
@@ -602,6 +681,8 @@ export function resolveAttachments(
   skills: FactorySkill[],
   attachments: Attachment[],
   group: string,
+  /** When given, the skill's scope must allow this agent too. */
+  agent?: AgentCtx,
 ): { ok: { skill: FactorySkill; release: Release }[]; dropped: { skill: string; release: number; reason: string }[] } {
   const ok: { skill: FactorySkill; release: Release }[] = [];
   const dropped: { skill: string; release: number; reason: string }[] = [];
@@ -624,6 +705,10 @@ export function resolveAttachments(
     }
     if (!skill.acceptances.some((x) => x.group === group && x.release === rel.n && x.tree === rel.tree)) {
       dropped.push({ ...a, reason: `v${rel.n} has not been accepted for ${group}` });
+      continue;
+    }
+    if (agent && !scopeAllowsAgent(skill.owner, agent)) {
+      dropped.push({ ...a, reason: `scoped to ${skill.owner}, which this agent is not part of` });
       continue;
     }
     seen.add(skill.id);
@@ -677,6 +762,7 @@ export function pluginArgs(
   root: string,
   attachments: Attachment[] | undefined,
   group = MAIN_GROUP,
+  agent?: AgentCtx,
 ): {
   args: string[];
   running: { name: string; release: number; tree: string }[];
@@ -685,7 +771,7 @@ export function pluginArgs(
   dropped: { skill: string; release: number; reason: string }[];
 } {
   if (!attachments?.length) return { args: [], running: [], secrets: [], dropped: [] };
-  const { ok, dropped } = resolveAttachments(loadRegistry(root).skills, attachments, group);
+  const { ok, dropped } = resolveAttachments(loadRegistry(root).skills, attachments, group, agent);
   const args: string[] = [];
   const running: { name: string; release: number; tree: string }[] = [];
   const secrets = new Set<string>();
@@ -702,10 +788,10 @@ export function pluginArgs(
 }
 
 /** Pure: the secret names an agent's attachments grant it (accepted releases only). */
-export function grantedSecrets(skills: FactorySkill[], attachments: Attachment[] | undefined, group = MAIN_GROUP): string[] {
+export function grantedSecrets(skills: FactorySkill[], attachments: Attachment[] | undefined, group = MAIN_GROUP, agent?: AgentCtx): string[] {
   if (!attachments?.length) return [];
   const out = new Set<string>();
-  for (const { release } of resolveAttachments(skills, attachments, group).ok) for (const n of release.secrets ?? []) out.add(n);
+  for (const { release } of resolveAttachments(skills, attachments, group, agent).ok) for (const n of release.secrets ?? []) out.add(n);
   return [...out];
 }
 
@@ -778,7 +864,7 @@ function renameChanges(files: ScanFile[], from: string, to: string, description?
 export function duplicateSkill(
   root: string,
   idOrName: string,
-  input: { name: string; release: number; description?: string; by: string },
+  input: { name: string; release: number; description?: string; by: string; owner?: Scope },
 ): FactorySkill {
   const src = mustSkill(root, idOrName);
   const rel = src.releases.find((r) => r.n === input.release);
@@ -797,7 +883,7 @@ export function duplicateSkill(
     id,
     name: input.name,
     description,
-    owner: MAIN_GROUP,
+    owner: input.owner || src.owner || MAIN_GROUP,
     editors: [MAIN_GROUP],
     users: [MAIN_GROUP],
     createdBy: input.by,
@@ -836,7 +922,7 @@ export function adoptable(skillsDir: string, root: string): { dir: string; name:
  */
 export function adoptSkill(
   root: string,
-  input: { skillsDir: string; dir: string; name?: string; by: string; secrets: ScanSecret[] },
+  input: { skillsDir: string; dir: string; name?: string; by: string; secrets: ScanSecret[]; owner?: Scope },
 ): FactorySkill {
   const name = input.name || input.dir;
   const err = skillNameError(name);
@@ -862,7 +948,7 @@ export function adoptSkill(
     if (e) scan.refusals.push({ path: f.path, message: e });
   }
   if (scan.refusals.length) throw new FactoryError("refused by the scan", 422, scan);
-  const skill = createSkill(root, { name, description: "", by: input.by });
+  const skill = createSkill(root, { name, description: "", by: input.by, owner: input.owner });
   const d = repoPath(root, skill.id);
   const hasManifest = files.some((f) => f.path === "shadok-skill.json");
   const changes = files.map((f) => ({ path: f.path, content: f.content as Buffer | null }));
@@ -927,6 +1013,96 @@ export function attachmentDirNames(skills: FactorySkill[], attachments: Attachme
     if (s && rel) out.push(pluginDirName(s.name, rel));
   }
   return out;
+}
+
+// ── Administration: scope, tags, archive, title ──────────────────────────────
+
+/** Normalise free tags: lowercase words, deduplicated, bounded. Pure. */
+export function cleanTags(raw: unknown): string[] {
+  const list = Array.isArray(raw) ? raw : typeof raw === "string" ? raw.split(",") : [];
+  const out: string[] = [];
+  for (const t of list) {
+    const v = String(t ?? "").trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9\u00c0-\u024f_-]/g, "").slice(0, 30);
+    if (v && !out.includes(v)) out.push(v);
+    if (out.length >= 12) break;
+  }
+  return out;
+}
+
+export function updateMeta(
+  root: string,
+  idOrName: string,
+  patch: { owner?: string; tags?: string[]; archived?: boolean; title?: string; description?: string },
+): FactorySkill {
+  const skill = mustSkill(root, idOrName);
+  return mutate(root, (reg) => {
+    const s = reg.skills.find((x) => x.id === skill.id)!;
+    if (patch.owner !== undefined) s.owner = patch.owner;
+    if (patch.tags !== undefined) s.tags = cleanTags(patch.tags);
+    if (patch.archived !== undefined) s.archived = !!patch.archived || undefined;
+    if (patch.title !== undefined) s.title = String(patch.title).trim().slice(0, 80) || undefined;
+    if (patch.description !== undefined) s.description = String(patch.description).trim().replace(/\s+/g, " ").slice(0, 300);
+    return s;
+  });
+}
+
+// ── Runs: each `Skill(<name>:<name>)` call an agent makes ────────────────────
+
+const usagePath = (root: string) => path.join(root, "usage.jsonl");
+export const USAGE_KEEP_MS = 30 * 86_400_000;
+
+/** The factory skill a `Skill` call loaded, or null (`name:name` → name; a seeded or user skill → null). */
+export function skillOfCall(skillArg: string, names: string[]): string | null {
+  const m = /^([a-z0-9][a-z0-9-]*):\1$/.exec(skillArg) ?? /^([a-z0-9][a-z0-9-]*):[a-z0-9-]+$/.exec(skillArg);
+  const n = m ? m[1] : null;
+  return n && names.includes(n) ? n : null;
+}
+
+export function recordRun(root: string, run: { skill: string; agent: string; at?: number }): void {
+  try {
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    fs.appendFileSync(usagePath(root), JSON.stringify({ at: run.at ?? Date.now(), skill: run.skill, agent: run.agent }) + "\n", { mode: 0o600 });
+  } catch {
+    /* a lost count is a lost statistic, never a failed turn */
+  }
+}
+
+/** Runs per skill and per (skill, agent) since `since`. Old lines are dropped on the way. */
+export function runStats(root: string, since: number, now = Date.now()): { bySkill: Record<string, number>; byAgent: Record<string, Record<string, number>>; last: Record<string, number> } {
+  const bySkill: Record<string, number> = {};
+  const byAgent: Record<string, Record<string, number>> = {};
+  const last: Record<string, number> = {};
+  let raw = "";
+  try {
+    raw = fs.readFileSync(usagePath(root), "utf8");
+  } catch {
+    return { bySkill, byAgent, last };
+  }
+  const keep: string[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    let r: { at: number; skill: string; agent: string };
+    try {
+      r = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (now - r.at > USAGE_KEEP_MS) continue;
+    keep.push(line);
+    last[r.skill] = Math.max(last[r.skill] ?? 0, r.at);
+    if (r.at < since) continue;
+    bySkill[r.skill] = (bySkill[r.skill] ?? 0) + 1;
+    (byAgent[r.skill] ??= {})[r.agent] = (byAgent[r.skill][r.agent] ?? 0) + 1;
+  }
+  // Compact when a good share of the file has aged out (bounded by 30 days).
+  if (keep.length < raw.split("\n").length - 50) {
+    try {
+      fs.writeFileSync(usagePath(root), keep.join("\n") + (keep.length ? "\n" : ""), { mode: 0o600 });
+    } catch {
+      /* best effort */
+    }
+  }
+  return { bySkill, byAgent, last };
 }
 
 /** Pure: is `main` ahead of the latest release (so "unreleased changes")? */

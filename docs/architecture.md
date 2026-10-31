@@ -1413,6 +1413,36 @@ at its current path. Verified: the same agent then answered with v3.
 - Duplicate fetches a release's tag into a new bare repo and commits a rename.
 - Adopt imports a `~/.claude/skills` folder after a scan.
 
+**Who it is for, what it is called, how much it runs.**
+- `FactorySkill.owner` is the share:
+  - `user:<account>`: only that person sees it, and it runs on agents they
+    created (`Channel.createdBy`, asserted at birth; an agent's spawn inherits
+    its parent's).
+  - `groups:1,3`: it runs on the agents of those cockpit groups.
+  - `main`: everyone.
+- `scopeAllowsAgent` is applied at attach, at update, at birth and at spawn, so
+  an agent moved out of a group loses the skill at its next spawn and the log
+  says why.
+- Until groups have members, a group skill is visible to every person; only
+  "only me" hides it.
+- Tags and archiving are plain registry fields (`PUT /factory/skills/:id/meta`).
+- Runs are counted from the transcripts: the tail now carries the `skill` of a
+  `Skill` tool call, and every `<name>:<name>` call matching a factory skill
+  appends one row to `usage.jsonl` (30 days, compacted on read). The list's
+  "runs · 7 days" and the per-agent counts come from there.
+
+**The page** (`public/index.html`, "Skill Factory"):
+- `body.factory-mode` hides `main` and shows `#factoryPage`, with a short
+  slide in both directions (off under `prefers-reduced-motion`).
+- The list is a table with chip filters (OR within a family, AND across
+  families), a bulk bar and a drawer.
+- The editor parses SKILL.md into "when to use it" (the frontmatter
+  `description`) and "instructions" (the body), and writes them back as one
+  commit.
+- Its prompt panel drives a background `Shadok-Skillsmith` tab: the tab's
+  WebSocket messages are mirrored through `t.facListen`, and the document
+  reloads on `turn-done`.
+
 **Who may do what.** Reads are open behind the password gate. A person's writes
 are browser-only. Any editor releases (acceptance, not release, is the gate);
 deleting is an admin act. A push needs the caller's session key AND a channel profile of

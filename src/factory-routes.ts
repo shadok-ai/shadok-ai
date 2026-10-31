@@ -42,6 +42,15 @@ import {
   MAIN_GROUP,
   prepareWorkspace,
   readFile,
+  scopeAllowsAgent,
+  scopeError,
+  groupsScope,
+  runStats,
+  updateMeta,
+  cleanTags,
+  scopeVisibleTo,
+  slugify,
+  type AgentCtx,
   receivePush,
   saveFile,
   scanMain,
@@ -73,6 +82,10 @@ export interface FactoryDeps {
   reloadIfIdle(sessionId: string): "reloaded" | "stale" | "offline";
   /** The MCP server names an agent's profile carries (for `requires.mcp`). */
   agentMcp(sessionId: string): string[];
+  /** The cockpit's groups (`{id, name, icon}`), for a skill's group scope. */
+  groups(): { id: number; name?: string; icon?: string }[];
+  /** An agent's schedules, for "where it runs" (label + prompt). */
+  cronsOf(sessionId: string): { label: string; prompt: string }[];
   audit(row: Record<string, unknown>): void;
 }
 
@@ -87,11 +100,18 @@ function fail(res: Response, e: unknown): void {
   res.status(500).json({ error: "factory error" });
 }
 
+/** Why a skill cannot go on an agent, in the words the panel shows. */
+function scopeRefusal(owner: string): string {
+  if (owner.startsWith("user:")) return "this skill is yours only: it runs on agents you created";
+  if (owner.startsWith("group")) return "this skill is shared with some groups: it runs only on their agents";
+  return "this skill cannot run on that agent";
+}
+
 export function mountFactory(app: Express, deps: FactoryDeps): void {
   const root = () => factoryRoot();
 
   /** The card as the panel shows it: registry + live facts (head, bindings, where attached). */
-  const view = (s: FactorySkill, channels: Channel[], vaultNames: Set<string>) => {
+  const view = (s: FactorySkill, channels: Channel[], vaultNames: Set<string>, stats: ReturnType<typeof runStats>) => {
     const head = headCommit(root(), s.id);
     const manifest = parseManifest(readFile(root(), s.id, "shadok-skill.json")).manifest;
     const required = manifest.requires?.secrets ?? [];
@@ -110,6 +130,9 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
           return {
             sessionId: c.sessionId,
             name: c.name ?? c.sessionId.slice(0, 8),
+            group: c.group ?? null,
+            runs: stats.byAgent[s.name]?.[c.sessionId] ?? 0,
+            crons: deps.cronsOf(c.sessionId),
             release,
             // What THIS agent gets: each granted secret, present in the vault or not.
             secrets: (rel?.secrets ?? []).map((n) => ({ name: n, bound: vaultNames.has(n), detected: !!rel?.detectedSecrets?.includes(n) })),
@@ -118,6 +141,9 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
           };
         }),
       feedback: (s.feedback ?? []).slice().reverse(),
+      tags: s.tags ?? [],
+      runs7d: stats.bySkill[s.name] ?? 0,
+      lastRun: stats.last[s.name] ?? null,
     };
   };
   const latestAccepted = (s: FactorySkill) =>
@@ -135,26 +161,84 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     return false;
   };
 
+  /**
+   * Who is asking, for scope: a person (by account) or an agent (by its key —
+   * its group and creator). A "just me" skill is invisible to everyone else: it
+   * answers 404, never 403, so its existence does not leak either.
+   */
+  const ctxOf = (c: Channel | undefined): AgentCtx => ({ group: c?.group ?? null, createdBy: c?.createdBy ?? null });
+  const canSee = (req: Request, s: FactorySkill): boolean => {
+    const agent = deps.callerOf(req);
+    if (agent.id) {
+      const ch = deps.loadChannels().find((c) => c.sessionId === agent.id);
+      // An agent sees what may run on it, plus what it is working on as the
+      // Skillsmith launched by that skill's owner (same creator).
+      return scopeAllowsAgent(s.owner, ctxOf(ch)) || scopeVisibleTo(s.owner, ch?.createdBy ?? null);
+    }
+    return scopeVisibleTo(s.owner, deps.personName(req));
+  };
   const skillOr404 = (req: Request, res: Response): FactorySkill | null => {
     const s = findSkill(root(), String(req.params.id));
-    if (!s) res.status(404).json({ error: "no such skill" });
-    return s ?? null;
+    if (!s || !canSee(req, s)) {
+      res.status(404).json({ error: "no such skill" });
+      return null;
+    }
+    return s;
+  };
+  /**
+   * The form's "shared with" → the stored owner: "me" (only you), "all"
+   * (everyone), or `{groups: [ids]}` / "groups:1,3" (the agents of those groups
+   * — one skill shared across several teams).
+   */
+  const ownerFrom = (req: Request, scope: unknown): string => {
+    if (scope === "me") return `user:${deps.personName(req) ?? "admin"}`;
+    if (scope === "all" || scope === "org" || scope === MAIN_GROUP || scope == null || scope === "") return MAIN_GROUP;
+    const stored =
+      scope && typeof scope === "object" && Array.isArray((scope as { groups?: unknown }).groups)
+        ? groupsScope((scope as { groups: unknown[] }).groups.map(Number).filter(Number.isInteger))
+        : String(scope);
+    const err = scopeError(stored, deps.groups().map((g) => g.id));
+    if (err) throw new FactoryError(err);
+    return stored;
   };
 
-  app.get("/factory/skills", (_req, res) => {
+  app.get("/factory/skills", (req, res) => {
     const channels = deps.loadChannels();
     const names = new Set(Object.keys(deps.vault()));
     res.json({
       group: MAIN_GROUP,
-      skills: loadRegistry(root()).skills.map((s) => view(s, channels, names)),
-      agents: channels.map((c) => ({ sessionId: c.sessionId, name: c.name ?? c.sessionId.slice(0, 8), skills: c.skills ?? [], mcp: deps.agentMcp(c.sessionId) })),
+      me: deps.personName(req),
+      groups: deps.groups().map((g) => ({ id: g.id, name: g.name ?? `group ${g.id}`, icon: g.icon ?? "" })),
+      skills: (() => {
+        const stats = runStats(root(), Date.now() - 7 * 86_400_000);
+        return loadRegistry(root()).skills.filter((s) => canSee(req, s)).map((s) => view(s, channels, names, stats));
+      })(),
+      agents: channels.map((c) => ({
+        sessionId: c.sessionId,
+        name: c.name ?? c.sessionId.slice(0, 8),
+        skills: c.skills ?? [],
+        mcp: deps.agentMcp(c.sessionId),
+        group: c.group ?? null,
+        createdBy: c.createdBy ?? null,
+      })),
     });
   });
 
   app.post("/factory/skills", (req, res) => {
     if (!browser(req, res)) return;
     try {
-      const s = createSkill(root(), { name: String(req.body?.name ?? ""), description: req.body?.description, by: by(req) });
+      // A person types a TITLE ("Daily marketing summary"); the technical name
+      // agents see is derived from it, and made unique rather than refused.
+      const title = typeof req.body?.title === "string" ? req.body.title.trim() : "";
+      let name = typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : slugify(title);
+      if (!name) throw new FactoryError("give the skill a name");
+      if (findSkill(root(), name)) {
+        let i = 2;
+        while (findSkill(root(), `${name}-${i}`)) i++;
+        name = `${name}-${i}`;
+      }
+      const s = createSkill(root(), { name, title, description: req.body?.description, by: by(req), owner: ownerFrom(req, req.body?.scope) });
+      if (req.body?.tags) updateMeta(root(), s.id, { tags: cleanTags(req.body.tags) });
       deps.audit({ action: "create", skill: s.name, by: by(req) });
       res.json({ skill: s });
     } catch (e) {
@@ -162,10 +246,42 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     }
   });
 
-  app.delete("/factory/skills/:id", (req, res) => {
-    if (!deps.requireAdmin(req, res, "delete a factory skill")) return;
+  /**
+   * Administer a skill: who it is shared with, its tags, archived or not, its
+   * name and description. Narrowing or widening who it is shared with is the
+   * creator's (or an admin's) call; tags and archiving, anyone who sees it.
+   */
+  app.put("/factory/skills/:id/meta", (req, res) => {
+    if (!browser(req, res)) return;
     const s = skillOr404(req, res);
     if (!s) return;
+    try {
+      const b = req.body ?? {};
+      const patch: Parameters<typeof updateMeta>[2] = {};
+      if (b.scope !== undefined) {
+        const me = deps.personName(req) ?? "admin";
+        if (s.createdBy !== me && !s.owner.startsWith(`user:${me}`) && !deps.requireAdmin(req, res, "change who a shared skill is shared with")) return;
+        patch.owner = ownerFrom(req, b.scope);
+      }
+      if (b.tags !== undefined) patch.tags = cleanTags(b.tags);
+      if (b.archived !== undefined) patch.archived = !!b.archived;
+      if (b.title !== undefined) patch.title = String(b.title);
+      if (b.description !== undefined) patch.description = String(b.description);
+      const out = updateMeta(root(), s.id, patch);
+      deps.audit({ action: "meta", skill: s.name, ...patch, by: by(req) });
+      res.json({ skill: out });
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
+  app.delete("/factory/skills/:id", (req, res) => {
+    const s = skillOr404(req, res);
+    if (!s) return;
+    // Yours: you delete it. Shared (a group's, the organisation's): an admin.
+    if (s.owner.startsWith("user:")) {
+      if (!browser(req, res)) return;
+    } else if (!deps.requireAdmin(req, res, "delete a shared factory skill")) return;
     const attached = deps.loadChannels().filter((c) => c.skills?.some((a) => a.skill === s.id));
     if (attached.length && req.query.force !== "1")
       return res.status(409).json({
@@ -349,7 +465,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     const out: { name: string; result: string }[] = [];
     for (const c of deps.loadChannels()) {
       const cur = c.skills?.find((a) => a.skill === s.id);
-      if (!cur || cur.release >= rel.n) continue;
+      if (!cur || cur.release >= rel.n || !scopeAllowsAgent(s.owner, ctxOf(c))) continue;
       deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
       deps.onAttachmentsChanged(c.sessionId);
       out.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
@@ -397,7 +513,11 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     if (!s) return;
     try {
       const release = req.body?.release != null ? Number(req.body.release) : s.releases[s.releases.length - 1]?.n;
-      const d = duplicateSkill(root(), s.id, { name: String(req.body?.name ?? ""), release, description: req.body?.description, by: by(req) });
+      const name = typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : slugify(String(req.body?.title ?? ""));
+      const d = duplicateSkill(root(), s.id, {
+        name, release, description: req.body?.description, by: by(req),
+        ...(req.body?.scope ? { owner: ownerFrom(req, req.body.scope) } : {}),
+      });
       deps.audit({ action: "duplicate", skill: d.name, origin: d.origin, by: by(req) });
       res.json({ skill: d });
     } catch (e) {
@@ -420,6 +540,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
         name: typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : undefined,
         by: by(req),
         secrets: secretsOf(deps.vault()),
+        owner: ownerFrom(req, req.body?.scope ?? "me"),
       });
       deps.audit({ action: "adopt", skill: s.name, origin: s.origin, by: by(req) });
       res.json({ skill: s });
@@ -440,8 +561,11 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     const ch = deps.loadChannels().find((c) => c.sessionId === sessionId);
     if (!ch) return res.status(404).json({ error: "no such agent" });
     const s = findSkill(root(), String(req.body?.skill ?? ""));
-    if (!s) return res.status(404).json({ error: "no such skill" });
+    if (!s || !canSee(req, s)) return res.status(404).json({ error: "no such skill" });
     const release = req.body?.release === null ? null : Number(req.body?.release);
+    if (release !== null && !scopeAllowsAgent(s.owner, ctxOf(ch)))
+      return res.status(409).json({ error: scopeRefusal(s.owner) });
+    if (release !== null && s.archived) return res.status(409).json({ error: "this skill is archived: unarchive it first" });
     const rest = (ch.skills ?? []).filter((a) => a.skill !== s.id);
     if (release !== null) {
       const rel = s.releases.find((r) => r.n === release);

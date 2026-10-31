@@ -342,3 +342,56 @@ test("prune removes release dirs nothing references — the old path an updated 
   assert.equal(fs.existsSync(d1), false); // read-only tree, removed all the same
   assert.equal(fs.existsSync(d2), true);
 });
+
+import { cleanTags, groupsScope, recordRun, runStats, scopeAllowsAgent, scopeError, scopeGroups, scopeVisibleTo, skillOfCall, slugify, updateMeta } from "../src/factory.js";
+
+test("scope: shared with several groups, only me, or everyone", () => {
+  assert.equal(groupsScope([3, 1, 3]), "groups:1,3");
+  assert.deepEqual(scopeGroups("groups:1,3"), [1, 3]);
+  assert.deepEqual(scopeGroups("group:2"), [2]); // the one-group spelling still reads
+  assert.equal(scopeAllowsAgent("groups:1,3", { group: 3 }), true);
+  assert.equal(scopeAllowsAgent("groups:1,3", { group: 2 }), false);
+  assert.equal(scopeAllowsAgent("groups:1,3", { group: null }), false);
+  assert.equal(scopeAllowsAgent("main", {}), true);
+  assert.equal(scopeAllowsAgent("user:lea", { createdBy: "lea" }), true);
+  assert.equal(scopeAllowsAgent("user:lea", { createdBy: "max" }), false);
+  assert.equal(scopeAllowsAgent("user:admin", {}), true); // an agent nobody signed for is the bootstrap admin's
+  assert.equal(scopeVisibleTo("user:lea", "max"), false);
+  assert.equal(scopeVisibleTo("groups:1", "max"), true);
+  assert.equal(scopeError("groups:1,9", [1, 2]), "one of those groups does not exist");
+  assert.equal(scopeError("groups:", [1]), "pick at least one group");
+  assert.equal(scopeError("user:lea", []), null);
+});
+
+test("titles become technical names; tags are normalised", () => {
+  assert.equal(slugify("Résumé marketing — quotidien !"), "resume-marketing-quotidien");
+  assert.equal(slugify("shadok-files"), "files");
+  assert.deepEqual(cleanTags(["Reporting", "slack", "reporting", " big data "]), ["reporting", "slack", "big-data"]);
+  assert.deepEqual(cleanTags("dev, linear"), ["dev", "linear"]);
+});
+
+test("runs: a Skill(name:name) call counts for that factory skill, per agent, over a window", (t) => {
+  const root = scratch(t);
+  assert.equal(skillOfCall("daily-zebra:daily-zebra", ["daily-zebra"]), "daily-zebra");
+  assert.equal(skillOfCall("shadok-factory", ["daily-zebra"]), null);
+  assert.equal(skillOfCall("vercel:deploy", ["daily-zebra"]), null);
+  const now = Date.now();
+  recordRun(root, { skill: "s", agent: "a1", at: now - 1000 });
+  recordRun(root, { skill: "s", agent: "a1", at: now - 2000 });
+  recordRun(root, { skill: "s", agent: "a2", at: now - 10 * 86_400_000 });
+  const st = runStats(root, now - 7 * 86_400_000, now);
+  assert.equal(st.bySkill.s, 2);
+  assert.equal(st.byAgent.s.a1, 2);
+  assert.equal(st.byAgent.s.a2, undefined);
+  assert.ok(st.last.s >= now - 1000);
+});
+
+test("updateMeta: share, tag, archive", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "meta", by: "a", owner: "user:a" });
+  const out = updateMeta(root, s.id, { owner: "groups:1,2", tags: ["X", "y"], archived: true });
+  assert.equal(out.owner, "groups:1,2");
+  assert.deepEqual(out.tags, ["x", "y"]);
+  assert.equal(out.archived, true);
+  assert.equal(updateMeta(root, s.id, { archived: false }).archived, undefined);
+});

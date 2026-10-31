@@ -82,6 +82,10 @@ export interface Channel {
    *  Server-owned, assert-only like `model`: only `POST /factory/attach` writes
    *  it, and a resume that omits it never erases it. See src/factory.ts. */
   skills?: { skill: string; release: number }[];
+  /** The account that created this agent (at its first spawn). Server-owned,
+   *  assert-only: what a "just me" factory skill is scoped by. Absent on agents
+   *  that predate it, which then count as the bootstrap admin's. */
+  createdBy?: string;
 }
 
 /**
@@ -104,7 +108,7 @@ export function isMirrored(c: Channel): boolean {
  * only resume its own agents" — which broke any multi-step remote exchange
  * (the holder's first resume ran; the browser's next sync wiped the owner). Same
  * loss as `profile`/`parent` before they were listed here. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer", "skills"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer", "skills", "createdBy"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
@@ -328,6 +332,7 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
     // writes them (`POST /factory/attach`), so a browser PUT can neither change
     // them (above) nor introduce them on an agent that has none.
     if (prev.skills === undefined) delete merged.skills;
+    if (prev.createdBy === undefined) delete merged.createdBy;
     if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;
     result.push(merged);
   }

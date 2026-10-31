@@ -246,35 +246,40 @@ Enter to skip; you can add it later from the web UI).
   buried the chat, so the cockpit folds it into a collapsible **Context summary**
   box: collapsed by default, one click to read it, capped and scrolling even when
   open. It is still real history — just out of the way.
-- **Skill Factory**: the flask icon in the header. Write a Claude Code skill
-  together, people and agents alike, then run it in the agents and crons that
-  need it.
-  - **Writing.** Each skill is a git history held by the server. A person edits
-    files in the panel (each save is a commit). **Work on it with an agent**
-    starts a `Shadok-Skillsmith` in a clone; it pushes through the
-    `shadok-factory` skill, fast-forward only. **Import** brings in a skill
-    already in `~/.claude/skills`, and **Duplicate** starts a variant from a
-    release.
-  - **Running.** Any editor **releases** a version (`v1`, `v2`…). A person
-    **accepts** it after reviewing its diff and the secrets it will receive.
-    Then it is **attached** to an agent, which loads it with `--plugin-dir` at
-    its next reload. It shows up as `<name>:<name>`, and only in that agent.
-  - **Born with it, scheduled with it.** An agent can be born with a skill (a
-    picker in the new-agent dialog, or `pilotctl spawn --skill name[@N]`).
-    **Run on a schedule…** attaches a skill and writes a daily or interval cron
-    in one dialog.
-  - **Updates.** **Update N agents** moves every agent on an older release to
-    the new one and reloads the idle ones. Agents that run a skill report what
-    is wrong with `factory.mjs feedback`, and the next Skillsmith starts from it.
-  - **Secrets travel by name.** A release grants its agents the secrets it
-    declares in `shadok-skill.json`, plus any vault name its code reads (shown
-    as "found in the code"). Per-agent chips say what each agent receives, and
-    whether its profile has the MCP servers the skill expects. Any save or push
-    holding a vault value is refused before it reaches the history.
-  - Deleting a skill is an admin act. A Skillsmith starts with no secrets.
+- **Skill Factory**: the flask icon in the header switches the cockpit to the
+  **Skills** page, with a slide; click it again to come back. Write a Claude
+  Code skill together, people and agents alike, then run it in the agents and
+  crons that need it.
+  - **The list.** Every skill with its tags, who it is shared with, its version,
+    where it is used, and how many times it ran this week. It can be filtered by
+    tag, by "shared with" and by status (to approve, update available, unused,
+    feedback, archived). Ticked rows can be shared, tagged, updated or archived
+    in one go.
+  - **The detail panel.** Its numbers, where it runs (group by group: each
+    agent, its version, its schedule, its runs), its version and the secrets it
+    receives, and its feedback.
+  - **Sharing.** A skill is shared with **only me**, with **one or more
+    groups**, or with **everyone**. Only the agents of those groups (or the ones
+    you created) can run it.
+  - **Editing**, on one screen. The skills are listed by name on the left. In
+    the middle, the skill reads as one document: *When to use it*,
+    *Instructions*, *Needs*, with the scripts folded away for developers. On the
+    right, **change it by prompt**: a `Shadok-Skillsmith` agent edits, tests and
+    pushes, and its changes show up in the document. Both paths land in one
+    "N changes since vX" bar, with **Freeze as vX+1**.
+  - **Running.** A frozen version is approved, after its diff and the secrets
+    it will receive are shown. Then it is given to an agent (loaded with
+    `--plugin-dir` at its next reload, as `<name>:<name>`), or scheduled on one
+    with **Run on a schedule…**. An agent can also be born with it, from the
+    new-agent dialog or with `pilotctl spawn --skill`.
+  - **Updates and feedback.** **Update agents** moves the agents on an older
+    version and reloads the idle ones. Agents report problems with
+    `factory.mjs feedback`.
+  - **Secrets travel by name.** A version receives the secrets it declares,
+    plus any vault name its code reads. A save or push holding a vault value is
+    refused.
+  - **Also:** import from `~/.claude/skills`, make a variant, archive.
   - Design: `docs/superpowers/specs/2026-10-29-skill-factory-design.md`.
-    Single-tenant today; sharing between groups comes with the multi-tenant
-    work.
 - **Diff panel** — what an agent actually changed, against its base.
 - **What an agent left running, on its tab** — a turning ⏳ for background
   shells, a still 👁 for monitors, each with its count past one. Claude Code
