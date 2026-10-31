@@ -10302,7 +10302,6 @@
     d.appendChild(facEl("h2", { text: "Actions" }));
     d.appendChild(facEl("div", { class: "fp-actions", style: "margin-top:0" }, [
       facEl("button", { class: "primary", text: "Edit", onclick: () => facEdit(s.id) }),
-      facEl("button", { text: "Change it by prompt", onclick: () => facEdit(s.id, true) }),
       facEl("button", { text: "History", onclick: () => { facEdit(s.id); fac.edTab = "history"; facRender(); } }),
       last ? facEl("button", { text: "Make a variant…", onclick: () => facDuplicate(s) }) : null,
       facEl("button", { text: s.archived ? "Unarchive" : "Archive", onclick: () => meta({ archived: !s.archived }) }),
