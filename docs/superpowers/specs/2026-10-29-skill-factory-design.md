@@ -1,7 +1,7 @@
 # Skill Factory — co-write a skill across one or more groups, then run it in an agent or a cron
 
-Status: **Draft for review** — revised 2026-10-31, then challenged and partly
-measured the same day. Points settled are marked **[DECIDED]**, calls the author
+Status: **Draft for review** — revised 2026-10-31, then challenged and measured
+the same day. Points settled are marked **[DECIDED]**, calls the author
 made that a builder could not settle alone **[CALL]**, points left open
 **[OPEN]** (each with a recommendation). Nothing here is built.
 
@@ -227,7 +227,7 @@ group whose agents (and secrets) will run it must decide too.
 
 ### The mechanism: `--plugin-dir`, per process
 
-**[DECIDED, partly measured] A release reaches an agent as a plugin passed on its
+**[DECIDED, measured] A release reaches an agent as a plugin passed on its
 own command line, never by writing into `~/.claude/skills`.** At spawn the server:
 
 1. reads the agent's attachments and keeps those whose release is **accepted by
@@ -256,19 +256,44 @@ directory, probe plugin `kpi-probe` carrying skill `pd-probe`), on Claude Code
   per group (`factory:kpi-export`) would put several releases in one plugin dir.
   Recommend one plugin per release — provenance is one dir per tree hash.
 
-**Not yet measured** — both binaries on the test machine were signed out, so no
-turn could run: that the skill **triggers** on its description, that its
-**scripts run** (`${CLAUDE_PLUGIN_ROOT}` set, the agent's env — secrets — visible
-to them), and that it **survives `--resume`**, including a resume with a
-*different* plugin set (the reload-to-apply path). These are phase 1's remaining
-items, on a signed-in instance, interactive (never `claude -p`, invariant 29's
-trap). The probe is trivial to rebuild: a `plugin.json`, a `SKILL.md` asking for
-an unusual phrase, a script that echoes an env var into a file.
+**Turn-level, measured the same day on 2.1.309, signed in (Team plan).** Same
+probe. Its `SKILL.md` answers "the zebra quartz report" by running
+`bash ${CLAUDE_PLUGIN_ROOT}/skills/pd-probe/scripts/report.sh`, which prints an
+env var the launcher set (standing in for a vault secret) and
+`$CLAUDE_PLUGIN_ROOT`, then writes the same line to a marker file:
 
-**Fallback if the turn-level measurement fails** — install into the using group's
-`~/.claude/skills` under a `factory-` prefix with a `.shadok-managed.json` marker.
-Loses per-agent precision (every agent of the group sees every installed skill),
-keeps group isolation (each isolated group has its own HOME).
+| Run | Result |
+|---|---|
+| Fresh session, `--plugin-dir plug` | **Triggers on its description** (`Skill(kpi-probe:pd-probe)` → "Successfully loaded skill"); the script runs; it **sees the agent's env** (`secret=s3cr3t-from-env`) |
+| `--resume`, same `--plugin-dir` | Still available; runs again |
+| `--resume`, **no** `--plugin-dir` | `Error: Unknown skill: kpi-probe:pd-probe` — the skill is **gone** for the new process, although the transcript still shows earlier calls to it |
+| `--resume`, `--plugin-dir plug2` (same plugin name, changed script, another dir) | The **new** release runs (`ZQ-V2`) |
+
+What this settles:
+
+- **The main path holds.** Per-agent skills, revocation and update all reduce to
+  "which `--plugin-dir` pairs did this spawn get", and the reload-to-apply flow
+  (respawn with `--resume`) is enough to apply an attach, an update or a
+  revocation. No fallback needed.
+- **`${CLAUDE_PLUGIN_ROOT}` is substituted in `SKILL.md`, not exported to
+  scripts** (`root=unset` in every run). Factory skills must locate their own
+  files from the path the SKILL.md hands them, or from `$(dirname "$0")`. The
+  Skillsmith prompt says so, and the release scan **warns** on a script that
+  reads `$CLAUDE_PLUGIN_ROOT`.
+- **Secrets reach skill scripts exactly as they reach any Bash call** — through
+  the agent's env. The "names travel, values don't" rule needs no new mechanism.
+- **A resumed agent may notice the move.** On the plug → plug2 resume, the model
+  commented that the skill "now loads from a different location" before running
+  it. That is harmless, even welcome, and it argues for stable paths
+  (`<skill>@<N>/`, content-addressed) over a random directory per spawn.
+
+Not measured: a plugin dir owned by a different OS user than the one reading it
+(phase 3, multi-tenant). Plain reading should be enough, since the agent runs as
+the owner.
+
+**Fallback, kept in case a later release breaks this**: install into the using
+group's `~/.claude/skills` under a `factory-` prefix with a `.shadok-managed.json`
+marker. This loses per-agent precision but keeps group isolation.
 
 **Stated plainly:** in the commons (`Main` and every public group share one OS
 user), a materialised plugin dir is readable by every public agent — per-agent
@@ -384,10 +409,9 @@ named in the body.
 
 ## Phasing
 
-1. **Finish measuring `--plugin-dir`** on a signed-in interactive agent: triggers,
-   scripts run with the agent's env, `${CLAUDE_PLUGIN_ROOT}`, survives `--resume`,
-   and a resume with a changed plugin set. Loading is already confirmed on
-   2.1.197 and 2.1.309. Decides main path vs fallback.
+1. ~~**Measure `--plugin-dir`**~~ — **done 2026-10-31** (see "The mechanism"):
+   the main path holds on 2.1.309. Re-run the probe whenever a Claude Code
+   upgrade touches plugins.
 2. **Local factory, single-tenant** — bare repos, push-time scan, browser editor,
    Skillsmith + `shadok-factory` skill, releases, acceptance, agent attachments,
    fingerprint wiring, audit rows.
