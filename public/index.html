@@ -9932,13 +9932,19 @@
     if (owner.startsWith("user:")) return ["Only me"];
     return (facScopeIds(owner) || []).map((id) => { const g = facGroup(id); return g ? `${g.icon ? g.icon + " " : ""}${g.name}` : `group ${id}`; });
   }
-  /** Same rule as the server's scopeAllowsAgent. */
+  /** Same rule as the server's scopeOffersAgent: is it offered first on this
+   *  agent? Never a refusal: sharing keeps lists short, it does not lock. */
   function facAllows(s, a) {
     if (!s.owner || s.owner === "main") return true;
     const ids = facScopeIds(s.owner);
     if (ids) return a.group != null && ids.includes(Number(a.group));
-    if (s.owner.startsWith("user:")) return (a.createdBy || "admin") === s.owner.slice(5);
+    if (s.owner.startsWith("user:")) return true; // private: you see it, so you put it where you want
     return false;
+  }
+  /** Every agent, the ones of the groups it is shared with first. */
+  function facAgentsFor(s) {
+    const all = (fac.data && fac.data.agents) || [];
+    return [...all.filter((a) => facAllows(s, a)), ...all.filter((a) => !facAllows(s, a))];
   }
   /** A coloured tile with the skill's initials — the same palette as the agents' avatars. */
   function facAvatar(s, size) {
@@ -10236,7 +10242,7 @@
     const share = facEl("div", { class: "fp-card" }, [
       ...facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x })),
       facEl("button", { class: "fp-link", text: "change", onclick: () => facSharePicker(share, s, (scope) => meta({ scope })) }),
-      facEl("div", { class: "fp-hint", text: s.owner === "main" ? "Any agent can run it." : s.owner.startsWith("user:") ? "Only you see it; only the agents you created can run it." : "Only the agents of these groups can run it." }),
+      facEl("div", { class: "fp-hint", text: s.owner === "main" ? "Any agent can run it." : s.owner.startsWith("user:") ? "Only you see it; you can use it on any agent." : "Only the agents of these groups can run it." }),
     ]);
     d.appendChild(share);
     // Where it runs, by group
@@ -10261,7 +10267,7 @@
     }
     const use = facEl("div", { class: "fp-actions" });
     if (s.latestAccepted && !s.archived) {
-      const eligible = ((fac.data && fac.data.agents) || []).filter((a) => facAllows(s, a) && !s.attachedTo.some((x) => x.sessionId === a.sessionId));
+      const eligible = facAgentsFor(s).filter((a) => !s.attachedTo.some((x) => x.sessionId === a.sessionId));
       if (eligible.length) {
         const sel = facEl("select", { "aria-label": "Agent" });
         for (const a of eligible) sel.add(new Option(a.name, a.sessionId));
@@ -10333,7 +10339,7 @@
     btn.disabled = true;
     const agent = facEl("select", { "aria-label": "Agent that runs it" });
     agent.add(new Option(`a new agent "${facTitle(s)}"`, ""));
-    for (const a of ((fac.data && fac.data.agents) || []).filter((a) => facAllows(s, a))) agent.add(new Option(a.name, a.sessionId));
+    for (const a of facAgentsFor(s)) agent.add(new Option(a.name, a.sessionId));
     const kind = facEl("select", {});
     kind.add(new Option("every day at", "daily"));
     kind.add(new Option("every N minutes", "interval"));
@@ -10458,7 +10464,7 @@
       facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpDescIn", text: "What does it do, and when should it be used?" }), desc,
         facEl("div", { class: "fp-hint", text: "An agent reads this to decide to use the skill. You can refine it later." })]),
       facEl("div", { class: "fp-field" }, [facEl("span", { class: "fp-label", text: "Shared with" }),
-        choice("me", "🔒 Only me", "Only you see it; only the agents you create can run it."),
+        choice("me", "🔒 Only me", "Only you see it; you can use it on any agent."),
         facGroups().length ? choice("groups", "👥 Some groups", "Only the agents of the groups you tick can run it. It can be shared with several.") : facEl("div", { class: "fp-hint", text: "👥 To share with teams, create groups in the cockpit first." }),
         groupBoxes.length ? facEl("div", { class: "fp-groups" }, groupBoxes) : null,
         choice("all", "🏢 Everyone", "Any agent can run it.")]),
@@ -10802,7 +10808,9 @@
     box.textContent = "";
     let data;
     try { data = await facCall("GET", "/factory/skills"); } catch { data = { skills: [] }; }
-    const usable = data.skills.filter((s) => s.latestAccepted && !s.archived);
+    // Only what is shared with the group the agent goes to (or with everyone,
+    // or yours): the point of sharing is a short list, not a lock.
+    const usable = data.skills.filter((s) => s.latestAccepted && !s.archived && facAllows(s, { group: setupGroup }));
     $("skillsField").hidden = !usable.length;
     $("skillsCount").textContent = usable.length ? String(usable.length) : "";
     for (const s of usable)

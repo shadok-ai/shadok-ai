@@ -83,13 +83,15 @@ export function groupsScope(ids: number[]): string {
   return `groups:${[...new Set(ids)].sort((a, b) => a - b).join(",")}`;
 }
 
-/** Pure: may this skill run on this agent? (Its scope, not the acceptance.) */
-export function scopeAllowsAgent(owner: Scope, agent: AgentCtx): boolean {
+/** Pure: is this skill OFFERED on this agent's pickers? Sharing is there so
+ *  people are not flooded with everyone's skills, not as a security boundary:
+ *  a skill someone can see, they can put on any agent. Only a private skill
+ *  is hidden (`scopeVisibleTo`), and that is the whole gate. */
+export function scopeOffersAgent(owner: Scope, agent: AgentCtx): boolean {
   if (!owner || owner === MAIN_GROUP) return true;
   const ids = scopeGroups(owner);
   if (ids) return agent.group != null && ids.includes(Number(agent.group));
-  const u = /^user:(.+)$/.exec(owner);
-  if (u) return (agent.createdBy || DEFAULT_CREATOR) === u[1];
+  if (/^user:.+$/.test(owner)) return true;
   return false;
 }
 
@@ -705,10 +707,6 @@ export function resolveAttachments(
     }
     if (!skill.acceptances.some((x) => x.group === group && x.release === rel.n && x.tree === rel.tree)) {
       dropped.push({ ...a, reason: `v${rel.n} has not been accepted for ${group}` });
-      continue;
-    }
-    if (agent && !scopeAllowsAgent(skill.owner, agent)) {
-      dropped.push({ ...a, reason: `scoped to ${skill.owner}, which this agent is not part of` });
       continue;
     }
     seen.add(skill.id);

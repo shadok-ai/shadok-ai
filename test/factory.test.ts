@@ -343,19 +343,19 @@ test("prune removes release dirs nothing references — the old path an updated 
   assert.equal(fs.existsSync(d2), true);
 });
 
-import { cleanTags, groupsScope, recordRun, runStats, scopeAllowsAgent, scopeError, scopeGroups, scopeVisibleTo, skillOfCall, slugify, updateMeta } from "../src/factory.js";
+import { cleanTags, groupsScope, recordRun, runStats, scopeOffersAgent, scopeError, scopeGroups, scopeVisibleTo, skillOfCall, slugify, updateMeta } from "../src/factory.js";
 
 test("scope: shared with several groups, only me, or everyone", () => {
   assert.equal(groupsScope([3, 1, 3]), "groups:1,3");
   assert.deepEqual(scopeGroups("groups:1,3"), [1, 3]);
   assert.deepEqual(scopeGroups("group:2"), [2]); // the one-group spelling still reads
-  assert.equal(scopeAllowsAgent("groups:1,3", { group: 3 }), true);
-  assert.equal(scopeAllowsAgent("groups:1,3", { group: 2 }), false);
-  assert.equal(scopeAllowsAgent("groups:1,3", { group: null }), false);
-  assert.equal(scopeAllowsAgent("main", {}), true);
-  assert.equal(scopeAllowsAgent("user:lea", { createdBy: "lea" }), true);
-  assert.equal(scopeAllowsAgent("user:lea", { createdBy: "max" }), false);
-  assert.equal(scopeAllowsAgent("user:admin", {}), true); // an agent nobody signed for is the bootstrap admin's
+  // Offered first on those groups' agents; never a refusal.
+  assert.equal(scopeOffersAgent("groups:1,3", { group: 3 }), true);
+  assert.equal(scopeOffersAgent("groups:1,3", { group: 2 }), false);
+  assert.equal(scopeOffersAgent("main", {}), true);
+  // Private: hidden from others, and its owner puts it on any agent.
+  assert.equal(scopeOffersAgent("user:lea", { createdBy: "max", group: 2 }), true);
+  assert.equal(scopeVisibleTo("user:lea", "lea"), true);
   assert.equal(scopeVisibleTo("user:lea", "max"), false);
   assert.equal(scopeVisibleTo("groups:1", "max"), true);
   assert.equal(scopeError("groups:1,9", [1, 2]), "one of those groups does not exist");

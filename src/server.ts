@@ -11,7 +11,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
-import { scopeAllowsAgent, recordRun, skillOfCall } from "./factory.js";
+import { scopeVisibleTo, recordRun, skillOfCall } from "./factory.js";
 import { attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
@@ -3851,7 +3851,8 @@ function resolveBirthSkills(req: { skill: string; release?: number }[], agent: A
       s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree));
     const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
     if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
-    if (!scopeAllowsAgent(s.owner, agent)) { refused.push(`${s.name}: scoped to ${s.owner}`); continue; }
+    // A private skill is attached by its owner only: the person starting the agent.
+    if (!scopeVisibleTo(s.owner, agent.createdBy ?? null)) { refused.push(`${s.name}: private to someone else`); continue; }
     if (s.archived) { refused.push(`${s.name}: archived`); continue; }
     if (!ok.some((a) => a.skill === s.id)) ok.push({ skill: s.id, release: rel.n });
   }

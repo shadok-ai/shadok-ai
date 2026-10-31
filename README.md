@@ -259,8 +259,10 @@ Enter to skip; you can add it later from the web UI).
     agent, its version, its schedule, its runs), its version and the secrets it
     receives, and its feedback.
   - **Sharing.** A skill is shared with **only me**, with **one or more
-    groups**, or with **everyone**. Only the agents of those groups (or the ones
-    you created) can run it.
+    groups**, or with **everyone**. Sharing keeps lists short; it is not a
+    lock. "Only me" hides the skill from everyone else. A group skill is offered
+    when you create an agent in that group and listed first when you give it to
+    an agent, and anyone who sees a skill can put it on any agent.
   - **Editing**, on one screen. The skills are listed by name on the left. In
     the middle, the skill reads as one document: *When to use it*,
     *Instructions*, *Needs*, with the scripts folded away for developers. On the

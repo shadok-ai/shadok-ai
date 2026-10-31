@@ -1415,14 +1415,17 @@ at its current path. Verified: the same agent then answered with v3.
 
 **Who it is for, what it is called, how much it runs.**
 - `FactorySkill.owner` is the share:
-  - `user:<account>`: only that person sees it, and it runs on agents they
-    created (`Channel.createdBy`, asserted at birth; an agent's spawn inherits
-    its parent's).
-  - `groups:1,3`: it runs on the agents of those cockpit groups.
+  - `user:<account>`: only that person sees it, and they can put it on any
+    agent. Seeing it is the gate: others get a 404, so only the owner can
+    attach it, and a birth with the skill needs the agent's creator
+    (`Channel.createdBy`, asserted at birth, inherited from a parent) to be
+    the owner.
+  - `groups:1,3`: offered on those cockpit groups' agents (the new-agent
+    picker lists it, the attach list puts their agents first).
   - `main`: everyone.
-- `scopeAllowsAgent` is applied at attach, at update, at birth and at spawn, so
-  an agent moved out of a group loses the skill at its next spawn and the log
-  says why.
+- Sharing is about not flooding everyone's lists, not security: nothing refuses
+  a visible skill on an agent. `scopeOffersAgent` only decides what a picker
+  offers; `scopeVisibleTo` is the one gate, and it hides only private skills.
 - Until groups have members, a group skill is visible to every person; only
   "only me" hides it.
 - Tags and archiving are plain registry fields (`PUT /factory/skills/:id/meta`).
