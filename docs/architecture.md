@@ -1381,9 +1381,41 @@ used inside a script.
 - `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md but is NOT exported to
   scripts.
 
+**Secrets are granted by the release, consented to at acceptance.**
+- `Release.secrets` = the names `requires.secrets` declares ∪ every vault name
+  the code reads (`detectSecrets`; `detectedSecrets` marks the undeclared ones).
+  So the person accepting sees exactly what the code will get, whether or not
+  the author remembered to declare it.
+- `makePilot` injects them beside the profile's (`pluginArgs(...).secrets`), and
+  `buildPreprompt` lists them, so a newly granted name lights the reload
+  indicator too.
+- Profiles are not touched: the link is skill → agent.
+
+**Release directories are pruned, and that is correctness, not housekeeping.**
+Measured: an agent resumed onto v2 re-ran v1's absolute script path straight
+from its history, because v1's directory still existed. So after an update,
+attach or detach, and once a reloaded process holds its new directories,
+`prunePlugins` removes every release directory that no channel attachment, no
+pending spawn and no running process (`runningPlugins`, recorded in
+`makePilot`) references. The old path then fails, and the agent reloads the skill
+at its current path. Verified: the same agent then answered with v3.
+
+**Born with skills, scheduled with skills.**
+- `start` accepts `skills` (latest accepted release unless `@N`). They are
+  resolved before the spawn and held in `pendingSkills` until `ready` writes them
+  on the channel; one that is refused is logged and dropped.
+- "Run on a schedule…" is client-side orchestration: attach with
+  `reload: true` (or a new agent born with the skill), then `POST /crons`.
+- `POST /factory/skills/:id/update` moves every older attachment and reloads
+  the idle agents.
+- Feedback (`POST …/feedback`, an agent's key or the browser) is stored on the
+  skill, bounded at 50, and quoted into the next Skillsmith's kickoff.
+- Duplicate fetches a release's tag into a new bare repo and commits a rename.
+- Adopt imports a `~/.claude/skills` folder after a scan.
+
 **Who may do what.** Reads are open behind the password gate. A person's writes
-are browser-only. Release and delete are admin acts (a `Main` skill is a house
-asset). A push needs the caller's session key AND a channel profile of
+are browser-only. Any editor releases (acceptance, not release, is the gate);
+deleting is an admin act. A push needs the caller's session key AND a channel profile of
 `Shadok-Skillsmith`: on a single-tenant instance "any agent of the group" would
 be every agent on the machine. The Skillsmith is a managed profile (prompt
 re-seeded from `context/skillsmith-prompt.md` at boot, `secrets: []` on

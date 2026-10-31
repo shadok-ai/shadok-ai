@@ -11,7 +11,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
-import { factoryRoot, loadRegistry, MAIN_GROUP, pluginArgs, resolveAttachments } from "./factory.js";
+import { attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -2070,6 +2070,22 @@ mountFactory(app, {
     const s = sessions.get(id);
     if (s) broadcastStaleness(s);
   },
+  prune: () => pruneFactoryPlugins(),
+  reloadIfIdle: (id) => {
+    const s = sessions.get(id);
+    if (!s) return "offline"; // applied at its next start
+    if (s.busy) return "stale";
+    // Prune once the new process holds its new directories, so the old ones go.
+    void restartSession(s)
+      .then(() => pruneFactoryPlugins())
+      .catch((e) => console.log(`factory: reload ${id.slice(0, 8)} failed: ${(e as Error).message}`));
+    return "reloaded";
+  },
+  agentMcp: (id) => {
+    const p = loadChannels().find((c) => c.sessionId === id)?.profile;
+    const prof = p ? effectiveProfile(getProfile(p)) : undefined;
+    return Object.keys(prof?.mcpServers ?? {});
+  },
   audit: factoryAudit,
 });
 
@@ -3545,6 +3561,11 @@ type ClientMessage =
        *  spawn — never on a resume, so it can't clobber a rename made in the UI.
        *  Omitted → the client derives a default from the profile/directory. */
       name?: string;
+      /** Skill Factory skills a NEW agent is born with (the creation popin's
+       *  picker, `pilotctl --skill name[@N]`). A missing release means the
+       *  latest ACCEPTED one. Accepted releases only; refusals are logged and
+       *  dropped, never fatal to the spawn (same spirit as `parent`). */
+      skills?: { skill: string; release?: number }[];
     }
   /** `force`: send despite a pace overrun. Applies to this message only. */
   /** `from`: display name of whoever typed it, when a client knows it (the
@@ -3760,11 +3781,58 @@ function installedCapabilities(): { name: string; description: string }[] {
  * plugin directories themselves are materialised by `makePilot`, never by the
  * staleness sweep.
  */
+/**
+ * Skills asked for at `start` (the creation popin's picker, `pilotctl --skill`),
+ * held until `ready` records them on the channel: the channel row does not
+ * exist yet when `makePilot` runs for a brand-new agent.
+ */
+const pendingSkills = new Map<string, Attachment[]>();
+/** Plugin directories each process was SPAWNED with — a busy agent not yet
+ *  reloaded still runs from these, so they must survive a prune. */
+const runningPlugins = new Map<string, string[]>();
+
+/** Remove the release directories no attachment and no running process uses. */
+function pruneFactoryPlugins(): void {
+  const skills = loadRegistry(factoryRoot()).skills;
+  const keep = new Set<string>();
+  for (const c of loadChannels()) for (const n of attachmentDirNames(skills, c.skills)) keep.add(n);
+  for (const [, dirs] of runningPlugins) for (const d of dirs) keep.add(path.basename(d));
+  for (const [, att] of pendingSkills) for (const n of attachmentDirNames(skills, att)) keep.add(n);
+  const removed = prunePlugins(factoryRoot(), keep);
+  if (removed.length) console.log(`factory: removed unused release dirs ${removed.join(", ")}`);
+}
+
+function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
+  if (!sessionId) return undefined;
+  return loadChannels().find((c) => c.sessionId === sessionId)?.skills ?? pendingSkills.get(sessionId);
+}
+
+/** The secret names an agent's factory skills are granted (accepted releases only). */
+function factorySecretsFor(sessionId?: string | null): string[] {
+  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), MAIN_GROUP);
+}
+
+/** Pure-ish: turn a `start`'s requested skills into accepted attachments. */
+function resolveBirthSkills(req: { skill: string; release?: number }[]): { ok: Attachment[]; refused: string[] } {
+  const skills = loadRegistry(factoryRoot()).skills;
+  const ok: Attachment[] = [];
+  const refused: string[] = [];
+  for (const r of req.slice(0, 20)) {
+    const s = skills.find((x) => x.id === r?.skill || x.name === r?.skill);
+    if (!s) { refused.push(`${r?.skill}: no such skill`); continue; }
+    const accepted = s.releases.filter((rel) =>
+      s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree));
+    const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
+    if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
+    if (!ok.some((a) => a.skill === s.id)) ok.push({ skill: s.id, release: rel.n });
+  }
+  return { ok, refused };
+}
+
 function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
-  if (!sessionId) return [];
-  const ch = loadChannels().find((c) => c.sessionId === sessionId);
-  if (!ch?.skills?.length) return [];
-  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, ch.skills, MAIN_GROUP);
+  const attached = attachmentsFor(sessionId);
+  if (!attached?.length) return [];
+  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, MAIN_GROUP);
   return ok.map(({ skill, release }) => ({ name: skill.name, release: release.n, tree: release.tree }));
 }
 
@@ -3778,7 +3846,9 @@ function buildPreprompt(profileName?: string | null, sessionId?: string | null):
     deny: resolved?.deny,
     allow: resolved?.allow,
     permissionMode,
-    secretNames: Object.keys(secretsFor(profile?.secrets)),
+    // The profile's names AND those its factory skills were granted — what the
+    // process really receives, so a newly granted name also lights the reload.
+    secretNames: Object.keys(secretsFor([...new Set([...(profile?.secrets ?? []), ...factorySecretsFor(sessionId)])])),
     capabilities: installedCapabilities(),
     pilotPrompt: pilotPrompt() ?? undefined,
     ledgerReflex: ledgerEnabled ? ledgerReflex() : null,
@@ -3823,7 +3893,16 @@ function makePilot(
   // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
   // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
   // must never print" was noise that buried the real ones.
-  const secretEnv = secretsFor(profile?.secrets);
+  // Skill Factory releases attached to THIS agent, one `--plugin-dir` each
+  // (measured 2026-10-31 on 2.1.309: loaded for this process only, gone on a
+  // resume without it). A dropped attachment is said, never silently skipped.
+  // Their declared/detected secrets are GRANTED here: a person of this group
+  // accepted that tree, and the accept screen listed those names.
+  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), MAIN_GROUP);
+  for (const d of factory.dropped)
+    console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
+  runningPlugins.set(id, factory.args.filter((_a, i) => i % 2 === 1));
+  const secretEnv = secretsFor([...new Set([...(profile?.secrets ?? []), ...factory.secrets])]);
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
   // point off Anthropic, and maps the model aliases. See src/backend.ts.
@@ -3852,12 +3931,6 @@ function makePilot(
   const sp = pilotPrompt();
   // Opt-in only: a live agent gains the reflex at its next (re)spawn.
   const lr = ledgerEnabled ? ledgerReflex() : null;
-  // Skill Factory releases attached to THIS agent, one `--plugin-dir` each
-  // (measured 2026-10-31 on 2.1.309: loaded for this process only, gone on a
-  // resume without it). A dropped attachment is said, never silently skipped.
-  const factory = pluginArgs(factoryRoot(), loadChannels().find((c) => c.sessionId === id)?.skills, MAIN_GROUP);
-  for (const d of factory.dropped)
-    console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
@@ -4191,7 +4264,7 @@ function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
   const profile = s.profile ? getProfile(s.profile) : undefined;
   recordSecretAudit({
     action: "injected",
-    secrets: Object.keys(secretsFor(profile?.secrets)),
+    secrets: Object.keys(secretsFor([...new Set([...(profile?.secrets ?? []), ...factorySecretsFor(s.id)])])),
     ...by,
     agent: s.id,
     agentName: loadChannels().find((c) => c.sessionId === s.id)?.name,
@@ -5362,6 +5435,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             !resumed && typeof msg.name === "string" && msg.name.trim()
               ? msg.name.trim().slice(0, 80)
               : undefined;
+          // Born with skills: resolved and checked BEFORE the spawn, since
+          // `--plugin-dir` is a spawn arg. Held in `pendingSkills` until the
+          // channel row exists (written at ready, below).
+          let initialSkills: Attachment[] | undefined;
+          if (!resumed && Array.isArray(msg.skills) && msg.skills.length) {
+            const { ok, refused } = resolveBirthSkills(msg.skills);
+            for (const r of refused) console.log(`factory: ${id.slice(0, 8)} not born with ${r}`);
+            if (ok.length) {
+              initialSkills = ok;
+              pendingSkills.set(id, ok);
+            }
+          }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
@@ -5445,7 +5530,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // The spawn-time name (pilotctl `--name`). ASSERT-only and computed
             // above so it can never fire on a resume — a UI rename must win.
             ...(initialName ? { name: initialName } : {}),
+            ...(initialSkills ? { skills: initialSkills } : {}),
           });
+          pendingSkills.delete(id);
           send({ type: "tokens", tokens: tokenTotals(session) });
           send(profileMessage(session));
             if (session.contextPct !== null) send({ type: "context", pct: session.contextPct });

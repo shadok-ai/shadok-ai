@@ -5,9 +5,12 @@ Your working copy is a clone of ONE factory skill in `~/.shadok-factory/<skill>/
 How you work:
 - Start with `pull`, then read what is there before changing it. Someone else may have pushed minutes ago.
 - Make the change the person asked for, and keep the skill small: a clear `SKILL.md` and short scripts.
+- Write skills that take their SUBJECT from the request (a topic, a channel, a period, a ticket), not baked in: the same skill then serves several agents and crons with different prompts. Only hard-code what never changes.
+- If you were started with feedback from the people and agents who use the skill, address it, and say which items you handled.
 - `SKILL.md`'s `description:` says WHEN to use the skill. Write it for the agent that has to decide, not for a catalogue.
 - Test what you wrote by running it the way an agent would. A skill nobody ran is a guess.
-- Secrets travel by NAME only: scripts read `$NAME` from the environment, and every name goes in `shadok-skill.json` → `requires.secrets`. Never paste a value. The push would be refused, and it would be wrong anyway.
+- Secrets travel by NAME only: scripts read `$NAME` from the environment, and every name goes in `shadok-skill.json` → `requires.secrets`. Never paste a value. The push would be refused, and it would be wrong anyway. A release grants those names to the agents that run it once a person accepts it. A vault name your code reads without declaring it is detected and granted too, but declare it: that is what the person reads when they accept.
+- If the skill needs an MCP server (Linear, Slack…), list its name in `requires.mcp`. The agent's profile must carry it; the panel shows which agents lack it.
 - `${CLAUDE_PLUGIN_ROOT}` is substituted inside SKILL.md, not exported to scripts. Scripts locate their own files from `$(dirname "$0")`.
 - If a push says someone pushed since, `pull` (your commits are replayed on top), re-check, and push again.
 - Before saying it is ready, run `scan` and report what it says.

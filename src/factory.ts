@@ -24,6 +24,7 @@ import os from "node:os";
 import path from "node:path";
 import { instanceKey } from "./paths.js";
 import {
+  detectSecrets,
   frontmatterName,
   parseManifest,
   releaseWarnings,
@@ -47,8 +48,14 @@ export interface Release {
   by: string;
   at: number;
   note?: string;
-  /** requires.secrets as the manifest declared them at this release. */
+  /** requires.secrets as the manifest declared them at this release — the names
+   *  an attached agent RECEIVES once a person of its group accepted this tree. */
   secrets: string[];
+  /** The subset of `secrets` found in the code but NOT declared in the
+   *  manifest — granted all the same, and shown as such at acceptance. */
+  detectedSecrets?: string[];
+  /** requires.mcp at this release (informative: checked against the agent's profile). */
+  mcp?: string[];
   warnings: ScanFinding[];
 }
 
@@ -71,6 +78,20 @@ export interface FactorySkill {
   createdAt: number;
   releases: Release[];
   acceptances: Acceptance[];
+  /** "This went wrong / this is missing", from the agents and people who USE it. */
+  feedback?: Feedback[];
+  /** `<skill>@<N>` this one was duplicated from, if any. */
+  origin?: string;
+}
+
+export interface Feedback {
+  id: string;
+  by: string;
+  at: number;
+  /** The release the reporter was running, when known. */
+  release?: number;
+  text: string;
+  done?: { by: string; at: number };
 }
 
 interface Registry {
@@ -474,12 +495,13 @@ export function scanMain(
   root: string,
   idOrName: string,
   secrets: ScanSecret[],
-): ScanResult & { secrets: string[] } {
+): ScanResult & { secrets: string[]; detected: string[]; mcp: string[] } {
   const skill = mustSkill(root, idOrName);
   const files = readFiles(root, skill.id);
   const scan = scanFiles(files, secrets);
   const { manifest, error } = parseManifest(files.find((f) => f.path === "shadok-skill.json")?.content.toString("utf8") ?? null);
   const declared = manifest.requires?.secrets ?? [];
+  const mcp = manifest.requires?.mcp ?? [];
   const warnings = [...scan.warnings, ...releaseWarnings(files, declared, secrets.map((s) => s.name))];
   if (error) warnings.push({ path: "shadok-skill.json", message: error });
   const md = files.find((f) => f.path === "SKILL.md");
@@ -489,7 +511,12 @@ export function scanMain(
     if (fm && fm !== skill.name)
       warnings.push({ path: "SKILL.md", message: `frontmatter name "${fm}" differs from the factory name "${skill.name}"` });
   }
-  return { refusals: scan.refusals, warnings, secrets: declared };
+  // What the skill really uses: declared ∪ found in its code. An author who
+  // forgot to declare a name does not get a skill that breaks at 7 a.m.; the
+  // name is granted and shown, at acceptance, as "found in the code".
+  const found = detectSecrets(files, secrets.map((s) => s.name));
+  const detected = found.filter((n) => !declared.includes(n));
+  return { refusals: scan.refusals, warnings, secrets: [...declared, ...detected], detected, mcp };
 }
 
 /** Freeze `main` as release v<N+1>. Refusals block; warnings are recorded. */
@@ -516,6 +543,8 @@ export function cutRelease(
     at: Date.now(),
     ...(input.note?.trim() ? { note: input.note.trim().slice(0, 300) } : {}),
     secrets: scan.secrets,
+    ...(scan.detected.length ? { detectedSecrets: scan.detected } : {}),
+    mcp: scan.mcp,
     warnings: scan.warnings,
   };
   mutate(root, (reg) => {
@@ -609,8 +638,10 @@ export function resolveAttachments(
  * Read-only on disk: what an agent runs must not be editable in place.
  * Measured 2026-10-31: `claude --plugin-dir <this>` lists `<name>:<name>`.
  */
+export const pluginDirName = (name: string, rel: { n: number; tree: string }) => `${name}@${rel.n}-${rel.tree.slice(0, 8)}`;
+
 export function materialise(root: string, skill: FactorySkill, rel: Release): string {
-  const dir = path.join(pluginsDir(root), `${skill.name}@${rel.n}-${rel.tree.slice(0, 8)}`);
+  const dir = path.join(pluginsDir(root), pluginDirName(skill.name, rel));
   if (fs.existsSync(path.join(dir, ".claude-plugin", "plugin.json"))) return dir;
   const tmp = `${dir}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   const skillDir = path.join(tmp, "skills", skill.name);
@@ -646,20 +677,256 @@ export function pluginArgs(
   root: string,
   attachments: Attachment[] | undefined,
   group = MAIN_GROUP,
-): { args: string[]; running: { name: string; release: number; tree: string }[]; dropped: { skill: string; release: number; reason: string }[] } {
-  if (!attachments?.length) return { args: [], running: [], dropped: [] };
+): {
+  args: string[];
+  running: { name: string; release: number; tree: string }[];
+  /** Union of the running releases' requires.secrets: what the agent receives. */
+  secrets: string[];
+  dropped: { skill: string; release: number; reason: string }[];
+} {
+  if (!attachments?.length) return { args: [], running: [], secrets: [], dropped: [] };
   const { ok, dropped } = resolveAttachments(loadRegistry(root).skills, attachments, group);
   const args: string[] = [];
   const running: { name: string; release: number; tree: string }[] = [];
+  const secrets = new Set<string>();
   for (const { skill, release } of ok) {
     try {
       args.push("--plugin-dir", materialise(root, skill, release));
       running.push({ name: skill.name, release: release.n, tree: release.tree });
+      for (const n of release.secrets ?? []) secrets.add(n);
     } catch (e) {
       dropped.push({ skill: skill.name, release: release.n, reason: `could not materialise: ${(e as Error).message}` });
     }
   }
-  return { args, running, dropped };
+  return { args, running, secrets: [...secrets], dropped };
+}
+
+/** Pure: the secret names an agent's attachments grant it (accepted releases only). */
+export function grantedSecrets(skills: FactorySkill[], attachments: Attachment[] | undefined, group = MAIN_GROUP): string[] {
+  if (!attachments?.length) return [];
+  const out = new Set<string>();
+  for (const { release } of resolveAttachments(skills, attachments, group).ok) for (const n of release.secrets ?? []) out.add(n);
+  return [...out];
+}
+
+// ── Feedback: from the agents and people who USE a skill ────────────────────
+
+export const MAX_FEEDBACK = 50;
+
+export function addFeedback(root: string, idOrName: string, input: { by: string; text: string; release?: number }): Feedback {
+  const skill = mustSkill(root, idOrName);
+  const text = String(input.text ?? "").trim().slice(0, 2000);
+  if (!text) throw new FactoryError("feedback text required");
+  const f: Feedback = {
+    id: randomUUID().slice(0, 8),
+    by: input.by,
+    at: Date.now(),
+    ...(Number.isInteger(input.release) ? { release: input.release } : {}),
+    text,
+  };
+  mutate(root, (reg) => {
+    const s = reg.skills.find((x) => x.id === skill.id)!;
+    // Bounded: the open items first, then the newest closed ones.
+    const all = [...(s.feedback ?? []), f];
+    const open = all.filter((x) => !x.done).slice(-MAX_FEEDBACK);
+    // `slice(-0)` is the WHOLE array: room for zero closed items must keep zero.
+    const room = MAX_FEEDBACK - open.length;
+    const closed = room > 0 ? all.filter((x) => x.done).slice(-room) : [];
+    s.feedback = [...open, ...closed].sort((a, b) => a.at - b.at);
+  });
+  return f;
+}
+
+export function closeFeedback(root: string, idOrName: string, input: { id: string; by: string }): void {
+  const skill = mustSkill(root, idOrName);
+  mutate(root, (reg) => {
+    const f = reg.skills.find((x) => x.id === skill.id)!.feedback?.find((x) => x.id === input.id);
+    if (!f) throw new FactoryError("no such feedback", 404);
+    f.done = { by: input.by, at: Date.now() };
+  });
+}
+
+// ── Duplicate, adopt ─────────────────────────────────────────────────────────
+
+/** Rename a skill inside its own files: the frontmatter `name:` and the manifest's. */
+function renameChanges(files: ScanFile[], from: string, to: string, description?: string): { path: string; content: Buffer }[] {
+  const out: { path: string; content: Buffer }[] = [];
+  const md = files.find((f) => f.path === "SKILL.md");
+  if (md) {
+    let t = md.content.toString("utf8");
+    t = t.replace(/^(---\n[\s\S]*?^name:\s*)(.+)$/m, (_m, a) => a + to);
+    t = t.split(`/skills/${from}/`).join(`/skills/${to}/`);
+    if (description) t = t.replace(/^(---\n[\s\S]*?^description:\s*)(.+)$/m, (_m, a) => a + description);
+    out.push({ path: "SKILL.md", content: Buffer.from(t) });
+  }
+  const man = files.find((f) => f.path === "shadok-skill.json");
+  const { manifest } = parseManifest(man?.content.toString("utf8") ?? null);
+  out.push({
+    path: "shadok-skill.json",
+    content: Buffer.from(
+      JSON.stringify({ ...manifest, name: to, ...(description ? { description } : {}), requires: { secrets: manifest.requires?.secrets ?? [], ...(manifest.requires?.mcp?.length ? { mcp: manifest.requires.mcp } : {}) } }, null, 2) + "\n",
+    ),
+  });
+  return out;
+}
+
+/**
+ * A new skill starting from release N of another one. Its history begins with
+ * that release's commits (blame and diffs still make sense), then one commit
+ * renaming it. The two evolve apart from here; `origin` remembers where it came from.
+ */
+export function duplicateSkill(
+  root: string,
+  idOrName: string,
+  input: { name: string; release: number; description?: string; by: string },
+): FactorySkill {
+  const src = mustSkill(root, idOrName);
+  const rel = src.releases.find((r) => r.n === input.release);
+  if (!rel) throw new FactoryError(`no release v${input.release}`, 404);
+  const err = skillNameError(input.name);
+  if (err) throw new FactoryError(err);
+  if (findSkill(root, input.name)) throw new FactoryError(`a factory skill named ${input.name} already exists`, 409);
+  const id = randomUUID();
+  const d = repoPath(root, id);
+  execFileSync("git", ["init", "--bare", "-q", "-b", "main", d], { stdio: "pipe" });
+  git(d, ["fetch", "-q", repoPath(root, src.id), `refs/tags/v${rel.n}:refs/heads/main`]);
+  const description = (input.description ?? "").trim().replace(/\s+/g, " ").slice(0, 300) || src.description;
+  const commit = commitChanges(d, renameChanges(readFiles(root, id), src.name, input.name, description), `Duplicate ${src.name}@${rel.n} as ${input.name}`, null);
+  stamp(d, commit, input.by);
+  const skill: FactorySkill = {
+    id,
+    name: input.name,
+    description,
+    owner: MAIN_GROUP,
+    editors: [MAIN_GROUP],
+    users: [MAIN_GROUP],
+    createdBy: input.by,
+    createdAt: Date.now(),
+    releases: [],
+    acceptances: [],
+    origin: `${src.name}@${rel.n}`,
+  };
+  mutate(root, (reg) => reg.skills.push(skill));
+  return skill;
+}
+
+/** Skills in a Claude Code skills directory that could be adopted (never shadok's own). */
+export function adoptable(skillsDir: string, root: string): { dir: string; name: string; description: string; taken: boolean }[] {
+  let entries: fs.Dirent[] = [];
+  try {
+    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: { dir: string; name: string; description: string; taken: boolean }[] = [];
+  for (const e of entries) {
+    if (!e.isDirectory() || e.name.startsWith("shadok-") || e.name.startsWith(".")) continue;
+    const md = path.join(skillsDir, e.name, "SKILL.md");
+    if (!fs.existsSync(md)) continue;
+    const text = fs.readFileSync(md, "utf8");
+    const desc = /^description:\s*(.+)$/m.exec(/^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? "")?.[1]?.trim() ?? "";
+    out.push({ dir: e.name, name: e.name, description: desc.replace(/^["']|["']$/g, "").slice(0, 300), taken: !!findSkill(root, e.name) });
+  }
+  return out;
+}
+
+/**
+ * Import a skill folder as a new draft. Scanned like a push (a vault value in
+ * it is refused before anything is written); the original folder is only read.
+ */
+export function adoptSkill(
+  root: string,
+  input: { skillsDir: string; dir: string; name?: string; by: string; secrets: ScanSecret[] },
+): FactorySkill {
+  const name = input.name || input.dir;
+  const err = skillNameError(name);
+  if (err) throw new FactoryError(`${err} (rename it while adopting)`);
+  if (findSkill(root, name)) throw new FactoryError(`a factory skill named ${name} already exists`, 409);
+  if (input.dir.includes("/") || input.dir.startsWith(".")) throw new FactoryError("bad folder");
+  const base = path.join(input.skillsDir, input.dir);
+  if (!fs.existsSync(path.join(base, "SKILL.md"))) throw new FactoryError("no SKILL.md in that folder", 404);
+  const files: ScanFile[] = [];
+  const walk = (rel: string) => {
+    for (const e of fs.readdirSync(path.join(base, rel), { withFileTypes: true })) {
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.name === ".git" || e.name === "node_modules" || e.name === ".DS_Store") continue;
+      if (e.isDirectory()) walk(r);
+      else if (e.isFile()) files.push({ path: r, content: fs.readFileSync(path.join(base, r)) });
+      if (files.length > 400) throw new FactoryError("too many files to adopt");
+    }
+  };
+  walk("");
+  const scan = scanFiles(files, input.secrets);
+  for (const f of files) {
+    const e = skillPathError(f.path);
+    if (e) scan.refusals.push({ path: f.path, message: e });
+  }
+  if (scan.refusals.length) throw new FactoryError("refused by the scan", 422, scan);
+  const skill = createSkill(root, { name, description: "", by: input.by });
+  const d = repoPath(root, skill.id);
+  const hasManifest = files.some((f) => f.path === "shadok-skill.json");
+  const changes = files.map((f) => ({ path: f.path, content: f.content as Buffer | null }));
+  // The template's SKILL.md/manifest are replaced by the adopted ones; a
+  // missing manifest keeps the template's (empty requires — the scan's
+  // "undeclared env" warning then says what to declare).
+  if (!hasManifest) changes.push(...renameChanges(files, name, name).filter((c) => c.path === "shadok-skill.json"));
+  const commit = commitChanges(d, changes, `Adopt ${input.dir} from ~/.claude/skills`, null);
+  stamp(d, commit, input.by);
+  const desc = adoptable(input.skillsDir, root).find((a) => a.dir === input.dir)?.description ?? "";
+  mutate(root, (reg) => {
+    const s = reg.skills.find((x) => x.id === skill.id)!;
+    s.description = desc;
+    s.origin = `~/.claude/skills/${input.dir}`;
+  });
+  return { ...skill, description: desc, origin: `~/.claude/skills/${input.dir}` };
+}
+
+/**
+ * Delete the plugin directories nothing uses any more. Not housekeeping: an
+ * agent resumed onto v2 still has v1's ABSOLUTE script path in its history, and
+ * measured on 2.1.309 it re-ran that path rather than reloading the skill — so
+ * while v1's directory exists, an "updated" agent can silently keep running the
+ * old code. Gone, the old path fails and the agent reloads the skill, which
+ * hands it the current one. `keep` = every directory an attachment or a running
+ * process still references.
+ */
+export function prunePlugins(root: string, keep: Set<string>): string[] {
+  const dir = pluginsDir(root);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  const removed: string[] = [];
+  for (const n of names) {
+    if (keep.has(n) || n.includes(".tmp-")) continue;
+    const p = path.join(dir, n);
+    try {
+      // Materialised read-only: give write back to the tree before removing it.
+      const walk = (q: string) => {
+        fs.chmodSync(q, 0o700);
+        if (fs.statSync(q).isDirectory()) for (const e of fs.readdirSync(q)) walk(path.join(q, e));
+      };
+      walk(p);
+      fs.rmSync(p, { recursive: true, force: true });
+      removed.push(n);
+    } catch {
+      /* best effort — a directory we could not remove only costs disk */
+    }
+  }
+  return removed;
+}
+
+/** Plugin directory names an attachment list resolves to (accepted or not — keep is conservative). */
+export function attachmentDirNames(skills: FactorySkill[], attachments: Attachment[] | undefined): string[] {
+  const out: string[] = [];
+  for (const a of attachments ?? []) {
+    const s = skills.find((x) => x.id === a.skill || x.name === a.skill);
+    const rel = s?.releases.find((r) => r.n === a.release);
+    if (s && rel) out.push(pluginDirName(s.name, rel));
+  }
+  return out;
 }
 
 /** Pure: is `main` ahead of the latest release (so "unreleased changes")? */

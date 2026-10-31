@@ -246,22 +246,35 @@ Enter to skip; you can add it later from the web UI).
   buried the chat, so the cockpit folds it into a collapsible **Context summary**
   box: collapsed by default, one click to read it, capped and scrolling even when
   open. It is still real history — just out of the way.
-- **Skill Factory** — the flask icon in the header. Write a Claude Code skill
-  together, people and agents alike, then run it in the agents that need it.
-  Each skill is a git history held by the server: a person edits files in the
-  panel (each save is a commit), or clicks **Work on it with an agent** to start
-  a `Shadok-Skillsmith` agent in a clone of it. That agent pushes its commits
-  through the `shadok-factory` skill, fast-forward only. A **release** (`v1`,
-  `v2`…) freezes the skill. Once **accepted** (you review its diff), it can be
-  **attached** to an agent, which loads it with `--plugin-dir` at its next
-  reload. The skill shows up as `<name>:<name>`, and only in that agent. A
-  cron uses the skills of the agent it drives. Secrets travel by name only:
-  `shadok-skill.json` lists the ones it needs (green or red chips, depending
-  on whether the vault has them). Any save or push that contains a vault value
-  is refused before it reaches the history. Releasing and deleting are admin
-  acts; a Skillsmith starts with no secrets. Design:
-  `docs/superpowers/specs/2026-10-29-skill-factory-design.md` (phase 2,
-  single-tenant; sharing between groups comes with the multi-tenant work).
+- **Skill Factory**: the flask icon in the header. Write a Claude Code skill
+  together, people and agents alike, then run it in the agents and crons that
+  need it.
+  - **Writing.** Each skill is a git history held by the server. A person edits
+    files in the panel (each save is a commit). **Work on it with an agent**
+    starts a `Shadok-Skillsmith` in a clone; it pushes through the
+    `shadok-factory` skill, fast-forward only. **Import** brings in a skill
+    already in `~/.claude/skills`, and **Duplicate** starts a variant from a
+    release.
+  - **Running.** Any editor **releases** a version (`v1`, `v2`…). A person
+    **accepts** it after reviewing its diff and the secrets it will receive.
+    Then it is **attached** to an agent, which loads it with `--plugin-dir` at
+    its next reload. It shows up as `<name>:<name>`, and only in that agent.
+  - **Born with it, scheduled with it.** An agent can be born with a skill (a
+    picker in the new-agent dialog, or `pilotctl spawn --skill name[@N]`).
+    **Run on a schedule…** attaches a skill and writes a daily or interval cron
+    in one dialog.
+  - **Updates.** **Update N agents** moves every agent on an older release to
+    the new one and reloads the idle ones. Agents that run a skill report what
+    is wrong with `factory.mjs feedback`, and the next Skillsmith starts from it.
+  - **Secrets travel by name.** A release grants its agents the secrets it
+    declares in `shadok-skill.json`, plus any vault name its code reads (shown
+    as "found in the code"). Per-agent chips say what each agent receives, and
+    whether its profile has the MCP servers the skill expects. Any save or push
+    holding a vault value is refused before it reaches the history.
+  - Deleting a skill is an admin act. A Skillsmith starts with no secrets.
+  - Design: `docs/superpowers/specs/2026-10-29-skill-factory-design.md`.
+    Single-tenant today; sharing between groups comes with the multi-tenant
+    work.
 - **Diff panel** — what an agent actually changed, against its base.
 - **What an agent left running, on its tab** — a turning ⏳ for background
   shells, a still 👁 for monitors, each with its count past one. Claude Code

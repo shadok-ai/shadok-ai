@@ -7,6 +7,7 @@
 //   factory.mjs status <skill>       what you have not pushed yet
 //   factory.mjs scan <skill>         what a release would say right now (server-side)
 //   factory.mjs push <skill>         send your new commits (fast-forward only)
+//   factory.mjs feedback <skill> "…" tell the people who maintain it what went wrong / is missing
 //
 // The clone lives in ~/.shadok-factory/<skill>. Commit there with plain git;
 // this script only moves bundles. A push is refused when someone else pushed
@@ -22,7 +23,7 @@ const die = (m) => {
   process.exit(1);
 };
 const [cmd, name] = process.argv.slice(2);
-const usage = "usage: factory.mjs list | pull <skill> | status <skill> | scan <skill> | push <skill>";
+const usage = 'usage: factory.mjs list | pull <skill> | status <skill> | scan <skill> | push <skill> | feedback <skill> "<text>"';
 if (!cmd || cmd === "--help" || cmd === "-h") die(usage);
 
 const port = process.env.SHADOK_PORT;
@@ -143,6 +144,13 @@ if (cmd === "list") {
   }
 } else if (cmd === "pull") await pull(name);
 else if (cmd === "push") await push(name);
+else if (cmd === "feedback") {
+  const text = process.argv.slice(4).join(" ").trim();
+  if (!text) die('usage: factory.mjs feedback <skill> "what went wrong or is missing"');
+  const s = await idOf(name);
+  await json("POST", `/factory/skills/${s.id}/feedback`, { text });
+  console.log(`noted on ${s.name}. The people who maintain it will see it on its card, and the next Skillsmith starts from it.`);
+}
 else if (cmd === "status") {
   const dir = cloneOf((await idOf(name)).name);
   if (!fs.existsSync(path.join(dir, ".git"))) die(`no clone yet — run: factory.mjs pull ${name}`);

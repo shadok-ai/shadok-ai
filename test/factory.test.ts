@@ -243,3 +243,102 @@ test("resolveAttachments: every reason to drop is explicit", () => {
   const moved = { ...skill, releases: [{ ...skill.releases[0], tree: "t2" }] };
   assert.equal(resolveAttachments([moved], [{ skill: "k", release: 1 }], "marketing").ok.length, 0);
 });
+
+// ── What the use cases needed (2026-10-31) ───────────────────────────────────
+
+import { adoptable, adoptSkill, addFeedback, closeFeedback, duplicateSkill, grantedSecrets, loadRegistry } from "../src/factory.js";
+import { detectSecrets, parseManifest } from "../src/factory-scan.js";
+
+test("secrets a skill USES are detected from its code — vault names only, never $HOME", () => {
+  const files = [f("scripts/post.sh", 'curl -H "Bearer $SLACK_BOT_TOKEN" "$HOME/x"'), f("SKILL.md", "run with ${LINEAR_KEY:-none}")];
+  assert.deepEqual(detectSecrets(files, ["SLACK_BOT_TOKEN", "LINEAR_KEY", "UNUSED"]), ["LINEAR_KEY", "SLACK_BOT_TOKEN"]);
+});
+
+test("a release grants declared ∪ detected secrets, and says which were only detected", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "daily-slack", by: "m" });
+  saveFile(root, s.id, { path: "scripts/post.sh", content: "curl -d @- $SLACK_WEBHOOK\n", base: null, by: "m", secrets: [] });
+  saveFile(root, s.id, { path: "shadok-skill.json", content: JSON.stringify({ name: "daily-slack", requires: { secrets: ["SLACK_BOT_TOKEN"], mcp: ["slack", "bad name!"] } }), base: null, by: "m", secrets: [] });
+  const vault = [{ name: "SLACK_WEBHOOK", value: "https://hooks.example/xyz123" }, { name: "SLACK_BOT_TOKEN", value: "xoxb-not-in-the-files" }];
+  const rel = cutRelease(root, s.id, { by: "m", secrets: vault });
+  assert.deepEqual(rel.secrets, ["SLACK_BOT_TOKEN", "SLACK_WEBHOOK"]);
+  assert.deepEqual(rel.detectedSecrets, ["SLACK_WEBHOOK"]);
+  assert.deepEqual(rel.mcp, ["slack"]); // an invalid name is dropped, never stored
+  // Granted only once accepted for the group.
+  const skills = () => loadRegistry(root).skills;
+  assert.deepEqual(grantedSecrets(skills(), [{ skill: s.id, release: 1 }]), []);
+  accept(root, s.id, { group: MAIN_GROUP, release: 1, by: "m" });
+  assert.deepEqual(grantedSecrets(skills(), [{ skill: s.id, release: 1 }]).sort(), ["SLACK_BOT_TOKEN", "SLACK_WEBHOOK"]);
+  assert.deepEqual(pluginArgs(root, [{ skill: s.id, release: 1 }]).secrets.sort(), ["SLACK_BOT_TOKEN", "SLACK_WEBHOOK"]);
+});
+
+test("manifest secret names must be env var names (they become env keys)", () => {
+  const { manifest } = parseManifest(JSON.stringify({ requires: { secrets: ["OK_NAME", "rm -rf", "A=B", 3] } }));
+  assert.deepEqual(manifest.requires!.secrets, ["OK_NAME"]);
+});
+
+test("feedback: added with who and which release, closed, bounded", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "fb", by: "a" });
+  const f1 = addFeedback(root, s.id, { by: "agent:dev/1234", text: "misses the Instagram numbers", release: 2 });
+  assert.equal(findSkill(root, s.id)!.feedback![0].release, 2);
+  assert.throws(() => addFeedback(root, s.id, { by: "x", text: "   " }), /required/);
+  closeFeedback(root, s.id, { id: f1.id, by: "bob" });
+  assert.equal(findSkill(root, s.id)!.feedback![0].done!.by, "bob");
+  for (let i = 0; i < 60; i++) addFeedback(root, s.id, { by: "x", text: "n" + i });
+  assert.ok(findSkill(root, s.id)!.feedback!.length <= 50);
+});
+
+test("duplicate starts a new history from a release, renamed, with its origin", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "summary", description: "daily", by: "a" });
+  saveFile(root, s.id, { path: "scripts/run.sh", content: "bash ${CLAUDE_PLUGIN_ROOT}/skills/summary/x\n", base: null, by: "a", secrets: [] });
+  cutRelease(root, s.id, { by: "a", secrets: [] });
+  saveFile(root, s.id, { path: "later.md", content: "after v1", base: null, by: "a", secrets: [] });
+  const d = duplicateSkill(root, s.id, { name: "competitor-digest", release: 1, by: "b" });
+  assert.equal(d.origin, "summary@1");
+  assert.match(readFile(root, d.id, "SKILL.md")!, /^name: competitor-digest$/m);
+  assert.equal(JSON.parse(readFile(root, d.id, "shadok-skill.json")!).name, "competitor-digest");
+  assert.equal(readFile(root, d.id, "later.md"), null); // from v1, not from main
+  assert.ok(log(root, d.id).length >= 3); // the source history is kept
+  assert.equal(readFile(root, s.id, "SKILL.md")!.includes("competitor-digest"), false); // source untouched
+});
+
+test("adopt imports a ~/.claude/skills folder as a draft; never shadok's own; scanned first", (t) => {
+  const root = scratch(t);
+  const dir = scratch(t);
+  fs.mkdirSync(path.join(dir, "ticket", "scripts"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "ticket", "SKILL.md"), "---\nname: ticket\ndescription: Implement a Linear ticket end to end\n---\nbody");
+  fs.writeFileSync(path.join(dir, "ticket", "scripts", "go.sh"), "echo $LINEAR_KEY");
+  fs.mkdirSync(path.join(dir, "shadok-files"));
+  fs.writeFileSync(path.join(dir, "shadok-files", "SKILL.md"), "x");
+  fs.mkdirSync(path.join(dir, "leaky"));
+  fs.writeFileSync(path.join(dir, "leaky", "SKILL.md"), `token ${SECRET.value}`);
+  assert.deepEqual(adoptable(dir, root).map((a) => a.name).sort(), ["leaky", "ticket"]);
+  const s = adoptSkill(root, { skillsDir: dir, dir: "ticket", by: "eng", secrets: [SECRET] });
+  assert.equal(s.description, "Implement a Linear ticket end to end");
+  assert.equal(readFile(root, s.id, "scripts/go.sh"), "echo $LINEAR_KEY");
+  assert.ok(readFile(root, s.id, "shadok-skill.json")); // a manifest is added when missing
+  assert.ok(adoptable(dir, root).find((a) => a.name === "ticket")!.taken);
+  assert.throws(() => adoptSkill(root, { skillsDir: dir, dir: "leaky", by: "eng", secrets: [SECRET] }), /refused by the scan/);
+  assert.equal(findSkill(root, "leaky"), undefined);
+  assert.ok(fs.existsSync(path.join(dir, "ticket", "SKILL.md"))); // original untouched
+});
+
+import { attachmentDirNames, prunePlugins } from "../src/factory.js";
+
+test("prune removes release dirs nothing references — the old path an updated agent would re-run", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "pr", by: "a" });
+  cutRelease(root, s.id, { by: "a", secrets: [] });
+  saveFile(root, s.id, { path: "b.md", content: "2", base: null, by: "a", secrets: [] });
+  cutRelease(root, s.id, { by: "a", secrets: [] });
+  accept(root, s.id, { group: MAIN_GROUP, release: 1, by: "a" });
+  accept(root, s.id, { group: MAIN_GROUP, release: 2, by: "a" });
+  const d1 = pluginArgs(root, [{ skill: s.id, release: 1 }]).args[1];
+  const d2 = pluginArgs(root, [{ skill: s.id, release: 2 }]).args[1];
+  const keep = new Set(attachmentDirNames(loadRegistry(root).skills, [{ skill: s.id, release: 2 }]));
+  assert.deepEqual(prunePlugins(root, keep), [path.basename(d1)]);
+  assert.equal(fs.existsSync(d1), false); // read-only tree, removed all the same
+  assert.equal(fs.existsSync(d2), true);
+});
