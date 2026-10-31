@@ -130,6 +130,22 @@ export function envReads(text: string): string[] {
 }
 
 /**
+ * The vault secrets a skill USES, read from its code rather than from what its
+ * author remembered to declare: every env read (scripts AND SKILL.md, whose
+ * bash snippets the agent runs) whose name is a known vault secret. Only vault
+ * names count — otherwise $HOME and $PATH would be "secrets". Pure.
+ */
+export function detectSecrets(files: ScanFile[], vaultNames: string[]): string[] {
+  const vault = new Set(vaultNames);
+  const out = new Set<string>();
+  for (const f of files) {
+    if (f.path === "shadok-skill.json") continue;
+    for (const n of envReads(f.content.toString("utf8"))) if (vault.has(n)) out.add(n);
+  }
+  return [...out].sort();
+}
+
+/**
  * Release-time warnings that need the manifest: a script reading a vault secret
  * it does not declare (it would show bound here and break in the next group),
  * and a script relying on $CLAUDE_PLUGIN_ROOT — measured 2026-10-31 on 2.1.309:
@@ -182,7 +198,9 @@ export function skillPathError(p: unknown): string | null {
 export interface Manifest {
   name?: string;
   description?: string;
-  requires?: { secrets?: string[] };
+  /** secrets: env var NAMES the skill reads (granted at acceptance); mcp: MCP
+   *  servers it expects the agent's profile to carry (informative only). */
+  requires?: { secrets?: string[]; mcp?: string[] };
 }
 
 /** Read `shadok-skill.json` leniently: a broken manifest is a warning, not a crash. */
@@ -191,10 +209,12 @@ export function parseManifest(raw: string | null): { manifest: Manifest; error?:
   try {
     const m = JSON.parse(raw);
     if (!m || typeof m !== "object") return { manifest: {}, error: "shadok-skill.json is not an object" };
-    const secrets = Array.isArray(m.requires?.secrets)
-      ? m.requires.secrets.filter((s: unknown): s is string => typeof s === "string")
-      : [];
-    return { manifest: { name: m.name, description: m.description, requires: { secrets } } };
+    const names = (v: unknown, re: RegExp) =>
+      Array.isArray(v) ? [...new Set(v.filter((x: unknown): x is string => typeof x === "string" && re.test(x)))] : [];
+    // An env var name, nothing else: these names end up as keys of a process env.
+    const secrets = names(m.requires?.secrets, /^[A-Za-z_][A-Za-z0-9_]*$/);
+    const mcp = names(m.requires?.mcp, /^[A-Za-z0-9_.-]{1,64}$/);
+    return { manifest: { name: m.name, description: m.description, requires: { secrets, mcp } } };
   } catch {
     return { manifest: {}, error: "shadok-skill.json is not valid JSON" };
   }

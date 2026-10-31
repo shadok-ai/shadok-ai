@@ -529,10 +529,24 @@ named in the body.
 3. **Groups** — owner / editors / users, the per-group panel and 🧩 in the groups
    bar, revocation, owner-destruction transfer. With (or after) the multi-tenant
    work.
-2b. **What the two use cases need** (single-tenant, before groups): gaps 1–3
-   (skill secrets granted at acceptance, editors release, one-click update),
-   then 5 (schedule from the card), 6 (feedback), 8 (adopt), 4 (born with the
-   skill), 7 (duplicate), 9 (`requires.mcp`).
+2b. **What the two use cases need**: **built 2026-10-31**. Gaps 1–9, except
+   the group default skills of gap 4 (phase 3). Two things changed on the way:
+   - **"Which secret does this skill use?" no longer depends on the author.**
+     Asked by the product owner: a user cannot be expected to know which
+     secrets a skill needs. A release now grants `requires.secrets` ∪ every
+     vault name its scripts or SKILL.md read (`detectSecrets`). The accept
+     screen lists them all, marking the undeclared ones "found in the code".
+     The person accepting therefore sees the real list, and the agent gets
+     what the code needs even if nobody declared it. Only vault names count,
+     so `$HOME` is never a "secret".
+   - **Old release directories must be deleted for an update to take effect.**
+     Measured end to end: after "Update 1 agent to v2" the agent was reloaded
+     onto v2, yet it answered with v1. It re-ran v1's absolute script path from
+     its own history, and that directory still existed. `prunePlugins` now
+     removes every release directory nothing references (attachments, pending
+     spawns, running processes). The old path then fails, and the agent
+     reloads the skill. Verified: the same agent then ran v3 and said
+     "the plugin was updated (now @3)".
 4. **Later** — group default skills (phase 3, gap 4), skill-script cron checks
    (scoped secrets), cross-org peers.
 

@@ -5,8 +5,11 @@
  * Who may do what (phase 2, single-tenant — the one group is `main`):
  * - READ (list, tree, file, log, diff, bundle, scan): anyone past the password
  *   gate, an agent included (by its session key).
- * - WRITE by a person: same-origin browser only (create, save a file, accept,
- *   attach). Releasing and deleting a `Main` skill are admin acts.
+ * - WRITE by a person: same-origin browser only (create, save, release, accept,
+ *   attach, update, duplicate, adopt). Release is open to every editor — it is
+ *   not the gate, acceptance is; deleting a `Main` skill stays an admin act.
+ * - FEEDBACK: any agent (session key) or person — the agents that USE a skill
+ *   are the ones that find what is wrong with it.
  * - PUSH by an agent: its session key, and its channel's profile must be the
  *   managed `Shadok-Skillsmith`. Not every agent of the group: on a
  *   single-tenant instance that would be every agent on the machine.
@@ -16,8 +19,14 @@ import fs from "node:fs";
 import path from "node:path";
 import express, { type Express, type Request, type Response } from "express";
 import type { Channel } from "./channels.js";
+import os from "node:os";
 import {
   accept,
+  addFeedback,
+  adoptable,
+  adoptSkill,
+  closeFeedback,
+  duplicateSkill,
   bundleOf,
   createSkill,
   cutRelease,
@@ -58,6 +67,12 @@ export interface FactoryDeps {
   upsertChannel(patch: Partial<Channel> & { sessionId: string }): void;
   /** Re-evaluate an agent's reload indicator after its attachments changed. */
   onAttachmentsChanged(sessionId: string): void;
+  /** Remove release directories nothing references any more (see `prunePlugins`). */
+  prune(): void;
+  /** Reload an agent now if it is idle; otherwise it is only marked stale. */
+  reloadIfIdle(sessionId: string): "reloaded" | "stale" | "offline";
+  /** The MCP server names an agent's profile carries (for `requires.mcp`). */
+  agentMcp(sessionId: string): string[];
   audit(row: Record<string, unknown>): void;
 }
 
@@ -85,15 +100,28 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       head,
       unreleased: unreleased(s, head),
       bindings: required.map((name) => ({ name, bound: vaultNames.has(name) })),
+      latestAccepted: latestAccepted(s)?.n ?? null,
       attachedTo: channels
         .filter((c) => c.skills?.some((a) => a.skill === s.id))
-        .map((c) => ({
-          sessionId: c.sessionId,
-          name: c.name ?? c.sessionId.slice(0, 8),
-          release: c.skills!.find((a) => a.skill === s.id)!.release,
-        })),
+        .map((c) => {
+          const release = c.skills!.find((a) => a.skill === s.id)!.release;
+          const rel = s.releases.find((r) => r.n === release);
+          const mcpHave = new Set(deps.agentMcp(c.sessionId));
+          return {
+            sessionId: c.sessionId,
+            name: c.name ?? c.sessionId.slice(0, 8),
+            release,
+            // What THIS agent gets: each granted secret, present in the vault or not.
+            secrets: (rel?.secrets ?? []).map((n) => ({ name: n, bound: vaultNames.has(n), detected: !!rel?.detectedSecrets?.includes(n) })),
+            mcp: (rel?.mcp ?? []).map((n) => ({ name: n, present: mcpHave.has(n) })),
+            update: (latestAccepted(s)?.n ?? 0) > release ? latestAccepted(s)!.n : null,
+          };
+        }),
+      feedback: (s.feedback ?? []).slice().reverse(),
     };
   };
+  const latestAccepted = (s: FactorySkill) =>
+    [...s.releases].reverse().find((r) => s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === r.n && a.tree === r.tree));
 
   const by = (req: Request): string => {
     const agent = deps.callerOf(req);
@@ -119,7 +147,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     res.json({
       group: MAIN_GROUP,
       skills: loadRegistry(root()).skills.map((s) => view(s, channels, names)),
-      agents: channels.map((c) => ({ sessionId: c.sessionId, name: c.name ?? c.sessionId.slice(0, 8), skills: c.skills ?? [] })),
+      agents: channels.map((c) => ({ sessionId: c.sessionId, name: c.name ?? c.sessionId.slice(0, 8), skills: c.skills ?? [], mcp: deps.agentMcp(c.sessionId) })),
     });
   });
 
@@ -272,8 +300,10 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
 
   // ── Release, accept, attach — a person's clicks ───────────────────────────
   app.post("/factory/skills/:id/release", (req, res) => {
-    // A `Main` skill is a house asset: publishing it is an admin act (spec [CALL]).
-    if (!deps.requireAdmin(req, res, "release a skill")) return;
+    // Any editor releases (revised 2026-10-31): a release runs nowhere until a
+    // person of the running group accepts it, so gating it on admin only blocked
+    // the people who improve the skill, and protected nothing.
+    if (!browser(req, res)) return;
     const s = skillOr404(req, res);
     if (!s) return;
     try {
@@ -304,6 +334,101 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
   });
 
   /**
+   * Move every agent running an older release of this skill to release N (it
+   * must be accepted), and reload the idle ones now — an explicit click, so an
+   * explicit respawn. Busy agents are only marked stale: their own reload applies it.
+   */
+  app.post("/factory/skills/:id/update", (req, res) => {
+    if (!browser(req, res)) return;
+    const s = skillOr404(req, res);
+    if (!s) return;
+    const rel = s.releases.find((r) => r.n === Number(req.body?.release));
+    if (!rel) return res.status(404).json({ error: "no such release" });
+    if (!s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree))
+      return res.status(409).json({ error: `v${rel.n} has not been accepted yet` });
+    const out: { name: string; result: string }[] = [];
+    for (const c of deps.loadChannels()) {
+      const cur = c.skills?.find((a) => a.skill === s.id);
+      if (!cur || cur.release >= rel.n) continue;
+      deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
+      deps.onAttachmentsChanged(c.sessionId);
+      out.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
+    }
+    deps.prune();
+    deps.audit({ action: "update", skill: s.name, release: rel.n, agents: out.length, by: by(req) });
+    res.json({ updated: out });
+  });
+
+  /** Feedback: an agent that USED the skill (session key), or a person. */
+  app.post("/factory/skills/:id/feedback", (req, res) => {
+    const agent = deps.callerOf(req);
+    if (!agent.id && !deps.requestFromBrowser(req))
+      return res.status(403).json({ error: "feedback comes from an agent (session key) or the cockpit" });
+    const s = skillOr404(req, res);
+    if (!s) return;
+    try {
+      // The release the reporting agent runs, when it runs this skill at all.
+      const running = agent.id
+        ? deps.loadChannels().find((c) => c.sessionId === agent.id)?.skills?.find((a) => a.skill === s.id)?.release
+        : undefined;
+      const f = addFeedback(root(), s.id, { by: by(req), text: String(req.body?.text ?? ""), release: running });
+      deps.audit({ action: "feedback", skill: s.name, id: f.id, by: by(req) });
+      res.json({ feedback: f });
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
+  app.post("/factory/skills/:id/feedback/:fid/done", (req, res) => {
+    if (!browser(req, res)) return;
+    const s = skillOr404(req, res);
+    if (!s) return;
+    try {
+      closeFeedback(root(), s.id, { id: String(req.params.fid), by: by(req) });
+      res.json({ ok: true });
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
+  app.post("/factory/skills/:id/duplicate", (req, res) => {
+    if (!browser(req, res)) return;
+    const s = skillOr404(req, res);
+    if (!s) return;
+    try {
+      const release = req.body?.release != null ? Number(req.body.release) : s.releases[s.releases.length - 1]?.n;
+      const d = duplicateSkill(root(), s.id, { name: String(req.body?.name ?? ""), release, description: req.body?.description, by: by(req) });
+      deps.audit({ action: "duplicate", skill: d.name, origin: d.origin, by: by(req) });
+      res.json({ skill: d });
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
+  /** Skills already on this machine (~/.claude/skills) that can be brought in. */
+  const skillsDir = () => process.env.SHADOK_ADOPT_DIR || path.join(os.homedir(), ".claude", "skills");
+  app.get("/factory/adoptable", (_req, res) => {
+    res.json({ dir: skillsDir(), skills: adoptable(skillsDir(), root()) });
+  });
+
+  app.post("/factory/adopt", (req, res) => {
+    if (!browser(req, res)) return;
+    try {
+      const s = adoptSkill(root(), {
+        skillsDir: skillsDir(),
+        dir: String(req.body?.dir ?? ""),
+        name: typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : undefined,
+        by: by(req),
+        secrets: secretsOf(deps.vault()),
+      });
+      deps.audit({ action: "adopt", skill: s.name, origin: s.origin, by: by(req) });
+      res.json({ skill: s });
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
+  /**
    * Attach (release N) or detach (release null) a skill on an agent. Never
    * respawns: it marks the agent stale and the person reloads it — killing a
    * working agent because someone clicked in another panel is what the reload
@@ -327,8 +452,12 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     }
     deps.upsertChannel({ sessionId, skills: rest });
     deps.onAttachmentsChanged(sessionId);
+    // `reload: true` — the person asked for it in the same click ("Run on a
+    // schedule…" on an existing agent): reload now if idle, else mark stale.
+    const reload = req.body?.reload === true ? deps.reloadIfIdle(sessionId) : undefined;
+    deps.prune();
     deps.audit({ action: release === null ? "detach" : "attach", skill: s.name, release, agent: sessionId, by: by(req) });
-    res.json({ ok: true, skills: rest, note: "applies when the agent is reloaded" });
+    res.json({ ok: true, skills: rest, ...(reload ? { reload } : {}), note: "applies when the agent is reloaded" });
   });
 }
 

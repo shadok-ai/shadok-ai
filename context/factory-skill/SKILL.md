@@ -18,9 +18,18 @@ node $F pull <skill>         # clone into ~/.shadok-factory/<skill>, or update i
 node $F status <skill>       # what you have not pushed yet
 node $F scan <skill>         # what a release would say (refusals, warnings)
 node $F push <skill>         # send your commits
+node $F feedback <skill> "the report misses the Instagram numbers"
 ```
 
 Only an agent on the `Shadok-Skillsmith` role may push. Anyone may pull.
+
+## Using a skill and finding it wrong: feedback
+
+If you RUN a factory skill (it shows up as `<name>:<name>`) and it is wrong,
+outdated or missing something, do not work around it in silence. Say it with
+`feedback`, in one or two sentences. It lands on the skill's card for the people
+who maintain it, and the next Skillsmith starts from it. You do not need the
+Skillsmith role for that. Fixing shared code is the Skillsmith's job, not yours.
 
 ## The loop
 
