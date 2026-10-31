@@ -1,54 +1,59 @@
 # Skill Factory — co-write a skill across one or more groups, then run it in an agent or a cron
 
-Status: **Draft for review** — revised 2026-10-31. Points settled are marked
-**[DECIDED]**, calls the author made that a builder could not settle alone
-**[CALL]**, points left open **[OPEN]** (each with a recommendation). Nothing here
-is built.
+Status: **Draft for review** — revised 2026-10-31, then challenged and partly
+measured the same day. Points settled are marked **[DECIDED]**, calls the author
+made that a builder could not settle alone **[CALL]**, points left open
+**[OPEN]** (each with a recommendation). Nothing here is built.
 
 > **What changed since the 2026-10-29 draft (read this if you saw it).**
 > 1. **Vocabulary realigned on the multi-tenant spec** as it stands after #362–#364
->    (`2026-10-29-multi-tenant-scoped-isolation-design.md`): there are no more
->    `owner` / `group` / `instance` *scopes* and no "team" — there is **one
->    concept, the group**, with three natures (private / restricted / public), and
->    `Main` is the public commons. Everything below is written in those words.
-> 2. **A skill is now shared between ONE OR MORE groups**, with two separate
->    rights — *edit* (co-write the draft) and *use* (run it) — instead of a single
->    "share" verb. That is the request this revision answers: work on a skill
->    together, across groups, without breaking the walls.
-> 3. **"Use it in an agent / a cron" is now designed** (it was missing). A skill
->    is attached to a **profile**, an **agent**, or a **cron**, and reaches the
->    process through `claude --plugin-dir` at spawn — per process, never by
->    writing into `~/.claude/skills`. This also settles the old "per-profile
->    skills" open question.
-> 4. **The Secrets tab is removed from this spec.** The multi-tenant spec now owns
->    the secrets panel, group by group (#362). This spec only *consumes* secrets
->    (a skill names them; the group supplies them). The rotation-staleness idea
->    from the old draft is listed under "Handed to other specs".
+>    (`2026-10-29-multi-tenant-scoped-isolation-design.md`): no more `owner` /
+>    `group` / `instance` *scopes*, no "team" — **one concept, the group**, with
+>    three natures (private / restricted / public), and `Main` as the public
+>    commons.
+> 2. **A skill is shared between ONE OR MORE groups**, with two separate rights —
+>    *edit* (co-write) and *use* (run).
+> 3. **"Use it in an agent / a cron" is designed**: a release reaches an agent
+>    through `claude --plugin-dir` at spawn, per process, never by writing into
+>    `~/.claude/skills`. A cron uses what its target agent carries.
+> 4. **The Secrets tab is removed** — the multi-tenant spec owns the per-group
+>    secrets panel (#362). This spec only consumes secrets.
+>
+> **What the challenge pass changed (same day).** An adversarial review found a
+> cross-group supply chain (code written by one group running with another
+> group's secrets, with no human of the running group in the loop) and a
+> cross-wall oracle in the scan. Fixes folded in: **a release runs in a group only
+> once a person of that group accepted its exact tree hash**; no auto-follow; the
+> Skillsmith runs draft code with **no secrets**; the vault scan runs **at push**,
+> against what the pusher could have pasted; profile attachments, `Cron.skills`
+> and skill-script cron checks are **cut from v1**; nothing respawns implicitly;
+> the fate of a skill whose owner group is destroyed is now specified. See
+> "Challenge log" at the end for what was accepted, adjusted or refused.
 
 ## The whole thing in one page
 
-**A skill is a thing with one owner group, a list of groups that may co-write
-it, and a list of groups that may use it.** Private by default; every share is an
-explicit act. That is the multi-tenant spec's one rule ("you only see and touch
-your own groups + the public") and its one gesture ("to cross a wall, make one
-deliberate outbound move") applied to skills.
+**A skill has one owner group, a list of groups that may co-write it (editors),
+and a list of groups that may run it (users).** Private by default; every share is
+an explicit act. That is the multi-tenant spec's one rule ("you only see and
+touch your own groups + the public") and its one gesture ("to cross a wall, make
+one deliberate outbound move") applied to skills.
 
-- **Write it together** — a draft is a git history held by the server. Every
-  editor (a person in the browser, or a `Shadok-Skillsmith` agent in any editor
-  group) works on its own clone and **pushes**; the server is the `origin`, and it
-  checks the pusher's group on every push. It is the multi-tenant spec's "code
-  circulates by origin, never by the disk", with shadok as the origin.
-- **Freeze it** — a **release** (`name@3`) is an immutable tag, cut by a person,
-  after a deterministic scan that refuses any vault value in the files.
-- **Run it** — a release is **attached** to a profile, an agent or a cron. At
-  spawn, the server hands the agent the releases it is attached to, through
-  `--plugin-dir`, **only if the agent's group holds the use right**. A cron can
-  additionally run a skill's script as its zero-token `check`.
+- **Write it together** — a draft is a git history held by the server. Editors (a
+  person, or a `Shadok-Skillsmith` agent in an editor group) work on clones and
+  **push**; the server is the `origin`, checks the pusher on every push, scans
+  each push for vault values, and accepts fast-forwards only.
+- **Freeze it** — a **release** (`name@3`) is an immutable tag cut by a person.
+- **Run it** — a person of the **using** group accepts a release (its exact tree
+  hash) and attaches it to an agent of their group. At spawn the agent receives it
+  through `--plugin-dir`. A cron simply drives an agent that carries it.
 
-**The secrets rule is unchanged and is what makes cross-group sharing safe:** a
-skill carries secret **names**, never values. Whoever *uses* it supplies the
-values from its own group (own → shared-in → `Main` → absent). Sharing a skill
-shares prose and code; the vault never crosses a wall.
+**Two rules make cross-group sharing safe:**
+
+1. **Names travel, values don't.** A skill carries secret *names*; the group
+   that runs it supplies the values (own → shared-in → `Main` → absent).
+2. **Code crosses a wall only through a human of the receiving side.** A release
+   written by MARKETING runs in SALES only after a SALES person has seen it and
+   accepted that exact tree. Nothing updates on its own.
 
 ## Intent and why
 
@@ -58,90 +63,74 @@ Skills are the reusable know-how of a hybrid company — "how we qualify a lead"
 - shadok only knows the skills it **seeds itself** (`seed*Skill`, copied over
   `~/.claude/skills/` at every boot). A skill a person writes is a loose folder on
   one machine: no version, no history, no review, no owner.
-- every agent on the machine loads **every** skill in `~/.claude/skills`, so there
-  is no way to give the deploy skill to `Shadok-Release` only, or the HR skill to
-  the HR group only.
-- under the multi-tenant design, each isolated group has its own HOME. A skill
-  written in SALES's HOME is unreachable from MARKETING — which is correct for
-  *files*, and wrong for a skill both teams want to build together.
-
-The factory is where a skill is **co-written** (by people and agents from one or
-more groups), **frozen** into releases, and **wired** into the agents and crons
-that run it — with the same rights model as everything else.
+- every agent on the machine loads **every** skill in `~/.claude/skills`, so the
+  deploy skill cannot be given to one agent only.
+- under the multi-tenant design, each isolated group has its own HOME. A skill in
+  SALES's HOME is unreachable from MARKETING — right for *files*, wrong for a
+  skill both teams want to build together.
 
 ## Vocabulary
 
 | Term | Meaning |
 |---|---|
-| **Skill** | A Claude Code skill directory (`SKILL.md` + optional scripts/files) plus a shadok manifest. |
-| **Manifest** | `shadok-skill.json` beside `SKILL.md`: `name`, `description`, `requires.secrets[]`, `requires.tools[]` (optional, informative). Server-managed fields (`id`, `owner`, `releases`) live in the factory registry, not in the files — a contributor cannot rewrite them by editing. |
-| **Draft** | The skill's mutable git history (`main` branch of its factory repo). |
-| **Release** | An immutable tag `v<N>` on the draft, with its tree hash. The only thing ever run. |
-| **Owner group** | The ONE group that owns the skill. Decides its share lists. |
-| **Editor groups** | Groups whose members (and agents) may push to the draft and cut releases. Always includes the owner. |
-| **User groups** | Groups whose agents may run its releases. Editors are implicitly users. |
-| **Attachment** | "This profile / agent / cron runs `name@N`." |
-| **Binding** | Whether each `requires.secrets` name resolves in the *using* group. |
-
-"Group" is always the multi-tenant spec's group (private / restricted / public),
-never the old cosmetic tab group — that spec promotes one into the other.
+| **Skill** | A Claude Code skill directory (`SKILL.md` + optional scripts/files) plus a manifest. |
+| **Manifest** | `shadok-skill.json` beside `SKILL.md`: `name`, `description`, `requires.secrets[]`. Server-managed fields (`id`, `owner`, lists, releases) live in the factory registry, never in the files — a contributor cannot rewrite them by editing. |
+| **Draft** | The skill's mutable git history (`main` of its factory repo). |
+| **Release** | An immutable tag `v<N>` with its tree hash. The only thing ever run. |
+| **Owner group** | The ONE group that owns the skill and decides its lists. |
+| **Editors** | Groups whose people (and Skillsmith agents) may push and release. Always includes the owner. |
+| **Users** | Groups that may run its releases. Editors are implicitly users. |
+| **Acceptance** | "Group G accepts `name@N` (tree `abc…`)", recorded with the person who clicked. |
+| **Attachment** | "This agent runs `name@N`." |
 
 ## Ownership and rights
 
-**[DECIDED] One owner group, two share lists — the secrets model, extended by one
-column.** The multi-tenant spec gave a secret one owner and a "shared read with"
-list, and rejected copies. A skill gets the same shape, with *read* split in two
-because a skill, unlike a secret, is something people **write together**:
+**[DECIDED] One owner group, two lists — the secrets model with *read* split in
+two**, because a skill, unlike a secret, is something people write together:
 
 ```
 skill: { id, name, owner: <group>, editors: [<group>…], users: [<group>…], createdBy, createdAt }
 ```
 
-- **Shared by reference, never by copy.** There is one draft history and one set
-  of releases, held by the server. Each editor group works on a clone; each user
-  group runs a read-only copy of a release. Nothing forks silently.
-- **Private by default.** A new skill is owned by the creator's chosen group (their
-  private group by default) and shared with nobody. Adding an editor or a user
-  group is the outbound gesture — the twin of `--public` on a ledger line or a
-  file dropped into `~/shared/`.
-- **A skill owned by `Main` is public**: every group may see and use it. Who may
-  *edit* a `Main` skill follows `Main`'s rule for shared assets — **[CALL]** any
-  person may push to a `Main` draft, only an `admin` may release or change its
-  share lists (the same line the multi-tenant spec draws for `Main` secrets: a
-  house asset is an admin act to *publish*, not to *contribute to*).
-- **A private group may own a skill and share it out.** The group itself can never
-  be shared (no invitation into a private group, ever), but its *skill* can — the
-  share is the explicit act, exactly as dropping a file into `~/shared/` from a
-  private group is. Nobody else sees a private-owned skill until its owner adds
-  them.
+- **By reference, never by copy.** One draft history, one set of releases, held
+  by the server. Nothing forks silently.
+- **Private by default.** A new skill is owned by a group the creator picks (their
+  private group by default) and shared with nobody. Adding an editor or a user is
+  the outbound gesture — the twin of `--public` on a ledger line.
+- **A `Main`-owned skill is public**: everyone may see it; using it in a group
+  still needs that group's acceptance (rule 2). **[CALL]** Any person may push to
+  a `Main` draft; only an `admin` releases it or changes its lists — the line the
+  multi-tenant spec draws for `Main` secrets.
+- **A private group may own a skill and share it out.** The group can never be
+  shared; its *skill* can, and the share is the explicit act.
 - **Seeing a skill = being in its owner, editor or user groups** (or it being
-  `Main`'s). You cannot enumerate another group's skills — same as its agents.
+  `Main`'s). Another group's skills cannot be enumerated.
+- **[DECIDED] Two lists, not one.** The challenge proposed editors = users for v1.
+  Refused: "SALES runs TECH's skill without being able to change it" is the
+  common case, and it costs one column.
 
 ### Who may do what
 
 | Action | Who | Where |
 |---|---|---|
-| Create a skill | any person, owner = one of *their* groups | browser |
-| See it (card, files, history) | members of owner / editor / user groups; everyone for `Main` | browser, agent |
-| Push to the draft | members of an **editor** group; an agent whose **own** group is an editor | browser editor, `factory.mjs push` |
-| Run the scan (dry-run) | anyone who may push | browser, agent |
-| Cut a release | a **person** in an editor group (admin for a `Main` skill) | browser only |
-| Change the editor / user lists | members of the **owner** group; an admin for a restricted owner (as for secrets); admin only for `Main` | browser only |
-| Attach a release to an agent / cron | a person who may drive that agent (own groups + public), **and** the agent's group must be a user group | browser only |
-| Attach to a profile | whoever may edit profiles (browser `PUT /profiles`, invariant 26) — the attachment is still filtered per group at spawn | browser only |
-| Delete a skill | owner group members; refused while attached anywhere, unless forced (say who would lose it) | browser only |
-| Transfer ownership | owner group members, to a group they also belong to | browser only |
+| Create a skill | any person; owner = one of *their* groups | browser |
+| See it (card, files, history) | owner / editor / user groups; everyone for `Main` | browser, agent |
+| Push to the draft | a person in an **editor** group; an agent whose own group is an editor **and** whose channel profile is `Shadok-Skillsmith` (read from the channel, invariant 1) | browser, `factory.mjs push` |
+| Cut a release | a **person** in an editor group (admin for `Main`) | browser only |
+| Change the lists | **owner** group members; an admin for a restricted owner (administrative reach); admin only for `Main` | browser only |
+| Accept a release for group G | a **person in G** (admin cannot accept for a group they are not in — acceptance is operational, not administrative) | browser only |
+| Attach an accepted release to an agent | a person who may drive that agent | browser only |
+| Delete a skill | owner group members; refused while attached, unless forced (lists who loses it) | browser only |
+| Transfer ownership | owner members, to a group they also belong to; an admin, when the owner group is being destroyed (below) | browser only |
 
-Two lines carry the weight:
-
-- **An agent may write, never publish.** A Skillsmith agent can push commits and
-  run the scan; cutting a release, sharing and attaching are human clicks. A
-  release is code every user-group agent will load — the same reason `PUT
-  /profiles` is browser-only (invariant 26). Soft isolation, as always.
-- **An admin's reach stays administrative.** As in the multi-tenant spec, an admin
-  manages share lists of restricted-owned skills but does not see a restricted
-  group's agents, and never a private group's skill unless shared. The factory
-  adds no super-view.
+- **Agents write, people publish and accept.** A Skillsmith pushes commits; cutting
+  a release, sharing, accepting and attaching are human clicks (the reason `PUT
+  /profiles` is browser-only, invariant 26). Restricting pushes to the Skillsmith
+  profile keeps "every agent of the group" — on single-tenant `Main`, every agent
+  on the machine — from writing into shared code.
+- **Admin reach stays administrative.** An admin manages lists of restricted-owned
+  skills, never sees a private group's skill unless shared, and never accepts code
+  on behalf of a group they are not in.
 
 ## Writing a skill together
 
@@ -149,315 +138,317 @@ Two lines carry the weight:
 
 **[DECIDED] Each skill is a bare git repository held by the server**:
 `~/.shadok-ai/factory/<instance-key>/<skill-id>.git`, owned by the server's user,
-outside every group HOME. Under OS walls no group can open another group's files,
-and a shared directory would erase the wall — so the meeting point is a remote,
-exactly the multi-tenant spec's answer for code. History, diff, blame and
-attribution come for free; a release is an annotated tag.
+outside every group HOME. A directory writable by several OS users is either
+`~/shared/` (visible to everyone) or a hole in the wall, so the meeting point is a
+remote — the multi-tenant spec's answer for code, with shadok as the remote.
 
-Contributors never touch that path. They reach it through the server:
-
-- **A person** edits in the browser (below); each save is a commit authored by
-  their account.
+- **A person** edits in the browser: a read of the tree, history and per-commit
+  diff, plus a plain text editor per file whose save is one commit authored by
+  their account. **[CALL]** Kept in v1 against the challenge's "read-only browser"
+  proposal: the request is that *people* work on a skill together, and a person
+  who is not a developer has no clone.
 - **An agent** works in a clone **inside its own group's HOME**
-  (`~/.shadok-factory/<skill>/`), made and refreshed by the `shadok-factory`
-  skill:
+  (`~/.shadok-factory/<skill>/`), through the seeded `shadok-factory` skill:
   - `factory.mjs pull <skill>` — the server streams a `git bundle` of `main`;
-  - `factory.mjs push <skill>` — the agent's new commits go up as a bundle to
+  - `factory.mjs push <skill>` — new commits go up as a bundle to
     `POST /factory/skills/:id/push`, authenticated by `SHADOK_SESSION_KEY`. The
-    server derives the agent's group from the key (never from the request),
-    checks it is an editor group, and **fast-forwards only**.
-  - A push that is not a fast-forward is refused with "someone pushed since —
-    `pull` and replay your change": two editors never overwrite each other, and
-    the history stays linear and readable. No merge machinery, no conflict
-    markers in a skill file (invariant 9's lesson).
-- Commits are **stamped by the server** with who pushed — `alice (SALES)` or
-  `agent:Shadok-Skillsmith/1a2b3c4d (MARKETING)` — whatever the commit's own
-  author field says. The history must answer "who wrote this line", and a client
-  cannot be trusted to say.
+    server derives the agent's group and profile from the key and the channel
+    (never from the request) and **fast-forwards only**.
+  - A non-fast-forward is refused: "someone pushed since — `pull` and replay your
+    change". No merge machinery, no conflict markers (invariant 9's lesson).
+- **Every push is size-capped at the HTTP layer** and stamped by the server with
+  who pushed — `alice (SALES)` or `agent:Shadok-Skillsmith/1a2b3c4d (MARKETING)` —
+  whatever the commit says. Each push, release, list change, acceptance and
+  attachment writes one audit row (the `secret-audit.ts` pattern: append-only
+  JSONL, names only).
 
-**Why not a shared directory the editor groups all mount?** It is cheaper to build
-and it is the one thing the multi-tenant spec forbids: a directory writable by
-several OS users is either `~/shared/` (visible to *everyone*) or a new hole in
-the wall. The server-as-origin costs a bundle round-trip and keeps every wall
-intact.
+### The scan runs at push, against what the pusher could have pasted
 
-### The Skills panel
+**[DECIDED] The vault check runs on every push and every browser save — before
+the commit enters the shared history.** A bundle carries the whole history, so a
+value committed and removed later would otherwise reach every editor group
+forever; a check at release is too late.
 
-One header entry, **Skills**, opens a full-panel overlay. On a single-tenant
-instance it is one list; once groups exist, it is organised by group like the
-secrets panel, with a 🧩 per group in the groups bar as the quick path.
-
-Lists: **Mine to edit** (I am in an editor group), **Available to use** (a user
-group I am in, or `Main`), **Attached** (where each release runs).
-
-A skill card shows: description, owner group, editor / user chips, latest release
-and how far `main` is ahead of it, the **bindings** for the group being viewed
-(one chip per required secret: green = resolves here, red = "missing in this
-group → Set it", which opens that group's secrets panel pre-filled), and where it
-is attached.
-
-Card actions:
-
-- **Open** — the file tree, a Markdown/text editor per file (save = commit), the
-  history with per-commit diff and author, and the scan results of `main`.
-- **Work on it with an agent** — spawns an agent on the managed
-  `Shadok-Skillsmith` profile **in one of the person's editor groups** (they pick
-  which, if several), with the skill pulled into its clone. This is the factory
-  part: a skill is improved the way everything in shadok is — by an agent, in
-  chat, with a diff panel. Several agents from several editor groups can work on
-  the same skill at once; the fast-forward rule serialises them.
-- **Release** — runs the scan, shows the diff since the last release, asks for a
-  one-line note, tags `v<N+1>`.
-- **Share** — the editor and user lists, with the owner group fixed.
-- **Attach** — to a profile, an agent, or a cron (below).
+1. **Vault match — refuses the push.** The new blobs are searched for every vault
+   value (length ≥ 8) **the pusher's group resolves** (own → shared-in → `Main`).
+   Those are the only values they could have pasted. The refusal names the file,
+   the line and the secret name — all of which the pusher may see. **No
+   cross-slice scan**: refusing on "a value from a slice you cannot see" would let
+   any editor test a guessed password against another group's vault — an oracle
+   through the wall.
+2. **Forbidden files — refuses.** `.env*`, `*.pem`, `*.key`, `id_*`,
+   `credentials*`, `*.jsonl` (a transcript), anything over the size cap.
+3. **Shape match — warns** (at push and again at release). `sk-…`, `ghp_…`,
+   `xox?-…`, AWS keys, PEM headers, long high-entropy strings, with an explicit
+   "this is not a secret" override recorded in the release. Warn, not refuse: a
+   scan that cries wolf gets bypassed by habit.
+4. **Undeclared env — warns at release.** A script reading `process.env.X` / `$X`
+   where `X` is a secret name the releaser can see but absent from
+   `requires.secrets` → "declare it".
 
 ### The Skillsmith role
 
-`Shadok-Skillsmith` is a **managed** profile (like `Shadok-Tweak`: its prompt is
-rewritten from `context/skillsmith-prompt.md` at every boot, so it is hidden from
-pickers by `isManagedProfile` and spawned only from the factory). Its prompt
-teaches the manifest, the secrets rule ("names only; read values from the env;
-declare every one you read"), the `pull` / edit / **test** / `scan` / `push`
-loop, and that releasing is the human's click. Guardrails: no `deny` beyond the
-cockpit defaults — it must run the skill's scripts to test them.
+`Shadok-Skillsmith` is a **managed** profile (like `Shadok-Tweak`: prompt rewritten
+from `context/skillsmith-prompt.md` at every boot, hidden from pickers by
+`isManagedProfile`, spawned only from the factory). Its prompt teaches the
+manifest, the secrets rule, the `pull` / edit / test / `push` loop, that releasing
+is a human click, and that **the draft is untrusted input** — it may contain code
+another group pushed a minute ago.
 
-## Using a skill: agent, profile, cron
+**[DECIDED] It spawns with NO secrets by default.** It runs the draft's scripts to
+test them, and those scripts may come from another editor group's last push,
+unscanned by any human. The "Work on it" dialog lists the skill's
+`requires.secrets` with **unticked** boxes; a person who ticks one is choosing to
+run the current draft with that value. Guardrails: no `deny` beyond the cockpit
+defaults.
+
+## Using a skill: accept, attach, run
+
+### Acceptance — the receiving side's human gate
+
+**[DECIDED] A release runs in group G only after a person of G accepted its exact
+tree hash.** The challenge's central finding: with editors and users in different
+groups, "a release exists" means "someone *else* decided this code is fine". The
+group whose agents (and secrets) will run it must decide too.
+
+- The accept screen shows the origin, the file list, the **full diff against the
+  release G currently runs** (or the whole tree the first time), every script
+  highlighted, the required secret names with G's bindings (green / red), and the
+  scan warnings. Accepting records `{group, skill, release, treeHash, by, at}`.
+- An editor group's own releases still need an acceptance by a person of that
+  group to run there — usually the releaser, in one click ("release and accept for
+  SALES").
+- **No `follow` / auto-update in v1.** A new release shows as "v5 available" on
+  every attachment; nothing changes until a person accepts and re-attaches. If an
+  opt-in follow ever comes back, it is refused whenever the release came from an
+  editor group other than the using one.
+- **Revocation.** Removing G from `users` (or `editors`) makes G's attachments
+  inert at the next spawn; acceptances stay in the audit log.
 
 ### The mechanism: `--plugin-dir`, per process
 
-**[DECIDED, to be measured] A release reaches an agent as a plugin passed on its
-own command line, never by writing into `~/.claude/skills`.** Claude Code
-(2.1.197 here) has `--plugin-dir <path>` — "Load a plugin from a directory or
-.zip", repeatable. A plugin can carry skills (`skills/<name>/SKILL.md` under a
-`.claude-plugin/plugin.json`). So at spawn the server:
+**[DECIDED, partly measured] A release reaches an agent as a plugin passed on its
+own command line, never by writing into `~/.claude/skills`.** At spawn the server:
 
-1. resolves the agent's **effective attachments** (profile ∪ agent ∪ crons that
-   target it — below), and keeps only those whose skill lists the agent's group
-   as a user group (or is `Main`'s). A dropped attachment is logged by name, never
-   silent;
-2. materialises each release once per using group as a read-only plugin directory
-   **owned by that group's OS user**, in its HOME
-   (`~/.shadok-factory/plugins/<skill>@<N>/`), from the tag's tree — content
-   addressed by the tree hash, so two agents of the group share it;
-3. passes one `--plugin-dir` per release.
+1. reads the agent's attachments and keeps those whose release is **accepted by
+   the agent's group** and whose skill still lists that group (a dropped one is
+   logged by name, never silent);
+2. materialises each accepted release once per using group as a read-only plugin
+   directory **owned by that group's OS user**, in its HOME
+   (`~/.shadok-factory/plugins/<skill>@<N>/`, `.claude-plugin/plugin.json` +
+   `skills/<name>/…`), content-addressed by tree hash;
+3. passes one `--plugin-dir <dir>` pair per release, emitted from `profileArgs`
+   beside the other spawn args. Mind the trap documented there: `--mcp-config`
+   is variadic and swallows every following non-flag word. A `--plugin-dir`
+   flag ends that run, but no bare value may ever sit right after
+   `--mcp-config`'s JSON. The arg-order test should cover it.
 
-What this buys, at once:
+**Measured 2026-10-31** (throwaway interactive `claude` in tmux, scratch
+directory, probe plugin `kpi-probe` carrying skill `pd-probe`), on Claude Code
+**2.1.197** and **2.1.309**:
 
-- **Per-profile and per-agent skills** — the old draft's main open question —
-  with no allow-list the CLI does not have: an agent simply never receives a
-  plugin it is not attached to.
-- **No collision with skills the user owns.** `~/.claude/skills` is untouched;
-  nothing to adopt, nothing to overwrite (the additive posture of
-  `claude-home.ts`).
-- **Group isolation by construction**: the plugin directory lives in the using
-  group's HOME, owned by its user; the agent runs what is there and nothing else.
+- With `--plugin-dir`, `/skills` lists `kpi-probe:pd-probe · plugin · locked by
+  plugin`. Without the flag (control), it is absent. So the per-process set works
+  as far as *loading* goes, on an old and a current release.
+- Plugin skills are **namespaced `<plugin>:<skill>`**, and shown "locked by
+  plugin" (cannot be toggled off from the TUI). One plugin per release, named
+  after the skill, gives `kpi-export:kpi-export`; **[OPEN]** a shorter plugin name
+  per group (`factory:kpi-export`) would put several releases in one plugin dir.
+  Recommend one plugin per release — provenance is one dir per tree hash.
 
-Two things to state plainly:
+**Not yet measured** — both binaries on the test machine were signed out, so no
+turn could run: that the skill **triggers** on its description, that its
+**scripts run** (`${CLAUDE_PLUGIN_ROOT}` set, the agent's env — secrets — visible
+to them), and that it **survives `--resume`**, including a resume with a
+*different* plugin set (the reload-to-apply path). These are phase 1's remaining
+items, on a signed-in instance, interactive (never `claude -p`, invariant 29's
+trap). The probe is trivial to rebuild: a `plugin.json`, a `SKILL.md` asking for
+an unusual phrase, a script that echoes an env var into a file.
 
-- **Plugin skills are namespaced** (`<plugin>:<skill>` — visible in this very
-  session's skill list, e.g. `vercel:deploy`). The plugin is named after the skill
-  so the agent sees `lead-qualify:lead-qualify`; **[OPEN]** a short shared plugin
-  name per group (`factory:lead-qualify`) reads better but puts several releases
-  in one plugin directory. Recommend one plugin per release for v1 — simpler
-  provenance, one directory per tree hash.
-- **This must be measured on a live interactive agent before it is built on** —
-  that a `--plugin-dir` skill is listed, triggers on its description, and runs its
-  scripts; and that it survives `--resume`. Not under `claude -p` (invariant 29's
-  trap, again). The flag existing is not the flag behaving.
+**Fallback if the turn-level measurement fails** — install into the using group's
+`~/.claude/skills` under a `factory-` prefix with a `.shadok-managed.json` marker.
+Loses per-agent precision (every agent of the group sees every installed skill),
+keeps group isolation (each isolated group has its own HOME).
 
-**Fallback if the measurement fails** — install into the using group's
-`~/.claude/skills` under a factory prefix (`factory-<name>`) with a
-`.shadok-managed.json` marker. That loses per-agent precision (every agent of
-the group sees every installed skill) but keeps group isolation, because each
-isolated group has its own HOME. The panel would then say "installed in group X"
-rather than "attached to agent Y".
+**Stated plainly:** in the commons (`Main` and every public group share one OS
+user), a materialised plugin dir is readable by every public agent — per-agent
+precision is a command-line argument, not a file permission. That is the "public
+is no wall" rule, not a leak. Private and restricted groups keep the real wall.
 
-### Attaching
+### Attaching to an agent
 
-**[DECIDED] Attachments name a release, never `main`.** Code an agent loads must
-have been frozen and scanned. An attachment is `{ skill, release }` with an
-optional **follow** flag (default **off**):
+**[DECIDED] v1 attaches to agents only.** `Channel.skills: [{skill, release}]`,
+`SERVER_OWNED`, assert-only like `model` (a resume that omits it never erases it,
+invariants 1 / 24), changed through a WS `set-skills` (twin of `set-model`).
 
-- off → pinned; a newer release shows as "update available: v4 → v5" with its
-  diff, applied by a click;
-- on → the next spawn of that agent takes the latest release. Opt-in only,
-  because a new release is a supply-chain event.
+- The attachment set is part of the **spawn fingerprint** (`prepromptParts` /
+  `stalenessReasons`, invariant 40), so a new attachment, a newly accepted release
+  or a revoked right lights the existing reload indicator — "started without
+  `kpi-export@5`".
+- **Nothing respawns implicitly.** Attaching from the agent's own menu respawns
+  it like `set-model` (the person is on that agent and asked). Attaching from the
+  factory panel, accepting a release, or a revocation only marks the agent stale;
+  the reload is the person's click. Killing a working agent because someone saved
+  something elsewhere is exactly what the reload indicator exists to avoid.
 
-Three places, one resolution:
-
-| Attached to | Stored on | Effect |
-|---|---|---|
-| **A profile** | `Profile.skills: [{skill, release, follow?}]` | every agent of that role, *in groups that may use it*. A profile is global (multi-tenant spec), so the attachment is too — and the group filter at spawn is what keeps it from reaching a group that was never granted the skill. Exactly how a profile names a secret and the group decides whether it resolves. |
-| **An agent** | the channel (`skills`, `SERVER_OWNED`, assert-only like `model` — a resume that omits it never erases it, invariant 1 / 24) | that agent only, on top of its profile's. Applied with a respawn (`--plugin-dir` is a spawn arg, same as `set-model`). |
-| **A cron** | `Cron.skills` | the cron's **target agent** carries it (merged into that agent's effective set) — see below. |
-
-Effective set = profile ∪ agent ∪ its crons', de-duplicated by skill (the agent's
-own pin wins over the profile's, a cron's pin over the agent's for its own
-skill). The set is part of the **spawn fingerprint** (`prepromptParts` /
-`stalenessReasons`, invariant 40), so an attachment, an update or a revoked use
-right lights the existing reload indicator — "started without `lead-qualify@5`" —
-and nothing silently runs stale code.
+**Profile attachments — cut from v1 [DECIDED].** Profiles are global and readable
+by every member, so a restricted group's skill attached to `dev` would show its
+*name* to every group (an anti-goal), and a role edit would change running code in
+every group at once. If they come back, `GET /profiles` must filter `skills` per
+caller and acceptance still applies per group.
 
 ### In a cron
 
-A cron drives one agent (`Cron.sessionId`), and skills are spawn-time. So
-"use a skill in a cron" is two things, both useful:
+**[DECIDED] A cron uses what its target agent carries.** A cron drives one agent
+(`Cron.sessionId`), and skills are per process, so a skill pinned "for a cron"
+would really change the agent for all its turns — and two crons pinning v4 and v5
+of the same skill have no sane resolution. So:
 
-1. **The skill does the work, in the agent's turn.** `Cron.skills` puts the
-   release in the target agent's effective set (respawn on attach, as above) and
-   the cron editor offers "**Use skill ▾**", which prefills the prompt with
-   `Use the <skill> skill to …`. The common case: a weekly report the skill
-   knows how to build.
-2. **The skill's script is the guard.** The cron's deterministic `check` (run
-   server-side, **without the LLM**, invariant 16) may reference a script of an
-   attached release: `check: "{skill:kpi-export}/scripts/check.sh"`. The server
-   expands the placeholder to the materialised plugin path **of the agent's
-   group**, runs it as that group's user with that agent's resolved secrets, and
-   refuses the cron (out loud, at save) if the release is not attached or the
-   group lost its use right. A monitoring skill thus ships its own zero-token
-   "anything new?" probe, written and reviewed once, reused by every group that
-   uses it.
+- the cron editor's **"Use skill ▾"** lists the target agent's attachments and
+  prefills the prompt with `Use the <plugin>:<skill> skill to …`;
+- to give a cron a new skill, attach it to the agent (reload on click);
+- the common setup is one agent per recurring job, which keeps "what the cron
+  runs" equal to "what that agent carries".
 
-A cron's skills follow the cron: deleting the cron detaches them from the agent
-(at its next spawn), unless the agent or its profile also carries them.
-
-### When a right is revoked
-
-Removing a group from `users` (or `editors`) takes effect **at the next spawn**:
-the attachment is dropped from the effective set, the agent's reload indicator
-says why, and the panel lists the attachments that just became inert. A running
-agent keeps what it was started with — a live process's skills cannot be pulled
-from under it, the same limit as a live process's env — and the panel says so
-rather than pretending. The plugin directories of a release no group uses any
-more are pruned.
+**Skill scripts as a cron's zero-token `check` — cut from v1 [DECIDED].** A
+`check` runs server-side, without the model or any guardrail, every slot, as the
+using group's user — and `runCronCheck` today injects the profile's whole secret
+list. A script from another group's release running there is the sharpest form of
+the supply chain above. If it comes back: only accepted releases, only the
+release's `requires.secrets` in its env, and refused while the release came from
+another group unless that group's acceptance is fresh for that tree.
 
 ## Secrets: names travel, values don't
 
-**[DECIDED] A skill carries secret NAMES, never VALUES. The using group supplies
-the values**, with the multi-tenant precedence: own group → shared-in → `Main` →
-absent. A SALES agent running `lead-qualify` gets SALES's `HUBSPOT_TOKEN`; a
-MARKETING agent, MARKETING's — or a red chip "missing in MARKETING" until someone
-sets it there.
+**[DECIDED] A skill carries secret NAMES, never VALUES; the using group supplies
+the values** with the multi-tenant precedence (own → shared-in → `Main` → absent).
 
-- **Values reach a skill only through the agent's env**, injected at spawn by the
-  existing path. The factory adds no `get`, and a skill can never read the vault.
-- **`requires.secrets` is informative, not an injection list.** It drives the
-  binding chips and the scan. *Injection* stays the profile's / group's business:
-  attaching a skill does not hand its secrets to a role that does not already
-  name them. **[OPEN]** whether attaching should *offer* to add the missing names
-  to the profile's secret list — recommend yes, as an explicit checkbox in the
-  attach dialog, never implicit.
+- Values reach a skill only through the agent's env, injected at spawn by the
+  existing path. The factory adds no `get`.
+- `requires.secrets` is **informative**: it drives the binding chips (green =
+  resolves in this group, red = "missing in this group → Set it", which opens
+  that group's secrets panel pre-filled) and the scan. *Injection* stays the
+  profile's / group's business, edited on the secrets side as #362 decided — the
+  factory does not offer to add names to a profile.
 
-### The publish scan (deterministic, no model call)
+## When the owner group disappears
 
-Run on every release, available as a dry-run on any push:
+A private group is destroyed in cascade with its account; a restricted group can
+be emptied of members.
 
-1. **Vault match — refuses.** Every file is searched for every vault value of
-   length ≥ 8, **in every group's slice** — the server is the only reader, and a
-   co-written skill may have had an editor from a group the releaser cannot see.
-   A hit refuses the release and names the file and line. It names the **secret**
-   only if the releaser may see that secret; otherwise it says "a value from a
-   vault slice you cannot see" — naming it would leak its existence across a wall.
-2. **Forbidden files — refuses.** `.env*`, `*.pem`, `*.key`, `id_*`,
-   `credentials*`, `*.jsonl` (a transcript), anything over a size cap.
-3. **Shape match — warns.** Common token formats (`sk-…`, `ghp_…`, `xox?-…`, AWS
-   keys, PEM headers, long high-entropy strings), with an explicit "this is not a
-   secret" override recorded in the release. Warn, not refuse: placeholders look
-   like tokens, and a scan that cries wolf gets bypassed by habit.
-4. **Undeclared env — warns.** A script reading `process.env.X` / `$X` where `X`
-   names a secret in any slice but is absent from `requires.secrets` → "declare
-   it", because an undeclared dependency shows bound in one group and breaks in
-   the next.
+- **[DECIDED]** The account-deletion warning lists the private group's skills that
+  were **shared out** (editors or users beyond the owner).
+- A never-shared skill dies with its group (it was never anyone else's).
+- A shared-out skill is **transferred** at deletion time to a group the deleting
+  admin picks among its editor groups (or `Main`), so it keeps an owner who can
+  manage its lists. Already-accepted releases keep running where they were
+  accepted — they were deliberately shared and deliberately accepted.
+- A restricted owner group emptied of members: an admin may transfer ownership
+  the same way (membership and ownership are administrative acts).
 
 ## What stays out
 
-- **shadok's own seeded skills** (`shadok-ai-agents`, `shadok-secrets`, the new
+- **shadok's own seeded skills** (`shadok-ai-agents`, `shadok-secrets`,
   `shadok-factory`…) are not factory skills: rewritten at every boot, listed
-  read-only, never editable (the `Shadok-Tweak` lesson).
+  read-only (the `Shadok-Tweak` lesson).
 - **Unmanaged skills in `~/.claude/skills`** are never touched. "Adopt into the
-  factory" imports one as a new draft owned by a group the person picks; the
-  original folder stays where it is.
-- **Cross-org sharing** (another shadok instance, via peers) keeps the old draft's
-  design — peer catalogue, pull, `contentHash` check, import review, admin-only
-  per-peer share — as a later phase. A peer is simply one more kind of *user*
-  entry (`peer:<name>`), read-only, releases only, and never an editor in v1.
+  factory" (later phase) would import one as a new draft.
+- **Cross-org sharing** (another shadok instance, via peers): a peer becomes one
+  more *user* entry, read-only, releases only, with acceptance on the receiving
+  instance. Later phase.
 
 ## Degradation: a single-tenant instance
 
-With only `Main`, there are no walls and no share lists to show: every skill is
-`Main`'s, every person may push, an admin releases, and attaching works on
-profiles, agents and crons exactly as above. Group pickers and share lists appear
-only once a second group exists — the same rule as the secrets panel. This means
-**phases 1–2 ship before the multi-tenant work**, and become multi-group by
-filling in the lists, not by a redesign.
+With only `Main`: no lists to show, every skill is `Main`'s, any person pushes,
+an admin releases, and acceptance is the same click as attaching (one group). The
+Skillsmith-only push rule and the push-time scan still apply. Phases 1–2 ship
+before the multi-tenant work and become multi-group by filling in the lists.
 
 ## Endpoints (sketch)
 
-- `GET /factory/skills` — the lists for the caller (filtered by group).
-- `POST /factory/skills` — create / adopt; `DELETE /factory/skills/:id`.
+- `GET /factory/skills` — the caller's lists (filtered by group).
+- `POST /factory/skills`, `DELETE /factory/skills/:id`.
 - `GET /factory/skills/:id/tree`, `…/file?path=`, `…/log`, `…/diff?from=&to=`.
-- `PUT /factory/skills/:id/file` — browser editor save = one commit.
-- `GET /factory/skills/:id/bundle`, `POST /factory/skills/:id/push` — the agent
-  clone's pull / push (session key; fast-forward only).
-- `POST /factory/skills/:id/scan` — dry-run.
+- `PUT /factory/skills/:id/file` — browser save = one commit (scanned).
+- `GET /factory/skills/:id/bundle`, `POST /factory/skills/:id/push` — session key,
+  Skillsmith only, fast-forward only, size-capped, scanned.
 - `POST /factory/skills/:id/release` — browser only.
 - `PUT /factory/skills/:id/share` — `{editors, users}`, browser only.
-- Attachments ride the existing writes: `PUT /profiles` (`skills`), a new WS
-  `set-skills` (twin of `set-model`, respawns), and the cron `PUT` (`skills`).
+- `POST /factory/skills/:id/accept` — `{group, release}`, browser only, a person
+  in that group.
+- WS `set-skills` — attachments on an agent.
 
 Every route derives the caller's groups server-side (account cookie, or the
-agent's session key → its group). None trusts a group named in the body.
+agent's session key → its channel → its group and profile). None trusts a group
+named in the body.
 
 ## Phasing
 
-1. **Measure `--plugin-dir`** on a live interactive agent (listed, triggers,
-   scripts run, survives `--resume`). Decides between the main path and the
-   fallback; one afternoon, and nothing else should be built before it.
-2. **Local factory, single-tenant** — bare repos, browser editor, Skillsmith +
-   `shadok-factory` skill (pull / push / scan), releases with the scan, attach to
-   profile / agent / cron (incl. `{skill:…}` checks), fingerprint wiring.
-3. **Groups** — owner / editors / users, the per-group panel and 🧩, scan across
-   slices, revocation. Lands with (or after) the multi-tenant work.
-4. **Cross-org** — peers as user entries, catalogue / pull / import review.
+1. **Finish measuring `--plugin-dir`** on a signed-in interactive agent: triggers,
+   scripts run with the agent's env, `${CLAUDE_PLUGIN_ROOT}`, survives `--resume`,
+   and a resume with a changed plugin set. Loading is already confirmed on
+   2.1.197 and 2.1.309. Decides main path vs fallback.
+2. **Local factory, single-tenant** — bare repos, push-time scan, browser editor,
+   Skillsmith + `shadok-factory` skill, releases, acceptance, agent attachments,
+   fingerprint wiring, audit rows.
+3. **Groups** — owner / editors / users, the per-group panel and 🧩 in the groups
+   bar, revocation, owner-destruction transfer. With (or after) the multi-tenant
+   work.
+4. **Later** — profile attachments (filtered), skill-script cron checks (scoped
+   secrets), adopt-from-`~/.claude/skills`, cross-org peers.
 
 Each phase ships with its README / architecture / CLAUDE.md updates.
 
 ## Goals / non-goals / anti-goals
 
-**Goals** — people and agents from one or more groups co-write a skill with full
-history and attribution; releases are frozen and scanned; a release runs in
-exactly the profiles, agents and crons it is attached to, in groups granted its
-use; secrets never cross a wall.
+**Goals** — people and agents from one or more groups co-write a skill with
+history and attribution; releases are frozen; a release runs only in agents of
+groups that were granted it **and accepted it**; a cron runs it through its agent;
+secrets never cross a wall.
 
-**Non-goals (v1)** — a public marketplace; real-time co-editing (two cursors in
-one file); merge of concurrent edits (fast-forward + replay is enough at this
-scale); sharing secrets themselves across groups through a skill.
+**Non-goals (v1)** — a marketplace; real-time co-editing; merging concurrent
+edits; profile-level attachments; skill scripts as cron checks; auto-update.
 
 **Anti-goals** (a design that does these has failed even if it works):
-- A secret value in a release, a bundle, a commit, a log line or an error message.
-- An agent loading code no human released, or a new release without a human
-  seeing its diff (unless that human opted into `follow`).
+- A secret value in a commit, a bundle, a release, a log line or an error.
+- Code from one group running with another group's secrets without a person of
+  the running group having seen and accepted that exact tree.
 - A skill reaching an agent whose group was never granted it — or one group
-  learning, through the factory, the name of another group's secret or skill.
-- Writing into `~/.claude/skills` on the main path, or overwriting a skill shadok
+  learning, through the factory, the name or the value of another group's secret
+  or skill.
+- Writing into `~/.claude/skills` on the main path; overwriting a skill shadok
   does not own on any path.
-- A revoked right or a new release that leaves an agent on old code with nothing
-  saying so.
+- An agent restarted because of something done elsewhere, or left on old code
+  with nothing saying so.
 
 ## Handed to other specs
 
-- **Secret rotation staleness** (old draft): fingerprint each secret at spawn,
-  surface "started with the previous value of X" in the reload indicator, keep one
-  previous value for a rollback window. Belongs to the per-group secrets panel of
-  the multi-tenant spec, not here.
+- **Secret rotation staleness** (old draft): fingerprint each secret at spawn and
+  surface "started with the previous value of X" in the reload indicator. Belongs
+  to the multi-tenant spec's per-group secrets panel.
 
 ## Open decisions (summary)
 
-- Plugin naming: one plugin per release (recommended) vs one `factory` plugin per
-  group.
-- Attaching offers to add missing secret names to the profile — explicit checkbox
-  (recommended)?
+- Plugin naming: one plugin per release (recommended) vs one plugin per group.
 - `Main` skills: any person pushes, admin releases — confirm the [CALL].
-- Should a cron's `{skill:…}` check be allowed on a release attached to the agent
-  by its *profile* only, or require an explicit `Cron.skills` entry? Recommend
-  explicit: a cron's guard should not change because someone edited a role.
+- Browser text editor in v1 — confirm the [CALL] (the challenge proposed
+  read-only).
+
+## Challenge log (2026-10-31)
+
+An adversarial review (separate model, read the spec cold against the
+multi-tenant spec, CLAUDE.md and the code) returned ten findings. Disposition:
+
+| # | Finding | Disposition |
+|---|---|---|
+| 1 | Cross-group supply chain through `{skill:…}` cron checks and `follow` | **Accepted** — acceptance per group pinned to a tree hash; no `follow`; skill-script checks cut from v1 |
+| 2 | Skillsmith runs another group's unscanned draft code with its own secrets | **Accepted** — no secrets by default, explicit opt-in per name; prompt says the draft is untrusted |
+| 3 | Cross-slice scan is an oracle; release-time scan is too late for history | **Accepted** — scan at push, against the pusher's resolvable slices only |
+| 4 | Profile attachments leak skill names (profiles are global); attach-adds-secret reopens #362 | **Accepted** — profile attachments cut from v1; no secret-adding checkbox |
+| 5 | `Cron.skills` has no coherent semantics | **Accepted** — a cron uses its agent's attachments |
+| 6 | Implicit respawn on attach | **Accepted** — mark stale, reload on click; only the agent's own menu respawns |
+| 7 | Owner group destroyed | **Accepted** — warning, transfer, accepted releases keep running |
+| 8 | Any agent of an editor group may push | **Accepted** — Skillsmith profile only |
+| 9 | Commons plugin dirs readable by all public agents | **Accepted as a stated property** of "public is no wall" |
+| 10 | Audit, size cap, arg order, binary version | **Accepted** — audit rows, HTTP cap, the `--mcp-config` variadic trap called out, loading measured on 2.1.309 too |
+| — | Smaller v1: editors = users, read-only browser | **Refused** — two lists kept (use-without-edit is the common case); browser editor kept as a [CALL] so non-developers can co-write |
