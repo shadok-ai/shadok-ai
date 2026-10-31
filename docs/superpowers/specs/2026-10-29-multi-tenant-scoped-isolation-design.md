@@ -1,9 +1,12 @@
 # Multi-tenant cockpit: isolated groups, per-group OS users, scoped secrets
 
-Status: **Draft for review** — revised 2026-10-31 (public groups are no longer
+Status: **Ready for approval** — revised 2026-10-31 (public groups are no longer
 walls; migration, the shared ledger under groups, and cross-group communication
-folded in; a one-page mental model added at the top). Written from an ongoing
-brainstorming conversation. Points settled in that conversation are
+folded in; a one-page mental model added at the top; a builder-check pass folded
+in — accounts required for isolation, cascade teardown of a private group on
+account deletion, admin reach is administrative-not-operational, plus three
+author calls). Written from an ongoing brainstorming conversation. Points settled
+in that conversation are
 marked **[DECIDED]**; a call the author made that a builder could not settle
 alone is marked **[CALL]**; points deliberately left open are **[OPEN]**.
 Nothing here is built yet; this document is the thing to approve before a plan.
@@ -117,6 +120,16 @@ An agent is described by **two independent things**:
    secrets it needs. A profile is reusable across groups: COMEX has a `dev`,
    SALES has a `dev`, it is the *same* role. (This is today's `src/profiles.ts`,
    unchanged in spirit.)
+   - **[DECIDED] The profile catalogue stays GLOBAL and shared** — one
+     `~/.shadok-ai/profiles.json`, not per group. A role is a company-wide
+     concept by design (the point of "COMEX `dev` = SALES `dev`"). So editing a
+     role (`PUT /profiles` / `/profiles/prompt`, invariant 26) is a company-wide
+     act, and the "you only touch your own groups" rule does **not** extend to the
+     role catalogue — it governs agents, channels, files, secrets, the ledger.
+     This is an accepted trade-off, not a leak: a profile carries **no secret
+     *values*** (only names, resolved per group at spawn), so a shared catalogue
+     reveals nothing confidential. Guardrails stay write-protected as today
+     (browser-only `PUT /profiles`; agents only reach `/profiles/prompt`).
 
 2. **Group = WHERE it lives** — the isolation island it runs in and the ACL that
    governs who sees it. **An agent belongs to exactly one group** for its whole
@@ -165,6 +178,16 @@ scopes.
 - **[DECIDED]** It must be **visually recognisable** in the UI (a lock / a
   "personal" marker), so a person can tell their private island apart from shared
   groups at a glance.
+- **[DECIDED] When the account is deleted, its private group is destroyed in
+  cascade.** Deleting a person's account (admin-only, `src/accounts.ts`)
+  **tears down their private group** — OS user, HOME, and any running agents —
+  even though **nobody, not even the deleting admin, may see its contents**. The
+  admin confirms an explicit warning ("this permanently destroys X's private
+  space, which cannot be inspected"). This keeps the no-break-glass invariant
+  intact (the data is never *revealed*, only removed) while refusing the orphan
+  alternative — a sealed island nobody can reach or clean, accumulating forever.
+  An account deletion thus implies a **privileged teardown**, like creation
+  implies a privileged provision.
 
 ### Main (the default public group)
 
@@ -258,6 +281,15 @@ server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
   discipline as-is or add a small **auth broker** that owns the refresh and hands
   read-only copies out. The `CLAUDE_CODE_OAUTH_TOKEN` env var is **not** a
   substitute — it only feeds the `/usage` endpoint, not the TUI's own auth.
+- **[builder — verify BEFORE planning the auth path]** The measurement that
+  "resolved" this blocker only proved many processes under **one** OS user read
+  one file; it did **not** test cross-user **write-back**. The symlink scheme
+  assumes `claude` **writes the credential in place**. If instead it
+  **writes-new-then-renames**, every refresh produces a fresh file owned by the
+  refreshing group's user at mode `600`, silently breaking every *other* group's
+  read — in which case the **auth broker is mandatory from day one**, not a
+  deferrable `[OPEN]`. This single fact (in-place vs rename) decides the shape of
+  the whole auth path, so confirm it against the running binary first.
 
 ## Execution isolation (the light form — no containers)
 
@@ -322,6 +354,17 @@ install must degrade **honestly**, not half-way.
   actually provision an OS user (root, or the needed sudo rights) rather than
   guessing from "am I root", so it is wrong in neither direction. One source of
   truth for the mode.
+- **[DECIDED] Capable requires identities too — the probe also gates on the
+  accounts system being active.** The entire ACL (visibility, membership, admin
+  reach, and one private group *per account*) keys on `src/accounts.ts`
+  identities, and those are **dormant without `SHADOK_GUI_PASSWORD`**: no password
+  → `BOOTSTRAP_ADMIN` lives in the password, not a file, so there are **zero
+  accounts to scope by**. So "capable" means **privileged AND accounts-enabled**.
+  A privileged-but-passwordless instance has no identities to attribute groups to,
+  so it stays **mono-tenant** — the same honest refusal as the non-privileged
+  case, for the same reason (nothing to attribute = nothing to isolate). Turning
+  isolation on therefore presupposes the password/admin is set; it is not minted
+  silently under a running passwordless instance.
 - **Capable → multi-tenant.** Private/restricted groups, the 🔑 per group, the
   whole model.
 - **Not capable → mono-tenant**, which is **exactly today's instance**:
@@ -396,13 +439,22 @@ level, not inside the cockpit.
   browser filtering is cosmetic only.
 - **[DECIDED]** A **private** group is fully private: invisible **and**
   non-pilotable **even to an admin**, with **no break-glass**.
-- **[DECIDED]** An **`admin`-role** user **sees and manages the member list of
-  every restricted group**, even ones they do not belong to — this is what lets
-  an admin remove members (above). A **member** (non-admin) still sees a
-  restricted group only if invited. The private group is the one exception: it
-  stays invisible and unmanageable **even to an admin** (no break-glass, per the
-  line above). So admin reach is: all public ∪ all restricted — never any
-  private.
+- **[DECIDED]** An **`admin`-role** user **manages the member list and the secrets
+  of every restricted group**, even ones they do not belong to — this is what lets
+  an admin remove members (above) and administer restricted secrets. A **member**
+  (non-admin) still sees a restricted group only if invited. The private group is
+  the one exception: it stays invisible and unmanageable **even to an admin** (no
+  break-glass, per the line above).
+- **[DECIDED] Admin reach is ADMINISTRATIVE, not operational.** An admin's extra
+  power over restricted groups is **membership + secrets management only** — it
+  does **not** let them **see or drive the agents** of a restricted group they do
+  not belong to. The universal rule still holds for everyone, admins included:
+  **see/drive = your own groups + public.** To actually work inside a restricted
+  group, an admin gets invited like anyone else. (This resolves an inconsistency a
+  builder-check flagged between this section and "Collaboration": administering a
+  team is not the same as reading its agents' work.) So: administrative reach = all
+  public ∪ all restricted (membership/secrets); operational reach (see/drive) = own
+  groups ∪ public; private = neither, ever.
 
 ## Collaboration across boundaries (spawn, drive, talk, git)
 
@@ -476,6 +528,12 @@ new hierarchy, and sharing by reference rather than by copy.
   three group **natures** already in the model (personal = **private** group,
   team = **restricted** group, general = **`Main`**). A secret is defined in a
   group, full stop.
+  - **A public group has no vault slice of its own.** Public groups share the
+    commons, so there is exactly **one** public slice — **`Main`'s**. A non-`Main`
+    public group is a cosmetic label; its "own" secrets level simply **is** the
+    commons (`Main`), and its 🔑 panel shows `Main`'s secrets as the own section
+    (editable under the `Main` rule — admin only). Only **private and restricted**
+    groups ever get a separate slice.
 - **[DECIDED] A secret may be SHARED, read-only, with other specific groups — by
   reference, not by copy.** When one key must serve two teams, the owner group
   adds the other groups to the secret's **"shared read with"** list. The value
@@ -755,6 +813,10 @@ is for future agents.)
   (invariant 33).
 - **On-demand OS-user provisioning**: create/destroy a group's OS user + HOME,
   seed `~/.claude` and the credential symlink, from the privileged server.
+  Includes the **account-lifecycle hooks**: redeeming an `/invite` creates a new
+  account, which must trigger the privileged **private-group provision** for that
+  person (the unprivileged invite path kicks the privileged `useradd`); deleting
+  an account triggers the cascade **teardown** of its private group (above).
 - **Schema changes**: the group gains membership + a visibility nature + an OS
   identity (today's cosmetic `channel.group` / `/groups` is promoted to a
   server-owned object); channels carry their group; secrets gain an **owner
