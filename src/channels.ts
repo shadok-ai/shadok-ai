@@ -78,6 +78,10 @@ export interface Channel {
   /** The `claude` binary version at that real spawn, to flag an agent still on
    *  an older binary than the one now installed. Null when it couldn't be read. */
   spawnClaudeVer?: string | null;
+  /** Skill Factory releases attached to this agent (`--plugin-dir` at spawn).
+   *  Server-owned, assert-only like `model`: only `POST /factory/attach` writes
+   *  it, and a resume that omits it never erases it. See src/factory.ts. */
+  skills?: { skill: string; release: number }[];
 }
 
 /**
@@ -100,7 +104,7 @@ export function isMirrored(c: Channel): boolean {
  * only resume its own agents" — which broke any multi-step remote exchange
  * (the holder's first resume ran; the browser's next sync wiped the owner). Same
  * loss as `profile`/`parent` before they were listed here. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer", "skills"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
@@ -320,6 +324,10 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
     }
     const merged: Channel = { ...c };
     for (const k of SERVER_OWNED) if (prev[k] !== undefined) (merged as any)[k] = prev[k];
+    // Factory attachments decide which code an agent loads: only the server
+    // writes them (`POST /factory/attach`), so a browser PUT can neither change
+    // them (above) nor introduce them on an agent that has none.
+    if (prev.skills === undefined) delete merged.skills;
     if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;
     result.push(merged);
   }

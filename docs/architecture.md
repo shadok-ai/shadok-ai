@@ -1322,6 +1322,73 @@ each spawned agent is visible in `/live` ("Agents running now" in the UI).
 Spawned prompts respect the pace gate; a block is currently silent to the
 parent (a known rough edge).
 
+## The Skill Factory (`src/factory.ts`, `src/factory-scan.ts`, `src/factory-routes.ts`)
+
+A place to write skills together and run them in chosen agents. Spec:
+`docs/superpowers/specs/2026-10-29-skill-factory-design.md`. Phase 2 is
+single-tenant (one group, `main`). The owner, editors and users lists are stored
+but not yet offered in the UI.
+
+**The server is the git origin.** Each skill is a bare repository under
+`~/.shadok-ai/factory/<instance-key>/repos/<id>.git`, next to `registry.json`
+(releases, acceptances) and `audit.jsonl`. Contributors never touch those paths:
+- A browser save is one commit, built with a private `GIT_INDEX_FILE` and moved
+  onto `main` with a compare-and-swap `update-ref`. A stale base answers "someone
+  saved since".
+- An agent pulls a `git bundle` into `~/.shadok-factory/<name>` and pushes one
+  back. The server fetches it into a scratch ref, requires a fast-forward, then
+  moves `main` with the same CAS.
+- Who pushed or saved is recorded as a git note (`refs/notes/shadok`), stamped by
+  the server. Never the commit's author field: a client chooses that.
+
+Under the multi-tenant design this is what lets walled groups co-write: a remote
+is not a hole in the wall, a shared directory would be.
+
+**The scan runs at push and at every save, before the commit exists.**
+`scanFiles` (pure) refuses vault values (≥ 8 characters, reported by NAME and
+line, never by value), credential-shaped files and oversized trees. It only
+warns about token shapes. `receivePush` scans every blob the push introduces
+across the whole range, not just the final tree: a value added then removed
+inside the push would otherwise travel in the history. `releaseWarnings` adds
+two warnings at release time: an undeclared env read, and `$CLAUDE_PLUGIN_ROOT`
+used inside a script.
+
+**Release → accept → attach → spawn.**
+- A release is a tag `v<N>` plus its tree hash.
+- An acceptance pins `{group, release, tree}`. That is the receiving side's
+  human gate, so code runs in a group only once a person of that group said yes
+  to that exact tree.
+- An attachment lives on the channel (`Channel.skills`, `SERVER_OWNED`, written
+  only by `POST /factory/attach`). `mergeChannels` drops one a browser PUT tries
+  to introduce.
+- At spawn, `makePilot` calls `pluginArgs`. `resolveAttachments` (pure) keeps
+  what still exists, is shared with the group, and is accepted for that tree,
+  and logs every drop by name. `materialise` extracts the tag once into a
+  read-only, content-addressed plugin directory
+  (`plugins/<name>@<N>-<tree8>/.claude-plugin/plugin.json` +
+  `skills/<name>/…`). One `--plugin-dir` per release is emitted before the
+  profile's flags, so nothing lands after `--mcp-config`'s variadic JSON.
+- The attachment set is a preprompt part ("Factory skills"), so an attach, a new
+  acceptance or a drop lights the reload indicator. Attaching never respawns:
+  the person reloads.
+
+**Measured, 2026-10-31, Claude Code 2.1.309.**
+- A `--plugin-dir` skill lists as `<plugin>:<skill>` and triggers on its
+  description.
+- Its scripts see the agent's env.
+- It survives `--resume` with the flag, disappears on a resume without it, and
+  a resume with a changed directory runs the new release.
+- `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md but is NOT exported to
+  scripts.
+
+**Who may do what.** Reads are open behind the password gate. A person's writes
+are browser-only. Release and delete are admin acts (a `Main` skill is a house
+asset). A push needs the caller's session key AND a channel profile of
+`Shadok-Skillsmith`: on a single-tenant instance "any agent of the group" would
+be every agent on the machine. The Skillsmith is a managed profile (prompt
+re-seeded from `context/skillsmith-prompt.md` at boot, `secrets: []` on
+creation) because it runs draft code nobody has reviewed yet.
+
 ## Known rough edges / debt
 
 - Much was built in low-visibility agent sessions; detection heuristics,

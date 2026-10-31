@@ -246,6 +246,22 @@ Enter to skip; you can add it later from the web UI).
   buried the chat, so the cockpit folds it into a collapsible **Context summary**
   box: collapsed by default, one click to read it, capped and scrolling even when
   open. It is still real history — just out of the way.
+- **Skill Factory** — the flask icon in the header. Write a Claude Code skill
+  together, people and agents alike, then run it in the agents that need it.
+  Each skill is a git history held by the server: a person edits files in the
+  panel (each save is a commit), or clicks **Work on it with an agent** to start
+  a `Shadok-Skillsmith` agent in a clone of it. That agent pushes its commits
+  through the `shadok-factory` skill, fast-forward only. A **release** (`v1`,
+  `v2`…) freezes the skill. Once **accepted** (you review its diff), it can be
+  **attached** to an agent, which loads it with `--plugin-dir` at its next
+  reload. The skill shows up as `<name>:<name>`, and only in that agent. A
+  cron uses the skills of the agent it drives. Secrets travel by name only:
+  `shadok-skill.json` lists the ones it needs (green or red chips, depending
+  on whether the vault has them). Any save or push that contains a vault value
+  is refused before it reaches the history. Releasing and deleting are admin
+  acts; a Skillsmith starts with no secrets. Design:
+  `docs/superpowers/specs/2026-10-29-skill-factory-design.md` (phase 2,
+  single-tenant; sharing between groups comes with the multi-tenant work).
 - **Diff panel** — what an agent actually changed, against its base.
 - **What an agent left running, on its tab** — a turning ⏳ for background
   shells, a still 👁 for monitors, each with its count past one. Claude Code

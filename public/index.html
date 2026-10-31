@@ -2146,6 +2146,39 @@
   .bk-msg.ok { border-color: color-mix(in srgb, #3c9 60%, transparent); color: #3c9; }
   .bk-msg.bad { border-color: color-mix(in srgb, #e55 60%, transparent); color: #e77; }
   .bk-foot { margin-top: 14px; }
+  /* Skill Factory panel */
+  #factoryPanel { width: min(980px, 96vw); }
+  #factoryList, #factoryFiles, #factoryLog { list-style: none; margin: 0; padding: 0; }
+  #factoryList > li { padding: 10px 0; border-bottom: 1px solid var(--line, #2a2d32); }
+  #factoryList > li:last-child { border-bottom: none; }
+  .fac-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+  .fac-row input:not([type=checkbox]) { flex: 1 1 160px; min-width: 0; }
+  .fac-sp { flex: 1; }
+  .fac-name { font-weight: 600; }
+  .fac-badge { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--line, #3a3d42);
+    border-radius: 999px; padding: 1px 7px; margin-left: 6px; opacity: .85; }
+  .fac-badge.warn { color: #e9a23b; border-color: currentColor; }
+  .fac-desc { font-size: 12px; opacity: .85; margin-top: 3px; }
+  .fac-meta { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
+  .fac-chip { display: inline-block; font-size: 11px; border-radius: 999px; padding: 1px 7px; margin: 2px 4px 0 0;
+    border: 1px solid currentColor; }
+  .fac-chip.ok { color: #4caf7a; } .fac-chip.miss { color: #e05d5d; }
+  .fac-msg { font-size: 12px; min-height: 1em; white-space: pre-wrap; }
+  .fac-msg.err { color: #e05d5d; }
+  .fac-h { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 12px 0 4px; }
+  .fac-cols { display: grid; grid-template-columns: 220px 1fr; gap: 12px; }
+  @media (max-width: 700px) { .fac-cols { grid-template-columns: 1fr; } }
+  #factoryFiles li button { width: 100%; text-align: left; background: none; border: none; color: inherit;
+    padding: 3px 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; cursor: pointer; }
+  #factoryFiles li button[aria-current="true"] { background: rgba(255,255,255,.08); border-radius: 4px; }
+  #factoryEditor { width: 100%; min-height: 260px; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 16px; resize: vertical; }
+  @media (pointer: fine) { #factoryEditor { font-size: 12px; } }
+  #factoryLog li { font-size: 12px; padding: 3px 0; cursor: pointer; }
+  #factoryLog li .fac-meta { display: inline; margin-left: 6px; }
+  #factoryOut { max-height: 320px; overflow: auto; font-size: 11px; background: rgba(0,0,0,.25); padding: 8px; border-radius: 6px; white-space: pre-wrap; }
+  .fac-chk { font-size: 12px; display: inline-flex; gap: 4px; align-items: center; }
+  .fac-attach select { max-width: 220px; }
   #ledgerList { list-style: none; margin: 0; padding: 0; }
   #ledgerList li { padding: 8px 0; border-bottom: 1px solid var(--line, #2a2d32); }
   #ledgerList li:last-child { border-bottom: none; }
@@ -2497,6 +2530,7 @@
   <div class="hdr-tools">
   <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)" aria-label="Secrets"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l7.5 7.5M15.5 15.5l1.8-1.8M17.8 17.8l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="ab-txt">Secrets</span></button>
   <button id="ledgerBtn" class="icon" title="Shared ledger — what agents have resolved / decided" aria-label="Ledger"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Ledger</span></button>
+  <button id="factoryBtn" class="icon" title="Skill Factory — write skills together, release them, attach them to agents" aria-label="Skills"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M9 3.5h6M10 3.5v5.5l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3.5M7.5 15h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="ab-txt">Skills</span></button>
   <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)" aria-label="Profiles"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Profiles</span></button>
   <!-- Security: what was done to accounts and second factors, and "this wasn't
        me". Kept out of the ⋯ overflow on a phone: its badge is the point. -->
@@ -2668,6 +2702,47 @@
     </div>
     <div class="pin-body">
       <ul id="ledgerList"></ul>
+    </div>
+  </div>
+</div>
+
+<div id="factoryOverlay" class="overlay" hidden>
+  <div class="sec-panel pinned" id="factoryPanel">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong id="factoryTitle">Skill Factory</strong>
+        <button id="factoryClose" title="Close">✕</button>
+      </div>
+      <p class="sec-note" id="factoryNote">Skills written together by people and agents. A <b>release</b> freezes one; once <b>accepted</b>, it can be <b>attached</b> to an agent, which loads it at its next reload. Secrets travel by name only — a save or push holding a vault value is refused.</p>
+      <div class="fac-row" id="factoryCreate">
+        <input id="factoryName" placeholder="new-skill-name" autocomplete="off" spellcheck="false" />
+        <input id="factoryDesc" placeholder="When should an agent use it?" autocomplete="off" />
+        <button id="factoryCreateBtn">Create</button>
+      </div>
+      <div class="fac-msg" id="factoryMsg" role="status"></div>
+    </div>
+    <div class="pin-body">
+      <ul id="factoryList"></ul>
+      <div id="factoryDetail" hidden>
+        <div class="fac-row"><button id="factoryBack">← All skills</button><span class="fac-sp"></span><button id="factoryScanBtn">Scan</button><button id="factoryWorkBtn">Work on it with an agent</button></div>
+        <div class="fac-cols">
+          <div class="fac-files">
+            <div class="fac-h">Files</div>
+            <ul id="factoryFiles"></ul>
+            <div class="fac-row"><input id="factoryNewPath" placeholder="scripts/run.sh" spellcheck="false" /><button id="factoryNewFile">Add</button></div>
+          </div>
+          <div class="fac-edit">
+            <div class="fac-h"><span id="factoryPath">—</span></div>
+            <textarea id="factoryEditor" spellcheck="false" disabled></textarea>
+            <div class="fac-row"><button id="factorySave" disabled>Save</button><button id="factoryDelFile" disabled>Delete file</button></div>
+          </div>
+        </div>
+        <div class="fac-h">Release</div>
+        <div class="fac-row"><input id="factoryRelNote" placeholder="What changed (one line)" /><label class="fac-chk"><input type="checkbox" id="factoryRelAccept" checked> and accept it here</label><button id="factoryRelDiff">Review changes</button><button id="factoryRelease">Release</button></div>
+        <div class="fac-h">History</div>
+        <ul id="factoryLog"></ul>
+        <pre id="factoryOut" hidden></pre>
+      </div>
     </div>
   </div>
 </div>
@@ -8063,6 +8138,9 @@
         if (t.btnEl.classList.contains("working")) setTabMood(t, null);
         setTabState(t, "ready", "ready");
         persistChannels();
+        // A tab started with a first instruction (the Skill Factory's "Work on
+        // it") sends it once, now that the agent can take it.
+        if (t.kickoff) { const k = t.kickoff; t.kickoff = null; submitPrompt(t, k); }
         // "ready" means the process is idle NOW. Stop any running timer — a
         // reload broadcasts a transient "working" that started one, and nothing
         // else stops it, so the counter kept ticking after the reload finished.
@@ -9069,7 +9147,7 @@
   // SINGLE row (brand + dials + ⋯) by moving EVERY tool icon into the ⋯ menu —
   // the real button elements, so their click handlers travel with them.
   // Recomputed on load, on resize, and when the instance name changes.
-  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "profilesBtn", "telegramBtn", "muteNotif"];
+  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "factoryBtn", "profilesBtn", "telegramBtn", "muteNotif"];
   function reflowHeaderTools() {
     const hdrTools = document.querySelector(".hdr-tools");
     const moreWrap = document.querySelector(".more-wrap");
@@ -9193,6 +9271,7 @@
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("factoryOverlay").hidden) { $("factoryOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
@@ -9618,6 +9697,283 @@
   });
   $("ledgerClose").addEventListener("click", () => { $("ledgerOverlay").hidden = true; });
   $("ledgerOverlay").addEventListener("click", (e) => { if (e.target === $("ledgerOverlay")) $("ledgerOverlay").hidden = true; });
+
+  // ── Skill Factory ─────────────────────────────────────────────────────────
+  // Everything shown here (file contents, descriptions, history) can be written
+  // by an agent, so it only ever reaches the DOM through textContent — never
+  // innerHTML (invariant 13).
+  const fac = { data: null, skill: null, path: null, head: null };
+  const facEl = (tag, props = {}, kids = []) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (k === "class") e.className = v;
+      else if (k === "text") e.textContent = v;
+      else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+      else e.setAttribute(k, v);
+    }
+    for (const c of kids) if (c) e.appendChild(c);
+    return e;
+  };
+  function facMsg(text, err) {
+    $("factoryMsg").textContent = text || "";
+    $("factoryMsg").classList.toggle("err", !!err);
+  }
+  /** A refusal's text, with the scan's findings spelled out (names, never values). */
+  function facError(out, status) {
+    const lines = [out && out.error ? out.error : `failed (${status})`];
+    for (const r of (out && out.scan && out.scan.refusals) || [])
+      lines.push(`✗ ${r.path || "(skill)"}${r.line ? ":" + r.line : ""} — ${r.message}`);
+    return lines.join("\n");
+  }
+  async function facCall(method, url, body) {
+    const r = await fetch(url, {
+      method,
+      headers: body ? { "content-type": "application/json" } : {},
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const text = await r.text();
+    let out = null;
+    try { out = JSON.parse(text); } catch { out = text; }
+    if (!r.ok) throw new Error(facError(out, r.status));
+    return out;
+  }
+  const facAgo = (t) => {
+    const m = Math.round((Date.now() - t) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+  };
+  const facLast = (s) => s.releases[s.releases.length - 1];
+  const facAccepted = (s, rel) => !!rel && s.acceptances.some((a) => a.release === rel.n && a.tree === rel.tree);
+  const facFinding = (f) => `${f.path || "(skill)"}${f.line ? ":" + f.line : ""} — ${f.message}`;
+
+  async function facLoad() {
+    try { fac.data = await facCall("GET", "/factory/skills"); }
+    catch (e) { facMsg(e.message, true); fac.data = { skills: [], agents: [] }; }
+  }
+
+  function facRenderList() {
+    const ul = $("factoryList");
+    ul.textContent = "";
+    $("factoryDetail").hidden = true;
+    ul.hidden = false;
+    $("factoryCreate").hidden = false;
+    $("factoryTitle").textContent = "Skill Factory";
+    const skills = (fac.data && fac.data.skills) || [];
+    if (!skills.length) {
+      ul.appendChild(facEl("li", { class: "fac-meta", text: "No factory skill yet. Create one above, then open it and write it yourself or with an agent." }));
+      return;
+    }
+    for (const s of skills) {
+      const last = facLast(s);
+      const head = facEl("div", {}, [
+        facEl("span", { class: "fac-name", text: s.name }),
+        facEl("span", { class: "fac-badge", text: last ? `v${last.n}` : "unreleased" }),
+        s.unreleased && last ? facEl("span", { class: "fac-badge warn", text: "changes since v" + last.n }) : null,
+        last && !facAccepted(s, last) ? facEl("span", { class: "fac-badge warn", text: `v${last.n} not accepted` }) : null,
+      ]);
+      const chips = facEl("div", {}, s.bindings.map((b) =>
+        facEl("span", { class: "fac-chip " + (b.bound ? "ok" : "miss"), title: b.bound ? "set in the vault" : "missing from the vault", text: (b.bound ? "✓ " : "✗ ") + b.name })));
+      const where = s.attachedTo.length
+        ? "Attached to " + s.attachedTo.map((a) => `${a.name} (v${a.release})`).join(", ")
+        : "Not attached to any agent";
+      const actions = facEl("div", { class: "fac-row" }, [
+        facEl("button", { text: "Open", onclick: () => facOpen(s.id) }),
+        last && !facAccepted(s, last) ? facEl("button", { text: `Review & accept v${last.n}`, onclick: () => facReviewAccept(s, last) }) : null,
+        last && facAccepted(s, last) ? facAttachControl(s, last) : null,
+      ]);
+      for (const a of s.attachedTo)
+        actions.appendChild(facEl("button", { text: `Detach from ${a.name}`, onclick: () => facAttach(s, a.sessionId, null) }));
+      ul.appendChild(facEl("li", {}, [head, facEl("div", { class: "fac-desc", text: s.description || "(no description)" }), chips,
+        facEl("div", { class: "fac-meta", text: where }), actions]));
+    }
+  }
+
+  function facAttachControl(s, rel) {
+    const sel = facEl("select", { "aria-label": "Agent to attach to" });
+    for (const a of (fac.data && fac.data.agents) || []) sel.add(new Option(a.name, a.sessionId));
+    const btn = facEl("button", { text: `Attach v${rel.n}`, onclick: () => sel.value && facAttach(s, sel.value, rel.n) });
+    return facEl("span", { class: "fac-row fac-attach" }, [sel, btn]);
+  }
+
+  async function facAttach(s, sessionId, release) {
+    try {
+      await facCall("POST", "/factory/attach", { sessionId, skill: s.id, release });
+      facMsg(release === null
+        ? `${s.name} detached. The agent drops it at its next reload.`
+        : `${s.name} v${release} attached. Reload the agent to load it (its reload indicator is on).`);
+      await facLoad();
+      facRenderList();
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  async function facReviewAccept(s, rel) {
+    const prev = [...s.acceptances].sort((a, b) => b.release - a.release)[0];
+    try {
+      const d = await facCall("GET", `/factory/skills/${s.id}/diff?${prev ? "from=v" + prev.release + "&" : ""}to=v${rel.n}`);
+      // Show it before asking: what you accept must be what you saw.
+      await facOpen(s.id);
+      $("factoryOut").hidden = false;
+      $("factoryOut").textContent =
+        `Review ${s.name} v${rel.n}${prev ? " against v" + prev.release + " (accepted)" : " (the whole skill)"}:\n\n` + (d || "(no difference)");
+      $("factoryOut").scrollIntoView({ block: "nearest" });
+      if (confirm(`Accept ${s.name} v${rel.n} to run in this cockpit's agents?\n\nRead the diff shown in the panel first. This is code agents will run.`)) {
+        await facCall("POST", `/factory/skills/${s.id}/accept`, { release: rel.n });
+        facMsg(`v${rel.n} accepted. It can now be attached to an agent.`);
+        await facLoad();
+        fac.skill = fac.data.skills.find((x) => x.id === s.id) || fac.skill;
+      }
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  async function facOpen(id) {
+    fac.skill = fac.data.skills.find((x) => x.id === id);
+    if (!fac.skill) return;
+    $("factoryList").hidden = true;
+    $("factoryCreate").hidden = true;
+    $("factoryDetail").hidden = false;
+    $("factoryOut").hidden = true;
+    $("factoryTitle").textContent = fac.skill.name;
+    fac.path = null;
+    $("factoryEditor").value = "";
+    $("factoryEditor").disabled = true;
+    $("factorySave").disabled = $("factoryDelFile").disabled = true;
+    $("factoryPath").textContent = "—";
+    await facRefreshDetail();
+    await facSelect("SKILL.md");
+  }
+
+  async function facRefreshDetail() {
+    const s = fac.skill;
+    try {
+      const [tree, lg] = await Promise.all([facCall("GET", `/factory/skills/${s.id}/tree`), facCall("GET", `/factory/skills/${s.id}/log`)]);
+      fac.head = tree.head;
+      const files = $("factoryFiles");
+      files.textContent = "";
+      for (const f of tree.files)
+        files.appendChild(facEl("li", {}, [facEl("button", { text: f.path, "aria-current": String(f.path === fac.path), onclick: () => facSelect(f.path) })]));
+      const logUl = $("factoryLog");
+      logUl.textContent = "";
+      const tags = new Map(s.releases.map((r) => [r.commit, r.n]));
+      for (const c of lg.log)
+        logUl.appendChild(facEl("li", { title: "Show this commit's changes", onclick: () => facShowDiff(c.commit + "~1", c.commit) }, [
+          tags.has(c.commit) ? facEl("span", { class: "fac-badge", text: "v" + tags.get(c.commit) }) : null,
+          document.createTextNode(" " + c.subject),
+          facEl("span", { class: "fac-meta", text: `${c.by || "unknown"} · ${facAgo(c.at)}` }),
+        ]));
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  async function facSelect(p) {
+    try {
+      const out = await facCall("GET", `/factory/skills/${fac.skill.id}/file?path=${encodeURIComponent(p)}`);
+      fac.path = p;
+      fac.head = out.head;
+      $("factoryPath").textContent = p;
+      $("factoryEditor").value = out.content;
+      $("factoryEditor").disabled = false;
+      $("factorySave").disabled = $("factoryDelFile").disabled = false;
+      for (const b of $("factoryFiles").querySelectorAll("button")) b.setAttribute("aria-current", String(b.textContent === p));
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  async function facSave(content) {
+    try {
+      const out = await facCall("PUT", `/factory/skills/${fac.skill.id}/file`,
+        content === null ? { path: fac.path, delete: true, base: fac.head } : { path: fac.path, content, base: fac.head });
+      fac.head = out.commit;
+      const warn = (out.warnings || []).map((w) => "! " + facFinding(w)).join("\n");
+      facMsg((content === null ? `Deleted ${fac.path}.` : `Saved ${fac.path}.`) + (warn ? "\n" + warn : ""));
+      await facLoad();
+      fac.skill = fac.data.skills.find((x) => x.id === fac.skill.id) || fac.skill;
+      await facRefreshDetail();
+      if (content === null) { fac.path = null; await facSelect("SKILL.md"); }
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  async function facShowDiff(from, to) {
+    try {
+      const d = await facCall("GET", `/factory/skills/${fac.skill.id}/diff?${from ? "from=" + encodeURIComponent(from) + "&" : ""}to=${encodeURIComponent(to)}`);
+      $("factoryOut").hidden = false;
+      $("factoryOut").textContent = d || "(no difference)";
+    } catch (e) {
+      // The first commit has no parent: show it whole.
+      if (from && from.endsWith("~1")) return facShowDiff(null, to);
+      facMsg(e.message, true);
+    }
+  }
+
+  $("factoryBtn").addEventListener("click", async () => {
+    $("factoryOverlay").hidden = false;
+    $("factoryList").innerHTML = skeletonHTML("rows", 3);
+    facMsg("");
+    await facLoad();
+    facRenderList();
+  });
+  $("factoryClose").addEventListener("click", () => { $("factoryOverlay").hidden = true; });
+  $("factoryOverlay").addEventListener("click", (e) => { if (e.target === $("factoryOverlay")) $("factoryOverlay").hidden = true; });
+  $("factoryBack").addEventListener("click", async () => { facMsg(""); await facLoad(); facRenderList(); });
+  $("factoryCreateBtn").addEventListener("click", async () => {
+    try {
+      const out = await facCall("POST", "/factory/skills", { name: $("factoryName").value.trim(), description: $("factoryDesc").value.trim() });
+      $("factoryName").value = $("factoryDesc").value = "";
+      facMsg(`Created ${out.skill.name}.`);
+      await facLoad();
+      await facOpen(out.skill.id);
+    } catch (e) { facMsg(e.message, true); }
+  });
+  $("factorySave").addEventListener("click", () => fac.path && facSave($("factoryEditor").value));
+  $("factoryDelFile").addEventListener("click", () => {
+    if (fac.path && confirm(`Delete ${fac.path} from ${fac.skill.name}? It stays in the history.`)) facSave(null);
+  });
+  $("factoryNewFile").addEventListener("click", () => {
+    const p = $("factoryNewPath").value.trim();
+    if (!p) return;
+    fac.path = p;
+    $("factoryPath").textContent = p + " (new: Save to create it)";
+    $("factoryEditor").value = "";
+    $("factoryEditor").disabled = false;
+    $("factorySave").disabled = false;
+    $("factoryDelFile").disabled = true;
+    $("factoryNewPath").value = "";
+    $("factoryEditor").focus();
+  });
+  $("factoryScanBtn").addEventListener("click", async () => {
+    try {
+      const out = await facCall("POST", `/factory/skills/${fac.skill.id}/scan`);
+      const lines = [...out.refusals.map((r) => "✗ " + facFinding(r)), ...out.warnings.map((w) => "! " + facFinding(w))];
+      $("factoryOut").hidden = false;
+      $("factoryOut").textContent = lines.length ? lines.join("\n") : "Clean: nothing a release would refuse or warn about.";
+    } catch (e) { facMsg(e.message, true); }
+  });
+  $("factoryRelDiff").addEventListener("click", () => {
+    const last = facLast(fac.skill);
+    facShowDiff(last ? "v" + last.n : null, "main");
+  });
+  $("factoryRelease").addEventListener("click", async () => {
+    const s = fac.skill;
+    try {
+      const out = await facCall("POST", `/factory/skills/${s.id}/release`, { note: $("factoryRelNote").value, accept: $("factoryRelAccept").checked });
+      $("factoryRelNote").value = "";
+      const warn = (out.release.warnings || []).map((w) => "! " + facFinding(w)).join("\n");
+      facMsg(`Released ${s.name} v${out.release.n}.` + (warn ? "\n" + warn : ""));
+      await facLoad();
+      fac.skill = fac.data.skills.find((x) => x.id === s.id) || s;
+      await facRefreshDetail();
+    } catch (e) { facMsg(e.message, true); }
+  });
+  $("factoryWorkBtn").addEventListener("click", async () => {
+    const s = fac.skill;
+    try {
+      const ws = await facCall("POST", `/factory/skills/${s.id}/workspace`);
+      $("factoryOverlay").hidden = true;
+      const t = createTab();
+      t.customName = true;           // launchTab only names a tab that has none
+      t.nameEl.textContent = "skill · " + ws.name;
+      t.profile = ws.profile;
+      // Sent once, on the first `ready`: the Skillsmith starts on THIS skill.
+      t.kickoff = `You are working on the factory skill "${ws.name}". Your clone is ready in ${ws.cwd}. Read it, tell me in two lines what it does today, then ask me what to change.`;
+      launchTab(t, { cwd: ws.cwd, profile: ws.profile });
+    } catch (e) { facMsg(e.message, true); }
+  });
 
   $("relayForm").addEventListener("submit", async (e) => {
     e.preventDefault();
