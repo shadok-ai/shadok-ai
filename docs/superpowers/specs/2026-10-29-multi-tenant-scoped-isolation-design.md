@@ -1,9 +1,9 @@
 # Multi-tenant cockpit: isolated groups, per-group OS users, scoped secrets
 
-Status: **Draft for review** — revised 2026-10-30 (secrets UX folded in; the
-secrets section now covers share-by-reference, the per-group panel and the
-profile-link move). Written from an ongoing brainstorming conversation. Points
-settled in that conversation are
+Status: **Draft for review** — revised 2026-10-31 (public groups are no longer
+walls; migration, the shared ledger under groups, and cross-group communication
+folded in; a one-page mental model added at the top). Written from an ongoing
+brainstorming conversation. Points settled in that conversation are
 marked **[DECIDED]**; a call the author made that a builder could not settle
 alone is marked **[CALL]**; points deliberately left open are **[OPEN]**.
 Nothing here is built yet; this document is the thing to approve before a plan.
@@ -17,6 +17,55 @@ Nothing here is built yet; this document is the thing to approve before a plan.
 > **resolved by measurement** (see "Claude authentication"). The old draft's
 > `owner`/`group`/`instance` wording is superseded by the mapping in "Core
 > model".
+>
+> **What changed on 2026-10-31 (read this if you saw the earlier draft).** One
+> earlier `[DECIDED]` was **reversed**: a group is *no longer* always an isolation
+> island. **Public groups have no OS wall** — they share one common OS user (the
+> "commons", which an existing instance already *is*). Only **private** and
+> **restricted** groups are real isolation islands. This is what makes migration
+> near-trivial (your instance today simply *becomes* the public commons) and it is
+> the reason the whole thing collapses to the one-page model below.
+
+## The whole model in one page
+
+The design is **one concept, one rule, and one gesture**. Everything else is that
+rule applied to a different surface. If this page does not fit in your head, the
+rest of the document has failed.
+
+**One concept — the group.** Three *natures*, by who can see it:
+
+- **Private** — just me. One per person, sealed, invisible even to an admin.
+- **Restricted** — my team. A member list; any member can invite.
+- **Public** — everyone. `Main` is the default public group; it is the shared
+  "commons", and an existing single-tenant instance already *is* exactly this.
+
+**Private and restricted are real walls** — each is its own **OS user + HOME +
+secret slice**. **Public is no wall**: all public groups share one commons OS
+user (so creating a public group is as cheap and cosmetic as a tab group today).
+Isolation exists only where there is actually something to protect.
+
+**One rule — you only see and touch your own groups + the public.** That single
+sentence explains the agent list, the files, the secrets, the ledger, who you can
+spawn and who you can drive. There are no other visibility rules to memorise.
+
+**One gesture — to cross a wall you make one deliberate, outbound move**, and it
+is the *same* move everywhere: drop a file into the shared `~/shared/` pot,
+`--public` a ledger line, push a branch to `origin`, send a message to another
+agent. **Private by default; sharing is always an explicit act.** Reversing that
+default anywhere (public-by-default, remember-to-hide) would reopen the leak — so
+it never reverses.
+
+**Two small nuances, and only two.** Secrets add a middle tier (a secret can be
+*shared by reference* with specific groups, not just own-or-public), because one
+API key sometimes must serve two teams. And **talking** across groups is allowed
+as a narrow, consensual channel (a message the recipient handles in its own
+context) even though **seeing and driving** across groups is not. Everything else
+is binary: yours, or public.
+
+**Migration asks you to understand nothing on day one.** Your instance is already
+the public commons; it keeps behaving exactly as today, and walls appear only when
+*you* create a private or restricted group. The rest of this document is the three
+paragraphs above, applied carefully to each surface.
 
 ## Intent and why
 
@@ -73,19 +122,27 @@ An agent is described by **two independent things**:
    governs who sees it. **An agent belongs to exactly one group** for its whole
    life.
 
-**[DECIDED] A group is ALWAYS an isolation island**, whatever its visibility:
-its own **OS user**, its own **secret slice**, its own **HOME**. Isolation is a
-property of the group, never of the profile — isolating by profile would wrongly
-pool every team's `dev` together.
+**[DECIDED — revised 2026-10-31] A group is an isolation island only when it has
+something to hide: private and restricted groups are islands (own OS user, own
+secret slice, own HOME); PUBLIC groups are NOT.** All public groups share a
+single **commons** OS user / HOME / vault slice — the one an existing instance
+already runs as. This reverses the earlier "a group is ALWAYS an island": a
+public group is visible to everyone by definition, so an OS wall around it would
+protect nothing while costing a `useradd` and a migration headache. Creating a
+public group is therefore as cheap and cosmetic as today's tab group; the real
+machinery (new OS user + HOME) fires only for private and restricted groups.
+Isolation is still a property of the group and never of the profile — isolating
+by profile would wrongly pool every team's `dev` together — it is just scoped to
+the natures that actually need it.
 
 **[DECIDED] Visibility is an independent setting on the group**, one of three
 **natures**:
 
-| Nature | Who sees it | Membership | Notes |
-|--------|-------------|------------|-------|
-| **Private** | its owner **only** | exactly one person, **fixed forever** | one per user; auto-created at onboarding; invisible even to an admin; never shareable; visually marked |
-| **Restricted** | the people on its member list | many; **any member can invite** | the team case |
-| **Public** | everyone in the cockpit | none (no list) | `Main` is a public group |
+| Nature | Who sees it | OS wall? | Membership | Notes |
+|--------|-------------|----------|------------|-------|
+| **Private** | its owner **only** | **yes** — own user/HOME/vault | exactly one person, **fixed forever** | one per user; auto-created at onboarding; invisible even to an admin; never shareable; visually marked |
+| **Restricted** | the people on its member list | **yes** — own user/HOME/vault | many; **any member can invite** | the team case |
+| **Public** | everyone in the cockpit | **no** — the shared commons user | none (no list) | `Main` is the default public group; an existing instance already *is* the commons |
 
 This supersedes the morning draft's `owner`/`group`/`instance` **scopes**, which
 map onto the natures 1:1: `owner` → **private**, `group` → **restricted**,
@@ -102,35 +159,43 @@ scopes.
   "[DECIDED, revisit]" — it is no longer up for revisiting.)
 - **[DECIDED]** It is **auto-provisioned**: onboarding a person creates their
   private group and therefore their personal **OS user** on the spot. The user
-  does not "create" it.
+  does not "create" it. (This applies in a **capable** deployment only — see
+  "Deployment modes". A non-privileged install cannot provision a real wall, so
+  it has **no** private groups at all: it never fakes one.)
 - **[DECIDED]** It must be **visually recognisable** in the UI (a lock / a
   "personal" marker), so a person can tell their private island apart from shared
   groups at a glance.
 
 ### Main (the default public group)
 
-- **[DECIDED]** **`Main`** (the former "Ungrouped", renamed by PR #325) is itself
-  a **public, isolated group**. It is where the `general`/lead agent lives and
-  where anyone without a more specific group lands by default.
+- **[DECIDED]** **`Main`** (the former "Ungrouped", renamed by PR #325) is the
+  default **public** group — the **commons**. It runs as the **commons OS user**
+  (no wall), it is where the `general`/lead agent lives and where anyone without a
+  more specific group lands by default. An existing single-tenant instance *is*
+  `Main`.
 - **[DECIDED]** **Only `Main` has a lead agent. Every other group starts empty** —
-  including the private group auto-provisioned at onboarding. Creating a group
-  provisions its OS user and HOME but **spawns no agent**; the user launches the
-  first one on demand. Concretely, today's "no channel at all → spawn the lead"
-  rule (`firstAgentPlan`, `src/first-agent.ts`) becomes scoped to `Main`, not
-  applied per group.
+  including the private group auto-provisioned at onboarding. Creating a
+  **private or restricted** group provisions its OS user and HOME but **spawns no
+  agent** (creating a **public** group provisions nothing — it is a label in the
+  commons); the user launches the first agent on demand. Concretely, today's "no
+  channel at all → spawn the lead" rule (`firstAgentPlan`, `src/first-agent.ts`)
+  becomes scoped to `Main`, not applied per group.
 
 ### Creating, moving, membership
 
 - **[DECIDED]** **Anyone can create a group** (restricted or public), **free and
-  unlimited in v1**. Because creating a group **provisions a new isolated OS
-  user**, this is a **privileged server operation performed on the user's
+  unlimited in v1**. A **public** group is cheap and cosmetic — a label in the
+  commons, no OS user, instant. A **restricted** group **provisions a new isolated
+  OS user**, which is a **privileged server operation performed on the user's
   behalf** — the server is the only actor that touches OS users; no user ever gets
-  shell or sudo. The operation itself is cheap: `useradd` + HOME is sub-second;
+  shell or sudo. That operation itself is cheap: `useradd` + HOME is sub-second;
   the perceptible cost is one-time HOME seeding (Claude config/skills, the
   `~/shared/` mount, an optional first `clone`) — seconds, not minutes. A
   guardrail (cap / quota / approval) is **deliberately deferred**: the reason to
   add one later is not latency but the accumulating privileged surface and
-  leftover orphan OS users / HOMEs, which v1 accepts.
+  leftover orphan OS users / HOMEs for restricted/private groups, which v1
+  accepts. (The **creation box** offers only **Public** vs **Restricted**; the
+  private group is auto-provisioned per person and is never created here.)
 - **[DECIDED]** **Membership is many-to-many** — a person can be in several
   groups (e.g. COMEX *and* TECH). Their visibility is the **union** of their
   private group ∪ every restricted group they belong to ∪ every public group.
@@ -196,18 +261,24 @@ server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
 
 ## Execution isolation (the light form — no containers)
 
-- **[DECIDED]** Per-group **OS user**, **no containers**. The global toolchain
-  (node, git, `claude`, tmux) is installed **once** for the machine and shared by
-  every user; there is no per-tenant image and no duplicated 223 MB `claude`
-  binary.
+- **[DECIDED]** A dedicated **OS user per isolated group** (private + restricted),
+  **no containers**. Public groups share the **commons** OS user, so there is one
+  OS user for the whole public world plus one per private/restricted group. The
+  global toolchain (node, git, `claude`, tmux) is installed **once** for the
+  machine and shared by every user; there is no per-tenant image and no duplicated
+  223 MB `claude` binary.
 - The shadok server becomes a **privileged orchestrator**: it runs as root (or
-  with the needed sudo rights) and **drops to the target OS user** when it spawns
-  each agent. It also manages the **lifecycle** of OS users and HOMEs — create the
-  user + HOME when a person (private group) or a shared group is created.
-- Each group gets its own **HOME**, holding `~/.claude` (skills seeded per HOME at
-  boot), config, transcripts, that group's **vault slice**, and a symlink to the
-  shared Claude credential (above). The `claude` native binary stays **global**
-  and is never duplicated per HOME.
+  with the needed sudo rights) and **drops to the target group's OS user** when it
+  spawns each agent — the **commons user** for a public-group agent, the group's
+  own user for a private/restricted one. **No agent ever runs as root** (a root
+  agent would walk through every wall — see Migration). It also manages the
+  **lifecycle** of OS users and HOMEs: create the user + HOME when a **private or
+  restricted** group is created, and tear it down when the group is deleted.
+- Each **isolated** group gets its own **HOME**, holding `~/.claude` (skills
+  seeded per HOME at boot), config, transcripts, that group's **vault slice**, and
+  a symlink to the shared Claude credential (above). Public groups live in the
+  commons HOME. The `claude` native binary stays **global** and is never
+  duplicated per HOME.
 - This **closes the current vault-read leak for free**: today every agent shares
   the server's OS user, so it can `cat ~/.shadok-ai/secrets.json` and read the
   whole vault (the `600` mode does nothing between same-user processes). Under
@@ -218,8 +289,9 @@ server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
 
 - **[DECIDED] The server provisions OS users in-place — in its own runtime
   environment — with no nested per-group containers.** We do **not** add a second
-  containerization layer: creating a group is a `useradd` in the environment the
-  server already runs in.
+  containerization layer: creating an **isolated** (private/restricted) group is a
+  `useradd` in the environment the server already runs in (a public group needs
+  no `useradd` at all).
 - **The blast-radius boundary comes for free from the standard deployment.** A
   shadok instance installed on a VPS **already runs inside one Docker container**
   (the official image). So "bare host" here means the server's own environment —
@@ -233,11 +305,40 @@ server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
   either place the user DB + HOMEs on the `shadok-data` volume or rebuild them at
   boot. Flagged, not designed here.
 
+### Deployment modes (the capability probe)
+
+Provisioning OS users needs privilege. A plain `npx shadok-ai` launched by a
+non-root user with no sudo **cannot** provision anyone — so multi-tenant is a
+capability of the **privileged (Docker/VPS) deployment**, and a non-privileged
+install must degrade **honestly**, not half-way.
+
+- **[DECIDED] The load-bearing rule: never simulate a wall we cannot pose.** The
+  worst possible failure is a non-privileged install that lets someone create a
+  "private" group which is secretly just a cosmetic label sharing root's files —
+  a confidentiality promise that is a lie. So: either we isolate for real, or we
+  do not offer isolation at all.
+- **[DECIDED] A deterministic capability probe at boot** decides the mode, in the
+  spirit of `inContainer()` (`/.dockerenv`): it **tests** whether the server can
+  actually provision an OS user (root, or the needed sudo rights) rather than
+  guessing from "am I root", so it is wrong in neither direction. One source of
+  truth for the mode.
+- **Capable → multi-tenant.** Private/restricted groups, the 🔑 per group, the
+  whole model.
+- **Not capable → mono-tenant**, which is **exactly today's instance**:
+  everything is `Main` (the commons), the secrets panel is one flat list, and the
+  isolation affordances (create a private/restricted group) are simply **not
+  offered**. If a client pokes the API anyway, it is refused with a clear reason
+  (`isolation requires the privileged deployment`) — **never a fake wall**.
+- **The mode is displayed** (e.g. on `/version` / a tooltip), so an operator
+  knows which mode they are in and why they do not see isolated groups. The
+  mono-tenant user loses nothing and sees no change from today.
+
 ### Cost, stated honestly
 
-- More OS users and HOMEs: roughly `#people + #shared-groups` (~55 for a
-  50-person company — each person's private group plus the teams). Linux handles
-  this easily, but the orchestrator must provision and tear them down.
+- More OS users and HOMEs: roughly `#people + #restricted-groups` (~55 for a
+  50-person company — each person's private group plus the teams). **Public groups
+  cost no user** (they are labels in the commons). Linux handles this easily, but
+  the orchestrator must provision and tear the isolated ones down.
 - A private group therefore gets its own HOME → a modest **per-person** cost
   (seeded skills + config + transcripts + that person's worktrees). Never the
   binary.
@@ -246,10 +347,13 @@ server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
 
 ## Files, folders and permissions
 
-Once each group runs as its own OS user with its own HOME, a file an agent writes
-is **owned by that group's OS user** and unreadable by another group — which is
-the point. The design then has to answer how anything legitimately crosses that
-wall. **[DECIDED]** There are exactly two doors, and nothing else traverses:
+Once each **isolated** group (private + restricted) runs as its own OS user with
+its own HOME, a file an agent writes there is **owned by that group's OS user**
+and unreadable by another group — which is the point. (Public groups share the
+commons user, so their files are mutually readable — public by definition; the
+doors below are about crossing an *isolated* group's wall.) The design then has to
+answer how anything legitimately crosses that wall. **[DECIDED]** There are
+exactly two doors, and nothing else traverses:
 
 - **Code circulates by `origin`, never by the disk.** Each group holds its **own
   clone** of a given project inside its HOME. Two groups working the same project
@@ -300,30 +404,60 @@ level, not inside the cockpit.
   line above). So admin reach is: all public ∪ all restricted — never any
   private.
 
-## Collaboration across boundaries
+## Collaboration across boundaries (spawn, drive, talk, git)
 
-Isolation must not break the collaboration shadok already relies on. It does not,
-because shadok routes collaboration through two channels that are **not** the
-shared filesystem:
+Isolation must not break the collaboration shadok relies on — but the earlier
+draft's "**pilotctl is unaffected by isolation**" was **wrong**, because pilotctl
+bundles three very different capabilities that the wall must treat differently. A
+spawn has to be born *somewhere*; driving is deep access; talking is not. So we
+split them:
 
-- **pilotctl** goes through the central server over the WebSocket. Agents in
-  different OS users / HOMEs (or even different machines) can still spawn, prompt,
-  and drive each other. Unaffected by isolation. (And already denied the Claude
-  Code cross-session `SendMessage`/`ListAgents` tools — see PR #317 — so the
-  server is the one sanctioned path.)
+- **[DECIDED] Spawn → your OWN group, only.** A pilotctl spawn is born in the
+  **same group as the caller** (same OS user / HOME / secrets). The agent never
+  chooses the uid: it authenticates with its `SHADOK_SESSION_KEY` (invariant 33),
+  the **server** derives its group and drops to *that* group's user. So there is
+  **no escalation path** — an agent cannot spawn itself, or anything else, into
+  another group. (A public-group agent spawns into the commons; a COMEX agent into
+  COMEX.)
+- **[DECIDED] See / drive → your own groups + public, only.** Listing agents,
+  reading a transcript, imposing a turn, stopping, `set-parent`, `set-profile` —
+  all deep access — are gated by the **same ACL as `GET /channels`**. Never
+  another restricted group, **never** any private group. Browser filtering is
+  cosmetic; the server enforces.
+- **[DECIDED] Talk → a narrow, consensual channel that MAY cross groups.** An
+  agent can **send a message** to another agent; the recipient receives it in
+  **its own context** (like a parent notification or a human prompt) and decides
+  what to do with it, under its own guardrails. The sender never sees the
+  recipient's transcript, never reads its files, never drives it — **a letter, not
+  a remote control.** This is how "two people on different teams can talk without
+  seeing each other's work". The message goes through the server (the sanctioned
+  path that replaced the native `SendMessage`/`ListAgents`, PR #317), which
+  applies the talk ACL:
+  - a **public** agent can be messaged **freely** (it is discoverable);
+  - an agent in another **restricted** group can be messaged **only if you hold
+    its handle** (someone introduced it — a human in both groups, or a reference
+    passed along); you **cannot enumerate** another group's roster, so there is no
+    browsing, only a targeted message to a known counterpart;
+  - a **private** group is **sealed in both directions** — it cannot be messaged
+    from outside (no break-glass); the person relays by hand if they want to.
 - **git**: the meeting point is the **remote (origin)**, not a shared local
   directory. A dev agent **commits locally** and **pushes a feature branch**; a
   push/merge-privileged agent (e.g. a release role) reviews and brings it to
   `main`. **Branch protection on the remote** — not a fragile tool `deny` — is
   what enforces "only certain roles merge".
 
-**Consequence to design around:** there is no shared-filesystem handoff of
-**uncommitted** work across a group boundary. The pattern "a git-less lead edits
-files, then asks a third party to reach into its worktree and push" **stops
-working** under isolation (the third party cannot see the worktree). It must be
-replaced by either (a) the lead delegating the coding to an agent that owns its
-branch end-to-end, or (b) giving the authoring agent enough git to commit + push a
-feature branch (never merge to `main`). This is a cleaner flow regardless.
+**Consequence to design around — agents are single-group, so there is no
+agent-driven orchestration across groups.** The transversal orchestration is done
+by a **human** from the UI (a person is a member of several groups), or it flows
+through **git/origin** (async: push a branch, an entitled agent picks it up) or a
+**public coordinator agent** in `Main` that everyone can see and drive. And there
+is no shared-filesystem handoff of **uncommitted** work across a group boundary:
+the pattern "a git-less lead edits files, then asks a third party to reach into
+its worktree and push" **stops working** (the third party cannot see the
+worktree). Replace it by either (a) the lead delegating the coding to an agent
+that owns its branch end-to-end, or (b) giving the authoring agent enough git to
+commit + push a feature branch (never merge to `main`). This is a cleaner flow
+regardless.
 
 ## Secrets model evolution
 
@@ -441,15 +575,49 @@ agent's group**, stamped **server-side** from its session (like
 `SHADOK_SESSION_KEY`), never from anything the client claims — and `createdBy`
 records the agent.
 
-### Migration
+### Migration (secrets)
 
-Today's flat vault becomes the **`Main`** (public) group's slice; existing
+Today's flat vault becomes the **`Main`** (commons) group's slice; existing
 profile↔secret bindings carry over unchanged (names are preserved). People and
 teams add their own on top, and share by reference where a key must span teams.
 No big-bang; a single-user instance with no extra groups behaves exactly as
-today (the degradation rule above). The full migration of a running instance is
-its own topic — see "Left to the builder" and the migration discussion still to
-be folded in.
+today (the degradation rule above). This is one step of the broader instance
+migration — see "## Migration" below.
+
+## The shared ledger under groups
+
+The ledger (`src/ledger.ts`, the `shadok-ledger` skill) is **per-instance today**:
+one table, and the `⟦ledger⟧` delta is pushed into **every** agent's turn. Under
+groups that is a **cross-group leak** — a line a private/restricted agent records
+("resolved the COMEX comp-grid bug") would be broadcast to everyone, turning the
+ledger into an information channel the isolation is meant to close.
+
+- **[DECIDED] The author decides reach, with a safe default — same gesture as
+  `~/shared/`.** The `shadok-ledger` skill is **explicit** at `record` time:
+  - a bare `record` stays **scoped to the agent's own group** (the safe default —
+    nothing leaks by forgetting);
+  - an explicit **`--public`** publishes the line to the **commons (`Main`)**
+    ledger, visible to all. That is the "drop it in the common pot" gesture of the
+    ledger, the exact twin of dropping a file into `~/shared/`.
+- **[DECIDED] Read / push = own group + public.** A `check`, and the pushed
+  `⟦ledger⟧` block, carry only the rows the agent's group may see: its **own
+  group's** rows **plus public** rows. A restricted group's rows stay in that
+  group; a private group's stay with the person.
+- **[DECIDED] No admin super-view, no break-glass.** The cross-group question
+  dissolves into the author's choice: what must be seen broadly is **explicitly
+  published**. An admin sees public + their own groups like anyone else. (This
+  mirrors the private-group rule everywhere else in this document.)
+- **[DECIDED] The non-negotiable invariant is the DIRECTION of the default:**
+  group-private by default, `--public` as the opt-in. The reverse (public by
+  default, remember-to-hide) would reopen the leak on the first agent's oversight.
+- Same accepted trade-off as the shared pot: **once public, public** (visible to
+  all, including later). The row still records which agent/group authored it
+  (audit), but its *visibility* is the scope the author chose.
+- Mechanically this is the secrets pattern again: rows gain a **scope** (own group
+  or public), the server filters `deltaSince` / `check` by the caller's group
+  (derived from its session), and the watermark bookkeeping
+  (`ledgerSeenFileFor`) is unchanged. One table, server-side scoping — no new
+  store.
 
 ## Disk / footprint
 
@@ -469,25 +637,85 @@ be folded in.
 - **Disk space / quotas are out of scope** — managed at the Docker/infrastructure
   level, not inside the cockpit.
 
+## Migration (an existing instance → isolated groups)
+
+The whole reason "public = no wall" matters: it makes migrating a running
+instance **near-trivial and additive**, not a re-homing project.
+
+**The key fact that dissolves most of the worry: today there are no isolated
+groups at all, so every file that already exists was created in the shared world
+— it is, by definition, a commons/public file.** There is no "team file" stranded
+under the wrong owner, because teams do not exist yet. So **nothing is reclassified
+retroactively**; isolation is additive and only ever applies to files created
+*after* a private/restricted group exists, *by* that group, owned correctly from
+birth. (The user confirmed: existing agents/files stay in the commons; isolation
+is for future agents.)
+
+- **[DECIDED] Migration is AUTOMATIC**, on the **first boot of a capable
+  instance** (the capability probe above succeeds). No operator gesture, no
+  button. It is an idempotent boot step in the spirit of `ensureClaudeHome` /
+  `ensureSshIdentity`, guarded by a **marker on the `shadok-data` volume** (so it
+  runs once and survives a `docker recreate`), and it runs **before** agents are
+  respawned.
+- **[DECIDED] The commons cannot stay root — this is the one real cost.** Today
+  the default Docker image has **no `USER` directive**, so the container runs as
+  **root** and agents' files are **root-owned** (verified: `Dockerfile` has only
+  `WORKDIR`, and `src/server.ts` has no privilege-drop at spawn). A **root agent
+  walks through every OS wall**, so a public/commons agent running as root could
+  read any private/restricted group's vault and files — exactly the top anti-goal.
+  Therefore migration:
+  1. creates a **non-root commons user** (`main`);
+  2. **`chown`s the existing tree** (workspace, HOMEs, the flat vault) from root
+     to `main` **once** — the files **do not move** (same paths, same worktrees),
+     they change owner in a single sweep;
+  3. the flat vault becomes **`Main`'s slice**;
+  4. **auto-provisions each existing account's private group** (empty — like every
+     non-`Main` group), so each person has their sealed personal space ready;
+  5. leaves today's channels and (cosmetic) groups **labelled public**, in the
+     commons.
+- **[DECIDED / builder-shaped] Agents that were running are respawned once under
+  `main`.** The pre-migration tmux panes were created by root; re-adopting them as
+  root would reintroduce a root agent, so they are **restarted once** under the
+  commons user (`--resume`, history kept), **one at a time** (the OAuth
+  refresh-race discipline, as `restart-all`). It is a brief blip at the upgrade —
+  the price of the root → non-root move — and it is the only moment existing
+  agents are touched.
+- **[DECIDED] A non-capable (npx, non-privileged) install is NOT migrated.** It
+  stays mono-tenant, byte-for-byte identical to today, and honestly refuses the
+  isolation affordances (Deployment modes). There is nothing to migrate because
+  there is nothing it could isolate.
+- **[DECIDED] Transparency.** Although automatic, the migration is **logged**, and
+  the UI states once that the instance moved to isolated groups — automatic must
+  not mean silent.
+
 ## Goals / non-goals / anti-goals
 
 **Goals**
 - Slack-like per-person and per-team visibility of agents (private / restricted /
   public groups).
-- Real, OS-level confidentiality of secrets and files **between** groups.
-- Cross-group collaboration preserved via pilotctl + git.
+- Real, OS-level confidentiality of secrets and files **between isolated groups**
+  (private + restricted); public is the shared commons by design.
+- Cross-group collaboration preserved: **git/origin** + a **public coordinator**
+  for handoffs, and a **narrow cross-group talk** channel — while spawn and drive
+  stay own-group + public.
+- Near-trivial, **automatic, additive** migration of an existing instance.
 - No containers; shared toolchain; one shared Claude subscription.
 
 **Non-goals (v1)**
 - Defending against host root / a determined insider with a host shell.
 - Containerization and Fortune-500 hardening.
 - Per-person disk quotas.
+- Multi-tenant on a non-privileged (npx) install — it stays mono-tenant.
 
 **Anti-goals (a design that does any of these has failed, even if it "works")**
 - Silently letting one group read another's secrets or files.
-- Breaking pilotctl or git collaboration across groups.
+- **Faking a wall we cannot pose** — a "private" group with no real OS boundary.
+- Leaking across groups through a side-channel: the **ledger push** or a **talk**
+  message reaching someone who is not entitled to it.
+- An agent that can **spawn into, see, or drive** a group it does not belong to.
 - A private agent that an admin can quietly see or drive.
-- Letting a user create unbounded OS users without any guardrail.
+- Letting a user create unbounded isolated OS users without any guardrail.
+- A migration that re-homes or loses existing files, or runs root agents.
 
 ## Constraints
 
@@ -501,7 +729,10 @@ be folded in.
   server-owned / same-origin invariants.
 - **Backward-compatible migration**: an existing single-user instance, with no
   extra groups defined, must keep behaving exactly as today (everything is the
-  `Main` public group).
+  `Main` commons group), and a non-privileged install stays mono-tenant.
+- **No agent runs as root**, and **no agent can act outside its own group +
+  public** (spawn/see/drive); cross-group reach is limited to git, a public
+  coordinator, and the narrow talk channel.
 
 ## Open decisions to revisit
 
@@ -510,6 +741,10 @@ be folded in.
   (PR #338, Telegram person ↔ web account link) now moves identity in this area —
   reconcile with it. Recommendation unchanged: **web-first in v1, Telegram
   deferred.**
+- **Cross-group talk discovery** — how a handle to an agent in another restricted
+  group is obtained/passed in practice (a human in both groups, a reference in a
+  message); the rule is set (public free, restricted by handle, private sealed),
+  the plumbing of handle-passing is left to design.
 
 ## Left to the builder
 
@@ -537,6 +772,24 @@ be folded in.
   groups bar, the write-only value field with audit display, and the single-flat-
   list degradation when only `Main` exists; plus the profile editor turned
   read-only on secrets with a "→ Manage secrets" link.
-- **Migration scripts**: flat vault → `Main` group slice; existing channels →
-  `Main` (or a person's private group, if derivable); every existing account gets
-  its auto-provisioned private group.
+- **The capability probe**: the deterministic boot test for "can I provision an
+  OS user" (root / sudo), its single source of truth for the deployment mode, and
+  how the mode is surfaced (`/version`, a tooltip) and enforced (refuse isolation
+  affordances in mono-tenant — never a fake wall).
+- **Automatic migration**: the idempotent, volume-marked boot step — create the
+  non-root `main` commons user, `chown` the existing root-owned tree to it once,
+  flat vault → `Main` slice, auto-provision each account's private group, label
+  existing channels/groups public; plus the **one-at-a-time respawn** of running
+  agents under `main` (`--resume`). Fail-safe: a partial failure must not break
+  the instance.
+- **The shared ledger under groups**: a per-row **scope** (own group / public),
+  server-side filtering of `check` / `deltaSince` / the `⟦ledger⟧` push by the
+  caller's group, and the `--public` flag in the `shadok-ledger` skill (safe
+  default = own group).
+- **Cross-group talk**: the server-mediated message primitive (a letter the
+  recipient handles in its own context, never a drive), its ACL (public free,
+  other restricted by handle, private sealed both ways), and how a handle is
+  passed without enumerating a group's roster.
+- **Migration scripts detail**: existing channels → `Main` (or a person's private
+  group, if derivable); every existing account gets its auto-provisioned private
+  group.
