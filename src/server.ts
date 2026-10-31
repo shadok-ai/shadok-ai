@@ -11,7 +11,8 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
-import { attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type Attachment } from "./factory.js";
+import { scopeAllowsAgent, recordRun, skillOfCall } from "./factory.js";
+import { attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -3183,6 +3184,11 @@ mountFactory(app, {
       .catch((e) => console.log(`factory: reload ${id.slice(0, 8)} failed: ${(e as Error).message}`));
     return "reloaded";
   },
+  groups: () => loadGroups(),
+  cronsOf: (id) =>
+    loadCrons()
+      .filter((c) => c.sessionId === id && c.enabled)
+      .map((c) => ({ label: scheduleLabel(c.schedule, cronTimeZone(c)), prompt: c.prompt.slice(0, 120) })),
   agentMcp: (id) => {
     const p = loadChannels().find((c) => c.sessionId === id)?.profile;
     const prof = p ? effectiveProfile(getProfile(p)) : undefined;
@@ -5178,6 +5184,12 @@ const pendingSkills = new Map<string, Attachment[]>();
  *  reloaded still runs from these, so they must survive a prune. */
 const runningPlugins = new Map<string, string[]>();
 
+/** One `Skill(<name>:<name>)` call = one run of that factory skill (for the panel's counts). */
+function countFactoryRun(skillArg: string, agentId: string): void {
+  const name = skillOfCall(skillArg, loadRegistry(factoryRoot()).skills.map((x) => x.name));
+  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId });
+}
+
 /** Remove the release directories no attachment and no running process uses. */
 function pruneFactoryPlugins(): void {
   const skills = loadRegistry(factoryRoot()).skills;
@@ -5189,6 +5201,17 @@ function pruneFactoryPlugins(): void {
   if (removed.length) console.log(`factory: removed unused release dirs ${removed.join(", ")}`);
 }
 
+/** Group + creator of an agent not yet on disk (a spawn in progress), for scope checks. */
+const pendingCtx = new Map<string, AgentCtx>();
+
+/** Who an agent is, for a factory skill's scope: its group and its creator. */
+function agentCtxFor(sessionId?: string | null): AgentCtx {
+  if (!sessionId) return {};
+  const ch = loadChannels().find((c) => c.sessionId === sessionId);
+  const p = pendingCtx.get(sessionId);
+  return { group: ch?.group ?? p?.group ?? null, createdBy: ch?.createdBy ?? p?.createdBy ?? null };
+}
+
 function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
   if (!sessionId) return undefined;
   return loadChannels().find((c) => c.sessionId === sessionId)?.skills ?? pendingSkills.get(sessionId);
@@ -5196,11 +5219,11 @@ function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
 
 /** The secret names an agent's factory skills are granted (accepted releases only). */
 function factorySecretsFor(sessionId?: string | null): string[] {
-  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), MAIN_GROUP);
+  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), MAIN_GROUP, agentCtxFor(sessionId));
 }
 
 /** Pure-ish: turn a `start`'s requested skills into accepted attachments. */
-function resolveBirthSkills(req: { skill: string; release?: number }[]): { ok: Attachment[]; refused: string[] } {
+function resolveBirthSkills(req: { skill: string; release?: number }[], agent: AgentCtx): { ok: Attachment[]; refused: string[] } {
   const skills = loadRegistry(factoryRoot()).skills;
   const ok: Attachment[] = [];
   const refused: string[] = [];
@@ -5211,6 +5234,8 @@ function resolveBirthSkills(req: { skill: string; release?: number }[]): { ok: A
       s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree));
     const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
     if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
+    if (!scopeAllowsAgent(s.owner, agent)) { refused.push(`${s.name}: scoped to ${s.owner}`); continue; }
+    if (s.archived) { refused.push(`${s.name}: archived`); continue; }
     if (!ok.some((a) => a.skill === s.id)) ok.push({ skill: s.id, release: rel.n });
   }
   return { ok, refused };
@@ -5219,7 +5244,7 @@ function resolveBirthSkills(req: { skill: string; release?: number }[]): { ok: A
 function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
   const attached = attachmentsFor(sessionId);
   if (!attached?.length) return [];
-  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, MAIN_GROUP);
+  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, MAIN_GROUP, agentCtxFor(sessionId));
   return ok.map(({ skill, release }) => ({ name: skill.name, release: release.n, tree: release.tree }));
 }
 
@@ -5435,7 +5460,7 @@ function makePilot(
   // resume without it). A dropped attachment is said, never silently skipped.
   // Their declared/detected secrets are GRANTED here: a person of this group
   // accepted that tree, and the accept screen listed those names.
-  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), MAIN_GROUP);
+  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), MAIN_GROUP, agentCtxFor(id));
   for (const d of factory.dropped)
     console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
   runningPlugins.set(id, factory.args.filter((_a, i) => i % 2 === 1));
@@ -6199,14 +6224,17 @@ function startContentTail(s: Live): void {
     } else if (e.kind === "prompt") {
       // The echoed prompt bubble learns its transcript id (see TailEvent).
       broadcast(s, { type: "prompt-id", msgId: e.uuid, text: e.text });
-    } else if (e.kind === "tool")
+    } else if (e.kind === "tool") {
+      // A `Skill(<name>:<name>)` call is one run of a factory skill: counted
+      // for the Skills page, then streamed like any other tool.
+      if (e.skill) countFactoryRun(e.skill, s.id);
       broadcast(s, {
         type: "stream-tool", id: e.id, name: e.name, summary: e.summary,
         // Files a SendUserFile delivered → the client renders a download / inline
         // card, Telegram uploads them. {path, name, image} so neither re-derives.
         ...(e.files?.length ? { files: e.files.map(fileCard) } : {}),
       });
-    else if (e.kind === "bash")
+    } else if (e.kind === "bash")
       broadcast(s, {
         type: "stream-bash",
         ...(e.command !== undefined ? { command: e.command } : {}),
@@ -7242,9 +7270,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Born with skills: resolved and checked BEFORE the spawn, since
           // `--plugin-dir` is a spawn arg. Held in `pendingSkills` until the
           // channel row exists (written at ready, below).
+          // Who this new agent belongs to, for factory skill scopes: the person
+          // spawning it (an agent's spawn inherits its parent's creator, so a
+          // lead's ticket agents stay "yours"), and the cockpit group the client
+          // creates it in. Both asserted once, at birth.
+          let initialCreatedBy: string | undefined;
+          if (!resumed) {
+            const parentCh = parentAtStart ? loadChannels().find((c) => c.sessionId === parentAtStart) : undefined;
+            initialCreatedBy = parentCh?.createdBy ?? me?.name ?? undefined;
+            // The group only steers which shared skills are OFFERED: the one the
+            // isolation policy assigned, else the one the client created it in.
+            pendingCtx.set(id, { group: agentGroupId ?? requestedGroupId, createdBy: initialCreatedBy ?? null });
+          }
           let initialSkills: Attachment[] | undefined;
           if (!resumed && Array.isArray(msg.skills) && msg.skills.length) {
-            const { ok, refused } = resolveBirthSkills(msg.skills);
+            const { ok, refused } = resolveBirthSkills(msg.skills, pendingCtx.get(id) ?? {});
             for (const r of refused) console.log(`factory: ${id.slice(0, 8)} not born with ${r}`);
             if (ok.length) {
               initialSkills = ok;
@@ -7359,8 +7399,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // dangling group id: `spawnGroupFor` returns a real group or null.
             ...isolation.groupPatch,
             ...(initialSkills ? { skills: initialSkills } : {}),
+            ...(initialCreatedBy ? { createdBy: initialCreatedBy } : {}),
           });
           pendingSkills.delete(id);
+          pendingCtx.delete(id);
           send({ type: "tokens", tokens: tokenTotals(session) });
           send(profileMessage(session));
             if (session.contextPct !== null) send({ type: "context", pct: session.contextPct });
