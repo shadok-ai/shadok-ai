@@ -98,9 +98,9 @@ skill: { id, name, owner: <group>, editors: [<group>…], users: [<group>…], c
   private group by default) and shared with nobody. Adding an editor or a user is
   the outbound gesture — the twin of `--public` on a ledger line.
 - **A `Main`-owned skill is public**: everyone may see it; using it in a group
-  still needs that group's acceptance (rule 2). **[CALL]** Any person may push to
-  a `Main` draft; only an `admin` releases it or changes its lists — the line the
-  multi-tenant spec draws for `Main` secrets.
+  still needs that group's acceptance (rule 2). Any person may push to and
+  release a `Main` draft; only an `admin` deletes it or changes its lists
+  (revised 2026-10-31, gap 2: release is not the gate, acceptance is).
 - **A private group may own a skill and share it out.** The group can never be
   shared; its *skill* can, and the share is the explicit act.
 - **Seeing a skill = being in its owner, editor or user groups** (or it being
@@ -116,7 +116,7 @@ skill: { id, name, owner: <group>, editors: [<group>…], users: [<group>…], c
 | Create a skill | any person; owner = one of *their* groups | browser |
 | See it (card, files, history) | owner / editor / user groups; everyone for `Main` | browser, agent |
 | Push to the draft | a person in an **editor** group; an agent whose own group is an editor **and** whose channel profile is `Shadok-Skillsmith` (read from the channel, invariant 1) | browser, `factory.mjs push` |
-| Cut a release | a **person** in an editor group (admin for `Main`) | browser only |
+| Cut a release | a **person** in an editor group (any person for `Main`) | browser only |
 | Change the lists | **owner** group members; an admin for a restricted owner (administrative reach); admin only for `Main` | browser only |
 | Accept a release for group G | a **person in G** (admin cannot accept for a group they are not in — acceptance is operational, not administrative) | browser only |
 | Attach an accepted release to an agent | a person who may drive that agent | browser only |
@@ -353,11 +353,13 @@ the values** with the multi-tenant precedence (own → shared-in → `Main` → 
 
 - Values reach a skill only through the agent's env, injected at spawn by the
   existing path. The factory adds no `get`.
-- `requires.secrets` is **informative**: it drives the binding chips (green =
-  resolves in this group, red = "missing in this group → Set it", which opens
-  that group's secrets panel pre-filled) and the scan. *Injection* stays the
-  profile's / group's business, edited on the secrets side as #362 decided — the
-  factory does not offer to add names to a profile.
+- `requires.secrets` is **an injection request, granted at acceptance** (revised
+  2026-10-31, see "Two use cases", gap 1). An attached, accepted release gives
+  its agent those names, resolved in the agent's group. The accept screen lists
+  them, and a release that adds one shows it as a new request in the diff. The
+  chips are per agent: received, missing in this group ("Set it" opens that
+  group's secrets panel pre-filled), or not requested. Profiles are not edited,
+  so #362's "binding lives on the secrets side" is untouched.
 
 ## When the owner group disappears
 
@@ -374,6 +376,107 @@ be emptied of members.
 - A restricted owner group emptied of members: an admin may transfer ownership
   the same way (membership and ownership are administrative acts).
 
+## Two use cases, walked through (2026-10-31)
+
+Two cases from the product owner, run against what phase 2 ships. Each step is
+marked **works**, **works with friction** or **missing**. The gaps that follow
+are what the cases need, in order.
+
+### A software engineer and their team, on a sprint's tickets
+
+*"I use a skill, and improve it with my team, to do one ticket or all of a
+sprint's. I collaborate on it with other engineers."*
+
+| Step | Today |
+|---|---|
+| Bring the team's existing ticket skill into the factory (they already have `ticket`, `sprint-tickets` in `~/.claude/skills`) | **missing**: "adopt" was deferred |
+| Several engineers edit it; their Skillsmiths push concurrently | **works**: fast-forward + "pull and replay" |
+| The skill needs Linear (an MCP server and/or a token) | **works with friction**: the token must be put on the agent's *profile* by hand, and nothing says the skill needs an MCP server |
+| One agent per ticket, each running the skill | **works with friction**: attach to each agent, one by one, then reload each. An agent spawned by a lead (pilotctl) is born without it |
+| While doing a ticket, the dev agent finds the skill is wrong and wants it fixed | **missing**: only a Skillsmith may push (correctly), and the agent that *noticed* has no way to say so |
+| The team releases v4 mid-sprint; ticket agents should take it | **works with friction**: nothing tells the agents on v3 that v4 exists; each one must be re-attached and reloaded |
+| Release | **works with friction**: admin only, so an engineer who is not admin cannot ship the fix they just made |
+
+### Marketing, a daily summary posted on Slack
+
+*"I create, with others, a daily summary posted on Slack. Another marketing
+member comes and changes the skill, adding elements little by little. I reuse
+this skill for other marketing topics."*
+
+| Step | Today |
+|---|---|
+| Write the skill together, in the browser, without git | **works**: the panel editor, or a Skillsmith that answers in their language |
+| It needs `SLACK_BOT_TOKEN` | **works with friction**: the chip says "in the vault" (green). That is not "this agent will receive it", which takes a profile edit elsewhere |
+| Post it every morning | **works with friction**: create an agent, attach, reload, then open its schedule and write a daily cron. Four places for one intent |
+| A colleague adds an element, releases v2; tomorrow's summary should include it | **works with friction**: release is admin-only, and the cron's agent stays on v1 until someone re-attaches and reloads it |
+| Reuse it for another topic (a weekly competitor digest) | **works** if the skill takes its topic from the request: same skill, another agent or cron, another prompt. **Missing** if the topic needs its own variant: no "duplicate" |
+
+### What the cases need, in order
+
+1. **[DECIDED] Attaching a skill gives it its declared secrets, and accepting
+   is the consent.** Today `requires.secrets` is informative and injection stays
+   on the profile. Both cases hit that wall first. A Slack token placed on a
+   *role* reaches every agent of that role, and a token missing from it fails
+   silently at 7 a.m. The new rule: an agent receives, at spawn, the
+   `requires.secrets` of every release attached to it and accepted for its
+   group, resolved through the group's normal precedence (own → shared-in →
+   `Main`). The accept screen lists those names: "v2 will receive
+   SLACK_BOT_TOKEN". A release that adds a name to `requires.secrets` is
+   therefore visibly a new request, in the diff a person must accept. That is
+   the supply-chain rule applied to secrets: code from elsewhere gets a
+   credential only if someone of the running group saw it ask. The chips become
+   **per agent**: received, missing in this group, or not requested. This does
+   not reopen #362: profiles stay as they are, the link is skill → agent, and
+   the values never leave the group. The Skillsmith still gets nothing by
+   default.
+2. **[DECIDED] Editors release; admins delete.** Admin-only release (the `Main`
+   [CALL] above) blocks the marketer and the engineer in their core loop, and it
+   protects nothing acceptance does not: no release runs anywhere until a person
+   of the running group accepts it. So any person in an editor group releases,
+   `Main` included. Deleting and changing the lists stay admin acts for `Main`.
+   This reverses the earlier [CALL].
+3. **Updates in one click.** Each attachment shows "v4 available" when a newer
+   release is accepted. The card has **Update N agents**: it re-attaches them to
+   the new release and reloads the idle ones now. Busy ones are marked stale and
+   reloaded by their own click. An explicit click is not an implicit respawn.
+   Auto-follow stays off.
+4. **Born with the skill.** Attach at creation (a skills picker in the creation
+   popin) and `pilotctl spawn --skill <name>[@N]`, so a lead spawning one agent
+   per ticket hands each the skill. Accepted releases only, same checks as
+   `POST /factory/attach`. In phase 3, **group default skills** ("every agent
+   born in TECH runs `ticket@latest-accepted`") replace the cut profile
+   attachments. They are scoped to a group, so nothing leaks across a wall.
+5. **Schedule from the card.** **Run on a schedule…** picks an agent of the
+   group (or creates one named after the skill), attaches the release, and
+   writes the cron (`daily HH:MM` / interval, prompt pre-filled with
+   `Use the <name>:<name> skill to …`) in one dialog. That is the marketing case
+   in one gesture. The cron model is unchanged: it drives an agent, and the
+   agent carries the skill.
+6. **Improve from use: feedback, not push.** An agent running a skill files
+   `factory.mjs feedback <skill> "<what went wrong / what is missing>"`. It is
+   kept on the card with who, when and which release, and handed to the next
+   Skillsmith's kickoff. Push rights do not widen: the ticket agent that noticed
+   the problem is not the one that rewrites shared code. The engineer clicks
+   **Work on it** and the Skillsmith starts from the feedback. A person can also
+   add feedback from the card.
+7. **Reuse.** The Skillsmith prompt asks for skills that take their *subject*
+   from the request (topic, channel, period), so one summary skill serves
+   several marketing topics through different cron prompts. When a real variant
+   is needed: **Duplicate as new skill** starts a new history from a release,
+   with `origin: <skill>@N` recorded, and the two then evolve apart.
+8. **Adopt existing skills.** Promoted from "later": an engineer's first move is
+   to bring the team's current skill in. Import a folder from
+   `~/.claude/skills/<name>` as a new draft (scanned like a push). The original
+   is never touched.
+9. **`requires.mcp`, informative.** A manifest may name the MCP servers a skill
+   needs (`linear`, `slack`). The per-agent chips check them against the
+   agent's profile `mcpServers`: "needs an MCP server named linear, which this
+   agent does not have". No injection: an MCP server is a role's equipment,
+   configured on the profile as #362 and the MCP spec decided.
+
+Engineers across several teams (TECH-front and TECH-back both editors) is phase
+3's editor list, and needs nothing more than what "Ownership and rights" says.
+
 ## What stays out
 
 - **shadok's own seeded skills** (`shadok-ai-agents`, `shadok-secrets`,
@@ -387,8 +490,8 @@ be emptied of members.
 
 ## Degradation: a single-tenant instance
 
-With only `Main`: no lists to show, every skill is `Main`'s, any person pushes,
-an admin releases, and acceptance is the same click as attaching (one group). The
+With only `Main`: no lists to show, every skill is `Main`'s, any person pushes
+and releases, an admin deletes, and acceptance is the same click as attaching (one group). The
 Skillsmith-only push rule and the push-time scan still apply. Phases 1–2 ship
 before the multi-tenant work and become multi-group by filling in the lists.
 
@@ -426,8 +529,12 @@ named in the body.
 3. **Groups** — owner / editors / users, the per-group panel and 🧩 in the groups
    bar, revocation, owner-destruction transfer. With (or after) the multi-tenant
    work.
-4. **Later** — profile attachments (filtered), skill-script cron checks (scoped
-   secrets), adopt-from-`~/.claude/skills`, cross-org peers.
+2b. **What the two use cases need** (single-tenant, before groups): gaps 1–3
+   (skill secrets granted at acceptance, editors release, one-click update),
+   then 5 (schedule from the card), 6 (feedback), 8 (adopt), 4 (born with the
+   skill), 7 (duplicate), 9 (`requires.mcp`).
+4. **Later** — group default skills (phase 3, gap 4), skill-script cron checks
+   (scoped secrets), cross-org peers.
 
 Each phase ships with its README / architecture / CLAUDE.md updates.
 
@@ -462,7 +569,8 @@ edits; profile-level attachments; skill scripts as cron checks; auto-update.
 ## Open decisions (summary)
 
 - Plugin naming: one plugin per release (recommended) vs one plugin per group.
-- `Main` skills: any person pushes, admin releases — confirm the [CALL].
+- ~~`Main` skills: any person pushes, admin releases~~ — reversed 2026-10-31:
+  editors release, admins delete (gap 2).
 - Browser text editor in v1 — confirm the [CALL] (the challenge proposed
   read-only).
 
