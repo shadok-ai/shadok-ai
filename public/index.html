@@ -10441,13 +10441,14 @@
     const choice = (value, head, text) => facEl("label", { class: "fp-choice" }, [
       facEl("input", { type: "radio", name: "fpScope", value, checked: value === "me" }),
       facEl("div", {}, [facEl("b", { text: head }), facEl("span", { text })])]);
-    const create = async (withPrompt) => {
+    // One button: the editor that opens next writes by hand and by prompt side by side.
+    const create = async () => {
       const v = (scroll.querySelector('input[name="fpScope"]:checked') || {}).value || "me";
       const scope = v === "groups" ? { groups: [...ids] } : v;
       try {
         const out = await facCall("POST", "/factory/skills", { title: title.value.trim(), description: desc.value.trim(), scope, tags: tags.value });
         await facLoad();
-        facEdit(out.skill.id, withPrompt);
+        facEdit(out.skill.id, true);
       } catch (e) { facMsg(e.message, true); }
     };
     scroll.appendChild(facEl("div", { class: "fp-form" }, [
@@ -10464,8 +10465,7 @@
         choice("all", "🏢 Everyone", "Any agent can run it.")]),
       facEl("div", { class: "fp-field" }, [facEl("label", { text: "Tags" }), tags, facEl("div", { class: "fp-hint", text: "Optional, separated by commas: they help filter the list." })]),
       facEl("div", { class: "fp-actions" }, [
-        facEl("button", { class: "primary", text: "Create and write it by prompt", onclick: () => create(true) }),
-        facEl("button", { text: "Create, I'll write it myself", onclick: () => create(false) }),
+        facEl("button", { class: "primary", text: "Create", onclick: create }),
         facEl("button", { text: "Cancel", onclick: () => facGo("list") }),
       ]),
       facEl("div", { id: "fpMsg", class: "fac-msg", role: "status" }),
