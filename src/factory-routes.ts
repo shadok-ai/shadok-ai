@@ -42,7 +42,6 @@ import {
   MAIN_GROUP,
   prepareWorkspace,
   readFile,
-  scopeAllowsAgent,
   scopeError,
   groupsScope,
   runStats,
@@ -98,13 +97,6 @@ function fail(res: Response, e: unknown): void {
   }
   console.error("factory:", (e as Error)?.message ?? e);
   res.status(500).json({ error: "factory error" });
-}
-
-/** Why a skill cannot go on an agent, in the words the panel shows. */
-function scopeRefusal(owner: string): string {
-  if (owner.startsWith("user:")) return "this skill is yours only: it runs on agents you created";
-  if (owner.startsWith("group")) return "this skill is shared with some groups: it runs only on their agents";
-  return "this skill cannot run on that agent";
 }
 
 export function mountFactory(app: Express, deps: FactoryDeps): void {
@@ -171,9 +163,9 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     const agent = deps.callerOf(req);
     if (agent.id) {
       const ch = deps.loadChannels().find((c) => c.sessionId === agent.id);
-      // An agent sees what may run on it, plus what it is working on as the
-      // Skillsmith launched by that skill's owner (same creator).
-      return scopeAllowsAgent(s.owner, ctxOf(ch)) || scopeVisibleTo(s.owner, ch?.createdBy ?? null);
+      // An agent sees what its creator sees, plus a private skill its owner
+      // put on it (a skill attached to someone else's agent).
+      return scopeVisibleTo(s.owner, ch?.createdBy ?? null) || !!ch?.skills?.some((a) => a.skill === s.id);
     }
     return scopeVisibleTo(s.owner, deps.personName(req));
   };
@@ -465,7 +457,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     const out: { name: string; result: string }[] = [];
     for (const c of deps.loadChannels()) {
       const cur = c.skills?.find((a) => a.skill === s.id);
-      if (!cur || cur.release >= rel.n || !scopeAllowsAgent(s.owner, ctxOf(c))) continue;
+      if (!cur || cur.release >= rel.n) continue;
       deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
       deps.onAttachmentsChanged(c.sessionId);
       out.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
@@ -563,8 +555,6 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     const s = findSkill(root(), String(req.body?.skill ?? ""));
     if (!s || !canSee(req, s)) return res.status(404).json({ error: "no such skill" });
     const release = req.body?.release === null ? null : Number(req.body?.release);
-    if (release !== null && !scopeAllowsAgent(s.owner, ctxOf(ch)))
-      return res.status(409).json({ error: scopeRefusal(s.owner) });
     if (release !== null && s.archived) return res.status(409).json({ error: "this skill is archived: unarchive it first" });
     const rest = (ch.skills ?? []).filter((a) => a.skill !== s.id);
     if (release !== null) {
