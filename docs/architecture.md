@@ -1322,6 +1322,138 @@ each spawned agent is visible in `/live` ("Agents running now" in the UI).
 Spawned prompts respect the pace gate; a block is currently silent to the
 parent (a known rough edge).
 
+## The Skill Factory (`src/factory.ts`, `src/factory-scan.ts`, `src/factory-routes.ts`)
+
+A place to write skills together and run them in chosen agents. Spec:
+`docs/superpowers/specs/2026-10-29-skill-factory-design.md`. Phase 2 is
+single-tenant (one group, `main`). The owner, editors and users lists are stored
+but not yet offered in the UI.
+
+**The server is the git origin.** Each skill is a bare repository under
+`~/.shadok-ai/factory/<instance-key>/repos/<id>.git`, next to `registry.json`
+(releases, acceptances) and `audit.jsonl`. Contributors never touch those paths:
+- A browser save is one commit, built with a private `GIT_INDEX_FILE` and moved
+  onto `main` with a compare-and-swap `update-ref`. A stale base answers "someone
+  saved since".
+- An agent pulls a `git bundle` into `~/.shadok-factory/<name>` and pushes one
+  back. The server fetches it into a scratch ref, requires a fast-forward, then
+  moves `main` with the same CAS.
+- Who pushed or saved is recorded as a git note (`refs/notes/shadok`), stamped by
+  the server. Never the commit's author field: a client chooses that.
+
+Under the multi-tenant design this is what lets walled groups co-write: a remote
+is not a hole in the wall, a shared directory would be.
+
+**The scan runs at push and at every save, before the commit exists.**
+`scanFiles` (pure) refuses vault values (≥ 8 characters, reported by NAME and
+line, never by value), credential-shaped files and oversized trees. It only
+warns about token shapes. `receivePush` scans every blob the push introduces
+across the whole range, not just the final tree: a value added then removed
+inside the push would otherwise travel in the history. `releaseWarnings` adds
+two warnings at release time: an undeclared env read, and `$CLAUDE_PLUGIN_ROOT`
+used inside a script.
+
+**Release → accept → attach → spawn.**
+- A release is a tag `v<N>` plus its tree hash.
+- An acceptance pins `{group, release, tree}`. That is the receiving side's
+  human gate, so code runs in a group only once a person of that group said yes
+  to that exact tree.
+- An attachment lives on the channel (`Channel.skills`, `SERVER_OWNED`, written
+  only by `POST /factory/attach`). `mergeChannels` drops one a browser PUT tries
+  to introduce.
+- At spawn, `makePilot` calls `pluginArgs`. `resolveAttachments` (pure) keeps
+  what still exists, is shared with the group, and is accepted for that tree,
+  and logs every drop by name. `materialise` extracts the tag once into a
+  read-only, content-addressed plugin directory
+  (`plugins/<name>@<N>-<tree8>/.claude-plugin/plugin.json` +
+  `skills/<name>/…`). One `--plugin-dir` per release is emitted before the
+  profile's flags, so nothing lands after `--mcp-config`'s variadic JSON.
+- The attachment set is a preprompt part ("Factory skills"), so an attach, a new
+  acceptance or a drop lights the reload indicator. Attaching never respawns:
+  the person reloads.
+
+**Measured, 2026-10-31, Claude Code 2.1.309.**
+- A `--plugin-dir` skill lists as `<plugin>:<skill>` and triggers on its
+  description.
+- Its scripts see the agent's env.
+- It survives `--resume` with the flag, disappears on a resume without it, and
+  a resume with a changed directory runs the new release.
+- `${CLAUDE_PLUGIN_ROOT}` is substituted in SKILL.md but is NOT exported to
+  scripts.
+
+**Secrets are granted by the release, consented to at acceptance.**
+- `Release.secrets` = the names `requires.secrets` declares ∪ every vault name
+  the code reads (`detectSecrets`; `detectedSecrets` marks the undeclared ones).
+  So the person accepting sees exactly what the code will get, whether or not
+  the author remembered to declare it.
+- `makePilot` injects them beside the profile's (`pluginArgs(...).secrets`), and
+  `buildPreprompt` lists them, so a newly granted name lights the reload
+  indicator too.
+- Profiles are not touched: the link is skill → agent.
+
+**Release directories are pruned, and that is correctness, not housekeeping.**
+Measured: an agent resumed onto v2 re-ran v1's absolute script path straight
+from its history, because v1's directory still existed. So after an update,
+attach or detach, and once a reloaded process holds its new directories,
+`prunePlugins` removes every release directory that no channel attachment, no
+pending spawn and no running process (`runningPlugins`, recorded in
+`makePilot`) references. The old path then fails, and the agent reloads the skill
+at its current path. Verified: the same agent then answered with v3.
+
+**Born with skills, scheduled with skills.**
+- `start` accepts `skills` (latest accepted release unless `@N`). They are
+  resolved before the spawn and held in `pendingSkills` until `ready` writes them
+  on the channel; one that is refused is logged and dropped.
+- "Run on a schedule…" is client-side orchestration: attach with
+  `reload: true` (or a new agent born with the skill), then `POST /crons`.
+- `POST /factory/skills/:id/update` moves every older attachment and reloads
+  the idle agents.
+- Feedback (`POST …/feedback`, an agent's key or the browser) is stored on the
+  skill, bounded at 50, and quoted into the next Skillsmith's kickoff.
+- Duplicate fetches a release's tag into a new bare repo and commits a rename.
+- Adopt imports a `~/.claude/skills` folder after a scan.
+
+**Who it is for, what it is called, how much it runs.**
+- `FactorySkill.owner` is the share:
+  - `user:<account>`: only that person sees it, and they can put it on any
+    agent. Seeing it is the gate: others get a 404, so only the owner can
+    attach it, and a birth with the skill needs the agent's creator
+    (`Channel.createdBy`, asserted at birth, inherited from a parent) to be
+    the owner.
+  - `groups:1,3`: offered on those cockpit groups' agents (the new-agent
+    picker lists it, the attach list puts their agents first).
+  - `main`: everyone.
+- Sharing is about not flooding everyone's lists, not security: nothing refuses
+  a visible skill on an agent. `scopeOffersAgent` only decides what a picker
+  offers; `scopeVisibleTo` is the one gate, and it hides only private skills.
+- Until groups have members, a group skill is visible to every person; only
+  "only me" hides it.
+- Tags and archiving are plain registry fields (`PUT /factory/skills/:id/meta`).
+- Runs are counted from the transcripts: the tail now carries the `skill` of a
+  `Skill` tool call, and every `<name>:<name>` call matching a factory skill
+  appends one row to `usage.jsonl` (30 days, compacted on read). The list's
+  "runs · 7 days" and the per-agent counts come from there.
+
+**The page** (`public/index.html`, "Skill Factory"):
+- `body.factory-mode` hides `main` and shows `#factoryPage`, with a short
+  slide in both directions (off under `prefers-reduced-motion`).
+- The list is a table with chip filters (OR within a family, AND across
+  families), a bulk bar and a drawer.
+- The editor parses SKILL.md into "when to use it" (the frontmatter
+  `description`) and "instructions" (the body), and writes them back as one
+  commit.
+- Its prompt panel drives a background `Shadok-Skillsmith` tab: the tab's
+  WebSocket messages are mirrored through `t.facListen`, and the document
+  reloads on `turn-done`.
+
+**Who may do what.** Reads are open behind the password gate. A person's writes
+are browser-only. Any editor releases (acceptance, not release, is the gate);
+deleting is an admin act. A push needs the caller's session key AND a channel profile of
+`Shadok-Skillsmith`: on a single-tenant instance "any agent of the group" would
+be every agent on the machine. The Skillsmith is a managed profile (prompt
+re-seeded from `context/skillsmith-prompt.md` at boot, `secrets: []` on
+creation) because it runs draft code nobody has reviewed yet.
+
 ## Known rough edges / debt
 
 - Much was built in low-visibility agent sessions; detection heuristics,

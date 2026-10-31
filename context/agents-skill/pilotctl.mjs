@@ -159,6 +159,8 @@ export function parseArgs(argv) {
       a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent" ||
       a === "--name" || a === "--peer" || a === "--peer-url" || a === "--peer-token"
     ) flags[a.slice(2)] = rest[++i];
+    // Repeatable: a Skill Factory skill the new agent is born with, `name` or `name@N`.
+    else if (a === "--skill") (flags.skill ||= []).push(rest[++i]);
     else pos.push(a);
   }
   return { cmd, pos, flags };
@@ -361,6 +363,13 @@ export function buildStartMsg(flags, env = process.env) {
   // later resume never overwrites a rename made in the cockpit. Omitted → the
   // cockpit derives a default from the profile/directory.
   if (flags.name) startMsg.name = flags.name;
+  // Born with factory skills (accepted releases only; the server logs and drops
+  // any it refuses rather than failing the spawn). No @N = the latest accepted.
+  if (flags.skill?.length)
+    startMsg.skills = flags.skill.map((s) => {
+      const m = /^(.+?)(?:@v?(\d+))?$/.exec(String(s));
+      return m[2] ? { skill: m[1], release: Number(m[2]) } : { skill: m[1] };
+    });
   // "none" is the escape hatch: spawn something deliberately unlinked.
   if (flags.parent === "none") startMsg.parent = null;
   else if (flags.parent) startMsg.parent = flags.parent;

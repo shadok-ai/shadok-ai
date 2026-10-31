@@ -1,5 +1,5 @@
 import type { Ground } from "./ground.js";
-import { BOSS_PROFILE_NAME, TWEAK_PROFILE_NAME, effectiveProfile, type Profile } from "./profiles.js";
+import { BOSS_PROFILE_NAME, MANAGED_PROFILE_NAMES, effectiveProfile, type Profile } from "./profiles.js";
 
 /**
  * What the home agent says the first time a cockpit opens.
@@ -128,7 +128,7 @@ export interface ProfileBrief {
  * imports both and asserts they agree, so the copy cannot drift in silence.
  */
 export function greetingProfiles(stored: readonly Profile[]): ProfileBrief[] {
-  const excluded = new Set([TWEAK_PROFILE_NAME, BOSS_PROFILE_NAME]);
+  const excluded = new Set([...MANAGED_PROFILE_NAMES, BOSS_PROFILE_NAME]);
   return stored
     .filter((p) => !excluded.has(String(p.name ?? "").trim()))
     .map((p) => ({ name: p.name, role: roleLine(effectiveProfile(p)?.systemPrompt ?? "") }));

@@ -586,6 +586,10 @@ export function permissionModeArgs(raw: string | undefined): string[] {
 
 /** The managed profile behind the "Tweak Shadok-AI" CTA. */
 export const TWEAK_PROFILE_NAME = "Shadok-Tweak";
+/** The managed profile behind the Skill Factory's "Work on it" (context/skillsmith-prompt.md). */
+export const SKILLSMITH_PROFILE_NAME = "Shadok-Skillsmith";
+/** Roles whose prompt the server rewrites at every boot: never edited, never picked by hand. */
+export const MANAGED_PROFILE_NAMES = [TWEAK_PROFILE_NAME, SKILLSMITH_PROFILE_NAME];
 
 /**
  * Pure: the profile after refreshing ONLY its system prompt. The prompt is
@@ -618,6 +622,16 @@ export function migrateToTracking(): string[] {
 /** Install/refresh the tweak profile from the repo's prompt file. Idempotent. */
 export function seedTweakProfile(systemPrompt: string): void {
   upsertProfile(withManagedPrompt(getProfile(TWEAK_PROFILE_NAME), TWEAK_PROFILE_NAME, systemPrompt));
+}
+
+/**
+ * Install/refresh the Skillsmith from its prompt file. Unlike the tweak role it
+ * also pins `secrets: []` on first creation: it runs draft code another group
+ * may have pushed, unreviewed, so it starts with no credential to leak.
+ */
+export function seedSkillsmithProfile(systemPrompt: string): void {
+  const existing = getProfile(SKILLSMITH_PROFILE_NAME);
+  upsertProfile(withManagedPrompt(existing ?? { name: SKILLSMITH_PROFILE_NAME, secrets: [] }, SKILLSMITH_PROFILE_NAME, systemPrompt));
 }
 
 /** The lead profile: the only one allowed to shape OTHER profiles (see below). */
@@ -730,7 +744,7 @@ export function promptOrigin(stored: Profile, shipped: Profile | undefined): Pro
   // context/tweak-prompt.md and rewritten at every boot — so `shipped` is
   // undefined for it. Reporting the one role that is ALWAYS current as "custom"
   // would be exactly backwards.
-  if (stored.name === TWEAK_PROFILE_NAME) return "tracked";
+  if (MANAGED_PROFILE_NAMES.includes(stored.name)) return "tracked";
   if (!shipped) return "custom";
   if (stored.systemPrompt === undefined) return "tracked";
   const mine = (stored.systemPrompt ?? "").trim();

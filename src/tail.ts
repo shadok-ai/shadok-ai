@@ -36,7 +36,7 @@ export type TailEvent =
   // `id`/`toolUseId` let a consumer pair an output with the call that produced
   // it. Necessary because one assistant message may carry several tool_use
   // blocks (parallel calls) whose results come back batched and out of order.
-  | { kind: "tool"; id: string; name: string; summary: string; files?: string[]; at?: number }
+  | { kind: "tool"; id: string; name: string; summary: string; files?: string[]; at?: number; skill?: string }
   | { kind: "result"; toolUseId: string; text: string; isError: boolean; at?: number }
   | { kind: "usage"; messageId: string; usage: TokenUsage }
   /** The turn's answer was ONLY the silence placeholder. Emitted where the text
@@ -412,6 +412,9 @@ export function parseLine(line: string): TailEvent[] {
           name: block.name,
           summary: toolSummary(block.input),
           ...(files.length ? { files } : {}),
+          // Which skill a `Skill` call loaded (`{"skill":"name:name"}`): what the
+          // Skill Factory counts as one RUN of a skill.
+          ...(block.name === "Skill" && typeof block.input?.skill === "string" ? { skill: block.input.skill } : {}),
           ...when,
         });
         // A tool renders as an activity block, which already breaks the group.

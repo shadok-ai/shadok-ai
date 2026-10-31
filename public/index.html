@@ -2146,6 +2146,229 @@
   .bk-msg.ok { border-color: color-mix(in srgb, #3c9 60%, transparent); color: #3c9; }
   .bk-msg.bad { border-color: color-mix(in srgb, #e55 60%, transparent); color: #e77; }
   .bk-foot { margin-top: 14px; }
+  /* Skill Factory page — toggled by the header's flask (body.factory-mode).
+     Agent-written text only ever reaches it through textContent (invariant 13). */
+  body.factory-mode main { display: none !important; }
+  body.factory-mode #factoryPage { display: flex; animation: fpIn .32s cubic-bezier(.2,.8,.2,1); }
+  main.fp-back { animation: fpBack .32s cubic-bezier(.2,.8,.2,1); }
+  @keyframes fpIn { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
+  @keyframes fpBack { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { body.factory-mode #factoryPage, main.fp-back { animation: none; } }
+  #factoryBtn[aria-pressed="true"] { color: var(--amber); background: var(--amber-soft); border-color: var(--amber); }
+  #factoryPage { flex: 1; min-height: 0; padding: 0 12px 12px; }
+  .fp-main { flex: 1; min-width: 0; min-height: 0; position: relative; overflow: hidden; display: flex; flex-direction: column;
+    background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); }
+  .fp-scroll { flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; }
+  .fp-main h1 { font-size: 18px; margin: 0; }
+  .fp-main h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 16px 0 6px; font-weight: 600; }
+  .fp-bar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  .fp-bar input[type=search] { width: 260px; max-width: 100%; }
+  .fp-sp { flex: 1; }
+  .fp-sub { color: var(--text-dim); font-size: 12px; }
+  .fp-chip { display: inline-flex; align-items: center; gap: 3px; background: none; border: 1px solid var(--line); border-radius: 999px;
+    padding: 2px 9px; font-size: 12px; color: var(--text-dim); cursor: pointer; white-space: nowrap; }
+  .fp-chip[aria-pressed="true"] { color: var(--text); border-color: var(--amber); background: var(--amber-soft); }
+  .fp-chip .n { opacity: .6; }
+  .fp-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 4px; }
+  .fp-flabel { color: var(--text-dim); font-size: 11px; margin: 0 2px 0 8px; }
+  .fp-flabel:first-child { margin-left: 0; }
+  .fp-tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; margin: 2px 3px 0 0;
+    background: color-mix(in srgb, var(--amber) 14%, transparent); color: var(--phosphor); }
+  .fp-gp { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--line); margin: 2px 3px 0 0; }
+  .fp-warn { color: #e9a23b; } .fp-ok { color: var(--ok); } .fp-ko { color: var(--err); }
+  .fp-bulk { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px 10px; border: 1px solid var(--amber);
+    background: var(--amber-soft); border-radius: var(--radius); margin: 6px 0; font-size: 12px; }
+  table.fp-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .fp-table th { text-align: left; font-weight: 500; color: var(--text-dim); font-size: 11px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .fp-table td { padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  .fp-table tr.row { cursor: pointer; }
+  .fp-table tr.row:hover td { background: var(--menu-hover); }
+  .fp-table tr.cur td { background: var(--amber-soft); }
+  .fp-table tr.archived td { opacity: .55; }
+  .fp-drawer { position: absolute; top: 8px; right: 8px; bottom: 8px; width: min(380px, 92%); overflow: auto; padding: 14px;
+    background: var(--bg-raised); border: 1px solid var(--line); border-radius: var(--radius);
+    transform: translateX(calc(100% + 16px)); transition: transform .28s cubic-bezier(.2,.8,.2,1); }
+  .fp-drawer.open { transform: none; }
+  @media (prefers-reduced-motion: reduce) { .fp-drawer { transition: none; } }
+  .fp-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 11px; margin-top: 6px; background: var(--bg); font-size: 12px; }
+  .fp-stats { display: flex; gap: 6px; margin-top: 10px; }
+  .fp-stat { flex: 1; border: 1px solid var(--line); border-radius: var(--radius); padding: 8px; background: var(--bg); }
+  .fp-stat b { display: block; font-size: 18px; font-weight: 600; }
+  .fp-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
+  .fp-link { background: none; border: none; color: var(--text-dim); text-decoration: underline; cursor: pointer; font-size: 11px; padding: 0 3px; }
+  .fp-share { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .fp-share label { display: flex; gap: 6px; align-items: center; font-size: 12px; }
+  .fp-empty { max-width: 560px; margin: 8vh auto; text-align: center; color: var(--text-dim); line-height: 1.6; }
+  .fp-empty h1 { color: var(--text); margin-bottom: 10px; }
+  .fp-form { max-width: 640px; }
+  .fp-field { margin: 14px 0; }
+  .fp-field > label, .fp-label { display: block; font-weight: 600; font-size: 13px; margin-bottom: 4px; }
+  .fp-hint { color: var(--text-dim); font-size: 12px; margin-top: 4px; }
+  .fp-main input[type=text], .fp-main textarea, .fp-main select { font-size: 16px; }
+  @media (hover: hover) and (pointer: fine) { .fp-main input[type=text], .fp-main textarea, .fp-main select { font-size: 13px; } }
+  .fp-form input[type=text], .fp-form textarea { width: 100%; box-sizing: border-box; }
+  .fp-choice { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: var(--radius); padding: 9px 12px; margin-top: 6px; cursor: pointer; }
+  .fp-choice:has(input:checked) { border-color: var(--amber); background: var(--amber-soft); }
+  .fp-choice b { display: block; font-size: 13px; }
+  .fp-choice span { color: var(--text-dim); font-size: 12px; }
+  /* Editor: skills | document | prompt, with the pending-changes bar below */
+  .fp-ed-top { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  .fp-ed { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr) 300px; gap: 10px; padding: 10px; }
+  .fp-col { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px; overflow: auto; min-height: 0; background: var(--bg-raised); display: flex; flex-direction: column; }
+  .fp-sk { text-align: left; background: none; border: none; color: inherit; padding: 7px 8px; border-radius: 6px; cursor: pointer; width: 100%; }
+  .fp-sk:hover { background: var(--menu-hover); }
+  .fp-sk[aria-current="true"] { background: var(--amber-soft); }
+  .fp-doc textarea { width: 100%; box-sizing: border-box; resize: vertical; line-height: 1.5; }
+  .fp-preview { font-size: 14px; line-height: 1.6; }
+  .fp-chat { flex: 1; overflow: auto; min-height: 0; display: flex; flex-direction: column; gap: 6px; margin: 6px 0; }
+  .fp-msg { font-size: 12px; padding: 7px 9px; border-radius: 8px; line-height: 1.5; white-space: pre-wrap; }
+  .fp-msg.me { background: var(--amber-soft); margin-left: 24px; }
+  .fp-msg.ag { background: var(--bg); border: 1px solid var(--line); }
+  .fp-msg.sys { color: var(--text-dim); font-style: italic; background: none; padding: 2px 4px; }
+  .fp-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 9px 14px; border-top: 1px solid var(--line); font-size: 12px; }
+  .fp-tabs { display: flex; gap: 4px; }
+  .fp-tab { background: none; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 12px; color: var(--text-dim); cursor: pointer; }
+  .fp-tab[aria-selected="true"] { color: var(--text); border-color: var(--amber); background: var(--amber-soft); }
+  /* ── Skill Factory: the visual layer ── */
+  #factoryPage .fp-main { background: var(--pane-main, var(--bg)); }
+  .fp-scroll { padding: 26px 32px 40px; }
+  .fp-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  .fp-hero h1 { font-size: 24px; font-weight: 650; letter-spacing: -.01em; }
+  .fp-hero .fp-sub { font-size: 13px; margin-top: 4px; }
+  .fp-hero-a { display: flex; gap: 8px; }
+  .fp-hero-a button { padding: 8px 14px; border-radius: 8px; }
+  .fp-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .fp-kpi { background: var(--bg-raised); border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+  .fp-kpi b { display: block; font-size: 22px; font-weight: 650; line-height: 1.1; }
+  .fp-kpi span { color: var(--text-dim); font-size: 12px; }
+  .fp-kpi.warn b { color: #e9a23b; }
+  .fp-searchbar { margin-bottom: 10px; }
+  .fp-searchbar input[type=search] { width: 100%; max-width: 520px; padding: 9px 12px; border-radius: 10px; }
+  .fp-main input[type=search], .fp-main input[type=text], .fp-main input[type=time], .fp-main input[type=number], .fp-main select {
+    background: var(--bg-raised); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+  .fp-main input:focus, .fp-main select:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+  .fp-filters { background: var(--bg-raised); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; gap: 6px 6px; margin-bottom: 12px; }
+  .fp-flabel { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; margin-left: 12px; }
+  .fp-chip { padding: 3px 10px; transition: background .15s, border-color .15s, color .15s; }
+  .fp-chip:hover { border-color: var(--text-dim); color: var(--text); }
+  table.fp-table { border-collapse: separate; border-spacing: 0; background: var(--bg-raised); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .fp-table th { padding: 10px 12px; background: color-mix(in srgb, var(--bg-raised) 70%, var(--bg)); text-transform: uppercase; letter-spacing: .05em; font-size: 10.5px; }
+  .fp-table td { padding: 12px; }
+  .fp-table tr:last-child td { border-bottom: none; }
+  .fp-table tr.row td { transition: background .12s; }
+  .fp-table tr.cur td { background: var(--amber-soft); }
+  .fp-table tr.cur td:first-child { box-shadow: inset 3px 0 0 var(--amber); }
+  .fp-cell { display: flex; gap: 12px; align-items: flex-start; min-width: 0; }
+  .fp-cell-t { min-width: 0; }
+  .fp-cell-t b { font-size: 14px; font-weight: 600; }
+  .fp-cell-d { color: var(--text-dim); font-size: 12px; margin: 2px 0 2px; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; max-width: 46ch; }
+  .fp-av { --ac: var(--amber); flex: none; width: 34px; height: 34px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; letter-spacing: .02em; color: #fff; background: var(--ac); }
+  .fp-av.sm { width: 26px; height: 26px; border-radius: 8px; font-size: 10px; }
+  .fp-av.lg { width: 44px; height: 44px; border-radius: 12px; font-size: 15px; }
+  .fp-tag { font-weight: 500; padding: 1px 8px; }
+  .fp-gp { background: var(--bg); padding: 2px 8px; font-size: 11.5px; }
+  .fp-ver { display: inline-block; font-family: var(--mono); font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); }
+  .fp-ver.live { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, transparent); background: color-mix(in srgb, var(--ok) 10%, transparent); }
+  .fp-ver.draft { color: var(--text-dim); font-family: var(--sans); font-weight: 500; }
+  .fp-badge { display: inline-block; margin-top: 4px; font-size: 11px; padding: 1px 8px; border-radius: 999px; color: var(--text-dim); background: var(--bg); border: 1px solid var(--line); }
+  .fp-badge.warn { color: #e9a23b; border-color: color-mix(in srgb, #e9a23b 40%, transparent); background: color-mix(in srgb, #e9a23b 10%, transparent); }
+  .fp-badge.info { color: var(--phosphor); border-color: color-mix(in srgb, var(--amber) 35%, transparent); background: var(--amber-soft); }
+  .fp-runs { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .fp-mono { font-family: var(--mono); font-size: 11px; }
+  .fp-bulk { border-radius: 12px; padding: 8px 12px; animation: fpPop .18s ease-out; }
+  @keyframes fpPop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+  .fp-drawer { width: min(420px, 94%); padding: 20px; border-radius: 14px; background: var(--bg-raised);
+    box-shadow: -18px 0 40px -24px rgba(0,0,0,.55); }
+  .fp-drawer h1 { font-size: 17px; font-weight: 650; }
+  .fp-drawer h2 { margin-top: 20px; }
+  .fp-drawer .fp-bar { gap: 12px; }
+  .fp-stat { border-radius: 12px; padding: 10px 12px; }
+  .fp-stat b { font-size: 22px; }
+  .fp-card { border-radius: 10px; padding: 10px 12px; }
+  .fp-empty h1 { font-size: 22px; }
+  .fp-form h1 { font-size: 22px; font-weight: 650; }
+  .fp-choice { border-radius: 10px; padding: 11px 14px; transition: border-color .15s, background .15s; }
+  .fp-choice:hover { border-color: var(--text-dim); }
+  .fp-field > label.fp-choice { display: flex; font-weight: 400; margin-bottom: 0; }
+  .fp-choice > input { flex: none; margin-top: 3px; }
+  .fp-choice b { font-weight: 600; margin-bottom: 1px; }
+  .fp-groups { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 2px 30px; }
+  .fp-field > label.fp-pill { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; margin: 0; border-radius: 999px; font-size: 13px; }
+  .fp-pill > input { margin: 0; }
+  .fp-form { max-width: 680px; margin: 0 auto; background: var(--bg-raised); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; }
+  .fp-form textarea, .fp-form input[type=text] { font-family: var(--sans); background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+  .fp-form textarea:focus, .fp-form input[type=text]:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+  .fp-form .fp-sub { margin-top: 2px; }
+  .fp-ed-top { padding: 12px 18px; }
+  .fp-ed-top b { font-size: 14px; }
+  .fp-ed { gap: 12px; padding: 12px; grid-template-columns: 240px minmax(0, 1fr) 320px; }
+  .fp-col { border-radius: 12px; padding: 12px; }
+  .fp-col.fp-doc { padding: 22px 26px; background: var(--bg); }
+  .fp-doc-head { display: flex; gap: 14px; align-items: center; margin-bottom: 6px; }
+  .fp-doc-head h1 { font-size: 20px; font-weight: 650; }
+  .fp-doc-head .fp-sub { margin-top: 4px; }
+  .fp-doc textarea { border-radius: 10px; padding: 10px 12px; background: var(--bg-raised); border: 1px solid var(--line); color: var(--text); font-family: var(--sans); }
+  .fp-doc textarea:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+  .fp-sk { display: flex; gap: 10px; align-items: center; padding: 7px 8px; border-radius: 9px; }
+  .fp-sk-t { display: flex; flex-direction: column; min-width: 0; }
+  .fp-sk-n { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fp-sk[aria-current="true"] { box-shadow: inset 3px 0 0 var(--amber); }
+  .fp-chat { gap: 8px; }
+  .fp-msg { border-radius: 12px; padding: 9px 11px; font-size: 12.5px; }
+  .fp-msg.me { background: var(--mine, var(--amber-soft)); border-bottom-right-radius: 4px; }
+  .fp-msg.ag { border-bottom-left-radius: 4px; }
+  .fp-col textarea { border-radius: 10px; padding: 9px 11px; background: var(--bg); border: 1px solid var(--line); color: var(--text); font-family: var(--sans); resize: none; }
+  .fp-foot { padding: 11px 18px; background: var(--bg-raised); border-top: 1px solid var(--line); }
+  .fp-foot button.primary { padding: 7px 14px; border-radius: 8px; }
+  .fp-tab { padding: 4px 12px; }
+  .fac-msg:empty { display: none; }
+  .fac-msg { margin: 0 0 10px; padding: 8px 12px; border-radius: 10px; background: var(--amber-soft); }
+  .fac-msg.err { background: color-mix(in srgb, var(--err) 12%, transparent); color: var(--err); }
+  @media (max-width: 900px) {
+    .fp-ed { grid-template-columns: 1fr; overflow: auto; }
+    .fp-ed > .fp-col:first-child { max-height: 160px; }
+  }
+  #factoryList, #factoryFiles, #factoryLog { list-style: none; margin: 0; padding: 0; }
+  #factoryList > li { padding: 10px 0; border-bottom: 1px solid var(--line, #2a2d32); }
+  #factoryList > li:last-child { border-bottom: none; }
+  .fac-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
+  .fac-row input:not([type=checkbox]) { flex: 1 1 160px; min-width: 0; }
+  .fac-sp { flex: 1; }
+  .fac-name { font-weight: 600; }
+  .fac-badge { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; border: 1px solid var(--line, #3a3d42);
+    border-radius: 999px; padding: 1px 7px; margin-left: 6px; opacity: .85; }
+  .fac-badge.warn { color: #e9a23b; border-color: currentColor; }
+  .fac-desc { font-size: 12px; opacity: .85; margin-top: 3px; }
+  .fac-meta { color: var(--text-dim); font-size: 11px; margin-top: 4px; }
+  .fac-chip { display: inline-block; font-size: 11px; border-radius: 999px; padding: 1px 7px; margin: 2px 4px 0 0;
+    border: 1px solid currentColor; }
+  .fac-chip.ok { color: #4caf7a; } .fac-chip.miss { color: #e05d5d; }
+  .fac-msg { font-size: 12px; min-height: 1em; white-space: pre-wrap; }
+  .fac-msg.err { color: #e05d5d; }
+  .fac-h { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 12px 0 4px; }
+  .fac-cols { display: grid; grid-template-columns: 220px 1fr; gap: 12px; }
+  @media (max-width: 700px) { .fac-cols { grid-template-columns: 1fr; } }
+  #factoryFiles li button { width: 100%; text-align: left; background: none; border: none; color: inherit;
+    padding: 3px 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; cursor: pointer; }
+  #factoryFiles li button[aria-current="true"] { background: rgba(255,255,255,.08); border-radius: 4px; }
+  #factoryEditor { width: 100%; min-height: 260px; box-sizing: border-box; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 16px; resize: vertical; }
+  @media (hover: hover) and (pointer: fine) { #factoryEditor { font-size: 12px; } }
+  #factoryLog li { font-size: 12px; padding: 3px 0; cursor: pointer; }
+  #factoryLog li .fac-meta { display: inline; margin-left: 6px; }
+  #factoryOut { max-height: 320px; overflow: auto; font-size: 11px; background: rgba(0,0,0,.25); padding: 8px; border-radius: 6px; white-space: pre-wrap; }
+  .fac-chk { font-size: 12px; display: inline-flex; gap: 4px; align-items: center; }
+  .fac-attach select { max-width: 220px; }
+  .fac-att { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; font-size: 12px; margin-top: 4px; }
+  .fac-att-name { font-weight: 500; margin-right: 4px; }
+  .fac-link { background: none; border: none; color: var(--text-dim); text-decoration: underline; cursor: pointer; font-size: 11px; padding: 0 4px; }
+  .fac-fb { margin-top: 6px; }
+  .fac-fb-item { font-size: 12px; margin-top: 3px; }
+  .fac-sched { margin-top: 8px; padding: 8px; border: 1px solid var(--line, #3a3d42); border-radius: 8px; }
+  .fac-sched textarea { width: 100%; box-sizing: border-box; font-size: 16px; }
+  @media (hover: hover) and (pointer: fine) { .fac-sched textarea { font-size: 13px; } }
+  .fac-pick { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
   #ledgerList { list-style: none; margin: 0; padding: 0; }
   #ledgerList li { padding: 8px 0; border-bottom: 1px solid var(--line, #2a2d32); }
   #ledgerList li:last-child { border-bottom: none; }
@@ -2497,6 +2720,7 @@
   <div class="hdr-tools">
   <button id="secretsBtn" class="icon" title="Repo secrets (injected as env)" aria-label="Secrets"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="8.5" cy="8.5" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 11l7.5 7.5M15.5 15.5l1.8-1.8M17.8 17.8l1.7-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="ab-txt">Secrets</span></button>
   <button id="ledgerBtn" class="icon" title="Shared ledger — what agents have resolved / decided" aria-label="Ledger"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Ledger</span></button>
+  <button id="factoryBtn" class="icon" title="Skill Factory — write skills together, release them, attach them to agents" aria-label="Skills"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M9 3.5h6M10 3.5v5.5l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3.5M7.5 15h9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="ab-txt">Skills</span></button>
   <button id="profilesBtn" class="icon" title="Agent profiles (role + guardrails + secrets)" aria-label="Profiles"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="8.5" r="3.6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 19.5a6.5 6.5 0 0 1 13 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Profiles</span></button>
   <!-- Security: what was done to accounts and second factors, and "this wasn't
        me". Kept out of the ⋯ overflow on a phone: its badge is the point. -->
@@ -2770,6 +2994,11 @@
         <input type="checkbox" id="mirrorInput">
         <span>Mirror to Telegram <span class="check-hint">— gives this agent its own topic in the board group, so you can follow it and reply from your phone. Off by default; switchable later from the agent menu.</span></span>
       </label>
+      <details class="fold" id="skillsField" hidden>
+        <summary>Factory skills <span class="fold-count" id="skillsCount"></span></summary>
+        <div class="field"><span class="check-hint">Born with these skills (their latest accepted release, and the secrets it was granted).</span>
+        <div id="skillsPick" class="fac-pick"></div></div>
+      </details>
       <details class="fold" id="advancedField">
           <summary>Advanced — working directory, resume an existing session</summary>
           <div class="field">
@@ -3248,6 +3477,12 @@
     <pre id="diffBody"></pre>
   </aside>
 </main>
+
+<!-- The Skill Factory is a PAGE, not a popin: the flask in the header toggles
+     the cockpit between the agents and this space (body.factory-mode). -->
+<section id="factoryPage" hidden aria-label="Skills">
+  <div id="fpMain" class="fp-main"></div>
+</section>
 
 <!-- Full-size image viewer: click any chat image to open it here. -->
 <div id="lightbox" role="dialog" aria-modal="true" aria-label="Image preview" hidden>
@@ -7223,7 +7458,13 @@
       if (t.ws !== ws) return;       // a newer link already superseded this one
       scheduleReconnect(t);
     });
-    ws.addEventListener("message", (ev) => handleMessage(t, JSON.parse(ev.data)));
+    ws.addEventListener("message", (ev) => {
+      const msg = JSON.parse(ev.data);
+      // The Skill Factory's editor follows its Skillsmith's conversation from
+      // its own prompt panel; the tab itself handles the message as usual.
+      if (t.facListen) { try { t.facListen(msg); } catch {} }
+      handleMessage(t, msg);
+    });
   }
 
   function scheduleReconnect(t) {
@@ -7401,6 +7642,7 @@
    */
   function openSetup(groupId = null) {
     setupGroup = groupId;
+    facFillPicker();
     renderModelRow();
     // Close the mobile agents sheet first: the setup overlay sits BELOW it in
     // the stack, so leaving the sheet open would hide the form behind it.
@@ -7569,6 +7811,10 @@
     const model = mode === "new" ? window.composeModel(selectedModel, $("longCtxInput").checked) : null;
     if (model) msg.model = model;
     msg.mirror = $("mirrorInput").checked;
+    if (mode === "new") {
+      const picked = facPickedSkills();
+      if (picked.length) msg.skills = picked;
+    }
     localStorage.setItem("cp.cwd", cwd);
     if (mode === "new") {
       localStorage.setItem("cp.profile", selectedProfile);
@@ -8063,6 +8309,12 @@
         if (t.btnEl.classList.contains("working")) setTabMood(t, null);
         setTabState(t, "ready", "ready");
         persistChannels();
+        // A tab started with a first instruction (the Skill Factory's "Work on
+        // it") sends it once, now that the agent can take it.
+        if (t.kickoff) { const k = t.kickoff; t.kickoff = null; submitPrompt(t, k); }
+        // A tab created to be scheduled (the Skill Factory's "Run on a
+        // schedule…") writes its cron once the agent exists and has an id.
+        if (t.afterReady && msg.sessionId) { const f = t.afterReady; t.afterReady = null; f(msg.sessionId); }
         // "ready" means the process is idle NOW. Stop any running timer — a
         // reload broadcasts a transient "working" that started one, and nothing
         // else stops it, so the counter kept ticking after the reload finished.
@@ -9069,7 +9321,7 @@
   // SINGLE row (brand + dials + ⋯) by moving EVERY tool icon into the ⋯ menu —
   // the real button elements, so their click handlers travel with them.
   // Recomputed on load, on resize, and when the instance name changes.
-  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "profilesBtn", "telegramBtn", "muteNotif"];
+  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "factoryBtn", "profilesBtn", "telegramBtn", "muteNotif"];
   function reflowHeaderTools() {
     const hdrTools = document.querySelector(".hdr-tools");
     const moreWrap = document.querySelector(".more-wrap");
@@ -9618,6 +9870,960 @@
   });
   $("ledgerClose").addEventListener("click", () => { $("ledgerOverlay").hidden = true; });
   $("ledgerOverlay").addEventListener("click", (e) => { if (e.target === $("ledgerOverlay")) $("ledgerOverlay").hidden = true; });
+
+  // ── Skill Factory (a page, toggled by the header's flask) ────────────────
+  // Three views: the administrable LIST (filters, tags, bulk actions, a detail
+  // drawer), the EDITOR (skills | the document | a prompt to a Skillsmith), and
+  // the creation form. Everything shown here can be written by an agent, so it
+  // only reaches the DOM through textContent; the one Markdown preview goes
+  // through DOMPurify like the chat (invariant 13).
+  const fac = {
+    data: null, view: "list", q: "", sel: null, drawer: false, checked: new Set(),
+    f: { tags: new Set(), shared: new Set(), status: new Set() },
+    edTab: "edit", ed: null, chat: {}, edQ: "",
+  };
+  const facEl = (tag, props = {}, kids = []) => {
+    const e = document.createElement(tag);
+    for (const [k, v] of Object.entries(props)) {
+      if (v === undefined || v === null || v === false) continue;
+      if (k === "class") e.className = v;
+      else if (k === "text") e.textContent = v;
+      else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+      else e.setAttribute(k, v === true ? "" : v);
+    }
+    for (const c of kids) if (c != null && c !== false) e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    return e;
+  };
+  function facMsg(text, err) {
+    const m = document.getElementById("fpMsg");
+    if (!m) return;
+    m.textContent = text || "";
+    m.classList.toggle("err", !!err);
+  }
+  function facError(out, status) {
+    const lines = [out && out.error ? out.error : `failed (${status})`];
+    for (const r of (out && out.scan && out.scan.refusals) || [])
+      lines.push(`✗ ${r.path || "(skill)"}${r.line ? ":" + r.line : ""} — ${r.message}`);
+    return lines.join("\n");
+  }
+  async function facCall(method, url, body) {
+    const r = await fetch(url, { method, headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
+    const text = await r.text();
+    let out = null;
+    try { out = JSON.parse(text); } catch { out = text; }
+    if (!r.ok) throw new Error(facError(out, r.status));
+    return out;
+  }
+  const facAgo = (t) => {
+    const m = Math.round((Date.now() - t) / 60000);
+    return m < 1 ? "just now" : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+  };
+  const facLast = (s) => s.releases[s.releases.length - 1];
+  const facAccepted = (s, rel) => !!rel && s.acceptances.some((a) => a.release === rel.n && a.tree === rel.tree);
+  const facFinding = (f) => `${f.path || "(skill)"}${f.line ? ":" + f.line : ""} — ${f.message}`;
+  const facOpenFeedback = (s) => (s.feedback || []).filter((f) => !f.done);
+  const facTitle = (s) => s.title || s.name;
+  const facGroups = () => (fac.data && fac.data.groups) || [];
+  const facGroup = (id) => facGroups().find((g) => g.id === Number(id));
+  const facScopeIds = (owner) => { const m = /^groups?:([\d,]*)$/.exec(owner || ""); return m ? m[1].split(",").filter(Boolean).map(Number) : null; };
+  /** "Shared with", as chips: Only me / Everyone / each group. */
+  function facSharedLabels(owner) {
+    if (!owner || owner === "main") return ["Everyone"];
+    if (owner.startsWith("user:")) return ["Only me"];
+    return (facScopeIds(owner) || []).map((id) => { const g = facGroup(id); return g ? `${g.icon ? g.icon + " " : ""}${g.name}` : `group ${id}`; });
+  }
+  /** Same rule as the server's scopeOffersAgent: is it offered first on this
+   *  agent? Never a refusal: sharing keeps lists short, it does not lock. */
+  function facAllows(s, a) {
+    if (!s.owner || s.owner === "main") return true;
+    const ids = facScopeIds(s.owner);
+    if (ids) return a.group != null && ids.includes(Number(a.group));
+    if (s.owner.startsWith("user:")) return true; // private: you see it, so you put it where you want
+    return false;
+  }
+  /** Every agent, the ones of the groups it is shared with first. */
+  function facAgentsFor(s) {
+    const all = (fac.data && fac.data.agents) || [];
+    return [...all.filter((a) => facAllows(s, a)), ...all.filter((a) => !facAllows(s, a))];
+  }
+  /** A coloured tile with the skill's initials — the same palette as the agents' avatars. */
+  function facAvatar(s, size) {
+    const el = facEl("span", { class: "fp-av" + (size ? " " + size : ""), "aria-hidden": "true" });
+    let h = 0;
+    for (const c of String(s.name || "")) h = (h * 31 + c.codePointAt(0)) >>> 0;
+    el.style.setProperty("--ac", AVATAR_COLORS[h % AVATAR_COLORS.length]);
+    el.textContent = avatarInitials(facTitle(s));
+    return el;
+  }
+  const facSlug = (t) => String(t || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^shadok-/, "").slice(0, 40).replace(/-+$/, "");
+  /** What needs a person's attention on a skill — the "Status" filter. */
+  function facStatus(s) {
+    const last = facLast(s);
+    const st = [];
+    if (last && !facAccepted(s, last)) st.push("approve");
+    if (s.attachedTo.some((a) => a.update)) st.push("behind");
+    if (!s.attachedTo.length) st.push("unused");
+    if (facOpenFeedback(s).length) st.push("feedback");
+    if (!last) st.push("draft");
+    if (s.archived) st.push("archived");
+    return st;
+  }
+  const FAC_STATUS = [["approve", "To approve"], ["behind", "Update available"], ["feedback", "Feedback"], ["unused", "Unused"], ["draft", "Draft"], ["archived", "Archived"]];
+
+  async function facLoad() {
+    try { fac.data = await facCall("GET", "/factory/skills"); }
+    catch (e) { fac.data = { skills: [], agents: [], groups: [] }; facMsg(e.message, true); }
+    if (fac.sel) fac.sel = fac.data.skills.find((x) => x.id === fac.sel.id) || null;
+  }
+  const facById = (id) => fac.data.skills.find((x) => x.id === id);
+
+  // ── Page mode and its transition ─────────────────────────────────────────
+  function facSetMode(on) {
+    const was = document.body.classList.contains("factory-mode");
+    document.body.classList.toggle("factory-mode", on);
+    $("factoryPage").hidden = !on;
+    $("factoryBtn").setAttribute("aria-pressed", String(on));
+    try { localStorage.setItem("cp.factoryMode", on ? "1" : ""); } catch {}
+    if (on) facRefresh();
+    else if (was) {
+      // Coming back: the cockpit slides in from the other side.
+      const m = document.querySelector("main");
+      m.classList.remove("fp-back");
+      void m.offsetWidth;
+      m.classList.add("fp-back");
+      m.addEventListener("animationend", () => m.classList.remove("fp-back"), { once: true });
+    }
+  }
+  async function facRefresh() { await facLoad(); facRender(); }
+  function facGo(view) { fac.view = view; facRender(); }
+  function facRender() {
+    const m = $("fpMain");
+    m.textContent = "";
+    if (fac.view === "new") return facRenderNew(m);
+    if (fac.view === "import") return facRenderImport(m);
+    if (fac.view === "edit" && fac.sel) return facRenderEditor(m);
+    facRenderList(m);
+  }
+
+  // ── The list ─────────────────────────────────────────────────────────────
+  function facFiltered() {
+    const q = fac.q.trim().toLowerCase();
+    return fac.data.skills.filter((s) => {
+      const st = facStatus(s);
+      if (s.archived && !fac.f.status.has("archived")) return false;
+      if (q && !`${facTitle(s)} ${s.name} ${s.description} ${(s.tags || []).join(" ")}`.toLowerCase().includes(q)) return false;
+      if (fac.f.tags.size && !(s.tags || []).some((t) => fac.f.tags.has(t))) return false;
+      if (fac.f.shared.size) {
+        const keys = s.owner === "main" ? ["all"] : s.owner.startsWith("user:") ? ["me"] : (facScopeIds(s.owner) || []).map((i) => "g" + i);
+        if (!keys.some((k) => fac.f.shared.has(k))) return false;
+      }
+      if (fac.f.status.size && ![...fac.f.status].some((x) => x === "archived" ? s.archived : st.includes(x))) return false;
+      return true;
+    });
+  }
+
+  function facRenderList(m) {
+    const d = fac.data;
+    const scroll = facEl("div", { class: "fp-scroll" });
+    m.appendChild(scroll);
+    const search = facEl("input", { type: "search", placeholder: "Search name, description, tag", value: fac.q });
+    search.addEventListener("input", () => { fac.q = search.value; facRenderTable(); });
+    const live = d.skills.filter((s) => !s.archived);
+    const runs = live.reduce((n, s) => n + (s.runs7d || 0), 0);
+    const toApprove = live.filter((s) => facStatus(s).includes("approve")).length;
+    const behind = live.filter((s) => facStatus(s).includes("behind")).length;
+    scroll.appendChild(facEl("div", { class: "fp-hero" }, [
+      facEl("div", { class: "fp-hero-t" }, [
+        facEl("h1", { text: "Skills" }),
+        facEl("div", { class: "fp-sub", text: "Your team's know-how, written together and run by your agents." }),
+      ]),
+      facEl("div", { class: "fp-hero-a" }, [
+        facEl("button", { text: "Import", onclick: () => facGo("import") }),
+        facEl("button", { class: "primary", text: "＋ New skill", onclick: () => facGo("new") }),
+      ]),
+    ]));
+    if (live.length)
+      scroll.appendChild(facEl("div", { class: "fp-kpis" }, [
+        facEl("div", { class: "fp-kpi" }, [facEl("b", { text: String(live.length) }), facEl("span", { text: "skills" })]),
+        facEl("div", { class: "fp-kpi" }, [facEl("b", { text: String(runs) }), facEl("span", { text: "runs this week" })]),
+        facEl("div", { class: "fp-kpi" + (toApprove ? " warn" : "") }, [facEl("b", { text: String(toApprove) }), facEl("span", { text: "to approve" })]),
+        facEl("div", { class: "fp-kpi" + (behind ? " warn" : "") }, [facEl("b", { text: String(behind) }), facEl("span", { text: "with agents behind" })]),
+      ]));
+    scroll.appendChild(facEl("div", { class: "fp-bar fp-searchbar" }, [search]));
+    scroll.appendChild(facEl("div", { id: "fpMsg", class: "fac-msg", role: "status" }));
+    if (!d.skills.length) return facRenderWelcome(scroll);
+    // Filters: OR inside a family, AND across families.
+    const fl = facEl("div", { class: "fp-filters" });
+    const chip = (set, key, label, n) => facEl("button", { class: "fp-chip", "aria-pressed": String(set.has(key)),
+      onclick: () => { set.has(key) ? set.delete(key) : set.add(key); facRender(); } }, [label, n != null ? facEl("span", { class: "n", text: String(n) }) : null]);
+    const tags = {};
+    for (const s of d.skills) for (const t of s.tags || []) tags[t] = (tags[t] || 0) + 1;
+    if (Object.keys(tags).length) {
+      fl.appendChild(facEl("span", { class: "fp-flabel", text: "Tags" }));
+      for (const [t, n] of Object.entries(tags).sort()) fl.appendChild(chip(fac.f.tags, t, t, n));
+    }
+    fl.appendChild(facEl("span", { class: "fp-flabel", text: "Shared with" }));
+    fl.appendChild(chip(fac.f.shared, "me", "Only me"));
+    fl.appendChild(chip(fac.f.shared, "all", "Everyone"));
+    for (const g of facGroups()) fl.appendChild(chip(fac.f.shared, "g" + g.id, `${g.icon ? g.icon + " " : ""}${g.name}`));
+    fl.appendChild(facEl("span", { class: "fp-flabel", text: "Status" }));
+    for (const [k, label] of FAC_STATUS) {
+      const n = d.skills.filter((s) => (k === "archived" ? s.archived : !s.archived && facStatus(s).includes(k))).length;
+      if (n || fac.f.status.has(k)) fl.appendChild(chip(fac.f.status, k, label, n));
+    }
+    scroll.appendChild(fl);
+    scroll.appendChild(facEl("div", { id: "fpBulk" }));
+    scroll.appendChild(facEl("div", { id: "fpTable" }));
+    m.appendChild(facEl("div", { id: "fpDrawer", class: "fp-drawer" + (fac.drawer && fac.sel ? " open" : "") }));
+    facRenderTable();
+    if (fac.drawer && fac.sel) facRenderDrawer();
+  }
+
+  function facRenderTable() {
+    const box = document.getElementById("fpTable");
+    if (!box) return;
+    box.textContent = "";
+    const list = facFiltered();
+    if (!list.length) { box.appendChild(facEl("p", { class: "fp-sub", text: "No skill matches these filters." })); facRenderBulk(); return; }
+    const all = facEl("input", { type: "checkbox", "aria-label": "Select all", checked: list.every((s) => fac.checked.has(s.id)) });
+    all.addEventListener("change", () => { for (const s of list) all.checked ? fac.checked.add(s.id) : fac.checked.delete(s.id); facRenderTable(); });
+    const t = facEl("table", { class: "fp-table" }, [facEl("tr", {}, [
+      facEl("th", { style: "width:24px" }, [all]), facEl("th", { text: "Skill" }), facEl("th", { text: "Shared with" }),
+      facEl("th", { text: "Version" }), facEl("th", { text: "Used" }), facEl("th", { text: "Runs · 7 days" }),
+    ])]);
+    for (const s of list) {
+      const last = facLast(s);
+      const st = facStatus(s);
+      const crons = s.attachedTo.reduce((n, a) => n + (a.crons || []).length, 0);
+      const ck = facEl("input", { type: "checkbox", "aria-label": "Select " + facTitle(s), checked: fac.checked.has(s.id) });
+      ck.addEventListener("click", (e) => e.stopPropagation());
+      ck.addEventListener("change", () => { ck.checked ? fac.checked.add(s.id) : fac.checked.delete(s.id); facRenderBulk(); });
+      const behind = s.attachedTo.filter((a) => a.update).length;
+      t.appendChild(facEl("tr", {
+        class: "row" + (fac.sel && fac.sel.id === s.id && fac.drawer ? " cur" : "") + (s.archived ? " archived" : ""),
+        onclick: () => facOpenDrawer(s.id),
+      }, [
+        facEl("td", {}, [ck]),
+        facEl("td", {}, [facEl("div", { class: "fp-cell" }, [facAvatar(s), facEl("div", { class: "fp-cell-t" }, [
+          facEl("b", { text: facTitle(s) }),
+          facEl("div", { class: "fp-cell-d", text: s.description || "No description yet" }),
+          (s.tags || []).length ? facEl("div", {}, s.tags.map((x) => facEl("span", { class: "fp-tag", text: x }))) : null,
+        ])])]),
+        facEl("td", {}, facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x }))),
+        facEl("td", {}, [facEl("span", { class: "fp-ver" + (last ? "" : " draft"), text: last ? `v${last.n}` : "draft" }),
+          st.includes("approve") ? facEl("div", {}, [facEl("span", { class: "fp-badge warn", text: `v${last.n} to approve` })]) : null,
+          behind ? facEl("div", {}, [facEl("span", { class: "fp-badge warn", text: `${behind} agent${behind > 1 ? "s" : ""} behind` })]) : null,
+          s.unreleased && last ? facEl("div", {}, [facEl("span", { class: "fp-badge", text: "unfrozen changes" })]) : null]),
+        facEl("td", {}, [s.attachedTo.length ? `${s.attachedTo.length} agent${s.attachedTo.length > 1 ? "s" : ""}${crons ? ` · ${crons} cron${crons > 1 ? "s" : ""}` : ""}` : facEl("span", { class: "fp-sub", text: "unused" })]),
+        facEl("td", {}, [facEl("span", { class: "fp-runs", text: String(s.runs7d || 0) }),
+          facOpenFeedback(s).length ? facEl("div", {}, [facEl("span", { class: "fp-badge info", text: `💬 ${facOpenFeedback(s).length}` })]) : null]),
+      ]));
+    }
+    box.appendChild(t);
+    facRenderBulk();
+  }
+
+  /** The bar that appears when rows are ticked. */
+  function facRenderBulk() {
+    const box = document.getElementById("fpBulk");
+    if (!box) return;
+    box.textContent = "";
+    const ids = [...fac.checked].filter((id) => facById(id));
+    if (!ids.length) return;
+    const skills = ids.map(facById);
+    const run = async (label, fn) => {
+      let ok = 0; const errs = [];
+      for (const s of skills) { try { await fn(s); ok++; } catch (e) { errs.push(`${facTitle(s)}: ${e.message}`); } }
+      await facLoad();
+      facRender();
+      facMsg(`${label}: ${ok} done${errs.length ? "\n" + errs.join("\n") : ""}`, !!errs.length);
+    };
+    box.appendChild(facEl("div", { class: "fp-bulk" }, [
+      facEl("b", { text: `${ids.length} selected` }), facEl("span", { class: "fp-sp" }),
+      facEl("button", { text: "Share with…", onclick: (e) => facSharePicker(e.target.parentElement, null, (scope) => run("Shared", (s) => facCall("PUT", `/factory/skills/${s.id}/meta`, { scope }))) }),
+      facEl("button", { text: "Add tag…", onclick: () => {
+        const t = prompt("Tag to add (several: separate with commas)");
+        if (t) run("Tagged", (s) => facCall("PUT", `/factory/skills/${s.id}/meta`, { tags: [...(s.tags || []), ...t.split(",")] }));
+      } }),
+      facEl("button", { text: "Update agents", onclick: () => run("Updated", (s) => s.attachedTo.some((a) => a.update) ? facCall("POST", `/factory/skills/${s.id}/update`, { release: s.latestAccepted }) : null) }),
+      skills.every((s) => s.archived)
+        ? facEl("button", { text: "Unarchive", onclick: () => run("Unarchived", (s) => facCall("PUT", `/factory/skills/${s.id}/meta`, { archived: false })) })
+        : facEl("button", { text: "Archive", onclick: () => run("Archived", (s) => facCall("PUT", `/factory/skills/${s.id}/meta`, { archived: true })) }),
+      facEl("button", { class: "fp-link", text: "clear", onclick: () => { fac.checked.clear(); facRenderTable(); } }),
+    ]));
+  }
+
+  /** "Only me / Everyone / these groups", applied by `apply(scope)`. */
+  function facSharePicker(host, s, apply) {
+    if (host.querySelector(".fp-share")) return;
+    const cur = s ? s.owner : "main";
+    const ids = new Set(facScopeIds(cur) || []);
+    const mode = cur.startsWith("user:") ? "me" : cur === "main" ? "all" : "groups";
+    const radio = (v, label) => facEl("label", {}, [facEl("input", { type: "radio", name: "fpShare" + (s ? s.id : "bulk"), value: v, checked: mode === v }), label]);
+    const boxes = facGroups().map((g) => facEl("label", { style: "margin-left:22px" }, [
+      facEl("input", { type: "checkbox", value: String(g.id), checked: ids.has(g.id) }), `${g.icon ? g.icon + " " : ""}${g.name}`]));
+    const panel = facEl("div", { class: "fp-share fp-card" }, [
+      radio("me", "🔒 Only me"),
+      radio("all", "🏢 Everyone"),
+      facGroups().length ? radio("groups", "👥 These groups:") : facEl("div", { class: "fp-hint", text: "Create a group in the cockpit to share with a team." }),
+      ...boxes,
+      facEl("div", { class: "fp-actions", style: "margin-top:4px" }, [
+        facEl("button", { class: "primary", text: "Apply", onclick: async () => {
+          const v = (panel.querySelector('input[type=radio]:checked') || {}).value;
+          const g = [...panel.querySelectorAll('input[type=checkbox]:checked')].map((i) => Number(i.value));
+          try { await apply(v === "groups" ? { groups: g } : v); panel.remove(); } catch (e) { facMsg(e.message, true); }
+        } }),
+        facEl("button", { text: "Cancel", onclick: () => panel.remove() }),
+      ]),
+    ]);
+    for (const b of boxes) b.querySelector("input").addEventListener("change", () => { panel.querySelector('input[value="groups"]').checked = true; });
+    host.appendChild(panel);
+  }
+
+  function facRenderWelcome(box) {
+    box.appendChild(facEl("div", { class: "fp-empty" }, [
+      facEl("h1", { text: "Your team's know-how, as skills" }),
+      facEl("p", { text: "A skill teaches an agent how to do one job well: prepare the daily marketing summary, take a sprint ticket to a pull request, answer a customer the way your team does." }),
+      facEl("p", { text: "Write it together, by hand or by asking an agent. Freeze a version when it is ready, then give it to the agents and schedules that need it." }),
+      facEl("div", { class: "fp-actions", style: "justify-content:center" }, [
+        facEl("button", { class: "primary", text: "＋ New skill", onclick: () => facGo("new") }),
+        facEl("button", { text: "Import one from this machine", onclick: () => facGo("import") }),
+      ]),
+    ]));
+  }
+
+  // ── The detail drawer ────────────────────────────────────────────────────
+  function facOpenDrawer(id) {
+    fac.sel = facById(id);
+    fac.drawer = true;
+    for (const tr of document.querySelectorAll(".fp-table tr.row")) tr.classList.remove("cur");
+    facRenderTable();
+    facRenderDrawer();
+    document.getElementById("fpDrawer").classList.add("open");
+  }
+  function facCloseDrawer() {
+    fac.drawer = false;
+    const d = document.getElementById("fpDrawer");
+    if (d) d.classList.remove("open");
+    facRenderTable();
+  }
+
+  function facRenderDrawer() {
+    const d = document.getElementById("fpDrawer");
+    const s = fac.sel;
+    if (!d || !s) return;
+    d.textContent = "";
+    const last = facLast(s);
+    const agents = s.attachedTo.length;
+    const crons = s.attachedTo.reduce((n, a) => n + (a.crons || []).length, 0);
+    const reload = async () => { await facLoad(); facRenderTable(); facRenderDrawer(); };
+    const meta = (patch) => facCall("PUT", `/factory/skills/${s.id}/meta`, patch).then(reload).catch((e) => facMsg(e.message, true));
+    // Head
+    d.appendChild(facEl("div", { class: "fp-bar", style: "align-items:flex-start" }, [
+      facAvatar(s, "lg"),
+      facEl("div", { style: "flex:1;min-width:0" }, [facEl("h1", { text: facTitle(s) }), facEl("div", { class: "fp-sub fp-mono", text: `${s.name}:${s.name}${s.origin ? " · from " + s.origin : ""}` })]),
+      facEl("button", { class: "fp-link", "aria-label": "Close", text: "✕", onclick: facCloseDrawer }),
+    ]));
+    // Tags
+    const tagBox = facEl("div", {}, (s.tags || []).map((t) => facEl("span", { class: "fp-tag" }, [t, facEl("button", { class: "fp-link", "aria-label": "Remove tag " + t, text: "×",
+      onclick: () => meta({ tags: (s.tags || []).filter((x) => x !== t) }) })])));
+    tagBox.appendChild(facEl("button", { class: "fp-chip", text: "+ tag", onclick: () => { const t = prompt("New tag"); if (t) meta({ tags: [...(s.tags || []), ...t.split(",")] }); } }));
+    d.appendChild(tagBox);
+    d.appendChild(facEl("div", { class: "fp-desc fp-sub", style: "margin-top:8px", text: s.description || "No description yet." }));
+    // Counters
+    d.appendChild(facEl("div", { class: "fp-stats" }, [
+      facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(s.runs7d || 0) }), facEl("span", { class: "fp-sub", text: "runs, 7 days" })]),
+      facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(agents) }), facEl("span", { class: "fp-sub", text: "agents" })]),
+      facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(crons) }), facEl("span", { class: "fp-sub", text: "schedules" })]),
+    ]));
+    // Shared with
+    d.appendChild(facEl("h2", { text: "Shared with" }));
+    const share = facEl("div", { class: "fp-card" }, [
+      ...facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x })),
+      facEl("button", { class: "fp-link", text: "change", onclick: () => facSharePicker(share, s, (scope) => meta({ scope })) }),
+      facEl("div", { class: "fp-hint", text: s.owner === "main" ? "Any agent can run it." : s.owner.startsWith("user:") ? "Only you see it; you can use it on any agent." : "Only the agents of these groups can run it." }),
+    ]);
+    d.appendChild(share);
+    // Where it runs, by group
+    d.appendChild(facEl("h2", { text: "Where it runs" }));
+    if (!agents) d.appendChild(facEl("div", { class: "fp-sub", text: "No agent uses it yet." }));
+    const byGroup = {};
+    for (const a of s.attachedTo) (byGroup[a.group == null ? "" : a.group] ||= []).push(a);
+    for (const [gid, list] of Object.entries(byGroup)) {
+      const g = gid === "" ? null : facGroup(gid);
+      d.appendChild(facEl("div", { class: "fp-card" }, [
+        facEl("b", { text: g ? `${g.icon ? g.icon + " " : ""}${g.name}` : "No group" }),
+        ...list.map((a) => facEl("div", { style: "margin-top:4px" }, [
+          `${a.name} · v${a.release}`,
+          ...(a.crons || []).map((c) => facEl("span", { class: "fp-sub", text: ` · ${c.label}` })),
+          facEl("span", { class: "fp-sub", text: ` · ${a.runs || 0} run${a.runs === 1 ? "" : "s"}` }),
+          a.update ? facEl("span", { class: "fp-warn", text: ` · v${a.update} available` }) : null,
+          ...a.secrets.filter((x) => !x.bound).map((x) => facEl("span", { class: "fp-ko", text: ` · ${x.name} missing` })),
+          ...a.mcp.filter((x) => !x.present).map((x) => facEl("span", { class: "fp-ko", text: ` · tool ${x.name} missing` })),
+          facEl("button", { class: "fp-link", text: "remove", onclick: () => facAttach(s, a.sessionId, null, false, reload) }),
+        ])),
+      ]));
+    }
+    const use = facEl("div", { class: "fp-actions" });
+    if (s.latestAccepted && !s.archived) {
+      const eligible = facAgentsFor(s).filter((a) => !s.attachedTo.some((x) => x.sessionId === a.sessionId));
+      if (eligible.length) {
+        const sel = facEl("select", { "aria-label": "Agent" });
+        for (const a of eligible) sel.add(new Option(a.name, a.sessionId));
+        use.append(sel, facEl("button", { text: "Give to agent", onclick: () => facAttach(s, sel.value, s.latestAccepted, false, reload) }));
+      }
+      use.appendChild(facEl("button", { text: "Run on a schedule…", onclick: (e) => facScheduleForm(s, d, e.target) }));
+    }
+    if (s.attachedTo.some((a) => a.update)) use.appendChild(facEl("button", { class: "primary", text: `Update agents to v${s.latestAccepted}`, onclick: () => facUpdate(s, reload) }));
+    if (use.childNodes.length) d.appendChild(use);
+    // Version
+    d.appendChild(facEl("h2", { text: "Version" }));
+    const v = facEl("div", { class: "fp-card" });
+    if (!last) v.appendChild(facEl("div", { text: "Draft: no version yet. Edit it, then freeze version 1." }));
+    else {
+      v.appendChild(facEl("div", {}, [facEl("b", { text: `v${last.n}` }), ` · ${last.by}, ${facAgo(last.at)}`, last.note ? ` · ${last.note}` : "",
+        facAccepted(s, last) ? facEl("span", { class: "fp-ok", text: " · approved" }) : facEl("span", { class: "fp-warn", text: " · waiting for approval" })]));
+      if (last.secrets.length) v.appendChild(facEl("div", { class: "fp-sub" }, ["Receives: ", ...last.secrets.map((n) => {
+        const bound = s.bindings.find((b) => b.name === n);
+        return facEl("span", { class: bound && !bound.bound ? "fp-ko" : "fp-ok", text: `${n}${(last.detectedSecrets || []).includes(n) ? "*" : ""} ` });
+      })]));
+      if ((last.detectedSecrets || []).length) v.appendChild(facEl("div", { class: "fp-hint", text: "* found in the code without being declared" }));
+      if (s.unreleased) v.appendChild(facEl("div", { class: "fp-sub", text: "Changes since this version, not frozen yet." }));
+    }
+    const va = facEl("div", { class: "fp-actions" });
+    if (last && !facAccepted(s, last)) va.appendChild(facEl("button", { class: "primary", text: `Review v${last.n}`, onclick: () => facReviewAccept(s, last) }));
+    if (va.childNodes.length) v.appendChild(va);
+    d.appendChild(v);
+    // Feedback
+    const open = facOpenFeedback(s);
+    d.appendChild(facEl("h2", { text: `Feedback${open.length ? " (" + open.length + ")" : ""}` }));
+    for (const f of open)
+      d.appendChild(facEl("div", { class: "fp-card" }, [`💬 ${f.text}`, facEl("div", { class: "fp-sub", text: `${f.by}${f.release ? ", on v" + f.release : ""}, ${facAgo(f.at)}` }),
+        facEl("button", { class: "fp-link", text: "handled", onclick: () => facCall("POST", `/factory/skills/${s.id}/feedback/${f.id}/done`).then(reload).catch((e) => facMsg(e.message, true)) })]));
+    const fin = facEl("input", { type: "text", placeholder: "What is wrong or missing?", style: "flex:1" });
+    d.appendChild(facEl("div", { class: "fp-actions" }, [fin, facEl("button", { text: "Add", onclick: () => fin.value.trim() &&
+      facCall("POST", `/factory/skills/${s.id}/feedback`, { text: fin.value.trim() }).then(reload).catch((e) => facMsg(e.message, true)) })]));
+    // Actions
+    d.appendChild(facEl("h2", { text: "Actions" }));
+    d.appendChild(facEl("div", { class: "fp-actions", style: "margin-top:0" }, [
+      facEl("button", { class: "primary", text: "Edit", onclick: () => facEdit(s.id) }),
+      facEl("button", { text: "History", onclick: () => { facEdit(s.id); fac.edTab = "history"; facRender(); } }),
+      last ? facEl("button", { text: "Make a variant…", onclick: () => facDuplicate(s) }) : null,
+      facEl("button", { text: s.archived ? "Unarchive" : "Archive", onclick: () => meta({ archived: !s.archived }) }),
+      facEl("button", { text: "Delete", onclick: () => facDelete(s) }),
+    ]));
+  }
+
+  async function facAttach(s, sessionId, release, reloadAgent, after) {
+    try {
+      const out = await facCall("POST", "/factory/attach", { sessionId, skill: s.id, release, ...(reloadAgent ? { reload: true } : {}) });
+      if (after) await after();
+      facMsg(release === null ? "Removed. The agent drops it at its next reload."
+        : out.reload === "reloaded" ? "Given to the agent, which is reloading with it."
+        : "Given to the agent. Reload it to load the skill (its reload indicator is on).");
+      return true;
+    } catch (e) { facMsg(e.message, true); return false; }
+  }
+  async function facUpdate(s, after) {
+    try {
+      const out = await facCall("POST", `/factory/skills/${s.id}/update`, { release: s.latestAccepted });
+      const said = { reloaded: "reloading now", stale: "busy; reload it when done", offline: "at its next start" };
+      if (after) await after();
+      facMsg(`Moved to v${s.latestAccepted}: ` + out.updated.map((u) => `${u.name} (${said[u.result] || u.result})`).join(", "));
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  function facScheduleForm(s, host, btn) {
+    if (host.querySelector(".fac-sched")) return;
+    btn.disabled = true;
+    const agent = facEl("select", { "aria-label": "Agent that runs it" });
+    agent.add(new Option(`a new agent "${facTitle(s)}"`, ""));
+    for (const a of facAgentsFor(s)) agent.add(new Option(a.name, a.sessionId));
+    const kind = facEl("select", {});
+    kind.add(new Option("every day at", "daily"));
+    kind.add(new Option("every N minutes", "interval"));
+    const time = facEl("input", { type: "time", value: "08:30" });
+    const every = facEl("input", { type: "number", min: "5", value: "60", hidden: true });
+    kind.addEventListener("change", () => { time.hidden = kind.value !== "daily"; every.hidden = kind.value === "daily"; });
+    const text = facEl("textarea", { rows: "2", style: "width:100%;box-sizing:border-box" });
+    text.value = `Use the ${s.name}:${s.name} skill to `;
+    const go = facEl("button", { class: "primary", text: "Schedule", onclick: async () => {
+      const [h, mi] = time.value.split(":").map(Number);
+      const schedule = kind.value === "daily" ? { kind: "daily", hour: h, minute: mi } : { kind: "interval", everyMin: Number(every.value) };
+      const p = text.value.trim();
+      if (!p) return;
+      const makeCron = (sessionId) => facCall("POST", "/crons", { sessionId, prompt: p, schedule });
+      try {
+        if (agent.value) {
+          const already = s.attachedTo.some((a) => a.sessionId === agent.value && a.release === s.latestAccepted);
+          if (!already && !(await facAttach(s, agent.value, s.latestAccepted, true))) return;
+          await makeCron(agent.value);
+          await facLoad(); facRenderTable(); facRenderDrawer();
+          facMsg(`Scheduled on ${agent.selectedOptions[0].textContent}.`);
+        } else {
+          // A new agent, born with the skill — in the skill's first group, if shared with groups.
+          const gid = (facScopeIds(s.owner) || [])[0] ?? null;
+          facSetMode(false);
+          const t = createTab(gid);
+          t.customName = true;
+          t.nameEl.textContent = facTitle(s);
+          t.afterReady = (sessionId) => makeCron(sessionId).catch((e) => alert("Could not schedule: " + e.message));
+          launchTab(t, { skills: [{ skill: s.id, release: s.latestAccepted }], ...(gid != null ? { group: gid } : {}) });
+        }
+      } catch (e) { facMsg(e.message, true); }
+    } });
+    host.appendChild(facEl("div", { class: "fac-sched fp-card" }, [
+      facEl("div", { class: "fp-actions", style: "margin-top:0" }, [facEl("span", { text: "Run with" }), agent, kind, time, every]),
+      text,
+      facEl("div", { class: "fp-actions" }, [go, facEl("span", { class: "fp-sub", text: "The prompt can say what to do it on: one skill, several topics." })]),
+    ]));
+  }
+
+  async function facReviewAccept(s, rel) {
+    const prev = [...s.acceptances].sort((a, b) => b.release - a.release)[0];
+    let d = "";
+    try { d = await facCall("GET", `/factory/skills/${s.id}/diff?${prev ? "from=v" + prev.release + "&" : ""}to=v${rel.n}`); } catch (e) { return facMsg(e.message, true); }
+    // Show the changes in the editor's History tab, then ask: what you approve is what you saw.
+    fac.sel = s;
+    fac.view = "edit";
+    fac.edTab = "history";
+    fac.ed = null;
+    facRender();
+    const out = document.getElementById("factoryOut");
+    if (out) { out.hidden = false; out.textContent = `v${rel.n}${prev ? " compared with the approved v" + prev.release : ", the whole skill"}:\n\n` + (d || "(no difference)"); }
+    const granted = (rel.secrets || []).map((n) => n + ((rel.detectedSecrets || []).includes(n) ? " (found in the code)" : ""));
+    const prevRel = prev ? s.releases.find((r) => r.n === prev.release) : null;
+    const added = (rel.secrets || []).filter((n) => !(prevRel && (prevRel.secrets || []).includes(n)));
+    const lines = [`Approve v${rel.n} of "${facTitle(s)}"?`, "", "Read the changes shown on the page first: this is what agents will run.",
+      granted.length ? `Agents running it will RECEIVE these secrets: ${granted.join(", ")}` : "It receives no secret.",
+      prevRel && added.length ? `NEW since v${prev.release}: ${added.join(", ")}` : "",
+      (rel.mcp || []).length ? `It expects these tools on the agent's profile: ${rel.mcp.join(", ")}` : ""].filter((x, i) => x || i === 1);
+    if (!confirm(lines.join("\n"))) return;
+    try {
+      await facCall("POST", `/factory/skills/${s.id}/accept`, { release: rel.n });
+      await facLoad();
+      facRender();
+      facMsg(`v${rel.n} approved. It can now be given to agents.`);
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  async function facDuplicate(s) {
+    const title = prompt(`Name of the variant (it starts from v${facLast(s).n} of "${facTitle(s)}"):`, facTitle(s) + " (variant)");
+    if (!title) return;
+    try {
+      const out = await facCall("POST", `/factory/skills/${s.id}/duplicate`, { title: title.trim(), release: facLast(s).n });
+      await facLoad();
+      fac.sel = facById(out.skill.id);
+      fac.drawer = true;
+      facRender();
+      facMsg(`Created from ${out.skill.origin}. It evolves on its own from now on.`);
+    } catch (e) { facMsg(e.message, true); }
+  }
+  async function facDelete(s) {
+    if (!confirm(`Delete "${facTitle(s)}" and its whole history? Archive it instead to keep it.`)) return;
+    try {
+      await facCall("DELETE", `/factory/skills/${s.id}${s.attachedTo.length ? "?force=1" : ""}`);
+      fac.sel = null; fac.drawer = false; fac.checked.delete(s.id);
+      await facRefresh();
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  // ── New skill ────────────────────────────────────────────────────────────
+  function facRenderNew(m) {
+    const scroll = facEl("div", { class: "fp-scroll" });
+    m.appendChild(scroll);
+    const title = facEl("input", { type: "text", id: "fpTitle", placeholder: "Daily marketing summary", autocomplete: "off" });
+    const slugHint = facEl("div", { class: "fp-hint", text: "Agents see it under a short technical name, made from this one." });
+    title.addEventListener("input", () => { const sl = facSlug(title.value); slugHint.textContent = sl ? `Agents will see it as ${sl}:${sl}.` : "Agents see it under a short technical name, made from this one."; });
+    const desc = facEl("textarea", { rows: "4", id: "fpDescIn",
+      placeholder: "Writes a short summary of yesterday's marketing numbers (traffic, signups, campaigns) and posts it in #marketing. Use it every morning, or when someone asks for the marketing summary." });
+    const tags = facEl("input", { type: "text", placeholder: "reporting, slack" });
+    const ids = new Set();
+    const groupBoxes = facGroups().map((g) => facEl("label", { class: "fp-choice fp-pill" }, [
+      facEl("input", { type: "checkbox", value: String(g.id), onchange: (e) => { e.target.checked ? ids.add(g.id) : ids.delete(g.id); scroll.querySelector('input[value="groups"]').checked = true; } }),
+      facEl("div", {}, [`${g.icon ? g.icon + " " : ""}${g.name}`])]));
+    const choice = (value, head, text) => facEl("label", { class: "fp-choice" }, [
+      facEl("input", { type: "radio", name: "fpScope", value, checked: value === "me" }),
+      facEl("div", {}, [facEl("b", { text: head }), facEl("span", { text })])]);
+    // One button: the editor that opens next writes by hand and by prompt side by side.
+    const create = async () => {
+      const v = (scroll.querySelector('input[name="fpScope"]:checked') || {}).value || "me";
+      const scope = v === "groups" ? { groups: [...ids] } : v;
+      try {
+        const out = await facCall("POST", "/factory/skills", { title: title.value.trim(), description: desc.value.trim(), scope, tags: tags.value });
+        await facLoad();
+        facEdit(out.skill.id, true);
+      } catch (e) { facMsg(e.message, true); }
+    };
+    scroll.appendChild(facEl("div", { class: "fp-form" }, [
+      facEl("div", { class: "fp-bar" }, [facEl("button", { class: "fp-link", text: "← Skills", onclick: () => facGo("list") })]),
+      facEl("h1", { text: "New skill" }),
+      facEl("div", { class: "fp-sub", text: "A short set of instructions an agent follows to do one job." }),
+      facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpTitle", text: "Name" }), title, slugHint]),
+      facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpDescIn", text: "What does it do, and when should it be used?" }), desc,
+        facEl("div", { class: "fp-hint", text: "An agent reads this to decide to use the skill. You can refine it later." })]),
+      facEl("div", { class: "fp-field" }, [facEl("span", { class: "fp-label", text: "Shared with" }),
+        choice("me", "🔒 Only me", "Only you see it; you can use it on any agent."),
+        facGroups().length ? choice("groups", "👥 Some groups", "Only the agents of the groups you tick can run it. It can be shared with several.") : facEl("div", { class: "fp-hint", text: "👥 To share with teams, create groups in the cockpit first." }),
+        groupBoxes.length ? facEl("div", { class: "fp-groups" }, groupBoxes) : null,
+        choice("all", "🏢 Everyone", "Any agent can run it.")]),
+      facEl("div", { class: "fp-field" }, [facEl("label", { text: "Tags" }), tags, facEl("div", { class: "fp-hint", text: "Optional, separated by commas: they help filter the list." })]),
+      facEl("div", { class: "fp-actions" }, [
+        facEl("button", { class: "primary", text: "Create", onclick: create }),
+        facEl("button", { text: "Cancel", onclick: () => facGo("list") }),
+      ]),
+      facEl("div", { id: "fpMsg", class: "fac-msg", role: "status" }),
+    ]));
+    title.focus();
+  }
+
+  // ── Import ───────────────────────────────────────────────────────────────
+  async function facRenderImport(m) {
+    const scroll = facEl("div", { class: "fp-scroll" });
+    m.appendChild(scroll);
+    scroll.appendChild(facEl("div", { class: "fp-bar" }, [facEl("button", { class: "fp-link", text: "← Skills", onclick: () => facGo("list") })]));
+    scroll.appendChild(facEl("h1", { text: "Import a skill from this machine" }));
+    scroll.appendChild(facEl("div", { class: "fp-sub", text: "Skills already installed for Claude Code here. Importing copies one in (the original stays where it is); it starts as yours only." }));
+    scroll.appendChild(facEl("div", { id: "fpMsg", class: "fac-msg", role: "status" }));
+    try {
+      const out = await facCall("GET", "/factory/adoptable");
+      if (!out.skills.length) scroll.appendChild(facEl("p", { class: "fp-sub", text: `Nothing to import in ${out.dir}.` }));
+      for (const a of out.skills)
+        scroll.appendChild(facEl("div", { class: "fp-card" }, [facEl("div", { class: "fp-bar", style: "margin:0" }, [
+          facEl("div", { style: "flex:1" }, [facEl("b", { text: a.name }), facEl("div", { class: "fp-sub", text: a.description || "(no description)" })]),
+          a.taken ? facEl("span", { class: "fp-sub", text: "already imported" }) : facEl("button", { text: "Import", onclick: async () => {
+            try { const r = await facCall("POST", "/factory/adopt", { dir: a.dir, scope: "me" }); await facLoad(); facEdit(r.skill.id); }
+            catch (e) { facMsg(e.message, true); }
+          } })])]));
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  // ── The editor: skills | the document | a prompt ─────────────────────────
+  /** SKILL.md = frontmatter (name, description, …) + instructions. Pure. */
+  function facParseMd(md) {
+    const m = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(md || "");
+    if (!m) return { front: "", desc: "", body: md || "" };
+    const d = /^description:\s*(.*)$/m.exec(m[1]);
+    return { front: m[1], desc: d ? d[1].trim().replace(/^["']|["']$/g, "") : "", body: m[2].replace(/^\n/, "") };
+  }
+  function facComposeMd(name, front, desc, body) {
+    const line = "description: " + desc.replace(/\s+/g, " ").trim();
+    let f = front || `name: ${name}`;
+    f = /^description:/m.test(f) ? f.replace(/^description:.*$/m, line) : f + "\n" + line;
+    if (!/^name:/m.test(f)) f = `name: ${name}\n` + f;
+    return `---\n${f}\n---\n\n${body.replace(/^\n+/, "")}`;
+  }
+
+  async function facEdit(id, focusPrompt) {
+    fac.sel = facById(id);
+    fac.view = "edit";
+    fac.edTab = "edit";
+    fac.ed = null;
+    fac.focusPrompt = !!focusPrompt;
+    facRender();
+  }
+
+  async function facRenderEditor(m) {
+    const s = fac.sel;
+    const last = facLast(s);
+    // Top
+    const tabs = facEl("div", { class: "fp-tabs" }, [["edit", "Edit"], ["preview", "Preview"], ["history", "History"]].map(([v, l]) =>
+      facEl("button", { class: "fp-tab", "aria-selected": String(fac.edTab === v), text: l, onclick: async () => { await facKeepDraft(); fac.edTab = v; facRender(); } })));
+    m.appendChild(facEl("div", { class: "fp-ed-top" }, [
+      facEl("button", { class: "fp-link", text: "← Skills", onclick: async () => { await facKeepDraft(); fac.view = "list"; facRefresh(); } }),
+      facEl("b", { text: "Edit a skill" }), facEl("span", { class: "fp-sp" }), tabs,
+    ]));
+    const grid = facEl("div", { class: "fp-ed" });
+    m.appendChild(grid);
+    // Left: skills by name
+    const q = facEl("input", { type: "search", placeholder: "Search skills", value: fac.edQ, style: "width:100%;box-sizing:border-box;margin-bottom:6px" });
+    const list = facEl("div");
+    const paintList = () => {
+      list.textContent = "";
+      const qq = fac.edQ.toLowerCase();
+      for (const k of fac.data.skills.filter((x) => !x.archived && (!qq || facTitle(x).toLowerCase().includes(qq)))) {
+        const kl = facLast(k);
+        list.appendChild(facEl("button", { class: "fp-sk", "aria-current": String(k.id === s.id), onclick: async () => { await facKeepDraft(); facEdit(k.id); } }, [
+          facAvatar(k, "sm"),
+          facEl("span", { class: "fp-sk-t" }, [facEl("span", { class: "fp-sk-n", text: facTitle(k) }),
+            facEl("span", { class: "fp-sub", text: `${kl ? "v" + kl.n : "draft"}${k.unreleased && kl ? " · changes" : ""}` })]),
+        ]));
+      }
+    };
+    q.addEventListener("input", () => { fac.edQ = q.value; paintList(); });
+    paintList();
+    grid.appendChild(facEl("div", { class: "fp-col" }, [q, list, facEl("button", { class: "fp-link", style: "margin-top:8px;text-align:left", text: "+ New skill", onclick: () => facGo("new") })]));
+    // Center
+    const center = facEl("div", { class: "fp-col fp-doc" });
+    grid.appendChild(center);
+    // Right: prompt
+    grid.appendChild(facPromptPanel(s));
+    // Footer
+    const foot = facEl("div", { class: "fp-foot" });
+    m.appendChild(foot);
+    m.appendChild(facEl("div", { id: "fpMsg", class: "fac-msg", role: "status", style: "padding:0 14px 8px" }));
+    // Load the document once per skill (kept while switching tabs).
+    if (!fac.ed || fac.ed.id !== s.id) {
+      try {
+        const [file, tree, lg, scan] = await Promise.all([
+          facCall("GET", `/factory/skills/${s.id}/file?path=SKILL.md`).catch(() => ({ content: "", head: null })),
+          facCall("GET", `/factory/skills/${s.id}/tree`),
+          facCall("GET", `/factory/skills/${s.id}/log`),
+          facCall("POST", `/factory/skills/${s.id}/scan`).catch(() => null),
+        ]);
+        const p = facParseMd(file.content);
+        fac.ed = { id: s.id, head: file.head, front: p.front, desc: p.desc, body: p.body, saved: { desc: p.desc, body: p.body }, tree: tree.files, log: lg.log, scan };
+      } catch (e) { facMsg(e.message, true); return; }
+    }
+    const ed = fac.ed;
+    const dirty = () => ed.desc !== ed.saved.desc || ed.body !== ed.saved.body;
+    // Center content per tab
+    center.appendChild(facEl("div", { class: "fp-doc-head" }, [facAvatar(s, "lg"), facEl("div", {}, [facEl("h1", { text: facTitle(s) }),
+      facEl("div", { class: "fp-sub" }, [
+        s.latestAccepted ? facEl("span", { class: "fp-ver live", text: `v${s.latestAccepted} live` }) : facEl("span", { class: "fp-ver draft", text: last ? "not approved yet" : "draft" }),
+        last && last.n !== s.latestAccepted ? facEl("span", { class: "fp-badge warn", style: "margin:0 0 0 6px", text: `v${last.n} waiting for approval` }) : null,
+        "  ", ...facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x }))])])]));
+    if (fac.edTab === "edit") {
+      const desc = facEl("textarea", { rows: "3" });
+      desc.value = ed.desc;
+      desc.addEventListener("input", () => { ed.desc = desc.value; paintFoot(); });
+      const body = facEl("textarea", { rows: "14" });
+      body.value = ed.body;
+      body.addEventListener("input", () => { ed.body = body.value; paintFoot(); });
+      center.append(
+        facEl("h2", { text: "When to use it" }), desc,
+        facEl("div", { class: "fp-hint", text: "An agent picks the skill when a request matches this sentence." }),
+        facEl("h2", { text: "Instructions" }), body,
+        facEl("h2", { text: "Needs" }), facNeeds(s, ed.scan),
+        facTechFiles(s, ed),
+      );
+    } else if (fac.edTab === "preview") {
+      const pv = facEl("div", { class: "fp-preview" });
+      const md = `**When to use it:** ${ed.desc}\n\n${ed.body}`;
+      if (window.marked && window.DOMPurify) pv.innerHTML = DOMPurify.sanitize(marked.parse(md));
+      else pv.textContent = md;
+      center.append(pv, facEl("div", { class: "fp-hint", text: "This is what an agent reads when it uses the skill." }));
+    } else {
+      const ul = facEl("ul", { id: "factoryLog" });
+      const tags = new Map(s.releases.map((r) => [r.commit, r.n]));
+      for (const c of ed.log)
+        ul.appendChild(facEl("li", { title: "Show this change", onclick: () => facShowDiff(c.commit + "~1", c.commit, c.subject) }, [
+          tags.has(c.commit) ? facEl("span", { class: "fac-badge", text: "v" + tags.get(c.commit) }) : null,
+          " " + c.subject, facEl("span", { class: "fac-meta", text: `${c.by || "unknown"} · ${facAgo(c.at)}` })]));
+      center.append(ul, facEl("pre", { id: "factoryOut", hidden: true }));
+    }
+    // Footer: pending changes, check, save, freeze
+    const paintFoot = () => {
+      foot.textContent = "";
+      const relCommit = last ? last.commit : null;
+      const since = [];
+      for (const c of ed.log) { if (c.commit === relCommit) break; since.push(c); }
+      const who = [...new Set(since.map((c) => c.by || "unknown"))].slice(0, 3).join(", ");
+      const problems = ed.scan ? ed.scan.refusals.length : 0;
+      // `append(null)` writes the text "null": only real nodes go in.
+      foot.append(...[
+        facEl("span", {}, [facEl("b", { text: since.length ? `${since.length} change${since.length > 1 ? "s" : ""} ${last ? "since v" + last.n : "so far"}` : last ? `same as v${last.n}` : "empty draft" }),
+          since.length ? facEl("span", { class: "fp-sub", text: ` · ${who}, ${facAgo(since[0].at)}` }) : null]),
+        dirty() ? facEl("span", { class: "fp-warn", text: "unsaved edits" }) : null,
+        ed.scan ? facEl("span", { class: problems ? "fp-ko" : "fp-ok", text: problems ? `✗ ${problems} problem${problems > 1 ? "s" : ""} to fix` : "✓ check passed" }) : null,
+        facEl("span", { class: "fp-sp" }),
+        facEl("button", { text: "See changes", onclick: async () => { await facKeepDraft(); fac.edTab = "history"; facRender(); setTimeout(() => facShowDiff(last ? "v" + last.n : null, "main", last ? `Changes since v${last.n}` : "The whole draft"), 50); } }),
+        facEl("button", { text: "Save", disabled: !dirty(), onclick: () => facSaveDoc() }),
+        facEl("button", { class: "primary", text: last ? `Freeze as v${last.n + 1}` : "Freeze as v1", disabled: !since.length && !dirty(), onclick: () => facFreeze() }),
+      ].filter(Boolean));
+    };
+    paintFoot();
+    fac.paintFoot = paintFoot;
+  }
+
+  function facNeeds(s, scan) {
+    const box = facEl("div", { class: "fp-card" });
+    const vault = new Set(((fac.data && fac.data.skills.find((x) => x.id === s.id)) || s).bindings.filter((b) => b.bound).map((b) => b.name));
+    const secrets = scan ? scan.secrets : [];
+    if (!secrets.length && !(scan && scan.mcp.length)) box.appendChild(facEl("span", { class: "fp-sub", text: "No secret and no tool needed." }));
+    for (const n of secrets) box.appendChild(facEl("span", { class: vault.has(n) || !s.bindings.some((b) => b.name === n) ? "fp-ok" : "fp-ko",
+      text: `${n}${scan.detected.includes(n) ? "*" : ""}  ` }));
+    if (scan && scan.mcp.length) box.appendChild(facEl("div", { class: "fp-sub", text: "Tools: " + scan.mcp.join(", ") }));
+    if (scan && scan.detected.length) box.appendChild(facEl("div", { class: "fp-hint", text: "* read by the code without being declared — it is granted all the same, and shown when a version is approved." }));
+    return box;
+  }
+
+  /** Scripts and technical files: folded away, for developers. */
+  function facTechFiles(s, ed) {
+    const others = (ed.tree || []).filter((f) => f.path !== "SKILL.md");
+    const det = facEl("details", { style: "margin-top:12px" }, [facEl("summary", { class: "fp-sub", text: `Scripts and technical files (${others.length}) — for developers` })]);
+    const area = facEl("textarea", { rows: "10", spellcheck: "false", hidden: true, style: "font-family:var(--mono);margin-top:6px" });
+    let cur = null;
+    const save = facEl("button", { text: "Save file", hidden: true, onclick: async () => {
+      try {
+        const out = await facCall("PUT", `/factory/skills/${s.id}/file`, { path: cur, content: area.value, base: ed.head });
+        ed.head = out.commit;
+        await facReloadEd();
+        facMsg(`Saved ${cur}.`);
+      } catch (e) { facMsg(e.message, true); }
+    } });
+    const row = facEl("div", { class: "fp-actions" });
+    for (const f of others) row.appendChild(facEl("button", { class: "fp-chip", text: f.path, onclick: async () => {
+      try { const r = await facCall("GET", `/factory/skills/${s.id}/file?path=${encodeURIComponent(f.path)}`); cur = f.path; area.value = r.content; area.hidden = false; save.hidden = false; }
+      catch (e) { facMsg(e.message, true); }
+    } }));
+    const np = facEl("input", { type: "text", placeholder: "scripts/new.sh", style: "width:160px" });
+    row.append(np, facEl("button", { class: "fp-link", text: "add", onclick: () => { if (!np.value.trim()) return; cur = np.value.trim(); area.value = ""; area.hidden = false; save.hidden = false; } }));
+    det.append(row, area, save);
+    return det;
+  }
+
+  /** Keep a draft when switching tab/skill: unsaved text is never thrown away silently. */
+  async function facKeepDraft() {
+    const ed = fac.ed;
+    if (!ed || (ed.desc === ed.saved.desc && ed.body === ed.saved.body)) return;
+    if (confirm("Save your edits to this skill before leaving it?")) await facSaveDoc(true);
+    else { ed.desc = ed.saved.desc; ed.body = ed.saved.body; }
+  }
+
+  async function facReloadEd() {
+    const id = fac.sel.id;
+    await facLoad();
+    fac.sel = facById(id);
+    fac.ed = null;
+    facRender();
+  }
+
+  async function facSaveDoc(quiet) {
+    const s = fac.sel, ed = fac.ed;
+    if (!ed) return false;
+    try {
+      const content = facComposeMd(s.name, ed.front, ed.desc, ed.body);
+      const out = await facCall("PUT", `/factory/skills/${s.id}/file`, { path: "SKILL.md", content, base: ed.head });
+      // The card's description follows the "when to use it" sentence.
+      await facCall("PUT", `/factory/skills/${s.id}/meta`, { description: ed.desc }).catch(() => {});
+      const warn = (out.warnings || []).map((w) => "! " + facFinding(w)).join("\n");
+      if (!quiet) { await facReloadEd(); facMsg("Saved." + (warn ? "\n" + warn : "")); }
+      return true;
+    } catch (e) { facMsg(e.message, true); return false; }
+  }
+
+  async function facFreeze() {
+    const s = fac.sel, ed = fac.ed;
+    if (ed && (ed.desc !== ed.saved.desc || ed.body !== ed.saved.body) && !(await facSaveDoc(true))) return;
+    const note = prompt("What changed in this version? (one line, optional)") ?? null;
+    if (note === null) return;
+    try {
+      const out = await facCall("POST", `/factory/skills/${s.id}/release`, { note, accept: true });
+      const warn = (out.release.warnings || []).map((w) => "! " + facFinding(w)).join("\n");
+      await facReloadEd();
+      const behind = fac.sel.attachedTo.filter((a) => a.update).length;
+      facMsg(`v${out.release.n} frozen and approved.${behind ? ` ${behind} agent${behind > 1 ? "s" : ""} still on an older version: update them from the list.` : ""}` + (warn ? "\n" + warn : ""));
+    } catch (e) { facMsg(e.message, true); }
+  }
+
+  async function facShowDiff(from, to, label) {
+    const out = document.getElementById("factoryOut");
+    if (!out) return;
+    try {
+      const d = await facCall("GET", `/factory/skills/${fac.sel.id}/diff?${from ? "from=" + encodeURIComponent(from) + "&" : ""}to=${encodeURIComponent(to)}`);
+      out.hidden = false;
+      out.textContent = (label ? label + ":\n\n" : "") + (d || "(no difference)");
+    } catch (e) {
+      if (from && from.endsWith("~1")) return facShowDiff(null, to, label); // the first change has no parent
+      facMsg(e.message, true);
+    }
+  }
+
+  // ── The prompt panel: a Skillsmith on this skill, in the background ──────
+  /** The cockpit tab of this skill's Skillsmith, if one is open. */
+  function facSmithTab(s) {
+    return tabs.find((t) => t.facSkill === s.id || (t.cwd && /\/\.shadok-factory\/([^/]+)\/?$/.exec(t.cwd)?.[1] === s.name));
+  }
+  function facPromptPanel(s) {
+    const log = (fac.chat[s.id] ||= []);
+    const chat = facEl("div", { class: "fp-chat" });
+    const paint = () => {
+      chat.textContent = "";
+      if (!log.length) chat.appendChild(facEl("div", { class: "fp-msg sys", text: "Describe the change you want. An agent edits the skill, tests it, and its changes show up here, ready to freeze." }));
+      for (const x of log) chat.appendChild(facEl("div", { class: "fp-msg " + x.who, text: x.text }));
+      chat.scrollTop = chat.scrollHeight;
+    };
+    const push = (who, text) => { log.push({ who, text }); if (log.length > 60) log.shift(); paint(); };
+    const listen = (t) => {
+      t.facSkill = s.id;
+      t.facListen = (msg) => {
+        if (msg.type === "stream-text" && msg.text) push("ag", msg.text);
+        else if (msg.type === "working") push("sys", "working…");
+        else if (msg.type === "turn-done") {
+          push("sys", "done");
+          // Its pushes changed the skill: show them.
+          if (fac.view === "edit" && fac.sel && fac.sel.id === s.id && !(fac.ed && fac.ed.desc !== fac.ed.saved.desc)) facReloadEd();
+        } else if (msg.type === "error" && msg.message) push("sys", "⚠ " + msg.message);
+        else if (msg.type === "dialog") push("sys", "The agent is asking a question: answer it in its tab (" + (t.nameEl.textContent || "agent") + ").");
+      };
+    };
+    const existing = facSmithTab(s);
+    if (existing) listen(existing);
+    const input = facEl("textarea", { rows: "3", placeholder: "Add the Instagram numbers to the summary", style: "width:100%;box-sizing:border-box" });
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      input.value = "";
+      push("me", text);
+      let t = facSmithTab(s);
+      if (t && t.sessionId && t.ws && t.ws.readyState === 1) { listen(t); return submitPrompt(t, text); }
+      try {
+        const ws = await facCall("POST", `/factory/skills/${s.id}/workspace`);
+        const gid = (facScopeIds(s.owner) || [])[0] ?? null;
+        t = createTab(gid, { focus: false });
+        t.customName = true;
+        t.nameEl.textContent = "✎ " + facTitle(s);
+        t.profile = ws.profile;
+        listen(t);
+        const fb = facOpenFeedback(s);
+        t.kickoff = `You are working on the factory skill "${facTitle(s)}" (${ws.name}). Your clone is ready in ${ws.cwd}.` +
+          (s.description ? ` What it is meant to do: ${s.description}` : "") +
+          (fb.length ? `\nOpen feedback from those who use it:\n${fb.map((f) => `- ${f.text} (${f.by}${f.release ? ", v" + f.release : ""})`).join("\n")}` : "") +
+          `\n\nThe person asks: ${text}\n\nPull, make the change, test it, push, scan, then say in two lines what you changed.`;
+        push("sys", "Starting an agent on this skill…");
+        launchTab(t, { cwd: ws.cwd, profile: ws.profile, ...(gid != null ? { group: gid } : {}) });
+      } catch (e) { push("sys", "⚠ " + e.message); }
+    };
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } });
+    paint();
+    const col = facEl("div", { class: "fp-col" }, [
+      facEl("div", { class: "fp-sub", text: "✦ Change it by prompt" }),
+      chat, input,
+      facEl("div", { class: "fp-actions", style: "margin-top:6px" }, [facEl("button", { class: "primary", text: "Send", onclick: send }),
+        existing ? facEl("button", { class: "fp-link", text: "open its full conversation", onclick: () => { facSetMode(false); activate(existing); } }) : null]),
+    ]);
+    if (fac.focusPrompt) { fac.focusPrompt = false; setTimeout(() => input.focus(), 50); }
+    return col;
+  }
+
+  $("factoryBtn").addEventListener("click", () => facSetMode(!document.body.classList.contains("factory-mode")));
+  try { if (localStorage.getItem("cp.factoryMode") === "1") facSetMode(true); } catch {}
+
+  // The new-agent dialog's "Factory skills" fold: born with approved, non-archived skills.
+  async function facFillPicker() {
+    const box = $("skillsPick");
+    if (!box) return;
+    box.textContent = "";
+    let data;
+    try { data = await facCall("GET", "/factory/skills"); } catch { data = { skills: [] }; }
+    // Only what is shared with the group the agent goes to (or with everyone,
+    // or yours): the point of sharing is a short list, not a lock.
+    const usable = data.skills.filter((s) => s.latestAccepted && !s.archived && facAllows(s, { group: setupGroup }));
+    $("skillsField").hidden = !usable.length;
+    $("skillsCount").textContent = usable.length ? String(usable.length) : "";
+    for (const s of usable)
+      box.appendChild(facEl("label", { class: "fac-chk", title: s.description || "" }, [
+        facEl("input", { type: "checkbox", value: s.id, "data-release": String(s.latestAccepted) }),
+        ` ${s.title || s.name} · v${s.latestAccepted}`,
+      ]));
+  }
+  function facPickedSkills() {
+    return [...document.querySelectorAll("#skillsPick input:checked")].map((i) => ({ skill: i.value, release: Number(i.dataset.release) }));
+  }
+
+
 
   $("relayForm").addEventListener("submit", async (e) => {
     e.preventDefault();
