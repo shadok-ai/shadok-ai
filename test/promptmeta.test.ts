@@ -7,6 +7,7 @@ import {
   markPromptMeta,
   stripPromptMeta,
   parsePromptMeta,
+  isSlashCommand,
 } from "../src/promptmeta.js";
 import { classifyUserLine } from "../src/prompt-kind.js";
 
@@ -134,4 +135,13 @@ test("a replayed agent prompt is labelled with the name alone", () => {
     from: "Shadok-Boss",
     origin: "agent",
   });
+});
+
+test("a slash command is recognised, a path or prose is not", () => {
+  assert.equal(isSlashCommand("/compact"), true);
+  assert.equal(isSlashCommand("/skildevef:skildevef summarise #general"), true);
+  assert.equal(isSlashCommand("/Users/me/file.txt look at this"), false);
+  assert.equal(isSlashCommand("please run /compact"), false);
+  assert.equal(isSlashCommand(" /compact"), false); // the TUI needs / first
+  assert.equal(isSlashCommand("/"), false);
 });

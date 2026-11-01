@@ -195,7 +195,7 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
-import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { isSlashCommand, markPromptMeta, promptMetaHeader } from "./promptmeta.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
   ledgerFileFor,
@@ -7480,7 +7480,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // not "someone speaking", and reach the TUI through driveChannel
             // (`origin: "cron"`), so they never match here.
             let submitText = text;
-            if (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent") {
+            // A slash command goes in bare: anything ahead of the `/` makes the
+            // TUI read it as prose, and the agent never runs the command.
+            const command = isSlashCommand(text);
+            if (!command && (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent")) {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header
@@ -7528,7 +7531,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // the message stays outside it.
             let ledgerSeen: number | null = null;
             let ledgerPrelude: string[] | undefined;
-            if (ledgerEnabled) {
+            if (ledgerEnabled && !command) {
               // The agent's group comes from its CHANNEL (server-side, never the
               // message). One table; `deltaSince`'s visibleScope keeps only this
               // group's own rows + the commons' public ones — another group's
