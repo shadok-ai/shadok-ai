@@ -228,7 +228,9 @@ Enter to skip; you can add it later from the web UI).
   remove it. On send, an image shows **inline in your own message bubble**;
   under the hood the agent still receives it as an `[Attached …: path]` line,
   the same format Telegram uses, so nothing about how the agent reads it
-  changes. A message can be attachments alone, with no words. The files are
+  changes. If the agent is mirrored into Telegram, the file is **posted into its
+  topic too** — a photo as a photo, anything else as a document — so whoever is
+  reading there sees what you sent instead of a path. A message can be attachments alone, with no words. The files are
   served back to the browser by `GET /media/<name>` from the same directory
   Telegram attachments land in.
 - **Files an agent hands you** — when an agent's result IS a file (a report, an

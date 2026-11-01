@@ -544,6 +544,102 @@ export function attachmentPrompt(items: PromptItem[], caption?: string): string 
   return caption?.trim() ? lines.join("\n") + "\n" + caption : lines.join("\n");
 }
 
+/** One file an echoed prompt points at, ready for `sendUserFile`. */
+export interface EchoedFile {
+  path: string;
+  name: string;
+  kind: "image" | "file" | "video";
+}
+
+/** How many files one echoed prompt may upload. A paste carries one or two;
+ *  this only ever bounds a crafted message, and the excess is REPORTED rather
+ *  than dropped in silence. */
+export const ECHO_FILE_CAP = 10;
+
+const ATTACHMENT_MARKER = /\[Attached (image|file|video): ([^\]]+)\]/g;
+/** What follows a still's marker — `[Attached image: …] frame 1/2 at 0:02`. */
+const FRAME_TAIL = /^\s*frame \d+\/\d+ at \d+:\d{2}/;
+/** The lines `attachmentPrompt` writes AROUND a video, for the agent's benefit. */
+const VIDEO_SCAFFOLD = /^(Stills from it|⟦heard in the video⟧|⟦video audio⟧)/;
+
+/**
+ * The reader for what `attachmentPrompt` writes — the other half of the pair.
+ *
+ * A file pasted into the WEB composer goes through `/paste`, which deliberately
+ * describes it with this very marker ("the very wording Telegram already uses,
+ * so an agent sees one format"). The web renders those markers as thumbnails;
+ * Telegram printed the absolute path instead, so a file posted from the cockpit
+ * reached the agent but was invisible to the person reading the topic.
+ *
+ * Three decisions worth keeping.
+ *
+ * **The path is never trusted.** Anyone can type `[Attached file: /etc/shadow]`
+ * into the composer, and the echo arrives here as ordinary text — so a marker
+ * counts only when it names a file DIRECTLY inside `mediaDir`, which is the same
+ * rule (and the same reason) as the `/media/:name` route's basename scoping. A
+ * refused marker is left in the prose rather than removed: Telegram then shows
+ * exactly what it shows today, and nothing is silently swallowed.
+ *
+ * **A video's stills stay behind.** They exist so a model can SEE a clip it
+ * cannot open; a human on Telegram is about to watch the clip itself, and eight
+ * frames would bury it. Same for the sentence introducing them and the
+ * transcript line.
+ *
+ * **Pure, and the directory is a parameter**, so the rule is testable without a
+ * filesystem — like `spawnHelperPaths` and `classifyBin`.
+ */
+export function attachmentsInPrompt(
+  text: string,
+  mediaDir: string,
+): { files: EchoedFile[]; prose: string; dropped: number } {
+  const files: EchoedFile[] = [];
+  const kept: string[] = [];
+  let dropped = 0;
+  for (const line of String(text ?? "").split("\n")) {
+    if (VIDEO_SCAFFOLD.test(line.trim())) continue;
+    let rest = "";
+    let last = 0;
+    let still = false;
+    let m: RegExpExecArray | null;
+    ATTACHMENT_MARKER.lastIndex = 0;
+    while ((m = ATTACHMENT_MARKER.exec(line))) {
+      if (m[1] === "image" && FRAME_TAIL.test(line.slice(m.index + m[0].length))) {
+        still = true;
+        break;
+      }
+      rest += line.slice(last, m.index);
+      last = m.index + m[0].length;
+      const f = echoedFile(m[1] as EchoedFile["kind"], m[2], mediaDir);
+      if (!f) {
+        rest += m[0]; // not ours: keep the marker as text, upload nothing
+        continue;
+      }
+      if (files.length >= ECHO_FILE_CAP) {
+        dropped++;
+        continue;
+      }
+      files.push(f);
+    }
+    if (still) continue;
+    kept.push(rest + line.slice(last));
+  }
+  // Same collapse the web client applies once its markers are lifted out: a
+  // line that was ONLY a marker must not leave a blank behind.
+  const prose = kept.join("\n").replace(/\n{2,}/g, "\n").trim();
+  return { files, prose, dropped };
+}
+
+/** A marker's path → the file to upload, or null when it is not ours to send. */
+function echoedFile(kind: EchoedFile["kind"], raw: string, mediaDir: string): EchoedFile | null {
+  // A video carries its length INSIDE the bracket: `/m/v.mp4 (0:07)`.
+  const p = raw.trim().replace(/\s+\(\d+:\d{2}\)$/, "");
+  const name = path.basename(p);
+  // Equality, not a prefix test: `<mediaDir>/../../.ssh/id_ed25519` has the
+  // right prefix and is not in the directory.
+  if (!name || path.join(mediaDir, name) !== p) return null;
+  return { path: p, name, kind };
+}
+
 /** What a bot simply cannot fetch: the Bot API caps `getFile` at 20 MB, and no
  *  code on our side lifts it — so the notice names both sizes and the two
  *  things that do work. */
@@ -1352,12 +1448,28 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           send(b, m.text);
           break;
         }
-        case "prompt-echo":
+        case "prompt-echo": {
           // The server already excludes the sender: what arrives here
           // necessarily comes from ANOTHER client. We show it, marked — a bot
           // cannot post under the user's name.
-          if (m.text?.trim()) send(b, promptEchoLabel(m.origin, m.auto, m.from) + "\n" + m.text);
+          if (!m.text?.trim()) break;
+          const label = promptEchoLabel(m.origin, m.auto, m.from);
+          // A file pasted into the web composer is a MEDIA, not a path. The web
+          // renders its marker as a thumbnail; printing the marker here left the
+          // person reading the topic with an absolute path and nothing to look
+          // at. Upload it instead, so both surfaces show the same thing.
+          const att = attachmentsInPrompt(m.text, MEDIA_DIR);
+          if (!att.files.length) {
+            send(b, label + "\n" + m.text);
+            break;
+          }
+          const extra = att.dropped ? `\n(+${att.dropped} more not sent)` : "";
+          // The caption first, then its files: the bridge's queue is serial, so
+          // this order is the order they arrive in.
+          send(b, att.prose ? `${label}\n${att.prose}${extra}` : label + extra);
+          for (const f of att.files) sendUserFile(b, f);
           break;
+        }
         case "stream-tool":
           // A SendUserFile is a delivered file, not tool noise: upload it (photo
           // or document) regardless of /tools.
