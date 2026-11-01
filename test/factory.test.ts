@@ -30,7 +30,12 @@ const f = (p: string, s: string) => ({ path: p, content: Buffer.from(s) });
 
 function scratch(t: test.TestContext): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factory-test-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  // A git command may still be writing in there (background maintenance after a
+  // commit), and rm then races it with ENOTEMPTY: retry, and never let cleanup
+  // fail a test that passed (CI saw exactly that, as a failed `after` hook).
+  t.after(() => {
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  });
   return dir;
 }
 
