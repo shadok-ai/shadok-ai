@@ -1256,6 +1256,18 @@
     border-radius: 8px; padding: 7px 14px;
   }
   #lightboxDl:hover { background: rgba(0, 0, 0, 0.75); }
+  /* Media gallery popin: a wider panel than the default so the thumbnail grid
+     breathes, and a square-cell auto-fill grid that reflows from phone to
+     desktop with no breakpoints of its own. */
+  .gal-panel { width: min(760px, 100%); max-height: min(82vh, 820px); }
+  .gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 10px; }
+  .gal-cell {
+    position: relative; aspect-ratio: 1 / 1; padding: 0; overflow: hidden; cursor: zoom-in;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--bg-raised);
+  }
+  .gal-cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .gal-cell:hover { border-color: var(--amber); }
+  .gal-empty { color: var(--text-dim); font-size: 13px; text-align: center; padding: 24px 4px; }
   .att-file .att-ic { color: var(--amber); flex: none; }
   .att-file .att-nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Composer attachment strip: the SAME dropped/pasted files, previewed above the
@@ -2367,11 +2379,11 @@
   #chanBar .gauge .label { display: none; }
   #chanBar .gauge .value { color: var(--text-dim); font-size: 12px; }
   #chanBar .gauge:nth-of-type(3) { display: none; } /* the session id: in the tooltip of the menu */
-  #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm {
+  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm {
     position: relative; align-self: stretch; display: inline-flex; align-items: center; gap: 6px;
     border: 0; border-radius: 0; background: none; padding: 0 10px; color: var(--text-dim); font-size: 14px;
   }
-  #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover { color: var(--text); background: none; }
   #chanBar .chan-actions #chanTerm.on { color: var(--text); font-weight: 600; background: none; border: 0; }
   #chanBar .chan-actions #chanTerm.on::after {
     content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--amber);
@@ -3151,6 +3163,7 @@
       </div>
       <span class="chan-actions">
         <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
+        <button id="chanGallery" class="icon" title="Media gallery — every image in this conversation" aria-label="Media gallery"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8.5" cy="9.5" r="1.4" fill="currentColor"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ct-txt">Schedule</span></button>
         <button id="chanStop" class="icon stop" title="End session" aria-label="End session"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 4v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.5 6.8a6 6 0 1 0 7 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ct-txt">Terminal</span></button>
@@ -3254,6 +3267,27 @@
   <button id="lightboxClose" type="button" aria-label="Close image preview">×</button>
   <img id="lightboxImg" alt="">
   <div id="lightboxBar"><a id="lightboxDl" download>⭳ Download</a></div>
+</div>
+
+<!-- Media gallery: every image in the ACTIVE agent's conversation, as a grid of
+     thumbnails. Clicking one opens the lightbox above (the "classic flow"). The
+     grid is scanned from the live transcript DOM, so it covers all three image
+     kinds the lightbox already knows (agent file cards, user attachments,
+     markdown images) with no extra bookkeeping. -->
+<div id="galleryOverlay" class="overlay" hidden>
+  <div class="sec-panel pinned gal-panel">
+    <div class="pin-head">
+      <div class="sec-head">
+        <strong>Media gallery</strong>
+        <button id="galleryClose" title="Close">✕</button>
+      </div>
+      <p class="sec-note" id="galleryNote">Every image in this conversation. Click one to view it full-size.</p>
+    </div>
+    <div class="pin-body">
+      <div id="galleryGrid" class="gal-grid"></div>
+      <div id="galleryEmpty" class="gal-empty" hidden>No images in this conversation yet.</div>
+    </div>
+  </div>
 </div>
 
 <link rel="stylesheet" href="/vendor/xterm.css">
@@ -5519,6 +5553,9 @@
     // Viewing the channel clears its "unread response" highlight.
     if (tab.btnEl.classList.contains("unread")) setTabMood(tab, null);
     const switched = !!prev && prev !== tab && !restoring;
+    // The gallery is per-agent; switching agents under it would show the old
+    // one's media. Close it rather than silently mislabel the grid.
+    if (switched) closeGallery();
     tabs.forEach((t) => {
       t.btnEl.classList.toggle("active", t === tab);
       t.transcriptEl.hidden = t !== tab;
@@ -6027,6 +6064,8 @@
       // talking about an agent that does not exist.
       $("chanCron").disabled = true;
       $("chanStop").disabled = true;
+      $("chanGallery").disabled = true;
+      closeGallery(); // no agent → its media grid is stale; don't leave it up
       paintChanUpdate();
       // Two different truths behind the same empty panel — the server tells us
       // which (see syncFirstAgent), so a newcomer is never invited to create a
@@ -6039,6 +6078,7 @@
     $("startingState").classList.remove("visible");
     $("chanCron").disabled = !t.sessionId;
     $("chanStop").disabled = false;
+    $("chanGallery").disabled = !t.sessionId;
     paintChanUpdate();
     $("led").className = "led " +
       ({ setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[t.status]);
@@ -9171,6 +9211,59 @@
   });
   $("lightboxClose").addEventListener("click", closeLightbox);
 
+  // Media gallery: the grid of every image in the active conversation. It reads
+  // the live transcript DOM rather than a separate media model, so it stays in
+  // lockstep with what the lightbox handles — the same three selectors — and a
+  // newly streamed image shows up the next time the gallery is opened, with no
+  // extra wiring. De-duped by src: the same file sent twice is one tile.
+  function collectGalleryImages() {
+    const host = active && active.transcriptEl;
+    if (!host) return [];
+    const out = [], seen = new Set();
+    for (const img of host.querySelectorAll(".file-img img, .att-img img, .bubble.md img")) {
+      const src = img.currentSrc || img.src;
+      if (!src || seen.has(src)) continue;
+      seen.add(src);
+      out.push({ src, name: img.alt || "" });
+    }
+    return out;
+  }
+  function openGallery() {
+    if (!active) return;
+    const items = collectGalleryImages();
+    const grid = $("galleryGrid");
+    grid.innerHTML = "";
+    for (const it of items) {
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "gal-cell";
+      cell.title = it.name || "image";
+      const im = document.createElement("img");
+      im.src = it.src; im.alt = it.name; im.loading = "lazy";
+      cell.appendChild(im);
+      // "Retombe sur le flow classique": a thumbnail opens the lightbox on top
+      // of the gallery, so closing it returns here to pick another.
+      cell.addEventListener("click", () => openLightbox(it.src, it.name));
+      grid.appendChild(cell);
+    }
+    $("galleryEmpty").hidden = items.length > 0;
+    $("galleryNote").textContent = items.length
+      ? "Every image in this conversation — " + items.length + (items.length > 1 ? " images" : " image") + ". Click one to view it full-size."
+      : "Every image in this conversation. Click one to view it full-size.";
+    $("galleryOverlay").hidden = false;
+    $("galleryClose").focus();
+  }
+  function closeGallery() {
+    if ($("galleryOverlay").hidden) return;
+    $("galleryOverlay").hidden = true;
+    $("galleryGrid").innerHTML = ""; // drop the decoded thumbnails
+  }
+  $("chanGallery").addEventListener("click", openGallery);
+  $("galleryClose").addEventListener("click", closeGallery);
+  $("galleryOverlay").addEventListener("click", (e) => {
+    if (e.target === $("galleryOverlay")) closeGallery();
+  });
+
   // The Escape key sends esc to the active session (like the engine room's Esc
   // button). Precedence: an open overlay/panel is closed first (Escape does not
   // reach down to the session); a pending clickable dialog is left intact;
@@ -9182,6 +9275,10 @@
     // The image viewer sits on top of everything, including the terminal, so it
     // is closed before any other Escape handling.
     if (!lightbox.hidden) { closeLightbox(); e.preventDefault(); return; }
+    // The gallery is a modal overlay on top of the terminal too, so it is closed
+    // before the terminal gets to claim Escape — but after the lightbox, which
+    // may be stacked above it.
+    if (!$("galleryOverlay").hidden) { closeGallery(); e.preventDefault(); return; }
     // In the interactive terminal, xterm owns every key (incl. Esc) — the raw
     // keystroke already flows to the pane via term.onData; don't double-handle.
     if (active && active.termOn) return;
