@@ -232,6 +232,14 @@ Enter to skip; you can add it later from the web UI).
   reload the agent when offered — a value reaches a process at spawn). Only
   names that look like a credential or a connection setting get one (`…_TOKEN`,
   `…_KEY`, `…_URL`, `…_ID`…), never `NODE_ENV` nor shadok's own `SHADOK_*`.
+- **`/` commands** — type `/` in the composer and a menu lists what the agent
+  can run: its skills (`~/.claude/skills`, the project's own), your
+  `.claude/commands`, the Skill Factory skills attached to it (`/name:name`)
+  and a few built-ins (`/compact`, `/clear`…). ↑/↓ to move, Enter or Tab to
+  complete, Escape to close (`GET /commands?session=`). A message that starts
+  with a command goes to the agent bare, without shadok's context line or
+  ledger update ahead of it, since Claude Code reads a command only when `/`
+  comes first.
 - **Files you hand an agent** — paste or drop a file into the composer, or pick
   one with the 📎 button beside it (an image, a PDF, a CSV…), and it becomes a **chip** above the text box: a
   thumbnail for an image, a named tag for anything else, each with a ✕ to

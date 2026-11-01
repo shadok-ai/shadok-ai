@@ -196,6 +196,7 @@ import {
   type DriveReason,
 } from "./crons.js";
 import { isSlashCommand, markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { listCommands } from "./slash-commands.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
   ledgerFileFor,
@@ -1862,6 +1863,20 @@ app.get("/sessions", (req, res) => {
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
 // /sessions cannot see them — this is the only way the UI can list them.
+// The `/` commands an agent can run, for the composer's autocomplete
+// (src/slash-commands.ts). Read on each call: a skill seeded or attached a
+// minute ago must show up without a restart.
+app.get("/commands", (req, res) => {
+  const id = String(req.query.session ?? "");
+  const target = id ? resolveSessionTarget(loadChannels(), id, process.cwd()) : null;
+  const skills = loadRegistry(factoryRoot()).skills;
+  const factory = factorySkillsFor(id || null).map((f) => ({
+    name: f.name,
+    description: skills.find((s) => s.name === f.name)?.description ?? "",
+  }));
+  res.json(listCommands({ home: os.homedir(), cwd: target?.cwd ?? null, factory }));
+});
+
 app.get("/live", (req, res) => {
   // Scope to the caller's visible groups: /live leaks `lastPrompt` (content) and
   // `cwd`/`branch` (location), and is the id-discovery vector for the WS resume
