@@ -1749,7 +1749,6 @@
   .slash-item[aria-selected="true"] { background: var(--amber-soft); }
   .slash-name { font-family: var(--mono); font-size: 13px; flex: none; }
   .slash-desc { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .slash-src { margin-left: auto; flex: none; color: var(--text-dim); font-size: 11px; }
   .cmp-attach {
     flex: none;
     align-self: flex-end;
@@ -9840,7 +9839,7 @@
     el.setSelectionRange(pos, pos);
   }
 
-  // ── `/` autocomplete: the commands this agent can run (GET /commands), shown
+  // ── `/` autocomplete: the factory skills attached to this agent (GET /commands), shown
   // while the box holds a single `/word`. Enter/Tab completes, Escape closes.
   const slashMenu = $("slashMenu");
   const slash = { list: [], at: 0, cache: new Map() };
@@ -9863,9 +9862,7 @@
       b.setAttribute("aria-selected", String(i === slash.at));
       const n = document.createElement("span"); n.className = "slash-name"; n.textContent = "/" + c.name;
       const d = document.createElement("span"); d.className = "slash-desc"; d.textContent = c.description || "";
-      const src = document.createElement("span"); src.className = "slash-src";
-      src.textContent = c.source === "factory" ? "factory" : c.source === "built-in" ? "" : "skill";
-      b.append(n, d, src);
+      b.append(n, d);
       b.addEventListener("mousedown", (e) => { e.preventDefault(); pickSlash(i); });
       slashMenu.appendChild(b);
     });
