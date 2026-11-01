@@ -240,6 +240,13 @@ Enter to skip; you can add it later from the web UI).
   otherwise just print a local path you cannot open. **Artifacts are denied**
   cockpit-wide for the same reason — a page on claude.ai is not the file you
   asked for (`SHADOK_ALLOW_ARTIFACTS=1` lifts it).
+- **Photos and videos, viewable** — an image or a **video** (mp4/webm/mov…) in
+  the chat renders inline (a video gets a real player), and clicking a photo
+  opens it full-size in a lightbox. The 🖼 button in an agent's bar opens a
+  **media gallery**: a grid of every photo and video in that conversation —
+  click a thumbnail to view or play it full-size, then back to the grid. Videos
+  are served with HTTP range requests so they seek and stream instead of
+  downloading whole.
 - **Compaction summaries, folded away** — when Claude Code runs out of context
   it compacts the conversation and writes a long "This session is being
   continued…" summary as the first message of what follows. Shown in full it
