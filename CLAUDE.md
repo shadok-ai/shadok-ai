@@ -1578,6 +1578,17 @@ Auth section of `docs/architecture.md`).
     that way: a cron fire and a parent notification carry their own mark, are not
     "someone speaking", and reach the TUI through `driveChannel`
     (`origin: "cron"`), so they match no header gate.
+    **And a name is not an address.** Naming the sender only told the receiver
+    WHO spoke; nothing makes cockpit tab names unique and every tool takes an
+    id, so an agent had no reliable way back. An `agent` header therefore ends
+    with the sender's short session id (`⟦agent · … · Shadok-Boss · b1c347bc⟧`),
+    which `resolveResumeId` resolves as a prefix — refusing an ambiguous one
+    rather than guessing. `parsePromptMeta` splits it back OFF before reading
+    `who`, because `who` is what labels a bubble on reload: an address left
+    inside the name would be printed in the chat forever after. The split is
+    narrow on purpose (agent platform, exact 8 hex, last field) — `who` is
+    deliberately "everything past the time" so a sender whose name contains
+    " · " survives, and a greedier rule would eat into it.
 
 ## Conventions
 

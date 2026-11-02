@@ -154,7 +154,10 @@ not what the absence of an origin means, though: the client's fallback for a
 prompt with no origin and no name is **the human driving the cockpit** (one
 cockpit, one human — `public/echo-author.js`), which is why a machine client that
 forgets to introduce itself is shown as the user rather than as "unknown", and why
-`callerOrigin` in pilotctl is not cosmetic (invariant 47). A `prompt` refused
+`callerOrigin` in pilotctl is not cosmetic (invariant 47). An `agent` header
+also ends with the sender's short session id, the address the receiving agent
+answers to (`pilotctl prompt <id>`), split back off by `parsePromptMeta` so the
+chat only ever shows the name. A `prompt` refused
 mid-turn comes back as `error` with `code: "busy"` — a machine client can
 classify the refusal without pattern-matching the message text. And
 `stream-text` carries `at`, the time the block was **written**, not the time we

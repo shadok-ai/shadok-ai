@@ -923,7 +923,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 | Message | Purpose |
 |---|---|
-| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
+| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
 | `{type:"prompt", text, force?}` | sends a prompt (`force` bypasses the pace guard) |
 | `{type:"choose", n}` | single-select dialog: picks and validates option n |
 | `{type:"toggle", n}` / `{type:"confirm"}` | multi-select: toggles option n / submits |

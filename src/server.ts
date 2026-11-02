@@ -1239,7 +1239,8 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
 }
 
 /**
- * The cockpit name of the AGENT whose session key signs this request, if any.
+ * The AGENT whose session key signs this request, if any — its cockpit name for
+ * the byline, and its id for the reply address.
  *
  * Attribution, deliberately NOT reusing `currentAccount`: that maps the very
  * same key to the bootstrap admin, which is the right answer for AUTHORISATION
@@ -1248,11 +1249,11 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
  * this exists to close. Resolved from the key, never from the frame, exactly
  * like a web prompt's author.
  */
-function agentNameForKey(req: Caller): string | undefined {
+function agentCaller(req: Caller): { id: string; name: string } | undefined {
   const key = req.headers["x-shadok-session-key"];
   if (typeof key !== "string" || !key) return undefined;
   const id = localSessionForKey(req, key);
-  return id ? channelLabel(loadChannels(), id) : undefined;
+  return id ? { id, name: channelLabel(loadChannels(), id) } : undefined;
 }
 
 /** Who an HTTP call to the vault/profile routes is, for the secret audit log. */
@@ -5127,7 +5128,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // own `SHADOK_SESSION_KEY` and declares `origin: "agent"`. Resolved ONCE here,
   // from the key, for the same reason as `me` just above: what a frame says
   // about who is speaking is never what we believe.
-  const callerAgent = agentNameForKey(req);
+  const callerAgent = agentCaller(req);
   // A RESTRICTED peer is boxed to its own agents (the ownership checks below);
   // a MEMBER peer acts as a web member (`currentAccount` above already returns
   // it as one) and those checks are skipped. The tag is still written for BOTH,
@@ -5141,7 +5142,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   const fromBrowser = requestFromBrowser(req);
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
-  const wsBy = (): SpawnBy => spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent });
+  const wsBy = (): SpawnBy =>
+    spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent?.name });
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -5427,7 +5429,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               : undefined;
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
-            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent }),
+            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
           );
           session.clients.add(ws);
           if (resumed) {
@@ -5527,7 +5529,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // browser is not: for a web client the SESSION decides, and whatever
           // `from` the frame carried is discarded. An agent is not trusted
           // either: its name comes from the key that signed the socket.
-          const author = promptAuthor(origin, me?.name, msg.from, callerAgent);
+          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -5592,7 +5594,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // `parsePromptMeta` reads the platform as the first field and the
               // sender as everything past the time, so this widens neither.
               const platform = msg.voice === true ? `${origin} vocal` : origin;
-              submitText = markPromptMeta(text, promptMetaHeader(platform, new Date(), author, defaultTimeZone()));
+              // An agent header ends with the sender's REPLY ADDRESS — its short
+              // session id — because a name is not an address: nothing makes tab
+              // names unique and every tool takes an id, so naming the sender was
+              // only half of telling the receiver who it is. Short because
+              // `resolveResumeId` resolves a prefix (and refuses an ambiguous one
+              // rather than guessing). It is stripped back out by
+              // `parsePromptMeta`, so it never reaches the chat.
+              const ref = origin === "agent" ? callerAgent?.id.slice(0, 8) : undefined;
+              submitText = markPromptMeta(
+                text,
+                promptMetaHeader(platform, new Date(), author, defaultTimeZone(), ref),
+              );
             }
             // Push the ledger DELTA ahead of the message: rows changed since this
             // agent last saw the ledger, so it learns what siblings resolved /
