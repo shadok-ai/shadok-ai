@@ -104,6 +104,29 @@ export function visibleChannels(
   });
 }
 
+/**
+ * The group a caller spawns a NEW agent into, derived from identity alone.
+ *
+ * A client never names its own group (it would just claim someone else's), so
+ * this takes only the viewer and the server's group list. The rule:
+ * - a member of exactly ONE non-public group → that group (their own);
+ * - anyone else (no group, or several — which is ambiguous) → the commons.
+ *
+ * Falling back to the COMMONS on ambiguity is the safe direction: it never puts
+ * an agent into a group the caller might not have meant, and never under another
+ * group's OS user. Explicit cross-group selection is a later task; until then an
+ * agent is born either in its caller's one group or in the shared commons.
+ *
+ * Returns null only when there is no group at all to resolve to (no `main`, no
+ * public group) — the caller then treats it as the group-less commons.
+ */
+export function spawnGroupFor(viewer: Viewer | null, groups: readonly Group[]): Group | null {
+  const commons = groups.find((g) => g.id === MAIN_GROUP_ID) ?? groups.find((g) => g.nature === "public") ?? null;
+  if (!viewer) return commons;
+  const own = groups.filter((g) => g.nature !== "public" && memberOf(g, viewer.name));
+  return own.length === 1 ? own[0] : commons;
+}
+
 /** An account as a Viewer (null passes through). */
 export function viewerFor(account: { name: string; role: Role } | null): Viewer | null {
   return account ? { name: account.name, role: account.role } : null;

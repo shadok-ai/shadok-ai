@@ -1,6 +1,7 @@
 import pty from "node-pty";
 import xterm from "@xterm/headless";
 import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, typeIntoBox } from "./detect.js";
+import { dropArgv } from "./osusers.js";
 
 const { Terminal } = xterm;
 
@@ -39,6 +40,14 @@ export interface PilotOptions {
   cols?: number;
   rows?: number;
   env?: Record<string, string>;
+  /**
+   * The OS user to drop to before exec (multi-tenant isolation). When set, the
+   * spawn is wrapped in `setpriv` (`src/osusers.ts`); unset = today's behaviour,
+   * running as the server's own user. The multi-tenant gate lives in the caller
+   * (`makePilot`), so an unset `user` is the only thing a mono-tenant spawn ever
+   * sees — the spawn path then stays byte-for-byte what it was.
+   */
+  user?: string | null;
 }
 
 export interface WaitOptions {
@@ -110,7 +119,14 @@ export class PtyPilot {
       if (/^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k)) continue;
       env[k] = v;
     }
-    this.proc = pty.spawn(this.opts.claudePath ?? "claude", this.opts.args ?? [], {
+    // Drop to the target group's OS user when one is set (node-pty has no uid
+    // option, so we wrap the command in setpriv). `user` is only ever set in
+    // multi-tenant — the gate lives in `makePilot` — so this branch is dead in
+    // mono-tenant and the spawn below is unchanged.
+    const bin0 = this.opts.claudePath ?? "claude";
+    const args0 = this.opts.args ?? [];
+    const drop = this.opts.user ? dropArgv(this.opts.user, bin0, args0) : null;
+    this.proc = pty.spawn(drop ? drop.cmd : bin0, drop ? drop.argv : args0, {
       name: "xterm-256color",
       cols: this.opts.cols,
       rows: this.opts.rows,

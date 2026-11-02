@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
+import { dropArgv } from "./osusers.js";
 import { binaryBusyError } from "./claude-bin.js";
 import { SHADOK_DIR } from "./config.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
@@ -24,6 +25,8 @@ export interface TmuxPilotOptions extends PilotOptions {
   tmuxName: string;
   /** Where the one-shot launcher script is written (default `~/.shadok-ai/run`). */
   launcherDir?: string;
+  /** OS user to drop to before exec (multi-tenant isolation) — see PilotOptions. */
+  user?: string | null;
 }
 
 function tmux(args: string[], input?: string): string {
@@ -92,6 +95,14 @@ export function launcherScript(o: {
   forced: Record<string, string>;
   bin: string;
   args: string[];
+  /**
+   * OS user to drop to (multi-tenant isolation). When set, the `exec` line is
+   * wrapped in `setpriv` (`dropArgv`), so the drop happens AFTER the exports —
+   * the env is set in the root shell and setpriv preserves it across the exec,
+   * which is the whole reason setpriv is used over a PAM path. Unset = today's
+   * exec line, byte-for-byte. The multi-tenant gate lives in `makePilot`.
+   */
+  user?: string | null;
 }): { script: string; skipped: string[] } {
   const skipped: string[] = [];
   const exports: string[] = [];
@@ -102,12 +113,14 @@ export function launcherScript(o: {
   add("TERM", "xterm-256color");
   for (const [k, v] of Object.entries(o.env)) add(k, v);
   for (const [k, v] of Object.entries(o.forced)) add(k, v);
+  const drop = o.user ? dropArgv(o.user, o.bin, o.args) : null;
+  const execArgv = drop ? [drop.cmd, ...drop.argv] : [o.bin, ...o.args];
   const script = [
     "#!/bin/sh",
     'rm -f -- "$0"',
     ...o.unset.filter(isEnvName).map((k) => `unset ${k}`),
     ...exports,
-    `exec ${[o.bin, ...o.args].map(shellQuote).join(" ")}`,
+    `exec ${execArgv.map(shellQuote).join(" ")}`,
     "",
   ].join("\n");
   return { script, skipped };
@@ -187,6 +200,9 @@ export class TmuxPilot {
         forced: FORCED_CLAUDE_ENV,
         bin,
         args: this.opts.args ?? [],
+        // Multi-tenant isolation: drop to the group's OS user. Only ever set in
+        // multi-tenant (the gate is in makePilot), so this is a no-op otherwise.
+        user: this.opts.user,
       });
       for (const name of skipped)
         console.error(`[${this.name}] secret "${name}" not exported — not a valid environment variable name`);
