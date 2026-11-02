@@ -45,3 +45,46 @@ test("the synthetic Main view and the commons fold are preserved", () => {
   assert.match(html, /\{ view: "ungrouped", icon: "📥", name: "Main" \}/);
   assert.match(html, /String\(sg\.id\) === COMMONS_GROUP_ID\) continue/);
 });
+
+// ── Create-group form ────────────────────────────────────────────
+function createFormBlock(): string {
+  const m = html.match(/<div id="groupCreateOverlay"[\s\S]*?<!-- END group-create-form -->/);
+  assert.ok(m, "groupCreateOverlay markup present");
+  return m![0];
+}
+function createFormScript(): string {
+  const m = html.match(/let groupCapable[\s\S]*?\/\/ END group-create/);
+  assert.ok(m, "group-create script block present");
+  return m![0];
+}
+
+test("create-group form offers exactly Public and Private, never Personal/restricted", () => {
+  const block = createFormBlock();
+  assert.match(block, /class="overlay"|class="overlay /);
+  assert.match(block, /<option value="public">Public<\/option>/);
+  assert.match(block, /<option value="restricted">Private<\/option>/);
+  assert.equal((block.match(/<option /g) ?? []).length, 2);
+  assert.doesNotMatch(block, /Personal/);
+  assert.doesNotMatch(block, />[^<]*restricted[^<]*</i);
+});
+
+test("create-group submit POSTs /groups with a nature", () => {
+  const s = createFormScript();
+  assert.match(s, /fetch\("\/groups",\s*\{\s*method:\s*"POST"/);
+  assert.match(s, /nature/);
+  assert.match(s, /"x-shadok-instance":\s*instanceKey/);
+  assert.match(s, /fetch\("\/groups\/members",\s*\{\s*method:\s*"POST"/);
+});
+
+test("Private is gated on the capability mode", () => {
+  const s = createFormScript();
+  assert.match(s, /mode\s*===\s*"multi-tenant"/);
+  assert.match(s, /disabled/);
+});
+
+test("choosing Private reveals a picker sourced from GET /accounts", () => {
+  const s = createFormScript();
+  assert.match(s, /fetch\("\/accounts"/);
+  assert.match(s, /groupMembersField/);
+  assert.match(createFormBlock(), /id="groupMembersField"/);
+});

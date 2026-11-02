@@ -2770,6 +2770,38 @@
   </div>
 </div>
 
+<div id="groupCreateOverlay" class="overlay" hidden>
+  <div id="groupCreatePanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>New <span class="obj">group</span></strong>
+      <button id="groupCreateClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <span class="label">Name</span>
+        <input id="groupCreateName" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Backend" />
+      </div>
+      <div class="field">
+        <span class="label">Type</span>
+        <select id="groupCreateType" aria-label="Group type">
+          <option value="public">Public</option>
+          <option value="restricted">Private</option>
+        </select>
+        <span class="check-hint" id="groupCreateNoPrivate" hidden>Private groups need a multi-tenant instance.</span>
+      </div>
+      <div class="field" id="groupMembersField" hidden>
+        <span class="label">Members</span>
+        <select id="groupMembersPick" multiple size="6" aria-label="Initial members"></select>
+        <span class="check-hint">Optional. You are always a member. Ctrl/Cmd-click to pick several.</span>
+      </div>
+      <p class="sec-note warn" id="groupCreateErr" hidden></p>
+    </div>
+    <div class="modal-foot">
+      <button class="primary" id="groupCreateSubmit">Create group</button>
+    </div>
+  </div>
+</div>
+<!-- END group-create-form -->
 <div id="setupOverlay" class="overlay" hidden>
   <div id="setupPanel" class="sec-panel modal">
     <div class="sec-head">
@@ -9484,6 +9516,7 @@
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
+    if (!$("groupCreateOverlay").hidden) { closeGroupCreate(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
     if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("telegramOverlay").hidden) { $("telegramOverlay").hidden = true; e.preventDefault(); return; }
@@ -11722,18 +11755,93 @@
     markTweakTab(t);
     launchTab(t, { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" });
   });
-  function addGroup() {
-    const g = createGroup();
-    persistGroups();
-    // applyView first, so has-groups is set and the column is shown SYNCHRONOUSLY
-    // — otherwise railShown() below is still false on the first group (created
-    // from the bare button, while the rail was hidden) and it would not select.
-    applyView();
-    // A new group is where you are going next: select it (it starts empty).
-    if (railShown()) setView(g.id, { follow: false });
+  // ── Create-group form ─────────────────────────────────────────
+  // "Public" is nature "public"; "Private" is the server's "restricted".
+  // Private needs a multi-tenant instance: /version reports it as `mode`.
+  let groupCapable = null;
+  async function isGroupCapable() {
+    if (groupCapable !== null) return groupCapable;
+    try {
+      const v = await (await fetch("/version")).json();
+      groupCapable = v.mode === "multi-tenant";
+    } catch { return false; } // unknown: refuse Private now, retry next opening
+    return groupCapable;
   }
-  newGroupBtn.addEventListener("click", addGroup);
-  $("newGroupBare").addEventListener("click", addGroup);
+  function groupCreateError(msg) {
+    const el = $("groupCreateErr");
+    el.textContent = msg || "";
+    el.hidden = !msg;
+  }
+  async function openGroupCreate() {
+    $("groupCreateName").value = "";
+    $("groupCreateType").value = "public";
+    $("groupMembersField").hidden = true;
+    $("groupMembersPick").textContent = "";
+    groupCreateError("");
+    $("groupCreateSubmit").disabled = false;
+    const capable = await isGroupCapable();
+    $("groupCreateType").querySelector('option[value="restricted"]').disabled = !capable;
+    $("groupCreateNoPrivate").hidden = capable;
+    $("groupCreateOverlay").hidden = false;
+    $("groupCreateName").focus();
+  }
+  function closeGroupCreate() { $("groupCreateOverlay").hidden = true; }
+  async function loadGroupAccounts() {
+    const pick = $("groupMembersPick");
+    try {
+      const r = await fetch("/accounts");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const names = await r.json();
+      pick.textContent = "";
+      for (const n of names) {
+        const o = document.createElement("option");
+        o.value = n; o.textContent = n;
+        pick.appendChild(o);
+      }
+    } catch (e) {
+      groupCreateError("Could not load accounts: " + e.message);
+    }
+  }
+  async function submitGroupCreate() {
+    const name = $("groupCreateName").value.trim();
+    const nature = $("groupCreateType").value === "restricted" ? "restricted" : "public";
+    if (!name) return groupCreateError("Give the group a name.");
+    const members = nature === "restricted"
+      ? [...$("groupMembersPick").selectedOptions].map((o) => o.value) : [];
+    $("groupCreateSubmit").disabled = true;
+    groupCreateError("");
+    const headers = { "Content-Type": "application/json", "x-shadok-instance": instanceKey };
+    try {
+      const r = await fetch("/groups", { method: "POST", headers, body: JSON.stringify({ name, nature }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.ok) throw new Error(data.error || data.message || "HTTP " + r.status);
+      const g = createGroup(data.group);
+      applyView();
+      if (railShown()) setView(g.id, { follow: false });
+      closeGroupCreate();
+      const failed = [];
+      for (const add of members) {
+        const mr = await fetch("/groups/members", { method: "POST", headers, body: JSON.stringify({ group: data.group.id, add }) });
+        if (!mr.ok) failed.push(add);
+      }
+      if (failed.length) alert("Group created, but could not add: " + failed.join(", "));
+    } catch (e) {
+      groupCreateError(e.message);
+      $("groupCreateSubmit").disabled = false;
+    }
+  }
+  $("groupCreateType").addEventListener("change", () => {
+    const priv = $("groupCreateType").value === "restricted";
+    $("groupMembersField").hidden = !priv;
+    if (priv) loadGroupAccounts();
+  });
+  $("groupCreateClose").addEventListener("click", closeGroupCreate);
+  $("groupCreateOverlay").addEventListener("click", (e) => { if (e.target === $("groupCreateOverlay")) closeGroupCreate(); });
+  $("groupCreateSubmit").addEventListener("click", submitGroupCreate);
+  $("groupCreateName").addEventListener("keydown", (e) => { if (e.key === "Enter") submitGroupCreate(); });
+  // END group-create
+  newGroupBtn.addEventListener("click", openGroupCreate);
+  $("newGroupBare").addEventListener("click", openGroupCreate);
 
   // ── Quota gauges (5h / 7d) ──────────────────────────────
   function fmtReset(sec) {
