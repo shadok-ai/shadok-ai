@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   visibleChannels,
   viewerFor,
@@ -238,4 +241,46 @@ test("mono-tenant: no groups + null-group channels are fully visible to everyone
   assert.deepEqual(visibleChannels(channels, [], viewerFor(null)).map((c) => c.sessionId), ["a", "b"]);
   // A bootstrap-admin viewer sees them too.
   assert.deepEqual(visibleChannels(channels, [], viewerFor(admin)).map((c) => c.sessionId), ["a", "b"]);
+});
+
+// ── Task 16: account lifecycle wiring — a source-scan lock (server.ts is
+// un-importable at module load, like the migrate-groups wiring lock) ───────────
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const SERVER = fs.readFileSync(path.join(HERE, "..", "src", "server.ts"), "utf8");
+
+test("server: redeeming an invite provisions the person's private group (multi-tenant only)", () => {
+  // The hook exists, is DEPLOYMENT_MODE-gated, and is driven by the redeem handler.
+  assert.ok(/ensurePrivateGroupProvisioned\s*\(/.test(SERVER), "the invite→provision hook is defined and called");
+  const fn = SERVER.slice(SERVER.indexOf("async function ensurePrivateGroupProvisioned"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.ok(/DEPLOYMENT_MODE !== "multi-tenant"/.test(body), "no-op in mono-tenant (byte-for-byte today)");
+  assert.ok(/privateGroupFor\(/.test(body), "idempotent: does not double-provision an existing private group");
+  assert.ok(/newPrivateGroup\(/.test(body), "a NEW person gets a fresh private group");
+  assert.ok(/osUserFor\(/.test(body), "the group's osUser is stamped before persist");
+  assert.ok(/saveGroups\(/.test(body), "the group row is persisted (so boot reprovision can retry)");
+  assert.ok(/provisionOsUserFor\(/.test(body), "the privileged OS-user provision is kicked");
+  // Best-effort: a provision failure is caught (sign-in must not be blocked).
+  assert.ok(/catch\b/.test(body), "a provision failure is caught, not thrown into the redeem");
+  // The redeem handler must actually call the hook.
+  const redeem = SERVER.slice(SERVER.indexOf('app.post("/invite/:token"'));
+  const redeemBody = redeem.slice(0, redeem.indexOf("\n});\n"));
+  assert.ok(/ensurePrivateGroupProvisioned\(/.test(redeemBody), "the redeem route invokes the hook");
+});
+
+test("server: DELETE /users cascades to tear down ONLY the person's private group", () => {
+  const route = SERVER.slice(SERVER.indexOf('app.delete("/users"'));
+  const body = route.slice(0, route.indexOf("\n});\n"));
+  assert.ok(/accountDeleteGroups\(/.test(body), "the pure cascade decides what to tear down / what to keep");
+  assert.ok(/teardownGroupUser\(/.test(body), "the private group's OS user + HOME are torn down");
+  assert.ok(/killGroupAgents\(/.test(body), "its running agents are killed (T6 helper, needed here)");
+  assert.ok(/saveGroups\(/.test(body), "the remaining group list (row removed, memberships dropped) is persisted");
+  assert.ok(/DEPLOYMENT_MODE === "multi-tenant"/.test(body), "the cascade is multi-tenant only (mono no-op)");
+  // The userdel warning is SURFACED, not swallowed.
+  assert.ok(/warning/.test(body), "a teardown warning is surfaced to the admin");
+  // No break-glass: the admin never reads the private group's contents — there is
+  // no loadHistory / transcript read on the delete path.
+  assert.ok(!/loadHistory/.test(body), "no break-glass: the private space is destroyed unread");
+  // Explicit confirmation before the irreversible destruction.
+  assert.ok(/confirm/.test(body), "an explicit confirmation gate guards the irreversible destroy");
 });

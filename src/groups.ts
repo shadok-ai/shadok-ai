@@ -77,6 +77,74 @@ export function membershipVerdict(
 }
 
 /**
+ * The sealed private group a given account OWNS, or null. Pure, so the account
+ * lifecycle hooks (Task 16) can be reasoned about with no server: one person maps
+ * to exactly ONE private group (`owner === name`), which is what makes both the
+ * invite-provision (idempotency check: already provisioned?) and the delete
+ * cascade (which group to tear down?) a single lookup rather than a scan repeated
+ * at two call sites. Keyed on `owner`, never on `members`: a private group's
+ * roster can list the owner (the brief) or omit them (`memberOf` treats the owner
+ * as a member either way) — only the owner is the durable identity.
+ */
+export function privateGroupFor(accountName: string, groups: readonly Group[]): Group | null {
+  return groups.find((g) => g.nature === "private" && g.owner === accountName) ?? null;
+}
+
+/**
+ * A fresh sealed private group for a person (Task 16's invite-provision). The
+ * owner is also listed as the sole member (the brief's exact shape
+ * `{nature:"private", owner:name, members:[name]}`), which is redundant with
+ * `memberOf` but unambiguous on disk. `osUser` is left null here — the server
+ * sets it via `osUserFor` (osusers.ts) before persisting, exactly as
+ * `migProvisionPrivateGroup` does; keeping this pure avoids a groups↔osusers
+ * import cycle (osusers already imports groups).
+ */
+export function newPrivateGroup(accountName: string, id: string, now: number): Group {
+  return {
+    id,
+    name: accountName,
+    nature: "private",
+    members: [accountName],
+    owner: accountName,
+    osUser: null,
+    createdAt: now,
+  };
+}
+
+/** An account dropped from a members list (new array, order preserved). */
+export function membersWithout(members: readonly string[], accountName: string): string[] {
+  return members.filter((m) => m !== accountName);
+}
+
+/**
+ * The group-list change when an account is DELETED (pure — Task 16's cascade).
+ *
+ * Two different things happen to the two kinds of group the person touched, and
+ * the distinction is the whole point:
+ *  - their SEALED PRIVATE group (`owner === name`) is TORN DOWN — returned as
+ *    `torndown` so the caller can `teardownGroupUser` it (OS user, HOME, agents)
+ *    and its row is removed from the list;
+ *  - every RESTRICTED group they were a member of SURVIVES; the person is merely
+ *    dropped from its `members` (never tear down a shared group because one
+ *    member left — the brief).
+ *
+ * Returns `{ torndown, groups }`: the group to tear down (or null — mono-tenant,
+ * or a person with no private group yet), and the remaining list to persist.
+ */
+export function accountDeleteGroups(
+  accountName: string,
+  groups: readonly Group[],
+): { torndown: Group | null; groups: Group[] } {
+  const torndown = privateGroupFor(accountName, groups);
+  const remaining = groups
+    .filter((g) => !(torndown && g.id === torndown.id))
+    .map((g) =>
+      g.members.includes(accountName) ? { ...g, members: membersWithout(g.members, accountName) } : g,
+    );
+  return { torndown, groups: remaining };
+}
+
+/**
  * The channels a viewer may see:
  * - a channel with NO group is kept: it is commons, visible to everyone;
  * - a channel whose group resolves to a known group is kept iff the viewer may

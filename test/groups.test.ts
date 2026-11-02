@@ -11,6 +11,10 @@ import {
   viewerFor,
   canResumeAs,
   canRestartInto,
+  privateGroupFor,
+  newPrivateGroup,
+  membersWithout,
+  accountDeleteGroups,
   type Group,
 } from "../src/groups.js";
 
@@ -64,6 +68,71 @@ test("membershipVerdict: any member invites, self leaves, only admin removes", (
   assert.equal(membershipVerdict(null, g, "invite", "x").ok, false);
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, { ...g, nature: "private" }, "invite", "z").ok, false);
   assert.equal(membershipVerdict({ name: "root", role: "admin" }, { ...g, nature: "public" }, "remove", "leo").ok, false);
+});
+
+// ── Task 16: account lifecycle (invite → provision, delete → cascade) ──────────
+
+test("newPrivateGroup: one sealed group, owner is sole member (the brief's shape)", () => {
+  const g = newPrivateGroup("ada", "g1", 42);
+  assert.equal(g.nature, "private");
+  assert.equal(g.owner, "ada");
+  assert.deepEqual(g.members, ["ada"]);
+  assert.equal(g.id, "g1");
+  assert.equal(g.createdAt, 42);
+  assert.equal(g.osUser, null); // the server sets it via osUserFor before persist
+});
+
+test("privateGroupFor: finds the account's private group by owner, idempotency guard", () => {
+  const groups: Group[] = [
+    { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },
+    { id: "comex", name: "COMEX", nature: "restricted", members: ["ada"], createdAt: 0 },
+    newPrivateGroup("ada", "ada-priv", 1),
+  ];
+  assert.equal(privateGroupFor("ada", groups)?.id, "ada-priv");
+  // A new person has no private group yet → redeeming provisions exactly one.
+  assert.equal(privateGroupFor("zoe", groups), null);
+  // Owner, not membership: a private row listing the owner only in `members`
+  // (not as owner) is NOT theirs — owner is the durable identity.
+  const quirky: Group = { id: "q", name: "Q", nature: "private", members: ["leo"], owner: "x", createdAt: 0 };
+  assert.equal(privateGroupFor("leo", [quirky]), null);
+});
+
+test("membersWithout: drops the account, preserves order, leaves others untouched", () => {
+  assert.deepEqual(membersWithout(["ada", "leo", "zoe"], "leo"), ["ada", "zoe"]);
+  assert.deepEqual(membersWithout(["ada"], "zoe"), ["ada"]);
+});
+
+test("accountDeleteGroups: tears down ONLY the private group, drops restricted memberships", () => {
+  const groups: Group[] = [
+    { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },
+    { id: "comex", name: "COMEX", nature: "restricted", members: ["ada", "leo"], createdAt: 0 },
+    { id: "rh", name: "RH", nature: "restricted", members: ["leo"], createdAt: 0 },
+    newPrivateGroup("ada", "ada-priv", 1),
+  ];
+  const r = accountDeleteGroups("ada", groups);
+  // The private group is the one torn down…
+  assert.equal(r.torndown?.id, "ada-priv");
+  // …and its row is gone from the remaining list.
+  assert.equal(r.groups.some((g) => g.id === "ada-priv"), false);
+  // COMEX SURVIVES — ada is merely dropped from its members (leo stays).
+  const comex = r.groups.find((g) => g.id === "comex")!;
+  assert.deepEqual(comex.members, ["leo"]);
+  // RH never had ada → untouched; main untouched.
+  assert.deepEqual(r.groups.find((g) => g.id === "rh")!.members, ["leo"]);
+  assert.ok(r.groups.some((g) => g.id === "main"));
+  // No group is torn down just because a member left (only the private one).
+  assert.equal(r.groups.filter((g) => g.nature === "restricted").length, 2);
+});
+
+test("accountDeleteGroups: a person with no private group tears nothing down", () => {
+  const groups: Group[] = [
+    { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },
+    { id: "comex", name: "COMEX", nature: "restricted", members: ["ada"], createdAt: 0 },
+  ];
+  const r = accountDeleteGroups("ada", groups);
+  assert.equal(r.torndown, null);
+  assert.deepEqual(r.groups.find((g) => g.id === "comex")!.members, []); // still dropped
+  assert.equal(r.groups.length, 2); // nothing removed
 });
 
 const ch = (sessionId: string, group?: string | null) =>

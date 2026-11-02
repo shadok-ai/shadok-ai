@@ -119,6 +119,9 @@ import {
   memberGroupIds,
   ledgerGroupsFor,
   groupsPutFlow,
+  privateGroupFor,
+  newPrivateGroup,
+  accountDeleteGroups,
   MAIN_GROUP_ID,
   type Viewer,
   type Group,
@@ -1545,7 +1548,7 @@ app.get("/invite/:token", (req, res) => {
   return sendAuthPage(res, invitePage(acct!.name, token), 200);
 });
 
-app.post("/invite/:token", (req, res) => {
+app.post("/invite/:token", async (req, res) => {
   const token = String(req.params.token ?? "");
   const password = String(req.body?.password ?? "");
   const list = loadAccounts();
@@ -1583,6 +1586,10 @@ app.post("/invite/:token", (req, res) => {
   );
   console.log(`users: ${acct!.name} redeemed their invitation`);
   recordEvent({ kind: "invite-redeemed", actor: acct!.name, target: acct!.name });
+  // Task 16: redeeming kicks the privileged private-group provision for this
+  // person (multi-tenant only). Best-effort — a failure never blocks sign-in,
+  // which is why it is awaited but cannot throw out of the handler.
+  await ensurePrivateGroupProvisioned(acct!.name);
   if (tfa) {
     res.setHeader("Set-Cookie", pendingCookie(acct!.name));
     if (keptPasskey) return res.json({ ok: true, user: acct!.name, next: "passkey" });
@@ -2540,6 +2547,46 @@ function provisionOsUserFor(g: Group): Promise<unknown> {
   });
 }
 
+/**
+ * Task 16 — the invite→provision hook. When a person REDEEMS their invitation
+ * (the unprivileged path kicks this privileged step server-side), make sure their
+ * SEALED private group exists and its OS user is provisioned.
+ *
+ * No-op in mono-tenant (there are no private groups), so a non-capable instance
+ * stays byte-for-byte today. Idempotent: a password-reset redeem (the account +
+ * group already exist) re-provisions the EXISTING group rather than minting a
+ * twin — `provisionGroupUser` is itself idempotent (`userExists` skips useradd).
+ *
+ * PROVISION POLICY — best-effort, never block sign-in (the brief). The group ROW
+ * is persisted FIRST, then the OS user is provisioned; a provision failure is
+ * CAUGHT and logged loudly, not thrown into the redeem. Persisting the row first
+ * is what makes the failure self-heal: the boot migration's reprovision list
+ * (`reprovisionGroups`, every persisted private/restricted group) re-provisions it
+ * on the next capable boot/recreate, so a transient failure does not strand the
+ * person — and meanwhile the account exists and they can sign in.
+ */
+async function ensurePrivateGroupProvisioned(accountName: string): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const groups = loadGroups();
+  let g = privateGroupFor(accountName, groups);
+  if (!g) {
+    g = newPrivateGroup(accountName, randomUUID(), Date.now());
+    g.osUser = osUserFor(g);
+    saveGroups([...groups, g]);
+    console.log(`groups: created private group ${g.id.slice(0, 8)} for ${accountName} (invite redeemed)`);
+  }
+  try {
+    await provisionOsUserFor(g);
+  } catch (e) {
+    // Best-effort: the account exists and the person signs in regardless; the
+    // persisted row is re-provisioned at the next capable boot (reprovision list).
+    console.error(
+      `groups: provisioning private group for ${accountName} failed (will retry at next boot): ` +
+        `${(e as Error)?.message ?? e}`,
+    );
+  }
+}
+
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
 async function migCreateCommonsUser(): Promise<void> {
   if (osUserExistsSync(COMMONS_USER)) return;
@@ -3014,11 +3061,55 @@ app.delete("/users", async (req, res) => {
   if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
   const keep = keepsTwoAdminsVerdict(twoFactorOn(), list.filter((a) => a.name !== name));
   if (!keep.ok) return res.status(400).json({ error: keep.error });
+
+  // Task 16 — deleting an account in multi-tenant CASCADES to its sealed private
+  // group: OS user, HOME and running agents are destroyed, and the data is gone
+  // for good (no break-glass — nobody, not even this admin, ever reads it). That
+  // is irreversible, so demand an EXPLICIT confirmation before the destroy; the
+  // body names what will be lost so the client can show "permanently destroys X's
+  // private space, which cannot be inspected". Server-authoritative: a client that
+  // does not pass `confirm` gets a 409 and must re-submit. A person with no private
+  // group (or mono-tenant) is NOT gated — nothing irreversible happens.
+  const priv = DEPLOYMENT_MODE === "multi-tenant" ? privateGroupFor(name, loadGroups()) : null;
+  const confirmed =
+    req.query.confirm === "1" || req.query.confirm === "true" || req.body?.confirm === true;
+  if (priv && !confirmed) {
+    return res.status(409).json({
+      error: "confirmation required",
+      confirmation: {
+        account: name,
+        group: priv.id,
+        message: `Deleting ${name} permanently destroys ${name}'s private space, which cannot be inspected. This cannot be undone.`,
+      },
+    });
+  }
+
   if (!(await stepUpIfTwoFactor(req, res, me!))) return;
   saveAccounts(loadAccounts().filter((a) => a.name !== name));
   console.log(`users: ${me!.name} removed ${name}`);
   recordEvent({ kind: "removed", actor: me!.name, target: name });
-  res.json({ ok: true });
+
+  // The cascade (multi-tenant only). Re-read the group list AFTER the step-up —
+  // that await can wait on a human touching a passkey, so a snapshot taken before
+  // it could be stale (invariant 6). `accountDeleteGroups` decides: tear down ONLY
+  // this person's private group (its agents + OS user + HOME), and DROP them from
+  // every restricted group they belonged to WITHOUT tearing those down. The
+  // teardown never throws, but its `userdel` warning is SURFACED to the admin so
+  // an orphaned OS user/HOME does not go unnoticed.
+  let warning: string | undefined;
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    const { torndown, groups } = accountDeleteGroups(name, loadGroups());
+    if (torndown) {
+      const r = await teardownGroupUser(torndown, {
+        run: runPrivileged,
+        homeBase: GROUP_HOME_BASE,
+        killAgents: () => killGroupAgents(torndown.id),
+      });
+      if (!r.ok) warning = r.warning;
+    }
+    saveGroups(groups);
+  }
+  res.json(warning ? { ok: true, warning } : { ok: true });
 });
 
 app.post("/users/role", async (req, res) => {
