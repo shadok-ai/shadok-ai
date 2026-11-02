@@ -6,10 +6,13 @@ import { fileURLToPath } from "node:url";
 import {
   canResumeAs,
   canSeeGroup,
+  canSeeSession,
+  listableGroups,
   viewerFor,
   MAIN_GROUP_ID,
   type Group,
 } from "../src/groups.js";
+import type { Channel } from "../src/channels.js";
 import { secretWriteDecision } from "../src/secrets.js";
 
 // Cross-group leaks closed in Task 10 follow-up. The DECISIONS are pure and
@@ -88,6 +91,65 @@ test("secret write: a private-group AGENT writes its own group's secret; a non-m
   });
 });
 
+// ── Final-fix wave: four more cross-group read leaks ───────────────────────────
+
+const withPrivate: Group[] = [
+  { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },
+  { id: "comex", name: "COMEX", nature: "restricted", members: ["ada"], createdAt: 0 },
+  { id: "ada-priv", name: "Ada", nature: "private", members: ["ada"], owner: "ada", createdAt: 0 },
+  { id: "bob-priv", name: "Bob", nature: "private", members: ["bob"], owner: "bob", createdAt: 0 },
+];
+
+// ── MUST-FIX 1: GET /groups is filtered by the caller ──────────────────────────
+test("listableGroups: a non-member omits a restricted group's row AND a foreign private group", () => {
+  // bob is in neither COMEX nor ada-priv. He keeps public Main and his own
+  // private group; COMEX (restricted, not a member) and ada-priv (foreign
+  // private) are both omitted — their members/owner never reach him.
+  const seen = listableGroups(withPrivate, viewerFor(bob)).map((g) => g.id);
+  assert.deepEqual(seen.sort(), ["bob-priv", "main"]);
+});
+test("listableGroups: an ADMIN non-member SEES restricted groups but NOT a foreign private group", () => {
+  // The admin nuance: root administers COMEX's membership/secrets without being a
+  // member, so COMEX's row (existence + members) MUST survive — a plain
+  // canSeeGroup would wrongly hide it. But a private group root does not own stays
+  // hidden: "a private group is invisible even to an admin". root owns none here.
+  const seen = listableGroups(withPrivate, viewerFor(admin)).map((g) => g.id);
+  assert.deepEqual(seen.sort(), ["comex", "main"]);
+  assert.ok(!seen.includes("ada-priv") && !seen.includes("bob-priv"), "no private group is visible to an admin");
+});
+test("listableGroups: a member sees own restricted + own private; null/mono-tenant sees public only", () => {
+  const ada = { name: "ada", role: "member" as const };
+  const adaSeen = listableGroups(withPrivate, viewerFor(ada)).map((g) => g.id);
+  assert.deepEqual(adaSeen.sort(), ["ada-priv", "comex", "main"]);
+  assert.deepEqual(listableGroups(withPrivate, null).map((g) => g.id), ["main"]); // no account → public only
+  // Mono-tenant: only public Main → everyone keeps it, byte-for-byte unchanged.
+  const mono: Group[] = [{ id: "main", name: "main", nature: "public", members: [], createdAt: 0 }];
+  assert.deepEqual(listableGroups(mono, viewerFor(bob)).map((g) => g.id), ["main"]);
+  assert.deepEqual(listableGroups(mono, null).map((g) => g.id), ["main"]);
+});
+
+// ── MUST-FIX 2 / ADJACENT: /diff, /recover, /sessions session-level gate ────────
+test("canSeeSession: a session in a group the caller can't see is refused; commons/legacy visible", () => {
+  const chans: Channel[] = [
+    { sessionId: "S-comex", cwd: "", group: "comex" },
+    { sessionId: "S-commons", cwd: "", group: null },
+    { sessionId: "S-nogroup", cwd: "" }, // no group field at all → commons
+  ];
+  // bob is not in COMEX → its session is refused; the commons ones stay visible.
+  assert.equal(canSeeSession("S-comex", chans, withPrivate, viewerFor(bob)), false);
+  assert.equal(canSeeSession("S-comex", chans, withPrivate, viewerFor({ name: "ada", role: "member" })), true);
+  assert.equal(canSeeSession("S-commons", chans, withPrivate, viewerFor(bob)), true);
+  assert.equal(canSeeSession("S-nogroup", chans, withPrivate, viewerFor(bob)), true);
+  // A session with no channel row at all (legacy) → commons, visible to everyone.
+  assert.equal(canSeeSession("S-orphan", chans, withPrivate, viewerFor(bob)), true);
+  assert.equal(canSeeSession(null, chans, withPrivate, viewerFor(bob)), true);
+  // An admin is NOT exempt from a restricted group's sessions (runs as a member).
+  assert.equal(canSeeSession("S-comex", chans, withPrivate, viewerFor(admin)), false);
+  // A dangling group id fails closed.
+  const dangling: Channel[] = [{ sessionId: "S-x", cwd: "", group: "ghost" }];
+  assert.equal(canSeeSession("S-x", dangling, withPrivate, viewerFor(admin)), false);
+});
+
 // ── Wiring locks (source-scan) — the `server.ts` surfaces are un-importable ────
 const SERVER_SRC = fs.readFileSync(
   path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "server.ts"),
@@ -145,4 +207,51 @@ test("Task 11 wiring: secretWriteTarget reads a body/query `group` and threads i
     body.includes("DEPLOYMENT_MODE") && body.includes("secretOwnerGroup({ ...caller, groups })"),
     "mono-tenant must ignore the request and keep today's identity-derived owner",
   );
+});
+
+// ── Final-fix wave wiring (source-scan): the four read leaks are gated ──────────
+
+test("MUST-FIX1 wiring: GET /groups is filtered by the caller via listableGroups", () => {
+  // The leak was `app.get("/groups", (_req, res) => res.json(loadGroups()))` —
+  // every group's members/owner/osUser to any authenticated caller. It must now
+  // read the caller (`req`, not `_req`) and filter with the admin-aware
+  // listableGroups, so a non-member never sees a restricted roster or a foreign
+  // private group's existence.
+  const route = SERVER_SRC.indexOf('app.get("/groups"');
+  assert.ok(route > 0, "the GET /groups route must exist");
+  const body = SERVER_SRC.slice(route, route + 900);
+  assert.ok(!/app\.get\("\/groups",\s*\(_req/.test(body), "GET /groups must not ignore the caller (_req)");
+  assert.ok(body.includes("listableGroups("), "GET /groups must filter via listableGroups");
+  assert.ok(
+    body.includes("viewerFor(currentAccount(req))"),
+    "GET /groups must derive the viewer server-side from currentAccount",
+  );
+});
+
+test("MUST-FIX2 wiring: GET /diff carries the session group gate (canSeeSession) AND the peer check", () => {
+  const route = SERVER_SRC.indexOf('app.get("/diff"');
+  assert.ok(route > 0, "the GET /diff route must exist");
+  const body = SERVER_SRC.slice(route, route + 1600);
+  assert.ok(body.includes("canSeeSession("), "/diff must gate with canSeeSession");
+  assert.ok(
+    body.includes("viewerFor(currentAccount(req))"),
+    "/diff must derive the viewer server-side from currentAccount",
+  );
+  assert.ok(body.includes("DEPLOYMENT_MODE"), "/diff gate must short-circuit in mono-tenant");
+  // The existing remote restricted-peer behaviour must stay intact.
+  assert.ok(body.includes("peerScopeFor(req)") && body.includes("ownedByPeer("), "/diff must keep the peer gate");
+});
+
+test("ADJACENT wiring: GET /recover and GET /sessions filter past sessions by group", () => {
+  for (const name of ["/recover", "/sessions"]) {
+    const route = SERVER_SRC.indexOf(`app.get("${name}"`);
+    assert.ok(route > 0, `the GET ${name} route must exist`);
+    const body = SERVER_SRC.slice(route, route + 900);
+    assert.ok(body.includes("canSeeSession("), `${name} must filter sessions via canSeeSession`);
+    assert.ok(
+      body.includes("viewerFor(currentAccount(req))"),
+      `${name} must derive the viewer server-side from currentAccount`,
+    );
+    assert.ok(body.includes("DEPLOYMENT_MODE"), `${name} must short-circuit in mono-tenant`);
+  }
 });

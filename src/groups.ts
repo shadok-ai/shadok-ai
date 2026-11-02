@@ -53,6 +53,62 @@ export function visibleGroupIds(groups: readonly Group[], viewer: Viewer | null)
 }
 
 /**
+ * The groups a viewer may LIST (`GET /groups`). A group row leaks its
+ * `members`/`owner`/`osUser`, so the list must be filtered by the caller or a
+ * non-member learns a restricted group's roster and a private group's very
+ * existence (which "a private group is invisible even to an admin" forbids).
+ *
+ * A row is kept iff the viewer may SEE it (`canSeeGroup`) OR ADMINISTER it
+ * (`canAdministerGroup`). The admin nuance is REQUIRED, not cosmetic: an admin
+ * administers restricted groups (their membership/secrets) WITHOUT being a
+ * member, so must still see their rows — a plain `canSeeGroup`/`visibleGroupIds`
+ * alone would wrongly hide a restricted group from the very admin who manages
+ * it. And `canAdministerGroup` returns false for a PRIVATE group the viewer does
+ * not own, so a foreign private group stays hidden even from an admin.
+ *
+ * Row-level only (which groups), never field-level: a group the viewer can SEE
+ * but is not a member/admin of is public, whose `members` are already empty; a
+ * restricted/private group only survives the filter for a member/admin, who may
+ * read its members. So there is nothing left to trim.
+ *
+ * A null viewer (no account) sees public groups only. Mono-tenant (only a public
+ * Main exists) → everyone keeps Main, unchanged.
+ */
+export function listableGroups(groups: readonly Group[], viewer: Viewer | null): Group[] {
+  return groups.filter((g) => canSeeGroup(g, viewer) || canAdministerGroup(g, viewer));
+}
+
+/**
+ * May `viewer` see the SESSION identified by `sessionId`? The HTTP-route mirror
+ * of the WS `mayDriveSession` and `GET /live`'s `visible()` — the same group
+ * boundary, reused by the routes that return a single session's content or
+ * metadata (`/diff`, `/recover`, `/sessions`), so agent-by-session-key and
+ * browser-by-account resolve identically. Keyed on the channel registry, which
+ * is the authority on where a session lives (invariant 1); the request only ever
+ * names the id/path asked about, never its own group.
+ *
+ *  - no `sessionId`, or a session with no channel row, or a channel with no group
+ *    → commons / legacy, visible to everyone (today's behaviour);
+ *  - a channel whose group resolves → visible iff `canSeeGroup` (an admin is NOT
+ *    exempt — a restricted group's agents run as a member, not the admin);
+ *  - a channel whose group id does NOT resolve → HIDDEN (fail-closed), the twin
+ *    of `visibleChannels` and `canResumeAs`.
+ */
+export function canSeeSession(
+  sessionId: string | null | undefined,
+  channels: readonly Channel[],
+  groups: readonly Group[],
+  viewer: Viewer | null,
+): boolean {
+  if (!sessionId) return true; // no id to resolve → legacy / commons
+  const gid = channels.find((c) => c.sessionId === sessionId)?.group ?? null;
+  if (!gid) return true; // commons / group-less
+  const g = groups.find((x) => x.id === gid);
+  if (!g) return false; // dangling group → fail closed
+  return canSeeGroup(g, viewer);
+}
+
+/**
  * Who may change a group's membership. Refusals are explicit strings, never a
  * silent no-op. Only `restricted` groups have a mutable roster.
  */

@@ -116,6 +116,8 @@ import {
   canResumeAs,
   canRestartInto,
   canSeeGroup,
+  canSeeSession,
+  listableGroups,
   visibleChannels,
   memberGroupIds,
   ledgerGroupsFor,
@@ -1768,7 +1770,17 @@ app.get("/vendor/addon-fit.js", (_req, res) =>
 // Resumable sessions of a directory (for the "resume by id" picker).
 app.get("/sessions", (req, res) => {
   const cwd = String(req.query.cwd ?? "").trim() || process.cwd();
-  res.json(listSessions(cwd));
+  const list = listSessions(cwd);
+  // `cwd` is a caller-supplied path, so a caller who knows another group's HOME
+  // could enumerate that group's resumable sessions (ids + first-prompt preview).
+  // Filter each to the caller's visible groups — the same session-level boundary
+  // as /diff and /live. A session with no channel row (legacy/commons) stays
+  // visible to all. Mono-tenant returns the list unchanged.
+  if (DEPLOYMENT_MODE !== "multi-tenant") return res.json(list);
+  const chans = loadChannels();
+  const groups = loadGroups();
+  const viewer = viewerFor(currentAccount(req));
+  res.json(list.filter((s) => canSeeSession(s.id, chans, groups, viewer)));
 });
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
@@ -1829,17 +1841,39 @@ app.get("/diff", (req, res) => {
   // one (invariant 1), and a multi-day agent — the very case the live base
   // exists for — has certainly been resumed by then, so fall back to the
   // channel's own `repo`, as endChannel already does.
-  const ch = loadChannels().find((c) => c.sessionId === s.id);
+  const chans = loadChannels();
+  const ch = chans.find((c) => c.sessionId === s.id);
   // A RESTRICTED peer sees the diff of ITS OWN agents only. A member peer (and
   // any account) passed the gate as a member and sees any.
   if (peerScopeFor(req) === "restricted" && !ownedByPeer(ch, peerName(req)!))
+    return res.status(403).json({ error: "not your agent" });
+  // /diff returns a session's git status + working-tree FILE CONTENTS, so it is a
+  // cross-group confidentiality decision just like the drive/`/live` paths. Gate
+  // it on the SAME group boundary (canSeeSession mirrors `mayDriveSession` /
+  // `/live visible()`): agent-by-session-key and browser-by-account both resolve
+  // through currentAccount. A group-less/commons session stays visible to all; an
+  // unresolvable group fails closed. Mono-tenant short-circuits to visible.
+  if (
+    DEPLOYMENT_MODE === "multi-tenant" &&
+    !canSeeSession(s.id, chans, loadGroups(), viewerFor(currentAccount(req)))
+  )
     return res.status(403).json({ error: "not your agent" });
   res.json(gitDiff(s.cwd, s.worktree?.repo ?? ch?.repo ?? null));
 });
 // Past worktree sessions of a repo (for reopening unfinished work).
 app.get("/recover", (req, res) => {
   const repo = String(req.query.repo ?? "").trim() || process.cwd();
-  res.json(isGitRepo(repo) ? listPastSessions(repo) : []);
+  const list = isGitRepo(repo) ? listPastSessions(repo) : [];
+  // `repo` is a caller-supplied path: a caller who knows another group's HOME
+  // could enumerate that group's past worktree sessions (branch/commit metadata +
+  // first-prompt preview). Filter each past session to the caller's visible
+  // groups — the same boundary as /diff and /sessions. A session with no channel
+  // row (legacy/commons) stays visible to all. Mono-tenant returns it unchanged.
+  if (DEPLOYMENT_MODE !== "multi-tenant") return res.json(list);
+  const chans = loadChannels();
+  const groups = loadGroups();
+  const viewer = viewerFor(currentAccount(req));
+  res.json(list.filter((s) => canSeeSession(s.sessionId, chans, groups, viewer)));
 });
 // Server-side defaults (the launch directory pre-fills the working dir field).
 app.get("/defaults", (_req, res) => {
@@ -2234,7 +2268,17 @@ app.delete("/channel", async (req, res) => {
   // client that believes it succeeded removes a tab the registry still has.
   res.status(ok ? 200 : 409).json(ok ? { ok } : { ok, error: "the home channel can't be closed" });
 });
-app.get("/groups", (_req, res) => res.json(loadGroups()));
+app.get("/groups", (req, res) => {
+  // A group row carries `members`/`owner`/`osUser`, so an unfiltered list leaks a
+  // restricted group's roster to non-members and a private group's very existence
+  // ("a private group is invisible even to an admin"). Filter by the caller via
+  // listableGroups: keep a row the viewer may SEE or ADMINISTER — the admin nuance
+  // keeps restricted rows visible to the managing admin while still hiding a
+  // private group they don't own. Row-level only; no field trimming is needed
+  // (a visible-but-not-member group is public, whose members are already empty).
+  // Mono-tenant (only a public Main) keeps Main for everyone, unchanged.
+  res.json(listableGroups(loadGroups(), viewerFor(currentAccount(req))));
+});
 app.put("/groups", (req, res) => {
   // BROWSER-ONLY (T2/T6 carry): an agent authenticates as the bootstrap admin,
   // so without this it could edit membership/nature by curl. The flow also
