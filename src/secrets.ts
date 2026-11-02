@@ -52,18 +52,29 @@ const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is
  * Main's → absent. Nothing is pinned to a group globally: the same name can
  * live in several groups and each resolves on its own.
  */
+/**
+ * Own-property lookup. A bare `obj[key]` answers an inherited prototype member
+ * for a name like `constructor` or `toString`: a function, truthy, with no
+ * `.sharedWith`, so the scan below crashed and the agent spawned with NO
+ * secrets. Anything not an own entry is ABSENT.
+ */
+const ownOf = <T>(obj: Record<string, T> | undefined, key: string): T | undefined =>
+  obj && Object.hasOwn(obj, key) ? obj[key] : undefined;
+
 export function resolveSecretValues(vault: Vault, groupId: string, names: readonly string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of names) {
-    const own = vault[groupId]?.[name];
-    if (own) { out[name] = own.value; continue; }
+    const mine = ownOf(ownOf(vault, groupId), name);
+    if (mine) { out[name] = mine.value; continue; }
+    // When two groups share the same name with the caller, the winner is
+    // insertion-order-deterministic: the first such group in `Object.entries` order.
     let shared: SecretEntry | undefined;
     for (const [gid, gv] of Object.entries(vault)) {
-      const e = gv[name];
+      const e = ownOf(gv, name);
       if (gid !== groupId && e && e.sharedWith.includes(groupId)) { shared = e; break; }
     }
     if (shared) { out[name] = shared.value; continue; }
-    const main = vault[MAIN_GROUP_ID]?.[name];
+    const main = ownOf(ownOf(vault, MAIN_GROUP_ID), name);
     if (main) out[name] = main.value;
   }
   return out;
@@ -173,7 +184,7 @@ export function deleteSecret(name: string, groupId: string = MAIN_GROUP_ID): voi
 
 /**
  * Provenance, kept in a SIDECAR file rather than in the vault: the vault is a
- * flat `{ NAME: value }` map read by several paths (and migrated from an older
+ * nested per-group `Vault` read by several paths (and migrated from an older
  * shape), and the one thing worse than losing provenance is corrupting the
  * credentials while adding it.
  *

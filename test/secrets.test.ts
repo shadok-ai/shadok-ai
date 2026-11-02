@@ -52,3 +52,23 @@ test("normalizeVault: mono-tenant legacy values resolve unchanged through Main",
   const v = normalizeVault({ "/repo/a": { A: "1" }, B: "2" });
   assert.deepEqual(resolveSecretValues(v, "main", ["A", "B"]), { A: "1", B: "2" });
 });
+
+test("resolve: a prototype-key name the group does not own resolves ABSENT, never throws", () => {
+  // `constructor` / `toString` are inherited from Object.prototype: a bare
+  // `gv[name]` returns a function, which is truthy and has no `.sharedWith`.
+  const v: Vault = { g: { A: e("a", "g") }, b: { X: e("x", "b") } };
+  assert.doesNotThrow(() => resolveSecretValues(v, "g", ["constructor", "toString"]));
+  assert.deepEqual(resolveSecretValues(v, "g", ["constructor", "toString"]), {});
+  // A caller whose own group is absent still gets a clean answer: the
+  // shared-in scan must not crash on the inherited `constructor` of group g.
+  assert.doesNotThrow(() => resolveSecretValues(v, "nobody", ["constructor", "toString", "X"]));
+  assert.deepEqual(resolveSecretValues(v, "nobody", ["constructor", "toString", "X"]), {});
+});
+
+test("resolve: prototype-key names do not disturb normal names in the same group", () => {
+  const v: Vault = { g: { A: e("a", "g") }, b: { S: e("s", "b", ["g"]) }, main: { M: e("m", "main") } };
+  assert.deepEqual(
+    resolveSecretValues(v, "g", ["constructor", "A", "toString", "S", "M", "hasOwnProperty"]),
+    { A: "a", S: "s", M: "m" },
+  );
+});
