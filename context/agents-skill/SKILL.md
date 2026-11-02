@@ -113,6 +113,26 @@ time, and the information comes to you.
 `--parent none` spawns an agent deliberately unattached; `--parent <id>`
 attaches it elsewhere.
 
+## Being prompted BY another agent
+
+The other direction: a prompt from an agent arrives under a context header
+naming it and ending with its short session id — its reply address:
+
+```
+⟦agent · 2026-11-02 15:40 · Shadok-Boss · b1c347bc⟧
+```
+
+**To answer the turn you need nothing.** `prompt` blocks until your turn ends
+and hands your answer back to the caller — the conversation is already a round
+trip. The address is for reaching them LATER, on your own initiative:
+`pilotctl prompt b1c347bc "…"`.
+
+Two things not to assume. A name is **not** an address: nothing makes tab names
+unique, which is why the id is in the header at all. And the automatic reports
+above go to whoever **spawned** you, which is not necessarily whoever just
+prompted you — if a sibling you did not come from asks you something, its
+address is the only way back to it.
+
 ## Driving agents on ANOTHER instance (`--peer`)
 
 You can spawn and drive agents on a **different** shadok instance — another one
