@@ -1,38 +1,107 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { MAIN_GROUP_ID } from "./groups.js";
 
 /**
- * Central secret vault: named secrets stored ONCE, referenced by profiles.
- * Stored OUTSIDE any repo at ~/.shadok-ai/secrets.json (600) and injected as
- * environment variables into an agent's `claude` process at spawn — never
- * written into the working directory. A flat `{ NAME: value }` map; a profile
- * lists the NAMES it wants injected (see profiles.ts).
+ * Central secret vault: named secrets stored OUTSIDE any repo at
+ * ~/.shadok-ai/secrets.json (600) and injected as environment variables into an
+ * agent's `claude` process at spawn — never written into the working directory.
+ *
+ * Per-GROUP: `{ groupId: { NAME: SecretEntry } }`. One server-owned file with
+ * policy scoping (not one file per group). Names are unique PER GROUP, never
+ * global. A group may SHARE a secret by reference (`sharedWith`), and `Main`
+ * is the instance-wide fallback. A profile lists the NAMES it wants injected.
  */
-export type Vault = Record<string, string>;
+export interface SecretEntry {
+  value: string;
+  ownerGroup: string;
+  sharedWith: string[];
+  profiles: string[];
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+export interface GroupVault {
+  [name: string]: SecretEntry;
+}
+export type Vault = { [groupId: string]: GroupVault };
 
 const FILE = path.join(os.homedir(), ".shadok-ai", "secrets.json");
 
 // ── Pure core (unit-tested) ──────────────────────────────────────────────
 
+/** Pure: lift today's flat NAME→value map into the Main group's slice. */
+export function migrateFlatVault(
+  flat: Record<string, string>,
+  mainId: string,
+  createdBy: string,
+  now: number,
+): Vault {
+  const slice: GroupVault = {};
+  for (const [name, value] of Object.entries(flat))
+    slice[name] = { value, ownerGroup: mainId, sharedWith: [], profiles: [], createdBy, createdAt: now, updatedAt: now };
+  return { [mainId]: slice };
+}
+
+const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+
 /**
- * Normalize a parsed secrets.json into a flat vault. Migrates the old per-repo
- * shape (`{ "<repo>": { NAME: value } }`) by flattening every repo's entries
- * into the single vault (last value wins on a name collision).
+ * Pure: resolve the env for `names` as seen from `groupId`. Per name, first
+ * match wins: the group's own secret → a secret another group shared with it →
+ * Main's → absent. Nothing is pinned to a group globally: the same name can
+ * live in several groups and each resolves on its own.
  */
-export function normalizeVault(raw: unknown): Vault {
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-  const obj = raw as Record<string, unknown>;
-  const nested = Object.values(obj).some((v) => v && typeof v === "object");
-  const out: Vault = {};
-  if (nested) {
-    for (const perRepo of Object.values(obj)) {
-      if (perRepo && typeof perRepo === "object")
-        for (const [k, v] of Object.entries(perRepo as Record<string, unknown>))
-          if (typeof v === "string") out[k] = v;
+export function resolveSecretValues(vault: Vault, groupId: string, names: readonly string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of names) {
+    const own = vault[groupId]?.[name];
+    if (own) { out[name] = own.value; continue; }
+    let shared: SecretEntry | undefined;
+    for (const [gid, gv] of Object.entries(vault)) {
+      const e = gv[name];
+      if (gid !== groupId && e && e.sharedWith.includes(groupId)) { shared = e; break; }
     }
-  } else {
-    for (const [k, v] of Object.entries(obj)) if (typeof v === "string") out[k] = v;
+    if (shared) { out[name] = shared.value; continue; }
+    const main = vault[MAIN_GROUP_ID]?.[name];
+    if (main) out[name] = main.value;
+  }
+  return out;
+}
+
+/**
+ * Normalize a parsed secrets.json into the per-group vault. Accepts the current
+ * nested shape (missing entry fields get safe defaults), today's flat
+ * `{NAME: value}` map, and the oldest per-repo shape (`{repo: {NAME: value}}`);
+ * the last two are migrated into Main (per-repo: last value wins on a collision).
+ */
+export function normalizeVault(raw: unknown, now: number = Date.now()): Vault {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Vault = {};
+  const legacy: Record<string, string> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === "string") { legacy[k] = v; continue; }
+    if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+    const slice: GroupVault = {};
+    for (const [name, e] of Object.entries(v as Record<string, unknown>)) {
+      if (typeof e === "string") { legacy[name] = e; continue; } // per-repo shape
+      if (!e || typeof e !== "object" || typeof (e as any).value !== "string") continue;
+      const o = e as Record<string, unknown>;
+      slice[name] = {
+        value: o.value as string,
+        ownerGroup: typeof o.ownerGroup === "string" && o.ownerGroup ? o.ownerGroup : k,
+        sharedWith: strList(o.sharedWith),
+        profiles: strList(o.profiles),
+        createdBy: typeof o.createdBy === "string" ? o.createdBy : "",
+        createdAt: typeof o.createdAt === "number" ? o.createdAt : now,
+        updatedAt: typeof o.updatedAt === "number" ? o.updatedAt : now,
+      };
+    }
+    if (Object.keys(slice).length) out[k] = slice;
+  }
+  if (Object.keys(legacy).length) {
+    const m = migrateFlatVault(legacy, MAIN_GROUP_ID, "", now)[MAIN_GROUP_ID];
+    out[MAIN_GROUP_ID] = { ...m, ...(out[MAIN_GROUP_ID] ?? {}) };
   }
   return out;
 }
@@ -75,21 +144,27 @@ export function saveVault(v: Vault): void {
   fs.chmodSync(FILE, 0o600); // enforce 600 even if the file pre-existed
 }
 
-/** All secret names (never the values), sorted. */
-export function secretNames(): string[] {
-  return Object.keys(loadVault()).sort();
+/** Secret names (never the values) in one group's own slice, sorted. */
+export function secretNames(groupId: string = MAIN_GROUP_ID): string[] {
+  return Object.keys(loadVault()[groupId] ?? {}).sort();
 }
 
-export function setSecret(name: string, value: string): void {
+/** Create or update a secret in `groupId` (default Main); an update keeps its sharing and provenance. */
+export function setSecret(name: string, value: string, groupId: string = MAIN_GROUP_ID, createdBy = ""): void {
   const v = loadVault();
-  v[name] = value;
+  const now = Date.now();
+  const prev = v[groupId]?.[name];
+  (v[groupId] ??= {})[name] = prev
+    ? { ...prev, value, updatedAt: now }
+    : { value, ownerGroup: groupId, sharedWith: [], profiles: [], createdBy, createdAt: now, updatedAt: now };
   saveVault(v);
 }
 
-export function deleteSecret(name: string): void {
+export function deleteSecret(name: string, groupId: string = MAIN_GROUP_ID): void {
   const v = loadVault();
-  if (name in v) {
-    delete v[name];
+  if (v[groupId] && name in v[groupId]) {
+    delete v[groupId][name];
+    if (!Object.keys(v[groupId]).length) delete v[groupId];
     saveVault(v);
   }
 }
@@ -154,11 +229,12 @@ export function recordOrigin(name: string, profile: string): void {
   fs.writeFileSync(ORIGIN_FILE, JSON.stringify(all, null, 2), { mode: 0o600 });
 }
 
-/** The `{ NAME: value }` env for a set of referenced names (unknown ones skipped). */
-export function secretsFor(names: string[] | undefined): Record<string, string> {
+/**
+ * The `{ NAME: value }` env for a set of referenced names (unknown ones skipped),
+ * resolved from `groupId` (own → shared-in → Main). `groupId` defaults to Main,
+ * which is every agent in a mono-tenant instance.
+ */
+export function secretsFor(names: string[] | undefined, groupId: string = MAIN_GROUP_ID): Record<string, string> {
   if (!names?.length) return {};
-  const v = loadVault();
-  const out: Record<string, string> = {};
-  for (const n of names) if (n in v) out[n] = v[n];
-  return out;
+  return resolveSecretValues(loadVault(), groupId, names);
 }

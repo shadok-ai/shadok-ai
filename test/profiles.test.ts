@@ -155,11 +155,14 @@ test("profileArgs: profile.secrets are references (names), not CLI args", () => 
 
 test("normalizeVault: flattens the old per-repo shape into one map", () => {
   const old = { "/repo/a": { A: "1", B: "2" }, "/repo/b": { C: "3" } };
-  assert.deepEqual(normalizeVault(old), { A: "1", B: "2", C: "3" });
+  const v = normalizeVault(old);
+  assert.deepEqual(Object.keys(v), ["main"]);
+  assert.deepEqual(Object.fromEntries(Object.entries(v.main).map(([k, e]) => [k, e.value])), { A: "1", B: "2", C: "3" });
 });
 
 test("normalizeVault: a flat vault is kept as-is; junk → {}", () => {
-  assert.deepEqual(normalizeVault({ A: "1", B: "2" }), { A: "1", B: "2" });
+  const v = normalizeVault({ A: "1", B: "2" });
+  assert.deepEqual(Object.fromEntries(Object.entries(v.main).map(([k, e]) => [k, e.value])), { A: "1", B: "2" });
   assert.deepEqual(normalizeVault(null), {});
   assert.deepEqual(normalizeVault([1, 2]), {});
 });
