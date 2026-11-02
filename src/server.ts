@@ -100,7 +100,19 @@ import {
 } from "./telegram.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
-import { viewerFor, canResumeAs, canRestartInto, MAIN_GROUP_ID, type Viewer, type Group, type Nature } from "./groups.js";
+import {
+  viewerFor,
+  canResumeAs,
+  canRestartInto,
+  canSeeGroup,
+  visibleChannels,
+  memberGroupIds,
+  groupsPutFlow,
+  MAIN_GROUP_ID,
+  type Viewer,
+  type Group,
+  type Nature,
+} from "./groups.js";
 import {
   resolveSpawnIsolation,
   provisionGroupUser,
@@ -198,7 +210,13 @@ import {
   secretNames,
   setSecret,
   deleteSecret,
+  setSecretSharing,
+  setSecretProfiles,
   secretWriteVerdict,
+  secretWriteDecision,
+  secretOwnerGroup,
+  visibleSecrets,
+  loadVault,
   recordOrigin,
   originProfile,
 } from "./secrets.js";
@@ -566,7 +584,9 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
   if (!c.check?.trim()) return Promise.resolve({ kind: "quiet" }); // no guard → the agent always runs
   return new Promise((resolve) => {
     const profile = target.profile ? getProfile(target.profile) : undefined;
-    const secretEnv = secretsFor(profile?.secrets);
+    // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
+    // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
+    const secretEnv = secretsFor(profile?.secrets, target.group ?? MAIN_GROUP_ID);
     const env = { ...process.env, ...secretEnv };
     recordSecretAudit({
       action: "cron-check",
@@ -1262,6 +1282,54 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
   return { id, profile };
 }
 
+/**
+ * The identity a secret WRITE is scoped by, resolved SERVER-SIDE (never the
+ * body). An AGENT (carrying its per-session key) owns its channel's group —
+ * `agentGroupId` present (possibly null = its agent has no group → Main). A
+ * browser leaves `agentGroupId` undefined and is resolved by `spawnGroupFor`
+ * from its account. The `viewer` is the authorization principal either way (an
+ * agent authenticates as the bootstrap admin).
+ */
+function secretCaller(req: Caller & { body?: unknown }): {
+  agentGroupId?: string | null;
+  viewer: Viewer | null;
+} {
+  const viewer = viewerFor(currentAccount(req));
+  const agentId = callerOf(req).id;
+  if (agentId) {
+    const group = loadChannels().find((c) => c.sessionId === agentId)?.group ?? null;
+    return { agentGroupId: group, viewer };
+  }
+  return { viewer };
+}
+
+/** The `createdBy` STAMPED on a secret — the agent's session id, or the signed-in
+ *  account — never a value the client sent (which it could forge). */
+function secretCreatedBy(req: Caller & { body?: unknown }): string {
+  const agentId = callerOf(req).id;
+  if (agentId) return `agent:${agentId}`;
+  return currentAccount(req)?.name ?? "";
+}
+
+/**
+ * The OWNER group a secret write lands in + the authorization verdict. The
+ * owner-group membership gate is applied ONLY in multi-tenant: mono-tenant
+ * cannot pose a real isolation wall (capability design, T3), so it keeps
+ * today's behaviour — any authenticated caller writes the commons (Main). The
+ * owner group is still derived from identity in BOTH modes (null/Main in
+ * mono-tenant), so an agent always writes its own group and `createdBy` is
+ * always stamped server-side.
+ */
+function secretWriteTarget(req: Caller & { body?: unknown }): { ownerGroup: string } | { refused: string } {
+  const caller = secretCaller(req);
+  const groups = loadGroups();
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    const decision = secretWriteDecision({ ...caller, groups });
+    return decision.ok ? { ownerGroup: decision.ownerGroup } : { refused: decision.error };
+  }
+  return { ownerGroup: secretOwnerGroup({ ...caller, groups }) };
+}
+
 /** Who an HTTP call to the vault/profile routes is, for the secret audit log. */
 function auditActorOf(req: { headers: Record<string, unknown>; body?: unknown }): {
   actor: string;
@@ -1932,10 +2000,15 @@ app.get("/stars", async (_req, res) => res.json({ count: await starCount() }));
  * (see invariant 6), so this field cannot pollute the registry. And it is what
  * avoids a second poll — `/channels` is already re-read every 4 s.
  */
-app.get("/channels", (_req, res) => {
+app.get("/channels", (req, res) => {
   const active = loadCrons().filter((c) => c.enabled);
+  // ACL: a caller sees only its own groups' channels + public/commons. The
+  // registry is the authority — the client is never trusted to filter. A null
+  // viewer (deleted account / no session) resolves to public-only, never a 500.
+  // Mono-tenant leaves every channel group-less, so visibleChannels is a no-op.
+  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req)));
   res.json(
-    loadChannels().map((ch) => {
+    visible.map((ch) => {
       const mine = active.filter((c) => c.sessionId === ch.sessionId);
       return mine.length ? { ...ch, crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : ch;
     }),
@@ -2082,11 +2155,20 @@ app.delete("/channel", async (req, res) => {
 });
 app.get("/groups", (_req, res) => res.json(loadGroups()));
 app.put("/groups", (req, res) => {
-  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
-    return res.status(409).json({ error: "instance-mismatch" });
-  }
-  saveGroups(Array.isArray(req.body) ? req.body : []);
-  res.json({ ok: true });
+  // BROWSER-ONLY (T2/T6 carry): an agent authenticates as the bootstrap admin,
+  // so without this it could edit membership/nature by curl. The flow also
+  // keeps the instance guard and refuses a non-admin membership/nature change —
+  // and MERGES cosmetic fields onto the stored rows, so the cosmetic client PUT
+  // can never silently wipe a restricted group down to an empty public one.
+  const r = groupsPutFlow({
+    fromBrowser: requestFromBrowser(req),
+    instanceOk: channelWriteAllowed(instanceKey(), req.get("x-shadok-instance")),
+    isAdmin: currentAccount(req)?.role === "admin",
+    stored: loadGroups(),
+    incoming: Array.isArray(req.body) ? req.body : [],
+  });
+  if (r.groups) saveGroups(r.groups);
+  res.status(r.status).json(r.body);
 });
 
 // ── Privileged group lifecycle (multi-tenant): provision on create, tear down
@@ -2380,9 +2462,19 @@ function body_id(req: { body?: any }): string {
   return typeof req.body?.id === "string" ? req.body.id : "";
 }
 
-// Central secret vault (global, stored 600 outside any repo). Values are NEVER
-// returned — only names. A profile references names to inject them.
-app.get("/secrets", (_req, res) => res.json({ names: secretNames() }));
+// Central secret vault (per-group, stored 600 outside any repo). Values are
+// NEVER returned — only names. A profile references names to inject them.
+//
+// ACL (T10): GET returns only the names the caller's groups resolve (own +
+// shared-in + Main), each tagged by source; a WRITE lands in the caller's OWN
+// group (identity-derived, never the body) and requires owner-group membership.
+// Mono-tenant resolves everyone to Main, so this is byte-for-byte today.
+app.get("/secrets", (req, res) => {
+  const { viewer } = secretCaller(req);
+  const list = visibleSecrets(loadVault(), memberGroupIds(loadGroups(), viewer));
+  // `names` stays a string[] for the existing client; `secrets` carries the tags.
+  res.json({ names: list.map((s) => s.name), secrets: list });
+});
 app.put("/secrets", (req, res) => {
   const { name, value, overwrite } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
@@ -2391,9 +2483,17 @@ app.put("/secrets", (req, res) => {
   // HTTP is the ONLY way an agent can reach the vault — it is a separate
   // process, and Telegram's /secret calls setSecret() directly. So guarding
   // here guards exactly the machine path, and nothing a human does by hand.
-  const verdict = secretWriteVerdict(secretNames().includes(key), overwrite === true);
+  //
+  // Owner-group gate (T9/T10 carry): resolve the target group from the caller's
+  // IDENTITY (never the body) and refuse a write the caller may not make.
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const ownerGroup = target.ownerGroup;
+  const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
-  setSecret(key, value);
+  // createdBy is STAMPED server-side (the agent's session or the account) — a
+  // client-claimed owner/createdBy is ignored by construction.
+  setSecret(key, value, ownerGroup, secretCreatedBy(req));
   recordSecretAudit({ action: verdict, secrets: [key], ...auditActorOf(req), instance: process.cwd() });
   // Remember WHO created it, so the agent can later attach it to its own
   // profile (`PUT /profiles/secret`). Only on a creation: recording an
@@ -2403,7 +2503,30 @@ app.put("/secrets", (req, res) => {
     const { profile } = callerOf(req);
     if (profile) recordOrigin(key, profile);
   }
-  res.json({ names: secretNames(), result: verdict });
+  res.json({ names: secretNames(ownerGroup), result: verdict });
+});
+// Edit a secret's SHARING (the groups it is lent to) — the name↔group link
+// lives on the secrets side. Owner-group gated, like every vault write.
+app.put("/secrets/share", (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  const sharedWith = Array.isArray(req.body?.sharedWith) ? req.body.sharedWith.map(String) : [];
+  if (!name) return res.status(400).json({ error: "name required" });
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  if (!setSecretSharing(name, target.ownerGroup, sharedWith))
+    return res.status(404).json({ error: "no such secret in your group", name });
+  res.json({ ok: true });
+});
+// Edit a secret's PROFILE binding (the profiles it is injected into). Same gate.
+app.put("/secrets/profiles", (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  const profiles = Array.isArray(req.body?.profiles) ? req.body.profiles.map(String) : [];
+  if (!name) return res.status(400).json({ error: "name required" });
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  if (!setSecretProfiles(name, target.ownerGroup, profiles))
+    return res.status(404).json({ error: "no such secret in your group", name });
+  res.json({ ok: true });
 });
 // Who wrote, attached and RECEIVED which secret (names only). Admin only: it
 // maps every credential to the agents and people that held it. See
@@ -2427,11 +2550,15 @@ app.get("/secrets/audit", (req, res) => {
 });
 app.delete("/secrets", (req, res) => {
   const name = String(req.query.name ?? req.body?.name ?? "").trim();
-  if (name && secretNames().includes(name)) {
-    deleteSecret(name);
+  // Owner-group gated, like PUT: you can only delete from your own group.
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const ownerGroup = target.ownerGroup;
+  if (name && secretNames(ownerGroup).includes(name)) {
+    deleteSecret(name, ownerGroup);
     recordSecretAudit({ action: "deleted", secrets: [name], ...auditActorOf(req), instance: process.cwd() });
   }
-  res.json({ names: secretNames() });
+  res.json({ names: secretNames(ownerGroup) });
 });
 
 // Finish an OAuth sign-in whose redirect points at an agent's localhost port,
@@ -3997,9 +4124,9 @@ function ledgerReflex(): string | null {
  */
 /** The backend an agent on this profile talks to — the same inputs
  *  `makePilot` hands the process, so the verdict cannot disagree with it. */
-function sessionBackend(profileName?: string | null): Backend {
+function sessionBackend(profileName?: string | null, groupId?: string | null): Backend {
   const profile = profileName ? getProfile(profileName) : undefined;
-  const secretEnv = secretsFor(profile?.secrets);
+  const secretEnv = secretsFor(profile?.secrets, groupId ?? MAIN_GROUP_ID);
   return backendFor({ ...backendEnv(instanceBackendSource(), secretEnv), ...secretEnv });
 }
 
@@ -4136,6 +4263,12 @@ function makePilot(
    * pilots' spawn path stays byte-for-byte what it was.
    */
   user?: string | null,
+  /**
+   * The isolation GROUP this agent belongs to, so its profile's secrets resolve
+   * by the agent's REAL group (own → shared-in → Main), not always Main. Null /
+   * undefined on every mono-tenant (and group-less) spawn → Main, i.e. today.
+   */
+  group?: string | null,
 ): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
@@ -4144,8 +4277,9 @@ function makePilot(
   // Env = the vault secrets the profile references (none without a profile).
   // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
   // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
-  // must never print" was noise that buried the real ones.
-  const secretEnv = secretsFor(profile?.secrets);
+  // must never print" was noise that buried the real ones. Resolved by the
+  // agent's own group (own → shared-in → Main); null/mono-tenant → Main.
+  const secretEnv = secretsFor(profile?.secrets, group ?? MAIN_GROUP_ID);
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
   // point off Anthropic, and maps the model aliases. See src/backend.ts.
@@ -4455,6 +4589,7 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
     s.model,
     s.effort,
     restartUser,
+    restartGroupId,
   );
   s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
@@ -4740,11 +4875,14 @@ async function createSession(
    *  mono-tenant, i.e. the server's own user). Resolved by the caller, which is
    *  where `DEPLOYMENT_MODE` and the channel's group are both known. */
   user: string | null = null,
+  /** The isolation group the agent belongs to (null = commons / mono-tenant),
+   *  so its profile's secrets resolve by the agent's REAL group, not always Main. */
+  group: string | null = null,
 ): Promise<Live> {
-  const pilot = makePilot(id, cwd, args, profile, model, effort, user);
+  const pilot = makePilot(id, cwd, args, profile, model, effort, user, group);
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id));
-  const backend = sessionBackend(profile);
+  const backend = sessionBackend(profile, group);
   // A custom backend's window is whatever its server was started with, which
   // no model name can tell us: SHADOK_CONTEXT_WINDOW says it, and without it
   // the usual assumption stands (and `effectiveWindow` still promotes on proof).
@@ -5447,6 +5585,22 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // apart from any other refusal, without matching on the message text.
   const fail = (message: string, code?: string) => send({ type: "error", message, ...(code ? { code } : {}) });
 
+  // ACL backstop on every per-turn DRIVE action (prompt, dialog answers, keys,
+  // restart, set-*, stop): may THIS caller see/drive the session's group? The
+  // spawn/resume path already gates with `canResumeAs`, but a socket attached to
+  // a foreign session must not act on it either. See/drive = own + public.
+  // Mono-tenant (and any group-less channel) resolves to no group → always true,
+  // so this changes nothing outside the privileged deployment. A dangling group
+  // id fails closed, the twin of `visibleChannels`.
+  const mayDriveSession = (id: string | undefined): boolean => {
+    if (!id || DEPLOYMENT_MODE !== "multi-tenant") return true;
+    const gid = loadChannels().find((c) => c.sessionId === id)?.group ?? null;
+    if (!gid) return true; // commons / group-less
+    const g = loadGroups().find((x) => x.id === gid);
+    if (!g) return false; // unresolvable → fail closed
+    return canSeeGroup(g, viewerFor(me));
+  };
+
   // Announce the running version on connect. The client remembers the first
   // one it sees and reloads if a later (re)connect reports a different one —
   // so a server updated underneath it refreshes the page automatically.
@@ -5757,11 +5911,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Task 7 verify-first gate: before dropping to the group's user, warn
           // LOUDLY if its HOME credential is no longer the shared symlink (the
           // rename-refresh signature that would silently break multi-user auth).
-          warnIfCredentialDiverged(resumed ? storedGroupId : isolation.groupPatch.group ?? null, isolation.user);
+          // The group this agent really belongs to: a resume keeps the channel's
+          // stored group; a new spawn gets the one the isolation policy derived
+          // from the caller's identity. Both null in mono-tenant → secrets = Main.
+          const agentGroupId = resumed ? storedGroupId : isolation.groupPatch.group ?? null;
+          warnIfCredentialDiverged(agentGroupId, isolation.user);
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
             isolation.user,
+            agentGroupId,
           );
           session.clients.add(ws);
           if (resumed) {
@@ -5861,6 +6020,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
 
         case "prompt": {
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (session.busy) return fail("a response is already in progress", "busy");
           const text = msg.text.trim();
           if (!text) return;
@@ -5985,6 +6145,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
 
         case "run": {
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (!fromBrowser) return fail("running a shell-mode command is reserved to the cockpit's browser");
           const refusal = runRefusal(msg.command);
           if (refusal) return fail(refusal);
@@ -6022,6 +6183,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // navigate") ignore digit keys, so navigate the ❯ cursor to the
           // target option with arrows, then Enter (works for all variants).
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           // You can only answer a dialog that's actually on screen. If it's not,
           // the keyboard is stale (the session moved past it) or a turn is
           // running — either way there's nothing to select here.
@@ -6036,6 +6198,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "toggle": {
           // Multi-select: toggle the checkbox then rebroadcast the state.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (!detectDialog(session.pilot.screen()))
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
           await toggleOption(session.pilot, msg.n);
@@ -6049,6 +6212,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "freetext": {
           // "Type something" option: digit → paste the text → Enter.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (!detectDialog(session.pilot.screen()))
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
           const t = msg.text.trim();
@@ -6068,6 +6232,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "confirm": {
           // Multi-select: commit the checkboxes with Tab, then submit.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const before = detectDialog(session.pilot.screen());
           if (!before)
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
@@ -6103,6 +6268,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "key": {
           // Manual keystroke from the terminal view (dialogs, menus…).
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const named = [
             "enter",
             "escape",
@@ -6181,12 +6347,14 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "settle": {
           // After a manual intervention: wait for the turn to finish.
           if (!session || session.busy) return;
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           await finishTurn(session);
           break;
         }
 
         case "restart": {
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           await restartSession(session, wsBy());
           break;
         }
@@ -6195,6 +6363,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // the fact. `profile` is SERVER_OWNED on the channel, so a browser PUT
           // can't touch it — this is the only legitimate path.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const name = msg.profile ?? null;
           // Refuse an unknown name rather than silently spawning bare: a typo
@@ -6213,6 +6382,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // The old process is cut short like Reload agent — catching an agent on
           // the wrong model is exactly the point.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const model = msg.model?.trim() || null;
           s.model = model ?? undefined;
@@ -6227,6 +6397,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // respawns rather than recording a wish, because an effort shown as
           // running while it is not is the failure this feature would be.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const wanted = msg.effort?.trim() || null;
           // Refuse out loud. The CLI would merely warn and fall back to the
@@ -6245,6 +6416,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // SERVER_OWNED on the channel, so a browser PUT can't touch it —
           // this is the only legitimate path, exactly like `set-profile`.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const wanted = msg.parent ?? null;
           const refusal = linkRefusal(loadChannels(), s.id, wanted);
@@ -6262,6 +6434,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // web ✕. Falls back to this connection's attached session.
           const id = msg.sessionId ?? session?.id;
           if (!id) return;
+          if (!mayDriveSession(id)) return fail("you are not entitled to drive this agent", "forbidden");
           // A RESTRICTED peer may only stop ITS OWN agents; a member peer stops
           // any (like a member). The guard is for an explicit `sessionId` naming
           // someone else's — the bound `session` is already its own.
