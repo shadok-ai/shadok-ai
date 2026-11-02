@@ -345,6 +345,7 @@ test("resolveSessionTarget: a worktree channel resolves to its OWN directory", (
     profile: "reviewer",
     branch: "shadok-ai/wt",
     repo: "/repo",
+    group: null,
     known: true,
   });
 });
@@ -357,6 +358,7 @@ test("resolveSessionTarget: an unknown session falls back to the server cwd", ()
     profile: null,
     branch: null,
     repo: null,
+    group: null,
     known: false,
   });
 });
@@ -368,6 +370,13 @@ test("resolveSessionTarget: missing fields normalize to null, blank cwd falls ba
   assert.equal(t.repo, null);
   assert.equal(t.profile, null);
   assert.equal(t.known, true); // the channel exists — only its cwd was unusable
+});
+
+test("resolveSessionTarget: carries the channel's isolation group (for cron secret scoping)", () => {
+  const list = [chan("g", { group: "comex" }), chan("n", {})];
+  assert.equal(resolveSessionTarget(list, "g", "/x").group, "comex");
+  assert.equal(resolveSessionTarget(list, "n", "/x").group, null); // group-less = commons
+  assert.equal(resolveSessionTarget(list, "ghost", "/x").group, null);
 });
 
 test("resolveSessionTarget: matches on sessionId, not on cwd", () => {
@@ -394,7 +403,7 @@ test("resumeTarget: the registry beats a cwd the caller invented", () => {
 test("resumeTarget: an unknown session still honours what the caller sent", () => {
   // A channel whose registry entry was lost must still resume where it lived.
   const t = resumeTarget([], "ghost", { cwd: "/wt", branch: "b", repo: "/r" }, "/server-cwd");
-  assert.deepEqual(t, { cwd: "/wt", profile: null, branch: "b", repo: "/r", known: false });
+  assert.deepEqual(t, { cwd: "/wt", profile: null, branch: "b", repo: "/r", group: null, known: false });
 });
 
 test("resumeTarget: with nothing anywhere, the server cwd is the last resort", () => {

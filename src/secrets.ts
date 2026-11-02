@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { MAIN_GROUP_ID } from "./groups.js";
+import { MAIN_GROUP_ID, canWriteSecretGroup, spawnGroupFor, type Group, type Viewer } from "./groups.js";
 
 /**
  * Central secret vault: named secrets stored OUTSIDE any repo at
@@ -117,6 +117,45 @@ export function normalizeVault(raw: unknown, now: number = Date.now()): Vault {
   return out;
 }
 
+export type SecretSource = "own" | "shared" | "main";
+export interface VisibleSecret {
+  name: string;
+  source: SecretSource;
+  /** The group that OWNS the secret — omitted for a Main secret (`source:"main"`). */
+  ownerGroup?: string;
+}
+
+/**
+ * Pure: the secret NAMES a caller may see, tagged by why — NEVER the values.
+ * `memberGroupIds` is the set of groups the caller belongs to (from
+ * `groups.memberGroupIds`). A name is visible when it is:
+ *   - `own`    — owned by one of the caller's groups;
+ *   - `shared` — owned elsewhere but shared WITH one of the caller's groups;
+ *   - `main`   — in the instance-wide commons, visible to everyone.
+ * Precedence on a name present several ways mirrors `resolveSecretValues`:
+ * own > shared > main. In mono-tenant the caller resolves to Main only, so this
+ * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
+ */
+export function visibleSecrets(vault: Vault, memberGroupIds: ReadonlySet<string>): VisibleSecret[] {
+  const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2 };
+  const chosen = new Map<string, VisibleSecret>();
+  const consider = (cand: VisibleSecret) => {
+    const prev = chosen.get(cand.name);
+    if (!prev || rank[cand.source] < rank[prev.source]) chosen.set(cand.name, cand);
+  };
+  for (const [gid, slice] of Object.entries(vault)) {
+    if (!slice || typeof slice !== "object") continue;
+    for (const name of Object.keys(slice)) {
+      if (!Object.hasOwn(slice, name)) continue;
+      if (gid === MAIN_GROUP_ID) consider({ name, source: "main" });
+      else if (memberGroupIds.has(gid)) consider({ name, source: "own", ownerGroup: gid });
+      else if (slice[name].sharedWith.some((g) => memberGroupIds.has(g)))
+        consider({ name, source: "shared", ownerGroup: gid });
+    }
+  }
+  return [...chosen.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export type SecretWrite = "created" | "updated" | "refused";
 
 /**
@@ -128,6 +167,47 @@ export type SecretWrite = "created" | "updated" | "refused";
 export function secretWriteVerdict(exists: boolean, overwrite: boolean): SecretWrite {
   if (!exists) return "created";
   return overwrite ? "updated" : "refused";
+}
+
+/**
+ * The group a secret WRITE lands in, derived SERVER-SIDE from the caller's
+ * identity — never from the client body (which could claim any group). Two
+ * callers:
+ *   - an AGENT (`agentGroupId` present, even as null): its OWN channel's group,
+ *     or Main when it has none — this is why an agent stores into its own group;
+ *   - a BROWSER (`agentGroupId` undefined): `spawnGroupFor`, the same
+ *     identity-derived "your one group or the commons" rule used at spawn.
+ */
+export function secretOwnerGroup(input: {
+  agentGroupId?: string | null;
+  viewer: Viewer | null;
+  groups: readonly Group[];
+}): string {
+  if (input.agentGroupId !== undefined) return input.agentGroupId ?? MAIN_GROUP_ID;
+  return spawnGroupFor(input.viewer, input.groups)?.id ?? MAIN_GROUP_ID;
+}
+
+/**
+ * Whole decision for a secret mutation (`PUT`/`DELETE`/share/bind): resolve the
+ * OWNER group server-side, then apply the owner-group membership gate
+ * (`canWriteSecretGroup`). Transport-free so the routes stay thin mappers and
+ * the gate is unit-tested. A client-claimed owner/createdBy never reaches here.
+ */
+export function secretWriteDecision(input: {
+  agentGroupId?: string | null;
+  viewer: Viewer | null;
+  groups: readonly Group[];
+}): { ok: true; ownerGroup: string } | { ok: false; error: string } {
+  const ownerGroup = secretOwnerGroup(input);
+  const g =
+    input.groups.find((x) => x.id === ownerGroup) ??
+    (ownerGroup === MAIN_GROUP_ID
+      ? ({ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], createdAt: 0 } as Group)
+      : null);
+  if (!canWriteSecretGroup(g, input.viewer)) {
+    return { ok: false, error: `you are not entitled to write a secret in group ${ownerGroup}` };
+  }
+  return { ok: true, ownerGroup };
 }
 
 // ── Vault API ────────────────────────────────────────────────────────────
@@ -178,6 +258,43 @@ export function deleteSecret(name: string, groupId: string = MAIN_GROUP_ID): voi
     if (!Object.keys(v[groupId]).length) delete v[groupId];
     saveVault(v);
   }
+}
+
+/**
+ * Replace a secret's `sharedWith` list (the groups it is lent to) — an
+ * own-property write on the OWNER group's slice. Returns false when the secret
+ * does not exist there (the owner-group gate lives at the route). The caller's
+ * OWN group is never added: a secret is already resolvable by its owner.
+ */
+export function setSecretSharing(name: string, groupId: string, sharedWith: string[]): boolean {
+  const v = loadVault();
+  const slice = v[groupId];
+  if (!slice || !Object.hasOwn(slice, name)) return false;
+  slice[name] = {
+    ...slice[name],
+    sharedWith: [...new Set(sharedWith.filter((g) => typeof g === "string" && g && g !== groupId))],
+    updatedAt: Date.now(),
+  };
+  saveVault(v);
+  return true;
+}
+
+/**
+ * Replace a secret's `profiles` binding (the profiles it is injected into) on
+ * the OWNER group's slice. The name↔profile link lives here, on the secrets
+ * side. Returns false when the secret does not exist in that group.
+ */
+export function setSecretProfiles(name: string, groupId: string, profiles: string[]): boolean {
+  const v = loadVault();
+  const slice = v[groupId];
+  if (!slice || !Object.hasOwn(slice, name)) return false;
+  slice[name] = {
+    ...slice[name],
+    profiles: [...new Set(profiles.filter((p) => typeof p === "string" && p))],
+    updatedAt: Date.now(),
+  };
+  saveVault(v);
+  return true;
 }
 
 // ── Who created a secret ─────────────────────────────────────────────────

@@ -187,3 +187,160 @@ export function canRestartInto(storedGroupId: string | null | undefined, groups:
 export function viewerFor(account: { name: string; role: Role } | null): Viewer | null {
   return account ? { name: account.name, role: account.role } : null;
 }
+
+/**
+ * The ids of every group a viewer is a MEMBER of (the owner of a private group
+ * counts, per `memberOf`). This is the set a secret resolution reads against:
+ * a member resolves their own groups' secrets, plus any shared with them, plus
+ * the commons. A null viewer (a deleted account / no session) is a member of
+ * nothing — only the commons remains, which is the fail-safe direction.
+ */
+export function memberGroupIds(groups: readonly Group[], viewer: Viewer | null): Set<string> {
+  const out = new Set<string>();
+  if (!viewer) return out;
+  for (const g of groups) if (memberOf(g, viewer.name)) out.add(g.id);
+  return out;
+}
+
+/**
+ * May this viewer WRITE (create/update/delete/share/bind) a secret that belongs
+ * to group `g`? A secret is a credential, so writing it is a privileged act:
+ * - a PRIVATE group's secret → its OWNER only (a private group is one person's);
+ * - a Main / restricted / public group's secret → an ADMIN.
+ *
+ * An agent authenticates as the bootstrap admin, so it clears the admin bar for
+ * its own commons/restricted group — which is how an agent stores a credential
+ * it obtained (the `shadok-secrets` skill). A null group (unresolvable) or a
+ * null viewer fails closed: never write a secret into a group we cannot verify.
+ */
+export function canWriteSecretGroup(g: Group | null | undefined, viewer: Viewer | null): boolean {
+  if (!g || !viewer) return false;
+  if (g.nature === "private") return g.owner === viewer.name;
+  return viewer.role === "admin";
+}
+
+const sameMembers = (a: readonly string[], b: readonly string[]): boolean => {
+  if (a.length !== b.length) return false;
+  const s = new Set(a);
+  return b.every((x) => s.has(x));
+};
+
+/**
+ * The server-side merge behind `PUT /groups` (pure, so the route is a thin
+ * mapper and the SECURITY rule is unit-tested).
+ *
+ * The web client PUTs only COSMETIC fields (id, name, icon, collapsed, order) —
+ * it never sends `members`/`nature`/`owner`. A naive `saveGroups(body)` would
+ * therefore default those through `normalizeGroups` and silently turn a
+ * restricted COMEX into an empty public group: a people-wall breach by omission.
+ * So this MERGES onto the stored rows and treats the ACL fields as privileged:
+ *
+ * - cosmetic fields are always taken from the incoming row;
+ * - `members`/`nature`/`owner` are changed ONLY when the caller is an admin AND
+ *   the field is actually present; a non-admin attempting such a change is
+ *   REFUSED (never a silent no-op, so the UI can say why);
+ * - a brand-new id is accepted only as a PUBLIC cosmetic group — real
+ *   private/restricted groups are minted by `POST /groups` (which provisions an
+ *   OS user); a non-public new row is refused;
+ * - a stored group the client OMITTED is preserved when it carries ACL meaning
+ *   (`main`, any non-public group, or one with members): a cosmetic PUT must
+ *   never DELETE a real group — that is `DELETE /groups`' job (with teardown).
+ */
+export function mergeGroupsPut(
+  stored: readonly Group[],
+  incoming: readonly unknown[],
+  isAdmin: boolean,
+): { ok: true; groups: Group[] } | { ok: false; error: string } {
+  const byId = new Map(stored.map((g) => [g.id, g]));
+  const seen = new Set<string>();
+  const out: Group[] = [];
+  for (const raw of incoming) {
+    if (!raw || typeof raw !== "object") continue;
+    const row = raw as Record<string, unknown>;
+    const id =
+      typeof row.id === "string" && row.id
+        ? row.id
+        : typeof row.id === "number" && Number.isFinite(row.id)
+          ? String(row.id)
+          : "";
+    if (!id) continue;
+    seen.add(id);
+    const prev = byId.get(id);
+    const wantsNature: Nature | undefined =
+      row.nature === "private" || row.nature === "restricted" || row.nature === "public" ? row.nature : undefined;
+    const wantsMembers = Array.isArray(row.members)
+      ? (row.members.filter((m): m is string => typeof m === "string") as string[])
+      : undefined;
+    const wantsOwner = typeof row.owner === "string" ? row.owner : undefined;
+    if (prev) {
+      const natureChange = wantsNature !== undefined && wantsNature !== prev.nature;
+      const membersChange = wantsMembers !== undefined && !sameMembers(wantsMembers, prev.members);
+      const ownerChange = wantsOwner !== undefined && wantsOwner !== (prev.owner ?? undefined);
+      if ((natureChange || membersChange || ownerChange) && !isAdmin) {
+        return { ok: false, error: "only an admin can change a group's membership or nature" };
+      }
+      // Display extras (icon/collapsed/order) travel on the row but aren't on
+      // the Group type — carry them through a loose record, like normalizeGroups.
+      const cosmetic: Record<string, unknown> = {};
+      if (typeof row.name === "string") cosmetic.name = row.name;
+      if ("icon" in row) cosmetic.icon = row.icon;
+      if ("collapsed" in row) cosmetic.collapsed = row.collapsed;
+      if ("order" in row) cosmetic.order = row.order;
+      const acl: Partial<Group> = isAdmin
+        ? {
+            ...(wantsNature !== undefined ? { nature: wantsNature } : {}),
+            ...(wantsMembers !== undefined ? { members: wantsMembers } : {}),
+            ...(wantsOwner !== undefined ? { owner: wantsOwner } : {}),
+          }
+        : {};
+      out.push({ ...prev, ...cosmetic, ...acl } as unknown as Group);
+    } else {
+      if (wantsNature === "private" || wantsNature === "restricted") {
+        return { ok: false, error: "create a private or restricted group from the group panel" };
+      }
+      const extras: Record<string, unknown> = {};
+      if ("icon" in row) extras.icon = row.icon;
+      if ("collapsed" in row) extras.collapsed = row.collapsed;
+      out.push({
+        id,
+        name: typeof row.name === "string" ? row.name : "",
+        nature: "public",
+        members: [],
+        osUser: null,
+        createdAt: typeof row.createdAt === "number" ? row.createdAt : 0,
+        ...extras,
+      } as unknown as Group);
+    }
+  }
+  for (const g of stored) {
+    if (seen.has(g.id)) continue;
+    if (g.id === MAIN_GROUP_ID || g.nature !== "public" || g.members.length > 0) out.push(g);
+  }
+  return { ok: true, groups: out };
+}
+
+/**
+ * `PUT /groups`' whole decision as a transport-free `{status, body, groups?}`
+ * (the twin of `createGroupFlow`), so the route is a thin mapper and every guard
+ * is unit-tested with no server.
+ *
+ * Guard order, each load-bearing:
+ * - `fromBrowser` FIRST (403): writing the group list is a cockpit act — an
+ *   agent authenticates as the bootstrap admin and would otherwise edit
+ *   membership/nature by `curl` (T2/T6 carry, same spirit as `POST /groups`).
+ * - instance (409): the stale-tab guard, kept.
+ * - the ACL merge (`mergeGroupsPut`): a non-admin membership/nature change → 403.
+ */
+export function groupsPutFlow(input: {
+  fromBrowser: boolean;
+  instanceOk: boolean;
+  isAdmin: boolean;
+  stored: readonly Group[];
+  incoming: readonly unknown[];
+}): { status: number; body: Record<string, unknown>; groups?: Group[] } {
+  if (!input.fromBrowser) return { status: 403, body: { error: "group management is done from the web UI only" } };
+  if (!input.instanceOk) return { status: 409, body: { error: "instance-mismatch" } };
+  const r = mergeGroupsPut(input.stored, input.incoming, input.isAdmin);
+  if (!r.ok) return { status: 403, body: { error: r.error } };
+  return { status: 200, body: { ok: true }, groups: r.groups };
+}

@@ -532,6 +532,9 @@ export interface SessionTarget {
   /** Worktree branch + origin repo, to recreate a reclaimed checkout. */
   branch: string | null;
   repo: string | null;
+  /** The isolation group the agent belongs to (null = commons / mono-tenant),
+   *  so a cron guard resolves this agent's secrets by its REAL group, not Main. */
+  group: string | null;
   /** False when no channel carries this sessionId: `cwd` is the fallback. */
   known: boolean;
 }
@@ -562,6 +565,7 @@ export function resolveSessionTarget(
     profile: ch?.profile ?? null,
     branch: ch?.branch ?? null,
     repo: ch?.repo ?? null,
+    group: ch?.group ?? null,
     known: !!ch,
   };
 }
