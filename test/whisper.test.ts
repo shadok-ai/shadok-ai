@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   ffmpegAsset, missingParts, installNotice, installFailure, parseWhisperText,
   transcriptionOutcome, heardNotice, modelLooksComplete, whisperPaths,
+  audioClipExtension,
   MODEL_BYTES, MODEL_FILE, MODELS, FFMPEG_TAG, WHISPER_TAG,
 } from "../src/whisper.js";
 
@@ -136,4 +137,20 @@ test("a model we have no size for is accepted, not refused", () => {
   // catches an HTML error page.
   assert.ok(modelLooksComplete(MODEL_BYTES));
   assert.ok(!modelLooksComplete(4096));
+});
+
+test("a recorded audio clip gets a truthful extension, defaulting to webm", () => {
+  // What Chromium/Firefox MediaRecorder actually emit, plus the parameters a
+  // browser tacks onto the mime type. ffmpeg reads by content anyway, so the
+  // load-bearing property is only that an unknown type never throws or produces
+  // a path-hostile string — it falls back to the common case.
+  assert.equal(audioClipExtension("audio/webm"), "webm");
+  assert.equal(audioClipExtension("audio/webm;codecs=opus"), "webm");
+  assert.equal(audioClipExtension("audio/ogg; codecs=opus"), "ogg");
+  assert.equal(audioClipExtension("audio/mp4"), "m4a");
+  assert.equal(audioClipExtension("audio/mpeg"), "m4a");
+  assert.equal(audioClipExtension("audio/wav"), "wav");
+  assert.equal(audioClipExtension("AUDIO/X-WAV"), "wav");
+  assert.equal(audioClipExtension(""), "webm");
+  assert.equal(audioClipExtension("application/octet-stream"), "webm");
 });

@@ -184,6 +184,31 @@ export function heardNotice(text: string): string {
   return `🎙 « ${text} »`;
 }
 
+/**
+ * The temp-file extension for an audio clip the web composer records with
+ * MediaRecorder. ffmpeg sniffs the container by content, so this is only
+ * cosmetic — but a truthful extension keeps the temp file honest and costs
+ * nothing. Unknown types fall back to `webm`, the usual MediaRecorder output.
+ * Pure/testable.
+ */
+export function audioClipExtension(contentType: string): string {
+  const t = contentType.split(";")[0].trim().toLowerCase();
+  switch (t) {
+    case "audio/ogg":
+    case "audio/ogg; codecs=opus":
+      return "ogg";
+    case "audio/mp4":
+    case "audio/mpeg":
+    case "audio/aac":
+      return "m4a";
+    case "audio/wav":
+    case "audio/x-wav":
+      return "wav";
+    default:
+      return "webm";
+  }
+}
+
 /** Is a downloaded model plausibly the model, rather than an error page? */
 export function modelLooksComplete(size: number): boolean {
   // An unknown model (someone pointed SHADOK_WHISPER_MODEL at another file) has
