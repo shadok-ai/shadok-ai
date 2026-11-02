@@ -3795,7 +3795,7 @@
     ctxFill.className = "ctxfill";
     ctxBar.appendChild(ctxFill);
     btn.appendChild(ctxBar);
-    const group = groupId != null && groups.find((g) => g.id === groupId);
+    const group = groupId != null && groups.find((g) => String(g.id) === String(groupId));
     (group ? group.bodyEl : ungroupedEl).appendChild(btn);
 
     const tab = {
@@ -4757,8 +4757,8 @@
   }
 
   function createGroup(opts = {}) {
-    const id = opts.id != null ? opts.id : ++groupSeq;
-    groupSeq = Math.max(groupSeq, id);
+    const id = opts.id != null ? String(opts.id) : String(++groupSeq);
+    groupSeq = Math.max(groupSeq, Number(id) || 0);
     const el = document.createElement("div");
     el.className = "group" + (opts.collapsed ? " collapsed" : "");
     const head = document.createElement("div");
@@ -4911,7 +4911,7 @@
     if (setupGroup != null) return setupGroup;
     if (!railShown()) return null;
     const v = currentView();
-    return v === "ungrouped" ? null : Number(v);
+    return v === "ungrouped" ? null : String(v);
   }
   const viewOfTab = (tab) => {
     const id = groupIdOf(tab.btnEl);
@@ -5425,7 +5425,7 @@
     if (Array.isArray(srvGroups)) {
       for (const sg of srvGroups) {
         if (sg == null || sg.id == null) continue;
-        const g = groups.find((x) => x.id === sg.id);
+        const g = groups.find((x) => String(x.id) === String(sg.id));
         if (!g) { createGroup(sg); continue; }
         if (sg.name && sg.name !== g.nameEl.textContent && !renamingAGroup())
           g.nameEl.textContent = sg.name;
@@ -5475,7 +5475,7 @@
         // and never over a move of this tab's own that has not landed yet.
         if (!dragTabEl && !t.btnEl.closest("#tweakSlot")) {
           const r = window.reconcileTabGroup(groupIdOf(t.btnEl), t.syncedGroup, c.group);
-          const dest = r.move && (c.group == null ? ungroupedEl : groups.find((g) => g.id === c.group)?.bodyEl);
+          const dest = r.move && (c.group == null ? ungroupedEl : groups.find((g) => String(g.id) === String(c.group))?.bodyEl);
           if (dest) dest.appendChild(t.btnEl);
           if (!r.move || dest) t.syncedGroup = r.synced;
         }

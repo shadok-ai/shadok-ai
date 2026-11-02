@@ -13,6 +13,8 @@ import {
   channelWriteAllowed,
   dropForeignHomes,
   profilePatch,
+  normalizeGroups,
+  ensureMainGroup,
   type Channel,
 } from "../src/channels.js";
 
@@ -127,20 +129,20 @@ test("mergeChannels: client drives name/group; server-owned fields preserved", (
     // A topic channel (threadId set) — not the General, so the client name wins.
     { sessionId: "a", cwd: "/real", branch: "b", telegram: { chatId: 7, threadId: 3 }, name: "srv" },
   ];
-  const client: Channel[] = [{ sessionId: "a", cwd: "/wrong", name: "renamed", group: 2 }];
+  const client: Channel[] = [{ sessionId: "a", cwd: "/wrong", name: "renamed", group: "2" }];
   const out = mergeChannels(stored, client, new Set());
   assert.deepEqual(out, [
-    { sessionId: "a", cwd: "/real", name: "renamed", group: 2, branch: "b", telegram: { chatId: 7, threadId: 3 } },
+    { sessionId: "a", cwd: "/real", name: "renamed", group: "2", branch: "b", telegram: { chatId: 7, threadId: 3 } },
   ]);
 });
 
-test("mergeChannels: an omitted group keeps the stored one, an explicit null ungroups", () => {
-  // A tab that did not move the agent omits `group`: it must not undo a move
-  // another tab just made (the agent used to jump back to its old group).
-  const stored: Channel[] = [{ sessionId: "a", cwd: "/r", group: 5 }];
-  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", name: "x" }], new Set())[0].group, 5);
-  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: 2 }], new Set())[0].group, 2);
-  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: null }], new Set())[0].group, null);
+test("mergeChannels: group is server-owned — a client can neither move nor clear it", () => {
+  // An agent is born into its group and never moves; a PUT must not reassign it
+  // across an isolation wall.
+  const stored: Channel[] = [{ sessionId: "a", cwd: "/r", group: "5" }];
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", name: "x" }], new Set())[0].group, "5");
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: "2" }], new Set())[0].group, "5");
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: null }], new Set())[0].group, "5");
 });
 
 test("mergeChannels: a client can neither change nor clear a channel's profile", () => {
@@ -410,4 +412,46 @@ test("resolveResumeId: a shortened id nobody carries is refused, never passed to
 test("resolveResumeId: a complete id is kept even when the registry has forgotten it", () => {
   const id = "113f3745-b8bc-4d73-b5c4-93b1557fb921";
   assert.deepEqual(resolveResumeId([], id), { ok: true, id }); // /recover
+});
+
+test("normalizeGroups: a legacy tab-group row becomes a public Group with a string id", () => {
+  const out = normalizeGroups([{ id: 3, name: "SALES", collapsed: true, order: 1 }]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, "3");
+  assert.equal(out[0].name, "SALES");
+  assert.equal(out[0].nature, "public");
+  assert.deepEqual(out[0].members, []);
+  assert.equal(out[0].osUser, null);
+  assert.equal(typeof out[0].createdAt, "number");
+});
+
+test("normalizeGroups: unparseable rows are dropped, non-arrays give []", () => {
+  assert.deepEqual(normalizeGroups(null), []);
+  assert.deepEqual(normalizeGroups("x"), []);
+  assert.deepEqual(normalizeGroups([null, 5, {}, { name: "no id" }]), []);
+});
+
+test("normalizeGroups: an already-typed Group keeps its nature and members", () => {
+  const out = normalizeGroups([{ id: "g1", name: "T", nature: "restricted", members: ["ada"], owner: "ada", createdAt: 7 }]);
+  assert.equal(out[0].nature, "restricted");
+  assert.deepEqual(out[0].members, ["ada"]);
+  assert.equal(out[0].createdAt, 7);
+});
+
+test("ensureMainGroup: [] yields exactly one public main group", () => {
+  const out = ensureMainGroup([]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, "main");
+  assert.equal(out[0].nature, "public");
+});
+
+test("ensureMainGroup is idempotent", () => {
+  const once = ensureMainGroup([]);
+  assert.deepEqual(ensureMainGroup(once), once);
+});
+
+test("mergeChannels: group is server-owned once the channel exists", () => {
+  const stored = [{ sessionId: "a", cwd: "/x", group: "g1" }] as Channel[];
+  const out = mergeChannels(stored, [{ sessionId: "a", cwd: "/x", group: "other" }] as Channel[], new Set());
+  assert.equal(out[0].group, "g1");
 });

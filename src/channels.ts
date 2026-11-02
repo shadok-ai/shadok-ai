@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { type Group, type Nature, MAIN_GROUP_ID } from "./groups.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -17,8 +18,10 @@ export interface Channel {
   branch?: string | null;
   /** Repo the worktree belongs to, to recreate a reclaimed checkout. */
   repo?: string;
-  /** Tab group id (client-owned metadata). */
-  group?: number | null;
+  /** Id of the `Group` this agent was born into. Server-owned: an agent never
+   *  moves between groups, so a client PUT must not reassign it across an
+   *  isolation wall. */
+  group?: string | null;
   /** The environment's home base: pinned, never closable. Server-owned, so a
    *  stale client's PUT cannot clear it. See `isHomeChannel`. */
   home?: boolean;
@@ -100,7 +103,7 @@ export function isMirrored(c: Channel): boolean {
  * only resume its own agents" — which broke any multi-step remote exchange
  * (the holder's first resume ran; the browser's next sync wiped the owner). Same
  * loss as `profile`/`parent` before they were listed here. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "group", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
@@ -347,12 +350,49 @@ export function mergeClientChannels(clientList: Channel[], liveIds: Set<string>)
   return result;
 }
 
-/** Tab groups (id, name, collapsed, order), persisted the same way as channels. */
-export function loadGroups(): any[] {
-  return readJson("groups");
+/**
+ * Coerce whatever is on disk (or in a PUT body) into typed Groups. Legacy rows
+ * were cosmetic tab groups (`{id:number, name, collapsed, order}`); they become
+ * PUBLIC groups with no members, so nobody loses sight of an existing tab.
+ * Display extras (icon, collapsed, order) are kept. Rows with no usable id are
+ * dropped rather than invented.
+ */
+export function normalizeGroups(raw: unknown): Group[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Group[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const row = r as Record<string, any>;
+    const idOk = (typeof row.id === "string" && row.id !== "") || (typeof row.id === "number" && Number.isFinite(row.id));
+    if (!idOk) continue;
+    const nature: Nature = row.nature === "private" || row.nature === "restricted" || row.nature === "public" ? row.nature : "public";
+    const g: Group = {
+      ...row,
+      id: String(row.id),
+      name: typeof row.name === "string" ? row.name : "",
+      nature,
+      members: Array.isArray(row.members) ? row.members.filter((m: unknown) => typeof m === "string") : [],
+      osUser: typeof row.osUser === "string" ? row.osUser : null,
+      createdAt: typeof row.createdAt === "number" ? row.createdAt : Date.now(),
+    };
+    if (typeof row.owner !== "string") delete g.owner;
+    out.push(g);
+  }
+  return out;
 }
-export function saveGroups(list: any[]): void {
-  writeJson("groups", list);
+
+/** Guarantee the shared public group exists. Idempotent: never adds a second. */
+export function ensureMainGroup(list: Group[]): Group[] {
+  if (list.some((g) => g.id === MAIN_GROUP_ID)) return list;
+  return [{ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], osUser: null, createdAt: Date.now() }, ...list];
+}
+
+/** Groups, persisted per launch dir like channels. */
+export function loadGroups(): Group[] {
+  return normalizeGroups(readJson("groups"));
+}
+export function saveGroups(list: Group[]): void {
+  writeJson("groups", normalizeGroups(list));
 }
 
 /** The single group this instance is bound to (one board per instance), or null.
