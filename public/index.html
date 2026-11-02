@@ -4776,6 +4776,26 @@
   const COMMONS_GROUP_ID = "main";
   const foldCommons = (id) => (id != null && String(id) === COMMONS_GROUP_ID ? null : id);
 
+  // Group nature (server-owned): public / restricted / private. A walled group
+  // (restricted or private) carries a padlock. The operator never sees the
+  // internal word "restricted": the type reads Private, and the personal
+  // space reads Personal.
+  function isWalled(nature) {
+    return nature === "private" || nature === "restricted";
+  }
+  function groupTypeLabel(nature) {
+    if (nature === "private") return "Personal";
+    if (nature === "restricted") return "Private";
+    return "Public";
+  }
+  // The name a group SHOWS: the personal space is always "Personal" (its stored
+  // name is the account name); any other group shows its own name.
+  function groupDisplayName(g) {
+    return g.nature === "private" ? "Personal" : g.name;
+  }
+  // What is persisted back is the STORED name, never the display override.
+  const storedGroupName = (g) => (g.nature === "private" ? g.name : g.nameEl.textContent);
+
   function groupIdOf(tabEl) {
     const g = tabEl.closest(".group");
     return g ? g._group.id : null;
@@ -4785,7 +4805,7 @@
   function persistGroups() {
     const list = [...groupsEl.children].map((el) => ({
       id: el._group.id,
-      name: el._group.nameEl.textContent,
+      name: storedGroupName(el._group),
       icon: el._group.icon,
       collapsed: el.classList.contains("collapsed"),
     }));
@@ -4814,8 +4834,13 @@
     caret.className = "caret";
     const gname = document.createElement("span");
     gname.className = "gname";
-    gname.textContent = opts.name || "group " + id;
-    gname.title = "Double-click to rename";
+    const storedName = opts.name || "group " + id;
+    gname.textContent = groupDisplayName({ nature: opts.nature, name: storedName });
+    gname.title = opts.nature === "private" ? "" : "Double-click to rename";
+    const glock = document.createElement("span");
+    glock.className = "glock";
+    glock.textContent = "🔒";
+    glock.title = groupTypeLabel(opts.nature);
     const gclose = document.createElement("span");
     gclose.className = "gclose";
     gclose.textContent = "×";
@@ -4832,7 +4857,9 @@
     gkey.className = "gkey";
     gkey.textContent = "🔑";
     gkey.title = "Secrets of this group";
-    head.append(caret, gicon, gname, gkey, gadd, gclose);
+    head.append(caret, gicon, gname);
+    if (isWalled(opts.nature)) head.append(glock);
+    head.append(gkey, gadd, gclose);
     const body = document.createElement("div");
     body.className = "group-body";
     el.append(head, body);
@@ -4842,7 +4869,8 @@
     // icons existed) gets a random one, persisted once the restore is over.
     const icon = opts.icon || window.randomGroupIcon();
     if (!opts.icon) groupIconsMinted = true;
-    const group = { id, el, headEl: head, bodyEl: body, nameEl: gname, icon, iconDrawn: !opts.icon };
+    const group = { id, el, headEl: head, bodyEl: body, nameEl: gname, icon, iconDrawn: !opts.icon,
+      nature: opts.nature || "public", owner: opts.owner || null, name: storedName };
     el._group = group;
     const paintCaret = () => {
       caret.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
@@ -4859,8 +4887,10 @@
     });
     gname.addEventListener("dblclick", (e) => {
       e.stopPropagation();
+      if (group.nature === "private") return; // the personal space is not renamable
       inlineRename(head, gname, (v) => {
         gname.textContent = v;
+        group.name = v;
         persistGroups();
       });
     });
@@ -5039,10 +5069,11 @@
   // rewrites its text, never the element.
   viewLabelEl.addEventListener("click", (e) => {
     const g = groups.find((x) => String(x.id) === currentView());
-    if (!g) return;
+    if (!g || g.nature === "private") return; // the personal space is not renamable
     e.stopPropagation();
     inlineRename(tabbar, viewLabelEl, (v) => {
       g.nameEl.textContent = v;
+      g.name = v;
       persistGroups();
       applyView();
     });
@@ -5119,11 +5150,13 @@
       });
       nm.addEventListener("click", (e) => {
         if (!isSecondClick(e)) return; // the item's own click selects the group
+        if (group.nature === "private") return; // the personal space is not renamable
         // Not to the item: its setView could move the focus to the composer
         // and blur (= close) the field we are opening.
         e.stopPropagation();
         inlineRename(item, nm, (v) => {
           group.nameEl.textContent = v;
+          group.name = v;
           persistGroups();
           applyView();
         });
@@ -5209,7 +5242,7 @@
     const entries = [
       { view: "ungrouped", icon: "📥", name: "Main" },
       ...[...groupsEl.children].map((el) =>
-        ({ view: String(el._group.id), icon: el._group.icon, name: el._group.nameEl.textContent, group: el._group })),
+        ({ view: String(el._group.id), icon: isWalled(el._group.nature) ? "🔒" : el._group.icon, name: el._group.nameEl.textContent, group: el._group })),
     ];
     // The column mutates all the time (LEDs, timers, reconnects): rebuild only
     // when what the rail SHOWS changed, or every click would land on an item
@@ -5480,8 +5513,10 @@
         if (String(sg.id) === COMMONS_GROUP_ID) continue; // the commons is the "Main" view, not a rail group
         const g = groups.find((x) => String(x.id) === String(sg.id));
         if (!g) { createGroup(sg); continue; }
-        if (sg.name && sg.name !== g.nameEl.textContent && !renamingAGroup())
-          g.nameEl.textContent = sg.name;
+        if (sg.name && sg.name !== g.name && !renamingAGroup()) {
+          g.name = sg.name;
+          g.nameEl.textContent = groupDisplayName(g);
+        }
         if (sg.icon && sg.icon !== g.icon) g.icon = sg.icon;
       }
       renderRail(); // an icon lives outside the column, so no observer sees it
