@@ -354,3 +354,12 @@ test("server: GET /accounts is a names-only roster for any signed-in account", (
     assert.ok(!body.includes(leak), `names only: the handler never touches ${leak}`);
   }
 });
+
+test("ensureGroupsProvisioned: the capable boot gives the bootstrap admin a Personal group", () => {
+  const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/server.ts"), "utf8");
+  const start = src.indexOf("async function ensureGroupsProvisioned");
+  assert.ok(start >= 0, "function exists");
+  const end = src.indexOf("\n}\n", start);
+  const body = src.slice(start, end);
+  assert.ok(body.includes("ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN)"), "provisions the operator's Personal group");
+});

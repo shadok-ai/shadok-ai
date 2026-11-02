@@ -2714,6 +2714,10 @@ async function ensureGroupsProvisioned(): Promise<void> {
         `${r.present.length} already present, ${r.failed.length} failed`,
     );
   }
+  // The bootstrap admin (the operator) has no accounts.json row, so neither the
+  // invite-redeem hook nor the per-account migration loop ever fires for it.
+  // Give it a Personal group here; idempotent (reuses an existing private group).
+  await ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN);
 }
 
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
