@@ -106,10 +106,10 @@ test("no alias is invented on the subscription or without a model", () => {
 });
 
 test("a custom-backend instance gets its lead agent without signing in", () => {
-  const p = firstAgentPlan({ channelCount: 0, authState: "signed-out", customBackend: true });
+  const p = firstAgentPlan({ mainChannelCount: 0, authState: "signed-out", customBackend: true });
   assert.equal(p.spawn, true);
   // …but a cockpit in use is still left alone.
-  assert.equal(firstAgentPlan({ channelCount: 2, authState: "unknown", customBackend: true }).spawn, false);
+  assert.equal(firstAgentPlan({ mainChannelCount: 2, authState: "unknown", customBackend: true }).spawn, false);
 });
 
 test("a backend saved in the cockpit REPLACES shadok's env, never merges with it", () => {

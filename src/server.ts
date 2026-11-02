@@ -45,6 +45,7 @@ import { readTokenExpiry } from "./claude-creds.js";
 import { starCount } from "./stars.js";
 import {
   announceFirstAgent,
+  countMainChannels,
   ensureFirstAgent,
   firstAgentStatus,
   settleFirstAgent,
@@ -558,7 +559,7 @@ function greetHomeAgent(id: string): void {
 async function startFirstAgent(): Promise<void> {
   // Before the attempt, not after it: the browser may already be loading, and
   // the empty state it would otherwise paint invites a SECOND lead agent.
-  announceFirstAgent(loadChannels().length);
+  announceFirstAgent(countMainChannels(loadChannels()));
   try {
     const why = await ensureFirstAgent({
       port: boundPort,
@@ -7465,6 +7466,6 @@ server.listen(port, HOST, () => {
   // Announce here, not only inside the deferred call: the browser is opening
   // NOW and would otherwise be told there is nothing coming for a second and a
   // half — the whole window this status exists to fill.
-  announceFirstAgent(loadChannels().length);
+  announceFirstAgent(countMainChannels(loadChannels()));
   setTimeout(() => void startFirstAgent(), 1500).unref?.();
 });
