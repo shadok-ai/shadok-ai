@@ -108,6 +108,7 @@ import {
   DEFAULT_HOME_BASE,
   createGroupFlow,
   deleteGroupFlow,
+  checkCredentialDivergence,
 } from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
@@ -2089,6 +2090,36 @@ app.put("/groups", (req, res) => {
 /** Where a group's HOME is created (`SHADOK_HOME_BASE` override, else `/home`). */
 const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_HOME_BASE;
 
+/** The ONE server-owned Claude credential every group HOME symlinks to (Task 7).
+ *  It is the server's own `~/.claude/.credentials.json` — the exact file the
+ *  single-user instance already uses — living OUTSIDE every group HOME, so Task
+ *  6's 0700 wall on the HOMEs is untouched. */
+const SHARED_CREDENTIAL_PATH = path.join(os.homedir(), ".claude", ".credentials.json");
+
+/** Real fs probe for `checkCredentialDivergence`: is `p` a symlink pointing at
+ *  `target`? Swallows every error (missing / not a link / unreadable) to `false`
+ *  — anything that is not exactly our symlink is treated as divergence. */
+function isSymlinkToReal(p: string, target: string): boolean {
+  try {
+    if (!fs.lstatSync(p).isSymbolicLink()) return false;
+    return fs.readlinkSync(p) === target;
+  } catch {
+    return false;
+  }
+}
+
+/** Fire the verify-first divergence warning for a group agent about to be
+ *  dropped to its OS user (multi-tenant only). A no-op in mono-tenant or for a
+ *  commons agent (no dedicated user). See `checkCredentialDivergence`. */
+function warnIfCredentialDiverged(groupId: string | null, osUser: string | null): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !osUser) return;
+  checkCredentialDivergence(
+    { id: groupId ?? osUser, home: `${GROUP_HOME_BASE}/${osUser}` },
+    SHARED_CREDENTIAL_PATH,
+    { isSymlinkTo: isSymlinkToReal },
+  );
+}
+
 /** Run a privileged account command. Root runs it directly; otherwise go through
  *  NON-interactive sudo (`-n`) so a MISSING right fails fast with a non-zero exit
  *  instead of prompting — the T3 false positive (sudoers allows `true` but not
@@ -2108,12 +2139,13 @@ function runPrivileged(cmd: string, argv: string[]): Promise<void> {
 }
 
 /** Seed a freshly-provisioned HOME. The directory itself is created+owned by
- *  `useradd --create-home`; the per-HOME `~/.claude` seeding, the credential
- *  symlink (Task 7) and the shared mount (Task 12) hang off this hook in their
- *  own tasks. Kept async+injectable so provisioning fails honestly if it grows a
- *  real step that can fail. */
+ *  `useradd --create-home`; the credential symlink (Task 7) is wired inside
+ *  `provisionGroupUser` (before this hook) via `sharedCredentialPath`, and the
+ *  shared mount (Task 12) hangs off this hook in its own task. Kept
+ *  async+injectable so provisioning fails honestly if it grows a real step that
+ *  can fail. */
 async function seedGroupHome(home: string): Promise<void> {
-  console.log(`groups: provisioned HOME ${home} (per-HOME ~/.claude seeding lands in Task 7/12)`);
+  console.log(`groups: provisioned HOME ${home} (shared mount seeding lands in Task 12)`);
 }
 
 /** Does an OS user already exist? Used to make provisioning idempotent. */
@@ -2158,6 +2190,11 @@ app.post("/groups", async (req, res) => {
           seed: seedGroupHome,
           homeBase: GROUP_HOME_BASE,
           userExists: osUserExists,
+          // Task 7: share the one Claude credential into the HOME (symlink +
+          // shared unix group). Only in multi-tenant — this route only ever
+          // provisions there, but gate explicitly so the intent is local.
+          sharedCredentialPath:
+            DEPLOYMENT_MODE === "multi-tenant" ? SHARED_CREDENTIAL_PATH : undefined,
         }).then(() => void 0),
       loadGroups,
       saveGroups,
@@ -4262,6 +4299,10 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
     groups: loadGroups(),
     storedGroupId: restartGroupId,
   }).user;
+  // Task 7 verify-first gate (same as the spawn path): a restart re-adopts the
+  // HOME, so it is another moment the symlink could have been overwritten by a
+  // rename refresh — warn LOUDLY rather than let auth break in silence.
+  warnIfCredentialDiverged(restartGroupId, restartUser);
   s.pilot = makePilot(
     s.id,
     s.cwd,
@@ -5569,6 +5610,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             groups: groupsNow,
             storedGroupId,
           });
+          // Task 7 verify-first gate: before dropping to the group's user, warn
+          // LOUDLY if its HOME credential is no longer the shared symlink (the
+          // rename-refresh signature that would silently break multi-user auth).
+          warnIfCredentialDiverged(resumed ? storedGroupId : isolation.groupPatch.group ?? null, isolation.user);
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),

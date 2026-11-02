@@ -95,6 +95,123 @@ export function resolveSpawnIsolation(input: {
  *  (`SHADOK_HOME_BASE`) for unusual layouts; `/home` is the Linux standard. */
 export const DEFAULT_HOME_BASE = "/home";
 
+// ── Shared Claude credential (Task 7) ─────────────────────────────────────────
+//
+// One Claude OAuth subscription is shared across every group's OS user: this is
+// how the single-user instance already works (one `~/.claude/.credentials.json`,
+// ~30 claude processes reading it). In multi-tenant each group HOME's
+// `~/.claude/.credentials.json` is a SYMLINK to one server-owned file that lives
+// OUTSIDE every HOME, so the rest of the HOME stays private (Task 6's chmod 700)
+// while this one file is shared.
+//
+// VERIFY-FIRST GATE (controller ruling, spec `[builder — verify BEFORE planning
+// the auth path]`): the whole scheme assumes `claude` refreshes the credential
+// IN PLACE (open+rewrite the same inode). A live investigation was INCONCLUSIVE
+// and LEANED toward write-new-then-rename (the CLI uses write-tmp-then-rename for
+// some files). The decision was to ship the symlink scheme NOW (it matches the
+// working single-user instance) and make the rename-failure mode LOUD and
+// diagnosable — see `credentialDivergence` / `checkCredentialDivergence`. If a
+// real multi-user instance CONFIRMS rename, the follow-up is a full auth broker
+// (a single owner process holds the credential and hands out read-only copies;
+// agents never refresh directly) — `src/auth-broker.ts`, flagged, this PR on HOLD
+// for exactly that test. Do NOT build the broker until rename is confirmed.
+
+/** The shared unix group that owns the one credential file. Every provisioned
+ *  `sk-<id>` user is added to it, and the file is group-owned by it with mode
+ *  660, so any group user can READ and (for an in-place refresh) WRITE it while
+ *  the refresh stays readable by the others. */
+export const SHARED_CRED_GROUP = "shadok-cred";
+
+/**
+ * The symlink a group HOME gets and the shared file it points at. Pure. The link
+ * is always `<home>/.claude/.credentials.json`; the target is the server-owned
+ * shared credential path, which lives OUTSIDE the HOME (so Task 6's 0700 wall on
+ * the HOME is untouched — only this single file crosses it).
+ */
+export function credentialWiring(home: string, sharedCredentialPath: string): { link: string; target: string } {
+  return { link: `${home}/.claude/.credentials.json`, target: sharedCredentialPath };
+}
+
+/**
+ * The exact, ordered privileged commands that wire a group HOME to the shared
+ * credential. Pure (a list of `[cmd, argv]`) so the sequence is locked by test,
+ * exactly like `provisionPlan`'s `useradd`. Run as root through the injected
+ * `run` in `provisionGroupUser`. Each step is load-bearing:
+ * - `groupadd -f` the shared group (idempotent across re-provision);
+ * - `usermod -aG` adds THIS user to it (so it can read+write the one file);
+ * - create `<home>/.claude`, chown it to the user, chmod 700 (Task 6's wall —
+ *   only this user traverses it; only the credential symlink leaves it);
+ * - `ln -sfn` the symlink (`-f` replace, `-n` don't deref an existing link, so a
+ *   re-provision never nests link-in-link), then chown -h it to the user;
+ * - `chgrp`/`chmod 660` the SHARED file so every member user reads+writes it and
+ *   an in-place refresh by any one of them stays readable by the others.
+ */
+export function credentialWiringPlan(
+  user: string,
+  home: string,
+  sharedCredentialPath: string,
+): Array<[string, string[]]> {
+  const { link, target } = credentialWiring(home, sharedCredentialPath);
+  const claudeDir = `${home}/.claude`;
+  return [
+    ["groupadd", ["-f", SHARED_CRED_GROUP]],
+    ["usermod", ["-aG", SHARED_CRED_GROUP, user]],
+    ["mkdir", ["-p", claudeDir]],
+    ["chown", [`${user}:${user}`, claudeDir]],
+    ["chmod", ["700", claudeDir]],
+    ["ln", ["-sfn", target, link]],
+    ["chown", ["-h", `${user}:${user}`, link]],
+    ["chgrp", [SHARED_CRED_GROUP, sharedCredentialPath]],
+    ["chmod", ["660", sharedCredentialPath]],
+  ];
+}
+
+/**
+ * The verify-first gate's predicate (pure over an injected fs probe). TRUE when
+ * a group HOME's `.credentials.json` is NO LONGER the symlink we posed — i.e. it
+ * became a REAL file. That is the SIGNATURE of a write-new-then-rename refresh:
+ * `claude` wrote a fresh 0600 file owned by the refreshing group's user over the
+ * symlink, so every OTHER group can no longer read the shared credential and the
+ * symlink scheme is broken for multi-user. Anything other than "a symlink
+ * pointing at the shared file" (a real file, the wrong target, or missing)
+ * counts as divergence — the caller only ever asks about a HOME it PROVISIONED,
+ * where the expected state is precisely that symlink.
+ */
+export function credentialDivergence(
+  homeCredPath: string,
+  sharedCredentialPath: string,
+  deps: { isSymlinkTo: (p: string, target: string) => boolean },
+): boolean {
+  return !deps.isSymlinkTo(homeCredPath, sharedCredentialPath);
+}
+
+/**
+ * Run the divergence check for one group and, on divergence, emit a CLEAR
+ * warning naming the group and what it means — converting a SILENT auth break
+ * (every agent in the group starts getting 401s with "nothing changed on my
+ * side") into an actionable signal during the hold-test. Returns whether it
+ * diverged. The `warn` sink is injected so the firing is unit-testable; it
+ * defaults to `console.warn` in production.
+ */
+export function checkCredentialDivergence(
+  group: { id: string; home: string },
+  sharedCredentialPath: string,
+  deps: { isSymlinkTo: (p: string, target: string) => boolean; warn?: (msg: string) => void },
+): boolean {
+  const { link } = credentialWiring(group.home, sharedCredentialPath);
+  const diverged = credentialDivergence(link, sharedCredentialPath, deps);
+  if (diverged) {
+    (deps.warn ?? console.warn)(
+      `CREDENTIAL DIVERGENCE: group "${group.id}" HOME credential ${link} is no longer the shared ` +
+        `symlink — it is now a REAL file. This is the signature of \`claude\` refreshing the OAuth token by ` +
+        `write-new-then-rename, which BREAKS the shared-credential symlink scheme for multi-user: every other ` +
+        `group can no longer read the credential. An AUTH BROKER is required (Task 7 / spec verify-first gate); ` +
+        `this PR is on HOLD pending the real multi-user rename test.`,
+    );
+  }
+  return diverged;
+}
+
 /**
  * The on-demand provisioning plan for a group's OS user, kept PURE so the exact
  * `useradd` invocation and the HOME path are unit-tested without touching the
@@ -149,6 +266,10 @@ export async function provisionGroupUser(
     seed: (home: string) => Promise<void>;
     homeBase: string;
     userExists?: (u: string) => Promise<boolean>;
+    /** Task 7: when set (multi-tenant only), wire this HOME to the one shared
+     *  Claude credential — symlink it in + shared-group the file. Absent in
+     *  mono-tenant, so the credential wiring is byte-for-byte skipped there. */
+    sharedCredentialPath?: string;
   },
 ): Promise<{ osUser: string; home: string } | null> {
   const plan = provisionPlan(g, deps.homeBase);
@@ -177,6 +298,22 @@ export async function provisionGroupUser(
     await deps.run("chmod", ["700", plan.home]);
   } catch (e) {
     throw new Error(`provisionGroupUser: chmod 700 ${plan.home} failed: ${(e as Error)?.message ?? e}`);
+  }
+
+  // Task 7: share the one Claude credential into this HOME (multi-tenant only —
+  // `sharedCredentialPath` is absent in mono-tenant, so nothing runs). A failure
+  // here is as fatal as a failed chmod: an agent whose credential symlink was
+  // never posed cannot authenticate, which is a BROKEN wall, so it THROWS.
+  if (deps.sharedCredentialPath) {
+    try {
+      for (const [cmd, argv] of credentialWiringPlan(plan.user, plan.home, deps.sharedCredentialPath)) {
+        await deps.run(cmd, argv);
+      }
+    } catch (e) {
+      throw new Error(
+        `provisionGroupUser: credential wiring for ${plan.user} failed: ${(e as Error)?.message ?? e}`,
+      );
+    }
   }
 
   try {

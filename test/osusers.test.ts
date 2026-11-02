@@ -10,6 +10,11 @@ import {
   groupDeleteVerdict,
   createGroupFlow,
   deleteGroupFlow,
+  credentialWiring,
+  credentialWiringPlan,
+  credentialDivergence,
+  checkCredentialDivergence,
+  SHARED_CRED_GROUP,
 } from "../src/osusers.js";
 import { spawnGroupFor, MAIN_GROUP_ID, type Group } from "../src/groups.js";
 
@@ -276,6 +281,130 @@ test("provisionGroupUser: THROWS when seeding HOME fails (never silently continu
     }),
     /seeding/,
   );
+});
+
+// ── credentialWiring / credentialWiringPlan (Task 7 — shared Claude credential) ─
+// The ONE Claude OAuth credential (server-owned, outside every group HOME) is
+// shared across groups: each HOME's ~/.claude/.credentials.json is a SYMLINK to
+// it, and a shared unix group makes the single file readable+writable by every
+// group's sk-<id> user so an in-place `claude` refresh stays readable by all.
+
+const SHARED_CRED = "/root/.claude/.credentials.json";
+
+test("credentialWiring: the HOME link and the shared target, verbatim", () => {
+  assert.deepEqual(credentialWiring("/home/sk-comex", SHARED_CRED), {
+    link: "/home/sk-comex/.claude/.credentials.json",
+    target: SHARED_CRED,
+  });
+});
+
+test("credentialWiringPlan: issues shared-group, private ~/.claude, the symlink, and the shared file's group+mode — in order", () => {
+  assert.deepEqual(credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED), [
+    ["groupadd", ["-f", SHARED_CRED_GROUP]],
+    ["usermod", ["-aG", SHARED_CRED_GROUP, "sk-comex"]],
+    ["mkdir", ["-p", "/home/sk-comex/.claude"]],
+    ["chown", ["sk-comex:sk-comex", "/home/sk-comex/.claude"]],
+    ["chmod", ["700", "/home/sk-comex/.claude"]],
+    ["ln", ["-sfn", SHARED_CRED, "/home/sk-comex/.claude/.credentials.json"]],
+    ["chown", ["-h", "sk-comex:sk-comex", "/home/sk-comex/.claude/.credentials.json"]],
+    ["chgrp", [SHARED_CRED_GROUP, SHARED_CRED]],
+    ["chmod", ["660", SHARED_CRED]],
+  ]);
+});
+
+// ── provisionGroupUser: credential wiring (Task 7) ────────────────────────────
+
+test("provisionGroupUser: WITH sharedCredentialPath, issues the symlink + shared-group wiring after the HOME chmod", async () => {
+  const calls: Array<[string, string[]]> = [];
+  const r = await provisionGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    seed: async () => {},
+    homeBase: "/home",
+    userExists: async () => false,
+    sharedCredentialPath: SHARED_CRED,
+  });
+  assert.deepEqual(r, { osUser: "sk-comex", home: "/home/sk-comex" });
+  assert.deepEqual(calls, [
+    ["useradd", ["--create-home", "--home-dir", "/home/sk-comex", "sk-comex"]],
+    ["chmod", ["700", "/home/sk-comex"]],
+    ...credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED),
+  ]);
+});
+
+test("provisionGroupUser: WITHOUT sharedCredentialPath, no credential wiring runs (mono-tenant / unchanged)", async () => {
+  const calls: Array<[string, string[]]> = [];
+  await provisionGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    seed: async () => {},
+    homeBase: "/home",
+    userExists: async () => true,
+  });
+  // reused user: only the HOME chmod, no ln/groupadd/usermod/chgrp.
+  assert.deepEqual(calls, [["chmod", ["700", "/home/sk-comex"]]]);
+});
+
+test("provisionGroupUser: THROWS when credential wiring fails (an un-credentialed agent is a broken wall)", async () => {
+  await assert.rejects(
+    provisionGroupUser(comex, {
+      run: async (cmd) => {
+        if (cmd === "ln") throw new Error("ln: permission denied");
+      },
+      seed: async () => {},
+      homeBase: "/home",
+      userExists: async () => false,
+      sharedCredentialPath: SHARED_CRED,
+    }),
+    /credential wiring .* failed/,
+  );
+});
+
+// ── credentialDivergence / checkCredentialDivergence (the verify-first gate) ──
+// Detects the rename-refresh signature: the HOME's .credentials.json is NO
+// LONGER the symlink we posed (it became a real 600 file owned by whichever
+// group refreshed), which breaks the shared-symlink scheme for multi-user.
+
+test("credentialDivergence: FALSE while the HOME cred is still the expected symlink", () => {
+  assert.equal(
+    credentialDivergence("/home/sk-comex/.claude/.credentials.json", SHARED_CRED, {
+      isSymlinkTo: (p, t) =>
+        p === "/home/sk-comex/.claude/.credentials.json" && t === SHARED_CRED,
+    }),
+    false,
+  );
+});
+
+test("credentialDivergence: TRUE when the HOME cred became a REAL file (not the symlink)", () => {
+  assert.equal(
+    credentialDivergence("/home/sk-comex/.claude/.credentials.json", SHARED_CRED, {
+      isSymlinkTo: () => false, // a real file / wrong target / missing → not our symlink
+    }),
+    true,
+  );
+});
+
+test("checkCredentialDivergence: WARNS (naming the group + the broker gate) on divergence, returns true", () => {
+  const warnings: string[] = [];
+  const diverged = checkCredentialDivergence(
+    { id: "comex", home: "/home/sk-comex" },
+    SHARED_CRED,
+    { isSymlinkTo: () => false, warn: (m) => void warnings.push(m) },
+  );
+  assert.equal(diverged, true);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /comex/);
+  assert.match(warnings[0], /broker/i);
+  assert.match(warnings[0], /rename/i);
+});
+
+test("checkCredentialDivergence: SILENT and false when the symlink is intact", () => {
+  const warnings: string[] = [];
+  const diverged = checkCredentialDivergence(
+    { id: "comex", home: "/home/sk-comex" },
+    SHARED_CRED,
+    { isSymlinkTo: () => true, warn: (m) => void warnings.push(m) },
+  );
+  assert.equal(diverged, false);
+  assert.equal(warnings.length, 0);
 });
 
 // ── teardownGroupUser (impure, best-effort, never throws) ─────────────────────
