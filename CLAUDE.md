@@ -1551,14 +1551,20 @@ Auth section of `docs/architecture.md`).
     and gives none, which is worse than not offering it. Public groups are no
     wall by design (one commons user), so they stay available everywhere.
 
-48. **No agent runs as root.** The server (the privileged orchestrator) drops to
-    the group's OS user at EVERY spawn (`dropArgv` → `setpriv`, `src/osusers.ts`).
-    The Docker image has no `USER` (the server provisions users, so it must start
-    privileged), which means an undropped agent would be root and walk every wall.
-    The commons is a non-root user too: migration creates `main`
-    (`src/migrate-groups.ts`) and every public/commons spawn drops to it once the
-    volume marker says migration completed. Before that marker, the commons runs as
-    the server's own user — today's behaviour — never a half-state.
+48. **Once migration completes, no agent runs as root — before that, agents keep
+    the server's own user, which is root in the stock image.** In a CAPABLE
+    (multi-tenant) instance, with the migration marker set and the non-root `main`
+    user present, the server drops EVERY spawn to the group's OS user (`dropArgv`
+    → `setpriv`, `src/osusers.ts`); the commons drops to `main`
+    (`commonsOsUser`, `src/migrate-groups.ts`). The Docker image has no `USER` (the
+    server provisions users, so it must start privileged), so the drop is the only
+    thing between an agent and root. Until the marker is set — and after a FAILED or
+    partial migration, which withholds it — and in every MONO-TENANT instance (no
+    privilege or no GUI password), there is no drop user: the spawn is not wrapped
+    and the agent runs as the server's own user (root in the stock image). That is
+    today's behaviour, never a half-state; the migration banner warns while
+    migration is pending or failed. Private and restricted groups are the real
+    walls; public/commons shares the one user.
 
 49. **A caller's group is derived server-side, from the SESSION — never from
     client input — and a resume is checked even for a LIVE session.** Spawn,
@@ -1580,7 +1586,9 @@ Auth section of `docs/architecture.md`).
     (credential, skills, trust state), and every provisioning step still reports
     success. `dropEnv` points them at `homeForUser(user, homeBase)` — the same
     function that created the home — and it applies feature-wide (group users AND
-    `main`), not to one group. Human-verify on a real container: the unit tests
+    `main`), not to one group. With NO drop user (mono-tenant, or the commons
+    before migration) `dropEnv` returns `{}` and HOME is left untouched, so that
+    path is unchanged. Human-verify on a real container: the unit tests
     prove the env, only a real `setpriv` proves the uid can read what it was given.
 
 51. **Ledger and talk default to the sender's own group; crossing is an explicit,

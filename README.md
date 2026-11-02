@@ -455,9 +455,12 @@ protects nothing. You don't configure this; it follows from how you run it. The
 boot log prints `deployment mode: …`.
 
 An existing single-tenant instance that comes up capable is migrated
-automatically: what you have becomes the public `Main` group, agents run as a
-non-root `main` user, each account gets a private group, and agents restart one
-at a time. A banner shows progress. Telegram stays single-owner, and there are no
+automatically: what you have becomes the public `Main` group, each account gets
+a private group, and agents restart one at a time. A banner shows progress. Once
+migration completes, private and restricted agents run as their own non-root
+user, and `Main` agents run as a shared non-root `main` user. Until migration
+completes (or if it fails), agents keep running as before, so the non-root
+guarantee does not yet hold for them. Telegram stays single-owner, and there are no
 disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
 
 ### Exposing it beyond this machine
