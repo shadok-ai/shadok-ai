@@ -1709,10 +1709,27 @@ app.get("/sessions", (req, res) => {
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
 // /sessions cannot see them — this is the only way the UI can list them.
-app.get("/live", (_req, res) => {
+app.get("/live", (req, res) => {
+  // Scope to the caller's visible groups: /live leaks `lastPrompt` (content) and
+  // `cwd`/`branch` (location), and is the id-discovery vector for the WS resume
+  // and term-* attach paths. Mirror `mayDriveSession` per session — mono-tenant
+  // and any group-less (commons) channel resolve to always-visible, so the list
+  // stays byte-for-byte today's outside multi-tenant. A dangling group id fails
+  // closed, the twin of `visibleChannels`.
+  const viewer = viewerFor(currentAccount(req));
+  const chans = loadChannels();
+  const groups = loadGroups();
+  const visible = (id: string): boolean => {
+    if (DEPLOYMENT_MODE !== "multi-tenant") return true;
+    const gid = chans.find((c) => c.sessionId === id)?.group ?? null;
+    if (!gid) return true; // commons / group-less
+    const g = groups.find((x) => x.id === gid);
+    if (!g) return false; // unresolvable → fail closed
+    return canSeeGroup(g, viewer);
+  };
   res.json(
     [...sessions.values()]
-      .filter((s) => !s.pilot.hasExited)
+      .filter((s) => !s.pilot.hasExited && visible(s.id))
       .map((s) => ({
         id: s.id,
         cwd: s.cwd,
@@ -5769,6 +5786,38 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             });
           }
 
+          // People-boundary authorization on RESUME (security gate), hoisted
+          // ABOVE the live-attach branch below. The stored group drives a
+          // privilege drop to that group's OS user, so resuming a group's agent
+          // is driving a process AS that group. A caller who cannot SEE the
+          // stored group must be refused — never resumed under the commons user
+          // either, which would still open someone else's transcript. This MUST
+          // run before the `sessions.get(id)` attach: attaching to a CURRENTLY
+          // LIVE foreign-group session would otherwise bypass the check entirely
+          // and leak its history/screen/stream broadcasts to an unauthorized
+          // client. Only matters in multi-tenant (mono-tenant writes no group and
+          // drops to no user, so `canResumeAs` is a trivial pass; the mode gate
+          // keeps a stray legacy group from ever producing a false refusal
+          // there). `storedGroupId`/`groupsNow` are reused by the isolation
+          // policy and `agentGroupId` below.
+          const storedGroupId = resumed
+            ? loadChannels().find((c) => c.sessionId === id)?.group ?? null
+            : null;
+          const groupsNow = loadGroups();
+          if (
+            resumed &&
+            DEPLOYMENT_MODE === "multi-tenant" &&
+            !canResumeAs(storedGroupId, groupsNow, viewerFor(me))
+          ) {
+            console.log(
+              `resume: ${id.slice(0, 8)} refused — ${me?.name ?? "anon"} is not entitled to group ${storedGroupId}`,
+            );
+            return fail(
+              "you are not entitled to resume this agent — its group is not yours",
+              "forbidden",
+            );
+          }
+
           const existing = sessions.get(id);
           if (existing && !existing.pilot.hasExited) {
             // Session already piloted: attach to it (shared process). Cancel
@@ -5876,31 +5925,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // isn't read). A resume keeps the channel's stored group and runs as
           // that group's user. Mono-tenant resolves to no user / no group, so the
           // spawn and the channel record stay byte-for-byte today's.
-          const storedGroupId = resumed
-            ? loadChannels().find((c) => c.sessionId === id)?.group ?? null
-            : null;
-          const groupsNow = loadGroups();
-          // People-boundary authorization on RESUME (security gate). The stored
-          // group drives a privilege drop to that group's OS user, so resuming a
-          // group's agent is driving a process AS that group. A caller who cannot
-          // SEE the stored group must be refused — never resumed under the commons
-          // user either, which would still open someone else's transcript. Only
-          // matters in multi-tenant (mono-tenant writes no group and drops to no
-          // user, so `canResumeAs` is a trivial pass; the mode gate keeps a stray
-          // legacy group from ever producing a false refusal there).
-          if (
-            resumed &&
-            DEPLOYMENT_MODE === "multi-tenant" &&
-            !canResumeAs(storedGroupId, groupsNow, viewerFor(me))
-          ) {
-            console.log(
-              `resume: ${id.slice(0, 8)} refused — ${me?.name ?? "anon"} is not entitled to group ${storedGroupId}`,
-            );
-            return fail(
-              "you are not entitled to resume this agent — its group is not yours",
-              "forbidden",
-            );
-          }
+          // `storedGroupId`/`groupsNow` and the resume people-boundary gate were
+          // resolved ABOVE the live-attach branch (see CRIT1 note there).
           const isolation = resolveSpawnIsolation({
             mode: DEPLOYMENT_MODE,
             resumed,
@@ -6302,6 +6328,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         // ── Experimental raw interactive terminal (tmux transport only) ──
         case "term-attach": {
           if (!session) return fail("no session started");
+          // SEE gate: the raw term-data stream carries the foreign agent's full
+          // screen, so an attach is a cross-group content leak just like history.
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           if (!(s.pilot instanceof TmuxPilot)) return fail("interactive terminal needs the tmux transport");
           s.rawClients ??= new Set();
@@ -6323,6 +6352,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         }
         case "term-input": {
           if (!session || !(session.pilot instanceof TmuxPilot)) return;
+          // DRIVE gate: raw keystrokes go straight to the pilot process.
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (typeof msg.data === "string") session.pilot.sendRaw(Buffer.from(msg.data, "base64"));
           break;
         }
@@ -6330,6 +6361,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Fit the pane to the browser terminal so the full-screen view fills.
           // Original size is remembered and restored when the pipe detaches.
           if (!session || !(session.pilot instanceof TmuxPilot)) return;
+          // DRIVE gate: resizing another group's pane perturbs its process.
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (typeof msg.cols === "number" && typeof msg.rows === "number")
             session.pilot.resizeWindow(msg.cols, msg.rows);
           break;

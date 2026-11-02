@@ -204,6 +204,21 @@ export function secretWriteDecision(input: {
     (ownerGroup === MAIN_GROUP_ID
       ? ({ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], createdAt: 0 } as Group)
       : null);
+  // An AGENT (its per-session key present → `agentGroupId` defined, possibly
+  // null) writes into its OWN channel group, which `secretOwnerGroup` just
+  // derived from its session id — the client cannot name another. That
+  // derivation IS the authorization, so the write is legitimate for ANY nature,
+  // INCLUDING a private group: `canWriteSecretGroup` would wrongly refuse it
+  // because an agent authenticates as the bootstrap admin and never as the
+  // private owner (`g.owner === viewer.name` is false), which would leave a
+  // private-group agent unable to store a credential it obtained via the
+  // `shadok-secrets` skill. HUMAN (browser) writes stay governed by the
+  // membership rules below. Still fail closed on an unresolvable group — we
+  // never write into a group we cannot verify.
+  if (input.agentGroupId !== undefined) {
+    if (!g) return { ok: false, error: `cannot resolve the owner group ${ownerGroup}` };
+    return { ok: true, ownerGroup };
+  }
   if (!canWriteSecretGroup(g, input.viewer)) {
     return { ok: false, error: `you are not entitled to write a secret in group ${ownerGroup}` };
   }
