@@ -172,6 +172,23 @@ function connect() {
   });
 }
 
+/**
+ * WHERE this client speaks from, travelling with every prompt it sends.
+ *
+ * It is what lets the cockpit say who spoke: a prompt that declares no origin
+ * and no name is read as the human's own — the label falls back to "you" and
+ * the bubble sits on your side — so an agent driving another used to appear as
+ * the person who owns the cockpit, in the chat AND in the receiving agent's
+ * transcript. `SHADOK_SESSION_ID` is set by the server on every piloted
+ * session, the same signal `buildStartMsg` links a parent with: inside one we
+ * are an agent, in a human's shell we are the CLI.
+ *
+ * Pure, so the rule is testable without a server.
+ */
+export function callerOrigin(env = process.env) {
+  return env.SHADOK_SESSION_ID ? "agent" : "cli";
+}
+
 // Attaches to (or starts) a session; resolves once the server says `ready`.
 export async function openSession(startMsg) {
   const ws = await connect();
@@ -215,7 +232,9 @@ export async function openSession(startMsg) {
         listeners.add(l);
       }),
   };
-  client.send({ type: "start", ...startMsg });
+  // The caller may override it (nothing does today); otherwise we introduce
+  // ourselves. Spread last so an explicit origin wins.
+  client.send({ type: "start", origin: callerOrigin(), ...startMsg });
   const ready = await client.waitFor(["ready", "error"], 90_000);
   if (ready.type !== "ready") {
     ws.close();

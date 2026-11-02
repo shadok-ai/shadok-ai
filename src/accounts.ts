@@ -230,13 +230,22 @@ export function inviteVerdict(
  * put anything in `from`. The Telegram bridge is a trusted bridge that knows its
  * sender, so it keeps naming them; other origins (cli, cron) are the server's
  * own callers and keep whatever they supplied.
+ *
+ * An AGENT prompt (pilotctl, `origin: "agent"`) follows the WEB rule, not the
+ * bridge one: the name comes from the session key that signed the socket, and a
+ * `from` in the frame is discarded. An agent is exactly the caller a claimed
+ * name cannot be taken from — it writes its own frames, and the whole point of
+ * the label is to tell its message apart from the human's.
  */
 export function promptAuthor(
   origin: string | undefined,
   sessionName: string | undefined,
   claimed: string | undefined,
+  callerAgent?: string | undefined,
 ): string | undefined {
-  return origin === "web" ? sessionName : claimed;
+  if (origin === "web") return sessionName;
+  if (origin === "agent") return callerAgent;
+  return claimed;
 }
 
 /**

@@ -148,8 +148,13 @@ self-healed at boot.
 
 **Who spoke.** Because several clients share one session, a prompt arriving out
 of nowhere is confusing. `start` carries an `origin` (`"web"`, `"cron"`,
-`"telegram"`, `"cli"`…) that travels with `prompt-echo`, so every other client can
-attribute the prompt instead of showing it anonymously. A `prompt` refused
+`"telegram"`, `"agent"`, `"cli"`) that travels with `prompt-echo`, so every other
+client can attribute the prompt instead of showing it anonymously. Anonymously is
+not what the absence of an origin means, though: the client's fallback for a
+prompt with no origin and no name is **the human driving the cockpit** (one
+cockpit, one human — `public/echo-author.js`), which is why a machine client that
+forgets to introduce itself is shown as the user rather than as "unknown", and why
+`callerOrigin` in pilotctl is not cosmetic (invariant 47). A `prompt` refused
 mid-turn comes back as `error` with `code: "busy"` — a machine client can
 classify the refusal without pattern-matching the message text. And
 `stream-text` carries `at`, the time the block was **written**, not the time we

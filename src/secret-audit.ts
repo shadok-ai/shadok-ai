@@ -95,9 +95,15 @@ export function spawnActor(c: {
   peer?: string | null;
   parent?: string | null;
   from?: string | null;
+  /** The cockpit name of the agent driving the socket, when one is. */
+  agent?: string | null;
 }): { actor: string; via: SecretAuditVia } {
   if (c.peer) return { actor: `peer ${c.peer}`, via: "peer" };
   if (c.parent) return { actor: `agent ${c.parent.slice(0, 8)}`, via: "agent" };
+  // An agent that declares itself but spawned nothing (it RESUMED a session, so
+  // there is no parent link to credit): same reason as the branch above — the
+  // account alone is the bootstrap admin, a person who did nothing.
+  if (c.origin === "agent") return { actor: c.agent ? `agent ${c.agent}` : "agent", via: "agent" };
   if (c.origin === "cron") return { actor: "cron", via: "cron" };
   if (c.origin === "telegram") return { actor: c.from ? `telegram ${c.from}` : "telegram", via: "telegram" };
   if (c.origin === "web") return { actor: c.account || "unknown", via: "web" };

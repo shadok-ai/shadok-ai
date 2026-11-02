@@ -209,8 +209,10 @@ both are silent in the DOM.
 there, so the link needs no configuring. A refused link is DROPPED and logged,
 never fatal to the spawn: killing an agent over a bad link would be worse than an
 agent that reports to nobody./
-`origin` — "web"/"cron"/"telegram"…, echoed back in `prompt-echo` to say WHO
-spoke/
+`origin` — "web"/"cron"/"telegram"/"agent"/"cli", echoed back in `prompt-echo` to
+say WHO spoke. A client that declares NOTHING is read as the human (cf. invariant
+47), so every machine client must name itself: pilotctl does it from
+`SHADOK_SESSION_ID` (`callerOrigin`)/
 `name` — the tab name for a NEW agent (pilotctl `--name`); ASSERT-only and applied
 on a spawn ONLY, so a resume never clobbers a rename made in the UI),
 `prompt` (text, `force?`), `run` (`command` — a one-line command typed into the pane's SHELL MODE on the human's behalf; **browser connections only**, since shell mode bypasses a profile's `deny`; see `src/bang.ts`), `choose` n, `toggle` n, `confirm`, `freetext` n
@@ -1550,6 +1552,32 @@ Auth section of `docs/architecture.md`).
     login path uses for the instance password and which never reaches an agent's
     env (`SHADOK_AUTH` keeps `mfa=0`, hence refused). Measured both ways on a
     real instance, not reasoned: 401/401 before, 200 + `/2fa` 403 after.
+
+47. **A client that does not say who it is is shown as THE HUMAN — "anonymous"
+    is not a state this cockpit has.** `echoAuthor` falls back to `"you"` and
+    `isOwnPrompt` to *yours* when a `prompt-echo` carries neither `origin` nor
+    `from`, deliberately: a web prompt with no account is the person driving a
+    cockpit that has one human. pilotctl declared no `origin`, so every prompt an
+    agent sent to another agent landed in that branch — the bubble sat on the
+    user's side of the chat, signed "you", for a message they never wrote. Two
+    halves, and the invisible one is the worse: the `⟦platform · time · sender⟧`
+    context header was gated on `web|telegram|cli`, so the RECEIVING agent got a
+    bare user message and obeyed a peer believing it was the cockpit's owner. So:
+    **every machine client names itself** (`callerOrigin`, from
+    `SHADOK_SESSION_ID` — inside a piloted session "agent", in a human's shell
+    "cli"), and the two paths that say who spoke stay in step; add an origin to
+    one and you must decide for the other.
+    **The name is resolved from the KEY, never from the frame** —
+    `agentNameForKey`, the same rule the web already had (`promptAuthor`). The
+    trap here is that the obvious fix is wrong in an interesting way:
+    `currentAccount` maps `x-shadok-session-key` to the bootstrap admin, which is
+    the right answer for AUTHORISATION and would have signed an agent's message
+    with the human's name — the same lie, with a signature. For the same reason
+    `spawnActor` credits `agent <name>` rather than the account on an
+    agent-origin socket. The HIDDEN machine paths are untouched and must stay
+    that way: a cron fire and a parent notification carry their own mark, are not
+    "someone speaking", and reach the TUI through `driveChannel`
+    (`origin: "cron"`), so they match no header gate.
 
 ## Conventions
 
