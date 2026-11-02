@@ -101,6 +101,7 @@ import {
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
 import { viewerFor, type Viewer, type Group } from "./groups.js";
+import { resolveSpawnIsolation } from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
   peerFileFor,
@@ -3823,6 +3824,13 @@ function makePilot(
   profileName?: string | null,
   model?: string | null,
   effort?: string | null,
+  /**
+   * The OS user to drop this agent to (multi-tenant isolation, `src/osusers.ts`).
+   * The multi-tenant gate lives at the call sites (the only place `DEPLOYMENT_MODE`
+   * is known), so this is `null`/undefined on every mono-tenant spawn and the
+   * pilots' spawn path stays byte-for-byte what it was.
+   */
+  user?: string | null,
 ): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
@@ -3880,8 +3888,8 @@ function makePilot(
   // back to the bare name, i.e. the historical behaviour.
   const claudePath = claudeCommand();
   return USE_TMUX
-    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath })
-    : new PtyPilot({ cwd, args: fullArgs, env, claudePath });
+    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user })
+    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user });
 }
 
 interface Live {
@@ -4098,6 +4106,18 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
   // respawns on the last known path, which is what it did before.
   const claude = await ensureClaudeOnce();
   if (!claude.ok) console.error(`[sk-${s.id}] restart: ${claude.error}`);
+  // A reload respawns a fresh process (for PtyPilot; TmuxPilot re-adopts the
+  // live pane and keeps its original uid — invariant 25 / Task 15). It is a
+  // resume, so it never reassigns the group: derive the OS user from the
+  // channel's stored group so a private agent comes back under its own user,
+  // not as root. Mono-tenant resolves to null — unchanged from before.
+  const restartUser = resolveSpawnIsolation({
+    mode: DEPLOYMENT_MODE,
+    resumed: true,
+    viewer: null,
+    groups: loadGroups(),
+    storedGroupId: loadChannels().find((c) => c.sessionId === s.id)?.group ?? null,
+  }).user;
   s.pilot = makePilot(
     s.id,
     s.cwd,
@@ -4105,6 +4125,7 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
     s.profile,
     s.model,
     s.effort,
+    restartUser,
   );
   s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
@@ -4386,8 +4407,12 @@ async function createSession(
   model: string | null = null,
   effort: string | null = null,
   by: SpawnBy = SYSTEM_SPAWN,
+  /** Multi-tenant isolation: the OS user to drop the agent to (null = commons /
+   *  mono-tenant, i.e. the server's own user). Resolved by the caller, which is
+   *  where `DEPLOYMENT_MODE` and the channel's group are both known. */
+  user: string | null = null,
 ): Promise<Live> {
-  const pilot = makePilot(id, cwd, args, profile, model, effort);
+  const pilot = makePilot(id, cwd, args, profile, model, effort, user);
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id));
   const backend = sessionBackend(profile);
@@ -5362,9 +5387,26 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             !resumed && typeof msg.name === "string" && msg.name.trim()
               ? msg.name.trim().slice(0, 80)
               : undefined;
+          // Isolation wall: the OS user to drop to, and the group a NEW agent is
+          // born into — BOTH derived from the caller's own identity (`me`), never
+          // from the client payload (a start msg cannot name its group: the field
+          // isn't read). A resume keeps the channel's stored group and runs as
+          // that group's user. Mono-tenant resolves to no user / no group, so the
+          // spawn and the channel record stay byte-for-byte today's.
+          const storedGroupId = resumed
+            ? loadChannels().find((c) => c.sessionId === id)?.group ?? null
+            : null;
+          const isolation = resolveSpawnIsolation({
+            mode: DEPLOYMENT_MODE,
+            resumed,
+            viewer: viewerFor(me),
+            groups: loadGroups(),
+            storedGroupId,
+          });
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
+            isolation.user,
           );
           session.clients.add(ws);
           if (resumed) {
@@ -5445,6 +5487,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // The spawn-time name (pilotctl `--name`). ASSERT-only and computed
             // above so it can never fire on a resume — a UI rename must win.
             ...(initialName ? { name: initialName } : {}),
+            // The group a NEW agent is born into, set SERVER-SIDE from the
+            // caller's own identity (never the client payload — `group` is
+            // SERVER_OWNED, so a PUT /channels cannot touch it either). Empty on
+            // a resume (the stored group is kept) and in mono-tenant (group-less
+            // = commons, today's behaviour). A channel is never born with a
+            // dangling group id: `spawnGroupFor` returns a real group or null.
+            ...isolation.groupPatch,
           });
           send({ type: "tokens", tokens: tokenTotals(session) });
           send(profileMessage(session));
