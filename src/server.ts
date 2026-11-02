@@ -172,6 +172,8 @@ import {
   setTitleForCwd,
   themeForCwd,
   setThemeForCwd,
+  mutedForCwd,
+  setMutedForCwd,
   twoFactorForCwd,
   setTwoFactorForCwd,
   backendForCwd,
@@ -1740,6 +1742,16 @@ app.get("/theme", (_req, res) => {
 app.put("/theme", (req, res) => {
   setThemeForCwd(loadConfig(), process.cwd(), String(req.body?.theme ?? ""));
   res.json({ theme: themeForCwd(loadConfig(), process.cwd()) });
+});
+// Instance-wide mute, per launch directory. `true` = NO web attention signal for
+// any agent (favicon frozen, no title badge, no blink, no chime). Purely a
+// display preference the client reads — no agent is restarted, unlike /ledger.
+app.get("/mute", (_req, res) => {
+  res.json({ muted: mutedForCwd(loadConfig(), process.cwd()) });
+});
+app.put("/mute", (req, res) => {
+  setMutedForCwd(loadConfig(), process.cwd(), req.body?.muted === true);
+  res.json({ muted: mutedForCwd(loadConfig(), process.cwd()) });
 });
 // Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
 // back the directory to start the agent in. Sits here so it inherits the same

@@ -2642,6 +2642,8 @@
   <div class="vm-hint" id="vmModeHint"></div>
   <label class="vm-check"><input type="checkbox" id="ledgerChk"><span>Shared ledger</span></label>
   <div class="vm-hint" id="vmLedgerHint"></div>
+  <label class="vm-check"><input type="checkbox" id="muteInstanceChk"><span>Mute this instance</span></label>
+  <div class="vm-hint" id="vmMuteHint">No favicon change, title badge, blink or sound — for every agent, on every tab of this instance.</div>
   <div class="vm-row"><span class="vm-label">Default model</span>
     <select id="defModelSel"><option value="">Claude Code's own default</option></select>
   </div>
@@ -5754,6 +5756,33 @@
   }
   renderThemeSwatches(); // paint the swatches now; the load fetch sets the active one
 
+  // ── Instance-wide mute: per instance, persisted server-side (like the name) ──
+  // When on, EVERY agent on this instance raises no web attention signal — the
+  // favicon never changes, no title badge, no blink, no chime — for every tab
+  // and device. It is the instance twin of a per-channel mute: `attentionInput`
+  // folds it into every channel's `muted`, and `ding` honours it too.
+  let cockpitMuted = false;
+  function applyMuted(on) {
+    cockpitMuted = !!on;
+    const chk = $("muteInstanceChk");
+    if (chk) chk.checked = cockpitMuted;
+    if (typeof paint === "function") paint(); // re-stamp favicon/title at once
+  }
+  async function saveMuted(on) {
+    applyMuted(on); // optimistic; the server echo reconciles below
+    try {
+      const res = await fetch("/mute", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ muted: !!on }),
+      });
+      const j = await res.json();
+      applyMuted(!!(j && j.muted));
+    } catch {
+      /* offline: keep the optimistic state, the next reload re-fetches */
+    }
+  }
+
   // ── Light / dark mode: per BROWSER (localStorage), not per instance ─────────
   // A comfort choice that belongs to the person, not the cockpit's identity (the
   // accent palette is the shared one). The <head> script already set the
@@ -5911,11 +5940,14 @@
   }
   /** What each channel is asking for, as the pure module wants it. */
   function attentionInput() {
+    // An instance-wide mute makes EVERY agent silent for notification purposes,
+    // so the favicon never changes, no title badge, no blink — the twin of a
+    // per-channel mute, applied to all at once (cockpitMuted, from /mute).
     return tabs.map((t) => ({
       mood: t.btnEl.classList.contains("needs-answer") ? "needs-answer"
         : t.btnEl.classList.contains("unread") ? "unread"
         : t.btnEl.classList.contains("working") ? "working" : null,
-      muted: !!t.muted,
+      muted: cockpitMuted || !!t.muted,
     }));
   }
 
@@ -6023,7 +6055,7 @@
   document.addEventListener("pointerdown", unlockAudio);
   document.addEventListener("keydown", unlockAudio);
   function ding() {
-    if (muted || !audioCtx || audioCtx.state !== "running") return;
+    if (muted || cockpitMuted || !audioCtx || audioCtx.state !== "running") return;
     const t0 = audioCtx.currentTime;
     for (const [freq, at] of [[880, 0], [1320, 0.12]]) {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
@@ -7962,6 +7994,13 @@
     .then((r) => r.json())
     .then((j) => applyTheme(j && j.theme ? j.theme : "amber"))
     .catch(() => {});
+  // Instance-wide mute, likewise server-owned per instance.
+  fetch("/mute")
+    .then((r) => r.json())
+    .then((j) => applyMuted(!!(j && j.muted)))
+    .catch(() => {});
+  const muteInstanceChk = $("muteInstanceChk");
+  if (muteInstanceChk) muteInstanceChk.addEventListener("change", () => saveMuted(muteInstanceChk.checked));
   // Click outside closes it; clicks inside the menu don't.
   document.addEventListener("click", (e) => {
     if (!verMenu.hidden && !verMenu.contains(e.target) && e.target !== verView && e.target !== verChan) toggleVerMenu(false);
