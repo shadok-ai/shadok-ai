@@ -163,46 +163,120 @@ export function credentialWiring(home: string, sharedCredentialPath: string): { 
 }
 
 /**
- * The exact, ordered privileged commands that wire a group HOME to the shared
- * credential. Pure (a list of `[cmd, argv]`) so the sequence is locked by test,
- * exactly like `provisionPlan`'s `useradd`. Run as root through the injected
- * `run` in `provisionGroupUser`. Each step is load-bearing:
+ * The privileged commands that wire a group HOME to the shared credential,
+ * SPLIT BY WHO RUNS THEM. Pure (lists of `[cmd, argv]`) so the sequence and the
+ * root/user split are locked by test, exactly like `provisionPlan`'s `useradd`.
+ *
+ * WHY THE SPLIT (Important #B — close the TOCTOU). The HOME is owned by the
+ * group user and is mode 700 (Task 6). If ROOT created `~/.claude` and the
+ * symlink inside it, it would be writing THROUGH an agent-controllable directory
+ * — and an agent that plants a symlink at `~/.claude` (or a race between the
+ * lstat and the write) could make root dereference it and hand the agent
+ * ownership of an arbitrary target. So root does ONLY the shared-side (the group
+ * the agent is in, the shared directory chain, and the shared FILE's group+mode),
+ * and the HOME-side (create the private `~/.claude`, pose the credential symlink)
+ * runs AS THE GROUP USER via `runuser -u <user> --` (see `runAsUser`). The user
+ * owns its own HOME, so it needs no privilege to write there, and root never
+ * touches a path the agent can control. `provisionGroupUser` keeps the
+ * `claudeDirStat` lstat refusal as belt-and-braces on top of this.
+ *
+ * `rootCmds` (run directly through the privileged `run`):
  * - `groupadd -f` the shared group (idempotent across re-provision);
  * - `install -d` the shared file's DIRECTORY as `root:shadok-cred` mode 0750, so
  *   the chain to the credential is TRAVERSABLE by every group user (group execute
  *   = traverse). Without this the file is 660 but unreachable — a silent no-auth
  *   spawn. The directory's contents stay root-owned; only traverse is granted;
  * - `usermod -aG` adds THIS user to the shared group (so it can read+write it);
- * - `install -d -o <user> -g <user> -m 700 <home>/.claude`: creates+owns the dir
- *   ATOMICALLY and does NOT follow a final planted symlink the way mkdir+chown
- *   would (Important #2 belt; the lstat refusal in `provisionGroupUser` is the
- *   suspenders). Task 6's wall — only this user traverses it;
- * - `ln -sfn` the symlink (`-f` replace, `-n` don't deref an existing link, so a
- *   re-provision never nests link-in-link), then chown -h it to the user;
  * - `chgrp`/`chmod 660` the SHARED file so every member user reads+writes it and
  *   an in-place refresh by any one of them stays readable by the others.
+ *
+ * `userCmds` (each wrapped in `runAsUser` and then run through the SAME
+ * privileged `run`, which drops to the group user):
+ * - `install -d -m 700 <home>/.claude`: the user creates+owns the dir itself, so
+ *   no `-o`/`-g` is needed and root never follows a planted link to get there;
+ * - `ln -sfn` the symlink (`-f` replace, `-n` don't deref an existing link, so a
+ *   re-provision never nests link-in-link). Created by the user → already owned
+ *   by the user, so the old root `chown -h` is gone.
  *
  * WHITELIST: the only paths whose owner/group/mode this plan touches are the
  * shared file, its parent dir, `<home>/.claude` and the link — nothing else.
  */
+export interface CredentialWiringPlan {
+  /** Shared-side, run AS ROOT: the group, the shared directory chain, group
+   *  membership, and the shared FILE's group+mode. Root never touches the HOME. */
+  rootCmds: Array<[string, string[]]>;
+  /** HOME-side, run AS THE GROUP USER (`runAsUser`): create the private
+   *  `~/.claude` and pose the credential symlink inside the user's own HOME. */
+  userCmds: Array<[string, string[]]>;
+}
+
 export function credentialWiringPlan(
   user: string,
   home: string,
   sharedCredentialPath: string,
-): Array<[string, string[]]> {
+): CredentialWiringPlan {
   const { link, target } = credentialWiring(home, sharedCredentialPath);
   const claudeDir = `${home}/.claude`;
   const sharedDir = path.dirname(sharedCredentialPath);
-  return [
-    ["groupadd", ["-f", SHARED_CRED_GROUP]],
-    ["install", ["-d", "-o", "root", "-g", SHARED_CRED_GROUP, "-m", "0750", sharedDir]],
-    ["usermod", ["-aG", SHARED_CRED_GROUP, user]],
-    ["install", ["-d", "-o", user, "-g", user, "-m", "700", claudeDir]],
-    ["ln", ["-sfn", target, link]],
-    ["chown", ["-h", `${user}:${user}`, link]],
-    ["chgrp", [SHARED_CRED_GROUP, sharedCredentialPath]],
-    ["chmod", ["660", sharedCredentialPath]],
-  ];
+  return {
+    rootCmds: [
+      ["groupadd", ["-f", SHARED_CRED_GROUP]],
+      ["install", ["-d", "-o", "root", "-g", SHARED_CRED_GROUP, "-m", "0750", sharedDir]],
+      ["usermod", ["-aG", SHARED_CRED_GROUP, user]],
+      ["chgrp", [SHARED_CRED_GROUP, sharedCredentialPath]],
+      ["chmod", ["660", sharedCredentialPath]],
+    ],
+    userCmds: [
+      ["install", ["-d", "-m", "700", claudeDir]],
+      ["ln", ["-sfn", target, link]],
+    ],
+  };
+}
+
+/**
+ * Wrap a command so the privileged `run` executes it AS the group user rather
+ * than as root. `runuser -u <user> --` drops privilege and execs the target
+ * directly; `--` ends runuser's own flags so an argument starting with `-` can
+ * never be read as one. Pure (a single `[cmd, argv]`) so the HOME-side split is
+ * locked by test. This is what lets root never dereference an agent-planted path
+ * while still creating the HOME-side wiring (see `credentialWiringPlan`).
+ */
+export function runAsUser(user: string, cmd: string, argv: string[]): [string, string[]] {
+  return ["runuser", ["-u", user, "--", cmd, ...argv]];
+}
+
+/**
+ * The reachability DECISION, pure. Given the resolved shared file's owning group
+ * and group-readable bit, and the mode/group of every ANCESTOR directory up to
+ * `/`, is the credential actually reachable by a `shadok-cred` group member?
+ *
+ * TRUE iff: the file is group-owned by `shadok-cred` AND group-readable AND every
+ * ancestor is traversable by the group — which means either other-execute (the
+ * dir lets everyone traverse) OR group-execute with the dir ALSO group-owned by
+ * `shadok-cred`. This is exactly what catches the `/root` trap: a 660
+ * `root:shadok-cred` file is unreachable when an ancestor is mode 700 (no
+ * other-x, no group-x), so a group user would spawn credential-less in SILENCE.
+ * The real `server.ts` probe gathers the stats (realpath + stat the chain,
+ * resolving gids to the group name) and calls this; keeping the decision pure is
+ * what finally makes the /root-ancestor logic testable.
+ *
+ * An ancestor's `group` is the group NAME when it is `shadok-cred`, else absent
+ * (the server passes `shadok-cred` only when the dir's gid matches the resolved
+ * shadok-cred gid), so group-execute only counts for the right group.
+ */
+export function reachableFromInspection(input: {
+  fileOwnerGroup: string;
+  fileGroupReadable: boolean;
+  ancestors: Array<{ mode: number; group?: string }>;
+}): boolean {
+  if (input.fileOwnerGroup !== SHARED_CRED_GROUP) return false;
+  if (!input.fileGroupReadable) return false;
+  for (const a of input.ancestors) {
+    const otherX = (a.mode & 0o001) !== 0;
+    const groupX = (a.mode & 0o010) !== 0 && a.group === SHARED_CRED_GROUP;
+    if (!otherX && !groupX) return false;
+  }
+  return true;
 }
 
 /**
@@ -390,24 +464,38 @@ export async function provisionGroupUser(
     const { link } = credentialWiring(plan.home, shared);
     const claudeDir = `${plan.home}/.claude`;
 
-    // Important #2: refuse to wire THROUGH an agent-planted symlink. If `.claude`
-    // exists and is a symlink (or a non-directory), a root chown/chmod would
-    // dereference it and hand the agent ownership of an arbitrary dir. The
-    // `install -d` below is symlink-safe too, but this is the explicit guard.
-    if (deps.claudeDirStat) {
-      const st = deps.claudeDirStat(claudeDir);
-      if (st.exists && (st.isSymlink || !st.isDir)) {
-        throw new Error(
-          `provisionGroupUser: refusing to wire credential — ${claudeDir} is a symlink or not a directory ` +
-            `(an agent may have planted it); not following it with chown/chmod`,
-        );
-      }
+    // Change A — the three guard deps are REQUIRED once a shared path is set.
+    // They are optional in the signature so mono-tenant (no `sharedCredentialPath`)
+    // never has to pass them, but a future multi-tenant caller that sets the path
+    // yet omits one would SILENTLY skip the symlink-safety / sign-in / reachability
+    // guard and spawn an agent credential-less or through a planted link. That is a
+    // programmer error, not a runtime condition — fail loud rather than degrade the
+    // wall. (Tests inject all three, so they stay green.)
+    if (!deps.claudeDirStat || !deps.sharedCredentialExists || !deps.reachable) {
+      throw new Error(
+        "provisionGroupUser: sharedCredentialPath is set but a required guard dep is missing — " +
+          "claudeDirStat, sharedCredentialExists and reachable are ALL required in multi-tenant " +
+          "(skipping any one would silently spawn an agent credential-less or through a planted symlink)",
+      );
+    }
+
+    // Important #2 / Change B — refuse to wire THROUGH an agent-planted symlink.
+    // The HOME-side commands now run AS THE GROUP USER (so root never dereferences
+    // a path the agent controls — see `credentialWiringPlan`), but this lstat
+    // refusal stays as belt-and-braces: if `.claude` already exists as a symlink
+    // (or a non-directory), we refuse before touching it at all.
+    const st = deps.claudeDirStat(claudeDir);
+    if (st.exists && (st.isSymlink || !st.isDir)) {
+      throw new Error(
+        `provisionGroupUser: refusing to wire credential — ${claudeDir} is a symlink or not a directory ` +
+          `(an agent may have planted it); not following it`,
+      );
     }
 
     // Important #3: a clear cause when the shared file is absent. The migration
     // (T15) seeds it; until then (or until the instance signs in) it may not
     // exist, and the `chgrp`/`chmod 660` below would throw opaquely.
-    if (deps.sharedCredentialExists && !deps.sharedCredentialExists(shared)) {
+    if (!deps.sharedCredentialExists(shared)) {
       throw new Error(
         `provisionGroupUser: shared Claude credential not found at ${shared} — is the instance signed in to ` +
           `Claude? (provisioning refused rather than spawn without auth)`,
@@ -415,8 +503,17 @@ export async function provisionGroupUser(
     }
 
     try {
-      for (const [cmd, argv] of credentialWiringPlan(plan.user, plan.home, shared)) {
+      const credPlan = credentialWiringPlan(plan.user, plan.home, shared);
+      // Root does only the shared-side (the group, the shared dir chain, the
+      // shared file's perms) — never anything inside the agent-owned HOME.
+      for (const [cmd, argv] of credPlan.rootCmds) {
         await deps.run(cmd, argv);
+      }
+      // The HOME-side (create `~/.claude`, pose the symlink) runs AS THE GROUP
+      // USER, so root never writes through a path the agent can control (TOCTOU).
+      for (const [cmd, argv] of credPlan.userCmds) {
+        const [wcmd, wargv] = runAsUser(plan.user, cmd, argv);
+        await deps.run(wcmd, wargv);
       }
     } catch (e) {
       throw new Error(
@@ -428,14 +525,12 @@ export async function provisionGroupUser(
     // after wiring. The old /root path passed every wiring step yet left the file
     // unreachable (700 ancestor) — a silent no-credential spawn. If the check
     // says unreachable, THROW.
-    if (deps.reachable) {
-      const r = await deps.reachable(plan.user, link);
-      if (!r.ok) {
-        throw new Error(
-          `provisionGroupUser: shared credential ${shared} is not reachable by ${plan.user}` +
-            `${r.detail ? ` (${r.detail})` : ""} — refusing to spawn credential-less`,
-        );
-      }
+    const r = await deps.reachable(plan.user, link);
+    if (!r.ok) {
+      throw new Error(
+        `provisionGroupUser: shared credential ${shared} is not reachable by ${plan.user}` +
+          `${r.detail ? ` (${r.detail})` : ""} — refusing to spawn credential-less`,
+      );
     }
   }
 

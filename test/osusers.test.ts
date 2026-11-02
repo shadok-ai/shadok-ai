@@ -12,6 +12,8 @@ import {
   deleteGroupFlow,
   credentialWiring,
   credentialWiringPlan,
+  runAsUser,
+  reachableFromInspection,
   classifyCredentialLink,
   checkCredentialDivergence,
   SHARED_CRED_GROUP,
@@ -308,33 +310,51 @@ test("credentialWiring: the HOME link and the shared target, verbatim", () => {
   });
 });
 
-test("credentialWiringPlan: shared-group, a group-traversable shared DIR, a symlink-safe private ~/.claude, the symlink, and the shared file's group+mode — in order", () => {
-  assert.deepEqual(credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED), [
+const LINK = "/home/sk-comex/.claude/.credentials.json";
+const CLAUDE_DIR = "/home/sk-comex/.claude";
+
+test("credentialWiringPlan: ROOT does ONLY the shared-side — the group, the group-traversable shared DIR, membership, and the shared file's group+mode (never anything inside the HOME)", () => {
+  const plan = credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED);
+  assert.deepEqual(plan.rootCmds, [
     ["groupadd", ["-f", SHARED_CRED_GROUP]],
     // The directory CHAIN to the shared file must be traversable by the group,
     // owned root:shadok-cred mode 0750 (group execute = traverse).
     ["install", ["-d", "-o", "root", "-g", SHARED_CRED_GROUP, "-m", "0750", SHARED_DIR]],
     ["usermod", ["-aG", SHARED_CRED_GROUP, "sk-comex"]],
-    // `install -d` creates+owns ~/.claude atomically and does NOT follow a final
-    // symlink the way mkdir+chown would (Important #2 belt; the lstat refusal in
-    // provisionGroupUser is the suspenders).
-    ["install", ["-d", "-o", "sk-comex", "-g", "sk-comex", "-m", "700", "/home/sk-comex/.claude"]],
-    ["ln", ["-sfn", SHARED_CRED, "/home/sk-comex/.claude/.credentials.json"]],
-    ["chown", ["-h", "sk-comex:sk-comex", "/home/sk-comex/.claude/.credentials.json"]],
     ["chgrp", [SHARED_CRED_GROUP, SHARED_CRED]],
     ["chmod", ["660", SHARED_CRED]],
   ]);
+  // No root command may touch anything inside the agent-owned HOME (TOCTOU).
+  for (const [, argv] of plan.rootCmds) {
+    for (const a of argv) assert.ok(!a.startsWith("/home/"), `root command must not touch the HOME: ${a}`);
+  }
+});
+
+test("credentialWiringPlan: the HOME-side (create private ~/.claude + pose the symlink) is run AS THE GROUP USER, not root — closes the TOCTOU", () => {
+  const plan = credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED);
+  // The raw HOME-side commands: create ~/.claude mode 700 (user owns it, so no
+  // -o/-g) and the symlink. No root `chown -h` — the user owns what it created.
+  assert.deepEqual(plan.userCmds, [
+    ["install", ["-d", "-m", "700", CLAUDE_DIR]],
+    ["ln", ["-sfn", SHARED_CRED, LINK]],
+  ]);
+  // Each one, as actually dispatched, runs through `runuser -u <user> --`.
+  assert.deepEqual(
+    plan.userCmds.map(([c, a]) => runAsUser("sk-comex", c, a)),
+    [
+      ["runuser", ["-u", "sk-comex", "--", "install", "-d", "-m", "700", CLAUDE_DIR]],
+      ["runuser", ["-u", "sk-comex", "--", "ln", "-sfn", SHARED_CRED, LINK]],
+    ],
+  );
 });
 
 test("credentialWiringPlan: whitelist — group/mode/owner changes touch ONLY the shared file, the shared dir, ~/.claude and the link", () => {
   const plan = credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED);
-  const claudeDir = "/home/sk-comex/.claude";
-  const link = "/home/sk-comex/.claude/.credentials.json";
-  const allowed = new Set([SHARED_CRED, SHARED_DIR, claudeDir, link]);
+  const allowed = new Set([SHARED_CRED, SHARED_DIR, CLAUDE_DIR, LINK]);
   // Every command that changes ownership or mode (install -o/-g/-m, chown, chgrp,
   // chmod) must target a whitelisted path — nothing ELSE on the filesystem gets
   // its group or mode touched by the wiring.
-  for (const [cmd, argv] of plan) {
+  for (const [cmd, argv] of [...plan.rootCmds, ...plan.userCmds]) {
     if (cmd === "install") {
       assert.ok(allowed.has(argv[argv.length - 1]), `install target ${argv[argv.length - 1]} not whitelisted`);
     } else if (cmd === "chown" || cmd === "chgrp" || cmd === "chmod") {
@@ -353,6 +373,14 @@ const okCredProbes = {
   reachable: async (_u: string, _l: string) => ({ ok: true }),
 };
 
+/** The flat command sequence the credential wiring issues through `run`: the
+ *  root-side commands verbatim, then each HOME-side command wrapped in
+ *  `runuser -u <user> --` (the TOCTOU-safe split). */
+const expectedWiring = (user: string, home: string, shared: string): Array<[string, string[]]> => {
+  const p = credentialWiringPlan(user, home, shared);
+  return [...p.rootCmds, ...p.userCmds.map(([c, a]) => runAsUser(user, c, a))];
+};
+
 test("provisionGroupUser: WITH sharedCredentialPath, issues the symlink + shared-group wiring after the HOME chmod", async () => {
   const calls: Array<[string, string[]]> = [];
   const r = await provisionGroupUser(comex, {
@@ -367,8 +395,16 @@ test("provisionGroupUser: WITH sharedCredentialPath, issues the symlink + shared
   assert.deepEqual(calls, [
     ["useradd", ["--create-home", "--home-dir", "/home/sk-comex", "sk-comex"]],
     ["chmod", ["700", "/home/sk-comex"]],
-    ...credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED),
+    ...expectedWiring("sk-comex", "/home/sk-comex", SHARED_CRED),
   ]);
+  // Every command that touches a path INSIDE the agent-owned HOME's ~/.claude
+  // must run via runuser (as the user), never as root — that is the TOCTOU fix.
+  // (The `chmod 700` on the HOME dir itself is root's Task-6 wall and is fine:
+  //  the dir is root-controlled at useradd time, before any agent can plant.)
+  const insideClaudeRanAsUser = calls
+    .filter(([c, a]) => a.some((x) => x.includes("/.claude")))
+    .every(([c]) => c === "runuser");
+  assert.ok(insideClaudeRanAsUser, "every ~/.claude command must run via runuser, never as root");
 });
 
 test("provisionGroupUser: re-provision is idempotent — running the wiring twice is safe (same idempotent commands, no throw)", async () => {
@@ -391,7 +427,7 @@ test("provisionGroupUser: re-provision is idempotent — running the wiring twic
   assert.deepEqual(first, second);
   assert.deepEqual(second, [
     ["chmod", ["700", "/home/sk-comex"]],
-    ...credentialWiringPlan("sk-comex", "/home/sk-comex", SHARED_CRED),
+    ...expectedWiring("sk-comex", "/home/sk-comex", SHARED_CRED),
   ]);
 });
 
@@ -410,8 +446,10 @@ test("provisionGroupUser: WITHOUT sharedCredentialPath, no credential wiring run
 test("provisionGroupUser: THROWS when credential wiring fails (an un-credentialed agent is a broken wall)", async () => {
   await assert.rejects(
     provisionGroupUser(comex, {
-      run: async (cmd) => {
-        if (cmd === "ln") throw new Error("ln: permission denied");
+      // `ln` now runs through `runuser -u <user> -- ln ...`, so match on the
+      // wrapped argv, not the bare command.
+      run: async (cmd, argv) => {
+        if (cmd === "ln" || argv.includes("ln")) throw new Error("ln: permission denied");
       },
       seed: async () => {},
       homeBase: "/home",
@@ -437,8 +475,12 @@ test("provisionGroupUser: REFUSES to wire when ~/.claude is a symlink (root must
     }),
     /symlink|not a directory/i,
   );
-  // It refused BEFORE issuing any credential wiring (no ln/chgrp ran).
-  assert.ok(!calls.some(([c]) => c === "ln" || c === "chgrp"), "wiring must not run once refused");
+  // It refused BEFORE issuing any credential wiring (no chgrp root-side, no
+  // runuser HOME-side, no ln anywhere).
+  assert.ok(
+    !calls.some(([c, a]) => c === "chgrp" || c === "runuser" || c === "ln" || a.includes("ln")),
+    "wiring must not run once refused",
+  );
 });
 
 test("provisionGroupUser: REFUSES with a clear cause when the shared credential file is absent (instance not signed in / T15 not run)", async () => {
@@ -468,6 +510,104 @@ test("provisionGroupUser: THROWS when the wired credential is NOT reachable by t
       reachable: async (_u, _l) => ({ ok: false, detail: "sk-comex cannot read the shared credential" }),
     }),
     /not reachable|cannot read/i,
+  );
+});
+
+// Change A — the three guard deps are REQUIRED once sharedCredentialPath is set.
+// A future multi-tenant caller that sets the path but omits one would SILENTLY
+// skip the symlink-safety / sign-in / reachability guard; that is a programmer
+// error, so provisioning throws loudly rather than degrade the wall.
+for (const omit of ["claudeDirStat", "sharedCredentialExists", "reachable"] as const) {
+  test(`provisionGroupUser: THROWS when sharedCredentialPath is set but '${omit}' is omitted (guard deps are required in multi-tenant)`, async () => {
+    const probes: Record<string, unknown> = { ...okCredProbes };
+    delete probes[omit];
+    await assert.rejects(
+      provisionGroupUser(comex, {
+        run: async () => {},
+        seed: async () => {},
+        homeBase: "/home",
+        userExists: async () => false,
+        sharedCredentialPath: SHARED_CRED,
+        ...(probes as typeof okCredProbes),
+      }),
+      new RegExp(`required guard dep is missing|${omit}`),
+    );
+  });
+}
+
+// ── reachableFromInspection (the /root-trap DECISION, pure) ───────────────────
+// The real server probe gathers stats and calls this; extracting the decision is
+// what finally makes the mode/owner reachability logic testable on its own.
+
+const OK_ANCESTORS = [
+  { mode: 0o750, group: SHARED_CRED_GROUP }, // /var/lib/shadok-ai/credentials
+  { mode: 0o755 }, // /var/lib/shadok-ai
+  { mode: 0o755 }, // /var/lib
+  { mode: 0o755 }, // /var
+  { mode: 0o755 }, // /
+];
+
+test("reachableFromInspection: a proper chain (0750 root:shadok-cred dir + 0660 shadok-cred file) is reachable", () => {
+  assert.equal(
+    reachableFromInspection({ fileOwnerGroup: SHARED_CRED_GROUP, fileGroupReadable: true, ancestors: OK_ANCESTORS }),
+    true,
+  );
+});
+
+test("reachableFromInspection: a mode-700 ancestor (the /root trap) is NOT reachable", () => {
+  assert.equal(
+    reachableFromInspection({
+      fileOwnerGroup: SHARED_CRED_GROUP,
+      fileGroupReadable: true,
+      // A 0700 root:root dir: no other-x and no group-x for shadok-cred → wall.
+      ancestors: [{ mode: 0o660, group: SHARED_CRED_GROUP }, { mode: 0o700 }, { mode: 0o755 }],
+    }),
+    false,
+  );
+});
+
+test("reachableFromInspection: a world-traversable (0755) ancestor passes on other-execute alone", () => {
+  assert.equal(
+    reachableFromInspection({
+      fileOwnerGroup: SHARED_CRED_GROUP,
+      fileGroupReadable: true,
+      ancestors: [{ mode: 0o755 }], // other-x, no group needed
+    }),
+    true,
+  );
+});
+
+test("reachableFromInspection: a group-execute (0710) ancestor passes ONLY when group-owned by shadok-cred", () => {
+  assert.equal(
+    reachableFromInspection({
+      fileOwnerGroup: SHARED_CRED_GROUP,
+      fileGroupReadable: true,
+      ancestors: [{ mode: 0o710, group: SHARED_CRED_GROUP }],
+    }),
+    true,
+  );
+  // Same 0710 mode but owned by a different group → not traversable by us.
+  assert.equal(
+    reachableFromInspection({
+      fileOwnerGroup: SHARED_CRED_GROUP,
+      fileGroupReadable: true,
+      ancestors: [{ mode: 0o710, group: "other" }],
+    }),
+    false,
+  );
+});
+
+test("reachableFromInspection: a file NOT group-readable is unreachable (the 660 bit is load-bearing)", () => {
+  assert.equal(
+    reachableFromInspection({ fileOwnerGroup: SHARED_CRED_GROUP, fileGroupReadable: false, ancestors: OK_ANCESTORS }),
+    false,
+  );
+});
+
+test("reachableFromInspection: a file NOT group-owned by shadok-cred is unreachable", () => {
+  assert.equal(
+    reachableFromInspection({ fileOwnerGroup: "other", fileGroupReadable: true, ancestors: OK_ANCESTORS }),
+    false,
   );
 });
 
@@ -541,6 +681,38 @@ test("checkCredentialDivergence: SILENT on a missing link (not yet wired) — mi
   );
   assert.equal(state, "missing");
   assert.equal(warnings.length, 0);
+});
+
+// Per-group dedupe: the server warns at most ONCE per group id (a real-file
+// divergence recurs on every spawn/restart otherwise). `checkCredentialDivergence`
+// is stateless and returns the category so the CALLER can record it and pass a
+// no-op `warn` on subsequent calls. This test exercises that exact contract — the
+// warn-once-per-group pattern `warnIfCredentialDiverged` (server.ts) implements.
+test("checkCredentialDivergence: supports per-group dedupe — the returned category lets a caller warn ONCE per group", () => {
+  const warned = new Set<string>();
+  const warnings: Array<[string, string]> = [];
+  const run = (id: string) =>
+    checkCredentialDivergence(
+      { id, home: `/home/sk-${id}` },
+      SHARED_CRED,
+      {
+        probe: () => ({ state: "file" }),
+        // The server's dedupe: a no-op sink once this group has already warned.
+        warn: warned.has(id) ? () => {} : (m) => void warnings.push([id, m]),
+      },
+    ) === "real-file"
+      ? warned.add(id)
+      : undefined;
+
+  run("comex"); // fires
+  run("comex"); // deduped (no-op warn)
+  run("sales"); // a DIFFERENT group still fires
+
+  assert.deepEqual(
+    warnings.map(([id]) => id),
+    ["comex", "sales"],
+    "each group warns exactly once; the second comex call is suppressed",
+  );
 });
 
 // ── teardownGroupUser (impure, best-effort, never throws) ─────────────────────

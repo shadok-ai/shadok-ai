@@ -110,6 +110,7 @@ import {
   deleteGroupFlow,
   checkCredentialDivergence,
   credentialWiring,
+  reachableFromInspection,
   SHARED_CRED_GROUP,
   DEFAULT_SHARED_CREDENTIAL_PATH,
   type LinkProbe,
@@ -2163,26 +2164,31 @@ function sharedCredGroupGid(): number | null {
 }
 
 /** Reachability by MODE/OWNER inspection (the fallback when we cannot run a read
- *  as the user): the resolved shared file must be group-owned by `shadok-cred`
- *  and group-readable, and every ancestor directory must be traversable by that
- *  group (other-execute, or group-execute with the matching gid). This is what
- *  catches the /root trap — a 660 file behind a 700 ancestor. */
+ *  as the user). This is the IMPURE half: it gathers ground-truth stats (resolve
+ *  the symlink, stat the file and every ancestor, map each gid to the shadok-cred
+ *  group NAME when it matches) and hands the DECISION to the pure
+ *  `reachableFromInspection`. The pure half — file group-owned by `shadok-cred` +
+ *  group-readable AND every ancestor traversable by the group — is what catches
+ *  the /root trap (a 660 file behind a 700 ancestor), now unit-tested on its own. */
 function reachableByInspection(link: string): { ok: boolean; detail?: string } {
   const gid = sharedCredGroupGid();
+  // Map a directory/file gid to the shared group NAME only when it matches the
+  // resolved shadok-cred gid, so the pure decision never credits the wrong group.
+  const groupName = (g: number): string | undefined => (gid != null && g === gid ? SHARED_CRED_GROUP : undefined);
   let real: string;
   try {
     real = fs.realpathSync(link);
   } catch (e) {
     return { ok: false, detail: `cannot resolve ${link}: ${(e as Error)?.message ?? e}` };
   }
+  let fileStat: fs.Stats;
   try {
-    const st = fs.statSync(real);
-    if (gid != null && st.gid !== gid) return { ok: false, detail: `${real} is not group-owned by ${SHARED_CRED_GROUP}` };
-    if (!(st.mode & 0o040)) return { ok: false, detail: `${real} is not group-readable` };
+    fileStat = fs.statSync(real);
   } catch (e) {
     return { ok: false, detail: `cannot stat ${real}: ${(e as Error)?.message ?? e}` };
   }
-  // Walk ancestors: each must be traversable by the shared group.
+  // Walk ancestors up to `/`, collecting each one's mode + (possibly) group.
+  const ancestors: Array<{ mode: number; group?: string }> = [];
   let dir = path.dirname(real);
   for (;;) {
     let dst: fs.Stats;
@@ -2191,14 +2197,22 @@ function reachableByInspection(link: string): { ok: boolean; detail?: string } {
     } catch (e) {
       return { ok: false, detail: `cannot stat ${dir}: ${(e as Error)?.message ?? e}` };
     }
-    const otherX = (dst.mode & 0o001) !== 0;
-    const groupX = (dst.mode & 0o010) !== 0 && gid != null && dst.gid === gid;
-    if (!otherX && !groupX) return { ok: false, detail: `${dir} is not traversable by group ${SHARED_CRED_GROUP}` };
+    ancestors.push({ mode: dst.mode, group: groupName(dst.gid) });
     const parent = path.dirname(dir);
     if (parent === dir) break; // reached /
     dir = parent;
   }
-  return { ok: true };
+  const ok = reachableFromInspection({
+    fileOwnerGroup: groupName(fileStat.gid) ?? "",
+    fileGroupReadable: (fileStat.mode & 0o040) !== 0,
+    ancestors,
+  });
+  return ok
+    ? { ok: true }
+    : {
+        ok: false,
+        detail: `${real} is not reachable by group ${SHARED_CRED_GROUP} — the file is not group-owned+readable by it, or an ancestor directory is not traversable (e.g. a mode-700 ancestor like /root)`,
+      };
 }
 
 /** Best-effort reachability check for the wired credential. Ground truth first:
