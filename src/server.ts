@@ -100,7 +100,7 @@ import {
 } from "./telegram.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
-import { viewerFor, type Viewer, type Group } from "./groups.js";
+import { viewerFor, canResumeAs, canRestartInto, type Viewer, type Group } from "./groups.js";
 import { resolveSpawnIsolation } from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
@@ -4058,6 +4058,26 @@ function broadcast(s: Live, msg: object, except?: WebSocket) {
  * Shared by the `restart` message and by `set-profile` with `restart: true`.
  */
 async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void> {
+  // Fail-closed group check BEFORE any teardown. A restart re-derives the OS
+  // user from the channel's stored group; if that group no longer resolves,
+  // `resolveSpawnIsolation` would derive a null user and respawn a private agent
+  // as the server's own (commons/root) user — a silent privilege DOWNGRADE that
+  // keeps the foreign transcript running. Refuse instead (no people-membership
+  // check: the session's entitlement was established at spawn, and no human
+  // principal drives a restart — see `canRestartInto`). Mono-tenant has no group,
+  // so this is a trivial pass and byte-for-byte today's behaviour.
+  const restartGroupId = loadChannels().find((c) => c.sessionId === s.id)?.group ?? null;
+  if (DEPLOYMENT_MODE === "multi-tenant" && !canRestartInto(restartGroupId, loadGroups())) {
+    console.error(
+      `[sk-${s.id}] restart refused — group ${restartGroupId} no longer resolves (would drop to commons/root)`,
+    );
+    broadcast(s, {
+      type: "error",
+      message: "restart refused: this agent's group no longer exists",
+      code: "forbidden",
+    });
+    return;
+  }
   s.restarting = true;
   // The raw pipe is bound to the pilot we're about to replace — close it;
   // clients re-attach on the next "ready" if the terminal is open.
@@ -4116,7 +4136,7 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
     resumed: true,
     viewer: null,
     groups: loadGroups(),
-    storedGroupId: loadChannels().find((c) => c.sessionId === s.id)?.group ?? null,
+    storedGroupId: restartGroupId,
   }).user;
   s.pilot = makePilot(
     s.id,
@@ -5396,11 +5416,33 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           const storedGroupId = resumed
             ? loadChannels().find((c) => c.sessionId === id)?.group ?? null
             : null;
+          const groupsNow = loadGroups();
+          // People-boundary authorization on RESUME (security gate). The stored
+          // group drives a privilege drop to that group's OS user, so resuming a
+          // group's agent is driving a process AS that group. A caller who cannot
+          // SEE the stored group must be refused — never resumed under the commons
+          // user either, which would still open someone else's transcript. Only
+          // matters in multi-tenant (mono-tenant writes no group and drops to no
+          // user, so `canResumeAs` is a trivial pass; the mode gate keeps a stray
+          // legacy group from ever producing a false refusal there).
+          if (
+            resumed &&
+            DEPLOYMENT_MODE === "multi-tenant" &&
+            !canResumeAs(storedGroupId, groupsNow, viewerFor(me))
+          ) {
+            console.log(
+              `resume: ${id.slice(0, 8)} refused — ${me?.name ?? "anon"} is not entitled to group ${storedGroupId}`,
+            );
+            return fail(
+              "you are not entitled to resume this agent — its group is not yours",
+              "forbidden",
+            );
+          }
           const isolation = resolveSpawnIsolation({
             mode: DEPLOYMENT_MODE,
             resumed,
             viewer: viewerFor(me),
-            groups: loadGroups(),
+            groups: groupsNow,
             storedGroupId,
           });
           session = await createSession(

@@ -127,6 +127,62 @@ export function spawnGroupFor(viewer: Viewer | null, groups: readonly Group[]): 
   return own.length === 1 ? own[0] : commons;
 }
 
+/**
+ * May this viewer RESUME an agent that was born into `storedGroupId`?
+ *
+ * This is the people-boundary check on the resume path, and it is a SECURITY
+ * gate, not cosmetics: the stored group drives a privilege drop to that group's
+ * OS user (`osUserFor` → `setpriv`), so resuming a group's agent is exactly
+ * driving a process AS that group. Without this check a member could plant a row
+ * `{sessionId:"Z", group:"comex"}` (a transcript id they can read) and then
+ * `start {resume:"Z"}` to come up under comex's Unix user — a privilege
+ * escalation across the people wall.
+ *
+ * - No stored group (null) → the commons / group-less agent: always allowed,
+ *   today's behaviour, no drop happens.
+ * - A stored group that resolves to a known group → allowed iff `canSeeGroup`
+ *   (a public group is seen by everyone; a private/restricted one only by a
+ *   member — an admin is NOT exempt).
+ * - A stored group id that resolves to NO known group → REFUSED (fail-closed,
+ *   the twin of `visibleChannels`): an unverifiable claim is never honoured, and
+ *   must never silently fall back to the commons user (that would still resume
+ *   someone else's transcript).
+ */
+export function canResumeAs(
+  storedGroupId: string | null | undefined,
+  groups: readonly Group[],
+  viewer: Viewer | null,
+): boolean {
+  if (!storedGroupId) return true;
+  const g = groups.find((x) => x.id === storedGroupId) ?? null;
+  if (!g) return false; // dangling group: cannot verify → fail closed
+  return canSeeGroup(g, viewer);
+}
+
+/**
+ * May an already-established session be RESTARTED into `storedGroupId`?
+ *
+ * A restart respawns a session that is ALREADY running as its group's user: the
+ * people-boundary was enforced when it first spawned/resumed (`canResumeAs`), and
+ * no human principal drives a restart — it is the session itself (the `restart`
+ * message), the agent's own `/reload` (session-key scoped), or an admin's
+ * `/restart-all`. So this deliberately does NOT re-check membership: an admin who
+ * cannot SEE a private group must still be able to `/restart-all` its agents, and
+ * the agent reloading itself carries no viewer. canResumeAs keyed on the
+ * triggerer would wrongly refuse both.
+ *
+ * What it DOES guard is the one new risk a restart adds: a stored group that no
+ * longer RESOLVES. `resolveSpawnIsolation` would then derive a null user and
+ * respawn the private agent as the server's own (commons/root) user — a silent
+ * privilege DOWNGRADE that keeps the foreign transcript running. Same fail-closed
+ * direction as `visibleChannels` and `canResumeAs`: refuse rather than drop out of
+ * the isolation wall.
+ */
+export function canRestartInto(storedGroupId: string | null | undefined, groups: readonly Group[]): boolean {
+  if (!storedGroupId) return true;
+  return groups.some((g) => g.id === storedGroupId);
+}
+
 /** An account as a Viewer (null passes through). */
 export function viewerFor(account: { name: string; role: Role } | null): Viewer | null {
   return account ? { name: account.name, role: account.role } : null;

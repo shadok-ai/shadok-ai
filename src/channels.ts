@@ -327,7 +327,17 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
     seen.add(c.sessionId);
     const prev = byId.get(c.sessionId);
     if (!prev) {
-      result.push(c); // a new channel the client just created
+      // A brand-new row the client just created. `group` is SERVER_OWNED and
+      // drives a privilege drop to that group's OS user on resume, so a client
+      // must NOT be able to plant one at birth — otherwise a member could PUT a
+      // row `{sessionId:"Z", group:"comex"}` (reusing a transcript id they can
+      // read) and then resume it to come up under comex's Unix user. Only the
+      // server's start-path upsert sets a group, from the caller's identity.
+      // The existing-row guard below (SERVER_OWNED) already protects births that
+      // are UPDATES; this extends the same wall to genuinely new rows.
+      const born = { ...c };
+      delete born.group;
+      result.push(born);
       continue;
     }
     const merged: Channel = { ...c };

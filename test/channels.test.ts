@@ -146,6 +146,22 @@ test("mergeChannels: group is server-owned — a client can neither move nor cle
   assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: null }], new Set())[0].group, "5");
 });
 
+test("mergeChannels: a brand-new row cannot be BORN with a client-supplied group", () => {
+  // The privilege-escalation vector (security fix): zoe closes her agent (the
+  // row is gone, the .jsonl persists), then PUTs a brand-new row reusing that
+  // transcript id with {group:"comex"}. `group` is SERVER_OWNED — but the
+  // existing-row guard only protects rows that already exist, so a NEW row used
+  // to carry the client's group verbatim, which the resume path then turned into
+  // a drop to comex's OS user. A new row must be born group-less; only the
+  // server's start-path upsert sets a group, from the caller's identity.
+  const out = mergeChannels([], [{ sessionId: "Z", cwd: "/r", name: "evil", group: "comex" }], new Set());
+  assert.equal(out.length, 1);
+  assert.equal(out[0].sessionId, "Z");
+  assert.equal(out[0].name, "evil"); // client still drives its own name
+  assert.equal(out[0].group, undefined); // but NOT the group
+  assert.equal("group" in out[0], false);
+});
+
 test("mergeChannels: a client can neither change nor clear a channel's profile", () => {
   // This is the invariant the dedicated `set-profile` path protects: a stale
   // client must not be able to strip an agent of its guardrails just by

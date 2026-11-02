@@ -9,6 +9,8 @@ import {
   MAIN_GROUP_ID,
   visibleChannels,
   viewerFor,
+  canResumeAs,
+  canRestartInto,
   type Group,
 } from "../src/groups.js";
 
@@ -103,4 +105,46 @@ test("visibleChannels drops a restricted channel for a non-member", () => {
 test("viewerFor passes null through and round-trips an account", () => {
   assert.equal(viewerFor(null), null);
   assert.deepEqual(viewerFor({ name: "ann", role: "admin" }), { name: "ann", role: "admin" });
+});
+
+const resumeGroups: Group[] = [
+  { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },
+  { id: "comex", name: "COMEX", nature: "restricted", members: ["ada"], createdAt: 0 },
+];
+
+test("canResumeAs: a group-less / null channel is always resumable (commons, no drop)", () => {
+  assert.equal(canResumeAs(null, resumeGroups, { name: "zoe", role: "member" }), true);
+  assert.equal(canResumeAs(undefined, resumeGroups, null), true);
+});
+
+test("canResumeAs: a public group is resumable by anyone", () => {
+  assert.equal(canResumeAs("main", resumeGroups, { name: "zoe", role: "member" }), true);
+  assert.equal(canResumeAs("main", resumeGroups, null), true);
+});
+
+test("canResumeAs: the privilege-escalation vector — a non-member cannot resume into a restricted group", () => {
+  // zoe plants {sessionId, group:"comex"} and resumes it; without this gate she
+  // would come up under comex's OS user driving comex's transcript.
+  assert.equal(canResumeAs("comex", resumeGroups, { name: "zoe", role: "member" }), false);
+  // An admin is NOT exempt (canSeeGroup rule).
+  assert.equal(canResumeAs("comex", resumeGroups, { name: "root", role: "admin" }), false);
+  // A real member resumes fine.
+  assert.equal(canResumeAs("comex", resumeGroups, { name: "ada", role: "member" }), true);
+});
+
+test("canResumeAs: a dangling group id is refused (fail closed, never falls back to commons)", () => {
+  assert.equal(canResumeAs("ghost", resumeGroups, { name: "ada", role: "member" }), false);
+  assert.equal(canResumeAs("ghost", resumeGroups, { name: "root", role: "admin" }), false);
+});
+
+test("canRestartInto: resolution-only (no membership) — a restart re-derives the session's own user", () => {
+  // No human principal drives a restart; the people-boundary was enforced at
+  // spawn. So an admin's /restart-all and a member's self-restart both succeed
+  // for a resolvable group, regardless of who triggered it.
+  assert.equal(canRestartInto("comex", resumeGroups), true);
+  assert.equal(canRestartInto("main", resumeGroups), true);
+  assert.equal(canRestartInto(null, resumeGroups), true);
+  // But a dangling group is refused: respawning would drop to the commons/root
+  // user and keep the private transcript running — a silent downgrade.
+  assert.equal(canRestartInto("ghost", resumeGroups), false);
 });
