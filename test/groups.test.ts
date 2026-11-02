@@ -124,6 +124,28 @@ test("accountDeleteGroups: tears down ONLY the private group, drops restricted m
   assert.equal(r.groups.filter((g) => g.nature === "restricted").length, 2);
 });
 
+test("delete→re-invite: removing the private-group ROW first means a re-invite mints a FRESH group, never reusing the old id/HOME", () => {
+  // The delete handler now removes the row BEFORE the teardown await, so even if
+  // the teardown crashed the row is gone. Re-inviting the SAME name must then mint
+  // a fresh private group (new id → new sk-<id> → new HOME), never match+reuse a
+  // lingering owner-matched row (the data-reuse leak this ordering closes).
+  const before: Group[] = [
+    { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },
+    newPrivateGroup("ada", "ada-priv-OLD", 1),
+  ];
+  // Step 1 — delete ada: the row is removed from the list that gets persisted.
+  const afterDelete = accountDeleteGroups("ada", before).groups;
+  assert.equal(privateGroupFor("ada", afterDelete), null, "the private row is gone before any teardown await");
+  // Step 2 — re-invite ada: no existing private group → a fresh one, new id.
+  const reinvited = privateGroupFor("ada", afterDelete) ?? newPrivateGroup("ada", "ada-priv-NEW", 2);
+  assert.notEqual(reinvited.id, "ada-priv-OLD", "a re-invite never reuses the deleted person's group id (→ new sk-<id>/HOME)");
+
+  // Contrast — the OLD buggy ordering (row still present at re-invite time) would
+  // have matched the lingering row by owner and REUSED it (the leak).
+  const stillPresent = privateGroupFor("ada", before);
+  assert.equal(stillPresent?.id, "ada-priv-OLD", "owner match would reuse the old row if it were not removed first");
+});
+
 test("accountDeleteGroups: a person with no private group tears nothing down", () => {
   const groups: Group[] = [
     { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },

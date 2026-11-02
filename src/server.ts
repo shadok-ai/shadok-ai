@@ -133,6 +133,7 @@ import {
   homeForUser,
   provisionGroupUser,
   teardownGroupUser,
+  reconcileGroupProvisioning,
   DEFAULT_HOME_BASE,
   createGroupFlow,
   deleteGroupFlow,
@@ -2560,10 +2561,12 @@ function provisionOsUserFor(g: Group): Promise<unknown> {
  * PROVISION POLICY — best-effort, never block sign-in (the brief). The group ROW
  * is persisted FIRST, then the OS user is provisioned; a provision failure is
  * CAUGHT and logged loudly, not thrown into the redeem. Persisting the row first
- * is what makes the failure self-heal: the boot migration's reprovision list
- * (`reprovisionGroups`, every persisted private/restricted group) re-provisions it
- * on the next capable boot/recreate, so a transient failure does not strand the
- * person — and meanwhile the account exists and they can sign in.
+ * is what makes the failure self-heal: `ensureGroupsProvisioned()` runs on EVERY
+ * capable boot — INDEPENDENT of the migration marker — and re-provisions any
+ * persisted private/restricted group whose OS user is missing. So a transient
+ * failure here does not strand the person even on an already-migrated instance
+ * (where the migration's own reprovision list never runs), and meanwhile the
+ * account exists and they can sign in.
  */
 async function ensurePrivateGroupProvisioned(accountName: string): Promise<void> {
   if (DEPLOYMENT_MODE !== "multi-tenant") return;
@@ -2583,6 +2586,38 @@ async function ensurePrivateGroupProvisioned(accountName: string): Promise<void>
     console.error(
       `groups: provisioning private group for ${accountName} failed (will retry at next boot): ` +
         `${(e as Error)?.message ?? e}`,
+    );
+  }
+}
+
+/**
+ * Task 16 (Important #1) — the boot provisioning reconciler. Runs on EVERY
+ * capable (multi-tenant) boot, INDEPENDENT of the migration marker, so a persisted
+ * private/restricted group whose OS user is missing is healed even on an already-
+ * migrated instance — where `runGroupsMigration` returns early (marker + `main`
+ * present) and its own reprovision list never runs. That is the gap that left a
+ * person whose private-group ROW persisted but whose OS user failed to provision
+ * (a transient `useradd`/credential error) permanently un-healed.
+ *
+ * Best-effort; `provisionGroupUser` is idempotent, so a group whose user already
+ * exists is skipped (no `useradd`) and running this right after a fresh migration
+ * finds everything present — which is why it is safe to wire AFTER migration.
+ * Subsumes the docker-recreate reprovision for the steady state. No-op in
+ * mono-tenant (no private groups), so a non-capable instance is byte-for-byte today.
+ */
+async function ensureGroupsProvisioned(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const r = await reconcileGroupProvisioning(loadGroups(), {
+    userExists: osUserExists,
+    provision: async (g) => {
+      await provisionOsUserFor(g);
+    },
+    log: (m) => console.log(m),
+  });
+  if (r.provisioned.length || r.failed.length) {
+    console.log(
+      `groups: boot reprovision — ${r.provisioned.length} (re)provisioned, ` +
+        `${r.present.length} already present, ${r.failed.length} failed`,
     );
   }
 }
@@ -2647,21 +2682,16 @@ function migVaultToMain(): void {
   loadVault();
 }
 
-/** Step 5a — provision one EMPTY private group per account (idempotent: reuse an
- *  existing private group owned by the account rather than minting a twin). */
+/** Step 5a — provision one private group per account (owner as sole member).
+ *  Idempotent: reuse an existing private group owned by the account rather than
+ *  minting a twin. Minor #3: the group shape comes from the SAME `newPrivateGroup`
+ *  the invite hook uses, so both creators agree on `members:[name]` (the owner is
+ *  a member) — one source of truth rather than a members:[] / members:[name] split. */
 async function migProvisionPrivateGroup(account: string): Promise<void> {
   const groups = loadGroups();
-  let g = groups.find((x) => x.nature === "private" && x.owner === account);
+  let g = privateGroupFor(account, groups);
   if (!g) {
-    g = {
-      id: randomUUID(),
-      name: account,
-      nature: "private",
-      members: [],
-      owner: account,
-      osUser: null,
-      createdAt: Date.now(),
-    };
+    g = newPrivateGroup(account, randomUUID(), Date.now());
     g.osUser = osUserFor(g);
     saveGroups([...groups, g]);
   }
@@ -3089,16 +3119,30 @@ app.delete("/users", async (req, res) => {
   console.log(`users: ${me!.name} removed ${name}`);
   recordEvent({ kind: "removed", actor: me!.name, target: name });
 
-  // The cascade (multi-tenant only). Re-read the group list AFTER the step-up —
-  // that await can wait on a human touching a passkey, so a snapshot taken before
-  // it could be stale (invariant 6). `accountDeleteGroups` decides: tear down ONLY
+  // The cascade (multi-tenant only). `accountDeleteGroups` decides: tear down ONLY
   // this person's private group (its agents + OS user + HOME), and DROP them from
-  // every restricted group they belonged to WITHOUT tearing those down. The
-  // teardown never throws, but its `userdel` warning is SURFACED to the admin so
-  // an orphaned OS user/HOME does not go unnoticed.
+  // every restricted group they belonged to WITHOUT tearing those down.
+  //
+  // ORDERING IS LOAD-BEARING — the group row is REMOVED (and memberships dropped)
+  // via `saveGroups` BEFORE the `await teardownGroupUser`, for two reasons:
+  //  1. STALE-SAVE: the `userdel --remove` can take a while; persisting AFTER it
+  //     would let a concurrent group edit during that wait be overwritten by the
+  //     pre-await snapshot. So we re-read `loadGroups()` immediately before the
+  //     save (invariant 6 — also covers the step-up await above, a passkey wait).
+  //  2. OWNERLESS-ROW REUSE LEAK: if a crash interrupted the teardown with the row
+  //     still on disk, it would be an OWNERLESS private-group row; re-inviting the
+  //     SAME account name matches it via `privateGroupFor` (owner match) and would
+  //     REUSE its `sk-<id>` user + HOME — handing the new person the deleted
+  //     person's data. With the row gone FIRST, a re-invite always mints a FRESH
+  //     private group (new id → new user) and can never reuse the old HOME; a
+  //     teardown failure then leaves at worst an ORPHAN OS user/HOME (surfaced as a
+  //     warning), never a reusable owner-matched row.
+  // The teardown never throws, but its `userdel` warning is SURFACED to the admin
+  // so an orphaned OS user/HOME does not go unnoticed.
   let warning: string | undefined;
   if (DEPLOYMENT_MODE === "multi-tenant") {
     const { torndown, groups } = accountDeleteGroups(name, loadGroups());
+    saveGroups(groups); // row removed + memberships dropped BEFORE any await
     if (torndown) {
       const r = await teardownGroupUser(torndown, {
         run: runPrivileged,
@@ -3107,7 +3151,6 @@ app.delete("/users", async (req, res) => {
       });
       if (!r.ok) warning = r.warning;
     }
-    saveGroups(groups);
   }
   res.json(warning ? { ok: true, warning } : { ok: true });
 });
@@ -7364,9 +7407,19 @@ Object.assign(process.env, ensureSshIdentity());
 // fire-and-forget so a slow migration never hangs the boot. A spawn that races
 // it uses the pre-migration (root) drop until `groupsMigrated` flips.
 if (DEPLOYMENT_MODE === "multi-tenant") {
-  void runGroupsMigration().catch((e) =>
-    console.error("migrate: unexpected error (ignored, boot continues):", (e as Error)?.message ?? e),
-  );
+  void runGroupsMigration()
+    .catch((e) =>
+      console.error("migrate: unexpected error (ignored, boot continues):", (e as Error)?.message ?? e),
+    )
+    // Task 16 (Important #1): AFTER migration (so a fresh migration's provisions
+    // aren't duplicated — the reconciler is idempotent anyway), heal any persisted
+    // private/restricted group whose OS user is missing, INDEPENDENT of the
+    // migration marker. This is what self-heals a failed invite-provision on an
+    // already-migrated instance, where the migration itself is a no-op.
+    .then(() => ensureGroupsProvisioned())
+    .catch((e) =>
+      console.error("groups: boot reprovision error (ignored, boot continues):", (e as Error)?.message ?? e),
+    );
 } else {
   groupsMigrated = migrationMarkerExists() && osUserExistsSync(COMMONS_USER);
 }

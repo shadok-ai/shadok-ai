@@ -705,6 +705,72 @@ export async function teardownGroupUser(
 }
 
 /**
+ * Boot reconciler (Task 16, Important #1): (re-)provision every private/restricted
+ * group whose OS user is MISSING, INDEPENDENT of the migration marker.
+ *
+ * Why this is separate from the migration's `reprovisionGroups` list: that list
+ * only runs DURING a real migration (or after a docker-recreate wiped `main`),
+ * because `runGroupsMigration` returns early once the instance is
+ * `alreadyMigrated` (marker present AND `main` exists). So on a live, already-
+ * migrated instance a person whose private-group ROW was persisted (by the invite
+ * hook) but whose OS user FAILED to provision — a transient `useradd`/credential
+ * error — was never healed: the invite hook's "retries at boot via the migration
+ * reprovision list" was FALSE for the steady state. This pass closes that. It runs
+ * on EVERY capable boot, probes each non-public group's user, and re-provisions
+ * the missing ones. Because `provisionGroupUser` is idempotent, a group whose user
+ * already exists is skipped (no `useradd`), and re-running right after a fresh
+ * migration simply finds everything present — which is why wiring it AFTER
+ * migration never double-provisions. It subsumes the docker-recreate reprovision
+ * for the steady state.
+ *
+ * Best-effort and NEVER throws: a per-group failure (or an unreadable probe) is
+ * logged and the loop continues — one bad group must not block the others nor the
+ * boot. Returns a summary for the caller to log. Injected `userExists`/`provision`
+ * keep it exec-/fs-free under test, like the rest of this module.
+ */
+export async function reconcileGroupProvisioning(
+  groups: readonly Group[],
+  deps: {
+    userExists: (user: string) => Promise<boolean>;
+    provision: (g: Group) => Promise<void>;
+    log?: (msg: string) => void;
+  },
+): Promise<{ provisioned: string[]; present: string[]; failed: string[] }> {
+  const log = deps.log ?? ((m: string) => console.log(m));
+  const provisioned: string[] = [];
+  const present: string[] = [];
+  const failed: string[] = [];
+  for (const g of groups) {
+    const user = osUserFor(g);
+    if (!user) continue; // public/commons: no dedicated user to reconcile
+    let exists = false;
+    try {
+      exists = await deps.userExists(user);
+    } catch {
+      // An unreadable probe → treat as missing and attempt the idempotent
+      // provision rather than skip a group that may genuinely need healing.
+      exists = false;
+    }
+    if (exists) {
+      present.push(g.id);
+      continue;
+    }
+    try {
+      await deps.provision(g);
+      provisioned.push(g.id);
+      log(`groups: reprovisioned ${g.nature} group ${g.id.slice(0, 8)} (${user}) — OS user was missing`);
+    } catch (e) {
+      failed.push(g.id);
+      log(
+        `groups: reprovision of ${g.id.slice(0, 8)} (${user}) FAILED (best-effort, continuing): ` +
+          `${(e as Error)?.message ?? e}`,
+      );
+    }
+  }
+  return { provisioned, present, failed };
+}
+
+/**
  * May a group be DELETED, given the channels currently on disk? (Pure.)
  *
  * T4 carry (fail-closed). `visibleChannels` HIDES a channel whose group id does

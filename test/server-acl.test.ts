@@ -284,3 +284,43 @@ test("server: DELETE /users cascades to tear down ONLY the person's private grou
   // Explicit confirmation before the irreversible destruction.
   assert.ok(/confirm/.test(body), "an explicit confirmation gate guards the irreversible destroy");
 });
+
+test("server: DELETE /users removes the group row (saveGroups) BEFORE the teardown await — closes stale-save + reuse leak", () => {
+  const route = SERVER.slice(SERVER.indexOf('app.delete("/users"'));
+  const body = route.slice(0, route.indexOf("\n});\n"));
+  // The cascade block: the row is persisted BEFORE `await teardownGroupUser(...)`.
+  const cascade = body.slice(body.indexOf('DEPLOYMENT_MODE === "multi-tenant"'));
+  const saveIdx = cascade.indexOf("saveGroups(");
+  const teardownIdx = cascade.indexOf("await teardownGroupUser(");
+  assert.ok(saveIdx >= 0, "the remaining group list is persisted");
+  assert.ok(teardownIdx >= 0, "the private group's OS user is torn down");
+  assert.ok(
+    saveIdx < teardownIdx,
+    "saveGroups MUST run before the teardown await (stale-save: a concurrent edit during userdel is not clobbered; " +
+      "reuse-leak: no ownerless row survives a crash for a re-invite to match+reuse by owner)",
+  );
+  // The group list is re-read fresh for that save (invariant 6, not a pre-await snapshot).
+  assert.ok(/accountDeleteGroups\(\s*name,\s*loadGroups\(\)\s*\)/.test(cascade), "the save re-reads loadGroups() fresh");
+});
+
+test("server: a boot reconciler re-provisions missing group OS users, INDEPENDENT of the migration marker", () => {
+  assert.ok(/async function ensureGroupsProvisioned\s*\(/.test(SERVER), "the boot reconciler is defined");
+  const fn = SERVER.slice(SERVER.indexOf("async function ensureGroupsProvisioned"));
+  const fnBody = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.ok(/DEPLOYMENT_MODE !== "multi-tenant"/.test(fnBody), "no-op in mono-tenant");
+  assert.ok(/reconcileGroupProvisioning\(/.test(fnBody), "it delegates to the pure/injected reconciler");
+  assert.ok(/loadGroups\(\)/.test(fnBody), "it iterates the persisted group list");
+  assert.ok(/osUserExists\b/.test(fnBody), "it reuses the existing OS-user probe");
+  assert.ok(/provisionOsUserFor\b/.test(fnBody), "it (re)provisions via the idempotent provision helper");
+  // Wired at boot AFTER migration, and NOT gated behind the migration marker.
+  const boot = SERVER.slice(SERVER.indexOf("void runGroupsMigration()"));
+  const bootBlock = boot.slice(0, boot.indexOf("server.listen"));
+  assert.ok(/\.then\(\(\)\s*=>\s*ensureGroupsProvisioned\(\)\)/.test(bootBlock), "runs AFTER runGroupsMigration resolves");
+});
+
+test("server: migProvisionPrivateGroup uses newPrivateGroup (unified members:[name] shape — Minor #3)", () => {
+  const fn = SERVER.slice(SERVER.indexOf("async function migProvisionPrivateGroup"));
+  const body = fn.slice(0, fn.indexOf("\n}\n"));
+  assert.ok(/newPrivateGroup\(/.test(body), "the migration creator shares newPrivateGroup with the invite hook");
+  assert.ok(!/members:\s*\[\]/.test(body), "no more members:[] — the owner is listed as a member");
+});

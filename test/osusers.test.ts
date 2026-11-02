@@ -9,6 +9,7 @@ import {
   provisionPlan,
   provisionGroupUser,
   teardownGroupUser,
+  reconcileGroupProvisioning,
   groupDeleteVerdict,
   createGroupFlow,
   deleteGroupFlow,
@@ -798,6 +799,53 @@ test("teardownGroupUser: a failing killAgents is swallowed, userdel still runs, 
   assert.deepEqual(calls, [["userdel", ["--remove", "sk-comex"]]]);
   assert.equal(r.ok, false);
   assert.match(r.warning ?? "", /killing sk-comex's agents failed/);
+});
+
+// ── reconcileGroupProvisioning (Task 16 Important #1 — boot self-heal) ─────────
+
+test("reconcileGroupProvisioning: re-provisions a group whose OS user is MISSING, skips an existing one", async () => {
+  const groups: Group[] = [
+    main, // public → never touched (no dedicated user)
+    comex, // restricted, sk-comex → user EXISTS, skip
+    adaPriv, // private, sk-ada-priv → user MISSING, re-provision
+  ];
+  const provisioned: string[] = [];
+  const probed: string[] = [];
+  const r = await reconcileGroupProvisioning(groups, {
+    userExists: async (u) => {
+      probed.push(u);
+      return u === "sk-comex"; // only comex's user exists
+    },
+    provision: async (g) => void provisioned.push(g.id),
+    log: () => {},
+  });
+  // Public group was never probed (no dedicated user to reconcile).
+  assert.deepEqual(probed.sort(), ["sk-ada-priv", "sk-comex"]);
+  // Only the group with the MISSING user was (re)provisioned.
+  assert.deepEqual(provisioned, ["ada-priv"]);
+  assert.deepEqual(r.provisioned, ["ada-priv"]);
+  assert.deepEqual(r.present, ["comex"]);
+  assert.deepEqual(r.failed, []);
+});
+
+test("reconcileGroupProvisioning: best-effort — a per-group provision failure is logged, the loop continues, NEVER throws", async () => {
+  const other: Group = { id: "rh", name: "RH", nature: "restricted", members: ["leo"], createdAt: 3 };
+  const provisioned: string[] = [];
+  let r!: { provisioned: string[]; present: string[]; failed: string[] };
+  await assert.doesNotReject(async () => {
+    r = await reconcileGroupProvisioning([adaPriv, other], {
+      userExists: async () => false, // both missing
+      provision: async (g) => {
+        if (g.id === "ada-priv") throw new Error("useradd blew up");
+        provisioned.push(g.id);
+      },
+      log: () => {},
+    });
+  });
+  // The failure on ada-priv did NOT stop rh from being provisioned.
+  assert.deepEqual(provisioned, ["rh"]);
+  assert.deepEqual(r.failed, ["ada-priv"]);
+  assert.deepEqual(r.provisioned, ["rh"]);
 });
 
 // ── groupDeleteVerdict (pure — the T4-carry anti-dangling rule) ───────────────
