@@ -202,12 +202,21 @@ export function dedupById(list: Channel[]): Channel[] {
   }
   return out;
 }
+/** A legacy file holds numeric `group` ids; the type says `string | null`, and
+ *  the client compares with `===`, so coerce on read. Absent stays absent. */
+export function normalizeChannelGroups(list: Channel[]): Channel[] {
+  return list.map((c) => {
+    const g = (c as any).group;
+    if (g === undefined || g === null || typeof g === "string") return c;
+    return { ...c, group: String(g) };
+  });
+}
 export function loadChannels(): Channel[] {
   // dropForeignHomes on READ too: a file poisoned by an older build (a stale tab
   // that PUT another instance's home before the write guard existed) is cleaned
   // the moment it is read, so /channels never surfaces a foreign "general".
   return dropForeignHomes(
-    dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string")),
+    normalizeChannelGroups(dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string"))),
     process.cwd(),
   );
 }
@@ -373,7 +382,7 @@ export function normalizeGroups(raw: unknown): Group[] {
       nature,
       members: Array.isArray(row.members) ? row.members.filter((m: unknown) => typeof m === "string") : [],
       osUser: typeof row.osUser === "string" ? row.osUser : null,
-      createdAt: typeof row.createdAt === "number" ? row.createdAt : Date.now(),
+      createdAt: typeof row.createdAt === "number" ? row.createdAt : 0, // stable: Date.now() made repeated loads differ
     };
     if (typeof row.owner !== "string") delete g.owner;
     out.push(g);

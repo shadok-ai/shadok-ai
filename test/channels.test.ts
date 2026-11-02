@@ -14,6 +14,7 @@ import {
   dropForeignHomes,
   profilePatch,
   normalizeGroups,
+  normalizeChannelGroups,
   ensureMainGroup,
   type Channel,
 } from "../src/channels.js";
@@ -422,7 +423,8 @@ test("normalizeGroups: a legacy tab-group row becomes a public Group with a stri
   assert.equal(out[0].nature, "public");
   assert.deepEqual(out[0].members, []);
   assert.equal(out[0].osUser, null);
-  assert.equal(typeof out[0].createdAt, "number");
+  assert.equal(out[0].createdAt, 0); // stable fallback: repeated loads agree
+  assert.deepEqual(normalizeGroups([{ id: 3 }]), normalizeGroups([{ id: 3 }]));
 });
 
 test("normalizeGroups: unparseable rows are dropped, non-arrays give []", () => {
@@ -454,4 +456,17 @@ test("mergeChannels: group is server-owned once the channel exists", () => {
   const stored = [{ sessionId: "a", cwd: "/x", group: "g1" }] as Channel[];
   const out = mergeChannels(stored, [{ sessionId: "a", cwd: "/x", group: "other" }] as Channel[], new Set());
   assert.equal(out[0].group, "g1");
+});
+
+test("normalizeChannelGroups: a legacy numeric group comes back as the equivalent string", () => {
+  const out = normalizeChannelGroups([
+    { sessionId: "a", cwd: "/x", group: 3 },
+    { sessionId: "b", cwd: "/x", group: "g1" },
+    { sessionId: "c", cwd: "/x", group: null },
+    { sessionId: "d", cwd: "/x" },
+  ] as any);
+  assert.strictEqual(out[0].group, "3");
+  assert.strictEqual(out[1].group, "g1");
+  assert.strictEqual(out[2].group, null);
+  assert.ok(!("group" in out[3]));
 });
