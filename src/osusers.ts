@@ -1,6 +1,6 @@
 import path from "node:path";
 import { capabilityRefusal, type DeploymentMode } from "./capability.js";
-import { spawnGroupFor, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
+import { spawnGroupFor, canAdministerGroup, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
 
 /**
  * OS-user isolation: the pure policy behind dropping a spawned agent to the
@@ -841,6 +841,10 @@ export async function createGroupFlow(
   const name = input.name.trim();
   if (!name) return { status: 400, body: { error: "name required" } };
 
+  // A Personal group is auto-provisioned with its account, never user-created.
+  if (input.nature === "private") {
+    return { status: 400, body: { error: "a personal group is created automatically, not here" } };
+  }
   if (input.nature !== "public") {
     // The ONE refusal primitive (capability.ts): same 400 + message everywhere.
     const refusal = capabilityRefusal(input.mode);
@@ -856,7 +860,6 @@ export async function createGroupFlow(
     createdAt: deps.now(),
     osUser: null,
   };
-  if (input.nature === "private") g.owner = input.account.name;
   g.osUser = osUserFor(g);
 
   // Provision the OS user BEFORE persisting: if provisioning fails honestly
@@ -890,7 +893,7 @@ export async function deleteGroupFlow(
   input: {
     fromBrowser: boolean;
     instanceOk: boolean;
-    account: { name: string } | null;
+    account: { name: string; role: "admin" | "member" } | null;
     id: string;
     mode: DeploymentMode;
   },
@@ -911,6 +914,13 @@ export async function deleteGroupFlow(
   const list = deps.loadGroups();
   const g = list.find((x) => x.id === id);
   if (!g) return { status: 404, body: { error: "no such group" } };
+
+  // Personal is torn down only with its account; a Private (restricted) group
+  // only by a member or an admin. Public stays open to any signed-in caller.
+  if (g.nature === "private") return { status: 403, body: { error: "a personal group cannot be deleted" } };
+  if (g.nature === "restricted" && !canAdministerGroup(g, { name: input.account.name, role: input.account.role } as Viewer)) {
+    return { status: 403, body: { error: "only a member or an admin can delete this group" } };
+  }
 
   // T4 carry (fail-closed): refuse while channels still reference the group.
   const verdict = groupDeleteVerdict(id, deps.loadChannels());

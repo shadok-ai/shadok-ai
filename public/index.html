@@ -4889,7 +4889,7 @@
     const gclose = document.createElement("span");
     gclose.className = "gclose";
     gclose.textContent = "×";
-    gclose.title = "Ungroup (tabs are kept)";
+    gclose.title = groupCloseTitle(opts.nature);
     const gicon = document.createElement("span");
     gicon.className = "gicon";
     gicon.title = "Change the group's icon";
@@ -4955,6 +4955,12 @@
     return group;
   }
 
+  function groupCloseTitle(nature) {
+    if (nature === "restricted") return "Delete group (destroys its agents and files)";
+    if (nature === "private") return "Personal space (sealed)";
+    return "Ungroup (its agents move to Main)";
+  }
+
   /** The group's × per nature. Public: the cosmetic ungroup. Restricted (Private):
    * the privileged teardown, behind a confirmation. Private (Personal): nothing.
    * Ungrouping a walled group would drop its agents into the commons. */
@@ -4968,7 +4974,11 @@
           headers: { "content-type": "application/json", "x-shadok-instance": instanceKey },
           body: JSON.stringify({ id: group.id }),
         });
-        if (!res.ok) { alert("Could not delete the group."); return; }
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || "Could not delete the group.");
+          return;
+        }
       } catch { alert("Could not delete the group."); return; }
     }
     dissolveGroup(group);
@@ -5212,7 +5222,7 @@
       del.type = "button";
       del.className = "rail-del";
       del.textContent = "×";
-      del.title = "Ungroup (its agents move to Main)";
+      del.title = groupCloseTitle(group.nature);
       item.appendChild(del);
       del.addEventListener("click", (e) => {
         e.stopPropagation();

@@ -1008,7 +1008,7 @@ test("deleteGroupFlow: a teardown warning is surfaced in the response, yet the r
 test("Review Focus #1: mono-tenant restricted create is 400 'isolation requires the privileged deployment', no OS user, nothing saved", async () => {
   const { isolationRefusal } = await import("../src/capability.js");
   const { deps, saved, provisioned } = createDeps({ isolationRefusal });
-  for (const nature of ["restricted", "private"] as const) {
+  for (const nature of ["restricted"] as const) {
     const r = await createGroupFlow(okCreateInput({ mode: "mono-tenant", nature }), deps);
     assert.equal(r.status, 400);
     assert.equal(r.body.error, "isolation requires the privileged deployment");
@@ -1093,4 +1093,47 @@ test("provisionGroupUser: THROWS when pot wiring fails", async () => {
     }),
     /shared pot wiring.*boom/,
   );
+});
+
+// ── deleteGroupFlow per-nature authorization / createGroupFlow Personal seal ──
+const natured = (nature: "public" | "restricted" | "private", members: string[] = []): Group =>
+  ({ id: "g1", name: "G", nature, members, createdAt: 1, osUser: null, ...(nature === "private" ? { owner: "ada" } : {}) }) as Group;
+const delAs = async (g: Group, name: string, role: "admin" | "member") => {
+  const { deps, saved, tore } = deleteDeps({ loadGroups: () => [g] });
+  const r = await deleteGroupFlow(okDeleteInput({ id: "g1", account: { name, role } } as never), deps);
+  return { r, saved, tore };
+};
+
+test("deleteGroupFlow: a private (Personal) group is refused 403 even for its owner and an admin", async () => {
+  for (const [n, role] of [["ada", "member"], ["root", "admin"]] as const) {
+    const { r, saved, tore } = await delAs(natured("private"), n, role);
+    assert.equal(r.status, 403);
+    assert.equal((r.body as { error: string }).error, "a personal group cannot be deleted");
+    assert.equal(saved.length, 0);
+    assert.equal(tore.length, 0);
+  }
+});
+
+test("deleteGroupFlow: a restricted group is refused for a non-member non-admin", async () => {
+  const { r, saved, tore } = await delAs(natured("restricted", ["bob"]), "eve", "member");
+  assert.equal(r.status, 403);
+  assert.equal((r.body as { error: string }).error, "only a member or an admin can delete this group");
+  assert.equal(saved.length + tore.length, 0);
+});
+
+test("deleteGroupFlow: a restricted group is deletable by a member and by an admin", async () => {
+  assert.equal((await delAs(natured("restricted", ["bob"]), "bob", "member")).r.status, 200);
+  assert.equal((await delAs(natured("restricted", ["bob"]), "root", "admin")).r.status, 200);
+});
+
+test("deleteGroupFlow: a public group stays deletable by a signed-in non-admin", async () => {
+  assert.equal((await delAs(natured("public"), "eve", "member")).r.status, 200);
+});
+
+test("createGroupFlow: nature private is refused 400 (Personal is auto-provisioned), nothing provisioned", async () => {
+  const { deps, saved, provisioned } = createDeps();
+  const r = await createGroupFlow(okCreateInput({ nature: "private" }), deps);
+  assert.equal(r.status, 400);
+  assert.equal((r.body as { error: string }).error, "a personal group is created automatically, not here");
+  assert.equal(saved.length + provisioned.length, 0);
 });

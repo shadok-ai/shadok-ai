@@ -184,3 +184,19 @@ test("icon picker is skipped for walled groups", () => {
   assert.match(html, /isWalled\(group\.nature\)\) return; return openIconPicker\(group, gicon\)/);
   assert.match(fnBlock("function openIconPicker(group, anchor)"), /isWalled\(group\.nature\)\) return/);
 });
+
+test("the restricted × title is destructive wording, not Ungroup; Personal's is not Ungroup", () => {
+  assert.match(html, /Delete group \(destroys its agents and files\)/);
+  assert.match(html, /function groupCloseTitle\(nature\)/);
+  const m = html.match(/function groupCloseTitle\(nature\)\s*\{[\s\S]*?\n  \}/);
+  assert.ok(m);
+  assert.match(m![0], /"restricted"[\s\S]*Delete group/);
+  assert.match(m![0], /"private"[\s\S]*Personal space/);
+  assert.match(html, /gclose\.title = groupCloseTitle\(opts\.nature\)/);
+  assert.match(html, /del\.title = groupCloseTitle\(group\.nature\)/);
+});
+
+test("closeGroupGesture surfaces the server's error on a failed delete", () => {
+  const b = fnBlock("async function closeGroupGesture(group, after)");
+  assert.match(b, /data\.error \|\| "Could not delete the group\."/);
+});
