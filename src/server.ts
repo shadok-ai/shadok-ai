@@ -109,6 +109,10 @@ import {
   createGroupFlow,
   deleteGroupFlow,
   checkCredentialDivergence,
+  credentialWiring,
+  SHARED_CRED_GROUP,
+  DEFAULT_SHARED_CREDENTIAL_PATH,
+  type LinkProbe,
 } from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
@@ -2090,34 +2094,132 @@ app.put("/groups", (req, res) => {
 /** Where a group's HOME is created (`SHADOK_HOME_BASE` override, else `/home`). */
 const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_HOME_BASE;
 
-/** The ONE server-owned Claude credential every group HOME symlinks to (Task 7).
- *  It is the server's own `~/.claude/.credentials.json` — the exact file the
- *  single-user instance already uses — living OUTSIDE every group HOME, so Task
- *  6's 0700 wall on the HOMEs is untouched. */
-const SHARED_CREDENTIAL_PATH = path.join(os.homedir(), ".claude", ".credentials.json");
+/** The ONE Claude credential every group HOME symlinks to (Task 7).
+ *  A NEUTRAL, group-traversable path (`DEFAULT_SHARED_CREDENTIAL_PATH`,
+ *  overridable via `SHADOK_SHARED_CREDENTIAL_PATH`) — NOT the server's own
+ *  `/root/.claude/.credentials.json`, which a group user cannot traverse (mode
+ *  700 on `/root`) so it ran credential-less in silence. The directory chain is
+ *  wired `root:shadok-cred` 0750 so every group user can traverse it.
+ *  T15 CARRY: the migration task SEEDS/populates this neutral file from the
+ *  existing credential and symlinks the commons HOME to it; Task 7 only USES it. */
+const SHARED_CREDENTIAL_PATH =
+  (process.env.SHADOK_SHARED_CREDENTIAL_PATH ?? "").trim() || DEFAULT_SHARED_CREDENTIAL_PATH;
 
-/** Real fs probe for `checkCredentialDivergence`: is `p` a symlink pointing at
- *  `target`? Swallows every error (missing / not a link / unreadable) to `false`
- *  — anything that is not exactly our symlink is treated as divergence. */
-function isSymlinkToReal(p: string, target: string): boolean {
+/** Real fs probe for `checkCredentialDivergence`: classify `p` into the four
+ *  distinct facts the predicate needs. ENOENT → `missing`; any other error
+ *  (EACCES: a non-root server cannot read a 700 HOME) → `cannot-stat`, which is
+ *  NOT treated as the rename signal — that is what removed the false "rename
+ *  divergence" warning on every spawn. */
+function probeCredentialLink(p: string): LinkProbe {
   try {
-    if (!fs.lstatSync(p).isSymbolicLink()) return false;
-    return fs.readlinkSync(p) === target;
-  } catch {
-    return false;
+    const st = fs.lstatSync(p);
+    if (st.isSymbolicLink()) {
+      try {
+        return { state: "symlink", target: fs.readlinkSync(p) };
+      } catch {
+        return { state: "cannot-stat" };
+      }
+    }
+    // A regular file (or anything non-symlink) where our symlink should be.
+    return { state: "file" };
+  } catch (e) {
+    return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? { state: "missing" } : { state: "cannot-stat" };
   }
 }
 
+/** Dedupe the divergence warning: fire at most ONCE per group id, not on every
+ *  spawn/restart (it would otherwise spam the log each turn). Module-level. */
+const credentialDivergenceWarned = new Set<string>();
+
 /** Fire the verify-first divergence warning for a group agent about to be
  *  dropped to its OS user (multi-tenant only). A no-op in mono-tenant or for a
- *  commons agent (no dedicated user). See `checkCredentialDivergence`. */
+ *  commons agent (no dedicated user). Warns only on a genuine `real-file`
+ *  divergence, and only once per group. See `checkCredentialDivergence`. */
 function warnIfCredentialDiverged(groupId: string | null, osUser: string | null): void {
   if (DEPLOYMENT_MODE !== "multi-tenant" || !osUser) return;
-  checkCredentialDivergence(
-    { id: groupId ?? osUser, home: `${GROUP_HOME_BASE}/${osUser}` },
+  const gid = groupId ?? osUser;
+  const state = checkCredentialDivergence(
+    { id: gid, home: `${GROUP_HOME_BASE}/${osUser}` },
     SHARED_CREDENTIAL_PATH,
-    { isSymlinkTo: isSymlinkToReal },
+    { probe: probeCredentialLink, warn: credentialDivergenceWarned.has(gid) ? () => {} : (m) => console.warn(m) },
   );
+  if (state === "real-file") credentialDivergenceWarned.add(gid);
+}
+
+/** Group id of the shared unix group, for the reachability inspection fallback.
+ *  Read from `/etc/group` (Node has no `getgrnam`); null if absent/unreadable. */
+function sharedCredGroupGid(): number | null {
+  try {
+    const line = fs
+      .readFileSync("/etc/group", "utf8")
+      .split("\n")
+      .find((l) => l.startsWith(SHARED_CRED_GROUP + ":"));
+    if (!line) return null;
+    const gid = Number(line.split(":")[2]);
+    return Number.isFinite(gid) ? gid : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Reachability by MODE/OWNER inspection (the fallback when we cannot run a read
+ *  as the user): the resolved shared file must be group-owned by `shadok-cred`
+ *  and group-readable, and every ancestor directory must be traversable by that
+ *  group (other-execute, or group-execute with the matching gid). This is what
+ *  catches the /root trap — a 660 file behind a 700 ancestor. */
+function reachableByInspection(link: string): { ok: boolean; detail?: string } {
+  const gid = sharedCredGroupGid();
+  let real: string;
+  try {
+    real = fs.realpathSync(link);
+  } catch (e) {
+    return { ok: false, detail: `cannot resolve ${link}: ${(e as Error)?.message ?? e}` };
+  }
+  try {
+    const st = fs.statSync(real);
+    if (gid != null && st.gid !== gid) return { ok: false, detail: `${real} is not group-owned by ${SHARED_CRED_GROUP}` };
+    if (!(st.mode & 0o040)) return { ok: false, detail: `${real} is not group-readable` };
+  } catch (e) {
+    return { ok: false, detail: `cannot stat ${real}: ${(e as Error)?.message ?? e}` };
+  }
+  // Walk ancestors: each must be traversable by the shared group.
+  let dir = path.dirname(real);
+  for (;;) {
+    let dst: fs.Stats;
+    try {
+      dst = fs.statSync(dir);
+    } catch (e) {
+      return { ok: false, detail: `cannot stat ${dir}: ${(e as Error)?.message ?? e}` };
+    }
+    const otherX = (dst.mode & 0o001) !== 0;
+    const groupX = (dst.mode & 0o010) !== 0 && gid != null && dst.gid === gid;
+    if (!otherX && !groupX) return { ok: false, detail: `${dir} is not traversable by group ${SHARED_CRED_GROUP}` };
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // reached /
+    dir = parent;
+  }
+  return { ok: true };
+}
+
+/** Best-effort reachability check for the wired credential. Ground truth first:
+ *  an ACTUAL read as the group user (`runuser` as root, else `sudo -n -u`). If
+ *  that mechanism is unavailable, fall back to mode/owner inspection. Only a
+ *  concluded "unreachable" is a false verdict — `provisionGroupUser` turns it
+ *  into a loud refusal (never a silent credential-less spawn). */
+function credentialReachableReal(user: string, link: string): Promise<{ ok: boolean; detail?: string }> {
+  return new Promise((resolve) => {
+    const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
+    const cmd = asRoot ? "runuser" : "sudo";
+    const argv = asRoot ? ["-u", user, "--", "test", "-r", link] : ["-n", "-u", user, "test", "-r", link];
+    const p = spawnChild(cmd, argv, { stdio: ["ignore", "ignore", "ignore"], timeout: 10_000 });
+    p.on("error", () => resolve(reachableByInspection(link))); // no runuser/sudo → inspect
+    p.on("exit", (code) => {
+      if (code === 0) return resolve({ ok: true });
+      // A non-zero exit means either "not readable" OR the wrapper itself failed
+      // (e.g. sudo denied). Confirm with inspection rather than trust the exit.
+      resolve(reachableByInspection(link));
+    });
+  });
 }
 
 /** Run a privileged account command. Root runs it directly; otherwise go through
@@ -2146,6 +2248,27 @@ function runPrivileged(cmd: string, argv: string[]): Promise<void> {
  *  can fail. */
 async function seedGroupHome(home: string): Promise<void> {
   console.log(`groups: provisioned HOME ${home} (shared mount seeding lands in Task 12)`);
+}
+
+/** Real `lstat` probe for Important #2: is `<home>/.claude` a safe real directory
+ *  to create+own, or a symlink / non-dir an agent may have planted? */
+function claudeDirStatReal(claudeDir: string): { exists: boolean; isSymlink: boolean; isDir: boolean } {
+  try {
+    const st = fs.lstatSync(claudeDir);
+    return { exists: true, isSymlink: st.isSymbolicLink(), isDir: st.isDirectory() };
+  } catch {
+    return { exists: false, isSymlink: false, isDir: false };
+  }
+}
+
+/** Does the shared credential FILE exist? Important #3: absence ⇒ the instance
+ *  is not signed in / T15 has not seeded it — provisioning refuses clearly. */
+function sharedCredentialExistsReal(p: string): boolean {
+  try {
+    return fs.existsSync(p);
+  } catch {
+    return false;
+  }
 }
 
 /** Does an OS user already exist? Used to make provisioning idempotent. */
@@ -2195,6 +2318,13 @@ app.post("/groups", async (req, res) => {
           // provisions there, but gate explicitly so the intent is local.
           sharedCredentialPath:
             DEPLOYMENT_MODE === "multi-tenant" ? SHARED_CREDENTIAL_PATH : undefined,
+          // Review fixes: refuse to chown/chmod through a planted symlink
+          // (Important #2), refuse clearly when the shared file is absent
+          // (Important #3), and PROVE the wired credential is reachable by the
+          // group user before the agent can spawn (Important #1).
+          claudeDirStat: claudeDirStatReal,
+          sharedCredentialExists: sharedCredentialExistsReal,
+          reachable: credentialReachableReal,
         }).then(() => void 0),
       loadGroups,
       saveGroups,
