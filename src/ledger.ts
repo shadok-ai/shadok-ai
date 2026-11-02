@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import { MAIN_GROUP_ID } from "./groups.js";
 import { rowKind, LABEL_MAX } from "../context/ledger-skill/ledger-core.mjs";
 
 /**
@@ -35,13 +36,41 @@ export interface LedgerRow {
   /** When its claim was last CONFIRMED — the freshness, which an edit must not
    *  move. Absent on older rows; `ageDays` falls back to `updatedAt`. */
   verifiedAt?: number;
+  /** `group` (default when absent) = the writer's own group only; `public` = the
+   *  commons. Group-private by default: a row nobody marked can never leak. */
+  scope?: "group" | "public";
+  /** The AUTHORING group, stamped in memory by `visibleLedger` from the file a
+   *  row was read out of — never stored (the file already is the group). */
+  group?: string | null;
 }
 
 /** The per-instance ledger file, keyed by the launch dir (same encoding as
  *  channels/crons). Distinct launch dirs → distinct ledgers. */
-export function ledgerFileFor(cwd: string): string {
+export function ledgerFileFor(cwd: string, groupId?: string | null): string {
   const enc = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  return path.join(os.homedir(), ".shadok-ai", "ledger", enc + ".json");
+  // Main / no group / mono-tenant keep the historical file: nothing migrates.
+  // Every other group gets a file of its OWN, which is the whole isolation — a
+  // group's agent is handed this path and cannot even address another's rows.
+  const g = !groupId || groupId === MAIN_GROUP_ID ? "" : ".g-" + groupId.replace(/[^a-zA-Z0-9_-]/g, "_");
+  return path.join(os.homedir(), ".shadok-ai", "ledger", enc + g + ".json");
+}
+
+/**
+ * What a group's agent may see: its own file, plus the PUBLIC rows of the
+ * commons (the Main file). For Main itself that is just the Main file — its own
+ * private rows and the public ones mirrored in by `--public`. Rows are tagged
+ * with the group they were read from so `deltaSince` can filter defensively.
+ */
+export function visibleLedger(cwd: string, groupId: string | null): LedgerRow[] {
+  const g = groupId ?? MAIN_GROUP_ID;
+  const own = readRows(ledgerFileFor(cwd, g)).map((r) => ({ ...r, group: g }));
+  if (g === MAIN_GROUP_ID) return own;
+  const seen = new Set(own.map((r) => r.entity.toLowerCase().replace(/\s+/g, " ").trim()));
+  const pub = readRows(ledgerFileFor(cwd))
+    .filter((r) => r.scope === "public")
+    .filter((r) => !seen.has(r.entity.toLowerCase().replace(/\s+/g, " ").trim()))
+    .map((r) => ({ ...r, group: MAIN_GROUP_ID }));
+  return [...own, ...pub];
 }
 
 /** The legacy single-file ledger, before it was scoped per instance. */
@@ -121,8 +150,16 @@ export function deltaSince(
   rows: LedgerRow[],
   watermark: number,
   cap: number,
+  /** When given, keep only what that group may see: public rows (if
+   *  `includePublic`) and rows it authored. A row with no `scope` is `group`. */
+  visibleScope?: { groupId: string | null; includePublic: boolean },
 ): { rows: LedgerRow[]; total: number } {
+  const visible = (r: LedgerRow): boolean =>
+    !visibleScope ||
+    (visibleScope.includePublic && r.scope === "public") ||
+    (r.group ?? null) === visibleScope.groupId;
   const changed = rows
+    .filter(visible)
     .filter((r) => (r.updatedAt ?? 0) > watermark)
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   return { rows: changed.slice(0, cap), total: changed.length };

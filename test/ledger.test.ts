@@ -248,3 +248,88 @@ test("ageDays is days since the claim was CONFIRMED, not since it was written", 
   // no verifiedAt → fall back to updatedAt, so older rows are unaffected
   assert.equal(ageDays({ updatedAt: 7 * day }, 10 * day), 3);
 });
+
+/* ---- Task 13: scope by group (group-private by default, --public opts in) ---- */
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { deltaSince, ledgerFileFor, visibleLedger } from "../src/ledger.ts";
+
+test("upsertEntry carries scope; absent scope is NOT written (reads as group)", () => {
+  const pub: any[] = upsertEntry([], { entity: "A", status: "open", scope: "public" }, 1, "a1");
+  assert.equal(pub[0].scope, "public");
+  const bare: any[] = upsertEntry([], { entity: "B", status: "open" }, 1, "b1");
+  assert.equal(bare[0].scope, "group"); // the SAFE default, stored explicitly
+  const upd: any[] = upsertEntry(pub, { id: "a1", note: "n" }, 2);
+  assert.equal(upd[0].scope, "public"); // an edit that omits scope keeps it
+  const demote: any[] = upsertEntry(pub, { id: "a1", scope: "group" }, 3);
+  assert.equal(demote[0].scope, "group");
+});
+
+test("deltaSince with a visibleScope drops another group's private rows, keeps public", () => {
+  const rows: any[] = [
+    { id: "1", entity: "mine", status: "open", updatedAt: 10, group: "g1", scope: "group" },
+    { id: "2", entity: "theirs", status: "open", updatedAt: 11, group: "g2", scope: "group" },
+    { id: "3", entity: "shared", status: "open", updatedAt: 12, group: "g2", scope: "public" },
+    { id: "4", entity: "legacy", status: "open", updatedAt: 13, group: "g2" }, // no scope = group
+  ];
+  const d = deltaSince(rows, 0, 10, { groupId: "g1", includePublic: true });
+  assert.deepEqual(d.rows.map((r) => r.id).sort(), ["1", "3"]);
+  assert.equal(d.total, 2);
+  const noPub = deltaSince(rows, 0, 10, { groupId: "g1", includePublic: false });
+  assert.deepEqual(noPub.rows.map((r) => r.id), ["1"]);
+  assert.equal(deltaSince(rows, 0, 10).total, 4); // unscoped call unchanged
+});
+
+test("per-group files: group A never sees group B's private rows, both see public", () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "led-"));
+  const prev = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const cwd = "/launch/dir";
+    const w = (f: string, rows: any[]) => {
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, JSON.stringify(rows));
+    };
+    w(ledgerFileFor(cwd), [
+      { id: "m1", entity: "main-private", status: "open", scope: "group", updatedAt: 1 },
+      { id: "m2", entity: "commons", status: "open", scope: "public", updatedAt: 2 },
+    ]);
+    w(ledgerFileFor(cwd, "A"), [{ id: "a1", entity: "a-private", status: "open", scope: "group", updatedAt: 3 }]);
+    w(ledgerFileFor(cwd, "B"), [{ id: "b1", entity: "b-private", status: "open", scope: "group", updatedAt: 4 }]);
+    const names = (g: string | null) => visibleLedger(cwd, g).map((r) => r.entity).sort();
+    assert.deepEqual(names("A"), ["a-private", "commons"]);
+    assert.deepEqual(names("B"), ["b-private", "commons"]);
+    assert.deepEqual(names(null), ["commons", "main-private"]); // mono-tenant: as today
+    assert.equal(ledgerFileFor(cwd, "main"), ledgerFileFor(cwd));
+  } finally {
+    process.env.HOME = prev;
+  }
+});
+
+test("CLI: bare record is group-private; --public is a boolean that eats no arg and mirrors to the commons", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ledcli-"));
+  const own = path.join(dir, "own.json");
+  const commons = path.join(dir, "commons.json");
+  const run = (...a: string[]) =>
+    spawnSync(process.execPath, ["context/ledger-skill/ledger.mjs", ...a], {
+      encoding: "utf8",
+      env: { ...process.env, SHADOK_LEDGER_FILE: own, SHADOK_LEDGER_PUBLIC_FILE: commons },
+    });
+  assert.equal(run("record", "--entity", "secret thing", "--status", "open").status, 0);
+  assert.equal(run("record", "--public", "--entity", "shared thing", "--status", "open").status, 0);
+  const ownRows = JSON.parse(fs.readFileSync(own, "utf8"));
+  assert.equal(ownRows.find((r: any) => r.entity === "secret thing").scope, "group");
+  assert.equal(ownRows.find((r: any) => r.entity === "shared thing").scope, "public");
+  const pub = JSON.parse(fs.readFileSync(commons, "utf8"));
+  assert.deepEqual(pub.map((r: any) => r.entity), ["shared thing"]); // the private one never left
+  // another group's CLI (own = empty file) sees the public row, not the private one
+  const other = path.join(dir, "other.json");
+  const chk = spawnSync(process.execPath, ["context/ledger-skill/ledger.mjs", "list"], {
+    encoding: "utf8",
+    env: { ...process.env, SHADOK_LEDGER_FILE: other, SHADOK_LEDGER_PUBLIC_FILE: commons },
+  });
+  assert.match(chk.stdout, /shared thing/);
+  assert.doesNotMatch(chk.stdout, /secret thing/);
+});

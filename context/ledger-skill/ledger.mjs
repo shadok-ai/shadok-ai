@@ -10,26 +10,51 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { upsertEntry, searchEntries, ageDays, resolveId, normEntity, rowKind, KINDS, LABEL_MAX } from "./ledger-core.mjs";
+import { upsertEntry, normScope, searchEntries, ageDays, resolveId, normEntity, rowKind, KINDS, LABEL_MAX } from "./ledger-core.mjs";
 
 const FILE =
   (process.env.SHADOK_LEDGER_FILE || "").trim() ||
   path.join(os.homedir(), ".shadok-ai", "ledger.json");
 
-function load() {
+// The commons file (multi-tenant): a group's agent writes to ITS OWN file
+// (FILE) and reads it plus the PUBLIC rows of the commons. Unset in a
+// mono-tenant instance, where FILE already is the commons.
+const PUBLIC_FILE = (process.env.SHADOK_LEDGER_PUBLIC_FILE || "").trim();
+const hasCommons = !!PUBLIC_FILE && path.resolve(PUBLIC_FILE) !== path.resolve(FILE);
+
+function loadFile(file) {
   try {
-    const j = JSON.parse(fs.readFileSync(FILE, "utf8"));
+    const j = JSON.parse(fs.readFileSync(file, "utf8"));
     return Array.isArray(j) ? j : [];
   } catch {
     return []; // absent or unreadable → empty table, never a crash
   }
 }
 
-function save(rows) {
-  fs.mkdirSync(path.dirname(FILE), { recursive: true });
-  const tmp = FILE + ".tmp";
+/** This group's own rows (the only ones a write ever touches). */
+function load() {
+  return loadFile(FILE);
+}
+
+/** What a read shows: own rows + the commons' PUBLIC rows (own wins on the same
+ *  entity). Another group's private rows live in ITS file and are never read. */
+function loadVisible() {
+  const own = load();
+  if (!hasCommons) return own;
+  const seen = new Set(own.map((r) => normEntity(r.entity)));
+  const pub = loadFile(PUBLIC_FILE).filter((r) => r.scope === "public" && !seen.has(normEntity(r.entity)));
+  return [...own, ...pub];
+}
+
+function saveTo(file, rows) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = file + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(rows, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, FILE); // atomic: a concurrent reader never sees half a file
+  fs.renameSync(tmp, file); // atomic: a concurrent reader never sees half a file
+}
+
+function save(rows) {
+  saveTo(FILE, rows);
 }
 
 /** A short, unique handle (4 hex): quotable from the pushed ledger block. */
@@ -44,7 +69,7 @@ function mintId(rows) {
 
 /** Flags that take NO value, listed rather than guessed: inferring "the next arg
  *  starts with -- so this one is a boolean" would misread `--note "--foo"`. */
-const BOOL_FLAGS = new Set(["verified"]);
+const BOOL_FLAGS = new Set(["verified", "public"]);
 
 /** `--key value` pairs → object. Values may be quoted by the shell already. */
 function parseFlags(args) {
@@ -86,7 +111,7 @@ if (cmd === "check") {
   // Two tiers, and the difference is the whole point: `strong` answers the
   // question, `weak` merely shares words with it. Collapsing them would make a
   // loosely-related row read as a status — the opposite of what this gates.
-  const { strong, weak } = searchEntries(load(), q);
+  const { strong, weak } = searchEntries(loadVisible(), q);
   if (strong.length) {
     console.log(strong.map((e) => fmt(e, now)).join("\n"));
   } else {
@@ -112,7 +137,7 @@ if (cmd === "check") {
   const hasStatus = !!f.status || !!f.kind;
   if (byId ? idHasNoFields : !f.entity || !hasStatus) {
     console.error(
-      'usage: ledger record --entity "<name>" --status <resolved|open|in-progress|decided> [--note "<line>"] [--source "<ref>"]\n' +
+      'usage: ledger record --entity "<name>" --status <resolved|open|in-progress|decided> [--note "<line>"] [--source "<ref>"] [--public]\n' +
         `   or: ledger record --entity "<name>" --kind <${KINDS.join("|")}> [--note "<line>"] [--source "<ref>"]\n` +
         '   or: ledger record --id <handle> [--status <…>] [--kind <…>] [--note "<line>"] [--source "<ref>"]\n' +
         '   or: ledger record --id <handle> --verified     (still true/current — nothing else changed)',
@@ -132,6 +157,8 @@ if (cmd === "check") {
         verified: f.verified === true,
         note: f.note,
         source: f.source,
+        // Group-private unless asked: `--public` is the only way out.
+        scope: f.public === true ? "public" : undefined,
       },
       now,
       mintId(rows0),
@@ -142,8 +169,21 @@ if (cmd === "check") {
   }
   save(rows);
   const row = byId ? resolveId(rows, f.id) : rows.find((r) => normEntity(r.entity) === normEntity(f.entity));
+  // Publishing = mirroring the row into the commons file (own file keeps it too,
+  // so the author's `check` is unchanged). A demotion removes the mirror.
+  if (hasCommons) {
+    const pubRows = loadFile(PUBLIC_FILE);
+    const key = normEntity(row.entity);
+    const rest = pubRows.filter((r) => normEntity(r.entity) !== key);
+    if (row.scope === "public") {
+      const prev = pubRows.find((r) => normEntity(r.entity) === key);
+      saveTo(PUBLIC_FILE, [...rest, { ...row, id: prev?.id ?? mintId(pubRows) }]);
+    } else if (rest.length !== pubRows.length) {
+      saveTo(PUBLIC_FILE, rest);
+    }
+  }
   const k = rowKind(row);
-  console.log(`recorded: ${row.entity} — ${row.status}${k === "task" ? "" : ` · ${k}`} [${row.id}]`);
+  console.log(`recorded: ${row.entity} — ${row.status}${k === "task" ? "" : ` · ${k}`}${row.scope === "public" ? " · public" : ""} [${row.id}]`);
   // Say it, don't enforce it: the row is already saved (a refused write is a
   // lost fact) and the full label stays in the table. But the delta pushed to
   // siblings only carries the first LABEL_MAX characters of it, and a label
@@ -155,7 +195,7 @@ if (cmd === "check") {
     );
   }
 } else if (cmd === "list") {
-  const rows = searchEntries(load(), "").strong;
+  const rows = searchEntries(loadVisible(), "").strong;
   console.log(rows.length ? rows.map((e) => fmt(e, now)).join("\n") : "(ledger empty)");
 } else {
   console.error("usage: ledger <check|record|list> …");

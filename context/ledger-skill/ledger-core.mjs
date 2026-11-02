@@ -87,6 +87,21 @@ export function rowKind(entry) {
 }
 
 /**
+ * A row's SCOPE: `group` (visible to the writer's own group only) or `public`
+ * (the commons, every group). The DIRECTION OF THE DEFAULT is the invariant:
+ * absent means `group`, so forgetting a flag can only ever keep something
+ * private. Public-by-default would reopen the cross-group leak on the first
+ * oversight — publishing is a deliberate act (`--public`), the twin of dropping
+ * a file into `~/shared/`.
+ */
+export function normScope(sc) {
+  const s = String(sc ?? "").trim().toLowerCase();
+  if (!s) return null;
+  if (s !== "group" && s !== "public") throw new Error(`unknown scope "${sc}" — use group or public`);
+  return s;
+}
+
+/**
  * Upsert a row, two ways:
  *  - `patch.id` present → UPDATE that exact row in place (resolved via resolveId),
  *    keeping its id AND its entity (a rename only if `patch.entity` is given).
@@ -114,6 +129,7 @@ export function rowKind(entry) {
  * was last observed, which is the truth and makes the migration lazy, per row.
  */
 export function upsertEntry(entries, patch, now, newId) {
+  const scope = normScope(patch.scope);
   const kind = normKind(patch.kind); // refuses an unknown kind before anything is written
   const statusGiven = patch.status != null && String(patch.status).trim() !== "";
 
@@ -131,7 +147,7 @@ export function upsertEntry(entries, patch, now, newId) {
         ? KIND_STATUS[kind]
         : cur.status;
     const edited =
-      statusGiven || kind != null || patch.note != null || patch.source != null || patch.entity != null;
+      statusGiven || kind != null || patch.note != null || patch.source != null || patch.entity != null || scope != null;
     const observed = statusGiven || patch.verified === true || status !== cur.status;
     const row = {
       id: cur.id,
@@ -139,6 +155,7 @@ export function upsertEntry(entries, patch, now, newId) {
         patch.entity != null && String(patch.entity).trim() ? String(patch.entity).trim() : cur.entity,
       status,
       ...(effKind ? { kind: effKind } : {}),
+      scope: scope ?? normScope(cur.scope) ?? "group",
       ...((patch.note ?? cur.note) ? { note: String(patch.note ?? cur.note).trim() } : {}),
       ...((patch.source ?? cur.source) ? { source: String(patch.source ?? cur.source).trim() } : {}),
       updatedAt: edited ? now : (cur.updatedAt ?? now),
@@ -160,6 +177,7 @@ export function upsertEntry(entries, patch, now, newId) {
     entity: String(patch.entity).trim(),
     status,
     ...(effKind ? { kind: effKind } : {}),
+    scope: scope ?? normScope(existing?.scope) ?? "group",
     ...(patch.note ? { note: String(patch.note).trim() } : {}),
     ...(patch.source ? { source: String(patch.source).trim() } : {}),
     updatedAt: now,

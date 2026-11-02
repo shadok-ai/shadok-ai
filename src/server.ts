@@ -173,6 +173,7 @@ import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
   ledgerFileFor,
+  visibleLedger,
   ensureLedgerFile,
   loadLedger,
   deltaSince,
@@ -4351,7 +4352,11 @@ function makePilot(
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
   // The PER-INSTANCE ledger file: an agent's cwd is a worktree, not the launch
   // dir, so it cannot derive the scope itself — hand it the path the skill writes.
-  env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
+  // Scoped by GROUP: the agent writes to its group's own file and is told where
+  // the commons is, so `--public` can publish there. Main/mono-tenant gets the
+  // historical single file and no commons path (it already is the commons).
+  env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd(), group);
+  if (group && group !== MAIN_GROUP_ID) env.SHADOK_LEDGER_PUBLIC_FILE = ledgerFileFor(process.cwd());
   // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
   // reads it to reach another instance's agents. See src/peers.ts.
   env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd());
@@ -6203,10 +6208,15 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             let ledgerSeen: number | null = null;
             let ledgerPrelude: string[] | undefined;
             if (ledgerEnabled) {
+              // The agent's group comes from its CHANNEL (server-side, never the
+              // message). Own group's rows + the commons' public ones; another
+              // group's private rows are not even read.
+              const ledgerGroup = loadChannels().find((c) => c.sessionId === session!.id)?.group ?? null;
               const { rows, total } = deltaSince(
-                loadLedger(ledgerFileFor(process.cwd())),
+                visibleLedger(process.cwd(), ledgerGroup),
                 session.ledgerSeenAt ?? 0,
                 LEDGER_PUSH_CAP,
+                { groupId: ledgerGroup ?? MAIN_GROUP_ID, includePublic: true },
               );
               ledgerSeen = Date.now();
               // One paste per chunk, and the threshold is applied per paste —

@@ -115,6 +115,21 @@ node ~/.claude/skills/shadok-ledger/ledger.mjs record \
   --id <id> --status resolved --note "<one line>"
 ```
 
+## Who sees a row: your group by default, everyone with `--public`
+
+On an instance with several groups, a row you record is **private to your
+group**: only agents of your group see it in `check`, `list` and the pushed
+block. That is the safe default — forgetting a flag can never leak anything. To
+share a resolution with every group, say so on purpose:
+
+```
+… record --entity "<name>" --status resolved --public
+```
+
+It is the twin of dropping a file into `~/shared/` to make it public. Publish
+only what is meant for the other groups. `--id <id> --public` publishes an
+existing row. (On a single-group instance nothing changes.)
+
 ## To consult the whole table
 
 ```
