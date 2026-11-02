@@ -24,7 +24,7 @@ import {
   type TuiDialog,
   type HistoryTurn,
 } from "./extract.js";
-import { fileCard, sentFilePaths, contentTypeFor, isImageFile } from "./download.js";
+import { fileCard, sentFilePaths, contentTypeFor, isImageFile, isVideoFile, parseByteRange } from "./download.js";
 import {
   OFFER_TOOL, filesFileFor, loadOffers, saveOffers, offerVerdict, withOffer,
   offeredPaths, refusalMessage, statForOffer, type OfferedFile,
@@ -3304,6 +3304,41 @@ function historyWithOffers(turns: HistoryTurn[], sessionId: string): HistoryTurn
   return out;
 }
 
+// Stream a vetted file back to the browser, honouring a single `Range` so a
+// <video> can seek and so Safari plays one at all (it demands a 206 before it
+// will start). Images/PDF/etc. get the same path — Range is harmless there and
+// helps a resumed download. A raster image or a video is served `inline` (the
+// chat's <img>/<video> renders it, and opening the URL shows it); everything
+// else — including SVG/HTML — downloads, under the same nosniff + sandbox CSP.
+function serveStaticFile(
+  req: express.Request, res: express.Response,
+  filePath: string, stat: fs.Stats, name: string,
+): void {
+  const ct = contentTypeFor(name);
+  const inline = (isImageFile(name) && ct !== "image/svg+xml") || isVideoFile(name);
+  res.setHeader("Content-Type", ct);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${name.replace(/["\\]/g, "_")}"`);
+  res.setHeader("Accept-Ranges", "bytes");
+  const range = parseByteRange(req.headers.range, stat.size);
+  if (range === "unsatisfiable") {
+    res.setHeader("Content-Range", `bytes */${stat.size}`);
+    res.status(416).end();
+    return;
+  }
+  const onErr = () => { if (!res.headersSent) res.status(500); res.end(); };
+  if (range) {
+    res.status(206);
+    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+    res.setHeader("Content-Length", String(range.end - range.start + 1));
+    fs.createReadStream(filePath, { start: range.start, end: range.end }).on("error", onErr).pipe(res);
+    return;
+  }
+  res.setHeader("Content-Length", String(stat.size));
+  fs.createReadStream(filePath).on("error", onErr).pipe(res);
+}
+
 app.get("/download", (req, res) => {
   const session = String(req.query.session ?? "");
   const wanted = String(req.query.path ?? "");
@@ -3327,16 +3362,7 @@ app.get("/download", (req, res) => {
   let stat: fs.Stats;
   try { stat = fs.statSync(wanted); if (!stat.isFile()) throw new Error("not a file"); }
   catch { return res.status(404).type("text").send("file no longer on disk"); }
-  const name = path.basename(wanted);
-  res.setHeader("Content-Type", contentTypeFor(name));
-  res.setHeader("Content-Length", String(stat.size));
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
-  // A raster image is served inline (so opening it shows the image); everything
-  // else — including SVG/HTML — downloads. The <img> in the chat renders either.
-  const inline = isImageFile(name) && contentTypeFor(name) !== "image/svg+xml";
-  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${name.replace(/["\\]/g, "_")}"`);
-  fs.createReadStream(wanted).on("error", () => { if (!res.headersSent) res.status(500); res.end(); }).pipe(res);
+  serveStaticFile(req, res, wanted, stat, path.basename(wanted));
 });
 
 // Serve a file the USER dropped / pasted (or a Telegram attachment) — they all
@@ -3355,13 +3381,7 @@ app.get("/media/:name", (req, res) => {
   let stat: fs.Stats;
   try { stat = fs.statSync(file); if (!stat.isFile()) throw new Error("not a file"); }
   catch { return res.status(404).type("text").send("no such media"); }
-  res.setHeader("Content-Type", contentTypeFor(base));
-  res.setHeader("Content-Length", String(stat.size));
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
-  const inline = isImageFile(base) && contentTypeFor(base) !== "image/svg+xml";
-  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${base.replace(/["\\]/g, "_")}"`);
-  fs.createReadStream(file).on("error", () => { if (!res.headersSent) res.status(500); res.end(); }).pipe(res);
+  serveStaticFile(req, res, file, stat, base);
 });
 
 // Install (or repair) the global Claude Code CLI on demand — `npm i -g

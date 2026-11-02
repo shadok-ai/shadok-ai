@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { isImageFile, telegramPhotoable, contentTypeFor, fileCard, toolFiles, sentFilePaths } from "../src/download.js";
+import { isImageFile, isVideoFile, telegramPhotoable, contentTypeFor, fileCard, parseByteRange, toolFiles, sentFilePaths } from "../src/download.js";
 
 test("isImageFile covers what an <img> renders", () => {
   for (const n of ["a.png", "b.JPG", "c.jpeg", "d.gif", "e.webp", "f.svg", "g.avif"]) assert.equal(isImageFile(n), true, n);
-  for (const n of ["h.pdf", "i.html", "j.txt", "k", "l.zip"]) assert.equal(isImageFile(n), false, n);
+  for (const n of ["h.pdf", "i.html", "j.txt", "k", "l.zip", "m.mp4"]) assert.equal(isImageFile(n), false, n);
+});
+
+test("isVideoFile covers what a <video> renders", () => {
+  for (const n of ["a.mp4", "b.M4V", "c.webm", "d.ogv", "e.MOV"]) assert.equal(isVideoFile(n), true, n);
+  for (const n of ["f.png", "g.gif", "h.pdf", "i", "j.mp3", "k.avi"]) assert.equal(isVideoFile(n), false, n);
 });
 
 test("telegramPhotoable is narrower than isImageFile (svg/gif go as documents)", () => {
@@ -19,12 +24,37 @@ test("contentTypeFor maps known types, else octet-stream", () => {
   assert.equal(contentTypeFor("x.png"), "image/png");
   assert.equal(contentTypeFor("x.html"), "text/html");
   assert.equal(contentTypeFor("x.svg"), "image/svg+xml");
+  assert.equal(contentTypeFor("x.mp4"), "video/mp4");
+  assert.equal(contentTypeFor("x.webm"), "video/webm");
+  assert.equal(contentTypeFor("x.mov"), "video/quicktime");
   assert.equal(contentTypeFor("x.unknownext"), "application/octet-stream");
 });
 
-test("fileCard = {path, basename, image}", () => {
-  assert.deepEqual(fileCard("/tmp/go1/report.pdf"), { path: "/tmp/go1/report.pdf", name: "report.pdf", image: false });
-  assert.deepEqual(fileCard("/a/b/chart.png"), { path: "/a/b/chart.png", name: "chart.png", image: true });
+test("fileCard = {path, basename, image, video}", () => {
+  assert.deepEqual(fileCard("/tmp/go1/report.pdf"), { path: "/tmp/go1/report.pdf", name: "report.pdf", image: false, video: false });
+  assert.deepEqual(fileCard("/a/b/chart.png"), { path: "/a/b/chart.png", name: "chart.png", image: true, video: false });
+  assert.deepEqual(fileCard("/a/b/clip.mp4"), { path: "/a/b/clip.mp4", name: "clip.mp4", image: false, video: true });
+});
+
+test("parseByteRange handles the forms a <video> sends", () => {
+  // no header / blank unit → whole file (200)
+  assert.equal(parseByteRange(undefined, 100), null);
+  assert.equal(parseByteRange("bytes=-", 100), null);
+  assert.equal(parseByteRange("chunks=0-10", 100), null);
+  // explicit start-end, inclusive
+  assert.deepEqual(parseByteRange("bytes=0-499", 1000), { start: 0, end: 499 });
+  // open-ended → to the last byte
+  assert.deepEqual(parseByteRange("bytes=500-", 1000), { start: 500, end: 999 });
+  // clamp an end past EOF
+  assert.deepEqual(parseByteRange("bytes=900-5000", 1000), { start: 900, end: 999 });
+  // suffix: the last N bytes
+  assert.deepEqual(parseByteRange("bytes=-200", 1000), { start: 800, end: 999 });
+  assert.deepEqual(parseByteRange("bytes=-5000", 1000), { start: 0, end: 999 });
+  // out of bounds → unsatisfiable (416)
+  assert.equal(parseByteRange("bytes=1000-1001", 1000), "unsatisfiable");
+  assert.equal(parseByteRange("bytes=-0", 1000), "unsatisfiable");
+  // a zero-size file has no satisfiable range
+  assert.equal(parseByteRange("bytes=0-0", 0), null);
 });
 
 test("toolFiles only returns paths for SendUserFile", () => {

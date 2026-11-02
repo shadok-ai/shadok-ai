@@ -12,6 +12,10 @@ import path from "node:path";
 export const SEND_FILE_TOOL = "SendUserFile";
 
 const IMAGE_EXT = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif", ".bmp", ".ico"]);
+// What the web renders inline as a <video>. Kept to the formats a browser can
+// actually play (mp4/webm/ogg, plus mov which Safari plays and Chrome often
+// does too); an unplayable container still downloads via the octet-stream path.
+const VIDEO_EXT = new Set([".mp4", ".m4v", ".webm", ".ogv", ".mov"]);
 // What Telegram will accept as a PHOTO (inline preview). Narrower than the web's
 // <img>: svg/gif/bmp/ico are not photos there, so they go as documents.
 const TG_PHOTO_EXT = new Set([".png", ".jpg", ".jpeg", ".webp"]);
@@ -22,6 +26,8 @@ const CONTENT_TYPE: Record<string, string> = {
   ".ico": "image/x-icon", ".pdf": "application/pdf", ".html": "text/html", ".htm": "text/html",
   ".css": "text/css", ".js": "text/javascript", ".json": "application/json", ".csv": "text/csv",
   ".txt": "text/plain", ".md": "text/markdown", ".xml": "application/xml", ".zip": "application/zip",
+  ".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".ogv": "video/ogg",
+  ".mov": "video/quicktime",
 };
 
 const ext = (name: string): string => path.extname(String(name || "")).toLowerCase();
@@ -29,6 +35,11 @@ const ext = (name: string): string => path.extname(String(name || "")).toLowerCa
 /** Would the web render this inline as an <img>? */
 export function isImageFile(name: string): boolean {
   return IMAGE_EXT.has(ext(name));
+}
+
+/** Would the web render this inline as a <video>? */
+export function isVideoFile(name: string): boolean {
+  return VIDEO_EXT.has(ext(name));
 }
 
 /** Should Telegram send this as a photo (inline) rather than a document? */
@@ -48,11 +59,47 @@ export interface FileCard {
   path: string;
   name: string;
   image: boolean;
+  video: boolean;
 }
 
 export function fileCard(p: string): FileCard {
   const name = path.basename(String(p || ""));
-  return { path: String(p || ""), name, image: isImageFile(name) };
+  return { path: String(p || ""), name, image: isImageFile(name), video: isVideoFile(name) };
+}
+
+/**
+ * Pure: parse an HTTP `Range` header against a known file size, for the single
+ * `bytes=start-end` form a <video> issues (browsers never send multipart ranges
+ * to a plain file server, so one range is all we honour).
+ *
+ * Returns the inclusive byte slice, `null` when there is no range to honour (no
+ * header, a non-bytes unit, a syntactically broken value → serve the whole file,
+ * a 200), or `"unsatisfiable"` when the range is well-formed but out of bounds
+ * (→ the caller answers 416). `bytes=N-` is "from N to the end"; `bytes=-N` is
+ * "the last N bytes".
+ */
+export function parseByteRange(
+  header: string | undefined,
+  size: number,
+): { start: number; end: number } | null | "unsatisfiable" {
+  if (!header || size <= 0) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m) return null;
+  const [, rawStart, rawEnd] = m;
+  if (rawStart === "" && rawEnd === "") return null;
+  let start: number, end: number;
+  if (rawStart === "") {
+    // Suffix: the last N bytes. N === 0 is unsatisfiable (no "last zero bytes").
+    const n = Number(rawEnd);
+    if (n === 0) return "unsatisfiable";
+    start = Math.max(0, size - n);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd === "" ? size - 1 : Math.min(Number(rawEnd), size - 1);
+  }
+  if (start > end || start >= size) return "unsatisfiable";
+  return { start, end };
 }
 
 /** The `files` a SendUserFile tool_use delivered — its `input.files`, kept only
