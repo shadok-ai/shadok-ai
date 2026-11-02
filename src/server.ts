@@ -1344,11 +1344,20 @@ function secretCreatedBy(req: Caller & { body?: unknown }): string {
  * mono-tenant), so an agent always writes its own group and `createdBy` is
  * always stamped server-side.
  */
-function secretWriteTarget(req: Caller & { body?: unknown }): { ownerGroup: string } | { refused: string } {
+function secretWriteTarget(
+  req: Caller & { body?: unknown; query?: Record<string, unknown> },
+): { ownerGroup: string } | { refused: string } {
   const caller = secretCaller(req);
   const groups = loadGroups();
   if (DEPLOYMENT_MODE === "multi-tenant") {
-    const decision = secretWriteDecision({ ...caller, groups });
+    // The client may REQUEST a target group (the panel's selected group), in the
+    // body (PUT/share/profiles) or the query (DELETE). It is only a request:
+    // `secretWriteDecision` applies `canWriteSecretGroup` to it, and an agent's
+    // is ignored (it writes only its own group). Mono-tenant drops the request
+    // entirely — everything is Main, unchanged.
+    const raw = (req.body as { group?: unknown } | undefined)?.group ?? req.query?.group;
+    const requestedGroup = typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+    const decision = secretWriteDecision({ ...caller, requestedGroup, groups });
     return decision.ok ? { ownerGroup: decision.ownerGroup } : { refused: decision.error };
   }
   return { ownerGroup: secretOwnerGroup({ ...caller, groups }) };

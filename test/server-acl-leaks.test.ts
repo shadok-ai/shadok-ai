@@ -128,3 +128,21 @@ test("IMPORTANT3 wiring: GET /live filters sessions by group visibility", () => 
   assert.ok(body.includes("canSeeGroup(g, viewer)"), "/live visibility must use canSeeGroup");
   assert.ok(body.includes("DEPLOYMENT_MODE"), "/live must short-circuit to visible in mono-tenant");
 });
+
+// ── Task 11 wiring: the validated `group` request reaches the write decision ───
+test("Task 11 wiring: secretWriteTarget reads a body/query `group` and threads it as requestedGroup", () => {
+  const start = SERVER_SRC.indexOf("function secretWriteTarget(");
+  assert.ok(start > 0, "secretWriteTarget must exist");
+  const body = SERVER_SRC.slice(start, start + 1300);
+  // It must READ a client-supplied group (body OR query — DELETE uses the query)…
+  assert.ok(/\.group\b/.test(body) && body.includes("req.query"), "secretWriteTarget must read a body/query `group`");
+  // …and pass it as `requestedGroup` into the (authorizing) decision, never as a
+  // trusted owner. The decision — not the route — applies canWriteSecretGroup.
+  assert.ok(body.includes("requestedGroup"), "the request must be threaded as requestedGroup");
+  assert.ok(body.includes("secretWriteDecision({"), "authorization must go through secretWriteDecision");
+  // And mono-tenant must NOT honour a requested group (back-compat: everything Main).
+  assert.ok(
+    body.includes("DEPLOYMENT_MODE") && body.includes("secretOwnerGroup({ ...caller, groups })"),
+    "mono-tenant must ignore the request and keep today's identity-derived owner",
+  );
+});

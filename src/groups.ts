@@ -206,7 +206,12 @@ export function memberGroupIds(groups: readonly Group[], viewer: Viewer | null):
  * May this viewer WRITE (create/update/delete/share/bind) a secret that belongs
  * to group `g`? A secret is a credential, so writing it is a privileged act:
  * - a PRIVATE group's secret → its OWNER only (a private group is one person's);
- * - a Main / restricted / public group's secret → an ADMIN.
+ * - a RESTRICTED (or any non-Main public) group's secret → a MEMBER of that
+ *   group, OR an admin: a group's members co-own its vault, which is what lets a
+ *   COMEX member manage COMEX's section (Task 11 — the group selector is useless
+ *   to a member who cannot write their own group);
+ * - the Main commons → an ADMIN (Main has no members, so `memberOf` is false for
+ *   everyone and this reduces to admin-only, as before).
  *
  * An agent authenticates as the bootstrap admin, so it clears the admin bar for
  * its own commons/restricted group — which is how an agent stores a credential
@@ -216,7 +221,7 @@ export function memberGroupIds(groups: readonly Group[], viewer: Viewer | null):
 export function canWriteSecretGroup(g: Group | null | undefined, viewer: Viewer | null): boolean {
   if (!g || !viewer) return false;
   if (g.nature === "private") return g.owner === viewer.name;
-  return viewer.role === "admin";
+  return viewer.role === "admin" || memberOf(g, viewer.name);
 }
 
 const sameMembers = (a: readonly string[], b: readonly string[]): boolean => {

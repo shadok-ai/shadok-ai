@@ -66,6 +66,12 @@ test("GET /secrets: a SALES caller omits COMEX-only names, keeps shared-in + Mai
   ]);
   // COMEX_ONLY never leaks to SALES.
   assert.ok(!seen.some((s) => s.name === "COMEX_ONLY"));
+  // The never-leak-a-value invariant: EVERY returned row — own, shared-in and
+  // inherited-from-Main alike — carries metadata but never the `value` key.
+  // (This spans all three sources; checking one entry would hide a leak in
+  // whichever source happened not to be first.)
+  assert.equal(seen.length, 3);
+  for (const s of seen) assert.ok(!("value" in s), `row ${s.name} must not carry value`);
 });
 
 test("GET /secrets: own beats shared beats main on a name present several ways", () => {
@@ -93,14 +99,18 @@ test("GET /secrets: a null viewer resolves to Main only (mono-tenant shape)", ()
 });
 
 // ── Secret WRITE gate (owner-group membership) ─────────────────────────────────
-test("canWriteSecretGroup: private → owner only; restricted/Main → admin", () => {
+test("canWriteSecretGroup: private → owner only; restricted → member OR admin; Main → admin", () => {
   const priv: Group = { id: "p", name: "P", nature: "private", members: [], owner: "ada", createdAt: 0 };
   assert.equal(canWriteSecretGroup(priv, ada), true);
   assert.equal(canWriteSecretGroup(priv, bob), false);
   assert.equal(canWriteSecretGroup(priv, admin), false); // an admin is NOT the owner
-  const comex = groups[1];
-  assert.equal(canWriteSecretGroup(comex, admin), true);
-  assert.equal(canWriteSecretGroup(comex, ada), false); // a plain member cannot write
+  const comex = groups[1]; // restricted, members: ["ada"]
+  assert.equal(canWriteSecretGroup(comex, admin), true); // admin always
+  assert.equal(canWriteSecretGroup(comex, ada), true); // a MEMBER co-owns the group's vault (Task 11)
+  assert.equal(canWriteSecretGroup(comex, bob), false); // a non-member (member of RH) cannot write COMEX
+  const main = groups[0]; // the commons: no members → admin-only, as before
+  assert.equal(canWriteSecretGroup(main, admin), true);
+  assert.equal(canWriteSecretGroup(main, ada), false); // a plain member cannot write Main
   assert.equal(canWriteSecretGroup(null, admin), false); // unresolvable → fail closed
   assert.equal(canWriteSecretGroup(comex, null), false);
 });
@@ -116,11 +126,16 @@ test("secretOwnerGroup: agent lands in its OWN channel group; browser via spawnG
   assert.equal(secretOwnerGroup({ viewer: admin, groups }), MAIN_GROUP_ID);
 });
 
-test("secretWriteDecision: an agent in COMEX may write there (bootstrap admin); a plain member may not", () => {
+test("secretWriteDecision: an agent in COMEX may write there (bootstrap admin); a browser member of COMEX may too", () => {
   const agent = secretWriteDecision({ agentGroupId: "comex", viewer: admin, groups });
   assert.deepEqual(agent, { ok: true, ownerGroup: "comex" });
-  const member = secretWriteDecision({ viewer: ada, groups }); // browser member → own COMEX, not admin
-  assert.equal(member.ok, false);
+  // A browser member of exactly COMEX (omitted group → own COMEX) now co-owns
+  // the group's vault (Task 11 — member-write), so this is allowed.
+  const member = secretWriteDecision({ viewer: ada, groups });
+  assert.deepEqual(member, { ok: true, ownerGroup: "comex" });
+  // A browser member of RH, with no own group that is COMEX, cannot write COMEX.
+  const foreign = secretWriteDecision({ requestedGroup: "comex", viewer: bob, groups });
+  assert.equal(foreign.ok, false);
 });
 
 test("secretWriteDecision: mono-tenant (bootstrap admin, no groups) resolves to Main and is allowed", () => {
@@ -128,6 +143,48 @@ test("secretWriteDecision: mono-tenant (bootstrap admin, no groups) resolves to 
     ok: true,
     ownerGroup: MAIN_GROUP_ID,
   });
+});
+
+// ── Task 11: a VALIDATED requested target group (server authorizes, never trusts) ──
+test("secretOwnerGroup: a browser `requestedGroup` targets it; an agent's is IGNORED", () => {
+  // Browser: the requested group becomes the target (authorized separately).
+  assert.equal(secretOwnerGroup({ requestedGroup: "rh", viewer: admin, groups }), "rh");
+  // Omitted → identity-derived own group (back-compat).
+  assert.equal(secretOwnerGroup({ viewer: ada, groups }), "comex");
+  // AGENT: a differing requested group is ignored — it writes ONLY its own group.
+  assert.equal(secretOwnerGroup({ agentGroupId: "comex", requestedGroup: "rh", viewer: admin, groups }), "comex");
+  // A blank/whitespace request falls back to the identity default.
+  assert.equal(secretOwnerGroup({ requestedGroup: "   ", viewer: ada, groups }), "comex");
+});
+
+test("secretWriteDecision: a requested group must pass the SAME write gate (human)", () => {
+  const priv: Group = { id: "p", name: "P", nature: "private", members: [], owner: "ada", createdAt: 0 };
+  const g2 = [...groups, priv];
+  // A member of G targeting G → OK.
+  assert.deepEqual(secretWriteDecision({ requestedGroup: "comex", viewer: ada, groups }), { ok: true, ownerGroup: "comex" });
+  // A non-member targeting G → refused (no write).
+  assert.equal(secretWriteDecision({ requestedGroup: "comex", viewer: bob, groups }).ok, false);
+  // An admin targeting a restricted G → OK.
+  assert.deepEqual(secretWriteDecision({ requestedGroup: "rh", viewer: admin, groups }), { ok: true, ownerGroup: "rh" });
+  // An admin targeting a PRIVATE G they do not own → refused (private is sealed).
+  assert.equal(secretWriteDecision({ requestedGroup: "p", viewer: admin, groups: g2 }).ok, false);
+  // The private owner targeting it → OK.
+  assert.deepEqual(secretWriteDecision({ requestedGroup: "p", viewer: ada, groups: g2 }), { ok: true, ownerGroup: "p" });
+  // A requested group that does not resolve → fail closed.
+  assert.equal(secretWriteDecision({ requestedGroup: "ghost", viewer: admin, groups }).ok, false);
+});
+
+test("secretWriteDecision: an agent sending group:G2 writes ONLY its own G1 (request ignored)", () => {
+  // Agent's channel is COMEX; a body group of RH must not aim RH's vault.
+  assert.deepEqual(
+    secretWriteDecision({ agentGroupId: "comex", requestedGroup: "rh", viewer: admin, groups }),
+    { ok: true, ownerGroup: "comex" },
+  );
+  // Even requesting a private group it does not own: still only its own group.
+  assert.deepEqual(
+    secretWriteDecision({ agentGroupId: "comex", requestedGroup: "nonexistent", viewer: admin, groups }),
+    { ok: true, ownerGroup: "comex" },
+  );
 });
 
 // ── PUT /groups: browser-only + admin-gated membership/nature ──────────────────

@@ -9451,6 +9451,20 @@
     const g = vaultGroups.find((x) => String(x.id) === String(id));
     return g ? g.name : String(id);
   }
+  // The TARGET group a write/share/profiles call lands in: in grouped mode the
+  // panel is scoped to one group, so a write lands in the section the user is
+  // looking at (not the caller's identity-derived default). The server still
+  // authorizes it (`canWriteSecretGroup`); this is a request, not a trusted
+  // value. Flat / mono-tenant mode omits it — the server keeps today's
+  // identity-derived behaviour (back-compat).
+  function secretWriteGroup() {
+    return window.secretsPanelMode(vaultGroups) === "grouped" && panelGroup != null ? String(panelGroup) : null;
+  }
+  // Add `group` to a write body only in grouped mode (omit otherwise).
+  function withSecretGroup(body) {
+    const g = secretWriteGroup();
+    return g ? { ...body, group: g } : body;
+  }
   function actionBtn(cls, text, title, fn) {
     const b = document.createElement("button");
     b.type = "button"; b.className = cls; b.textContent = text; b.title = title;
@@ -9495,7 +9509,8 @@
       actions.append(
         actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
-          await fetch("/secrets?name=" + encodeURIComponent(k), { method: "DELETE" });
+          const g = secretWriteGroup();
+          await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
           if (editingSecret === k) resetSecretForm();
           await loadVault(); renderSecrets();
         }),
@@ -9532,10 +9547,11 @@
       }));
       box.appendChild(wrap);
     };
+    // A secret's own controls target its OWNER group (the section it lives in).
     picker("shared read with", targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith, (sharedWith) =>
-      fetch("/secrets/share", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sec.name, sharedWith }) }));
+      fetch("/secrets/share", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, sharedWith })) }));
     picker("attach to profiles", profs.map((n) => ({ value: n, label: n })), sec.profiles, (profiles) =>
-      fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sec.name, profiles }) }));
+      fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, profiles })) }));
     return box;
   }
   function renderSecrets() {
@@ -9934,7 +9950,7 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     if (!keepValue) {
-      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
+      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
     }
     // Grouped mode binds profiles per row (PUT /secrets/profiles) and hides the
     // ticks: syncing here would read an empty selection and detach everything.
@@ -9976,7 +9992,7 @@
     // Sequential: each PUT does a read-modify-write of secrets.json on the
     // server; the awaits avoid a race on the file.
     for (const { name, value } of pairs) {
-      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
+      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
     }
     $("secretKey").value = ""; $("secretVal").value = "";
     await loadVault(); renderSecrets();

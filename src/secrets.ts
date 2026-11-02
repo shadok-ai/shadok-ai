@@ -180,31 +180,44 @@ export function secretWriteVerdict(exists: boolean, overwrite: boolean): SecretW
 }
 
 /**
- * The group a secret WRITE lands in, derived SERVER-SIDE from the caller's
- * identity — never from the client body (which could claim any group). Two
- * callers:
+ * The group a secret WRITE lands in. For an agent this is derived SERVER-SIDE
+ * from identity and is NON-NEGOTIABLE; for a browser it may be a client REQUEST
+ * that the authorization gate (`secretWriteDecision`) still has to clear.
  *   - an AGENT (`agentGroupId` present, even as null): its OWN channel's group,
- *     or Main when it has none — this is why an agent stores into its own group;
- *   - a BROWSER (`agentGroupId` undefined): `spawnGroupFor`, the same
- *     identity-derived "your one group or the commons" rule used at spawn.
+ *     or Main when it has none. A `requestedGroup` that differs is IGNORED — an
+ *     agent authenticates as the bootstrap admin, so honouring a body `group`
+ *     would let it aim another tenant's vault; it writes only its own group
+ *     (Task 10's agent-own-group rule, private included).
+ *   - a BROWSER (`agentGroupId` undefined): the group it REQUESTED (the panel's
+ *     selected group — a request, authorized separately), or, when omitted,
+ *     `spawnGroupFor` — the same identity-derived "your one group or the
+ *     commons" rule used at spawn (today's back-compat behaviour).
+ * The requested group is never TRUSTED here: this only chooses the target, and
+ * `secretWriteDecision` applies `canWriteSecretGroup` to it.
  */
 export function secretOwnerGroup(input: {
   agentGroupId?: string | null;
+  requestedGroup?: string | null;
   viewer: Viewer | null;
   groups: readonly Group[];
 }): string {
   if (input.agentGroupId !== undefined) return input.agentGroupId ?? MAIN_GROUP_ID;
+  if (typeof input.requestedGroup === "string" && input.requestedGroup.trim())
+    return input.requestedGroup.trim();
   return spawnGroupFor(input.viewer, input.groups)?.id ?? MAIN_GROUP_ID;
 }
 
 /**
  * Whole decision for a secret mutation (`PUT`/`DELETE`/share/bind): resolve the
- * OWNER group server-side, then apply the owner-group membership gate
- * (`canWriteSecretGroup`). Transport-free so the routes stay thin mappers and
- * the gate is unit-tested. A client-claimed owner/createdBy never reaches here.
+ * OWNER group (an optional browser-`requestedGroup` is a request, not a trusted
+ * value — an agent's is ignored outright), then apply the owner-group membership
+ * gate (`canWriteSecretGroup`) so the request must pass the SAME wall as any
+ * write. Transport-free so the routes stay thin mappers and the gate is
+ * unit-tested. A client-claimed owner/createdBy never reaches here.
  */
 export function secretWriteDecision(input: {
   agentGroupId?: string | null;
+  requestedGroup?: string | null;
   viewer: Viewer | null;
   groups: readonly Group[];
 }): { ok: true; ownerGroup: string } | { ok: false; error: string } {
