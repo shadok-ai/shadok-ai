@@ -375,6 +375,16 @@
     border: 1px solid currentColor; border-radius: 4px;
     background: transparent; color: inherit;
   }
+  /* Multi-tenant group-isolation migration status. Same top strip as the update
+     banner; LOUD and persistent while the commons runs un-isolated (pending =
+     amber, failed = red), so a never-completing migration is never silent. */
+  #migrationBanner {
+    flex: 0 0 auto; width: 100%; z-index: 1000;
+    font-family: var(--sans); font-size: 12px; font-weight: 600; text-align: center;
+    padding: 6px 12px;
+  }
+  #migrationBanner.pending { background: var(--amber); color: var(--on-accent); }
+  #migrationBanner.failed { background: #b91c1c; color: #fff; }
   .gauge { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .gauge .value {
     font-family: var(--sans);
@@ -7757,6 +7767,31 @@
       verChan.title = "Release channel — click the version for options";
     }
     renderVerMenu();
+    // Group-isolation (multi-tenant) migration status: a LOUD banner while the
+    // commons is running un-isolated — pending (mid-migration) or failed (a core
+    // step threw, e.g. signed out, so it will not retry until the next boot).
+    showMigrationBanner(msg.migrationState);
+  }
+
+  // The group-isolation migration banner. Persistent (not auto-dismissed) and
+  // reused via the version/status channel: a never-completing migration must be
+  // visible, not a log line nobody reads. "ok"/absent → removed.
+  function showMigrationBanner(state) {
+    let el = document.getElementById("migrationBanner");
+    if (state !== "pending" && state !== "failed") {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "migrationBanner";
+      document.body.insertBefore(el, document.body.firstChild);
+    }
+    el.classList.toggle("pending", state === "pending");
+    el.classList.toggle("failed", state === "failed");
+    el.textContent = state === "pending"
+      ? "Setting up isolated groups… agents are running un-isolated until this completes."
+      : "Group isolation did NOT complete — agents are running un-isolated (commons). Check the server logs; it retries on the next restart.";
   }
 
   function renderVerMenu() {

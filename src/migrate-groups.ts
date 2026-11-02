@@ -124,15 +124,19 @@ export function commonsOsUser(input: { migrated: boolean; mode: DeploymentMode }
 }
 
 /**
- * The running agents to respawn ONCE after migration, as session ids — deduped,
- * order preserved so the caller cycles them ONE AT A TIME (the OAuth
- * refresh-token race, `restartAllSessions` discipline).
+ * The running agents to respawn, as session ids — deduped, order preserved so
+ * the caller cycles them ONE AT A TIME (the OAuth refresh-token race,
+ * `restartAllSessions` discipline). The kill runs EARLY in `runMigration` (before
+ * the seconds-long chown) so no live root pane survives to be adopted by a client
+ * resume mid-migration.
  *
  * A pre-migration tmux pane was created while the server ran as root, so it is
  * running as root; it must be RESPAWNED, never re-adopted (invariant 25 —
  * `TmuxPilot.start()` adopts a live pane and keeps its uid). The server's
- * respawn dep hard-kills each pane so the next resume creates a fresh process
- * under the correct (post-migration) user, keeping history (`--resume`).
+ * respawn dep hard-kills each pane AND verifies it is gone, so the next resume
+ * creates a fresh process under the correct (post-migration) user, keeping
+ * history (`--resume`); the adoption guard in `TmuxPilot.start()` is the second
+ * line of defence should any pane outlive the kill.
  */
 export function respawnPlan(channels: readonly { sessionId?: string | null }[]): string[] {
   const out: string[] = [];
@@ -216,6 +220,18 @@ export async function runMigration(plan: MigrationPlan, deps: MigrationDeps): Pr
 
   log("migrate: moving the instance into isolated groups (one-time, idempotent)");
 
+  // ── Kill the running (root) panes FIRST, before the seconds-long chown. ──
+  // A pre-migration pane runs as root; `chown -R` can take many seconds, and
+  // during that window a client WS resume would otherwise ADOPT the live root
+  // pane and drive it (the kill used to run last). Killing here closes that race:
+  // once migration has begun, no root pane survives to be adopted. The kill is
+  // ENFORCED by the server dep (re-check + hard kill); the next resume respawns a
+  // fresh process under the new `main` drop, history kept via `--resume`.
+  if (deps.respawn && deps.respawnIds && deps.respawnIds.length) {
+    const ids = deps.respawnIds;
+    await step(`kill ${ids.length} running (root) agent(s) — respawned, not re-adopted`, true, () => deps.respawn!(ids), false);
+  }
+
   // ── Core: the commons must end up non-root `main`. ──
   await step("create commons user `main`", plan.createCommonsUser, deps.createCommonsUser, true);
   await step("chown root-owned tree → `main`", plan.chownTree, deps.chownTreeToCommons, true);
@@ -230,12 +246,6 @@ export async function runMigration(plan: MigrationPlan, deps: MigrationDeps): Pr
     await step(`re-provision persisted group ${gid.slice(0, 8)}`, true, () => deps.reprovisionGroup(gid), false);
   }
   await step("label existing channels/groups public", plan.labelExistingPublic, deps.labelExistingPublic, false);
-
-  // ── Respawn the running (root) agents once, one at a time, respawned-not-readopted. ──
-  if (deps.respawn && deps.respawnIds && deps.respawnIds.length) {
-    const ids = deps.respawnIds;
-    await step(`respawn ${ids.length} running agent(s) one at a time`, true, () => deps.respawn!(ids), false);
-  }
 
   if (coreOk) {
     try {

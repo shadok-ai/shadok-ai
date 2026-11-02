@@ -1,7 +1,7 @@
 import pty from "node-pty";
 import xterm from "@xterm/headless";
 import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, typeIntoBox } from "./detect.js";
-import { dropArgv } from "./osusers.js";
+import { dropArgv, dropEnv } from "./osusers.js";
 
 const { Terminal } = xterm;
 
@@ -48,6 +48,14 @@ export interface PilotOptions {
    * sees — the spawn path then stays byte-for-byte what it was.
    */
   user?: string | null;
+  /**
+   * The HOME directory of the drop `user`. `setpriv` changes the uid but not
+   * `$HOME`, so without this a dropped agent keeps the server's `HOME=/root` and
+   * never reaches its per-group `~/.claude` (auth + skills break). Only ever set
+   * alongside `user`; when `user` is unset this is ignored and HOME is left as
+   * today. See `dropEnv` (`src/osusers.ts`).
+   */
+  home?: string | null;
 }
 
 export interface WaitOptions {
@@ -131,10 +139,22 @@ export class PtyPilot {
       cols: this.opts.cols,
       rows: this.opts.rows,
       cwd: this.opts.cwd ?? process.cwd(),
+      // `dropEnv` sets HOME/USER/LOGNAME to the drop user's own when we are
+      // dropping privilege: setpriv changes the uid but not $HOME, so without
+      // this the agent keeps the server's HOME=/root and never reaches its
+      // per-group ~/.claude (auth + skills break). It goes AFTER `...env` (the
+      // inherited process env, which carries the server's HOME) so it overrides
+      // it, and is `{}` when no user is set, so the mono-tenant env is unchanged.
       // FORCED_CLAUDE_ENV goes LAST, after the profile's secrets: a transcript
       // is what the cockpit is made of, so nothing a profile carries may switch
       // it off, even by accident of naming.
-      env: { ...env, TERM: "xterm-256color", ...this.opts.env, ...FORCED_CLAUDE_ENV },
+      env: {
+        ...env,
+        TERM: "xterm-256color",
+        ...this.opts.env,
+        ...dropEnv(this.opts.user, this.opts.home),
+        ...FORCED_CLAUDE_ENV,
+      },
     });
     this.proc.onData((chunk) => {
       this.lastDataAt = Date.now();

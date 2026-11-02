@@ -57,6 +57,45 @@ export function dropArgv(user: string, bin: string, args: string[]): { cmd: stri
 }
 
 /**
+ * The HOME directory a group's OS user owns: `<homeBase>/<user>`. ONE definition,
+ * shared by `provisionPlan` (which CREATES it, with `useradd --home-dir`), by the
+ * commons seeding in `server.ts` (`migCreateCommonsUser` / `migSeedSharedCredential`,
+ * both `${homeBase}/main`), and by `makePilot` (which must point the DROPPED
+ * agent's `$HOME` at exactly that directory). Keeping it one function is what
+ * guarantees the spawn's HOME is byte-for-byte where the credential symlink +
+ * `~/.claude` were provisioned — a mismatch would leave auth/skills broken while
+ * every provisioning step still "succeeded".
+ */
+export function homeForUser(user: string, homeBase: string): string {
+  return `${homeBase}/${user}`;
+}
+
+/**
+ * The identity environment a privilege-dropped spawn needs — the OTHER half of
+ * `dropArgv`. `setpriv --reuid <user>` changes the uid but NOT `$HOME`/`$USER`/
+ * `$LOGNAME`, so a dropped agent keeps the SERVER's values: `HOME=/root`, which
+ * is mode 700 and un-traversable by the `sk-*`/`main` user, so it can never reach
+ * the per-group `~/.claude` the isolation wired (credential symlink, skills,
+ * settings) — auth and skills break for EVERY dropped agent, silently. Point HOME
+ * at the drop user's own directory (`homeForUser`) and set USER/LOGNAME for the
+ * tools that read them.
+ *
+ * Returns `{}` when there is NO drop user (mono-tenant, or the commons before
+ * migration): the spawn env is then byte-for-byte today's, HOME untouched — which
+ * is the whole fail-safe contract (`resolveSpawnIsolation`/`commonsOsUser` return
+ * a null user in exactly those cases). Pure, so the pilots and the tests share it.
+ */
+export function dropEnv(
+  user: string | null | undefined,
+  home: string | null | undefined,
+): Record<string, string> {
+  if (!user) return {};
+  const env: Record<string, string> = { USER: user, LOGNAME: user };
+  if (home) env.HOME = home;
+  return env;
+}
+
+/**
  * The whole server-side isolation policy for one spawn, kept pure so the start
  * handler stays a thin caller and the decision is fully testable (invariant 24:
  * a field threaded is not a field used — here the group is PROVEN to come from
@@ -422,7 +461,7 @@ export interface ProvisionPlan {
 export function provisionPlan(g: Group, homeBase: string): ProvisionPlan | null {
   const user = osUserFor(g);
   if (!user) return null; // public: nothing to provision
-  const home = `${homeBase}/${user}`;
+  const home = homeForUser(user, homeBase);
   return {
     user,
     home,

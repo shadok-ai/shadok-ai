@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   TmuxPilot,
+  adoptPaneDecision,
   isEnvName,
   launcherScript,
   shellQuote,
@@ -26,6 +27,32 @@ import {
  * they can: what matters is what the child process receives, not how the text
  * looks.
  */
+
+// ── adoptPaneDecision (Important #1b: never adopt a pane as the wrong user) ────
+
+test("adoptPaneDecision: no live session → spawn fresh", () => {
+  assert.equal(adoptPaneDecision({ hasSession: false, requiredUser: "sk-comex", paneUser: null }), "spawn");
+  assert.equal(adoptPaneDecision({ hasSession: false, requiredUser: null, paneUser: null }), "spawn");
+});
+
+test("adoptPaneDecision: live session + NO drop user → adopt (today's reattach behaviour)", () => {
+  assert.equal(adoptPaneDecision({ hasSession: true, requiredUser: null, paneUser: null }), "adopt");
+  assert.equal(adoptPaneDecision({ hasSession: true, requiredUser: undefined, paneUser: "root" }), "adopt");
+});
+
+test("adoptPaneDecision: a drop user IS required and the pane is CONFIRMED that user → adopt", () => {
+  assert.equal(adoptPaneDecision({ hasSession: true, requiredUser: "sk-comex", paneUser: "sk-comex" }), "adopt");
+});
+
+test("adoptPaneDecision: a drop user required but the pane is ROOT → respawn (never re-adopt root)", () => {
+  assert.equal(adoptPaneDecision({ hasSession: true, requiredUser: "main", paneUser: "root" }), "respawn");
+});
+
+test("adoptPaneDecision: a drop user required but the pane uid is UNKNOWN → respawn (fail-closed)", () => {
+  // A uid we could not read is NOT a confirmation — a re-adopted pane keeps its
+  // original (possibly root) uid, so the safe move is kill + fresh spawn.
+  assert.equal(adoptPaneDecision({ hasSession: true, requiredUser: "sk-comex", paneUser: null }), "respawn");
+});
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "shadok-launcher-"));
 

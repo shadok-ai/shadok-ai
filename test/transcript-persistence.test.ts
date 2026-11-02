@@ -25,12 +25,18 @@ test("the parent's markers are still stripped — the assertion ADDS to that, it
 });
 
 test("it is applied LAST, so no profile secret can switch the transcript off", () => {
-  // PtyPilot: the object spread that wins is the rightmost one.
-  const spawnEnv = session.match(/env: \{ \.\.\.env,[^}]*\}/)?.[0];
+  // PtyPilot: the object spread that wins is the rightmost (last) one.
+  const spawnEnv = session.match(/env: \{[\s\S]*?\n {6}\},/)?.[0];
   assert.ok(spawnEnv, "could not find PtyPilot's spawn env");
   assert.ok(
     spawnEnv.lastIndexOf("FORCED_CLAUDE_ENV") > spawnEnv.lastIndexOf("this.opts.env"),
     "FORCED_CLAUDE_ENV must come after ...this.opts.env, or a profile can override it",
+  );
+  // The HOME drop (dropEnv) must also sit after ...this.opts.env, so the drop
+  // user's HOME overrides the inherited server HOME rather than a profile/env.
+  assert.ok(
+    spawnEnv.lastIndexOf("dropEnv") > spawnEnv.lastIndexOf("this.opts.env"),
+    "dropEnv must come after ...this.opts.env, or the inherited HOME=/root wins",
   );
 
   // TmuxPilot: the launcher script exports in order and the shell keeps the

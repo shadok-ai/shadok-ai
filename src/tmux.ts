@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
-import { dropArgv } from "./osusers.js";
+import { dropArgv, dropEnv } from "./osusers.js";
 import { binaryBusyError } from "./claude-bin.js";
 import { SHADOK_DIR } from "./config.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
@@ -27,6 +27,9 @@ export interface TmuxPilotOptions extends PilotOptions {
   launcherDir?: string;
   /** OS user to drop to before exec (multi-tenant isolation) — see PilotOptions. */
   user?: string | null;
+  /** HOME of the drop `user` — see PilotOptions. Exported in the launcher so the
+   *  dropped agent reaches its per-group `~/.claude`, not the server's /root. */
+  home?: string | null;
 }
 
 function tmux(args: string[], input?: string): string {
@@ -103,6 +106,14 @@ export function launcherScript(o: {
    * exec line, byte-for-byte. The multi-tenant gate lives in `makePilot`.
    */
   user?: string | null;
+  /**
+   * HOME of the drop `user`. Exported (via `dropEnv`) so the dropped agent's
+   * `$HOME` points at its own per-group directory rather than the server's
+   * inherited `HOME=/root` — setpriv changes the uid but not $HOME, so without
+   * this the agent can never reach its `~/.claude` (auth + skills break). Only
+   * set alongside `user`; `{}` otherwise, so the mono-tenant script is unchanged.
+   */
+  home?: string | null;
 }): { script: string; skipped: string[] } {
   const skipped: string[] = [];
   const exports: string[] = [];
@@ -112,6 +123,10 @@ export function launcherScript(o: {
   };
   add("TERM", "xterm-256color");
   for (const [k, v] of Object.entries(o.env)) add(k, v);
+  // HOME/USER/LOGNAME of the drop user, AFTER the profile env (so the server's
+  // inherited HOME, which the tmux pane also inherits, is overridden) and before
+  // the forced vars. `{}` when no user is dropped → byte-for-byte today's script.
+  for (const [k, v] of Object.entries(dropEnv(o.user, o.home))) add(k, v);
   for (const [k, v] of Object.entries(o.forced)) add(k, v);
   const drop = o.user ? dropArgv(o.user, o.bin, o.args) : null;
   const execArgv = drop ? [drop.cmd, ...drop.argv] : [o.bin, ...o.args];
@@ -159,6 +174,63 @@ export function tmuxPaneCwd(name: string): string | null {
   }
 }
 
+/**
+ * The username the pane's foreground process actually runs as, or `null` when it
+ * cannot be determined. Used to decide whether a live pane may be ADOPTED when a
+ * privilege drop is required: `TmuxPilot.start()` adopts an existing pane by
+ * design (invariant 25 — that is what lets an agent survive a server restart),
+ * and a pane first spawned as root KEEPS root across restarts, ignoring the drop
+ * `user` a reload now asks for. So before trusting a live pane we confirm its uid.
+ *
+ * We read `/proc/<pane_pid>` owner via `stat -c %U` (not `ps -o user`, which
+ * truncates a long `sk-<id>` name to 8 chars + `+`): after the launcher `exec`s
+ * `setpriv … claude`, the pane's top process runs as the drop user, so its /proc
+ * owner is the answer. Anything unexpected (no pid, UNKNOWN uid, a throw) → null,
+ * which the decision below treats as "cannot confirm" → never adopt.
+ */
+export function tmuxPaneUser(name: string): string | null {
+  try {
+    const pid = tmux(["display-message", "-p", "-t", name, "#{pane_pid}"]).trim();
+    if (!/^\d+$/.test(pid)) return null;
+    const user = execFileSync("stat", ["-c", "%U", `/proc/${pid}`], {
+      encoding: "utf8",
+      timeout: 5_000,
+    }).trim();
+    return user && user !== "UNKNOWN" ? user : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether `TmuxPilot.start()` may ADOPT a pre-existing pane, must SPAWN a fresh
+ * one, or must RESPAWN (hard-kill the stale pane, then spawn fresh). Pure, so the
+ * whole policy is unit-tested without tmux.
+ *
+ * - No live session → `spawn` (nothing to adopt).
+ * - A live session and NO drop user required → `adopt`: today's behaviour, the
+ *   reattach that makes an agent survive a server restart.
+ * - A live session and a drop user IS required (multi-tenant, a private group or
+ *   the migrated commons): adopt ONLY when the pane is CONFIRMED to already run
+ *   as that exact user. Anything else — a different user, or a uid we could not
+ *   read (`paneUser === null`) — is `respawn`: a re-adopted pane keeps whatever
+ *   uid it was first spawned as, so a pre-migration ROOT pane would silently stay
+ *   root (invariant 23/25). The safe move is to kill it and spawn fresh under the
+ *   drop user.
+ */
+export type AdoptDecision = "adopt" | "spawn" | "respawn";
+
+export function adoptPaneDecision(input: {
+  hasSession: boolean;
+  requiredUser: string | null | undefined;
+  paneUser: string | null;
+}): AdoptDecision {
+  if (!input.hasSession) return "spawn";
+  if (!input.requiredUser) return "adopt";
+  if (input.paneUser && input.paneUser === input.requiredUser) return "adopt";
+  return "respawn";
+}
+
 export class TmuxPilot {
   private readonly opts: Required<Pick<TmuxPilotOptions, "cols" | "rows">> & TmuxPilotOptions;
   private readonly name: string;
@@ -183,11 +255,34 @@ export class TmuxPilot {
   }
 
   start(): void {
-    if (this.hasSession()) {
+    const required = this.opts.user ?? null;
+    // Decide adopt vs spawn vs respawn. A re-adopted pane keeps the uid it was
+    // first spawned as, so when a drop user is required we adopt ONLY a pane we
+    // can CONFIRM already runs as that user — otherwise (a root pane from before
+    // migration, or a uid we can't read) we hard-kill it and spawn fresh, so the
+    // new process actually runs as the drop user (invariant 23/25, Task 15).
+    const decision = adoptPaneDecision({
+      hasSession: this.hasSession(),
+      requiredUser: required,
+      // Only pay for the probe when a drop is required (the only case it gates).
+      paneUser: required && this.hasSession() ? tmuxPaneUser(this.name) : null,
+    });
+    if (decision === "adopt") {
       // Reattach to a session that outlived a previous server: claude is
       // already past the trust dialog and holding its state.
       this.attached = true;
     } else {
+      if (decision === "respawn") {
+        // The live pane cannot be confirmed to run as the required drop user —
+        // refuse to adopt it and ENFORCE its removal (mirroring restartSession)
+        // before spawning fresh, so no client ever drives a pane left running as
+        // the wrong (root) user. kill-session is synchronous; re-check once.
+        console.error(
+          `[${this.name}] refusing to adopt a pane that is not confirmed as ${required} — killing it before a fresh spawn`,
+        );
+        tmuxKillSession(this.name);
+        if (this.hasSession()) tmuxKillSession(this.name);
+      }
       // Strip a parent Claude Code session's vars (a nested claude that sees
       // them may disable interactive mode), like PtyPilot does.
       const unset = Object.keys(process.env).filter((k) => /^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k));
@@ -203,6 +298,10 @@ export class TmuxPilot {
         // Multi-tenant isolation: drop to the group's OS user. Only ever set in
         // multi-tenant (the gate is in makePilot), so this is a no-op otherwise.
         user: this.opts.user,
+        // …and point its HOME at that user's own directory (see launcherScript /
+        // dropEnv), or it would inherit the server's HOME=/root and run with no
+        // ~/.claude. `{}` without a user, so the mono-tenant script is unchanged.
+        home: this.opts.home,
       });
       for (const name of skipped)
         console.error(`[${this.name}] secret "${name}" not exported — not a valid environment variable name`);

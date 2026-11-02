@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import {
   osUserFor,
   dropArgv,
+  dropEnv,
+  homeForUser,
   resolveSpawnIsolation,
   provisionPlan,
   provisionGroupUser,
@@ -28,6 +30,29 @@ import { spawnGroupFor, MAIN_GROUP_ID, type Group } from "../src/groups.js";
 const main: Group = { id: MAIN_GROUP_ID, name: "Main", nature: "public", members: [], createdAt: 0 };
 const comex: Group = { id: "comex", name: "COMEX", nature: "restricted", members: ["ada"], createdAt: 1 };
 const adaPriv: Group = { id: "ada-priv", name: "Ada", nature: "private", members: [], owner: "ada", createdAt: 2 };
+
+// ── homeForUser / dropEnv (CRITICAL #4: setpriv keeps the server's HOME) ──────
+
+test("homeForUser: <homeBase>/<user> — the SAME derivation provisionPlan/migration use", () => {
+  assert.equal(homeForUser("main", "/home"), "/home/main");
+  assert.equal(homeForUser("sk-comex", "/home"), "/home/sk-comex");
+  // Matches provisionPlan's home so the spawn's HOME is where the credential was
+  // provisioned (a mismatch would leave auth broken while provisioning "succeeded").
+  assert.equal(provisionPlan(comex, "/home")!.home, homeForUser("sk-comex", "/home"));
+});
+
+test("dropEnv: a drop user sets HOME/USER/LOGNAME to that user's own", () => {
+  assert.deepEqual(dropEnv("sk-comex", "/home/sk-comex"), {
+    HOME: "/home/sk-comex",
+    USER: "sk-comex",
+    LOGNAME: "sk-comex",
+  });
+});
+
+test("dropEnv: NO user → {} (mono-tenant / commons-pre-migration: HOME left as today)", () => {
+  assert.deepEqual(dropEnv(null, "/home/x"), {});
+  assert.deepEqual(dropEnv(undefined, undefined), {});
+});
 
 // ── osUserFor ────────────────────────────────────────────────────────────────
 

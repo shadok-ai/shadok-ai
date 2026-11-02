@@ -127,6 +127,7 @@ import {
 import {
   resolveSpawnIsolation,
   osUserFor,
+  homeForUser,
   provisionGroupUser,
   teardownGroupUser,
   DEFAULT_HOME_BASE,
@@ -2479,6 +2480,20 @@ async function killGroupAgents(groupId: string): Promise<void> {
  *  server's own user — today's behaviour). */
 let groupsMigrated = false;
 
+/**
+ * A LOUD, persistent signal (surfaced on `/version` + the WS `version` message,
+ * so the client can show a banner) for when the commons is running UN-ISOLATED:
+ *  - `"ok"` — nothing to show: mono-tenant, or migration already completed;
+ *  - `"pending"` — a capable instance is MID-migration (the long chown), so a
+ *    commons agent is still running as the server's own (root) user for now;
+ *  - `"failed"` — a capable instance RAN the migration but a core step failed
+ *    (the marker was withheld), so it will NOT retry until the next boot and the
+ *    commons stays un-isolated. The classic cause is a signed-out instance whose
+ *    credential seed throws forever — which, without this, is INVISIBLE (the only
+ *    trace is a log line nobody reads). This turns it into an on-screen warning.
+ */
+let migrationState: "ok" | "pending" | "failed" = "ok";
+
 function migrationMarkerPath(): string {
   return path.join(os.homedir(), ".shadok-ai", MIGRATION_MARKER_FILE);
 }
@@ -2629,8 +2644,22 @@ async function migRespawnRunningAgents(ids: string[]): Promise<void> {
   for (const id of ids) {
     const name = "sk-" + id;
     try {
+      if (!tmuxHasSession(name)) continue;
+      // ENFORCE the kill, don't just fire it: a pane that outlives the kill would
+      // be re-adopted as ROOT on the next resume (invariant 23/25 — `restartSession`
+      // enforces for the same reason). Re-check, hard-kill again, and verify gone.
+      tmuxKillSession(name);
+      for (let i = 0; i < 30 && tmuxHasSession(name); i++) await sleep(100);
       if (tmuxHasSession(name)) {
         tmuxKillSession(name);
+        for (let i = 0; i < 20 && tmuxHasSession(name); i++) await sleep(100);
+      }
+      if (tmuxHasSession(name)) {
+        console.warn(
+          `migrate: pane ${name.slice(0, 11)} OUTLIVED the kill — next resume may re-adopt a root pane ` +
+            `(the adoption guard in TmuxPilot.start will then respawn it as ${COMMONS_USER})`,
+        );
+      } else {
         console.log(`migrate: killed root pane ${name.slice(0, 11)} — will respawn as ${COMMONS_USER} on next resume`);
       }
     } catch (e) {
@@ -2652,6 +2681,8 @@ async function runGroupsMigration(): Promise<void> {
     existingGroups: loadGroups(),
   });
   if (!plan) return; // already migrated, or mono-tenant: nothing to do
+  // A real migration is about to run: the commons is un-isolated until it lands.
+  migrationState = "pending";
   await runMigration(plan, {
     createCommonsUser: migCreateCommonsUser,
     chownTreeToCommons: migChownTreeToCommons,
@@ -2669,6 +2700,10 @@ async function runGroupsMigration(): Promise<void> {
   // Re-evaluate: the marker is written only when the core steps succeeded, so
   // this flips to `main`-commons exactly when it is safe.
   groupsMigrated = alreadyMigratedNow();
+  // If the marker did not land (a core step failed), the instance will NOT retry
+  // until the next boot — surface it LOUDLY rather than let the commons sit
+  // un-isolated in silence. Otherwise migration is done and there is nothing to show.
+  migrationState = groupsMigrated ? "ok" : "failed";
 }
 
 // Create a group. A private/restricted group needs the privileged deployment:
@@ -3854,7 +3889,7 @@ function broadcastAll(msg: object): void {
  *  whether auto-update is armed, and the spawn permission mode. */
 /** What both /version and the WS `version` message report. */
 function versionState() {
-  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel, mode: DEPLOYMENT_MODE, migrated: groupsMigrated };
+  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel, mode: DEPLOYMENT_MODE, migrated: groupsMigrated, migrationState };
 }
 
 function versionMessage(): object {
@@ -4778,9 +4813,18 @@ function makePilot(
   // like an agent that died for no reason. With nothing resolvable it falls
   // back to the bare name, i.e. the historical behaviour.
   const claudePath = claudeCommand();
+  // When we drop to an OS user, set its HOME too: setpriv changes the uid but not
+  // $HOME, so without this the agent keeps the server's HOME=/root — un-traversable
+  // (mode 700) — and never reaches its per-group ~/.claude (the credential symlink
+  // + skills + settings Tasks 6/7/12 wired there), breaking auth and skills for
+  // EVERY dropped agent. `homeForUser` is the SAME derivation the provisioning used
+  // (`${GROUP_HOME_BASE}/<user>`: commons `main` → GROUP_HOME_BASE/main, a private
+  // group → GROUP_HOME_BASE/sk-<id>), so the spawn's HOME is exactly where the
+  // credential was provisioned. Undefined without a drop user → HOME left as today.
+  const home = user ? homeForUser(user, GROUP_HOME_BASE) : undefined;
   return USE_TMUX
-    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user })
-    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user });
+    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home })
+    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home });
 }
 
 interface Live {
