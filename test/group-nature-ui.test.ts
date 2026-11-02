@@ -20,7 +20,14 @@ test("groupTypeLabel maps the three natures", () => {
 test("the lock is gated on isWalled in the group head and in the rail", () => {
   assert.match(html, /isWalled\(opts\.nature\)|isWalled\(group\.nature\)/);
   assert.match(html, /glock/);
-  assert.match(html, /isWalled\(el\._group\.nature\)\s*\?\s*"🔒"/);
+  // The rail keeps the group's own icon; the padlock is a small badge on it.
+  assert.doesNotMatch(html, /icon:\s*isWalled\([^)]*\)\s*\?\s*"🔒"/);
+  assert.match(html, /icon:\s*el\._group\.icon\b/);
+  const rail = html.match(/function railItem\([\s\S]*?\n  \}\n/);
+  assert.ok(rail, "railItem defined");
+  assert.match(rail![0], /isWalled\(group\.nature\)/);
+  assert.match(rail![0], /rail-lock/);
+  assert.match(html, /\.rail-lock\s*\{/);
 });
 
 test("createGroup threads nature and owner onto the group object", () => {
@@ -61,9 +68,10 @@ function createFormScript(): string {
 test("create-group form offers exactly Public and Private, never Personal/restricted", () => {
   const block = createFormBlock();
   assert.match(block, /class="overlay"|class="overlay /);
-  assert.match(block, /<option value="public">Public<\/option>/);
-  assert.match(block, /<option value="restricted">Private<\/option>/);
-  assert.equal((block.match(/<option /g) ?? []).length, 2);
+  assert.doesNotMatch(block, /<select id="groupCreateType"/);
+  assert.match(block, /<button type="button" class="nature-card[^"]*" data-nature="public"[^>]*>[\s\S]*?Public/);
+  assert.match(block, /<button type="button" class="nature-card[^"]*" data-nature="restricted"[^>]*>[\s\S]*?Private/);
+  assert.equal((block.match(/<button [^>]*class="nature-card/g) ?? []).length, 2);
   assert.doesNotMatch(block, /Personal/);
   assert.doesNotMatch(block, />[^<]*restricted[^<]*</i);
 });
@@ -79,7 +87,8 @@ test("create-group submit POSTs /groups with a nature", () => {
 test("Private is gated on the capability mode", () => {
   const s = createFormScript();
   assert.match(s, /mode\s*===\s*"multi-tenant"/);
-  assert.match(s, /disabled/);
+  assert.match(s, /data-nature="restricted"[^\n]*\.disabled\s*=\s*!capable/);
+  assert.match(s, /\.nature-card/);
 });
 
 test("choosing Private reveals a picker sourced from GET /accounts", () => {

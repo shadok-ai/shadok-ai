@@ -843,6 +843,18 @@
       display: inline-flex; align-items: center; justify-content: center;
       border: 1px solid transparent; border-radius: 5px; background: none; font-size: 18px; line-height: 1;
     }
+    .rail-icon-wrap { position: relative; flex: none; display: inline-flex; }
+    .rail-lock { position: absolute; right: -3px; bottom: -3px; font-size: 10px; line-height: 1; pointer-events: none; }
+    .nature-cards { display: flex; gap: 8px; }
+    .nature-card {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 8px;
+      background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px; color: var(--text); cursor: pointer;
+    }
+    .nature-card .nature-ico { font-size: 22px; line-height: 1; }
+    .nature-card:hover:not(:disabled) { background: var(--bg-raised); }
+    .nature-card.active { border-color: var(--amber); background: var(--bg-raised); }
+    .nature-card:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+    .nature-card:disabled { opacity: 0.45; cursor: not-allowed; }
     .rail-item.editable .rail-icon:hover { border-color: var(--line); background: var(--bg-inset); }
     .rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rail-item input.rename {
@@ -2795,10 +2807,10 @@
       </div>
       <div class="field">
         <span class="label">Type</span>
-        <select id="groupCreateType" aria-label="Group type">
-          <option value="public">Public</option>
-          <option value="restricted">Private</option>
-        </select>
+        <div id="groupCreateType" class="nature-cards" role="group" aria-label="Group type">
+          <button type="button" class="nature-card active" data-nature="public" aria-pressed="true"><span class="nature-ico">🌐</span><span class="nature-name">Public</span></button>
+          <button type="button" class="nature-card" data-nature="restricted" aria-pressed="false"><span class="nature-ico">🔒</span><span class="nature-name">Private</span></button>
+        </div>
         <span class="check-hint" id="groupCreateNoPrivate" hidden>Private groups need a multi-tenant instance.</span>
       </div>
       <div class="field" id="groupMembersField" hidden>
@@ -5216,7 +5228,17 @@
     add.className = "rail-add";
     add.textContent = "＋";
     add.title = "New agent in " + name;
-    item.append(ic, nm, dot, count, add);
+    // A walled group keeps its own icon; the padlock is a small corner badge.
+    let lead = ic;
+    if (group && isWalled(group.nature)) {
+      lead = document.createElement("span");
+      lead.className = "rail-icon-wrap";
+      const lock = document.createElement("span");
+      lock.className = "rail-lock";
+      lock.textContent = "🔒";
+      lead.append(ic, lock);
+    }
+    item.append(lead, nm, dot, count, add);
     if (group) {
       const del = document.createElement("button");
       del.type = "button";
@@ -5330,7 +5352,7 @@
     const entries = [
       { view: "ungrouped", icon: "📥", name: "Main" },
       ...[...groupsEl.children].map((el) =>
-        ({ view: String(el._group.id), icon: isWalled(el._group.nature) ? "🔒" : el._group.icon, name: el._group.nameEl.textContent, group: el._group })),
+        ({ view: String(el._group.id), icon: el._group.icon, name: el._group.nameEl.textContent, group: el._group })),
     ];
     // The column mutates all the time (LEDs, timers, reconnects): rebuild only
     // when what the rail SHOWS changed, or every click would land on an item
@@ -11915,15 +11937,29 @@
     el.textContent = msg || "";
     el.hidden = !msg;
   }
+  function groupNature() {
+    const a = $("groupCreateType").querySelector(".nature-card.active");
+    return a && a.dataset.nature === "restricted" ? "restricted" : "public";
+  }
+  function setGroupNature(nature) {
+    for (const c of $("groupCreateType").querySelectorAll(".nature-card")) {
+      const on = c.dataset.nature === nature && !c.disabled;
+      c.classList.toggle("active", on);
+      c.setAttribute("aria-pressed", String(on));
+    }
+    const priv = groupNature() === "restricted";
+    $("groupMembersField").hidden = !priv;
+    if (priv) loadGroupAccounts();
+  }
   async function openGroupCreate() {
     $("groupCreateName").value = "";
-    $("groupCreateType").value = "public";
+    setGroupNature("public");
     $("groupMembersField").hidden = true;
     $("groupMembersPick").textContent = "";
     groupCreateError("");
     $("groupCreateSubmit").disabled = false;
     const capable = await isGroupCapable();
-    $("groupCreateType").querySelector('option[value="restricted"]').disabled = !capable;
+    $("groupCreateType").querySelector('.nature-card[data-nature="restricted"]').disabled = !capable;
     $("groupCreateNoPrivate").hidden = capable;
     $("groupCreateOverlay").hidden = false;
     $("groupCreateName").focus();
@@ -11950,7 +11986,7 @@
     if ($("groupCreateSubmit").disabled) return;
     $("groupCreateSubmit").disabled = true;
     const name = $("groupCreateName").value.trim();
-    const nature = $("groupCreateType").value === "restricted" ? "restricted" : "public";
+    const nature = groupNature();
     if (!name) { $("groupCreateSubmit").disabled = false; return groupCreateError("Give the group a name."); }
     const members = nature === "restricted"
       ? [...$("groupMembersPick").selectedOptions].map((o) => o.value) : [];
@@ -11981,11 +12017,9 @@
       $("groupCreateSubmit").disabled = false;
     }
   }
-  $("groupCreateType").addEventListener("change", () => {
-    const priv = $("groupCreateType").value === "restricted";
-    $("groupMembersField").hidden = !priv;
-    if (priv) loadGroupAccounts();
-  });
+  for (const card of $("groupCreateType").querySelectorAll(".nature-card")) {
+    card.addEventListener("click", () => { if (!card.disabled) setGroupNature(card.dataset.nature); });
+  }
   $("groupCreateClose").addEventListener("click", closeGroupCreate);
   $("groupCreateOverlay").addEventListener("click", (e) => { if (e.target === $("groupCreateOverlay")) closeGroupCreate(); });
   $("groupCreateSubmit").addEventListener("click", submitGroupCreate);
