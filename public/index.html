@@ -3945,6 +3945,7 @@
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", "tab");
       dragTabEl = btn;
+      dragTabHome = btn.parentNode;
       document.body.classList.add("dragging-tab");
       requestAnimationFrame(() => btn.classList.add("dragging"));
     });
@@ -4925,8 +4926,8 @@
     };
     paintCaret();
     head.addEventListener("click", (e) => {
-      if (e.target === gclose) return dissolveGroup(group);
-      if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
+      if (e.target === gclose) return closeGroupGesture(group);
+      if (e.target === gicon) { e.stopPropagation(); if (isWalled(group.nature)) return; return openIconPicker(group, gicon); }
       if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
       if (e.target === gkey) { e.stopPropagation(); return openSecretsPanel(group.id); }
       if (e.target === ggear) { e.stopPropagation(); return openGroupPanel(group.id); }
@@ -4954,6 +4955,26 @@
     return group;
   }
 
+  /** The group's × per nature. Public: the cosmetic ungroup. Restricted (Private):
+   * the privileged teardown, behind a confirmation. Private (Personal): nothing.
+   * Ungrouping a walled group would drop its agents into the commons. */
+  async function closeGroupGesture(group, after) {
+    if (group.nature === "private") return;
+    if (group.nature === "restricted") {
+      if (!confirm("Delete group " + (group.name || "") + "? Its agents and files are destroyed.")) return;
+      try {
+        const res = await fetch("/groups", {
+          method: "DELETE",
+          headers: { "content-type": "application/json", "x-shadok-instance": instanceKey },
+          body: JSON.stringify({ id: group.id }),
+        });
+        if (!res.ok) { alert("Could not delete the group."); return; }
+      } catch { alert("Could not delete the group."); return; }
+    }
+    dissolveGroup(group);
+    if (after) after();
+  }
+
   /** Removes a group; its tabs move back to the ungrouped zone. */
   function dissolveGroup(group) {
     while (group.bodyEl.firstChild) ungroupedEl.appendChild(group.bodyEl.firstChild);
@@ -4965,13 +4986,21 @@
 
   // ── Drag & drop (tabs + groups, live-sort while dragging) ──
   let dragTabEl = null;
+  let dragTabHome = null;
   let dragGroupEl = null;
+  // On a capable (multi-tenant) instance `channel.group` is SERVER_OWNED, set at
+  // spawn from identity: a cross-group drop would only LIE (the server ignores
+  // it, and a private agent would look like it sits in the commons). Reordering
+  // inside its own group stays free; mono-tenant groups are cosmetic and move.
+  function tabMoveAllowed(zone) {
+    return groupCapable !== true || !dragTabHome || zone === dragTabHome;
+  }
 
   function endDrag() {
     const wasGroup = !!dragGroupEl;
     if (dragTabEl) dragTabEl.classList.remove("dragging");
     if (dragGroupEl) dragGroupEl.classList.remove("dragging");
-    dragTabEl = dragGroupEl = null;
+    dragTabEl = dragGroupEl = dragTabHome = null;
     document.body.classList.remove("dragging-tab");
     document.querySelectorAll(".rail-item.drop-target, .rail-item.dragging").forEach((r) => r.classList.remove("drop-target", "dragging"));
     persistChannels();
@@ -4989,6 +5018,7 @@
       // The bottom slot ONLY hosts the tweak channel: without this guard, a tab
       // dragged over it would be inserted there and end up pinned in place.
       if (overTab && overTab !== dragTabEl && !overTab.classList.contains("tweak")) {
+        if (!tabMoveAllowed(overTab.parentNode)) return;
         const r = overTab.getBoundingClientRect();
         const after = e.clientY > r.top + r.height / 2;
         overTab.parentNode.insertBefore(dragTabEl, after ? overTab.nextSibling : overTab);
@@ -4997,6 +5027,7 @@
       const head = e.target.closest(".group-head");
       if (head) {
         const g = head.parentNode;
+        if (!tabMoveAllowed(g._group.bodyEl)) return;
         // Dropping on a header files the tab into that group; unfold it so
         // the tab stays visible.
         g.classList.remove("collapsed");
@@ -5006,7 +5037,7 @@
         return;
       }
       const zone = e.target.closest("#ungrouped, .group-body");
-      if (zone && dragTabEl.parentNode !== zone) zone.appendChild(dragTabEl);
+      if (zone && dragTabEl.parentNode !== zone && tabMoveAllowed(zone)) zone.appendChild(dragTabEl);
     } else if (dragGroupEl) {
       const overGroup = e.target.closest(".group");
       if (overGroup && overGroup !== dragGroupEl) {
@@ -5185,9 +5216,7 @@
       item.appendChild(del);
       del.addEventListener("click", (e) => {
         e.stopPropagation();
-        dissolveGroup(group);
-        persistGroups();
-        applyView();
+        closeGroupGesture(group, () => { persistGroups(); applyView(); });
       });
       ic.addEventListener("click", (e) => {
         // stopPropagation so the item's own click doesn't double-fire setView,
@@ -5249,7 +5278,7 @@
       e.preventDefault();
       if (!dragTabEl) return;
       const body = group ? group.bodyEl : ungroupedEl;
-      if (dragTabEl.parentNode !== body) body.appendChild(dragTabEl);
+      if (dragTabEl.parentNode !== body && tabMoveAllowed(body)) body.appendChild(dragTabEl);
       endDrag();
     });
     return item;
@@ -5371,6 +5400,7 @@
     $("iconEmpty").hidden = !(q && !window.looksLikeEmoji(q) && list.length === 0);
   }
   function openIconPicker(group, anchor) {
+    if (isWalled(group.nature)) return; // a walled group shows 🔒: its icon has no visible effect
     iconTarget = group;
     iconInput.value = "";
     paintIconGrid("");
@@ -11869,6 +11899,7 @@
     } catch { return false; } // unknown: refuse Private now, retry next opening
     return groupCapable;
   }
+  isGroupCapable(); // warm the cache: the drag guard reads it synchronously
   function groupCreateError(msg) {
     const el = $("groupCreateErr");
     el.textContent = msg || "";

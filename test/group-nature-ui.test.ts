@@ -149,3 +149,38 @@ test("add/remove surfaces a failure instead of silently re-rendering", () => {
   assert.match(s, /\.error\b/);
   assert.match(s, /catch \(/);
 });
+
+function fnBlock(name: string): string {
+  const i = html.indexOf(name);
+  assert.ok(i >= 0, name + " defined");
+  return html.slice(i, i + 1500);
+}
+
+test("cross-group tab drops are no-ops on a capable instance", () => {
+  const g = fnBlock("function tabMoveAllowed(zone)");
+  assert.match(g, /groupCapable !== true/);
+  const dnd = html.slice(html.indexOf('tabbar.addEventListener("dragover"'), html.indexOf("// ── Groups column"));
+  assert.equal((dnd.match(/tabMoveAllowed\(/g) || []).length, 3);
+  assert.match(html, /dragTabEl\.parentNode !== body && tabMoveAllowed\(body\)/);
+});
+
+test("walled group x routes to DELETE /groups; public keeps dissolveGroup", () => {
+  const b = fnBlock("async function closeGroupGesture(group, after)");
+  assert.match(b, /fetch\("\/groups",\s*\{\s*method:\s*"DELETE"/);
+  assert.match(b, /"x-shadok-instance":\s*instanceKey/);
+  assert.match(b, /confirm\(/);
+  assert.match(b, /dissolveGroup\(group\)/);
+  assert.match(html, /e\.target === gclose\) return closeGroupGesture\(group\)/);
+  assert.doesNotMatch(html, /e\.target === gclose\) return dissolveGroup/);
+});
+
+test("Personal exposes neither delete nor rename", () => {
+  const b = fnBlock("async function closeGroupGesture(group, after)");
+  assert.match(b, /group\.nature === "private"\) return/);
+  assert.match(html, /group\.nature === "private"\) return; \/\/ the personal space is not renamable/);
+});
+
+test("icon picker is skipped for walled groups", () => {
+  assert.match(html, /isWalled\(group\.nature\)\) return; return openIconPicker\(group, gicon\)/);
+  assert.match(fnBlock("function openIconPicker(group, anchor)"), /isWalled\(group\.nature\)\) return/);
+});
