@@ -52,6 +52,7 @@ import {
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
+import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
 import {
@@ -346,6 +347,14 @@ const PASTE_LIMIT = "50mb";
 // flag), the whole GUI — pages, endpoints AND the WebSocket — requires a login.
 // Unset → no auth (the default).
 const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
+// Deployment mode, resolved ONCE at boot: the single source of truth for every
+// privileged / isolation path. Multi-tenant needs BOTH the ability to provision
+// an OS user and accounts; otherwise isolation is refused, never faked.
+const DEPLOYMENT_MODE = deploymentMode({
+  canProvision: probeCanProvision(),
+  accountsEnabled: accountsEnabled(GUI_PASSWORD),
+});
+console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
 // restart — so an auto-update reload stays logged in instead of bouncing the
@@ -3116,7 +3125,7 @@ function broadcastAll(msg: object): void {
  *  whether auto-update is armed, and the spawn permission mode. */
 /** What both /version and the WS `version` message report. */
 function versionState() {
-  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel };
+  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel, mode: DEPLOYMENT_MODE };
 }
 
 function versionMessage(): object {
