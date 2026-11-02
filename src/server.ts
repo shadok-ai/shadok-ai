@@ -52,7 +52,7 @@ import {
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
-import { accountsEnabled, deploymentMode, probeCanProvision, isolationRefusal } from "./capability.js";
+import { accountsEnabled, deploymentMode, probeCanProvision, isolationRefusal, requireCapable as requireCapableFor } from "./capability.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
 import {
@@ -370,6 +370,13 @@ const DEPLOYMENT_MODE = deploymentMode({
   accountsEnabled: accountsEnabled(GUI_PASSWORD),
 });
 console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
+
+/** Gate for any route that would pose an isolation wall: mono-tenant answers
+ *  400 with the honest reason and returns false (the caller must return). */
+function requireCapable(res: express.Response): boolean {
+  return requireCapableFor(DEPLOYMENT_MODE, res);
+}
+void requireCapable; // consumed by the secrets / private-group routes (later tasks)
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
 // restart — so an auto-update reload stays logged in instead of bouncing the

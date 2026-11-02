@@ -643,7 +643,7 @@ export interface RouteResult {
  *   and would otherwise reach it (invariant 26, exactly like `PUT /profiles`).
  * - instance (409) and sign-in (403): the existing guards, kept.
  * - mono-tenant REFUSES a private/restricted create via `isolationRefusal`
- *   (409): never mint a group that cannot actually isolate.
+ *   (400): never mint a group that cannot actually isolate.
  * - provision runs STRICTLY BEFORE persist: a provision throw returns 500 and
  *   NOTHING is saved, so no later spawn can try to drop to a non-existent user.
  */
@@ -672,8 +672,9 @@ export async function createGroupFlow(
   if (!name) return { status: 400, body: { error: "name required" } };
 
   if (input.nature !== "public") {
+    // Same 400 + message as `requireCapable` (capability.ts): one refusal shape.
     const refusal = deps.isolationRefusal(input.mode);
-    if (refusal) return { status: 409, body: { error: refusal } };
+    if (refusal) return { status: 400, body: { error: refusal } };
   }
 
   const id = deps.newId();

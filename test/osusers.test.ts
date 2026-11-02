@@ -824,7 +824,7 @@ test("createGroupFlow: a non-browser (agent) request is 403 — the privileged r
 test("createGroupFlow: mono-tenant REFUSES a restricted/private create via isolationRefusal (never a fake wall)", async () => {
   const { deps, saved, provisioned } = createDeps();
   const r = await createGroupFlow(okCreateInput({ mode: "mono-tenant" }), deps);
-  assert.equal(r.status, 409);
+  assert.equal(r.status, 400);
   assert.match(String(r.body.error), /multi-tenant only/);
   assert.equal(saved.length, 0);
   assert.equal(provisioned.length, 0);
@@ -927,4 +927,25 @@ test("deleteGroupFlow: a teardown warning is surfaced in the response, yet the r
   assert.equal(r.status, 200);
   assert.match(String(r.body.warning), /userdel --remove sk-comex failed/);
   assert.equal(saved.length, 1); // the group row is removed even when the OS user may be orphaned
+});
+
+test("Review Focus #1: mono-tenant restricted create is 400 'isolation requires the privileged deployment', no OS user, nothing saved", async () => {
+  const { isolationRefusal } = await import("../src/capability.js");
+  const { deps, saved, provisioned } = createDeps({ isolationRefusal });
+  for (const nature of ["restricted", "private"] as const) {
+    const r = await createGroupFlow(okCreateInput({ mode: "mono-tenant", nature }), deps);
+    assert.equal(r.status, 400);
+    assert.equal(r.body.error, "isolation requires the privileged deployment");
+  }
+  assert.equal(provisioned.length, 0);
+  assert.equal(saved.length, 0);
+});
+
+test("Review Focus #1: mono-tenant PUBLIC create is allowed — a label, provisions nothing", async () => {
+  const { isolationRefusal } = await import("../src/capability.js");
+  const { deps, saved, provisioned } = createDeps({ isolationRefusal });
+  const r = await createGroupFlow(okCreateInput({ mode: "mono-tenant", nature: "public" }), deps);
+  assert.equal(r.status, 200);
+  assert.equal(provisioned.length, 0);
+  assert.equal(saved.length, 1);
 });

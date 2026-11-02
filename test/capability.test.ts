@@ -40,3 +40,14 @@ test("isolationRefusal words the refusal per mode", () => {
   assert.equal(isolationRefusal("mono-tenant"), "isolation requires the privileged deployment");
   assert.equal(isolationRefusal("multi-tenant"), null);
 });
+
+test("requireCapable: mono-tenant answers 400 + honest message and returns false; multi-tenant passes untouched", async () => {
+  const { requireCapable } = await import("../src/capability.js");
+  const calls: Array<[number, unknown]> = [];
+  const res = { status: (c: number) => ({ json: (b: unknown) => void calls.push([c, b]) }) };
+  assert.equal(requireCapable("mono-tenant", res), false);
+  assert.deepEqual(calls, [[400, { error: "isolation requires the privileged deployment" }]]);
+  calls.length = 0;
+  assert.equal(requireCapable("multi-tenant", res), true);
+  assert.equal(calls.length, 0);
+});

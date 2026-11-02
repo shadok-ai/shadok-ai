@@ -58,3 +58,25 @@ export function deploymentMode(input: {
 export function isolationRefusal(mode: DeploymentMode): string | null {
   return mode === "mono-tenant" ? "isolation requires the privileged deployment" : null;
 }
+
+/**
+ * The ONE gate for every isolation affordance (private/restricted group
+ * provision, secrets-by-group, ...). Mono-tenant cannot pose a wall, so the
+ * route answers 400 with the honest reason and the caller must stop — never a
+ * fake wall. `res` is structural so this stays testable without express.
+ */
+export function requireCapable(
+  mode: DeploymentMode,
+  res: { status(code: number): { json(body: unknown): unknown } },
+): boolean {
+  const refusal = isolationRefusal(mode);
+  if (!refusal) return true;
+  res.status(400).json({ error: refusal });
+  return false;
+}
+
+/** Transport-free twin for flows that return a result instead of writing `res`. */
+export function capabilityRefusal(mode: DeploymentMode): { status: 400; body: { error: string } } | null {
+  const refusal = isolationRefusal(mode);
+  return refusal ? { status: 400, body: { error: refusal } } : null;
+}
