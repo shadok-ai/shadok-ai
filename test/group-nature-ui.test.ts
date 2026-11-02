@@ -137,3 +137,15 @@ test("add and remove call POST /groups/members; header uses type label, never 'r
   assert.match(s, /groupTypeLabel\(/);
   assert.doesNotMatch(s, /textContent\s*=\s*"[^"]*restricted/i);
 });
+
+test("panel never builds rows via innerHTML (invariant 13)", () => {
+  assert.doesNotMatch(groupPanelScript(), /innerHTML/);
+});
+
+test("add/remove surfaces a failure instead of silently re-rendering", () => {
+  const s = groupPanelScript();
+  assert.match(s, /!res\.ok/);
+  assert.match(s, /sec-note warn/);
+  assert.match(s, /\.error\b/);
+  assert.match(s, /catch \(/);
+});

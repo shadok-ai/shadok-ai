@@ -9842,10 +9842,24 @@
     if (g.nature === "restricted") {
       const members = Array.isArray(g.members) ? g.members : [];
       const post = async (payload) => {
-        await fetch("/groups/members", { method: "POST",
-          headers: { "content-type": "application/json", "x-shadok-instance": instanceKey },
-          body: JSON.stringify(payload) });
-        return openGroupPanel(groupId);
+        let failure = "";
+        try {
+          const res = await fetch("/groups/members", { method: "POST",
+            headers: { "content-type": "application/json", "x-shadok-instance": instanceKey },
+            body: JSON.stringify(payload) });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            failure = (j && j.error) || ("Request failed (" + res.status + ")");
+          }
+        } catch (e) { failure = "Network error: " + ((e && e.message) || e); }
+        if (!failure) return openGroupPanel(groupId);
+        let warn = body.querySelector("#gpError");
+        if (!warn) {
+          warn = document.createElement("p");
+          warn.id = "gpError"; warn.className = "sec-note warn";
+          body.prepend(warn);
+        }
+        warn.textContent = failure;
       };
       const ul = document.createElement("ul");
       ul.id = "gpMembers";
