@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { DeploymentMode } from "./capability.js";
+import { capabilityRefusal, type DeploymentMode } from "./capability.js";
 import { spawnGroupFor, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
 
 /**
@@ -642,7 +642,7 @@ export interface RouteResult {
  *   be a real same-origin browser — an agent carries the bootstrap admin cookie
  *   and would otherwise reach it (invariant 26, exactly like `PUT /profiles`).
  * - instance (409) and sign-in (403): the existing guards, kept.
- * - mono-tenant REFUSES a private/restricted create via `isolationRefusal`
+ * - mono-tenant REFUSES a private/restricted create via `capabilityRefusal`
  *   (400): never mint a group that cannot actually isolate.
  * - provision runs STRICTLY BEFORE persist: a provision throw returns 500 and
  *   NOTHING is saved, so no later spawn can try to drop to a non-existent user.
@@ -657,7 +657,6 @@ export async function createGroupFlow(
     mode: DeploymentMode;
   },
   deps: {
-    isolationRefusal: (mode: DeploymentMode) => string | null;
     provision: (g: Group) => Promise<void>;
     loadGroups: () => Group[];
     saveGroups: (groups: Group[]) => void;
@@ -672,9 +671,9 @@ export async function createGroupFlow(
   if (!name) return { status: 400, body: { error: "name required" } };
 
   if (input.nature !== "public") {
-    // Same 400 + message as `requireCapable` (capability.ts): one refusal shape.
-    const refusal = deps.isolationRefusal(input.mode);
-    if (refusal) return { status: 400, body: { error: refusal } };
+    // The ONE refusal primitive (capability.ts): same 400 + message everywhere.
+    const refusal = capabilityRefusal(input.mode);
+    if (refusal) return refusal;
   }
 
   const id = deps.newId();

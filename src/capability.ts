@@ -69,14 +69,14 @@ export function requireCapable(
   mode: DeploymentMode,
   res: { status(code: number): { json(body: unknown): unknown } },
 ): boolean {
-  const refusal = isolationRefusal(mode);
+  const refusal = capabilityRefusal(mode);
   if (!refusal) return true;
-  res.status(400).json({ error: refusal });
+  res.status(refusal.status).json(refusal.body);
   return false;
 }
 
-/** Transport-free twin for flows that return a result instead of writing `res`. */
-export function capabilityRefusal(mode: DeploymentMode): { status: 400; body: { error: string } } | null {
+/** THE refusal primitive: every gate (flows and `requireCapable`) derives from it. */
+export function capabilityRefusal(mode: DeploymentMode): { status: number; body: { error: string } } | null {
   const refusal = isolationRefusal(mode);
   return refusal ? { status: 400, body: { error: refusal } } : null;
 }

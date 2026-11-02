@@ -792,7 +792,6 @@ const createDeps = (over: Partial<Parameters<typeof createGroupFlow>[1]> = {}) =
   const saved: Group[][] = [];
   const provisioned: Group[] = [];
   const deps = {
-    isolationRefusal: (m: string) => (m === "multi-tenant" ? null : "multi-tenant only"),
     provision: async (g: Group) => void provisioned.push(g),
     loadGroups: () => [] as Group[],
     saveGroups: (gs: Group[]) => void saved.push(gs),
@@ -821,11 +820,11 @@ test("createGroupFlow: a non-browser (agent) request is 403 — the privileged r
   assert.equal(provisioned.length, 0); // and nothing provisioned
 });
 
-test("createGroupFlow: mono-tenant REFUSES a restricted/private create via isolationRefusal (never a fake wall)", async () => {
+test("createGroupFlow: mono-tenant REFUSES a restricted/private create via capabilityRefusal (never a fake wall)", async () => {
   const { deps, saved, provisioned } = createDeps();
   const r = await createGroupFlow(okCreateInput({ mode: "mono-tenant" }), deps);
   assert.equal(r.status, 400);
-  assert.match(String(r.body.error), /multi-tenant only/);
+  assert.match(String(r.body.error), /isolation requires the privileged deployment/);
   assert.equal(saved.length, 0);
   assert.equal(provisioned.length, 0);
 });

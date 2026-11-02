@@ -52,7 +52,7 @@ import {
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
-import { accountsEnabled, deploymentMode, probeCanProvision, isolationRefusal, requireCapable as requireCapableFor } from "./capability.js";
+import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
 import {
@@ -371,12 +371,6 @@ const DEPLOYMENT_MODE = deploymentMode({
 });
 console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 
-/** Gate for any route that would pose an isolation wall: mono-tenant answers
- *  400 with the honest reason and returns false (the caller must return). */
-function requireCapable(res: express.Response): boolean {
-  return requireCapableFor(DEPLOYMENT_MODE, res);
-}
-void requireCapable; // consumed by the secrets / private-group routes (later tasks)
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
 // restart — so an auto-update reload stays logged in instead of bouncing the
@@ -2306,7 +2300,7 @@ async function killGroupAgents(groupId: string): Promise<void> {
 }
 
 // Create a group. A private/restricted group needs the privileged deployment:
-// refuse CLEARLY in mono-tenant (isolationRefusal) rather than create a group
+// refuse CLEARLY in mono-tenant (capabilityRefusal) rather than create a group
 // that cannot actually isolate. A public group provisions nothing (commons).
 //
 // BROWSER-ONLY (invariant 26, like `PUT /profiles`): this route provisions an
@@ -2327,7 +2321,6 @@ app.post("/groups", async (req, res) => {
       mode: DEPLOYMENT_MODE,
     },
     {
-      isolationRefusal,
       provision: (g) =>
         provisionGroupUser(g, {
           run: runPrivileged,
