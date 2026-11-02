@@ -312,10 +312,16 @@ test("server: a boot reconciler re-provisions missing group OS users, INDEPENDEN
   assert.ok(/loadGroups\(\)/.test(fnBody), "it iterates the persisted group list");
   assert.ok(/osUserExists\b/.test(fnBody), "it reuses the existing OS-user probe");
   assert.ok(/provisionOsUserFor\b/.test(fnBody), "it (re)provisions via the idempotent provision helper");
-  // Wired at boot AFTER migration, and NOT gated behind the migration marker.
-  const boot = SERVER.slice(SERVER.indexOf("void runGroupsMigration()"));
-  const bootBlock = boot.slice(0, boot.indexOf("server.listen"));
-  assert.ok(/\.then\(\(\)\s*=>\s*ensureGroupsProvisioned\(\)\)/.test(bootBlock), "runs AFTER runGroupsMigration resolves");
+  // Wired AFTER migration (boot + the post-sign-in retry share `maybeRunGroupsMigration`),
+  // and NOT gated behind the migration marker: the reconciler runs on every capable
+  // run. Inside the shared entry point, `ensureGroupsProvisioned` is awaited right
+  // after `runGroupsMigration` resolves.
+  const entry = SERVER.slice(SERVER.indexOf("async function maybeRunGroupsMigration"));
+  const entryBody = entry.slice(0, entry.indexOf("\n}\n"));
+  assert.ok(
+    /await runGroupsMigration\(\);\s*\n\s*await ensureGroupsProvisioned\(\);/.test(entryBody),
+    "ensureGroupsProvisioned runs AFTER runGroupsMigration resolves, in the shared entry point",
+  );
 });
 
 test("server: migProvisionPrivateGroup uses newPrivateGroup (unified members:[name] shape — Minor #3)", () => {

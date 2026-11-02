@@ -1967,7 +1967,16 @@ app.post("/auth/code", async (req, res) => {
   // A brand-new instance was signed out at boot, so this is where its lead
   // agent is really born. Answer the browser FIRST — the spawn takes seconds
   // and the sign-in card has no reason to wait for it.
-  if (r.ok) void startFirstAgent();
+  if (r.ok) {
+    void startFirstAgent();
+    // Re-try the group migration now that a Claude credential exists. On a FRESH
+    // capable instance the boot migration always fails its CORE credential-seed
+    // step (not signed in yet) and withholds the marker, so the commons stays
+    // un-isolated behind the red banner until a MANUAL restart. Sign-in is the
+    // exact moment the credential becomes available — mirror of `startFirstAgent`
+    // above. Idempotent + guarded against overlapping a boot run that is still going.
+    void maybeRunGroupsMigration("post-sign-in");
+  }
 });
 
 app.delete("/auth/login", (_req, res) => {
@@ -2547,6 +2556,13 @@ let groupsMigrated = false;
  */
 let migrationState: "ok" | "pending" | "failed" = "ok";
 
+/** Serialises the migration: it runs at boot AND is re-tried after a Claude
+ *  sign-in (the credential-seed CORE step cannot succeed until the instance is
+ *  signed in — see `maybeRunGroupsMigration`). The two must never overlap: both
+ *  chown the same tree and respawn the same panes. `maybeRunGroupsMigration`
+ *  skips while this is set. */
+let migrationInFlight = false;
+
 function migrationMarkerPath(): string {
   return path.join(os.homedir(), ".shadok-ai", MIGRATION_MARKER_FILE);
 }
@@ -2828,6 +2844,57 @@ async function runGroupsMigration(): Promise<void> {
   // un-isolated in silence. Otherwise migration is done and there is nothing to show.
   migrationState = groupsMigrated ? "ok" : "failed";
   broadcastAll(versionMessage()); // tabs that saw "pending" must see the outcome
+}
+
+/**
+ * Run the migration if it has something to do — at boot, AND re-tried after a
+ * successful Claude sign-in. The second trigger is the fix for the fresh-instance
+ * failure: the migration's CORE "seed shared Claude credential" step reads
+ * `~/.claude/.credentials.json`, which does NOT exist until someone signs in —
+ * and on a brand-new instance the sign-in happens AFTER boot, via the web card.
+ * So the first-boot migration ALWAYS failed its credential seed, withheld the
+ * marker, and showed the red "isolation did NOT complete" banner until a MANUAL
+ * restart. `startFirstAgent` is already re-fired from the same sign-in handler
+ * for the mirror-image reason (a lead agent a signed-out boot could not start);
+ * re-running the migration there makes a fresh instance heal itself the moment it
+ * is signed in — no restart, no scary banner.
+ *
+ * Idempotent and safe to call repeatedly: `runGroupsMigration` short-circuits
+ * once the instance is already migrated (the marker + `main` present), and the
+ * in-flight guard keeps a sign-in that lands mid-boot-migration from starting a
+ * second, overlapping run (both chown the same tree, both respawn the same panes).
+ * No-op in mono-tenant. `reason` is logged so the two triggers stay legible.
+ */
+async function maybeRunGroupsMigration(reason: string): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") {
+    groupsMigrated = migrationMarkerExists() && osUserExistsSync(COMMONS_USER);
+    return;
+  }
+  if (migrationInFlight) {
+    console.log(`migrate: ${reason} re-run skipped — a migration is already running`);
+    return;
+  }
+  if (alreadyMigratedNow()) {
+    // Nothing to do, but make sure the in-memory state reflects reality (a
+    // sign-in after an already-successful migration must not leave a stale
+    // "failed" banner up, and commons must drop to `main`).
+    groupsMigrated = true;
+    if (migrationState === "failed") {
+      migrationState = "ok";
+      broadcastAll(versionMessage());
+    }
+    return;
+  }
+  migrationInFlight = true;
+  try {
+    console.log(`migrate: running (${reason})`);
+    await runGroupsMigration();
+    await ensureGroupsProvisioned();
+  } catch (e) {
+    console.error(`migrate: ${reason} run error (ignored, boot/sign-in continues):`, (e as Error)?.message ?? e);
+  } finally {
+    migrationInFlight = false;
+  }
 }
 
 // Create a group. A private/restricted group needs the privileged deployment:
@@ -7451,23 +7518,13 @@ Object.assign(process.env, ensureSshIdentity());
 // identity, BEFORE any spawn (reconcileOnBoot / startFirstAgent) — and
 // fire-and-forget so a slow migration never hangs the boot. A spawn that races
 // it uses the pre-migration (root) drop until `groupsMigrated` flips.
-if (DEPLOYMENT_MODE === "multi-tenant") {
-  void runGroupsMigration()
-    .catch((e) =>
-      console.error("migrate: unexpected error (ignored, boot continues):", (e as Error)?.message ?? e),
-    )
-    // Task 16 (Important #1): AFTER migration (so a fresh migration's provisions
-    // aren't duplicated — the reconciler is idempotent anyway), heal any persisted
-    // private/restricted group whose OS user is missing, INDEPENDENT of the
-    // migration marker. This is what self-heals a failed invite-provision on an
-    // already-migrated instance, where the migration itself is a no-op.
-    .then(() => ensureGroupsProvisioned())
-    .catch((e) =>
-      console.error("groups: boot reprovision error (ignored, boot continues):", (e as Error)?.message ?? e),
-    );
-} else {
-  groupsMigrated = migrationMarkerExists() && osUserExistsSync(COMMONS_USER);
-}
+// `maybeRunGroupsMigration` owns the mono-tenant no-op (it sets `groupsMigrated`
+// from the marker), the in-flight guard, and the post-migration reprovision
+// (`ensureGroupsProvisioned`) — so the boot trigger and the post-sign-in retry
+// (in `/auth/code`) share one code path. On a FRESH instance the boot run's
+// credential-seed step fails (not signed in yet); the sign-in retry is what makes
+// it complete without a manual restart.
+void maybeRunGroupsMigration("boot");
 
 server.listen(port, HOST, () => {
   console.log(`shadok-ai web: http://localhost:${port}${HOST === "127.0.0.1" ? "" : `  (bind ${HOST})`}`);

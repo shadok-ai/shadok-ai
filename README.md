@@ -460,7 +460,11 @@ a private group, and agents restart one at a time. A banner shows progress. Once
 migration completes, private and restricted agents run as their own non-root
 user, and `Main` agents run as a shared non-root `main` user. Until migration
 completes (or if it fails), agents keep running as before, so the non-root
-guarantee does not yet hold for them. Telegram stays single-owner, and there are no
+guarantee does not yet hold for them. On a **brand-new** instance one migration
+step — seeding the shared Claude credential — can only run once you have signed
+in to Claude, which happens after boot; the banner stays up until then and the
+migration **finishes on its own the moment you sign in** (no restart needed).
+Telegram stays single-owner, and there are no
 disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
 
 ### Exposing it beyond this machine

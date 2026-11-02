@@ -202,11 +202,14 @@ const SERVER = fs.readFileSync(path.join(HERE, "..", "src", "server.ts"), "utf8"
 test("server: the migration is wired into boot after ensureSshIdentity and gated by mode", () => {
   assert.ok(/runMigration\s*\(/.test(SERVER), "runMigration is called in server.ts");
   assert.ok(/runGroupsMigration\s*\(\s*\)/.test(SERVER), "the boot wrapper is invoked");
-  assert.ok(/DEPLOYMENT_MODE === "multi-tenant"/.test(SERVER), "the boot call is gated by DEPLOYMENT_MODE");
-  // The BOOT invocation (the top-level `runGroupsMigration()` call, not its
-  // definition) must come after the SSH identity is set up.
+  // Boot and the post-sign-in retry share ONE entry point, `maybeRunGroupsMigration`,
+  // which owns the mode gate (mono-tenant no-op), the in-flight guard and the
+  // post-migration reprovision. See `test/migration-signin-retry.test.ts`.
+  assert.ok(/DEPLOYMENT_MODE !== "multi-tenant"/.test(SERVER), "the entry point gates on DEPLOYMENT_MODE");
+  // The BOOT invocation (the top-level `maybeRunGroupsMigration("boot")` call, not
+  // its definition) must come after the SSH identity is set up.
   const sshIdx = SERVER.indexOf("Object.assign(process.env, ensureSshIdentity());");
-  const bootCall = SERVER.indexOf("void runGroupsMigration()");
+  const bootCall = SERVER.indexOf('void maybeRunGroupsMigration("boot")');
   assert.ok(sshIdx !== -1 && bootCall !== -1, "both anchors present");
   assert.ok(bootCall > sshIdx, "the migration boot call runs after the SSH identity is set up");
 });
