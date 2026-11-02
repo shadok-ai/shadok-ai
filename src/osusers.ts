@@ -352,6 +352,56 @@ export function checkCredentialDivergence(
   return state;
 }
 
+// ── Shared pot (Task 12) ──────────────────────────────────────────────────────
+//
+// ONE server-owned directory every group's HOME exposes as `~/shared/`: the
+// deliberate "make this public" drop point. Everything else in a HOME stays
+// walled (0700). Unlike the credential (read-shared) the pot is read+WRITE for
+// all groups; the spec accepts no per-file guardrail, so any group can overwrite
+// or delete another's file — hence no sticky bit.
+//
+// Its OWN unix group (not `shadok-cred`): membership of the credential group
+// grants write on the OAuth token, which a pot user must not get by accident of
+// a shared mechanism. The base is `root:shadok-shared` 2770 — setgid so files
+// created inside inherit the group (visible to every member), no access for
+// others. Files still carry the creator's umask, so a 644 file is readable but
+// not overwritable by other groups; acceptable for a drop point.
+//
+// T15 CARRY: the commons HOME (the server's own user) is not provisioned here;
+// the migration links `<commons-home>/shared` to the same base.
+
+/** The unix group that owns the shared pot; every provisioned user joins it. */
+export const SHARED_POT_GROUP = "shadok-shared";
+
+/** Neutral default (overridable via `SHADOK_SHARED_POT_PATH` in `server.ts`),
+ *  deliberately outside every HOME and `/root`. */
+export const DEFAULT_SHARED_POT_PATH = "/var/lib/shadok-ai/shared";
+
+/** The symlink a HOME gets and the one shared base it points at. Pure. */
+export function sharedPotWiring(home: string, sharedBase: string): { link: string; target: string } {
+  return { link: `${home}/shared`, target: sharedBase };
+}
+
+/**
+ * Pot wiring split by who runs it, same TOCTOU rule as `credentialWiringPlan`:
+ * root touches only the shared base and group membership; the HOME-side link is
+ * posed AS THE GROUP USER so root never writes through an agent-controlled path.
+ * `chmod` after `install -d` because install does not alter an existing dir's
+ * mode on every coreutils path, and a re-provision must still converge.
+ */
+export function sharedPotPlan(user: string, home: string, sharedBase: string): CredentialWiringPlan {
+  const { link, target } = sharedPotWiring(home, sharedBase);
+  return {
+    rootCmds: [
+      ["groupadd", ["-f", SHARED_POT_GROUP]],
+      ["install", ["-d", "-o", "root", "-g", SHARED_POT_GROUP, "-m", "2770", sharedBase]],
+      ["chmod", ["2770", sharedBase]],
+      ["usermod", ["-aG", SHARED_POT_GROUP, user]],
+    ],
+    userCmds: [["ln", ["-sfn", target, link]]],
+  };
+}
+
 /**
  * The on-demand provisioning plan for a group's OS user, kept PURE so the exact
  * `useradd` invocation and the HOME path are unit-tested without touching the
@@ -424,6 +474,9 @@ export async function provisionGroupUser(
      *  mode/owner inspection of the chain)? A false verdict THROWS: never let a
      *  spawn proceed credential-less in silence. */
     reachable?: (user: string, link: string) => Promise<{ ok: boolean; detail?: string }>;
+    /** Task 12: when set (multi-tenant only), expose the one shared pot as
+     *  `<home>/shared`. Absent in mono-tenant ⇒ nothing runs. */
+    sharedPotPath?: string;
   },
 ): Promise<{ osUser: string; home: string } | null> {
   const plan = provisionPlan(g, deps.homeBase);
@@ -531,6 +584,19 @@ export async function provisionGroupUser(
         `provisionGroupUser: shared credential ${shared} is not reachable by ${plan.user}` +
           `${r.detail ? ` (${r.detail})` : ""} — refusing to spawn credential-less`,
       );
+    }
+  }
+
+  if (deps.sharedPotPath) {
+    try {
+      const pot = sharedPotPlan(plan.user, plan.home, deps.sharedPotPath);
+      for (const [cmd, argv] of pot.rootCmds) await deps.run(cmd, argv);
+      for (const [cmd, argv] of pot.userCmds) {
+        const [wcmd, wargv] = runAsUser(plan.user, cmd, argv);
+        await deps.run(wcmd, wargv);
+      }
+    } catch (e) {
+      throw new Error(`provisionGroupUser: shared pot wiring for ${plan.user} failed: ${(e as Error)?.message ?? e}`);
     }
   }
 

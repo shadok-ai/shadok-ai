@@ -18,6 +18,10 @@ import {
   checkCredentialDivergence,
   SHARED_CRED_GROUP,
   DEFAULT_SHARED_CREDENTIAL_PATH,
+  sharedPotWiring,
+  sharedPotPlan,
+  SHARED_POT_GROUP,
+  DEFAULT_SHARED_POT_PATH,
 } from "../src/osusers.js";
 import { spawnGroupFor, MAIN_GROUP_ID, type Group } from "../src/groups.js";
 
@@ -947,4 +951,73 @@ test("Review Focus #1: mono-tenant PUBLIC create is allowed — a label, provisi
   assert.equal(r.status, 200);
   assert.equal(provisioned.length, 0);
   assert.equal(saved.length, 1);
+});
+
+// ── Shared pot (Task 12) ──────────────────────────────────────────────────────
+
+test("sharedPotWiring: <home>/shared -> the one shared base (same for any HOME)", () => {
+  assert.deepEqual(sharedPotWiring("/home/sk-comex", "/var/lib/shadok-ai/shared"), {
+    link: "/home/sk-comex/shared",
+    target: "/var/lib/shadok-ai/shared",
+  });
+  assert.equal(sharedPotWiring("/home/sk-ada", "/srv/pot").target, "/srv/pot");
+});
+
+test("DEFAULT_SHARED_POT_PATH: neutral, never under a HOME or /root", () => {
+  assert.equal(DEFAULT_SHARED_POT_PATH, "/var/lib/shadok-ai/shared");
+});
+
+test("sharedPotPlan: root sets up a setgid group-writable base; the symlink runs as the user", () => {
+  const p = sharedPotPlan("sk-comex", "/home/sk-comex", "/var/lib/shadok-ai/shared");
+  assert.deepEqual(p.rootCmds, [
+    ["groupadd", ["-f", SHARED_POT_GROUP]],
+    ["install", ["-d", "-o", "root", "-g", SHARED_POT_GROUP, "-m", "2770", "/var/lib/shadok-ai/shared"]],
+    ["chmod", ["2770", "/var/lib/shadok-ai/shared"]],
+    ["usermod", ["-aG", SHARED_POT_GROUP, "sk-comex"]],
+  ]);
+  assert.deepEqual(p.userCmds, [["ln", ["-sfn", "/var/lib/shadok-ai/shared", "/home/sk-comex/shared"]]]);
+  assert.notEqual(SHARED_POT_GROUP, SHARED_CRED_GROUP);
+});
+
+test("provisionGroupUser: WITH sharedPotPath, root setup then runuser symlink, after HOME chmod", async () => {
+  const calls: Array<[string, string[]]> = [];
+  await provisionGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    seed: async () => {},
+    homeBase: "/home",
+    userExists: async () => true,
+    sharedPotPath: "/var/lib/shadok-ai/shared",
+  });
+  const p = sharedPotPlan("sk-comex", "/home/sk-comex", "/var/lib/shadok-ai/shared");
+  assert.deepEqual(calls, [
+    ["chmod", ["700", "/home/sk-comex"]],
+    ...p.rootCmds,
+    ...p.userCmds.map(([c, a]) => runAsUser("sk-comex", c, a)),
+  ]);
+});
+
+test("provisionGroupUser: WITHOUT sharedPotPath, no pot wiring (mono-tenant)", async () => {
+  const calls: Array<[string, string[]]> = [];
+  await provisionGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    seed: async () => {},
+    homeBase: "/home",
+    userExists: async () => true,
+  });
+  assert.deepEqual(calls, [["chmod", ["700", "/home/sk-comex"]]]);
+});
+
+test("provisionGroupUser: THROWS when pot wiring fails", async () => {
+  await assert.rejects(
+    provisionGroupUser(comex, {
+      run: async (cmd) => {
+        if (cmd === "groupadd") throw new Error("boom");
+      },
+      seed: async () => {},
+      homeBase: "/home",
+      userExists: async () => true,
+      sharedPotPath: "/x",
+    }),
+    /shared pot wiring.*boom/,
+  );
 });

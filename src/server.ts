@@ -125,6 +125,7 @@ import {
   reachableFromInspection,
   SHARED_CRED_GROUP,
   DEFAULT_SHARED_CREDENTIAL_PATH,
+  DEFAULT_SHARED_POT_PATH,
   type LinkProbe,
 } from "./osusers.js";
 import { instanceKey } from "./paths.js";
@@ -2239,6 +2240,10 @@ const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_H
 const SHARED_CREDENTIAL_PATH =
   (process.env.SHADOK_SHARED_CREDENTIAL_PATH ?? "").trim() || DEFAULT_SHARED_CREDENTIAL_PATH;
 
+/** Task 12: the one shared pot every group HOME links as `~/shared`. */
+const SHARED_POT_PATH =
+  (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
+
 /** Real fs probe for `checkCredentialDivergence`: classify `p` into the four
  *  distinct facts the predicate needs. ENOENT → `missing`; any other error
  *  (EACCES: a non-root server cannot read a 700 HOME) → `cannot-stat`, which is
@@ -2468,6 +2473,7 @@ app.post("/groups", async (req, res) => {
           // (Important #2), refuse clearly when the shared file is absent
           // (Important #3), and PROVE the wired credential is reachable by the
           // group user before the agent can spawn (Important #1).
+          sharedPotPath: DEPLOYMENT_MODE === "multi-tenant" ? SHARED_POT_PATH : undefined,
           claudeDirStat: claudeDirStatReal,
           sharedCredentialExists: sharedCredentialExistsReal,
           reachable: credentialReachableReal,
