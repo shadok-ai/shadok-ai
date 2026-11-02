@@ -26,6 +26,8 @@ import {
   mediaFileName,
   mediaExtension,
   attachmentPrompt,
+  attachmentsInPrompt,
+  ECHO_FILE_CAP,
   tooLargeNotice,
   tooBigFor,
   makeAlbumBuffer,
@@ -948,6 +950,73 @@ test("attachmentPrompt: a photo and a file are untouched by all this", () => {
     attachmentPrompt([{ path: "/m/a.jpg", kind: "image" }, { path: "/m/b.zip", kind: "file" }]),
     "[Attached image: /m/a.jpg]\n[Attached file: /m/b.zip]",
   );
+});
+
+// The READER for what `attachmentPrompt` writes — what lets Telegram show a
+// file posted from the web instead of printing its path.
+const MEDIA = "/home/u/.shadok-ai/media";
+
+test("attachmentsInPrompt: an image posted from the web is a file to upload", () => {
+  const r = attachmentsInPrompt(`[Attached image: ${MEDIA}/a.jpg]`, MEDIA);
+  assert.deepEqual(r.files, [{ path: `${MEDIA}/a.jpg`, name: "a.jpg", kind: "image" }]);
+  assert.equal(r.prose, "");
+  assert.equal(r.dropped, 0);
+});
+
+test("attachmentsInPrompt: the typed caption survives, the marker leaves the text", () => {
+  const r = attachmentsInPrompt(`[Attached file: ${MEDIA}/r.pdf]\nsummarise this doc`, MEDIA);
+  assert.deepEqual(
+    r.files.map((f) => f.name),
+    ["r.pdf"],
+  );
+  assert.equal(r.prose, "summarise this doc");
+});
+
+test("attachmentsInPrompt: a path outside MEDIA_DIR is NOT uploaded and stays as text", () => {
+  // Anyone can type this marker into the web composer. Trusting its path would
+  // make the bot upload an arbitrary server file into Telegram.
+  const r = attachmentsInPrompt("[Attached file: /etc/shadow]\nread this", MEDIA);
+  assert.deepEqual(r.files, []);
+  assert.match(r.prose, /\[Attached file: \/etc\/shadow\]/);
+  assert.match(r.prose, /read this/);
+});
+
+test("attachmentsInPrompt: a traversal that merely ENDS in MEDIA_DIR is refused too", () => {
+  const r = attachmentsInPrompt(`[Attached image: ${MEDIA}/../../.ssh/id_ed25519]`, MEDIA);
+  assert.deepEqual(r.files, []);
+});
+
+test("attachmentsInPrompt: a video goes up, its analysis stills do not", () => {
+  const text = attachmentPrompt([
+    {
+      path: `${MEDIA}/v.mp4`,
+      kind: "video",
+      durationSec: 7,
+      frames: [
+        { path: `${MEDIA}/f1.jpg`, atSec: 2 },
+        { path: `${MEDIA}/f2.jpg`, atSec: 7 },
+      ],
+      transcript: "hello",
+    },
+  ]);
+  const r = attachmentsInPrompt(text, MEDIA);
+  assert.deepEqual(r.files, [{ path: `${MEDIA}/v.mp4`, name: "v.mp4", kind: "video" }]);
+  // Not the stills, not the sentence that introduces them, not the transcript:
+  // the person on Telegram is about to watch the clip itself.
+  assert.equal(r.prose, "");
+});
+
+test("attachmentsInPrompt: an ordinary message is left exactly alone", () => {
+  const r = attachmentsInPrompt("ship it, and tell me when [not a marker]", MEDIA);
+  assert.deepEqual(r.files, []);
+  assert.equal(r.prose, "ship it, and tell me when [not a marker]");
+});
+
+test("attachmentsInPrompt: the number of uploads is bounded, and the excess is counted", () => {
+  const many = Array.from({ length: ECHO_FILE_CAP + 3 }, (_, n) => `[Attached image: ${MEDIA}/p${n}.jpg]`).join("\n");
+  const r = attachmentsInPrompt(many, MEDIA);
+  assert.equal(r.files.length, ECHO_FILE_CAP);
+  assert.equal(r.dropped, 3);
 });
 
 test("the 20 MB ceiling is named as a ceiling, not as a failure", () => {

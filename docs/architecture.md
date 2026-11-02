@@ -484,6 +484,22 @@ group already bound before this change stays bound.
   prompt; a genuinely silent clip says nothing. Over 20 MB the Bot API refuses
   to serve the file at all, which the topic reports as a ceiling rather than as
   an error.
+- **A file posted from the WEB shows up as a file.** `attachmentPrompt` writes
+  `[Attached image: <path>]`, and `/paste` deliberately reuses that exact wording
+  so the agent sees one format whichever door the file came through. The web
+  client reads those markers back and renders thumbnails; the bridge used to
+  print them, so a file pasted into the cockpit reached the agent and was an
+  absolute path to whoever was reading the topic. `attachmentsInPrompt` is the
+  reader for that writer: the prose goes out as text under its author label, each
+  file goes up through the same `sendUserFile` an agent's delivery uses, and a
+  video's analysis **stills stay behind** — they exist so a model can see a clip
+  it cannot open, and eight frames would bury the clip for a human who is about
+  to watch it. The path in a marker is **never trusted**: anyone can type
+  `[Attached file: /etc/shadow]` into the composer, and the echo arrives as
+  ordinary text, so a marker counts only when it names a file directly inside
+  `MEDIA_DIR` — the same basename rule, for the same reason, as `GET /media/:name`.
+  A refused marker is left in the prose rather than removed, so the topic shows
+  exactly what it showed before and nothing is swallowed.
 - `/secret NAME value` deletes the user's message after storing, so the value
   doesn't linger in chat history (needs *Delete messages* admin rights).
 
