@@ -105,9 +105,9 @@ import {
   resolveSpawnIsolation,
   provisionGroupUser,
   teardownGroupUser,
-  groupDeleteVerdict,
-  osUserFor,
   DEFAULT_HOME_BASE,
+  createGroupFlow,
+  deleteGroupFlow,
 } from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
@@ -2132,82 +2132,66 @@ async function killGroupAgents(groupId: string): Promise<void> {
 // Create a group. A private/restricted group needs the privileged deployment:
 // refuse CLEARLY in mono-tenant (isolationRefusal) rather than create a group
 // that cannot actually isolate. A public group provisions nothing (commons).
+//
+// BROWSER-ONLY (invariant 26, like `PUT /profiles`): this route provisions an
+// OS user via `useradd` as root — an agent carries the bootstrap admin cookie
+// and sends no `Origin`, so without this gate it could `curl` a privileged
+// `useradd`. The flow (createGroupFlow) owns the guard order and the ordering.
 app.post("/groups", async (req, res) => {
-  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
-    return res.status(409).json({ error: "instance-mismatch" });
-  }
-  const me = currentAccount(req);
-  if (!me) return res.status(403).json({ error: "sign in to create a group" });
   const body = req.body ?? {};
-  const name = typeof body.name === "string" ? body.name.trim() : "";
   const nature: Nature =
     body.nature === "private" || body.nature === "restricted" || body.nature === "public" ? body.nature : "restricted";
-  if (!name) return res.status(400).json({ error: "name required" });
-
-  if (nature !== "public") {
-    const refusal = isolationRefusal(DEPLOYMENT_MODE);
-    if (refusal) return res.status(409).json({ error: refusal });
-  }
-
-  const id = randomUUID();
-  const g: Group = { id, name, nature, members: nature === "restricted" ? [me.name] : [], createdAt: Date.now(), osUser: null };
-  if (nature === "private") g.owner = me.name;
-  g.osUser = osUserFor(g);
-
-  // Provision the OS user BEFORE persisting the group: if provisioning fails
-  // honestly (T3), the group is never written, so no later spawn can try to drop
-  // to a user that does not exist (which would silently fail to isolate).
-  if (nature !== "public" && DEPLOYMENT_MODE === "multi-tenant") {
-    try {
-      await provisionGroupUser(g, {
-        run: runPrivileged,
-        seed: seedGroupHome,
-        homeBase: GROUP_HOME_BASE,
-        userExists: osUserExists,
-      });
-    } catch (e) {
-      console.error(`groups: provisioning ${g.id} failed:`, (e as Error)?.message ?? e);
-      return res.status(500).json({ error: `could not provision the group's user: ${(e as Error)?.message ?? e}` });
-    }
-  }
-
-  const list = loadGroups();
-  if (list.some((x) => x.id === g.id)) return res.status(409).json({ error: "group already exists" });
-  saveGroups([...list, g]);
-  res.json({ ok: true, group: g });
+  const r = await createGroupFlow(
+    {
+      fromBrowser: requestFromBrowser(req),
+      instanceOk: channelWriteAllowed(instanceKey(), req.get("x-shadok-instance")),
+      account: currentAccount(req),
+      name: typeof body.name === "string" ? body.name : "",
+      nature,
+      mode: DEPLOYMENT_MODE,
+    },
+    {
+      isolationRefusal,
+      provision: (g) =>
+        provisionGroupUser(g, {
+          run: runPrivileged,
+          seed: seedGroupHome,
+          homeBase: GROUP_HOME_BASE,
+          userExists: osUserExists,
+        }).then(() => void 0),
+      loadGroups,
+      saveGroups,
+      newId: randomUUID,
+      now: Date.now,
+    },
+  );
+  res.status(r.status).json(r.body);
 });
 
 // Delete a group: tear down its OS user and never strand its channels.
+// BROWSER-ONLY for the same reason as POST (its mirror runs `userdel --remove`).
 app.delete("/groups", async (req, res) => {
-  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
-    return res.status(409).json({ error: "instance-mismatch" });
-  }
-  const me = currentAccount(req);
-  if (!me) return res.status(403).json({ error: "sign in to delete a group" });
-  const id = String(req.query.id ?? body_id(req)).trim();
-  if (!id) return res.status(400).json({ error: "group id required" });
-  if (id === MAIN_GROUP_ID) return res.status(409).json({ error: "the main group cannot be deleted" });
-
-  const list = loadGroups();
-  const g = list.find((x) => x.id === id);
-  if (!g) return res.status(404).json({ error: "no such group" });
-
-  // T4 carry (fail-closed): refuse while channels still reference the group —
-  // reassigning them to the commons would turn a confidential group's agents
-  // public, and leaving the id dangling would HIDE them (visibleChannels).
-  const verdict = groupDeleteVerdict(id, loadChannels());
-  if (!verdict.ok) return res.status(409).json({ error: verdict.error });
-
-  if (DEPLOYMENT_MODE === "multi-tenant") {
-    // Best-effort, never throws into the caller — a delete always completes.
-    await teardownGroupUser(g, {
-      run: runPrivileged,
-      homeBase: GROUP_HOME_BASE,
-      killAgents: () => killGroupAgents(id),
-    });
-  }
-  saveGroups(list.filter((x) => x.id !== id));
-  res.json({ ok: true });
+  const r = await deleteGroupFlow(
+    {
+      fromBrowser: requestFromBrowser(req),
+      instanceOk: channelWriteAllowed(instanceKey(), req.get("x-shadok-instance")),
+      account: currentAccount(req),
+      id: String(req.query.id ?? body_id(req)),
+      mode: DEPLOYMENT_MODE,
+    },
+    {
+      loadGroups,
+      saveGroups,
+      loadChannels,
+      teardown: (g) =>
+        teardownGroupUser(g, {
+          run: runPrivileged,
+          homeBase: GROUP_HOME_BASE,
+          killAgents: () => killGroupAgents(g.id),
+        }),
+    },
+  );
+  res.status(r.status).json(r.body);
 });
 
 /** The group id may arrive on the query string or in a JSON body. */
