@@ -276,7 +276,7 @@ import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
 import { bindRefusal, originAllowed, parseOrigins, resolveHost,
-  browserOrigin,
+  browserOrigin, isLocalCaller,
 } from "./net.js";
 import { pctFromUsage, windowForModel } from "./context.js";
 import {
@@ -905,7 +905,7 @@ function cookieSession(req: { headers: Record<string, unknown> }): { user: strin
  * deleting an account or changing a role takes effect at once — that is what
  * buys us the absence of a session store.
  */
-function currentAccount(req: { headers: Record<string, unknown> }): { name: string; role: Role } | null {
+function currentAccount(req: Caller): { name: string; role: Role } | null {
   if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
   // An AGENT authenticates with its own session key, not with the cookie.
   //
@@ -919,9 +919,10 @@ function currentAccount(req: { headers: Record<string, unknown> }): { name: stri
   // It grants exactly what the cookie already did, no more: `SHADOK_AUTH` IS
   // the bootstrap admin's cookie, so this is the same authority reached by a
   // credential that cannot age out. `sessionForKey` requires the session to be
-  // live, so the key dies with the agent.
+  // live, so the key dies with the agent. And it only counts from THIS
+  // machine (`localSessionForKey`): from the network it is ignored.
   const skey = req.headers["x-shadok-session-key"];
-  if (typeof skey === "string" && skey && sessionForKey(skey))
+  if (typeof skey === "string" && skey && localSessionForKey(req, skey))
     return { name: BOOTSTRAP_ADMIN, role: "admin" };
   // A MEMBER-scope peer (an invited agent from another instance) authenticates
   // as a web MEMBER: everything a person you invite can do — see/drive EVERY
@@ -1031,7 +1032,7 @@ async function stepUpOk(req: express.Request, res: express.Response, me: { name:
   return true;
 }
 
-function requestAuthed(req: { headers: Record<string, unknown> }): boolean {
+function requestAuthed(req: Caller): boolean {
   return currentAccount(req) !== null;
 }
 
@@ -1192,6 +1193,19 @@ function sessionKeyFor(id: string): string {
  * the agent is closed — which is the moment the key should stop working.
  * The map is still consulted first: it costs nothing and spares the file read.
  */
+type Caller = { headers: Record<string, unknown>; socket?: { remoteAddress?: string } };
+
+/**
+ * `sessionForKey`, but only for a caller on THIS machine reaching us directly
+ * (`isLocalCaller`): the key never expires and is worth the bootstrap admin,
+ * so an exfiltrated one must buy nothing from the network. Every route that
+ * accepts a session key goes through here — never `sessionForKey` alone.
+ */
+function localSessionForKey(req: Caller, key: string): string | null {
+  if (!key || !isLocalCaller(req.socket?.remoteAddress, req.headers)) return null;
+  return sessionForKey(key);
+}
+
 function sessionForKey(key: string): string | null {
   const id = readSessionKey(key, signingSecret());
   if (!id) return null;
@@ -1208,14 +1222,11 @@ function sessionForKey(key: string): string | null {
  * is scoped by. A session that is no longer running still resolves through the
  * channel list, exactly like `sessionForKey`.
  */
-function callerOf(req: {
-  headers: Record<string, unknown>;
-  body?: unknown;
-}): { id: string | null; profile: string | null } {
+function callerOf(req: Caller & { body?: unknown }): { id: string | null; profile: string | null } {
   const h = req.headers["x-shadok-session-key"];
   const fromBody = (req.body as { key?: unknown } | undefined)?.key;
   const key = typeof h === "string" && h ? h : typeof fromBody === "string" ? fromBody : "";
-  const id = key ? sessionForKey(key) : null;
+  const id = localSessionForKey(req, key);
   if (!id) return { id: null, profile: null };
   const profile =
     sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
@@ -2834,7 +2845,7 @@ app.put("/profiles", (req, res) => {
 app.put("/profiles/prompt", (req, res) => {
   const b = req.body ?? {};
   const key = typeof b.key === "string" ? b.key : "";
-  const id = key ? sessionForKey(key) : null;
+  const id = localSessionForKey(req, key);
   if (!id) return res.status(403).json({ error: "unknown or missing session key" });
   const caller =
     sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
@@ -2908,7 +2919,7 @@ app.put("/profiles/secret", (req, res) => {
 // respawn — restartSession tears down the very process that made this call.
 app.post("/reload", (req, res) => {
   const key = typeof req.body?.key === "string" ? req.body.key : "";
-  const id = key ? sessionForKey(key) : null;
+  const id = localSessionForKey(req, key);
   if (!id) return res.status(403).json({ error: "unknown or missing session key" });
   const s = sessions.get(id);
   if (!s) return res.status(404).json({ error: "session not running" });
@@ -3226,7 +3237,7 @@ app.post("/restart-all", (req, res) => {
  */
 app.post("/files", (req, res) => {
   const key = String(req.headers["x-shadok-session-key"] ?? "");
-  const id = key ? sessionForKey(key) : null;
+  const id = localSessionForKey(req, key);
   if (!id) return res.status(403).json({ error: "unknown or missing session key" });
   const body = req.body ?? {};
   const raw = Array.isArray(body.paths) ? body.paths : body.path ? [body.path] : [];

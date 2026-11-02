@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   DEFAULT_HOST,
   bindRefusal,
+  isLocalCaller,
   isLoopbackHost,
   originAllowed,
   parseOrigins,
@@ -112,4 +113,25 @@ test("browserOrigin: seul un navigateur same-origin passe", () => {
   assert.equal(browserOrigin("", "localhost:3789"), false);
   assert.equal(browserOrigin("http://evil.example", "localhost:3789"), false);
   assert.equal(browserOrigin("null", "localhost:3789"), false, "origine opaque");
+});
+
+test("isLocalCaller: a direct loopback call is local (how every agent reaches its server)", () => {
+  assert.equal(isLocalCaller("127.0.0.1", {}), true);
+  assert.equal(isLocalCaller("::1", {}), true);
+  assert.equal(isLocalCaller("::ffff:127.0.0.1", {}), true);
+});
+
+test("isLocalCaller: any other address is the network — an exfiltrated key buys nothing there", () => {
+  assert.equal(isLocalCaller("203.0.113.7", {}), false);
+  assert.equal(isLocalCaller("172.17.0.1", {}), false); // Docker gateway: nginx on the host
+  assert.equal(isLocalCaller("::ffff:10.0.0.4", {}), false);
+  assert.equal(isLocalCaller(undefined, {}), false);
+});
+
+test("isLocalCaller: loopback relayed by a same-host proxy is NOT local", () => {
+  // nginx on the same machine connects from 127.0.0.1 on behalf of the internet.
+  assert.equal(isLocalCaller("127.0.0.1", { "x-forwarded-for": "203.0.113.7" }), false);
+  assert.equal(isLocalCaller("127.0.0.1", { "x-real-ip": "203.0.113.7" }), false);
+  assert.equal(isLocalCaller("127.0.0.1", { forwarded: "for=203.0.113.7" }), false);
+  assert.equal(isLocalCaller("::1", { "x-forwarded-host": "cockpit.example.com" }), false);
 });

@@ -228,7 +228,9 @@ Enter to skip; you can add it later from the web UI).
   remove it. On send, an image shows **inline in your own message bubble**;
   under the hood the agent still receives it as an `[Attached …: path]` line,
   the same format Telegram uses, so nothing about how the agent reads it
-  changes. A message can be attachments alone, with no words. The files are
+  changes. If the agent is mirrored into Telegram, the file is **posted into its
+  topic too** — a photo as a photo, anything else as a document — so whoever is
+  reading there sees what you sent instead of a path. A message can be attachments alone, with no words. The files are
   served back to the browser by `GET /media/<name>` from the same directory
   Telegram attachments land in.
 - **Files an agent hands you** — when an agent's result IS a file (a report, an
@@ -525,9 +527,19 @@ location / {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # see below
     client_max_body_size 50m;   # match the server's paste limit
 }
 ```
+
+**Forward the client address.** An agent authenticates to its own server with a
+session key that never expires, so the server accepts that key **only from this
+machine, directly** — never from the network, where a key leaked by a
+prompt-injected agent would otherwise be permanent admin. A proxy on the same
+host connects from `127.0.0.1` too; the `X-Forwarded-For` line is what tells the
+server the request was relayed. Without it, requests through a same-host proxy
+look local. (A proxy on another host, or nginx in front of a Docker container,
+is already seen as the network.)
 
 The client picks `wss://` on its own when the page is HTTPS, so there is nothing
 to configure on that side.
