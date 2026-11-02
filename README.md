@@ -424,6 +424,42 @@ supplies the reaper. And either way it is decided when the container is
 **created**: `docker restart` empties the table — pid 1 restarts, the kernel
 drops the lot — but the leak starts over, so a recreate is what makes it stop.
 
+### Groups and deployment modes
+
+An agent lives in a **group**, and a group is both what is isolated and who can
+see it:
+
+- **Private** — only you. One per person, sealed, invisible even to an admin.
+- **Restricted** — your team: a member list, any member can invite.
+- **Public** — everyone. `Main` is the default public group.
+
+You see and drive only your own groups plus the public ones; that covers the
+agent list, secrets, the shared ledger and messaging between agents. Private and
+restricted groups are real walls: each agent runs as its **own OS user** with its
+own home and secrets, never as root. Crossing a wall is always a deliberate act:
+drop a file in the shared `~/shared/` folder, record a ledger line with
+`--public`, push a branch, or message an agent (public groups freely, restricted
+ones only with a handle they gave you; private groups cannot be messaged).
+
+Real isolation needs two things, checked once at boot:
+
+1. the server can create OS users (it runs as root or has passwordless `sudo` —
+   the official Docker image or a VPS deploy), **and**
+2. a GUI password is set (`SHADOK_GUI_PASSWORD`), because accounts are who the
+   walls protect.
+
+Both → **multi-tenant**. Anything else — `npx shadok-ai` on your machine, Docker
+without the password — stays **single-tenant**, exactly as before: it says so and
+refuses to create a private or restricted group rather than drawing one that
+protects nothing. You don't configure this; it follows from how you run it. The
+boot log prints `deployment mode: …`.
+
+An existing single-tenant instance that comes up capable is migrated
+automatically: what you have becomes the public `Main` group, agents run as a
+non-root `main` user, each account gets a private group, and agents restart one
+at a time. A banner shows progress. Telegram stays single-owner, and there are no
+disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
+
 ### Exposing it beyond this machine
 
 The cockpit runs arbitrary commands on the host by design, so it binds

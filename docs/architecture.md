@@ -1338,6 +1338,129 @@ each spawned agent is visible in `/live` ("Agents running now" in the UI).
 Spawned prompts respect the pace gate; a block is currently silent to the
 parent (a known rough edge).
 
+## Groups and isolation (`src/groups.ts`, `src/capability.ts`, `src/osusers.ts`, `src/talk.ts`, `src/migrate-groups.ts`)
+
+Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
+Status: built, **on hold** for release; the paths marked *human-verify* below
+need a real privileged container and have only been proven by unit tests with
+injected side effects.
+
+### One concept
+
+A **group** is both the unit of isolation and the unit of visibility. Three
+natures (`Nature` in `groups.ts`):
+
+- **private** — one person, sealed, invisible even to an admin; one per account
+  (`newPrivateGroup`, created when an invitation is redeemed, torn down by
+  `accountDeleteGroups` when the account is deleted);
+- **restricted** — a member list; any member can invite (`membershipVerdict`);
+- **public** — everyone. `Main` (`MAIN_GROUP_ID`) is the default public group and
+  the commons: an existing single-tenant instance already *is* exactly this.
+
+Private and restricted are real walls (own OS user, HOME and secret slice).
+Public is **no wall**: all public groups share the one commons user, so creating
+one stays as cheap as a tab group. Isolation exists only where there is
+something to protect. One rule follows: you see and touch your own groups plus
+the public ones. Every surface (agent list, files, secrets, ledger, spawn, drive,
+talk) is that rule applied again.
+
+`channel.group` is a **server-owned** string id (`SERVER_OWNED` in `channels.ts`,
+like `profile`), resolved against a typed `Group` object; a browser `PUT
+/channels` cannot move an agent between groups.
+
+### Capable or mono-tenant
+
+`deploymentMode` (`capability.ts`) is decided once at boot: **multi-tenant** only
+if `probeCanProvision` (root, or passwordless `sudo -n`) **and** `accountsEnabled`
+(a GUI password is set — accounts are who a wall protects). Otherwise
+**mono-tenant**, which is today's behaviour unchanged: `isolationRefusal` answers
+any request for an isolated group with an explicit reason, and the feature stays
+invisible. We refuse rather than fake: a private group that is only a label is
+worse than none (invariant 47). `npx shadok-ai` on a workstation is therefore
+always mono-tenant; the capable shape is the privileged Docker/VPS deploy. The
+Dockerfile deliberately has no `USER`: the server must start privileged to
+provision users, and it drops every agent itself.
+
+### The privileged orchestrator
+
+The server is the only privileged process. Per spawn it picks the OS user
+(`osUserFor`: `sk-<group id>`; the commons user `main` for public groups once
+migrated — `commonsOsUser`) and execs the agent through `dropArgv` (`setpriv
+--reuid --regid --init-groups`). `setpriv` was chosen over `runuser`/`su` because
+it execs directly and leaves the environment alone; but it also leaves `HOME`
+alone, so `dropEnv` sets `HOME`/`USER`/`LOGNAME` from `homeForUser`
+(invariant 50). `provisionGroupUser` / `teardownGroupUser` create and remove the
+user and home idempotently; `reconcileGroupProvisioning` re-runs at boot so a
+half-provisioned group converges.
+
+Two deliberate crossings of the wall exist for infrastructure:
+
+- **One Claude credential.** Every group user's `~/.claude/.credentials.json` is
+  a symlink (`credentialWiring`) to one shared file (group `shadok-cred`), so one
+  sign-in serves all groups and the OAuth refresh happens in a single place.
+  Trade-off: a refresh that *renames* a new file over the symlink would silently
+  fork the credential; `checkCredentialDivergence` / `classifyCredentialLink`
+  detect it and the shared file is the source of truth. *Human-verify:* whether
+  the real CLI refreshes in place or by rename (the gate the design left open).
+- **`~/shared/`.** A symlink to one pot (group `shadok-shared`,
+  `sharedPotWiring`) is the only place files cross a wall, by an explicit drop.
+
+### The server-side ACL
+
+Policy is pure and lives in `groups.ts`; `server.ts` only plumbs it.
+`GET /channels` returns `visibleChannels`. A WS `start`/resume goes through
+`canResumeAs` — **including for an already-live session**; attaching before
+authorising was a real leak (invariant 49). Each turn passes `mayDriveSession`,
+which does not exempt the bootstrap admin: admin reach is administrative
+(`canAdministerGroup`: manage membership), not operational. The server's own
+loopback drivers (`driveChannel`: cron, parent notification, reload nudge)
+present `SYSTEM_DRIVE_SECRET`, a per-boot random held only in server memory, as
+`x-shadok-system-drive`; without it a cron on a private channel would be refused
+by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
+(`createGroupFlow` / `deleteGroupFlow`, refusing on mono-tenant).
+
+### Secrets, ledger, talk
+
+- **Secrets** (`secrets.ts`): one vault per group. Another group's secret is
+  reachable only by explicit share-by-reference (`PUT /secrets/share`), and a name
+  resolves own → shared-in → Main (`resolveSecretValues`). `/secrets` is scoped
+  to the caller's group; `PUT /secrets/profiles` and the panel's profile editor
+  follow it; the profile editor is read-only for a group that does not own the
+  profile. Values still travel only in the child's env (invariant 36).
+- **Ledger** (`ledger.ts`, `context/ledger-skill/`): rows carry `group` and
+  `scope`. The skill no longer writes the file; it calls `POST /ledger/record`,
+  where the server stamps the caller's group from the session. Default is
+  group-private; `--public` is the explicit crossing. `GET /ledger` and the push
+  delta are filtered by `ledgerGroupsFor`.
+- **Talk** (`talk.ts`, `POST /talk`): an agent can write to an agent in another
+  group. `talkVerdict` keys on the recipient: public free, restricted only with a
+  handle the recipient side shared, private sealed with no break-glass. The letter
+  (`talkLetter`) is hidden like a parent notification, names the sender's group,
+  and carries no reply handle. Discovery of handles is only partly built.
+
+### Automatic migration (`migrate-groups.ts`)
+
+The first boot of a capable instance migrates a running single-tenant one in
+place. It is additive — everything existing is already the public commons — and
+creates the non-root `main` user, chowns the root-owned tree to it, seeds its
+credential link, gives each account its private group, then respawns agents one
+at a time (`respawnPlan`; a herd of `claude --resume` trips the OAuth refresh race,
+cf. `/restart-all`). `runMigration` takes injected deps and only writes
+`MIGRATION_MARKER_FILE` (`groups-migrated.json`) at the end; the commons drop to
+`main` is gated on that marker, so a failure leaves the instance running as
+before. A banner at the top of the page shows in-progress / failed states, so a
+migration that never completes is never silent. The lead agent is scoped to Main:
+`firstAgentPlan` spawns it only there, every other group starts empty.
+
+### Not built / known limits
+
+- Telegram is not multi-tenant (single owner, as before); deferred by the spec.
+- No disk quota and no cap on isolated users per account.
+- Cross-group git is operational: protect the remote's branches; there is no code.
+- *Human-verify before release:* `setpriv` + `HOME` on a real container, the
+  credential in-place-vs-rename gate, and a full migration on a copy of a real
+  volume. The unit tests inject every side effect.
+
 ## Known rough edges / debt
 
 - Much was built in low-visibility agent sessions; detection heuristics,
