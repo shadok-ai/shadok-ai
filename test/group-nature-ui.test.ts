@@ -88,3 +88,9 @@ test("choosing Private reveals a picker sourced from GET /accounts", () => {
   assert.match(s, /groupMembersField/);
   assert.match(createFormBlock(), /id="groupMembersField"/);
 });
+
+test("submitGroupCreate has an early in-flight guard", () => {
+  const m = html.match(/async function submitGroupCreate\(\)\s*\{[\s\S]*?\n  \}\n/);
+  assert.ok(m, "submitGroupCreate defined");
+  assert.match(m![0], /^[^\n]*\n(\s*\/\/[^\n]*\n)*\s*if \(\$\("groupCreateSubmit"\)\.disabled\) return;/);
+});

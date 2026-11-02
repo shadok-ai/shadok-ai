@@ -11803,12 +11803,14 @@
     }
   }
   async function submitGroupCreate() {
+    // In-flight guard, set synchronously: Enter and a double-click both land here.
+    if ($("groupCreateSubmit").disabled) return;
+    $("groupCreateSubmit").disabled = true;
     const name = $("groupCreateName").value.trim();
     const nature = $("groupCreateType").value === "restricted" ? "restricted" : "public";
-    if (!name) return groupCreateError("Give the group a name.");
+    if (!name) { $("groupCreateSubmit").disabled = false; return groupCreateError("Give the group a name."); }
     const members = nature === "restricted"
       ? [...$("groupMembersPick").selectedOptions].map((o) => o.value) : [];
-    $("groupCreateSubmit").disabled = true;
     groupCreateError("");
     const headers = { "Content-Type": "application/json", "x-shadok-instance": instanceKey };
     try {
@@ -11816,13 +11818,19 @@
       const data = await r.json().catch(() => ({}));
       if (!r.ok || !data.ok) throw new Error(data.error || data.message || "HTTP " + r.status);
       const g = createGroup(data.group);
+      persistGroups();
       applyView();
       if (railShown()) setView(g.id, { follow: false });
       closeGroupCreate();
       const failed = [];
-      for (const add of members) {
-        const mr = await fetch("/groups/members", { method: "POST", headers, body: JSON.stringify({ group: data.group.id, add }) });
-        if (!mr.ok) failed.push(add);
+      // Own try/catch: the group EXISTS now, so a failure here must not re-arm Submit.
+      try {
+        for (const add of members) {
+          const mr = await fetch("/groups/members", { method: "POST", headers, body: JSON.stringify({ group: data.group.id, add }) });
+          if (!mr.ok) failed.push(add);
+        }
+      } catch (e2) {
+        for (const add of members) if (!failed.includes(add)) failed.push(add);
       }
       if (failed.length) alert("Group created, but could not add: " + failed.join(", "));
     } catch (e) {
