@@ -59,7 +59,7 @@ test("GET /secrets: a SALES caller omits COMEX-only names, keeps shared-in + Mai
     sales: { SALES_OWN: e("s", "sales") },
   };
   const seen = visibleSecrets(vault, memberGroupIds(groups, viewerFor(cy)));
-  assert.deepEqual(seen, [
+  assert.deepEqual(seen.map(({ name, source, ownerGroup }) => ({ name, source, ...(ownerGroup ? { ownerGroup } : {}) })), [
     { name: "COMMON", source: "main" },
     { name: "LENT", source: "shared", ownerGroup: "comex" },
     { name: "SALES_OWN", source: "own", ownerGroup: "sales" },
@@ -76,16 +76,20 @@ test("GET /secrets: own beats shared beats main on a name present several ways",
   };
   const seen = visibleSecrets(vault, memberGroupIds(groups, viewerFor(ada)));
   assert.deepEqual(
-    seen.find((s) => s.name === "K"),
+    seen.filter((s) => s.name === "K").map(({ name, source, ownerGroup }) => ({ name, source, ownerGroup }))[0],
     { name: "K", source: "own", ownerGroup: "comex" },
   );
 });
 
 test("GET /secrets: a null viewer resolves to Main only (mono-tenant shape)", () => {
   const vault: Vault = { main: { A: e("a", "main") }, comex: { C: e("c", "comex") } };
-  assert.deepEqual(visibleSecrets(vault, memberGroupIds(groups, viewerFor(null))), [
-    { name: "A", source: "main" },
-  ]);
+  assert.deepEqual(
+    visibleSecrets(vault, memberGroupIds(groups, viewerFor(null))).map(({ name, source }) => ({ name, source })),
+    [{ name: "A", source: "main" }],
+  );
+  // Metadata rides along; the value never does.
+  const [only] = visibleSecrets(vault, memberGroupIds(groups, viewerFor(null)));
+  assert.ok(!("value" in only) && typeof only.createdAt === "number");
 });
 
 // ── Secret WRITE gate (owner-group membership) ─────────────────────────────────

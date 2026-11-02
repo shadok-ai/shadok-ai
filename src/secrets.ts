@@ -123,6 +123,13 @@ export interface VisibleSecret {
   source: SecretSource;
   /** The group that OWNS the secret — omitted for a Main secret (`source:"main"`). */
   ownerGroup?: string;
+  /** Audit fields — metadata only, never the value. */
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+  /** Only on a secret the caller OWNS: the groups it is lent to / the profiles it feeds. */
+  sharedWith?: string[];
+  profiles?: string[];
 }
 
 /**
@@ -147,10 +154,13 @@ export function visibleSecrets(vault: Vault, memberGroupIds: ReadonlySet<string>
     if (!slice || typeof slice !== "object") continue;
     for (const name of Object.keys(slice)) {
       if (!Object.hasOwn(slice, name)) continue;
-      if (gid === MAIN_GROUP_ID) consider({ name, source: "main" });
-      else if (memberGroupIds.has(gid)) consider({ name, source: "own", ownerGroup: gid });
-      else if (slice[name].sharedWith.some((g) => memberGroupIds.has(g)))
-        consider({ name, source: "shared", ownerGroup: gid });
+      const e = slice[name];
+      const audit = { createdBy: e.createdBy, createdAt: e.createdAt, updatedAt: e.updatedAt };
+      if (gid === MAIN_GROUP_ID) consider({ name, source: "main", ...audit });
+      else if (memberGroupIds.has(gid))
+        consider({ name, source: "own", ownerGroup: gid, ...audit, sharedWith: [...e.sharedWith], profiles: [...e.profiles] });
+      else if (e.sharedWith.some((g) => memberGroupIds.has(g)))
+        consider({ name, source: "shared", ownerGroup: gid, ...audit });
     }
   }
   return [...chosen.values()].sort((a, b) => a.name.localeCompare(b.name));

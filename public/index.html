@@ -1041,6 +1041,19 @@
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 200;
     background: #e2564a; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 13px;
   }
+  .sec-sect { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+  .sec-scope { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; }
+  .sec-scope select { font-size: 16px; }
+  #secretsList li.sec-ro code { opacity: .85; }
+  #secretsList li.sec-row { flex-wrap: wrap; }
+  .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  #secretAttach[data-grouped="1"] { display: none; }
+  .sec-from { margin-left: 8px; font-size: 11px; color: var(--text-dim); font-family: var(--sans, inherit); }
+  .sec-ctl { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; margin-top: 4px; }
+  .sec-ctl label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  .group-head .gkey { flex: none; font-size: 12px; padding: 0 4px; cursor: pointer; visibility: hidden; }
+  .group-head:hover .gkey { visibility: visible; }
+  .prof-secrets-ro { list-style: none; padding: 0; margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
   .sec-users { margin-left: 8px; font-size: 11px; color: var(--text-dim); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Profile picker for a running agent (the tab's context menu). */
@@ -2151,9 +2164,6 @@
   #profilesList li:nth-child(odd) { background: rgba(255,255,255,.04); }
   #profilesList .pmeta { font-size: 12px; opacity: .7; }
   #profilesList button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; }
-  #profSecretsList { list-style: none; padding: 0; margin: 4px 0; }
-  #profSecretsList li { display: flex; justify-content: space-between; padding: 3px 6px; }
-  #profSecretsList button { background: none; border: none; color: #e26; cursor: pointer; }
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
@@ -2624,6 +2634,7 @@
         <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
     </div>
     <div class="pin-body">
+      <div id="secretsScope" class="sec-scope" hidden><span>Group</span><select id="secretsGroup" aria-label="Group whose secrets are shown"></select></div>
       <ul id="secretsList"></ul>
       <form id="secretsAdd">
         <div class="sec-add-row">
@@ -2962,7 +2973,7 @@
     <div class="field"><span class="label">Deny (one per line)</span><textarea id="profDeny" rows="2" placeholder="Bash(git commit:*)"></textarea></div>
     <div class="field"><span class="label">Model (optional)</span><input id="profModel" placeholder="claude-opus-4-8" autocomplete="off" spellcheck="false"></div>
     <div class="field"><span class="label">Thinking effort <span class="check-hint">— how hard agents of this role think before answering; higher costs more tokens</span></span><select id="profEffort"></select></div>
-    <div class="field"><span class="label">Secrets to inject <span class="check-hint">— tick which vault secrets this profile passes to its agents</span></span><ul id="profSecretsList"></ul></div>
+    <div class="field"><span class="label">Secrets injected <span class="check-hint">— read-only: values resolve per group when an agent starts (its own group's, then shared with it, then Main's)</span></span><ul id="profSecretsList" class="prof-secrets-ro"></ul><button type="button" class="linkish" id="profToSecrets">→ Manage secrets</button></div>
     <div class="field"><span class="label">MCP servers (JSON, optional) <span class="check-hint">— passed to its agents at spawn; write a secret as <code>${NAME}</code> and tick NAME above, never its value</span></span><textarea id="profMcp" rows="4" spellcheck="false" placeholder='{ "matomo": { "type": "http", "url": "https://…", "headers": { "Authorization": "Bearer ${MATOMO_TOKEN}" } } }'></textarea></div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button id="profSave" class="primary">Save profile</button>
@@ -3339,6 +3350,7 @@
     defaultAgentName,
     hasReadonlyPreset,
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
+  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
@@ -3397,6 +3409,11 @@
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
   window.secretUsers = secretUsers;
+  window.secretsPanelMode = secretsPanelMode;
+  window.secretSections = secretSections;
+  window.keyGroups = keyGroups;
+  window.shareTargets = shareTargets;
+  window.auditLine = auditLine;
   window.profileSaveBody = profileSaveBody;
   window.isManagedProfile = isManagedProfile;
   window.hasReadonlyPreset = hasReadonlyPreset;
@@ -3447,6 +3464,12 @@
     isManagedProfile: () => false,
     profileSaveBody: (form) => ({ ...form }),
     secretUsers: () => [],
+    // Before the module lands: the flat list (today's look) and no groups.
+    secretsPanelMode: () => "flat",
+    secretSections: () => ({ own: [], sharedIn: [], inheritedMain: [] }),
+    keyGroups: () => [],
+    shareTargets: () => [],
+    auditLine: () => "",
     extractLiveText: () => "",
     livePreviewDecision: () => null,
     echoAuthor: () => "",
@@ -4781,7 +4804,12 @@
     gadd.className = "gadd";
     gadd.textContent = "＋";
     gadd.title = "New agent in this group";
-    head.append(caret, gicon, gname, gadd, gclose);
+    // 🔑 opens THIS group's secrets directly (a flat panel when only Main exists).
+    const gkey = document.createElement("span");
+    gkey.className = "gkey";
+    gkey.textContent = "🔑";
+    gkey.title = "Secrets of this group";
+    head.append(caret, gicon, gname, gkey, gadd, gclose);
     const body = document.createElement("div");
     body.className = "group-body";
     el.append(head, body);
@@ -4801,6 +4829,7 @@
       if (e.target === gclose) return dissolveGroup(group);
       if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
       if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
+      if (e.target === gkey) { e.stopPropagation(); return openSecretsPanel(group.id); }
       el.classList.toggle("collapsed");
       paintCaret();
       persistGroups();
@@ -9402,60 +9431,145 @@
 
   // ── Secret vault panel (central, global; profiles pick which to inject) ──
   let vaultNames = [];
+  let vaultSecrets = [];   // the server's tagged list: {name, source, ownerGroup?, audit…}
+  let vaultGroups = [];    // GET /groups — decides flat vs grouped
+  let panelGroup = null;   // the group the panel is scoped to (null = the caller's own view)
   async function loadVault() {
-    try { vaultNames = (await (await fetch("/secrets")).json()).names || []; } catch { vaultNames = []; }
+    try {
+      const [v, g] = await Promise.all([
+        fetch("/secrets").then((r) => r.json()),
+        fetch("/groups").then((r) => r.json()).catch(() => null),
+      ]);
+      vaultNames = v.names || [];
+      vaultSecrets = Array.isArray(v.secrets) ? v.secrets : vaultNames.map((name) => ({ name, source: "main" }));
+      vaultGroups = Array.isArray(g) ? g : [];
+    } catch { vaultNames = []; vaultSecrets = []; vaultGroups = []; }
     if (!Array.isArray(vaultNames)) vaultNames = [];
     return vaultNames;
+  }
+  function groupName(id) {
+    const g = vaultGroups.find((x) => String(x.id) === String(id));
+    return g ? g.name : String(id);
+  }
+  function actionBtn(cls, text, title, fn) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = cls; b.textContent = text; b.title = title;
+    b.addEventListener("click", fn);
+    return b;
+  }
+  /** One secret row. `ro` = a secret that belongs to someone else: no value
+   *  editing, no deletion, no controls — only the audit history. The value is
+   *  never shown in any case (write-only vault). */
+  function secretRow(sec, { ro, grouped }) {
+    const k = sec.name;
+    const li = document.createElement("li");
+    if (grouped) li.className = "sec-row" + (ro ? " sec-ro" : "");
+    const code = document.createElement("code"); code.textContent = k;
+    if (ro && sec.ownerGroup) {
+      const from = document.createElement("span"); from.className = "sec-from";
+      from.textContent = "from " + groupName(sec.ownerGroup);
+      code.appendChild(from);
+    }
+    // Who receives it. Bridge guard (invariant 10): no module, no mention,
+    // rather than an exception that would empty the list.
+    const users = !ro && window.secretUsers ? window.secretUsers(profileCache, k) : null;
+    if (users && !grouped) {
+      const tag = document.createElement("span");
+      if (users.length) {
+        tag.className = "sec-users";
+        tag.textContent = "→ " + users.join(", ");
+        tag.title = users.length === 1
+          ? "Injected as an environment variable into agents running " + users[0]
+          : "Injected as an environment variable into agents running any of: " + users.join(", ");
+      } else {
+        tag.className = "sec-orphan";
+        tag.textContent = "⚠ no profile uses it";
+        tag.title = "No agent will ever receive this secret until a profile references it";
+      }
+      code.appendChild(tag);
+    }
+    const actions = document.createElement("div");
+    actions.className = "s-actions";
+    actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
+    if (!ro) {
+      actions.append(
+        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
+        actionBtn("s-del", "✕", "Remove from vault", async () => {
+          await fetch("/secrets?name=" + encodeURIComponent(k), { method: "DELETE" });
+          if (editingSecret === k) resetSecretForm();
+          await loadVault(); renderSecrets();
+        }),
+      );
+    }
+    li.append(code, actions);
+    if (grouped) {
+      const line = window.auditLine ? window.auditLine(sec) : "";
+      if (line) { const m = document.createElement("div"); m.className = "sec-meta"; m.textContent = line; li.appendChild(m); }
+      if (!ro) li.appendChild(secretControls(sec));
+    }
+    return li;
+  }
+  /** Own secret, grouped mode: who it is lent to (PUT /secrets/share) and which
+   *  profiles inject it (PUT /secrets/profiles). Each saves on its own button so
+   *  a half-ticked state never reaches the server. */
+  function secretControls(sec) {
+    const box = document.createElement("div"); box.className = "sec-ctl";
+    const targets = window.shareTargets ? window.shareTargets(vaultGroups, sec.ownerGroup) : [];
+    const profs = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n))).sort();
+    const picker = (label, options, current, onSave) => {
+      if (!options.length) return;
+      const wrap = document.createElement("span");
+      wrap.append(label + ": ");
+      const cbs = options.map((o) => {
+        const l = document.createElement("label");
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = (current || []).includes(o.value);
+        const t = document.createElement("span"); t.textContent = o.label;
+        l.append(cb, t); wrap.appendChild(l); return cb;
+      });
+      wrap.appendChild(actionBtn("linkish", "save", "Save", async () => {
+        await onSave(cbs.filter((c) => c.checked).map((c) => c.value));
+        await loadVault(); renderSecrets();
+      }));
+      box.appendChild(wrap);
+    };
+    picker("shared read with", targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith, (sharedWith) =>
+      fetch("/secrets/share", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sec.name, sharedWith }) }));
+    picker("attach to profiles", profs.map((n) => ({ value: n, label: n })), sec.profiles, (profiles) =>
+      fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: sec.name, profiles }) }));
+    return box;
   }
   function renderSecrets() {
     const ul = $("secretsList");
     ul.innerHTML = "";
-    if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
-    for (const k of vaultNames) {
-      const li = document.createElement("li");
-      const code = document.createElement("code"); code.textContent = k;
-      // Qui reçoit ce secret. Le panneau disait déjà « personne » ; il ne disait
-      // pas À QUI il sert quand il sert, ce qui obligeait à ouvrir les profils
-      // un par un. Garde du pont ESM (invariant 10) : pas de module, pas de
-      // mention, plutôt qu'une exception qui viderait la liste.
-      const users = window.secretUsers ? window.secretUsers(profileCache, k) : null;
-      if (users) {
-        const tag = document.createElement("span");
-        if (users.length) {
-          tag.className = "sec-users";
-          tag.textContent = "→ " + users.join(", ");
-          tag.title = users.length === 1
-            ? "Injected as an environment variable into agents running " + users[0]
-            : "Injected as an environment variable into agents running any of: " + users.join(", ");
-        } else {
-          tag.className = "sec-orphan";
-          tag.textContent = "⚠ no profile uses it";
-          tag.title = "No agent will ever receive this secret until a profile references it";
-        }
-        code.appendChild(tag);
-      }
-      const actions = document.createElement("div");
-      actions.className = "s-actions";
-      const edit = document.createElement("button");
-      edit.type = "button"; edit.className = "s-edit"; edit.textContent = "✎";
-      edit.title = "Update this secret's value / the profiles it feeds";
-      edit.addEventListener("click", () => startEditSecret(k));
-      const del = document.createElement("button");
-      del.type = "button"; del.className = "s-del"; del.textContent = "✕"; del.title = "Remove from vault";
-      del.addEventListener("click", async () => {
-        await fetch("/secrets?name=" + encodeURIComponent(k), { method: "DELETE" });
-        if (editingSecret === k) resetSecretForm();
-        await loadVault(); renderSecrets();
-      });
-      const hist = document.createElement("button");
-      hist.type = "button"; hist.className = "s-edit"; hist.textContent = "🕘";
-      hist.title = "Audit log for this secret — who wrote it and which agents received it";
-      hist.addEventListener("click", () => openSecretAudit(k));
-      actions.append(hist, edit, del);
-      li.append(code, actions);
-      ul.appendChild(li);
+    const grouped = window.secretsPanelMode(vaultGroups) === "grouped";
+    $("secretsScope").hidden = !grouped;
+    // Grouped mode attaches profiles per row (PUT /secrets/profiles); the flat
+    // form keeps today's profile ticks, byte for byte.
+    $("secretAttach").dataset.grouped = grouped ? "1" : "";
+    if (!grouped) {
+      if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
+      for (const k of vaultNames) ul.appendChild(secretRow(vaultSecrets.find((x) => x.name === k) || { name: k }, { ro: false, grouped: false }));
+      return;
     }
+    const sel = $("secretsGroup");
+    const gs = vaultGroups.filter((g) => g && g.id != null);
+    sel.replaceChildren(...gs.map((g) => { const o = document.createElement("option"); o.value = String(g.id); o.textContent = g.name; return o; }));
+    if (panelGroup == null || !gs.some((g) => String(g.id) === String(panelGroup))) {
+      const own = vaultSecrets.find((x) => x.source === "own");
+      panelGroup = own ? String(own.ownerGroup) : (gs.find((g) => String(g.id) !== "main") || gs[0] || {}).id;
+    }
+    sel.value = String(panelGroup);
+    const sec = window.secretSections(vaultSecrets, panelGroup);
+    const section = (title, rows, ro, empty) => {
+      const h = document.createElement("li"); h.className = "sec-sect"; h.textContent = title; ul.appendChild(h);
+      if (!rows.length) { const e = document.createElement("li"); e.innerHTML = '<span style="opacity:.6"></span>'; e.firstChild.textContent = empty; ul.appendChild(e); }
+      for (const r of rows) ul.appendChild(secretRow(r, { ro, grouped: true }));
+    };
+    section("Own — " + groupName(panelGroup), sec.own, false, "no secret of its own yet");
+    section("Shared with this group", sec.sharedIn, true, "nothing lent by another group");
+    section("Inherited from Main", sec.inheritedMain, true, "nothing in Main");
   }
+  $("secretsGroup").addEventListener("change", () => { panelGroup = $("secretsGroup").value; renderSecrets(); });
 
   // ── Add / update a secret, and wire it to profiles ──────────────────────
   // The vault add form doubles as an editor: ✎ on a row loads the name (locked)
@@ -9545,14 +9659,16 @@
   }
   // profileCache feeds the "no profile uses it" warning: it must be fresh when
   // the panel opens, or we would show a stale diagnosis.
-  $("secretsBtn").addEventListener("click", async () => {
+  async function openSecretsPanel(groupId) {
+    panelGroup = groupId == null ? null : String(groupId);
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
     resetSecretForm();
     $("secretsReload").hidden = true;
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
-  });
+  }
+  $("secretsBtn").addEventListener("click", () => openSecretsPanel(null));
   /** The vault, opened on ONE name an agent asked for: the name filled in (or the
    *  existing secret in edit mode), the asking agent's profile pre-ticked so the
    *  value actually reaches it, the cursor on the value. Saving then goes through
@@ -9820,7 +9936,9 @@
     if (!keepValue) {
       await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
     }
-    await syncSecretToProfiles(name, wanted); // refreshes profileCache
+    // Grouped mode binds profiles per row (PUT /secrets/profiles) and hides the
+    // ticks: syncing here would read an empty selection and detach everything.
+    if (window.secretsPanelMode(vaultGroups) === "flat") await syncSecretToProfiles(name, wanted); // refreshes profileCache
     await loadVault(); renderSecrets();
     offerReload(name); // propose reloading the live agents that now feed on it
     resetSecretForm();
@@ -10347,22 +10465,23 @@
   }
   // The profile's secrets are checkboxes over the vault: pick which named
   // secrets this profile injects. (Values live in the vault, defined once.)
-  async function renderProfSecrets() {
+  // Read-only on purpose: the name↔profile link is edited from the SECRETS side
+  // (per group), so the same secret can mean different values in different
+  // groups without the role carrying any of them. Shown so a role's needs stay
+  // visible; editSecretRefs is still sent back unchanged so a save never drops them.
+  function renderProfSecrets() {
     const ul = $("profSecretsList"); ul.innerHTML = "";
-    const names = await loadVault();
-    if (!names.length) { ul.innerHTML = '<li><span style="opacity:.6">vault is empty — add secrets in the Secrets panel</span></li>'; return; }
-    for (const k of names) {
+    if (!editSecretRefs.length) { ul.innerHTML = '<li><span style="opacity:.6">no secret injected</span></li>'; return; }
+    for (const k of editSecretRefs) {
       const li = document.createElement("li");
-      const label = document.createElement("label"); label.style.display = "flex"; label.style.gap = "6px"; label.style.cursor = "pointer";
-      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = editSecretRefs.includes(k);
-      cb.addEventListener("change", () => {
-        if (cb.checked) { if (!editSecretRefs.includes(k)) editSecretRefs.push(k); }
-        else editSecretRefs = editSecretRefs.filter((x) => x !== k);
-      });
       const code = document.createElement("code"); code.textContent = k;
-      label.append(cb, code); li.append(label); ul.appendChild(li);
+      li.appendChild(code); ul.appendChild(li);
     }
   }
+  $("profToSecrets").addEventListener("click", () => {
+    $("profilesOverlay").hidden = true;
+    openSecretsPanel(null);
+  });
   const READONLY_DENY = ["Bash(git commit:*)","Bash(git push:*)","Bash(git add:*)","Bash(git reset:*)","Bash(git rebase:*)","Bash(git merge:*)","Bash(git checkout:*)"];
   /** The typed patterns, one per line, without the empty ones. */
   function denyLines() {
