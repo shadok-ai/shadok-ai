@@ -177,7 +177,10 @@ Enter to skip; you can add it later from the web UI).
   message can force through).
 - **Notifications** — favicon, title badge and an optional sound when an agent
   needs you. It only blinks when the tab is hidden *and* an unmuted channel is
-  actually waiting.
+  actually waiting. Mute a single agent from its menu, or **mute the whole
+  instance** from the version menu (*Mute this instance*): the favicon never
+  changes, no badge, no blink, no sound — for every agent and every tab, saved
+  per instance like the cockpit's name and palette.
 - **Engine room** — the raw TUI screen, live, with clickable keys, for anything
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch, titleForCwd, themeForCwd } from "../src/config.js";
+import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch, titleForCwd, themeForCwd, mutedForCwd } from "../src/config.js";
 
 test("effectiveToken: an explicit env var always wins", () => {
   assert.equal(
@@ -101,4 +101,11 @@ test("themeForCwd: default, unknown, or unset resolve to null", () => {
   assert.equal(themeForCwd({}, "/x"), null);
   assert.equal(themeForCwd({ cockpitTheme: { "/x": "amber" } }, "/x"), null); // default stored as absent
   assert.equal(themeForCwd({ cockpitTheme: { "/x": "chartreuse" } }, "/x"), null); // unknown ignored
+});
+
+test("mutedForCwd: true only for this dir's explicit true", () => {
+  assert.equal(mutedForCwd({ cockpitMuted: { "/x": true } }, "/x"), true);
+  assert.equal(mutedForCwd({ cockpitMuted: { "/x": true } }, "/other"), false); // per dir
+  assert.equal(mutedForCwd({}, "/x"), false); // unset = not muted
+  assert.equal(mutedForCwd({ cockpitMuted: { "/x": false } }, "/x"), false); // explicit false
 });
