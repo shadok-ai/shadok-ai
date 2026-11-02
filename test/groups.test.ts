@@ -57,12 +57,14 @@ test("visibleGroupIds filters by visibility", () => {
   assert.deepEqual([...visibleGroupIds(gs, { name: "ada", role: "member" })].sort(), ["a", "main"]);
   assert.deepEqual([...visibleGroupIds(gs, null)], ["main"]);
 });
-test("membershipVerdict: any member invites, self leaves, only admin removes", () => {
+test("membershipVerdict: any member invites, self leaves, a member or admin removes", () => {
   const g: Group = { id: "t", name: "T", nature: "restricted", members: ["ada", "leo"], createdAt: 0 };
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "invite", "zoe").ok, true);
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "leave", "ada").ok, true);
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "leave", "leo").ok, false);
-  assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "remove", "leo").ok, false);
+  assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "remove", "leo").ok, true);
+  assert.equal(membershipVerdict({ name: "zoe", role: "member" }, g, "remove", "ada").ok, false);
+  assert.equal(membershipVerdict({ name: "ada", role: "member" }, { ...g, nature: "private" }, "remove", "leo").ok, false);
   assert.equal(membershipVerdict({ name: "root", role: "admin" }, g, "remove", "leo").ok, true);
   assert.equal(membershipVerdict({ name: "zoe", role: "member" }, g, "invite", "x").ok, false);
   assert.equal(membershipVerdict(null, g, "invite", "x").ok, false);

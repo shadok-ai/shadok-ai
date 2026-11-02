@@ -116,6 +116,7 @@ import {
   canResumeAs,
   canRestartInto,
   canSeeGroup,
+  membershipVerdict,
   canSeeSession,
   listableGroups,
   visibleChannels,
@@ -2303,6 +2304,38 @@ app.put("/groups", (req, res) => {
   });
   if (r.groups) saveGroups(r.groups);
   res.status(r.status).json(r.body);
+});
+
+// Add and/or remove members of a Private (`restricted`) group. Any MEMBER may do
+// both (membershipVerdict owns that rule); browser-only for the same reason as
+// PUT /groups: an agent holds the bootstrap admin cookie and sends no Origin.
+// A group the caller cannot see is a 404 (fail closed — never confirm it exists).
+app.post("/groups/members", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "browser only" });
+  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
+    return res.status(409).json({ error: "this page belongs to another instance" });
+  }
+  const body = req.body ?? {};
+  const add = typeof body.add === "string" ? body.add.trim() : "";
+  const remove = typeof body.remove === "string" ? body.remove.trim() : "";
+  if (!add && !remove) return res.status(400).json({ error: "nothing to add or remove" });
+  const viewer = viewerFor(currentAccount(req));
+  const list = loadGroups();
+  const group = list.find((g) => g.id === body.group);
+  if (!group || !canSeeGroup(group, viewer)) return res.status(404).json({ error: "unknown group" });
+  if (add) {
+    const v = membershipVerdict(viewer, group, "invite", add);
+    if (!v.ok) return res.status(403).json({ error: v.error });
+  }
+  if (remove) {
+    const v = membershipVerdict(viewer, group, "remove", remove);
+    if (!v.ok) return res.status(403).json({ error: v.error });
+  }
+  let members = group.members.filter((m) => m !== remove);
+  if (add && !members.includes(add)) members = [...members, add];
+  const updated = { ...group, members };
+  saveGroups(list.map((g) => (g.id === group.id ? updated : g)));
+  res.json({ ok: true, group: updated });
 });
 
 // ── Privileged group lifecycle (multi-tenant): provision on create, tear down

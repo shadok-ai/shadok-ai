@@ -128,7 +128,11 @@ export function membershipVerdict(
     case "leave":
       return actor.name === target ? { ok: true } : { ok: false, error: "you can only remove yourself" };
     case "remove":
-      return actor.role === "admin" ? { ok: true } : { ok: false, error: "only an admin can remove a member" };
+      // Mirrors `invite`: whoever may add a member may also remove one (a Private
+      // group is run by its members); an admin keeps the override.
+      return memberOf(g, actor.name) || actor.role === "admin"
+        ? { ok: true }
+        : { ok: false, error: "only a member can remove a member" };
   }
 }
 

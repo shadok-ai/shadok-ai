@@ -330,3 +330,15 @@ test("server: migProvisionPrivateGroup uses newPrivateGroup (unified members:[na
   assert.ok(/newPrivateGroup\(/.test(body), "the migration creator shares newPrivateGroup with the invite hook");
   assert.ok(!/members:\s*\[\]/.test(body), "no more members:[] — the owner is listed as a member");
 });
+
+test("server: POST /groups/members is browser-only, instance-gated and decided by membershipVerdict", () => {
+  const at = SERVER.indexOf('app.post("/groups/members"');
+  assert.ok(at >= 0, "the membership route exists");
+  const body = SERVER.slice(at, SERVER.indexOf("\n});\n", at));
+  assert.ok(/requestFromBrowser\(req\)/.test(body), "browser-only: an agent carries the admin cookie");
+  assert.ok(/channelWriteAllowed\(/.test(body), "instance-key gate");
+  assert.ok(/canSeeGroup\(/.test(body), "an unseen group is 404, never fabricated");
+  assert.ok(/membershipVerdict\([^)]*"invite"/.test(body), "add goes through the invite verdict");
+  assert.ok(/membershipVerdict\([^)]*"remove"/.test(body), "remove goes through the remove verdict");
+  assert.ok(!/isAdmin|role === "admin"/.test(body), "authority is membershipVerdict, not a bare admin check");
+});
