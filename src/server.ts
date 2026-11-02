@@ -2912,14 +2912,21 @@ async function maybeRunGroupsMigration(reason: string): Promise<void> {
     return;
   }
   if (alreadyMigratedNow()) {
-    // Nothing to do, but make sure the in-memory state reflects reality (a
-    // sign-in after an already-successful migration must not leave a stale
-    // "failed" banner up, and commons must drop to `main`).
+    // The DATA migration is done, but the boot RECONCILE still has to run on
+    // every capable boot — it is INDEPENDENT of the migration marker (Task 16).
+    // It heals a persisted private/restricted group whose OS user vanished on a
+    // `docker rm`+recreate, and provisions the bootstrap admin's Personal group.
+    // Regression guard: the pre-refactor boot path called `ensureGroupsProvisioned`
+    // unconditionally via `.then()`; folding the migration into this helper must
+    // NOT drop that call on an already-migrated instance (measured missing on the
+    // mt373 test instance — no admin Personal group, no reprovision, after a plain
+    // restart of a migrated instance).
     groupsMigrated = true;
     if (migrationState === "failed") {
       migrationState = "ok";
       broadcastAll(versionMessage());
     }
+    await ensureGroupsProvisioned();
     return;
   }
   migrationInFlight = true;

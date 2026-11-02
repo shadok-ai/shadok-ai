@@ -35,7 +35,7 @@ test("maybeRunGroupsMigration exists and is the one migration entry point", () =
 test("the migration is serialised against overlapping runs", () => {
   const i = SERVER_SRC.indexOf("async function maybeRunGroupsMigration(");
   assert.ok(i > 0, "maybeRunGroupsMigration must exist");
-  const body = SERVER_SRC.slice(i, i + 1600);
+  const body = SERVER_SRC.slice(i, i + 2400);
   assert.ok(
     /if \(migrationInFlight\)/.test(body),
     "it must skip while a migration is already in flight (boot vs sign-in overlap)",
@@ -47,6 +47,28 @@ test("the migration is serialised against overlapping runs", () => {
   assert.ok(
     /migrationInFlight = true/.test(body) && /migrationInFlight = false/.test(body),
     "it must set and clear the in-flight guard",
+  );
+});
+
+test("the boot reconcile runs even on an ALREADY-migrated capable boot", () => {
+  // Regression guard: the already-migrated short-circuit must still call
+  // ensureGroupsProvisioned() — it heals a persisted group's missing OS user
+  // after a docker recreate AND provisions the bootstrap admin's Personal group,
+  // both INDEPENDENT of the migration marker. Folding the migration into
+  // maybeRunGroupsMigration once dropped this call on a plain restart of a
+  // migrated instance (measured on the mt373 test instance: no admin Personal
+  // group, no reprovision).
+  const i = SERVER_SRC.indexOf("async function maybeRunGroupsMigration(");
+  assert.ok(i > 0, "maybeRunGroupsMigration must exist");
+  const body = SERVER_SRC.slice(i, i + 2400);
+  const guard = body.indexOf("if (alreadyMigratedNow())");
+  assert.ok(guard > 0, "the already-migrated short-circuit must exist");
+  // From the guard to its `return;` — the branch that runs when nothing migrates.
+  const branch = body.slice(guard, body.indexOf("return;", guard) + "return;".length);
+  assert.match(
+    branch,
+    /ensureGroupsProvisioned\(\)/,
+    "the already-migrated branch must still run the boot reconcile (admin Personal + OS-user heal)",
   );
 });
 
