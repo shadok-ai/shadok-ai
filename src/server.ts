@@ -3199,6 +3199,17 @@ app.get("/users", (req, res) => {
   );
 });
 
+// The roster a member-picker needs: NAMES ONLY. `GET /users` is admin-only and
+// carries role/pending/passkeys; a group's members must be choosable by anyone
+// who can see the group, so this exposes the one field that is not sensitive.
+app.get("/accounts", (req, res) => {
+  if (!currentAccount(req)) return res.status(401).json({ error: "sign in first" });
+  const names = loadAccounts().map((a) => a.name);
+  // The bootstrap admin is the password itself, not a stored account.
+  if (GUI_PASSWORD && !names.includes(BOOTSTRAP_ADMIN)) names.unshift(BOOTSTRAP_ADMIN);
+  res.json(names);
+});
+
 // Create AND issue the invitation in one step: an account with no way in is a
 // dead row, and two calls would let one succeed without the other.
 app.post("/users", async (req, res) => {

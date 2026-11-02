@@ -342,3 +342,15 @@ test("server: POST /groups/members is browser-only, instance-gated and decided b
   assert.ok(/membershipVerdict\([^)]*"remove"/.test(body), "remove goes through the remove verdict");
   assert.ok(!/isAdmin|role === "admin"/.test(body), "authority is membershipVerdict, not a bare admin check");
 });
+
+test("server: GET /accounts is a names-only roster for any signed-in account", () => {
+  const at = SERVER.indexOf('app.get("/accounts"');
+  assert.ok(at >= 0, "the roster route exists");
+  const body = SERVER.slice(at, SERVER.indexOf("\napp.", at + 5));
+  assert.ok(/currentAccount\(req\)/.test(body), "requires a signed-in caller");
+  assert.ok(!/accountAdmin\(/.test(body), "a member may read it: not admin-only");
+  assert.ok(/loadAccounts\(\)\.map\(\(a\) => a\.name\)/.test(body), "maps accounts to names");
+  for (const leak of ["hash", "sessionsAfter", ".role", "passkeys"]) {
+    assert.ok(!body.includes(leak), `names only: the handler never touches ${leak}`);
+  }
+});
