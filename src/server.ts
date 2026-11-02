@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual, createHmac } from "node:crypto";
+import { randomUUID, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import { newRequest, askVerdict, approveVerdict, cancelVerdict, dueRequests, expire, upsertRequest, requestsFor, describeRequest, loadRequests, saveRequests, isOpen, REQUEST_TTL_MS, type AdminRequest, type RequestKind } from "./admin-requests.js";
 import { recordEvent, loadEvents, saveEvents, inboxFor, markSeen, notMeEffect, describeEvent, type SecEvent } from "./security-events.js";
 import { execFile, execFileSync, spawn as spawnChild } from "node:child_process";
@@ -389,6 +389,23 @@ const DEPLOYMENT_MODE = deploymentMode({
 });
 console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 
+// The server drives channels it manages over its OWN loopback WS (cron fires,
+// parent notifications, the reload nudge — all through `driveChannel`). Those
+// deliveries authenticate as the bootstrap admin, but in multi-tenant the
+// per-group drive gate (`mayDriveSession`) does NOT exempt the bootstrap admin,
+// so a legitimate system delivery to a RESTRICTED or PRIVATE group's own channel
+// would be refused `forbidden` — breaking crons/notifications/reload for every
+// non-commons agent. This secret is the unforgeable proof that a drive comes
+// from the server itself: `driveChannel` presents it as `x-shadok-system-drive`,
+// the WS connect verifies it in constant time, and `mayDriveSession`/`canResumeAs`
+// treat a verified system connection as authorized regardless of group.
+//
+// It is per-process and in-memory ONLY: a fresh random value every boot, never
+// written to disk, never sent to any client, never logged. A client cannot forge
+// it, and — unlike a client-settable field such as `origin` — a browser cannot
+// claim it, which is why the exemption is gated on THIS and nothing else.
+const SYSTEM_DRIVE_SECRET = randomBytes(32).toString("hex");
+
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
 // restart — so an auto-update reload stays logged in instead of bouncing the
@@ -668,7 +685,14 @@ async function fireCron(c: Cron): Promise<{ outcome: string; reason?: DriveReaso
 function driveChannel(sessionId: string, text: string, target: SessionTarget): Promise<DriveOutcome> {
   return new Promise((resolve) => {
     const cookie = tgCookie();
-    const ws = new WebSocket(`ws://127.0.0.1:${boundPort}/ws`, cookie ? { headers: { cookie } } : {});
+    // The system-drive secret rides alongside the auth cookie: it is what tells
+    // the WS connect this is the SERVER driving a channel it manages, so the
+    // per-group gate (`mayDriveSession`) lets a cron/notification/reload delivery
+    // through even when the channel's group is restricted or private (the
+    // bootstrap admin alone is not exempt). The cookie still authenticates; the
+    // secret only grants the group-boundary exemption.
+    const headers = { ...(cookie ? { cookie } : {}), "x-shadok-system-drive": SYSTEM_DRIVE_SECRET };
+    const ws = new WebSocket(`ws://127.0.0.1:${boundPort}/ws`, { headers });
     let done = false;
     const finish = (out: DriveOutcome) => {
       if (done) return;
@@ -5585,6 +5609,22 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // profile's `deny` (measured), so pilotctl and the agents, which connect with
   // no Origin at all (invariant 11), must not be able to reach it.
   const fromBrowser = requestFromBrowser(req);
+  // Is this the SERVER driving one of its own channels? Decided ONCE at connect
+  // from an unforgeable per-process secret on the upgrade headers (set by
+  // `driveChannel`), compared in CONSTANT time with a length guard. A missing or
+  // wrong header is simply `false`. This — and ONLY this — exempts a connection
+  // from the per-group drive gate below: it must be the secret, never a
+  // client-settable field like `origin` (a browser could forge that), so the
+  // server's cron/notification/reload deliveries reach a restricted/private
+  // group's own channel while an interactive human/agent stays group-gated.
+  const isSystemDrive = ((): boolean => {
+    const raw = req.headers["x-shadok-system-drive"];
+    const header = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof header !== "string") return false;
+    const a = Buffer.from(header);
+    const b = Buffer.from(SYSTEM_DRIVE_SECRET);
+    return a.length === b.length && timingSafeEqual(a, b);
+  })();
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
   const wsBy = (): SpawnBy => spawnActor({ account: me?.name, origin, peer: callerPeer });
@@ -5611,6 +5651,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // id fails closed, the twin of `visibleChannels`.
   const mayDriveSession = (id: string | undefined): boolean => {
     if (!id || DEPLOYMENT_MODE !== "multi-tenant") return true;
+    // The server driving a channel it manages (cron/notification/reload) is
+    // authorized regardless of group — the delivery proved itself with the
+    // system-drive secret at connect, which no client can forge.
+    if (isSystemDrive) return true;
     const gid = loadChannels().find((c) => c.sessionId === id)?.group ?? null;
     if (!gid) return true; // commons / group-less
     const g = loadGroups().find((x) => x.id === gid);
@@ -5807,6 +5851,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           if (
             resumed &&
             DEPLOYMENT_MODE === "multi-tenant" &&
+            // The server resuming a channel it manages (every `driveChannel`
+            // delivery is a resume) is authorized regardless of group — same
+            // unforgeable secret-based exemption as `mayDriveSession`.
+            !isSystemDrive &&
             !canResumeAs(storedGroupId, groupsNow, viewerFor(me))
           ) {
             console.log(
