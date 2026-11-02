@@ -7753,6 +7753,8 @@
     lastVersion = msg;
     const tv = document.getElementById("tweakVer");
     if (tv) tv.textContent = msg.current ? "v" + msg.current : "";
+    // Independent of the version view: a page without #verView still needs it.
+    showMigrationBanner(msg.migrationState);
     if (!verView) return;
     const ahead = msg.latest && verIsNewer(msg.latest, msg.current);
     verView.textContent = ahead ? "v" + msg.current + " → " + msg.latest : "v" + (msg.current || "?");
@@ -7767,10 +7769,6 @@
       verChan.title = "Release channel — click the version for options";
     }
     renderVerMenu();
-    // Group-isolation (multi-tenant) migration status: a LOUD banner while the
-    // commons is running un-isolated — pending (mid-migration) or failed (a core
-    // step threw, e.g. signed out, so it will not retry until the next boot).
-    showMigrationBanner(msg.migrationState);
   }
 
   // The group-isolation migration banner. Persistent (not auto-dismissed) and

@@ -2543,7 +2543,7 @@ function provisionOsUserFor(g: Group): Promise<unknown> {
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
 async function migCreateCommonsUser(): Promise<void> {
   if (osUserExistsSync(COMMONS_USER)) return;
-  const home = `${GROUP_HOME_BASE}/${COMMONS_USER}`;
+  const home = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
   await runPrivileged("useradd", ["--create-home", "--home-dir", home, "--shell", "/bin/bash", COMMONS_USER]);
 }
 
@@ -2571,7 +2571,7 @@ async function migSeedSharedCredential(): Promise<void> {
   if (!fs.existsSync(src)) {
     throw new Error(`no ${src} to seed the shared credential from (is the instance signed in to Claude?)`);
   }
-  const mainHome = `${GROUP_HOME_BASE}/${COMMONS_USER}`;
+  const mainHome = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
   const dir = path.dirname(SHARED_CREDENTIAL_PATH);
   await runPrivileged("groupadd", ["-f", SHARED_CRED_GROUP]);
   await runPrivileged("groupadd", ["-f", SHARED_POT_GROUP]);
@@ -2683,6 +2683,7 @@ async function runGroupsMigration(): Promise<void> {
   if (!plan) return; // already migrated, or mono-tenant: nothing to do
   // A real migration is about to run: the commons is un-isolated until it lands.
   migrationState = "pending";
+  broadcastAll(versionMessage()); // open tabs show the pending banner live
   await runMigration(plan, {
     createCommonsUser: migCreateCommonsUser,
     chownTreeToCommons: migChownTreeToCommons,
@@ -2704,6 +2705,7 @@ async function runGroupsMigration(): Promise<void> {
   // until the next boot — surface it LOUDLY rather than let the commons sit
   // un-isolated in silence. Otherwise migration is done and there is nothing to show.
   migrationState = groupsMigrated ? "ok" : "failed";
+  broadcastAll(versionMessage()); // tabs that saw "pending" must see the outcome
 }
 
 // Create a group. A private/restricted group needs the privileged deployment:

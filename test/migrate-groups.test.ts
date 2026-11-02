@@ -237,3 +237,16 @@ test("server: the migration respawn ENFORCES the kill (re-check, not fire-and-fo
   // kill once and move on.
   assert.ok(/for\s*\([^)]*tmuxHasSession\(name\)/.test(body), "re-checks the session is actually gone after the kill");
 });
+
+test("server: migration state transitions are broadcast, and commons paths go through homeForUser", () => {
+  assert.ok(/migrationState = "pending";\s*\n\s*broadcastAll\(versionMessage\(\)\)/.test(SERVER), "pending is broadcast");
+  assert.ok(/migrationState = groupsMigrated \? "ok" : "failed";\s*\n\s*broadcastAll\(versionMessage\(\)\)/.test(SERVER), "outcome is broadcast");
+  assert.ok(!/\$\{GROUP_HOME_BASE\}\/\$\{COMMONS_USER\}/.test(SERVER), "no inline commons home path");
+  assert.equal((SERVER.match(/homeForUser\(COMMONS_USER, GROUP_HOME_BASE\)/g) ?? []).length, 2);
+});
+
+test("index.html: the migration banner is shown before the #verView early return", () => {
+  const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "index.html"), "utf8");
+  const i = html.indexOf("showMigrationBanner(msg.migrationState)");
+  assert.ok(i > 0 && i < html.indexOf("if (!verView) return;"));
+});
