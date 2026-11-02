@@ -4763,6 +4763,19 @@
   let groupIconsMinted = false;
   let groupSeq = Number(localStorage.getItem("cp.groupSeq") || 0);
 
+  // The server's commons group (src/groups.ts MAIN_GROUP_ID) is the SAME shared,
+  // no-wall home the client has always shown as the "Main" view — the ungrouped
+  // (📥) rail entry. Multi-tenant made it an explicit server group row so agents
+  // can be FILED into it (a channel then carries group === "main"); but rendered
+  // as its own rail group it becomes a SECOND "Main" beside that view — the exact
+  // confusion a user hit ("two main groups", general in the second). So the tab
+  // rail FOLDS it into the ungrouped view: it is never turned into a rail group,
+  // and a channel whose group is the commons is shown there. The server row stays
+  // untouched (group is SERVER_OWNED; the secrets panel still treats "main" as a
+  // real group, because Main HAS its own vault).
+  const COMMONS_GROUP_ID = "main";
+  const foldCommons = (id) => (id != null && String(id) === COMMONS_GROUP_ID ? null : id);
+
   function groupIdOf(tabEl) {
     const g = tabEl.closest(".group");
     return g ? g._group.id : null;
@@ -5464,6 +5477,7 @@
     if (Array.isArray(srvGroups)) {
       for (const sg of srvGroups) {
         if (sg == null || sg.id == null) continue;
+        if (String(sg.id) === COMMONS_GROUP_ID) continue; // the commons is the "Main" view, not a rail group
         const g = groups.find((x) => String(x.id) === String(sg.id));
         if (!g) { createGroup(sg); continue; }
         if (sg.name && sg.name !== g.nameEl.textContent && !renamingAGroup())
@@ -5513,8 +5527,9 @@
         // An agent moved to another group elsewhere follows here — never mid-drag,
         // and never over a move of this tab's own that has not landed yet.
         if (!dragTabEl && !t.btnEl.closest("#tweakSlot")) {
-          const r = window.reconcileTabGroup(groupIdOf(t.btnEl), t.syncedGroup, c.group);
-          const dest = r.move && (c.group == null ? ungroupedEl : groups.find((g) => String(g.id) === String(c.group))?.bodyEl);
+          const cg = foldCommons(c.group); // commons → the ungrouped "Main" view
+          const r = window.reconcileTabGroup(groupIdOf(t.btnEl), t.syncedGroup, cg);
+          const dest = r.move && (cg == null ? ungroupedEl : groups.find((g) => String(g.id) === String(cg))?.bodyEl);
           if (dest) dest.appendChild(t.btnEl);
           if (!r.move || dest) t.syncedGroup = r.synced;
         }
@@ -5523,9 +5538,9 @@
         // an empty cockpit — with `active === null` the user is looking at
         // #emptyState (invariant 18), so this displaces nobody, and showing the
         // channel beats leaving them in front of nothing.
-        const nt = createTab(c.group, { focus: !active });
+        const nt = createTab(foldCommons(c.group), { focus: !active });
         nt.sessionId = c.sessionId;
-        nt.syncedGroup = c.group ?? null;
+        nt.syncedGroup = foldCommons(c.group) ?? null;
         nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
@@ -11810,7 +11825,8 @@
     // A fulfilled /groups (or /channels) response is authoritative — even when
     // empty. Only a failed fetch falls back to the (now dir-scoped) cache.
     let savedGroups = pickChannelSource(groupsR, JSON.parse(localStorage.getItem(dirKey("cp.groups", instanceKey)) || "[]"));
-    for (const g of savedGroups) createGroup(g);
+    // The commons group ("main") is the "Main" view, never a rail group (see foldCommons).
+    for (const g of savedGroups) if (String(g.id) !== COMMONS_GROUP_ID) createGroup(g);
 
     let saved = pickChannelSource(channelsR, JSON.parse(localStorage.getItem(dirKey("cp.channels", instanceKey)) || "[]"));
 
@@ -11824,8 +11840,8 @@
       //    afterwards, prioritising the visible one.
       const pending = [];
       for (const s of uniqueChannels) {
-        const t = createTab(s.group);
-        t.syncedGroup = s.group ?? null;
+        const t = createTab(foldCommons(s.group));
+        t.syncedGroup = foldCommons(s.group) ?? null;
         // Know the session id from the start, so a slow or failed reattach never
         // drops the channel from a persist (which eroded the list to one).
         t.sessionId = s.sessionId;
