@@ -12,12 +12,14 @@ export interface LedgerCoreRow {
   source?: string;
   updatedAt?: number;
   verifiedAt?: number;
+  scope?: "group" | "public";
 }
 export type LedgerKind = "task" | "fact" | "decision";
 export const KINDS: LedgerKind[];
 export const LABEL_MAX: number;
 export function normEntity(s: unknown): string;
 export function normKind(k: unknown): LedgerKind | null;
+export function normScope(sc: unknown): "group" | "public" | null;
 export function rowKind(entry: unknown): LedgerKind;
 export function resolveId<T extends LedgerCoreRow>(entries: T[], idOrPrefix: unknown): T | null;
 export function upsertEntry<T extends LedgerCoreRow>(

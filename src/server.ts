@@ -107,6 +107,7 @@ import {
   canSeeGroup,
   visibleChannels,
   memberGroupIds,
+  ledgerGroupsFor,
   groupsPutFlow,
   MAIN_GROUP_ID,
   type Viewer,
@@ -173,7 +174,10 @@ import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
   ledgerFileFor,
-  visibleLedger,
+  scopeVisible,
+  recordIntoTable,
+  saveLedger,
+  mintLedgerId,
   ensureLedgerFile,
   loadLedger,
   deltaSince,
@@ -3917,20 +3921,74 @@ app.post("/claude-update", async (req, res) => {
   }
 });
 
-// The shared-ledger table for the GUI viewer (the version-menu / header button).
-// Reads the same file the `shadok-ledger` skill writes; most-recent first; an
-// absent or unreadable file → []. Read-only — agents write it via the skill.
-app.get("/ledger", (_req, res) => {
-  // This instance's own ledger (keyed by the launch dir), the same file agents
-  // write through SHADOK_LEDGER_FILE.
+// The shared-ledger table — ONE per instance (keyed by the launch dir). Read by
+// the GUI viewer (the version-menu / header button) AND by the `shadok-ledger`
+// CLI's `check`/`list` (which run their own recall over these rows). Filtered by
+// the CALLER's group, so another group's group-scoped rows never leak:
+//  - an AGENT (its per-session key) → its CHANNEL's group ∪ public;
+//  - a BROWSER → its member groups ∪ its commons home ∪ public (NO super-view,
+//    so an admin sees no more than the groups they belong to).
+// This replaces the old "return the Main file unfiltered" viewer, which showed
+// Main-private rows to any authenticated member.
+app.get("/ledger", (req, res) => {
   const rows = loadLedger(ledgerFileFor(process.cwd()));
-  rows.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
+  // The agent path FIRST: a session key makes `currentAccount` the bootstrap
+  // admin, so reading the viewer's membership for an agent would hand it the
+  // admin's whole reach instead of its own channel's group.
+  const agentId = callerOf(req).id;
+  const groupIds = agentId
+    ? new Set([loadChannels().find((c) => c.sessionId === agentId)?.group ?? MAIN_GROUP_ID])
+    : ledgerGroupsFor(loadGroups(), viewerFor(currentAccount(req)));
+  const visible = scopeVisible(rows, groupIds, true);
+  visible.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
   // `kind` is DERIVED here, never stored (cf. the derived `crons` on /channels
   // and `origin` on /profiles): the rows recorded before kinds existed carry
   // none, and the inference belongs to the skill's core — one source, so the
   // client needs no copy of it.
-  const entries = rows.map((r) => ({ ...r, kind: rowKind(r) }));
+  const entries = visible.map((r) => ({ ...r, kind: rowKind(r) }));
   res.json({ entries, enabled: ledgerEnabled });
+});
+
+// The ONE write path into the shared ledger. Agents never touch the file (it
+// lives 0600 in the server HOME, unreadable to a privilege-dropped group user —
+// the OS-user wall that the per-group-file `--public` mirror crashed on). The
+// `shadok-ledger` CLI POSTs here with its `x-shadok-session-key`, exactly like
+// the `shadok-secrets` skill reaches the vault. The authoring group is derived
+// SERVER-SIDE from the caller's session→channel — never the body — and
+// `recordIntoTable` scopes the upsert to that group, so a bare record can't
+// delete another group's public row and an `--id` edit can't touch a row a
+// different group authored.
+app.post("/ledger/record", (req, res) => {
+  const agentId = callerOf(req).id;
+  if (!agentId) return res.status(403).json({ error: "ledger record requires an agent session key" });
+  const group = loadChannels().find((c) => c.sessionId === agentId)?.group ?? null;
+  const file = ledgerFileFor(process.cwd());
+  const rows = loadLedger(file);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
+  try {
+    const { rows: next, row } = recordIntoTable(
+      rows,
+      group,
+      {
+        id: str(b.id),
+        entity: str(b.entity),
+        status: str(b.status),
+        kind: str(b.kind),
+        note: str(b.note),
+        source: str(b.source),
+        verified: b.verified === true,
+        public: b.public === true ? true : b.public === false ? false : undefined,
+      },
+      Date.now(),
+      mintLedgerId(new Set(rows.map((r) => r.id).filter((x): x is string => !!x))),
+    );
+    saveLedger(file, next);
+    res.json({ row });
+  } catch (e) {
+    // A bad id / missing entity / unknown kind is the agent's mistake, not ours.
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 });
 
 // Toggle the shared-ledger reflex from the GUI. Persisted. The reflex is fixed
@@ -4350,13 +4408,13 @@ function makePilot(
   // Proves WHO calls /profiles/prompt: without it "my own profile" means
   // nothing, since the session id is public.
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
-  // The PER-INSTANCE ledger file: an agent's cwd is a worktree, not the launch
-  // dir, so it cannot derive the scope itself — hand it the path the skill writes.
-  // Scoped by GROUP: the agent writes to its group's own file and is told where
-  // the commons is, so `--public` can publish there. Main/mono-tenant gets the
-  // historical single file and no commons path (it already is the commons).
-  env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd(), group);
-  if (group && group !== MAIN_GROUP_ID) env.SHADOK_LEDGER_PUBLIC_FILE = ledgerFileFor(process.cwd());
+  // The PER-INSTANCE ledger file (ONE table, keyed by the launch dir). On-server
+  // the CLI writes it THROUGH the server (`POST /ledger/record`, session-key
+  // auth), so group scoping and the OS-user wall are the server's problem, not
+  // the file's. This path is only the hand-run / server-unreachable FALLBACK;
+  // an agent's cwd is a worktree, so it still cannot derive the launch dir
+  // itself. No per-group / commons path any more — the group is a per-row field.
+  env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
   // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
   // reads it to reach another instance's agents. See src/peers.ts.
   env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd());
@@ -6209,11 +6267,12 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             let ledgerPrelude: string[] | undefined;
             if (ledgerEnabled) {
               // The agent's group comes from its CHANNEL (server-side, never the
-              // message). Own group's rows + the commons' public ones; another
-              // group's private rows are not even read.
+              // message). One table; `deltaSince`'s visibleScope keeps only this
+              // group's own rows + the commons' public ones — another group's
+              // group-scoped rows never reach it.
               const ledgerGroup = loadChannels().find((c) => c.sessionId === session!.id)?.group ?? null;
               const { rows, total } = deltaSince(
-                visibleLedger(process.cwd(), ledgerGroup),
+                loadLedger(ledgerFileFor(process.cwd())),
                 session.ledgerSeenAt ?? 0,
                 LEDGER_PUSH_CAP,
                 { groupId: ledgerGroup ?? MAIN_GROUP_ID, includePublic: true },

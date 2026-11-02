@@ -203,6 +203,24 @@ export function memberGroupIds(groups: readonly Group[], viewer: Viewer | null):
 }
 
 /**
+ * The authoring groups a VIEWER may read ledger rows of (the group-scoped ones;
+ * public rows are added by the caller regardless). It is the groups they belong
+ * to, PLUS their commons home (`spawnGroupFor` — Main when they have no single
+ * own group), so a commons operator still sees the commons' own rows while a
+ * restricted-group member does NOT see Main-private ones. There is no
+ * super-view: an admin with no memberships resolves to `{main}` exactly like
+ * anyone else. Mono-tenant (no groups, or a null viewer) collapses to `{main}`,
+ * which — since every row's authoring group normalises to Main there — keeps the
+ * whole table visible, today's behaviour.
+ */
+export function ledgerGroupsFor(groups: readonly Group[], viewer: Viewer | null): Set<string> {
+  const out = memberGroupIds(groups, viewer);
+  const home = spawnGroupFor(viewer, groups);
+  out.add(home ? home.id : MAIN_GROUP_ID);
+  return out;
+}
+
+/**
  * May this viewer WRITE (create/update/delete/share/bind) a secret that belongs
  * to group `g`? A secret is a credential, so writing it is a privileged act:
  * - a PRIVATE group's secret → its OWNER only (a private group is one person's);
