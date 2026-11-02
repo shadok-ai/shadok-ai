@@ -700,10 +700,12 @@ function driveChannel(sessionId: string, text: string, target: SessionTarget): P
  */
 const parentInbox = new Map<string, string[]>();
 
-/** A child's display name for its parent, falling back to a short id. */
-function childLabel(channels: readonly Channel[], childId: string): string {
-  const ch = channels.find((c) => c.sessionId === childId);
-  return ch?.name?.trim() || childId.slice(0, 8);
+/** A session's display name — the cockpit tab — falling back to a short id.
+ *  What a parent is told its child is called, and what an agent's own prompts
+ *  are signed with (`agentNameForKey`). */
+function channelLabel(channels: readonly Channel[], sessionId: string): string {
+  const ch = channels.find((c) => c.sessionId === sessionId);
+  return ch?.name?.trim() || sessionId.slice(0, 8);
 }
 
 /** Send one message (or a coalesced batch) to a parent, over the cron path. */
@@ -771,7 +773,7 @@ function notifyParent(child: Live, report: Omit<ChildReport, "name" | "sessionId
     notificationText(
       {
         ...report,
-        name: childLabel(channels, child.id),
+        name: channelLabel(channels, child.id),
         sessionId: child.id,
         branch: child.worktree?.branch ?? me?.branch ?? null,
       },
@@ -1234,6 +1236,23 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
   const profile =
     sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
   return { id, profile };
+}
+
+/**
+ * The cockpit name of the AGENT whose session key signs this request, if any.
+ *
+ * Attribution, deliberately NOT reusing `currentAccount`: that maps the very
+ * same key to the bootstrap admin, which is the right answer for AUTHORISATION
+ * (an agent may do what the human may) and the wrong one for a byline — an
+ * agent's message would go out signed with the human's name, which is the bug
+ * this exists to close. Resolved from the key, never from the frame, exactly
+ * like a web prompt's author.
+ */
+function agentNameForKey(req: Caller): string | undefined {
+  const key = req.headers["x-shadok-session-key"];
+  if (typeof key !== "string" || !key) return undefined;
+  const id = localSessionForKey(req, key);
+  return id ? channelLabel(loadChannels(), id) : undefined;
 }
 
 /** Who an HTTP call to the vault/profile routes is, for the secret audit log. */
@@ -5104,6 +5123,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // it, and the `start` handler tags what it spawns so a peer only ever touches
   // its own agents.
   const callerPeer = peerName(req);
+  // Which AGENT is driving this socket, when one is — pilotctl connects with its
+  // own `SHADOK_SESSION_KEY` and declares `origin: "agent"`. Resolved ONCE here,
+  // from the key, for the same reason as `me` just above: what a frame says
+  // about who is speaking is never what we believe.
+  const callerAgent = agentNameForKey(req);
   // A RESTRICTED peer is boxed to its own agents (the ownership checks below);
   // a MEMBER peer acts as a web member (`currentAccount` above already returns
   // it as one) and those checks are skipped. The tag is still written for BOTH,
@@ -5117,7 +5141,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   const fromBrowser = requestFromBrowser(req);
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
-  const wsBy = (): SpawnBy => spawnActor({ account: me?.name, origin, peer: callerPeer });
+  const wsBy = (): SpawnBy => spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent });
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -5403,7 +5427,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               : undefined;
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
-            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
+            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent }),
           );
           session.clients.add(ws);
           if (resumed) {
@@ -5501,8 +5525,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           if (!text) return;
           // The Telegram bridge is trusted to name its sender — it knows it. A
           // browser is not: for a web client the SESSION decides, and whatever
-          // `from` the frame carried is discarded.
-          const author = promptAuthor(origin, me?.name, msg.from);
+          // `from` the frame carried is discarded. An agent is not trusted
+          // either: its name comes from the key that signed the socket.
+          const author = promptAuthor(origin, me?.name, msg.from, callerAgent);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -5544,14 +5569,22 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));
           try {
-            // A HUMAN prompt (web/telegram/cli) gets a context header — platform,
-            // time, and sender when known — so the agent knows who is talking and
-            // when. Only the TUI (and thus the transcript) receives it; the echo
-            // above stays clean, and loadHistory strips the header on replay.
-            // Cron/agent prompts carry their own mark and are not "someone
-            // speaking", so they get no header.
+            // A prompt from SOMEONE (web/telegram/cli, or a sibling agent) gets a
+            // context header — platform, time, and sender when known — so the
+            // agent knows who is talking and when. Only the TUI (and thus the
+            // transcript) receives it; the echo above stays clean, and
+            // loadHistory strips the header on replay.
+            //
+            // `agent` is in that list for the reason the others are: without it
+            // an agent driving another through pilotctl arrived as a bare user
+            // message, indistinguishable from the human's own — so the receiving
+            // agent obeyed a peer believing it was the person who owns the
+            // cockpit. The HIDDEN machine paths are the ones that get no header:
+            // a cron fire and a parent notification carry their own mark, are
+            // not "someone speaking", and reach the TUI through driveChannel
+            // (`origin: "cron"`), so they never match here.
             let submitText = text;
-            if (origin === "web" || origin === "telegram" || origin === "cli") {
+            if (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent") {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header

@@ -27,6 +27,11 @@ test("secret audit: the most specific principal is credited with a spawn", () =>
   assert.deepEqual(spawnActor({ account: "admin", origin: "cron" }), { actor: "cron", via: "cron" });
   assert.deepEqual(spawnActor({ account: "admin", origin: "telegram", from: "Ada" }), { actor: "telegram Ada", via: "telegram" });
   assert.deepEqual(spawnActor({ account: "bob", origin: "web" }), { actor: "bob", via: "web" });
+  // An agent that RESUMED a session has no parent link to credit, so without
+  // this it fell through to the account — the bootstrap admin, a person who did
+  // nothing.
+  assert.deepEqual(spawnActor({ account: "admin", origin: "agent", agent: "Shadok-Boss" }), { actor: "agent Shadok-Boss", via: "agent" });
+  assert.deepEqual(spawnActor({ account: "admin", origin: "agent" }), { actor: "agent", via: "agent" });
   assert.deepEqual(spawnActor({}), { actor: "unknown", via: "system" });
 });
 
