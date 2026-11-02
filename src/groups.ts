@@ -77,10 +77,14 @@ export function membershipVerdict(
 }
 
 /**
- * The channels a viewer may see. A channel with no group (legacy / commons) is
- * public. A channel whose group id resolves to nothing is ALSO kept: fail-open
- * on an unknown group, because hiding a channel the server itself made would
- * strand it, whereas restricted groups are always known when they exist.
+ * The channels a viewer may see:
+ * - a channel with NO group is kept: it is commons, visible to everyone;
+ * - a channel whose group resolves to a known group is kept iff the viewer may
+ *   see that group (`canSeeGroup`);
+ * - a channel whose group id resolves to NO known group is HIDDEN (fail-closed).
+ *   A dangling or lost group row (e.g. a deleted or corrupt restricted group)
+ *   must never flip its channels to visible-to-everyone: confidentiality comes
+ *   first, so when in doubt the safe direction is to hide, not reveal.
  */
 export function visibleChannels(
   channels: readonly Channel[],
