@@ -279,3 +279,39 @@ export function readSessionKey(key: string, secret: Buffer): string | null {
     return null;
   }
 }
+
+/**
+ * A shareable TALK HANDLE for a session — an opaque token that lets ANOTHER
+ * agent address a one-way LETTER to this one (cross-group talk, `src/talk.ts`),
+ * and nothing more.
+ *
+ * It is DELIBERATELY NOT a session key. `signSessionKey` authenticates AS the
+ * agent and can DRIVE it; a handle must only ever resolve to "who to deliver a
+ * letter to", leaving the talk ACL to decide if the letter may pass. They share
+ * the id-inside-the-token shape but are DOMAIN-SEPARATED (`talk:` vs `session:`
+ * in the HMAC input), so a handle can never be replayed as a session key and a
+ * leaked session key is not a valid handle — a handle shared freely grants no
+ * drive capability.
+ */
+export function signTalkHandle(sessionId: string, secret: Buffer): string {
+  const id = Buffer.from(sessionId, "utf8").toString("base64url");
+  return `${id}.${createHmac("sha256", secret).update(`talk:${id}`).digest("hex")}`;
+}
+
+/** Pure: the session id a talk handle points to, or null if it does not verify. */
+export function readTalkHandle(handle: string, secret: Buffer): string | null {
+  const parts = String(handle ?? "").split(".");
+  if (parts.length !== 2) return null;
+  const [id, mac] = parts;
+  if (!id || !mac) return null;
+  const want = createHmac("sha256", secret).update(`talk:${id}`).digest("hex");
+  // Length first: timingSafeEqual THROWS on a mismatch rather than returning
+  // false, so a short handle would be a 500 instead of a refusal.
+  if (mac.length !== want.length) return null;
+  if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
+  try {
+    return Buffer.from(id, "base64url").toString("utf8") || null;
+  } catch {
+    return null;
+  }
+}

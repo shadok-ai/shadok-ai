@@ -196,6 +196,7 @@ import {
   notificationText,
   type ChildReport,
 } from "./kinship.js";
+import { talkVerdict, talkLetter } from "./talk.js";
 import {
   loadConfig,
   saveConfig,
@@ -277,6 +278,8 @@ import {
   type Role,
   signSessionKey,
   readSessionKey,
+  signTalkHandle,
+  readTalkHandle,
   type Account,
 } from "./accounts.js";
 import {
@@ -3989,6 +3992,109 @@ app.post("/ledger/record", (req, res) => {
     // A bad id / missing entity / unknown kind is the agent's mistake, not ours.
     res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
   }
+});
+
+/**
+ * Resolve a stored group id to a `Group` for the talk ACL.
+ *
+ * A NULL id = the commons / group-less channel: synthesize a public Main group
+ * so talk treats it as public (which is what the commons is), and mono-tenant —
+ * where every channel is group-less — never trips the "cannot be verified" 403.
+ * A NON-NULL id that does not resolve fails CLOSED (null), the twin of
+ * `visibleChannels`/`canResumeAs`: never deliver a letter into a group we cannot
+ * verify.
+ */
+function groupForTalk(gid: string | null): Group | null {
+  if (!gid) {
+    const groups = loadGroups();
+    return (
+      groups.find((g) => g.id === MAIN_GROUP_ID) ??
+      groups.find((g) => g.nature === "public") ?? {
+        id: MAIN_GROUP_ID,
+        name: "Main",
+        nature: "public",
+        members: [],
+        createdAt: 0,
+      }
+    );
+  }
+  return loadGroups().find((g) => g.id === gid) ?? null;
+}
+
+// Cross-group TALK: a narrow, consensual LETTER from one agent to another — the
+// SANCTIONED, server-mediated channel that replaced native SendMessage. It is
+// NOT a drive: the recipient reads the message in ITS OWN context under its own
+// guardrails, and the sender NEVER receives the recipient's transcript/stream/
+// files. Delivery is a server-side loopback (`driveChannel`), fully detached
+// from the caller's HTTP request — the request only ever learns the letter was
+// accepted and dispatched.
+//
+// The ACL is `talkVerdict`: a PUBLIC recipient is messageable freely; an agent
+// in another RESTRICTED group only if the caller holds its HANDLE (an opaque
+// token someone shared — there is no roster to enumerate); a PRIVATE recipient
+// is sealed inbound with no break-glass. A PRIVATE sender may still write
+// OUTWARD. The cross-group gate applies only in multi-tenant; mono-tenant is all
+// Main/public, so talk is unrestricted (the verdict returns ok there anyway —
+// public recipient — but the gate is explicit so the intent is readable).
+//
+// The SENDER's group is resolved SERVER-SIDE from its session→channel (never the
+// body — a client could forge it). The RECIPIENT is resolved ONLY from a valid
+// handle; a handle that does not verify, or verifies but names a channel that no
+// longer exists, is ONE indistinguishable "unknown handle", so a caller cannot
+// enumerate recipients by probing handles beyond a yes/no on one they already
+// hold.
+app.post("/talk", (req, res) => {
+  const agentId = callerOf(req).id;
+  if (!agentId) return res.status(403).json({ error: "talk requires an agent session key" });
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const handle = typeof b.handle === "string" ? b.handle.trim() : "";
+  const message = typeof b.message === "string" ? b.message : "";
+  if (!handle) return res.status(400).json({ error: "a recipient handle is required" });
+  if (!message.trim()) return res.status(400).json({ error: "a message is required" });
+
+  const recipientId = readTalkHandle(handle, signingSecret());
+  const channels = loadChannels();
+  const recipient = recipientId ? channels.find((c) => c.sessionId === recipientId) : undefined;
+  if (!recipient) return res.status(404).json({ error: "unknown handle" });
+
+  const senderGroupId = channels.find((c) => c.sessionId === agentId)?.group ?? null;
+  const senderGroup = groupForTalk(senderGroupId);
+  const recipientGroup = groupForTalk(recipient.group ?? null);
+  if (!senderGroup || !recipientGroup)
+    return res.status(403).json({ error: "that agent's group cannot be verified" });
+
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    // `hasHandle` is TRUE by construction: we only ever reach here with a handle
+    // that verified to this recipient.
+    const verdict = talkVerdict(senderGroup, recipientGroup, true);
+    if (!verdict.ok) return res.status(403).json({ error: verdict.error });
+  }
+
+  // Deliver as a hidden agent-prompt LETTER over the SAME server-side loopback a
+  // parent notification uses: the recipient's own context, its own guardrails,
+  // and the SENDER's request is never wired to the recipient's output. Fire and
+  // forget — awaiting would couple the sender to a turn that can run 30 minutes,
+  // which is exactly what would make talk a drive.
+  const letter = markAgentPrompt(talkLetter({ group: senderGroup.name }, message));
+  const target = resolveSessionTarget(channels, recipient.sessionId, process.cwd());
+  const tag = `talk: ${agentId.slice(0, 8)} → ${recipient.sessionId.slice(0, 8)}`;
+  void driveChannel(recipient.sessionId, letter, target).then((r) => {
+    console.log(r.ok ? `${tag} delivered` : `${tag} failed (${r.reason})`);
+  });
+  res.json({ ok: true, delivered: recipient.sessionId.slice(0, 8) });
+});
+
+// An agent's OWN talk handle — the minimal "here is a handle to me" exposure.
+// Scoped by the caller's session key (`callerOf`), so an agent can mint a handle
+// only to ITSELF: there is no route that lists or looks up another agent's
+// handle, which is what keeps talk free of roster enumeration. HOW a handle then
+// travels to a would-be sender is left OPEN (out of band — a human relays it, a
+// shared note, a prompt); building a cross-group directory is explicitly out of
+// scope for this task.
+app.get("/talk/handle", (req, res) => {
+  const agentId = callerOf(req).id;
+  if (!agentId) return res.status(403).json({ error: "a talk handle requires an agent session key" });
+  res.json({ handle: signTalkHandle(agentId, signingSecret()) });
 });
 
 // Toggle the shared-ledger reflex from the GUI. Persisted. The reflex is fixed
