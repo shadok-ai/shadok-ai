@@ -1063,6 +1063,8 @@
   .sec-ctl label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
   .group-head .gkey { flex: none; font-size: 12px; padding: 0 4px; cursor: pointer; visibility: hidden; }
   .group-head:hover .gkey { visibility: visible; }
+  #groupPanelBody .gp-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  #groupPanelBody .gp-row span { flex: 1; }
   .prof-secrets-ro { list-style: none; padding: 0; margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
   .sec-users { margin-left: 8px; font-size: 11px; color: var(--text-dim); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
@@ -2767,6 +2769,16 @@
       <button type="button" id="cronCancelEdit" hidden>Cancel</button>
       <button type="submit" form="cronAdd" class="primary" id="cronSubmit">Add schedule</button>
     </div>
+  </div>
+</div>
+
+<div id="groupPanelOverlay" class="overlay" hidden>
+  <div id="groupPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong id="groupPanelTitle"></strong>
+      <button id="groupPanelClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body" id="groupPanelBody"></div>
   </div>
 </div>
 
@@ -4891,7 +4903,11 @@
     gkey.title = "Secrets of this group";
     head.append(caret, gicon, gname);
     if (isWalled(opts.nature)) head.append(glock);
-    head.append(gkey, gadd, gclose);
+    const ggear = document.createElement("span");
+    ggear.className = "gkey";
+    ggear.textContent = "⚙";
+    ggear.title = "Settings and members of this group";
+    head.append(ggear, gkey, gadd, gclose);
     const body = document.createElement("div");
     body.className = "group-body";
     el.append(head, body);
@@ -4913,6 +4929,7 @@
       if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
       if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
       if (e.target === gkey) { e.stopPropagation(); return openSecretsPanel(group.id); }
+      if (e.target === ggear) { e.stopPropagation(); return openGroupPanel(group.id); }
       el.classList.toggle("collapsed");
       paintCaret();
       persistGroups();
@@ -9511,6 +9528,7 @@
     // must change nothing (neither save nor restart).
     if (!$("profConfirmOverlay").hidden) { closeProfConfirm(); e.preventDefault(); return; }
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
+    if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
@@ -9801,6 +9819,76 @@
     $("secretKey").focus();
   }
   $("secretsBtn").addEventListener("click", () => openSecretsPanel(null));
+  // BEGIN group-panel
+  // Group settings: name + type, and the member list for a Private group only.
+  async function openGroupPanel(groupId) {
+    const body = $("groupPanelBody");
+    const hdr = $("groupPanelTitle");
+    $("groupPanelOverlay").hidden = false;
+    let g = null;
+    try {
+      const r = await fetch("/groups");
+      const list = r.ok ? await r.json() : [];
+      g = (Array.isArray(list) ? list : []).find((x) => String(x.id) === String(groupId)) || null;
+    } catch { /* leave g null */ }
+    body.textContent = "";
+    if (!g) { hdr.textContent = "Group"; body.textContent = "Could not load this group."; return; }
+    hdr.textContent = groupDisplayName(g) + " · " + groupTypeLabel(g.nature);
+    const note = (t) => { const p = document.createElement("p"); p.className = "sec-note"; p.textContent = t; body.append(p); };
+    if (g.nature === "private") {
+      note("🔒 Only you — this space is sealed.");
+      return;
+    }
+    if (g.nature === "restricted") {
+      const members = Array.isArray(g.members) ? g.members : [];
+      const post = async (payload) => {
+        await fetch("/groups/members", { method: "POST",
+          headers: { "content-type": "application/json", "x-shadok-instance": instanceKey },
+          body: JSON.stringify(payload) });
+        return openGroupPanel(groupId);
+      };
+      const ul = document.createElement("ul");
+      ul.id = "gpMembers";
+      for (const m of members) {
+        const li = document.createElement("li");
+        li.className = "gp-row";
+        const nm = document.createElement("span");
+        nm.textContent = m;
+        const rm = document.createElement("button");
+        rm.type = "button"; rm.textContent = "Remove"; rm.title = "Remove " + m;
+        rm.addEventListener("click", () => post({ group: g.id, remove: m }));
+        li.append(nm, rm);
+        ul.append(li);
+      }
+      body.append(ul);
+      const row = document.createElement("div");
+      row.className = "gp-row";
+      const sel = document.createElement("select");
+      sel.id = "gpAdd";
+      sel.setAttribute("aria-label", "Add a member");
+      const add = document.createElement("button");
+      add.type = "button"; add.textContent = "Add member";
+      row.append(sel, add);
+      body.append(row);
+      let names = [];
+      try {
+        const r = await fetch("/accounts");
+        names = r.ok ? await r.json() : [];
+      } catch { /* picker stays empty */ }
+      for (const n of (Array.isArray(names) ? names : []).filter((n) => !members.includes(n))) {
+        const o = document.createElement("option");
+        o.value = n; o.textContent = n;
+        sel.append(o);
+      }
+      add.disabled = !sel.options.length;
+      add.addEventListener("click", () => { if (sel.value) post({ group: g.id, add: sel.value }); });
+      return;
+    }
+    note("Anyone can see this — it is a label.");
+  }
+  $("groupPanelClose").addEventListener("click", () => { $("groupPanelOverlay").hidden = true; });
+  $("groupPanelOverlay").addEventListener("click", (e) => { if (e.target === $("groupPanelOverlay")) $("groupPanelOverlay").hidden = true; });
+  // END group-panel
   /** The vault, opened on ONE name an agent asked for: the name filled in (or the
    *  existing secret in edit mode), the asking agent's profile pre-ticked so the
    *  value actually reaches it, the cursor on the value. Saving then goes through
