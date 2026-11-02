@@ -91,7 +91,12 @@ export function visibleChannels(
   return channels.filter((c) => {
     if (!c.group) return true;
     const g = byId.get(c.group);
-    return g ? canSeeGroup(g, viewer) : true;
+    if (!g) {
+      // Fail closed: a dangling group id must never flip a channel to visible.
+      console.warn(`groups: channel ${c.sessionId} references unknown group ${c.group}; hiding it`);
+      return false;
+    }
+    return canSeeGroup(g, viewer);
   });
 }
 

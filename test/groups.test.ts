@@ -71,10 +71,28 @@ const gs: Group[] = [
   { id: "r", name: "R", nature: "restricted", members: ["ann"], createdAt: 0 },
 ];
 
-test("visibleChannels keeps public, own-group, group-less and unknown-group channels", () => {
+test("visibleChannels keeps public, own-group and group-less channels, and drops an unresolved group (fail closed)", () => {
   const v = { name: "ann", role: "member" as const };
-  const out = visibleChannels([ch("a", "pub"), ch("b", "r"), ch("c"), ch("d", null), ch("e", "ghost")], gs, v);
-  assert.deepEqual(out.map((c) => c.sessionId), ["a", "b", "c", "d", "e"]);
+  const warn = console.warn;
+  const warned: string[] = [];
+  console.warn = (m: unknown) => void warned.push(String(m));
+  try {
+    const out = visibleChannels([ch("a", "pub"), ch("b", "r"), ch("c"), ch("d", null), ch("e", "ghost")], gs, v);
+    assert.deepEqual(out.map((c) => c.sessionId), ["a", "b", "c", "d"]);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(warned.length, 1);
+  assert.match(warned[0], /ghost/);
+  assert.match(warned[0], /\be\b/);
+});
+
+test("visibleChannels drops a restricted channel for a null viewer", () => {
+  assert.deepEqual(visibleChannels([ch("b", "r")], gs, null).map((c) => c.sessionId), []);
+});
+
+test("visibleChannels drops a restricted channel for a non-member admin", () => {
+  assert.deepEqual(visibleChannels([ch("b", "r")], gs, { name: "root", role: "admin" }).map((c) => c.sessionId), []);
 });
 
 test("visibleChannels drops a restricted channel for a non-member", () => {
