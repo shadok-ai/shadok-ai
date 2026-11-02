@@ -15,6 +15,7 @@ import {
   newPrivateGroup,
   membersWithout,
   accountDeleteGroups,
+  mergeGroupsPut,
   type Group,
 } from "../src/groups.js";
 
@@ -240,4 +241,18 @@ test("canRestartInto: resolution-only (no membership) — a restart re-derives t
   // But a dangling group is refused: respawning would drop to the commons/root
   // user and keep the private transcript running — a silent downgrade.
   assert.equal(canRestartInto("ghost", resumeGroups), false);
+});
+
+test("mergeGroupsPut: a private group is sealed even against an admin", () => {
+  const p: Group = { id: "p", name: "Ada", nature: "private", members: ["ada"], owner: "ada", createdAt: 0 };
+  for (const patch of [{ members: ["intruder"] }, { nature: "public" }, { owner: "intruder" }]) {
+    const r = mergeGroupsPut([p], [{ id: "p", ...patch }], true);
+    assert.equal(r.ok, false);
+  }
+});
+
+test("mergeGroupsPut: an admin may still change a restricted group's members", () => {
+  const g: Group = { id: "r", name: "R", nature: "restricted", members: ["a"], createdAt: 0 };
+  const r = mergeGroupsPut([g], [{ id: "r", members: ["a", "b"] }], true);
+  assert.equal(r.ok, true);
 });

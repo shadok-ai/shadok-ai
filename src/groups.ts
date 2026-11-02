@@ -427,6 +427,11 @@ export function mergeGroupsPut(
       const natureChange = wantsNature !== undefined && wantsNature !== prev.nature;
       const membersChange = wantsMembers !== undefined && !sameMembers(wantsMembers, prev.members);
       const ownerChange = wantsOwner !== undefined && wantsOwner !== (prev.owner ?? undefined);
+      // The Personal seal: a private group is immutable to everyone, admin
+      // included — it goes away only with its account (DELETE /groups).
+      if (prev.nature === "private" && (natureChange || membersChange || ownerChange)) {
+        return { ok: false, error: "a personal group is sealed and cannot be changed" };
+      }
       if ((natureChange || membersChange || ownerChange) && !isAdmin) {
         return { ok: false, error: "only an admin can change a group's membership or nature" };
       }
