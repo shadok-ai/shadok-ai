@@ -191,6 +191,13 @@ Enter to skip; you can add it later from the web UI).
   `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
+- **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
+  microphone and transcribes it with the **same local whisper.cpp** the voice
+  notes use (nothing leaves the machine). The text drops into the composer
+  **editable**, never auto-sent, so a misheard word is fixed before it goes —
+  click to start, click to stop, a red timer runs while recording. Needs a
+  secure context (localhost or HTTPS) for the browser to grant the mic; the
+  first use pays the same one-time whisper install as the voice notes above.
 - **Videos on Telegram** — share a video (or a GIF, or a round video note) and
   the agent actually sees it: shadok pulls a handful of stills out of the clip
   for it to look at, and transcribes the sound when there is speech. Both run

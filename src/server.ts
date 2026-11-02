@@ -97,6 +97,7 @@ import {
   MEDIA_DIR,
   type TelegramHandle,
 } from "./telegram.js";
+import { transcribe, audioClipExtension } from "./whisper.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
 import { instanceKey } from "./paths.js";
@@ -1558,6 +1559,46 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
     res.json({ path: file, line: attachmentPrompt([{ path: file, kind }]) });
   } catch (e) {
     res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * Speech-to-text for the composer's microphone button. The browser records a
+ * short clip (MediaRecorder → webm/opus) and POSTs the raw bytes here; we run
+ * the SAME local whisper.cpp pipeline the Telegram voice path uses
+ * (`transcribe`) and return the text for the client to drop into the composer.
+ *
+ * The text is NEVER auto-sent — it lands in the editable composer so the user
+ * reads it before acting, because a misheard instruction acted on in silence is
+ * worse than a voice note that was ignored (the reason `heardNotice` exists).
+ *
+ * `requestFromBrowser` like `/paste`: this writes a file and records the mic, a
+ * browser-only capability with no business being reachable by a script on
+ * loopback. The clip is TRANSIENT — written to the OS temp dir and removed in
+ * `finally`, never kept in `MEDIA_DIR`: it is spoken input, not a file to hand
+ * the agent.
+ *
+ * The first call on a fresh instance provisions whisper (ffmpeg / model / build
+ * via `ensureWhisper` inside `transcribe`), which can take minutes; the client
+ * shows a working state and we simply wait. The French whisper notices are kept
+ * server-side — the client maps `kind` to its own English UI copy, so the web
+ * stays English while Telegram keeps its spoken-language notices.
+ */
+app.post("/transcribe", express.raw({ type: () => true, limit: PASTE_LIMIT }), async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
+  const body = req.body as Buffer;
+  if (!Buffer.isBuffer(body) || !body.length) return res.status(400).json({ error: "empty body" });
+  const ext = audioClipExtension(String(req.headers["content-type"] ?? ""));
+  const tmp = path.join(os.tmpdir(), `shadok-stt-${randomUUID()}.${ext}`);
+  try {
+    await fs.promises.writeFile(tmp, body);
+    const out = await transcribe(tmp);
+    if (out.ok) return res.json({ ok: true, text: out.text });
+    return res.json({ ok: false, kind: out.kind });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  } finally {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {});
   }
 });
 
