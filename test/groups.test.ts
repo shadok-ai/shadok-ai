@@ -7,6 +7,8 @@ import {
   visibleGroupIds,
   memberOf,
   MAIN_GROUP_ID,
+  visibleChannels,
+  viewerFor,
   type Group,
 } from "../src/groups.js";
 
@@ -60,4 +62,27 @@ test("membershipVerdict: any member invites, self leaves, only admin removes", (
   assert.equal(membershipVerdict(null, g, "invite", "x").ok, false);
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, { ...g, nature: "private" }, "invite", "z").ok, false);
   assert.equal(membershipVerdict({ name: "root", role: "admin" }, { ...g, nature: "public" }, "remove", "leo").ok, false);
+});
+
+const ch = (sessionId: string, group?: string | null) =>
+  ({ sessionId, cwd: "/x", group }) as unknown as import("../src/channels.js").Channel;
+const gs: Group[] = [
+  { id: "pub", name: "Pub", nature: "public", members: [], createdAt: 0 },
+  { id: "r", name: "R", nature: "restricted", members: ["ann"], createdAt: 0 },
+];
+
+test("visibleChannels keeps public, own-group, group-less and unknown-group channels", () => {
+  const v = { name: "ann", role: "member" as const };
+  const out = visibleChannels([ch("a", "pub"), ch("b", "r"), ch("c"), ch("d", null), ch("e", "ghost")], gs, v);
+  assert.deepEqual(out.map((c) => c.sessionId), ["a", "b", "c", "d", "e"]);
+});
+
+test("visibleChannels drops a restricted channel for a non-member", () => {
+  const out = visibleChannels([ch("a", "pub"), ch("b", "r")], gs, { name: "zoe", role: "member" });
+  assert.deepEqual(out.map((c) => c.sessionId), ["a"]);
+});
+
+test("viewerFor passes null through and round-trips an account", () => {
+  assert.equal(viewerFor(null), null);
+  assert.deepEqual(viewerFor({ name: "ann", role: "admin" }), { name: "ann", role: "admin" });
 });

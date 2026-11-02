@@ -1,4 +1,5 @@
 import type { Role } from "./accounts.js";
+import type { Channel } from "./channels.js";
 
 /**
  * Groups: the unit of isolation between people sharing one cockpit. Pure and
@@ -73,4 +74,28 @@ export function membershipVerdict(
     case "remove":
       return actor.role === "admin" ? { ok: true } : { ok: false, error: "only an admin can remove a member" };
   }
+}
+
+/**
+ * The channels a viewer may see. A channel with no group (legacy / commons) is
+ * public. A channel whose group id resolves to nothing is ALSO kept: fail-open
+ * on an unknown group, because hiding a channel the server itself made would
+ * strand it, whereas restricted groups are always known when they exist.
+ */
+export function visibleChannels(
+  channels: readonly Channel[],
+  groups: readonly Group[],
+  viewer: Viewer | null,
+): Channel[] {
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  return channels.filter((c) => {
+    if (!c.group) return true;
+    const g = byId.get(c.group);
+    return g ? canSeeGroup(g, viewer) : true;
+  });
+}
+
+/** An account as a Viewer (null passes through). */
+export function viewerFor(account: { name: string; role: Role } | null): Viewer | null {
+  return account ? { name: account.name, role: account.role } : null;
 }

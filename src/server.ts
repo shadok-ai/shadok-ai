@@ -100,6 +100,7 @@ import {
 } from "./telegram.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
+import { viewerFor, type Viewer, type Group } from "./groups.js";
 import { instanceKey } from "./paths.js";
 import {
   peerFileFor,
@@ -944,6 +945,10 @@ function currentAccount(req: Caller): { name: string; role: Role } | null {
   // person, so it is recognised HERE and stays refused by `cookieAccount`.
   if (isInternalClient(cookieSession(req))) return { name: BOOTSTRAP_ADMIN, role: "admin" };
   return cookieAccount(req);
+}
+/** Who is asking and which groups exist; routes filter with `visibleChannels`. */
+export function callerGroups(req: Caller): { viewer: Viewer | null; groups: Group[] } {
+  return { viewer: viewerFor(currentAccount(req)), groups: loadGroups() };
 }
 
 /** Is two-factor sign-in on for this instance? Meaningless with no password. */
