@@ -53,6 +53,14 @@ import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
 import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
+import {
+  migrationPlan,
+  runMigration,
+  respawnPlan,
+  commonsOsUser,
+  COMMONS_USER,
+  MIGRATION_MARKER_FILE,
+} from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
 import {
@@ -69,6 +77,8 @@ import {
   loadChannels,
   loadGroups,
   saveGroups,
+  normalizeGroups,
+  ensureMainGroup,
   upsertChannel,
   removeChannel,
   mergeClientChannels,
@@ -116,6 +126,7 @@ import {
 } from "./groups.js";
 import {
   resolveSpawnIsolation,
+  osUserFor,
   provisionGroupUser,
   teardownGroupUser,
   DEFAULT_HOME_BASE,
@@ -125,6 +136,7 @@ import {
   credentialWiring,
   reachableFromInspection,
   SHARED_CRED_GROUP,
+  SHARED_POT_GROUP,
   DEFAULT_SHARED_CREDENTIAL_PATH,
   DEFAULT_SHARED_POT_PATH,
   type LinkProbe,
@@ -2444,6 +2456,221 @@ async function killGroupAgents(groupId: string): Promise<void> {
   for (const id of ids) await endChannel(id).catch(() => {});
 }
 
+// ── Task 15: automatic root→non-root commons migration ────────────────────────
+//
+// On the first boot of a CAPABLE (multi-tenant) instance, move the running
+// single-tenant instance into isolated groups: create the non-root commons user
+// `main`, chown the root-owned tree to it, lift the flat vault into Main,
+// auto-provision each account's private group, and label what exists as public.
+// The pure plan + fail-safe runner live in `src/migrate-groups.ts`; this is the
+// impure plumbing (the injected side effects). See that file and invariant notes.
+//
+// The marker lives on the shadok-data volume (`~/.shadok-ai`, the one mount that
+// survives `docker rm`+recreate — see `src/ssh.ts`), so the DATA migration never
+// re-runs. The OS layer is a separate idempotency concern: a recreate keeps the
+// volume but wipes `/etc/passwd` + the HOMEs, so we treat the instance as already
+// migrated only when the marker is present AND `main` actually exists — the
+// second term is what re-triggers the idempotent OS provisioning after a recreate.
+
+/** Has the commons migration moved this instance to isolated groups yet? Drives
+ *  `commonsOsUser`: only once true (and multi-tenant) do commons agents drop to
+ *  the non-root `main`. Flipped on at boot if already migrated, and after a
+ *  successful `runGroupsMigration`. Fail-safe default is `false` (commons as the
+ *  server's own user — today's behaviour). */
+let groupsMigrated = false;
+
+function migrationMarkerPath(): string {
+  return path.join(os.homedir(), ".shadok-ai", MIGRATION_MARKER_FILE);
+}
+function migrationMarkerExists(): boolean {
+  try {
+    return fs.existsSync(migrationMarkerPath());
+  } catch {
+    return false;
+  }
+}
+function writeMigrationMarker(): void {
+  const p = migrationMarkerPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ at: Date.now() }, null, 2));
+}
+/** Synchronous `id -u <user>` — boot-time, so it must not be async. */
+function osUserExistsSync(u: string): boolean {
+  try {
+    execFileSync("id", ["-u", u], { stdio: "ignore", timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+/** Already migrated iff the marker is present AND `main` exists (the latter is
+ *  what a docker recreate loses, re-triggering the idempotent provisioning). */
+function alreadyMigratedNow(): boolean {
+  return migrationMarkerExists() && osUserExistsSync(COMMONS_USER);
+}
+
+/** The full provisioning deps a group's OS user needs (shared with POST /groups):
+ *  credential + pot wiring, the symlink-safety / sign-in / reachability guards. */
+function provisionOsUserFor(g: Group): Promise<unknown> {
+  return provisionGroupUser(g, {
+    run: runPrivileged,
+    seed: seedGroupHome,
+    homeBase: GROUP_HOME_BASE,
+    userExists: osUserExists,
+    sharedCredentialPath: SHARED_CREDENTIAL_PATH,
+    sharedPotPath: SHARED_POT_PATH,
+    claudeDirStat: claudeDirStatReal,
+    sharedCredentialExists: sharedCredentialExistsReal,
+    reachable: credentialReachableReal,
+  });
+}
+
+/** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
+async function migCreateCommonsUser(): Promise<void> {
+  if (osUserExistsSync(COMMONS_USER)) return;
+  const home = `${GROUP_HOME_BASE}/${COMMONS_USER}`;
+  await runPrivileged("useradd", ["--create-home", "--home-dir", home, "--shell", "/bin/bash", COMMONS_USER]);
+}
+
+/** Step 2 — chown the root-owned tree (workspace, server data, Claude home) to
+ *  `main`, ONCE. Files DO NOT move; only ownership changes, so the commons agent
+ *  (now `main`) can read/write what it already worked on. Idempotent (chowning
+ *  already-`main`-owned files is a no-op), best-effort per target. */
+async function migChownTreeToCommons(): Promise<void> {
+  const targets = [process.cwd(), path.join(os.homedir(), ".shadok-ai"), path.join(os.homedir(), ".claude")];
+  const owner = `${COMMONS_USER}:${COMMONS_USER}`;
+  for (const t of targets) {
+    if (!t || !fs.existsSync(t)) continue;
+    await runPrivileged("chown", ["-R", owner, t]);
+  }
+}
+
+/** Step 3 — seed the neutral, group-traversable shared Claude credential from the
+ *  existing `~/.claude/.credentials.json` and wire the commons HOME to it (symlink
+ *  + shared groups + the `~/shared` pot link). Mirrors `credentialWiringPlan` /
+ *  `sharedPotPlan` but for the commons `main` user, and SEEDS the file they only
+ *  wire (the T7/T12 carry). Throws when there is nothing to seed from (not signed
+ *  in) — a CORE failure, so the marker is withheld and the next boot retries. */
+async function migSeedSharedCredential(): Promise<void> {
+  const src = path.join(os.homedir(), ".claude", ".credentials.json");
+  if (!fs.existsSync(src)) {
+    throw new Error(`no ${src} to seed the shared credential from (is the instance signed in to Claude?)`);
+  }
+  const mainHome = `${GROUP_HOME_BASE}/${COMMONS_USER}`;
+  const dir = path.dirname(SHARED_CREDENTIAL_PATH);
+  await runPrivileged("groupadd", ["-f", SHARED_CRED_GROUP]);
+  await runPrivileged("groupadd", ["-f", SHARED_POT_GROUP]);
+  await runPrivileged("usermod", ["-aG", `${SHARED_CRED_GROUP},${SHARED_POT_GROUP}`, COMMONS_USER]);
+  // Shared credential: traversable dir chain, seed the file, group+mode it 660.
+  await runPrivileged("install", ["-d", "-o", "root", "-g", SHARED_CRED_GROUP, "-m", "0750", dir]);
+  await runPrivileged("cp", ["-f", src, SHARED_CREDENTIAL_PATH]);
+  await runPrivileged("chgrp", [SHARED_CRED_GROUP, SHARED_CREDENTIAL_PATH]);
+  await runPrivileged("chmod", ["660", SHARED_CREDENTIAL_PATH]);
+  // Shared pot base (setgid, group shadok-shared).
+  await runPrivileged("install", ["-d", "-o", "root", "-g", SHARED_POT_GROUP, "-m", "2770", SHARED_POT_PATH]);
+  await runPrivileged("chmod", ["2770", SHARED_POT_PATH]);
+  // HOME-side AS `main` (TOCTOU: root never writes through an agent-owned path).
+  await runPrivileged("runuser", ["-u", COMMONS_USER, "--", "install", "-d", "-m", "700", `${mainHome}/.claude`]);
+  await runPrivileged(
+    "runuser",
+    ["-u", COMMONS_USER, "--", "ln", "-sfn", SHARED_CREDENTIAL_PATH, `${mainHome}/.claude/.credentials.json`],
+  );
+  await runPrivileged("runuser", ["-u", COMMONS_USER, "--", "ln", "-sfn", SHARED_POT_PATH, `${mainHome}/shared`]);
+}
+
+/** Step 4 — flat vault → Main's slice. `loadVault` runs `normalizeVault`, which
+ *  lifts a flat `{NAME:value}` map into Main (`migrateFlatVault`) and persists it;
+ *  idempotent (an already-nested vault has nothing flat to migrate). */
+function migVaultToMain(): void {
+  loadVault();
+}
+
+/** Step 5a — provision one EMPTY private group per account (idempotent: reuse an
+ *  existing private group owned by the account rather than minting a twin). */
+async function migProvisionPrivateGroup(account: string): Promise<void> {
+  const groups = loadGroups();
+  let g = groups.find((x) => x.nature === "private" && x.owner === account);
+  if (!g) {
+    g = {
+      id: randomUUID(),
+      name: account,
+      nature: "private",
+      members: [],
+      owner: account,
+      osUser: null,
+      createdAt: Date.now(),
+    };
+    g.osUser = osUserFor(g);
+    saveGroups([...groups, g]);
+  }
+  await provisionOsUserFor(g);
+}
+
+/** Step 5b — re-provision a persisted private/restricted group (docker-recreate
+ *  carry: the group list survived on the volume but its OS user+HOME did not). */
+async function migReprovisionGroup(gid: string): Promise<void> {
+  const g = loadGroups().find((x) => x.id === gid);
+  if (!g) return;
+  await provisionOsUserFor(g);
+}
+
+/** Step 6 — label existing channels/groups public/commons: guarantee Main and
+ *  normalise the group list. Channels with no group are already commons (Task 2),
+ *  so nothing there is reclassified; the migration is additive. */
+function migLabelExistingPublic(): void {
+  saveGroups(ensureMainGroup(normalizeGroups(loadGroups())));
+}
+
+/** Respawn the running agents ONCE, one at a time — respawned, NOT re-adopted. A
+ *  pre-migration tmux pane runs as root (invariant 25); killing it forces a fresh
+ *  spawn under the new `main` drop on the next resume (history kept via --resume).
+ *  Best-effort: a kill failure is logged, never fatal. */
+async function migRespawnRunningAgents(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    const name = "sk-" + id;
+    try {
+      if (tmuxHasSession(name)) {
+        tmuxKillSession(name);
+        console.log(`migrate: killed root pane ${name.slice(0, 11)} — will respawn as ${COMMONS_USER} on next resume`);
+      }
+    } catch (e) {
+      console.warn(`migrate: could not kill pane ${name.slice(0, 11)}: ${(e as Error)?.message ?? e}`);
+    }
+  }
+}
+
+/** Build the plan from what the instance IS and run it (fail-safe). Fire-and-
+ *  forget at boot: a migration that is slow must never hang the boot, and a
+ *  spawn that races it simply uses the pre-migration (root) drop until the
+ *  marker flips. Flips `groupsMigrated` on success so later spawns drop to `main`. */
+async function runGroupsMigration(): Promise<void> {
+  groupsMigrated = alreadyMigratedNow();
+  const plan = migrationPlan({
+    alreadyMigrated: groupsMigrated,
+    mode: DEPLOYMENT_MODE,
+    accounts: loadAccounts().map((a) => a.name),
+    existingGroups: loadGroups(),
+  });
+  if (!plan) return; // already migrated, or mono-tenant: nothing to do
+  await runMigration(plan, {
+    createCommonsUser: migCreateCommonsUser,
+    chownTreeToCommons: migChownTreeToCommons,
+    seedSharedCredential: migSeedSharedCredential,
+    migrateVaultToMain: migVaultToMain,
+    provisionPrivateGroup: migProvisionPrivateGroup,
+    reprovisionGroup: migReprovisionGroup,
+    labelExistingPublic: migLabelExistingPublic,
+    markerExists: migrationMarkerExists,
+    writeMarker: writeMigrationMarker,
+    respawnIds: respawnPlan(loadChannels()),
+    respawn: migRespawnRunningAgents,
+    log: (m) => console.log(m),
+  });
+  // Re-evaluate: the marker is written only when the core steps succeeded, so
+  // this flips to `main`-commons exactly when it is safe.
+  groupsMigrated = alreadyMigratedNow();
+}
+
 // Create a group. A private/restricted group needs the privileged deployment:
 // refuse CLEARLY in mono-tenant (capabilityRefusal) rather than create a group
 // that cannot actually isolate. A public group provisions nothing (commons).
@@ -3627,7 +3854,7 @@ function broadcastAll(msg: object): void {
  *  whether auto-update is armed, and the spawn permission mode. */
 /** What both /version and the WS `version` message report. */
 function versionState() {
-  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel, mode: DEPLOYMENT_MODE };
+  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel, mode: DEPLOYMENT_MODE, migrated: groupsMigrated };
 }
 
 function versionMessage(): object {
@@ -4795,13 +5022,14 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
   // resume, so it never reassigns the group: derive the OS user from the
   // channel's stored group so a private agent comes back under its own user,
   // not as root. Mono-tenant resolves to null — unchanged from before.
-  const restartUser = resolveSpawnIsolation({
-    mode: DEPLOYMENT_MODE,
-    resumed: true,
-    viewer: null,
-    groups: loadGroups(),
-    storedGroupId: restartGroupId,
-  }).user;
+  const restartUser =
+    resolveSpawnIsolation({
+      mode: DEPLOYMENT_MODE,
+      resumed: true,
+      viewer: null,
+      groups: loadGroups(),
+      storedGroupId: restartGroupId,
+    }).user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
   // Task 7 verify-first gate (same as the spawn path): a restart re-adopts the
   // HOME, so it is another moment the symlink could have been overwritten by a
   // rename refresh — warn LOUDLY rather than let auth break in silence.
@@ -6173,11 +6401,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // stored group; a new spawn gets the one the isolation policy derived
           // from the caller's identity. Both null in mono-tenant → secrets = Main.
           const agentGroupId = resumed ? storedGroupId : isolation.groupPatch.group ?? null;
-          warnIfCredentialDiverged(agentGroupId, isolation.user);
+          // T15 carry: a COMMONS agent (no dedicated group user) must not run as
+          // root post-migration — drop it to the non-root `main` once migration
+          // has completed. Before migration (or mono-tenant) this is null and the
+          // commons stays the server's own user, byte-for-byte today's.
+          const dropUser = isolation.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+          warnIfCredentialDiverged(agentGroupId, dropUser);
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
-            isolation.user,
+            dropUser,
             agentGroupId,
           );
           session.clients.add(ws);
@@ -6984,6 +7217,22 @@ ensureClaudeHome();
 // recreate. No-op on a normal host. Its GIT_SSH_COMMAND fallback is merged into
 // the env every spawned agent inherits.
 Object.assign(process.env, ensureSshIdentity());
+
+// Task 15: on the first boot of a CAPABLE instance, move the running
+// single-tenant instance into isolated groups (create the non-root commons user
+// `main`, chown the tree to it, vault→Main, provision per-account private
+// groups, label what exists public). Gated by a shadok-data-volume marker +
+// DEPLOYMENT_MODE, fully fail-safe. Runs here — after the Claude home + SSH
+// identity, BEFORE any spawn (reconcileOnBoot / startFirstAgent) — and
+// fire-and-forget so a slow migration never hangs the boot. A spawn that races
+// it uses the pre-migration (root) drop until `groupsMigrated` flips.
+if (DEPLOYMENT_MODE === "multi-tenant") {
+  void runGroupsMigration().catch((e) =>
+    console.error("migrate: unexpected error (ignored, boot continues):", (e as Error)?.message ?? e),
+  );
+} else {
+  groupsMigrated = migrationMarkerExists() && osUserExistsSync(COMMONS_USER);
+}
 
 server.listen(port, HOST, () => {
   console.log(`shadok-ai web: http://localhost:${port}${HOST === "127.0.0.1" ? "" : `  (bind ${HOST})`}`);
