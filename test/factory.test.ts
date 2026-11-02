@@ -366,6 +366,10 @@ test("scope: shared with several groups, only me, or everyone", () => {
   assert.equal(scopeError("groups:1,9", ["1", "2"]), "one of those groups does not exist");
   assert.equal(scopeError("groups:", ["1"]), "pick at least one group");
   assert.equal(scopeError("user:lea", []), null);
+  // Multi-tenant group ids are uuids: they share like any other.
+  const g = "0b6c2f9e-5d3a-4c1e-9a7b-2f4e8d1c3a5b";
+  assert.deepEqual(scopeGroups(`groups:${g},main`), [g, "main"]);
+  assert.equal(scopeOffersAgent(`groups:${g}`, { group: g }), true);
 });
 
 test("titles become technical names; tags are normalised", () => {

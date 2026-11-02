@@ -467,6 +467,44 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     res.json({ updated: out });
   });
 
+  /**
+   * "Save" in the editor: what is saved is what agents run. One click cuts a
+   * release of the current content (or reuses the last one when nothing changed
+   * since), accepts it — the person saving is a person of the running group —
+   * and moves every agent that has the skill onto it, reloading the idle ones.
+   * Versions and approval stay underneath (the plugin dir is content-addressed,
+   * an attachment pins a release), they are just no longer a step people take.
+   */
+  app.post("/factory/skills/:id/publish", (req, res) => {
+    if (!browser(req, res)) return;
+    const s = skillOr404(req, res);
+    if (!s) return;
+    try {
+      const last = s.releases[s.releases.length - 1];
+      const head = headCommit(root(), s.id);
+      const rel = last && head && last.commit === head
+        ? last
+        : cutRelease(root(), s.id, { by: by(req), secrets: secretsOf(deps.vault()) });
+      if (rel !== last) deps.audit({ action: "release", skill: s.name, release: rel.n, tree: rel.tree, by: by(req) });
+      if (!s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree)) {
+        accept(root(), s.id, { group: MAIN_GROUP, release: rel.n, by: by(req) });
+        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group: MAIN_GROUP, by: by(req) });
+      }
+      const updated: { name: string; result: string }[] = [];
+      for (const c of deps.loadChannels()) {
+        const cur = c.skills?.find((a) => a.skill === s.id);
+        if (!cur || cur.release === rel.n) continue;
+        deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
+        deps.onAttachmentsChanged(c.sessionId);
+        updated.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
+      }
+      deps.prune();
+      res.json({ release: rel, updated });
+    } catch (e) {
+      fail(res, e);
+    }
+  });
+
   /** Feedback: an agent that USED the skill (session key), or a person. */
   app.post("/factory/skills/:id/feedback", (req, res) => {
     const agent = deps.callerOf(req);

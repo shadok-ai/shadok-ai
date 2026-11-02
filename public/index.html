@@ -11096,15 +11096,15 @@
   function facStatus(s) {
     const last = facLast(s);
     const st = [];
-    if (last && !facAccepted(s, last)) st.push("approve");
-    if (s.attachedTo.some((a) => a.update)) st.push("behind");
+    // No versions, no approval on screen: a skill either matches what agents
+    // run (saved), or carries edits they do not see yet (draft).
+    if (!last || s.unreleased || !facAccepted(s, last)) st.push("draft");
     if (!s.attachedTo.length) st.push("unused");
     if (facOpenFeedback(s).length) st.push("feedback");
-    if (!last) st.push("draft");
     if (s.archived) st.push("archived");
     return st;
   }
-  const FAC_STATUS = [["approve", "To approve"], ["behind", "Update available"], ["feedback", "Feedback"], ["unused", "Unused"], ["draft", "Draft"], ["archived", "Archived"]];
+  const FAC_STATUS = [["draft", "Draft changes"], ["feedback", "Feedback"], ["unused", "Unused"], ["archived", "Archived"]];
 
   async function facLoad() {
     try { fac.data = await facCall("GET", "/factory/skills"); }
@@ -11166,8 +11166,7 @@
     search.addEventListener("input", () => { fac.q = search.value; facRenderTable(); });
     const live = d.skills.filter((s) => !s.archived);
     const runs = live.reduce((n, s) => n + (s.runs7d || 0), 0);
-    const toApprove = live.filter((s) => facStatus(s).includes("approve")).length;
-    const behind = live.filter((s) => facStatus(s).includes("behind")).length;
+    const drafts = live.filter((s) => facStatus(s).includes("draft")).length;
     scroll.appendChild(facEl("div", { class: "fp-hero" }, [
       facEl("div", { class: "fp-hero-t" }, [
         facEl("h1", { text: "Skills" }),
@@ -11182,8 +11181,7 @@
       scroll.appendChild(facEl("div", { class: "fp-kpis" }, [
         facEl("div", { class: "fp-kpi" }, [facEl("b", { text: String(live.length) }), facEl("span", { text: "skills" })]),
         facEl("div", { class: "fp-kpi" }, [facEl("b", { text: String(runs) }), facEl("span", { text: "runs this week" })]),
-        facEl("div", { class: "fp-kpi" + (toApprove ? " warn" : "") }, [facEl("b", { text: String(toApprove) }), facEl("span", { text: "to approve" })]),
-        facEl("div", { class: "fp-kpi" + (behind ? " warn" : "") }, [facEl("b", { text: String(behind) }), facEl("span", { text: "with agents behind" })]),
+        facEl("div", { class: "fp-kpi" + (drafts ? " warn" : "") }, [facEl("b", { text: String(drafts) }), facEl("span", { text: "with unsaved drafts" })]),
       ]));
     scroll.appendChild(facEl("div", { class: "fp-bar fp-searchbar" }, [search]));
     scroll.appendChild(facEl("div", { id: "fpMsg", class: "fac-msg", role: "status" }));
@@ -11225,7 +11223,7 @@
     all.addEventListener("change", () => { for (const s of list) all.checked ? fac.checked.add(s.id) : fac.checked.delete(s.id); facRenderTable(); });
     const t = facEl("table", { class: "fp-table" }, [facEl("tr", {}, [
       facEl("th", { style: "width:24px" }, [all]), facEl("th", { text: "Skill" }), facEl("th", { text: "Shared with" }),
-      facEl("th", { text: "Version" }), facEl("th", { text: "Used" }), facEl("th", { text: "Runs · 7 days" }),
+      facEl("th", { text: "State" }), facEl("th", { text: "Used" }), facEl("th", { text: "Runs · 7 days" }),
     ])]);
     for (const s of list) {
       const last = facLast(s);
@@ -11234,7 +11232,6 @@
       const ck = facEl("input", { type: "checkbox", "aria-label": "Select " + facTitle(s), checked: fac.checked.has(s.id) });
       ck.addEventListener("click", (e) => e.stopPropagation());
       ck.addEventListener("change", () => { ck.checked ? fac.checked.add(s.id) : fac.checked.delete(s.id); facRenderBulk(); });
-      const behind = s.attachedTo.filter((a) => a.update).length;
       t.appendChild(facEl("tr", {
         class: "row" + (fac.sel && fac.sel.id === s.id && fac.drawer ? " cur" : "") + (s.archived ? " archived" : ""),
         onclick: () => facOpenDrawer(s.id),
@@ -11246,10 +11243,9 @@
           (s.tags || []).length ? facEl("div", {}, s.tags.map((x) => facEl("span", { class: "fp-tag", text: x }))) : null,
         ])])]),
         facEl("td", {}, facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x }))),
-        facEl("td", {}, [facEl("span", { class: "fp-ver" + (last ? "" : " draft"), text: last ? `v${last.n}` : "draft" }),
-          st.includes("approve") ? facEl("div", {}, [facEl("span", { class: "fp-badge warn", text: `v${last.n} to approve` })]) : null,
-          behind ? facEl("div", {}, [facEl("span", { class: "fp-badge warn", text: `${behind} agent${behind > 1 ? "s" : ""} behind` })]) : null,
-          s.unreleased && last ? facEl("div", {}, [facEl("span", { class: "fp-badge", text: "unfrozen changes" })]) : null]),
+        facEl("td", {}, [st.includes("draft")
+          ? facEl("span", { class: "fp-badge warn", text: last ? "draft changes" : "draft" })
+          : facEl("span", { class: "fp-ver", text: "saved" })]),
         facEl("td", {}, [s.attachedTo.length ? `${s.attachedTo.length} agent${s.attachedTo.length > 1 ? "s" : ""}${crons ? ` · ${crons} cron${crons > 1 ? "s" : ""}` : ""}` : facEl("span", { class: "fp-sub", text: "unused" })]),
         facEl("td", {}, [facEl("span", { class: "fp-runs", text: String(s.runs7d || 0) }),
           facOpenFeedback(s).length ? facEl("div", {}, [facEl("span", { class: "fp-badge info", text: `💬 ${facOpenFeedback(s).length}` })]) : null]),
@@ -11281,7 +11277,6 @@
         const t = prompt("Tag to add (several: separate with commas)");
         if (t) run("Tagged", (s) => facCall("PUT", `/factory/skills/${s.id}/meta`, { tags: [...(s.tags || []), ...t.split(",")] }));
       } }),
-      facEl("button", { text: "Update agents", onclick: () => run("Updated", (s) => s.attachedTo.some((a) => a.update) ? facCall("POST", `/factory/skills/${s.id}/update`, { release: s.latestAccepted }) : null) }),
       skills.every((s) => s.archived)
         ? facEl("button", { text: "Unarchive", onclick: () => run("Unarchived", (s) => facCall("PUT", `/factory/skills/${s.id}/meta`, { archived: false })) })
         : facEl("button", { text: "Archive", onclick: () => run("Archived", (s) => facCall("PUT", `/factory/skills/${s.id}/meta`, { archived: true })) }),
@@ -11320,7 +11315,7 @@
     box.appendChild(facEl("div", { class: "fp-empty" }, [
       facEl("h1", { text: "Your team's know-how, as skills" }),
       facEl("p", { text: "A skill teaches an agent how to do one job well: prepare the daily marketing summary, take a sprint ticket to a pull request, answer a customer the way your team does." }),
-      facEl("p", { text: "Write it together, by hand or by asking an agent. Freeze a version when it is ready, then give it to the agents and schedules that need it." }),
+      facEl("p", { text: "Write it together, by hand or by asking an agent. Save a draft while you work; Save when it is ready, and the agents and schedules that have it use it." }),
       facEl("div", { class: "fp-actions", style: "justify-content:center" }, [
         facEl("button", { class: "primary", text: "＋ New skill", onclick: () => facGo("new") }),
         facEl("button", { text: "Import one from this machine", onclick: () => facGo("import") }),
@@ -11390,10 +11385,9 @@
       d.appendChild(facEl("div", { class: "fp-card" }, [
         facEl("b", { text: g ? `${g.icon ? g.icon + " " : ""}${g.name}` : "No group" }),
         ...list.map((a) => facEl("div", { style: "margin-top:4px" }, [
-          `${a.name} · v${a.release}`,
+          a.name,
           ...(a.crons || []).map((c) => facEl("span", { class: "fp-sub", text: ` · ${c.label}` })),
           facEl("span", { class: "fp-sub", text: ` · ${a.runs || 0} run${a.runs === 1 ? "" : "s"}` }),
-          a.update ? facEl("span", { class: "fp-warn", text: ` · v${a.update} available` }) : null,
           ...a.secrets.filter((x) => !x.bound).map((x) => facEl("span", { class: "fp-ko", text: ` · ${x.name} missing` })),
           ...a.mcp.filter((x) => !x.present).map((x) => facEl("span", { class: "fp-ko", text: ` · tool ${x.name} missing` })),
           facEl("button", { class: "fp-link", text: "remove", onclick: () => facAttach(s, a.sessionId, null, false, reload) }),
@@ -11410,31 +11404,19 @@
       }
       use.appendChild(facEl("button", { text: "Run on a schedule…", onclick: (e) => facScheduleForm(s, d, e.target) }));
     }
-    if (s.attachedTo.some((a) => a.update)) use.appendChild(facEl("button", { class: "primary", text: `Update agents to v${s.latestAccepted}`, onclick: () => facUpdate(s, reload) }));
     if (use.childNodes.length) d.appendChild(use);
-    // Version
-    d.appendChild(facEl("h2", { text: "Version" }));
-    const v = facEl("div", { class: "fp-card" });
-    if (!last) v.appendChild(facEl("div", { text: "Draft: no version yet. Edit it, then freeze version 1." }));
-    else {
-      v.appendChild(facEl("div", {}, [facEl("b", { text: `v${last.n}` }), ` · ${last.by}, ${facAgo(last.at)}`, last.note ? ` · ${last.note}` : "",
-        facAccepted(s, last) ? facEl("span", { class: "fp-ok", text: " · approved" }) : facEl("span", { class: "fp-warn", text: " · waiting for approval" })]));
-      if (last.secrets.length) v.appendChild(facEl("div", { class: "fp-sub" }, ["Receives: ", ...last.secrets.map((n) => {
-        const bound = s.bindings.find((b) => b.name === n);
-        return facEl("span", { class: bound && !bound.bound ? "fp-ko" : "fp-ok", text: `${n}${(last.detectedSecrets || []).includes(n) ? "*" : ""} ` });
-      })]));
-      if ((last.detectedSecrets || []).length) v.appendChild(facEl("div", { class: "fp-hint", text: "* found in the code without being declared" }));
-      if (s.unreleased) v.appendChild(facEl("div", { class: "fp-sub", text: "Changes since this version, not frozen yet." }));
-    }
-    const va = facEl("div", { class: "fp-actions" });
-    if (last && !facAccepted(s, last)) va.appendChild(facEl("button", { class: "primary", text: `Review v${last.n}`, onclick: () => facReviewAccept(s, last) }));
-    if (va.childNodes.length) v.appendChild(va);
-    d.appendChild(v);
+    // What agents running it receive: shown, never a step to take.
+    if (last && last.secrets.length) d.appendChild(facEl("div", { class: "fp-sub" }, ["Agents running it get: ", ...last.secrets.map((n) => {
+      const bound = s.bindings.find((b) => b.name === n);
+      return facEl("span", { class: bound && !bound.bound ? "fp-ko" : "fp-ok", text: `${n} ` });
+    })]));
+    if (!last || !facAccepted(s, last)) d.appendChild(facEl("div", { class: "fp-sub", text: "Never saved: open it and press Save so agents can use it." }));
+    else if (s.unreleased) d.appendChild(facEl("div", { class: "fp-sub", text: "It has draft changes agents do not see yet: open it and press Save." }));
     // Feedback
     const open = facOpenFeedback(s);
     d.appendChild(facEl("h2", { text: `Feedback${open.length ? " (" + open.length + ")" : ""}` }));
     for (const f of open)
-      d.appendChild(facEl("div", { class: "fp-card" }, [`💬 ${f.text}`, facEl("div", { class: "fp-sub", text: `${f.by}${f.release ? ", on v" + f.release : ""}, ${facAgo(f.at)}` }),
+      d.appendChild(facEl("div", { class: "fp-card" }, [`💬 ${f.text}`, facEl("div", { class: "fp-sub", text: `${f.by}, ${facAgo(f.at)}` }),
         facEl("button", { class: "fp-link", text: "handled", onclick: () => facCall("POST", `/factory/skills/${s.id}/feedback/${f.id}/done`).then(reload).catch((e) => facMsg(e.message, true)) })]));
     const fin = facEl("input", { type: "text", placeholder: "What is wrong or missing?", style: "flex:1" });
     d.appendChild(facEl("div", { class: "fp-actions" }, [fin, facEl("button", { text: "Add", onclick: () => fin.value.trim() &&
@@ -11460,15 +11442,6 @@
       return true;
     } catch (e) { facMsg(e.message, true); return false; }
   }
-  async function facUpdate(s, after) {
-    try {
-      const out = await facCall("POST", `/factory/skills/${s.id}/update`, { release: s.latestAccepted });
-      const said = { reloaded: "reloading now", stale: "busy; reload it when done", offline: "at its next start" };
-      if (after) await after();
-      facMsg(`Moved to v${s.latestAccepted}: ` + out.updated.map((u) => `${u.name} (${said[u.result] || u.result})`).join(", "));
-    } catch (e) { facMsg(e.message, true); }
-  }
-
   function facScheduleForm(s, host, btn) {
     if (host.querySelector(".fac-sched")) return;
     btn.disabled = true;
@@ -11515,36 +11488,8 @@
     ]));
   }
 
-  async function facReviewAccept(s, rel) {
-    const prev = [...s.acceptances].sort((a, b) => b.release - a.release)[0];
-    let d = "";
-    try { d = await facCall("GET", `/factory/skills/${s.id}/diff?${prev ? "from=v" + prev.release + "&" : ""}to=v${rel.n}`); } catch (e) { return facMsg(e.message, true); }
-    // Show the changes in the editor's History tab, then ask: what you approve is what you saw.
-    fac.sel = s;
-    fac.view = "edit";
-    fac.edTab = "history";
-    fac.ed = null;
-    facRender();
-    const out = document.getElementById("factoryOut");
-    if (out) { out.hidden = false; out.textContent = `v${rel.n}${prev ? " compared with the approved v" + prev.release : ", the whole skill"}:\n\n` + (d || "(no difference)"); }
-    const granted = (rel.secrets || []).map((n) => n + ((rel.detectedSecrets || []).includes(n) ? " (found in the code)" : ""));
-    const prevRel = prev ? s.releases.find((r) => r.n === prev.release) : null;
-    const added = (rel.secrets || []).filter((n) => !(prevRel && (prevRel.secrets || []).includes(n)));
-    const lines = [`Approve v${rel.n} of "${facTitle(s)}"?`, "", "Read the changes shown on the page first: this is what agents will run.",
-      granted.length ? `Agents running it will RECEIVE these secrets: ${granted.join(", ")}` : "It receives no secret.",
-      prevRel && added.length ? `NEW since v${prev.release}: ${added.join(", ")}` : "",
-      (rel.mcp || []).length ? `It expects these tools on the agent's profile: ${rel.mcp.join(", ")}` : ""].filter((x, i) => x || i === 1);
-    if (!confirm(lines.join("\n"))) return;
-    try {
-      await facCall("POST", `/factory/skills/${s.id}/accept`, { release: rel.n });
-      await facLoad();
-      facRender();
-      facMsg(`v${rel.n} approved. It can now be given to agents.`);
-    } catch (e) { facMsg(e.message, true); }
-  }
-
   async function facDuplicate(s) {
-    const title = prompt(`Name of the variant (it starts from v${facLast(s).n} of "${facTitle(s)}"):`, facTitle(s) + " (variant)");
+    const title = prompt(`Name of the variant (it starts from the saved "${facTitle(s)}"):`, facTitle(s) + " (variant)");
     if (!title) return;
     try {
       const out = await facCall("POST", `/factory/skills/${s.id}/duplicate`, { title: title.trim(), release: facLast(s).n });
@@ -11716,8 +11661,7 @@
     // Center content per tab
     center.appendChild(facEl("div", { class: "fp-doc-head" }, [facAvatar(s, "lg"), facEl("div", {}, [facEl("h1", { text: facTitle(s) }),
       facEl("div", { class: "fp-sub" }, [
-        s.latestAccepted ? facEl("span", { class: "fp-ver live", text: `v${s.latestAccepted} live` }) : facEl("span", { class: "fp-ver draft", text: last ? "not approved yet" : "draft" }),
-        last && last.n !== s.latestAccepted ? facEl("span", { class: "fp-badge warn", style: "margin:0 0 0 6px", text: `v${last.n} waiting for approval` }) : null,
+        facStatus(s).includes("draft") ? facEl("span", { class: "fp-ver draft", text: "draft changes" }) : facEl("span", { class: "fp-ver live", text: "saved" }),
         "  ", ...facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x }))])])]));
     if (fac.edTab === "edit") {
       const desc = facEl("textarea", { rows: "3" });
@@ -11744,11 +11688,12 @@
       const tags = new Map(s.releases.map((r) => [r.commit, r.n]));
       for (const c of ed.log)
         ul.appendChild(facEl("li", { title: "Show this change", onclick: () => facShowDiff(c.commit + "~1", c.commit, c.subject) }, [
-          tags.has(c.commit) ? facEl("span", { class: "fac-badge", text: "v" + tags.get(c.commit) }) : null,
+          tags.has(c.commit) ? facEl("span", { class: "fac-badge", text: "saved" }) : null,
           " " + c.subject, facEl("span", { class: "fac-meta", text: `${c.by || "unknown"} · ${facAgo(c.at)}` })]));
       center.append(ul, facEl("pre", { id: "factoryOut", hidden: true }));
     }
-    // Footer: pending changes, check, save, freeze
+    // Footer: draft changes, check, "Save draft" (agents do not see it) and
+    // "Save" (agents use it: publish route).
     const paintFoot = () => {
       foot.textContent = "";
       const relCommit = last ? last.commit : null;
@@ -11758,14 +11703,14 @@
       const problems = ed.scan ? ed.scan.refusals.length : 0;
       // `append(null)` writes the text "null": only real nodes go in.
       foot.append(...[
-        facEl("span", {}, [facEl("b", { text: since.length ? `${since.length} change${since.length > 1 ? "s" : ""} ${last ? "since v" + last.n : "so far"}` : last ? `same as v${last.n}` : "empty draft" }),
+        facEl("span", {}, [facEl("b", { text: since.length ? `${since.length} draft change${since.length > 1 ? "s" : ""} agents do not see yet` : last ? "Saved: agents use this" : "Empty draft" }),
           since.length ? facEl("span", { class: "fp-sub", text: ` · ${who}, ${facAgo(since[0].at)}` }) : null]),
         dirty() ? facEl("span", { class: "fp-warn", text: "unsaved edits" }) : null,
         ed.scan ? facEl("span", { class: problems ? "fp-ko" : "fp-ok", text: problems ? `✗ ${problems} problem${problems > 1 ? "s" : ""} to fix` : "✓ check passed" }) : null,
         facEl("span", { class: "fp-sp" }),
-        facEl("button", { text: "See changes", onclick: async () => { await facKeepDraft(); fac.edTab = "history"; facRender(); setTimeout(() => facShowDiff(last ? "v" + last.n : null, "main", last ? `Changes since v${last.n}` : "The whole draft"), 50); } }),
-        facEl("button", { text: "Save", disabled: !dirty(), onclick: () => facSaveDoc() }),
-        facEl("button", { class: "primary", text: last ? `Freeze as v${last.n + 1}` : "Freeze as v1", disabled: !since.length && !dirty(), onclick: () => facFreeze() }),
+        since.length ? facEl("button", { text: "See draft changes", onclick: async () => { await facKeepDraft(); fac.edTab = "history"; facRender(); setTimeout(() => facShowDiff(last ? "v" + last.n : null, "main", last ? "Draft changes agents do not see yet" : "The whole draft"), 50); } }) : null,
+        facEl("button", { text: "Save draft", title: "Keep your edits; agents keep using the last saved version", disabled: !dirty(), onclick: () => facSaveDoc() }),
+        facEl("button", { class: "primary", text: "Save", title: "Agents with this skill use it from now on", disabled: !since.length && !dirty() && !!last && facAccepted(s, last), onclick: () => facPublish() }),
       ].filter(Boolean));
     };
     paintFoot();
@@ -11839,17 +11784,18 @@
     } catch (e) { facMsg(e.message, true); return false; }
   }
 
-  async function facFreeze() {
+  /** "Save": what is saved is what agents run (POST …/publish). */
+  async function facPublish() {
     const s = fac.sel, ed = fac.ed;
     if (ed && (ed.desc !== ed.saved.desc || ed.body !== ed.saved.body) && !(await facSaveDoc(true))) return;
-    const note = prompt("What changed in this version? (one line, optional)") ?? null;
-    if (note === null) return;
     try {
-      const out = await facCall("POST", `/factory/skills/${s.id}/release`, { note, accept: true });
+      const out = await facCall("POST", `/factory/skills/${s.id}/publish`, {});
       const warn = (out.release.warnings || []).map((w) => "! " + facFinding(w)).join("\n");
+      const secrets = [...new Set([...(out.release.secrets || []), ...(out.release.detectedSecrets || [])])];
+      const n = out.updated.length;
       await facReloadEd();
-      const behind = fac.sel.attachedTo.filter((a) => a.update).length;
-      facMsg(`v${out.release.n} frozen and approved.${behind ? ` ${behind} agent${behind > 1 ? "s" : ""} still on an older version: update them from the list.` : ""}` + (warn ? "\n" + warn : ""));
+      facMsg("Saved." + (n ? ` ${n} agent${n > 1 ? "s" : ""} now use${n > 1 ? "" : "s"} it.` : "")
+        + (secrets.length ? `\nAgents running it get: ${secrets.join(", ")}.` : "") + (warn ? "\n" + warn : ""));
     } catch (e) { facMsg(e.message, true); }
   }
 
@@ -11951,7 +11897,7 @@
     for (const s of usable)
       box.appendChild(facEl("label", { class: "fac-chk", title: s.description || "" }, [
         facEl("input", { type: "checkbox", value: s.id, "data-release": String(s.latestAccepted) }),
-        ` ${s.title || s.name} · v${s.latestAccepted}`,
+        ` ${s.title || s.name}`,
       ]));
   }
   function facPickedSkills() {

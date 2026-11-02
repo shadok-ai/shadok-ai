@@ -7,9 +7,10 @@ description: Work on a Skill Factory skill — pull it into a clone, edit and te
 
 A factory skill is a git history held by the shadok server, which is the
 `origin`. Several people and agents work on the same skill: you edit a
-**clone**, commit with plain git, and **push**. A person then freezes a
-**release** and attaches it to the agents that should run it. Releasing,
-accepting and attaching are human clicks: you cannot, and should not try to.
+**clone**, commit with plain git, and **push**. What you push is a draft: a
+person presses **Save** in the Skills page to make it what agents run, and
+gives it to the agents that should run it. Those are human clicks: you cannot,
+and should not try to.
 
 ```bash
 F=~/.claude/skills/shadok-factory/scripts/factory.mjs

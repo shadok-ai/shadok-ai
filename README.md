@@ -276,14 +276,14 @@ Enter to skip; you can add it later from the web UI).
   **Skills** page, with a slide; click it again to come back. Write a Claude
   Code skill together, people and agents alike, then run it in the agents and
   crons that need it.
-  - **The list.** Every skill with its tags, who it is shared with, its version,
-    where it is used, and how many times it ran this week. It can be filtered by
-    tag, by "shared with" and by status (to approve, update available, unused,
-    feedback, archived). Ticked rows can be shared, tagged, updated or archived
-    in one go.
+  - **The list.** Every skill with its tags, who it is shared with, whether it
+    is saved or carries draft changes, where it is used, and how many times it
+    ran this week. It can be filtered by tag, by "shared with" and by status
+    (draft changes, unused, feedback, archived). Ticked rows can be shared,
+    tagged or archived in one go.
   - **The detail panel.** Its numbers, where it runs (group by group: each
-    agent, its version, its schedule, its runs), its version and the secrets it
-    receives, and its feedback.
+    agent, its schedule, its runs), the secrets agents running it get, and its
+    feedback.
   - **Sharing.** A skill is shared with **only me**, with **one or more
     groups**, or with **everyone**. Sharing keeps lists short; it is not a
     lock. "Only me" hides the skill from everyone else. A group skill is offered
@@ -293,19 +293,18 @@ Enter to skip; you can add it later from the web UI).
     the middle, the skill reads as one document: *When to use it*,
     *Instructions*, *Needs*, with the scripts folded away for developers. On the
     right, **change it by prompt**: a `Shadok-Skillsmith` agent edits, tests and
-    pushes, and its changes show up in the document. Both paths land in one
-    "N changes since vX" bar, with **Freeze as vX+1**.
-  - **Running.** A frozen version is approved, after its diff and the secrets
-    it will receive are shown. Then it is given to an agent (loaded with
+    pushes, and its changes show up in the document. Two buttons, no versions
+    to manage: **Save draft** keeps your edits while agents keep running the
+    last saved skill, and **Save** makes it what they run (`POST
+    …/publish`). Agents that have it move to it at once, idle ones reload.
+  - **Running.** A saved skill is given to an agent (loaded with
     `--plugin-dir` at its next reload, as `<name>:<name>`), or scheduled on one
     with **Run on a schedule…**. An agent can also be born with it, from the
-    new-agent dialog or with `pilotctl spawn --skill`.
-  - **Updates and feedback.** **Update agents** moves the agents on an older
-    version and reloads the idle ones. Agents report problems with
-    `factory.mjs feedback`.
-  - **Secrets travel by name.** A version receives the secrets it declares,
-    plus any vault name its code reads. A save or push holding a vault value is
-    refused.
+    new-agent dialog or with `pilotctl spawn --skill`. Agents report problems
+    with `factory.mjs feedback`.
+  - **Secrets travel by name.** A saved skill gives the agents running it the
+    secrets it declares, plus any vault name its code reads; the panel and the
+    Save message name them. A save or push holding a vault value is refused.
   - **Also:** import from `~/.claude/skills`, make a variant, archive.
   - Design: `docs/superpowers/specs/2026-10-29-skill-factory-design.md`.
 - **Diff panel** — what an agent actually changed, against its base.
