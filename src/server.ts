@@ -52,7 +52,7 @@ import {
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
-import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
+import { accountsEnabled, deploymentMode, probeCanProvision, isolationRefusal } from "./capability.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
 import {
@@ -100,8 +100,15 @@ import {
 } from "./telegram.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
-import { viewerFor, canResumeAs, canRestartInto, type Viewer, type Group } from "./groups.js";
-import { resolveSpawnIsolation } from "./osusers.js";
+import { viewerFor, canResumeAs, canRestartInto, MAIN_GROUP_ID, type Viewer, type Group, type Nature } from "./groups.js";
+import {
+  resolveSpawnIsolation,
+  provisionGroupUser,
+  teardownGroupUser,
+  groupDeleteVerdict,
+  osUserFor,
+  DEFAULT_HOME_BASE,
+} from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
   peerFileFor,
@@ -2074,6 +2081,139 @@ app.put("/groups", (req, res) => {
   saveGroups(Array.isArray(req.body) ? req.body : []);
   res.json({ ok: true });
 });
+
+// ── Privileged group lifecycle (multi-tenant): provision on create, tear down
+// on delete. These are the ONLY paths that create/destroy an OS user, so the
+// DEPLOYMENT_MODE gate and the honest-failure rules (T3/T4) all live here. ──────
+
+/** Where a group's HOME is created (`SHADOK_HOME_BASE` override, else `/home`). */
+const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_HOME_BASE;
+
+/** Run a privileged account command. Root runs it directly; otherwise go through
+ *  NON-interactive sudo (`-n`) so a MISSING right fails fast with a non-zero exit
+ *  instead of prompting — the T3 false positive (sudoers allows `true` but not
+ *  `useradd`) surfaces here and `provisionGroupUser` turns it into a refusal. */
+function runPrivileged(cmd: string, argv: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let c = cmd;
+    let a = argv;
+    if (typeof process.getuid === "function" && process.getuid() !== 0) {
+      a = ["-n", c, ...a];
+      c = "sudo";
+    }
+    const p = spawnChild(c, a, { stdio: ["ignore", "inherit", "inherit"], timeout: 60_000 });
+    p.on("error", reject);
+    p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with code ${code}`))));
+  });
+}
+
+/** Seed a freshly-provisioned HOME. The directory itself is created+owned by
+ *  `useradd --create-home`; the per-HOME `~/.claude` seeding, the credential
+ *  symlink (Task 7) and the shared mount (Task 12) hang off this hook in their
+ *  own tasks. Kept async+injectable so provisioning fails honestly if it grows a
+ *  real step that can fail. */
+async function seedGroupHome(home: string): Promise<void> {
+  console.log(`groups: provisioned HOME ${home} (per-HOME ~/.claude seeding lands in Task 7/12)`);
+}
+
+/** Does an OS user already exist? Used to make provisioning idempotent. */
+async function osUserExists(u: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    execFile("id", ["-u", u], { timeout: 5000 }, (err) => resolve(!err));
+  });
+}
+
+/** Best-effort: end every channel that belongs to a group (used on teardown). */
+async function killGroupAgents(groupId: string): Promise<void> {
+  const ids = loadChannels().filter((c) => c.group === groupId).map((c) => c.sessionId);
+  for (const id of ids) await endChannel(id).catch(() => {});
+}
+
+// Create a group. A private/restricted group needs the privileged deployment:
+// refuse CLEARLY in mono-tenant (isolationRefusal) rather than create a group
+// that cannot actually isolate. A public group provisions nothing (commons).
+app.post("/groups", async (req, res) => {
+  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
+    return res.status(409).json({ error: "instance-mismatch" });
+  }
+  const me = currentAccount(req);
+  if (!me) return res.status(403).json({ error: "sign in to create a group" });
+  const body = req.body ?? {};
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const nature: Nature =
+    body.nature === "private" || body.nature === "restricted" || body.nature === "public" ? body.nature : "restricted";
+  if (!name) return res.status(400).json({ error: "name required" });
+
+  if (nature !== "public") {
+    const refusal = isolationRefusal(DEPLOYMENT_MODE);
+    if (refusal) return res.status(409).json({ error: refusal });
+  }
+
+  const id = randomUUID();
+  const g: Group = { id, name, nature, members: nature === "restricted" ? [me.name] : [], createdAt: Date.now(), osUser: null };
+  if (nature === "private") g.owner = me.name;
+  g.osUser = osUserFor(g);
+
+  // Provision the OS user BEFORE persisting the group: if provisioning fails
+  // honestly (T3), the group is never written, so no later spawn can try to drop
+  // to a user that does not exist (which would silently fail to isolate).
+  if (nature !== "public" && DEPLOYMENT_MODE === "multi-tenant") {
+    try {
+      await provisionGroupUser(g, {
+        run: runPrivileged,
+        seed: seedGroupHome,
+        homeBase: GROUP_HOME_BASE,
+        userExists: osUserExists,
+      });
+    } catch (e) {
+      console.error(`groups: provisioning ${g.id} failed:`, (e as Error)?.message ?? e);
+      return res.status(500).json({ error: `could not provision the group's user: ${(e as Error)?.message ?? e}` });
+    }
+  }
+
+  const list = loadGroups();
+  if (list.some((x) => x.id === g.id)) return res.status(409).json({ error: "group already exists" });
+  saveGroups([...list, g]);
+  res.json({ ok: true, group: g });
+});
+
+// Delete a group: tear down its OS user and never strand its channels.
+app.delete("/groups", async (req, res) => {
+  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
+    return res.status(409).json({ error: "instance-mismatch" });
+  }
+  const me = currentAccount(req);
+  if (!me) return res.status(403).json({ error: "sign in to delete a group" });
+  const id = String(req.query.id ?? body_id(req)).trim();
+  if (!id) return res.status(400).json({ error: "group id required" });
+  if (id === MAIN_GROUP_ID) return res.status(409).json({ error: "the main group cannot be deleted" });
+
+  const list = loadGroups();
+  const g = list.find((x) => x.id === id);
+  if (!g) return res.status(404).json({ error: "no such group" });
+
+  // T4 carry (fail-closed): refuse while channels still reference the group —
+  // reassigning them to the commons would turn a confidential group's agents
+  // public, and leaving the id dangling would HIDE them (visibleChannels).
+  const verdict = groupDeleteVerdict(id, loadChannels());
+  if (!verdict.ok) return res.status(409).json({ error: verdict.error });
+
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    // Best-effort, never throws into the caller — a delete always completes.
+    await teardownGroupUser(g, {
+      run: runPrivileged,
+      homeBase: GROUP_HOME_BASE,
+      killAgents: () => killGroupAgents(id),
+    });
+  }
+  saveGroups(list.filter((x) => x.id !== id));
+  res.json({ ok: true });
+});
+
+/** The group id may arrive on the query string or in a JSON body. */
+function body_id(req: { body?: any }): string {
+  return typeof req.body?.id === "string" ? req.body.id : "";
+}
 
 // Central secret vault (global, stored 600 outside any repo). Values are NEVER
 // returned — only names. A profile references names to inject them.

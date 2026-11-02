@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { osUserFor, dropArgv, resolveSpawnIsolation } from "../src/osusers.js";
+import {
+  osUserFor,
+  dropArgv,
+  resolveSpawnIsolation,
+  provisionPlan,
+  provisionGroupUser,
+  teardownGroupUser,
+  groupDeleteVerdict,
+} from "../src/osusers.js";
 import { spawnGroupFor, MAIN_GROUP_ID, type Group } from "../src/groups.js";
 
 const main: Group = { id: MAIN_GROUP_ID, name: "Main", nature: "public", members: [], createdAt: 0 };
@@ -138,4 +146,160 @@ test("resolveSpawnIsolation: a resume of a commons (group-less) agent stays on t
     storedGroupId: null,
   });
   assert.deepEqual(r, { user: null, groupPatch: {} });
+});
+
+// ── provisionPlan (pure) ──────────────────────────────────────────────────────
+
+test("provisionPlan: a public group provisions NOTHING (commons = the server's own user)", () => {
+  assert.equal(provisionPlan(main, "/home"), null);
+});
+
+test("provisionPlan: a restricted group yields the exact useradd argv and HOME path", () => {
+  assert.deepEqual(provisionPlan(comex, "/home"), {
+    user: "sk-comex",
+    home: "/home/sk-comex",
+    useradd: ["useradd", "--create-home", "--home-dir", "/home/sk-comex", "sk-comex"],
+    seedHome: true,
+  });
+});
+
+test("provisionPlan: a private group gets its own user, HOME under the given base", () => {
+  assert.deepEqual(provisionPlan(adaPriv, "/srv/homes"), {
+    user: "sk-ada-priv",
+    home: "/srv/homes/sk-ada-priv",
+    useradd: ["useradd", "--create-home", "--home-dir", "/srv/homes/sk-ada-priv", "sk-ada-priv"],
+    seedHome: true,
+  });
+});
+
+// ── provisionGroupUser (impure, injected deps) ────────────────────────────────
+
+test("provisionGroupUser: a public group provisions nothing (null; run/seed untouched)", async () => {
+  let ran = 0;
+  let seeded = 0;
+  const r = await provisionGroupUser(main, {
+    run: async () => void ran++,
+    seed: async () => void seeded++,
+    homeBase: "/home",
+  });
+  assert.equal(r, null);
+  assert.equal(ran, 0);
+  assert.equal(seeded, 0);
+});
+
+test("provisionGroupUser: a NEW user runs useradd then seeds HOME", async () => {
+  const calls: Array<[string, string[]]> = [];
+  let seededHome: string | null = null;
+  const r = await provisionGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    seed: async (home) => void (seededHome = home),
+    homeBase: "/home",
+    userExists: async () => false,
+  });
+  assert.deepEqual(r, { osUser: "sk-comex", home: "/home/sk-comex" });
+  assert.deepEqual(calls, [["useradd", ["--create-home", "--home-dir", "/home/sk-comex", "sk-comex"]]]);
+  assert.equal(seededHome, "/home/sk-comex");
+});
+
+test("provisionGroupUser: an EXISTING user is reused — useradd is skipped, HOME still seeded (idempotent)", async () => {
+  const calls: Array<[string, string[]]> = [];
+  let seeded = 0;
+  const r = await provisionGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    seed: async () => void seeded++,
+    homeBase: "/home",
+    userExists: async () => true,
+  });
+  assert.deepEqual(r, { osUser: "sk-comex", home: "/home/sk-comex" });
+  assert.deepEqual(calls, []); // useradd never ran
+  assert.equal(seeded, 1); // seeding is idempotent and always runs
+});
+
+test("provisionGroupUser: THROWS when useradd fails (T3 carry — a false-positive sudo probe must surface)", async () => {
+  await assert.rejects(
+    provisionGroupUser(comex, {
+      run: async () => {
+        throw new Error("useradd: Permission denied");
+      },
+      seed: async () => {},
+      homeBase: "/home",
+      userExists: async () => false,
+    }),
+    /useradd failed/,
+  );
+});
+
+test("provisionGroupUser: THROWS when seeding HOME fails (never silently continue)", async () => {
+  await assert.rejects(
+    provisionGroupUser(comex, {
+      run: async () => {},
+      seed: async () => {
+        throw new Error("disk full");
+      },
+      homeBase: "/home",
+      userExists: async () => false,
+    }),
+    /seeding/,
+  );
+});
+
+// ── teardownGroupUser (impure, best-effort, never throws) ─────────────────────
+
+test("teardownGroupUser: a public group tears down nothing (null user)", async () => {
+  let ran = 0;
+  let killed = 0;
+  await teardownGroupUser(main, {
+    run: async () => void ran++,
+    homeBase: "/home",
+    killAgents: async () => void killed++,
+  });
+  assert.equal(ran, 0);
+  assert.equal(killed, 0);
+});
+
+test("teardownGroupUser: a restricted group kills its agents then userdel --remove", async () => {
+  const calls: Array<[string, string[]]> = [];
+  let killedFirst = false;
+  await teardownGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    homeBase: "/home",
+    killAgents: async () => void (killedFirst = calls.length === 0),
+  });
+  assert.equal(killedFirst, true); // agents killed BEFORE userdel
+  assert.deepEqual(calls, [["userdel", ["--remove", "sk-comex"]]]);
+});
+
+test("teardownGroupUser: NEVER throws when userdel fails (best-effort, swallow-and-log)", async () => {
+  await assert.doesNotReject(
+    teardownGroupUser(comex, {
+      run: async () => {
+        throw new Error("userdel: user is logged in");
+      },
+      homeBase: "/home",
+    }),
+  );
+});
+
+test("teardownGroupUser: a failing killAgents is swallowed and userdel still runs", async () => {
+  const calls: Array<[string, string[]]> = [];
+  await teardownGroupUser(comex, {
+    run: async (cmd, argv) => void calls.push([cmd, argv]),
+    homeBase: "/home",
+    killAgents: async () => {
+      throw new Error("kill blew up");
+    },
+  });
+  assert.deepEqual(calls, [["userdel", ["--remove", "sk-comex"]]]);
+});
+
+// ── groupDeleteVerdict (pure — the T4-carry anti-dangling rule) ───────────────
+
+test("groupDeleteVerdict: a group with no channels is deletable", () => {
+  assert.deepEqual(groupDeleteVerdict("comex", [{ group: "main" }, {}]), { ok: true });
+});
+
+test("groupDeleteVerdict: REFUSE while channels still reference the group (fail-closed, no dangling id)", () => {
+  const v = groupDeleteVerdict("comex", [{ group: "comex" }, { group: "main" }, { group: "comex" }]);
+  assert.equal(v.ok, false);
+  if (!v.ok) assert.match(v.error, /2 channel/);
 });
