@@ -1,3 +1,6 @@
+import pty from "node-pty";
+import { claudeCommand } from "./claude-bin.js";
+
 /**
  * In-cockpit provisioning of the long-lived subscription token
  * (`MT_CLAUDE_OAUTH_TOKEN`), the credential a multi-tenant instance injects into
@@ -68,4 +71,190 @@ export function parseSetupTokenOutcome(chunk: string): "invalid-code" | null {
 export function parseSetupToken(chunk: string): string | null {
   const m = stripTokenEscapes(chunk).match(/sk-ant-oat01-[A-Za-z0-9_-]+/);
   return m ? m[0] : null;
+}
+
+// ─── The flow (impure, PTY-driven) ───────────────────────────────────────────
+
+type IPty = ReturnType<typeof pty.spawn>;
+
+/** The OAuth URL expires anyway; a child holding the PTY forever is worse. */
+const FLOW_IDLE_MS = 10 * 60_000;
+/** Wide enough that the ~100-char token never line-wraps (a hard wrap inserts a
+ *  real newline no escape-strip can undo). */
+const PTY_COLS = 400;
+
+type Verdict =
+  | { kind: "success"; token: string }
+  | { kind: "invalid-code" }
+  | { kind: "ended" }
+  | { kind: "timeout" };
+
+interface Flow {
+  proc: IPty;
+  /** The OAuth URL this child printed, once it has. */
+  url: string | null;
+  /** PTY output accumulated since the last code submission (reset per submit). */
+  out: string;
+  /** Resolver waiting on the verdict for the code we just wrote. */
+  pending: ((v: Verdict) => void) | null;
+  ended: boolean;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/**
+ * ONE flow at a time for the whole instance (the credential is machine-global),
+ * shared by the web card and Telegram exactly like the sign-in flow — a code
+ * pasted from either finishes the other's.
+ */
+let flow: Flow | null = null;
+
+export function setupTokenPending(): boolean {
+  return flow !== null && !flow.ended;
+}
+
+export function cancelSetupToken(): void {
+  if (!flow) return;
+  clearTimeout(flow.timer);
+  try {
+    flow.proc.kill();
+  } catch {
+    /* already gone */
+  }
+  flow = null;
+}
+
+/**
+ * Start `claude setup-token` on a PTY and resolve its OAuth URL. Reuses a live
+ * flow that already printed a URL (a reload or a second door must not kill the
+ * link the operator is looking at — each flow carries its own PKCE challenge).
+ */
+export async function startSetupToken(): Promise<{ url: string } | { error: string }> {
+  if (flow && !flow.ended && flow.url) return { url: flow.url };
+  cancelSetupToken();
+  let proc: IPty;
+  try {
+    proc = pty.spawn(claudeCommand(), ["setup-token"], {
+      name: "xterm-256color",
+      cols: PTY_COLS,
+      rows: 40,
+      cwd: process.cwd(),
+      // Neutralise BROWSER so the CLI never opens a tab on the SERVER's machine.
+      env: { ...process.env, BROWSER: "/usr/bin/true" },
+    });
+  } catch (e) {
+    return { error: "could not start claude setup-token: " + (e instanceof Error ? e.message : String(e)) };
+  }
+  const f: Flow = {
+    proc,
+    url: null,
+    out: "",
+    pending: null,
+    ended: false,
+    timer: setTimeout(() => cancelSetupToken(), FLOW_IDLE_MS),
+  };
+  flow = f;
+
+  const settle = (v: Verdict) => {
+    const done = f.pending;
+    f.pending = null;
+    done?.(v);
+  };
+  // The whole stream is scanned for the URL; only AFTER a code is submitted
+  // (f.pending set) do we look for the token or the refusal. parseSetupToken
+  // never matches the URL stage, so a stray early match is impossible anyway.
+  let all = "";
+  proc.onData((d: string) => {
+    all += d;
+    if (!f.url) {
+      const u = parseSetupTokenUrl(all);
+      if (u) f.url = u;
+    }
+    if (f.pending) {
+      f.out += d;
+      const tok = parseSetupToken(f.out);
+      if (tok) {
+        settle({ kind: "success", token: tok });
+      } else if (parseSetupTokenOutcome(f.out) === "invalid-code") {
+        settle({ kind: "invalid-code" });
+      }
+    }
+  });
+  proc.onExit(() => {
+    f.ended = true;
+    if (f.pending) {
+      const tok = parseSetupToken(f.out);
+      settle(tok ? { kind: "success", token: tok } : { kind: "ended" });
+    }
+  });
+
+  return new Promise((resolve) => {
+    const deadline = setTimeout(() => {
+      cancelSetupToken();
+      resolve({ error: "claude setup-token printed no URL within 30s" });
+    }, 30_000);
+    const poll = setInterval(() => {
+      if (f.url) {
+        clearInterval(poll);
+        clearTimeout(deadline);
+        resolve({ url: f.url });
+      } else if (flow !== f || f.ended) {
+        clearInterval(poll);
+        clearTimeout(deadline);
+        resolve({ error: "the setup-token process ended before printing a URL" });
+      }
+    }, 100);
+  });
+}
+
+/**
+ * Submit the pasted code. Success = the token appears AND the child settles —
+ * never a guessed success string (the invalid-code wording is the only one the
+ * CLI gives us). On success the token is handed to `store` and the flow is torn
+ * down; the token is NEVER returned, logged, or surfaced in an error.
+ */
+export async function submitSetupTokenCode(
+  code: string,
+  store: (token: string) => void,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const f = flow;
+  if (!f || f.ended) return { ok: false, error: "no setup-token flow is in progress — start one first" };
+  const trimmed = code.trim();
+  if (!trimmed) return { ok: false, error: "empty code" };
+
+  clearTimeout(f.timer);
+  f.timer = setTimeout(() => cancelSetupToken(), FLOW_IDLE_MS);
+  // Forget prior output so a stale "Invalid code" is not read as THIS verdict.
+  f.out = "";
+
+  const verdict = await new Promise<Verdict>((resolve) => {
+    const t = setTimeout(() => {
+      f.pending = null;
+      resolve({ kind: "timeout" });
+    }, 30_000);
+    f.pending = (v) => {
+      clearTimeout(t);
+      resolve(v);
+    };
+    // The "Paste code here >" prompt reads a line; a PTY submits on CR.
+    f.proc.write(trimmed + "\r");
+  });
+
+  if (verdict.kind === "success") {
+    try {
+      store(verdict.token);
+    } catch (e) {
+      // Do not leak the token in the error; the flow stays open for a retry.
+      return { ok: false, error: "storing the token failed: " + (e instanceof Error ? e.message : "unknown") };
+    } finally {
+      // Scrub the buffer holding the token, then tear the flow down.
+      f.out = "";
+    }
+    cancelSetupToken();
+    return { ok: true };
+  }
+  if (verdict.kind === "invalid-code")
+    return { ok: false, error: "Invalid code. Please make sure the full code was copied." };
+  if (verdict.kind === "ended")
+    return { ok: false, error: "the setup-token flow ended — start a new one and try again" };
+  return { ok: false, error: "the CLI did not answer within 30s" };
 }
