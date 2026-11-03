@@ -1,7 +1,7 @@
 import { randomUUID, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import { newRequest, askVerdict, approveVerdict, cancelVerdict, dueRequests, expire, upsertRequest, requestsFor, describeRequest, loadRequests, saveRequests, isOpen, REQUEST_TTL_MS, type AdminRequest, type RequestKind } from "./admin-requests.js";
 import { recordEvent, loadEvents, saveEvents, inboxFor, markSeen, notMeEffect, describeEvent, type SecEvent } from "./security-events.js";
-import { execFile, execFileSync, spawn as spawnChild } from "node:child_process";
+import { execFile, execFileSync, spawnSync, spawn as spawnChild } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -39,6 +39,10 @@ import { ensureClaudeHome, ensureProjectTrusted,
   getDefaultModel,
   setDefaultModel,
   parseClaudeVersion,
+  seedPlan,
+  settingsPlan,
+  type ClaudeHome,
+  type ClaudeSettings,
 } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { readTokenExpiry } from "./claude-creds.js";
@@ -135,6 +139,7 @@ import {
   resolveSpawnIsolation,
   osUserFor,
   homeForUser,
+  runAsUser,
   provisionGroupUser,
   teardownGroupUser,
   reconcileGroupProvisioning,
@@ -4841,6 +4846,86 @@ function currentClaudeVersion(): string | null {
   return v;
 }
 
+/**
+ * Run a command AS a group's OS user, SYNCHRONOUSLY, for spawn-time HOME
+ * seeding. Mirrors `runPrivileged`'s sudo-when-non-root rule, but sync (the seed
+ * must land before the claude process reads its config) and able to pass stdin /
+ * capture stdout. `runAsUser` builds the `runuser -u <user> -- …` wrapping shared
+ * with the provisioning plans, so the privilege drop is byte-for-byte identical.
+ */
+function spawnAsUserSync(user: string, cmd: string, argv: string[], input?: string): { ok: boolean; stdout: string } {
+  let [c, a] = runAsUser(user, cmd, argv);
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    a = ["-n", c, ...a];
+    c = "sudo";
+  }
+  const r = spawnSync(c, a, { input, encoding: "utf8", timeout: 15_000 });
+  return { ok: r.status === 0, stdout: typeof r.stdout === "string" ? r.stdout : "" };
+}
+
+/** Atomic write of `content` to `file`, performed AS `user` (tee to a temp then
+ *  mv, both dropped to the user) so root never writes through a 0700 HOME it does
+ *  not own — an agent could plant a symlink there otherwise (same TOCTOU rule as
+ *  the provisioning plans' root/user split). */
+function writeAsUserAtomic(user: string, file: string, content: string): void {
+  const dir = file.slice(0, file.lastIndexOf("/"));
+  const tmp = `${file}.shadok.tmp`;
+  spawnAsUserSync(user, "mkdir", ["-p", dir]);
+  if (!spawnAsUserSync(user, "tee", [tmp], content).ok) throw new Error(`tee ${tmp} failed`);
+  if (!spawnAsUserSync(user, "mv", ["-f", tmp, file]).ok) throw new Error(`mv ${tmp} → ${file} failed`);
+}
+
+/**
+ * Seed Claude Code's first-run state into a DROPPED group agent's OWN HOME —
+ * `<home>/.claude.json` (global onboarding + this worktree's trust) and
+ * `<home>/.claude/settings.json`. An isolated-group agent runs as `sk-<id>` with
+ * HOME `/home/sk-<id>` (not /root), so the boot-time `ensureClaudeHome` seeding of
+ * the SERVER's HOME never reaches it: without this EVERY private/restricted agent
+ * opened on Claude Code's theme picker + per-directory trust dialog and never
+ * reached a prompt (the zombie shape of invariant 23).
+ *
+ * Runs AS THE GROUP USER (never root writing into a HOME it does not own),
+ * SYNCHRONOUSLY (the files must exist before claude reads them) and ADDITIVELY
+ * (reuses the pure `seedPlan`/`settingsPlan`, so a value the agent already set is
+ * kept and other worktrees' trust survives). Best-effort: a failure is logged,
+ * never fatal — a first-run screen beats a refused spawn. NB: this does NOT yet
+ * seed the shadok SKILLS into the group HOME (they live only in the server's
+ * ~/.claude/skills); that gap is tracked separately.
+ */
+function seedGroupAgentHome(user: string, home: string, cwd: string): void {
+  const version = currentClaudeVersion() ?? "0.0.0";
+  const readObj = (file: string): Record<string, unknown> | null => {
+    const r = spawnAsUserSync(user, "cat", [file]);
+    if (!r.ok || !r.stdout.trim()) return {}; // absent / empty → seed from scratch
+    try {
+      const p = JSON.parse(r.stdout);
+      // Unreadable/!object → null: "leave it alone", never clobber (same rule as
+      // claude-home's readHome).
+      return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  };
+  try {
+    const homeJson = `${home}/.claude.json`;
+    const existing = readObj(homeJson);
+    if (existing) {
+      const plan = seedPlan(existing as ClaudeHome, { version, cwd });
+      if (plan) writeAsUserAtomic(user, homeJson, JSON.stringify(plan, null, 2));
+    } else {
+      console.log(`claude-home: ${homeJson} unreadable — left alone, first-run screens may appear`);
+    }
+    const settingsJson = `${home}/.claude/settings.json`;
+    const sExisting = readObj(settingsJson);
+    if (sExisting) {
+      const splan = settingsPlan(sExisting as ClaudeSettings);
+      if (splan) writeAsUserAtomic(user, settingsJson, JSON.stringify(splan, null, 2));
+    }
+  } catch (e) {
+    console.log(`claude-home: could not seed group HOME ${home} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function makePilot(
   id: string,
   cwd: string,
@@ -4931,6 +5016,12 @@ function makePilot(
   // group → GROUP_HOME_BASE/sk-<id>), so the spawn's HOME is exactly where the
   // credential was provisioned. Undefined without a drop user → HOME left as today.
   const home = user ? homeForUser(user, GROUP_HOME_BASE) : undefined;
+  // A dropped agent reads its OWN HOME, not the server's: seed the onboarding +
+  // trust there too, or every isolated-group agent stalls on the theme picker and
+  // the per-directory trust dialog. `ensureProjectTrusted(cwd)` above seeds the
+  // SERVER's HOME (still needed for a commons/mono agent that runs as the server
+  // user); this adds the same state to the group user's HOME, as that user.
+  if (user && home) seedGroupAgentHome(user, home, cwd);
   // Isolated groups share the subscription token, injected in the forced-last
   // env layer. Mono-tenant (no user) reads and passes nothing.
   const oauthToken = user
