@@ -6358,6 +6358,36 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const paneCwd = tmuxPaneCwd("sk-" + id);
             if (paneCwd && fs.existsSync(paneCwd)) effectiveCwd = paneCwd;
           }
+          // MT-token guard, hoisted ABOVE `createWorktree`: a refusal must leave NO
+          // worktree/branch behind (a token-less retry loop would otherwise pile up
+          // empty checkouts). Keyed on the same `dropUser` the spawn will use; the
+          // late call below re-checks the (resume / live-attach) paths unchanged.
+          const mtRefusal = (dropUser: string | null | undefined): string | null => {
+            const m = mtCredentialMessage(
+              mtTokenNeeded(!!dropUser, sessionBackend(gateProfile(msg)).kind === "custom"),
+              !!secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"],
+            );
+            if (m && !mtTokenWarned) {
+              mtTokenWarned = true;
+              console.error(`mt: ${m}`);
+            }
+            return m ?? null;
+          };
+          if (!resumed) {
+            // A new spawn has no stored group; same inputs as the isolation
+            // resolution further down.
+            const earlyIso = resolveSpawnIsolation({
+              mode: DEPLOYMENT_MODE,
+              resumed,
+              viewer: viewerFor(me),
+              groups: loadGroups(),
+              storedGroupId: null,
+            });
+            const earlyUser =
+              earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+            const earlyMsg = mtRefusal(earlyUser);
+            if (earlyMsg) return fail(earlyMsg);
+          }
           if (msg.worktree && !resumed && isGitRepo(cwd)) {
             try {
               worktree = createWorktree(cwd, id.slice(0, 8));
@@ -6553,17 +6583,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // handed to makePilot — and skipped for a custom backend, which uses its
           // own key and never the subscription. Without the token, say so plainly
           // instead of letting the spawn die on a bare auth error.
-          const mtMsg = mtCredentialMessage(
-            mtTokenNeeded(!!dropUser, sessionBackend(gateProfile(msg)).kind === "custom"),
-            !!secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"],
-          );
-          if (mtMsg) {
-            if (!mtTokenWarned) {
-              mtTokenWarned = true;
-              console.error(`mt: ${mtMsg}`);
-            }
-            return fail(mtMsg);
-          }
+          const mtMsg = mtRefusal(dropUser);
+          if (mtMsg) return fail(mtMsg);
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
