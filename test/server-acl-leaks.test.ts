@@ -108,13 +108,11 @@ test("listableGroups: a non-member omits a restricted group's row AND a foreign 
   const seen = listableGroups(withPrivate, viewerFor(bob)).map((g) => g.id);
   assert.deepEqual(seen.sort(), ["bob-priv", "main"]);
 });
-test("listableGroups: an ADMIN non-member SEES restricted groups but NOT a foreign private group", () => {
-  // The admin nuance: root administers COMEX's membership/secrets without being a
-  // member, so COMEX's row (existence + members) MUST survive — a plain
-  // canSeeGroup would wrongly hide it. But a private group root does not own stays
-  // hidden: "a private group is invisible even to an admin". root owns none here.
+test("listableGroups: an ADMIN non-member sees public only: no restricted, no foreign private", () => {
+  // Operator decision 2026-11-03: an admin sees only member-of + public groups.
+  // root is in neither COMEX nor any private group here.
   const seen = listableGroups(withPrivate, viewerFor(admin)).map((g) => g.id);
-  assert.deepEqual(seen.sort(), ["comex", "main"]);
+  assert.deepEqual(seen.sort(), ["main"]);
   assert.ok(!seen.includes("ada-priv") && !seen.includes("bob-priv"), "no private group is visible to an admin");
 });
 test("listableGroups: a member sees own restricted + own private; null/mono-tenant sees public only", () => {

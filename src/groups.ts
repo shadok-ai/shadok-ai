@@ -42,10 +42,13 @@ export function canSeeGroup(g: Group, viewer: Viewer | null): boolean {
   return viewer !== null && memberOf(g, viewer.name);
 }
 
-/** Admin reach: never over a private group; admins or members otherwise. */
+/**
+ * Administer (list, delete, manage membership): a MEMBER of a non-private group,
+ * nothing else. An admin is NOT special here (operator decision 2026-11-03: an
+ * admin sees only the groups they belong to, plus public ones).
+ */
 export function canAdministerGroup(g: Group, viewer: Viewer | null): boolean {
-  if (viewer === null || g.nature === "private") return false;
-  return viewer.role === "admin" || memberOf(g, viewer.name);
+  return viewer !== null && g.nature !== "private" && memberOf(g, viewer.name);
 }
 
 export function visibleGroupIds(groups: readonly Group[], viewer: Viewer | null): Set<string> {
@@ -59,16 +62,14 @@ export function visibleGroupIds(groups: readonly Group[], viewer: Viewer | null)
  * existence (which "a private group is invisible even to an admin" forbids).
  *
  * A row is kept iff the viewer may SEE it (`canSeeGroup`) OR ADMINISTER it
- * (`canAdministerGroup`). The admin nuance is REQUIRED, not cosmetic: an admin
- * administers restricted groups (their membership/secrets) WITHOUT being a
- * member, so must still see their rows — a plain `canSeeGroup`/`visibleGroupIds`
- * alone would wrongly hide a restricted group from the very admin who manages
- * it. And `canAdministerGroup` returns false for a PRIVATE group the viewer does
- * not own, so a foreign private group stays hidden even from an admin.
+ * (`canAdministerGroup`). Both are member-only for restricted groups, so an
+ * admin sees exactly the groups they are a member of plus public ones; a
+ * restricted group they do not belong to, and any foreign private group, stay
+ * hidden from them like from anyone else.
  *
  * Row-level only (which groups), never field-level: a group the viewer can SEE
- * but is not a member/admin of is public, whose `members` are already empty; a
- * restricted/private group only survives the filter for a member/admin, who may
+ * but is not a member of is public, whose `members` are already empty; a
+ * restricted/private group only survives the filter for a member, who may
  * read its members. So there is nothing left to trim.
  *
  * A null viewer (no account) sees public groups only. Mono-tenant (only a public
@@ -129,8 +130,9 @@ export function membershipVerdict(
       return actor.name === target ? { ok: true } : { ok: false, error: "you can only remove yourself" };
     case "remove":
       // Mirrors `invite`: whoever may add a member may also remove one (a Private
-      // group is run by its members); an admin keeps the override.
-      return memberOf(g, actor.name) || actor.role === "admin"
+      // group is run by its members). An admin has NO override: not a member,
+      // no reach (operator decision 2026-11-03).
+      return memberOf(g, actor.name)
         ? { ok: true }
         : { ok: false, error: "only a member can remove a member" };
   }

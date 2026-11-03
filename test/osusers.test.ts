@@ -699,16 +699,18 @@ test("deleteGroupFlow: a private (Personal) group is refused 403 even for its ow
   }
 });
 
-test("deleteGroupFlow: a restricted group is refused for a non-member non-admin", async () => {
-  const { r, saved, tore } = await delAs(natured("restricted", ["bob"]), "eve", "member");
-  assert.equal(r.status, 403);
-  assert.equal((r.body as { error: string }).error, "only a member or an admin can delete this group");
-  assert.equal(saved.length + tore.length, 0);
+test("deleteGroupFlow: a restricted group is refused for a non-member and a non-member admin", async () => {
+  for (const [n, role] of [["eve", "member"], ["root", "admin"]] as const) {
+    const { r, saved, tore } = await delAs(natured("restricted", ["bob"]), n, role);
+    assert.equal(r.status, 403);
+    assert.equal((r.body as { error: string }).error, "only a member can delete this group");
+    assert.equal(saved.length + tore.length, 0);
+  }
 });
 
-test("deleteGroupFlow: a restricted group is deletable by a member and by an admin", async () => {
+test("deleteGroupFlow: a restricted group is deletable by a member (an admin member too)", async () => {
   assert.equal((await delAs(natured("restricted", ["bob"]), "bob", "member")).r.status, 200);
-  assert.equal((await delAs(natured("restricted", ["bob"]), "root", "admin")).r.status, 200);
+  assert.equal((await delAs(natured("restricted", ["bob", "root"]), "root", "admin")).r.status, 200);
 });
 
 test("deleteGroupFlow: a public group stays deletable by a signed-in non-admin", async () => {

@@ -592,10 +592,10 @@ export async function deleteGroupFlow(
   if (!g) return { status: 404, body: { error: "no such group" } };
 
   // Personal is torn down only with its account; a Private (restricted) group
-  // only by a member or an admin. Public stays open to any signed-in caller.
+  // only by a member. Public stays open to any signed-in caller.
   if (g.nature === "private") return { status: 403, body: { error: "a personal group cannot be deleted" } };
   if (g.nature === "restricted" && !canAdministerGroup(g, { name: input.account.name, role: input.account.role } as Viewer)) {
-    return { status: 403, body: { error: "only a member or an admin can delete this group" } };
+    return { status: 403, body: { error: "only a member can delete this group" } };
   }
 
   // T4 carry (fail-closed): refuse while channels still reference the group.

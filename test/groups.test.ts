@@ -42,11 +42,13 @@ test("private owner counts as a member even if absent from members", () => {
   assert.equal(memberOf(g, "ada"), true);
   assert.equal(canSeeGroup(g, { name: "ada", role: "member" }), true);
 });
-test("admin administers a restricted group it is not in, but cannot see/drive it", () => {
+test("admin has NO reach over a restricted group it is not in; a member does", () => {
   const g: Group = { id: "rh", name: "RH", nature: "restricted", members: ["ada"], createdAt: 0 };
   const admin = { name: "root", role: "admin" as const };
-  assert.equal(canAdministerGroup(g, admin), true);
+  assert.equal(canAdministerGroup(g, admin), false);
   assert.equal(canSeeGroup(g, admin), false);
+  assert.equal(canAdministerGroup(g, { name: "ada", role: "member" }), true);
+  assert.equal(canAdministerGroup(g, { name: "ada", role: "admin" }), true);
   assert.equal(canAdministerGroup(g, null), false);
 });
 test("visibleGroupIds filters by visibility", () => {
@@ -58,7 +60,7 @@ test("visibleGroupIds filters by visibility", () => {
   assert.deepEqual([...visibleGroupIds(gs, { name: "ada", role: "member" })].sort(), ["a", "main"]);
   assert.deepEqual([...visibleGroupIds(gs, null)], ["main"]);
 });
-test("membershipVerdict: any member invites, self leaves, a member or admin removes", () => {
+test("membershipVerdict: any member invites, self leaves, only a member removes", () => {
   const g: Group = { id: "t", name: "T", nature: "restricted", members: ["ada", "leo"], createdAt: 0 };
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "invite", "zoe").ok, true);
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "leave", "ada").ok, true);
@@ -66,7 +68,7 @@ test("membershipVerdict: any member invites, self leaves, a member or admin remo
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, g, "remove", "leo").ok, true);
   assert.equal(membershipVerdict({ name: "zoe", role: "member" }, g, "remove", "ada").ok, false);
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, { ...g, nature: "private" }, "remove", "leo").ok, false);
-  assert.equal(membershipVerdict({ name: "root", role: "admin" }, g, "remove", "leo").ok, true);
+  assert.equal(membershipVerdict({ name: "root", role: "admin" }, g, "remove", "leo").ok, false);
   assert.equal(membershipVerdict({ name: "zoe", role: "member" }, g, "invite", "x").ok, false);
   assert.equal(membershipVerdict(null, g, "invite", "x").ok, false);
   assert.equal(membershipVerdict({ name: "ada", role: "member" }, { ...g, nature: "private" }, "invite", "z").ok, false);

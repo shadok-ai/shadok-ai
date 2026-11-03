@@ -413,15 +413,16 @@ level, not inside the cockpit.
   browser filtering is cosmetic only.
 - **[DECIDED]** A **private** group is fully private: invisible **and**
   non-pilotable **even to an admin**, with **no break-glass**.
-- **[DECIDED]** An **`admin`-role** user **manages the member list and the secrets
-  of every restricted group**, even ones they do not belong to — this is what lets
-  an admin remove members (above) and administer restricted secrets. A **member**
-  (non-admin) still sees a restricted group only if invited. The private group is
-  the one exception: it stays invisible and unmanageable **even to an admin** (no
-  break-glass, per the line above).
+- **[DECIDED, REVERSED 2026-11-03]** ~~An admin manages every restricted group.~~
+  Operator decision: **an admin sees ONLY the groups they are a member of, plus
+  public ones.** Visibility, deletion and membership management of a restricted
+  group are **member-only** — an admin is treated like a non-member. The only
+  admin specialness left is account management and the agent-credential secret
+  path (`canWriteSecretGroup`, which agents use as the bootstrap admin). The
+  private group stays invisible and unmanageable even to an admin.
 - **[DECIDED] Admin reach is ADMINISTRATIVE, not operational.** An admin's extra
-  power over restricted groups is **membership + secrets management only** — it
-  does **not** let them **see or drive the agents** of a restricted group they do
+  power over restricted groups was **membership + secrets management only**
+  (membership reach removed 2026-11-03, see above) — it does **not** let them **see or drive the agents** of a restricted group they do
   not belong to. The universal rule still holds for everyone, admins included:
   **see/drive = your own groups + public.** To actually work inside a restricted
   group, an admin gets invited like anyone else. (This resolves an inconsistency a

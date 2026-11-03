@@ -2280,9 +2280,9 @@ app.get("/groups", (req, res) => {
   // A group row carries `members`/`owner`/`osUser`, so an unfiltered list leaks a
   // restricted group's roster to non-members and a private group's very existence
   // ("a private group is invisible even to an admin"). Filter by the caller via
-  // listableGroups: keep a row the viewer may SEE or ADMINISTER — the admin nuance
-  // keeps restricted rows visible to the managing admin while still hiding a
-  // private group they don't own. Row-level only; no field trimming is needed
+  // listableGroups: member-of plus public groups only. An admin is NOT special
+  // (operator decision 2026-11-03): a restricted group they don't belong to, and
+  // a private group they don't own, are hidden from them too. Row-level only; no field trimming is needed
   // (a visible-but-not-member group is public, whose members are already empty).
   // Mono-tenant (only a public Main) keeps Main for everyone, unchanged.
   res.json(listableGroups(loadGroups(), viewerFor(currentAccount(req))));
