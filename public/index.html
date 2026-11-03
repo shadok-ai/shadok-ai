@@ -5648,6 +5648,16 @@
   }
 
   let lastChannelIds = new Set();
+  // Channels confirmed present in a /channels response at least once, and — for
+  // one currently ABSENT — when it first went missing. The "ended elsewhere"
+  // removal waits for a SUSTAINED absence (CHANNEL_REMOVE_AFTER_MS): a single
+  // poll that omits a channel is NOT proof it was closed. A server mid-restart,
+  // or a transient viewer=null, returns an ACL-narrowed /channels that drops a
+  // PRIVATE-group channel (visibleChannels fails closed) — deleting the tab on
+  // the first miss is what made the "perso" agent vanish on every restart.
+  const everSeenChannelIds = new Set();
+  const channelMissedSince = new Map();
+  const CHANNEL_REMOVE_AFTER_MS = 20000;
   async function syncChannels() {
     if (restoring) return;
     let chans, srvGroups;
@@ -5767,10 +5777,18 @@
         });
       }
     }
-    // A channel that was in the registry and is now gone was ended elsewhere.
-    // Never drop the main channel this way (it's the environment's home base).
+    // A channel confirmed present before and now absent was ended elsewhere —
+    // but only once it STAYS absent (a transient ACL-narrowed list on restart
+    // must not delete it). Never drop the main channel (it's the home base).
+    for (const id of current) everSeenChannelIds.add(id);
     for (const t of [...tabs]) {
-      if (!t.isMain && t.sessionId && lastChannelIds.has(t.sessionId) && !current.has(t.sessionId)) {
+      if (t.isMain || !t.sessionId) continue;
+      if (current.has(t.sessionId)) { channelMissedSince.delete(t.sessionId); continue; }
+      if (!everSeenChannelIds.has(t.sessionId)) continue; // never confirmed present → not a close
+      const since = channelMissedSince.get(t.sessionId);
+      if (since == null) channelMissedSince.set(t.sessionId, Date.now());
+      else if (Date.now() - since >= CHANNEL_REMOVE_AFTER_MS) {
+        channelMissedSince.delete(t.sessionId);
         removeTabLocal(t);
       }
     }
