@@ -44,7 +44,8 @@ import { ensureClaudeHome, ensureProjectTrusted,
   type ClaudeHome,
   type ClaudeSettings,
 } from "./claude-home.js";
-import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
+import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
+import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
 import { readTokenExpiry } from "./claude-creds.js";
 import { starCount } from "./stars.js";
 import {
@@ -2060,6 +2061,59 @@ app.post("/auth/code", async (req, res) => {
 
 app.delete("/auth/login", (_req, res) => {
   cancelLogin();
+  res.json({ ok: true });
+});
+
+// --- Subscription-token provisioning (src/setup-token.ts) -----------------
+// A multi-tenant instance injects the long-lived subscription token
+// (MT_CLAUDE_OAUTH_TOKEN) into its privilege-dropped agents; these two routes
+// let an ADMIN mint/rotate it from the cockpit instead of a hand-run shell
+// `claude setup-token`. Browser-origin + admin, exactly like the guardrail
+// writes — and server-owned: the token is captured and stored server-side, and
+// the response never carries it. Mono-tenant needs no token, so the routes are
+// inert there (the UI hides them too).
+function mtTokenGate(req: Caller & { headers: Record<string, unknown> }, res: {
+  status: (n: number) => { json: (b: unknown) => void };
+}): boolean {
+  if (DEPLOYMENT_MODE !== "multi-tenant") {
+    res.status(400).json({ error: "not applicable: this instance is single-tenant" });
+    return false;
+  }
+  if (!requestFromBrowser(req)) {
+    res.status(403).json({ error: "browser only" });
+    return false;
+  }
+  if (currentAccount(req)?.role !== "admin") {
+    res.status(403).json({ error: "admins only" });
+    return false;
+  }
+  return true;
+}
+
+app.post("/mt-token/start", async (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const r = await startSetupToken();
+  if ("error" in r) return res.status(502).json(r);
+  res.json(r); // {url}
+});
+
+app.post("/mt-token/code", async (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  // The token is captured and written to the vault HERE and never leaves the
+  // server: `store` is the only thing that ever touches the value.
+  const r = await submitSetupTokenCode(code, (token) =>
+    setSecret(MT_CLAUDE_OAUTH_TOKEN_NAME, token, MAIN_GROUP_ID, "operator:setup-token"),
+  );
+  if (r.ok) {
+    mtTokenWarned = false; // a future absence gets warned again
+    invalidateAuthStatus(); // so /auth re-reports longLived immediately
+  }
+  res.status(r.ok ? 200 : 400).json(r); // {ok} — never the token
+});
+
+app.delete("/mt-token", (_req, res) => {
+  cancelSetupToken();
   res.json({ ok: true });
 });
 
