@@ -1,9 +1,29 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
+});
+
+const eb = (value: string, ownerGroup: string, profiles: string[], sharedWith: string[] = []): SecretEntry => ({
+  value, ownerGroup, sharedWith, profiles, createdBy: "u", createdAt: 1, updatedAt: 1,
+});
+
+test("secretNamesForProfile: binds on the SECRET side (entry.profiles), scoped to the agent's group", () => {
+  const v: Vault = {
+    g: { OWN: eb("x", "g", ["Dev"]), OTHER: eb("y", "g", ["QA"]) },      // OWN bound to Dev, OTHER to QA
+    b: { SHARED: eb("s", "b", ["Dev"], ["g"]) },                           // shared with g, bound to Dev
+    main: { COMMON: eb("m", "main", ["Dev"]) },                            // Main, bound to Dev
+    x: { FOREIGN: eb("z", "x", ["Dev"]) },                                 // another group, NOT resolvable from g
+  };
+  // From group g: OWN + SHARED + COMMON bind Dev; OTHER binds QA; FOREIGN is not reachable.
+  assert.deepEqual(secretNamesForProfile(v, "g", "Dev").sort(), ["COMMON", "OWN", "SHARED"]);
+  assert.deepEqual(secretNamesForProfile(v, "g", "QA").sort(), ["OTHER"]);
+  // Legacy profile.secrets are unioned in (flat / mono-tenant back-compat).
+  assert.deepEqual(secretNamesForProfile(v, "g", "Dev", ["LEGACY"]).sort(), ["COMMON", "LEGACY", "OWN", "SHARED"]);
+  // No profile name → only the legacy list, never the bindings.
+  assert.deepEqual(secretNamesForProfile(v, "g", "", ["LEGACY"]), ["LEGACY"]);
 });
 
 test("resolve: own beats shared-in beats Main beats absent", () => {

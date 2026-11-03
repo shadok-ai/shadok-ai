@@ -234,6 +234,8 @@ import {
 } from "./config.js";
 import {
   secretsFor,
+  secretsForProfile,
+  secretNamesForProfile,
   secretNames,
   setSecret,
   deleteSecret,
@@ -637,7 +639,7 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
     const profile = target.profile ? getProfile(target.profile) : undefined;
     // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
     // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
-    const secretEnv = secretsFor(profile?.secrets, target.group ?? MAIN_GROUP_ID);
+    const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID);
     const env = { ...process.env, ...secretEnv };
     recordSecretAudit({
       action: "cron-check",
@@ -4790,7 +4792,7 @@ function ledgerReflex(): string | null {
  *  `makePilot` hands the process, so the verdict cannot disagree with it. */
 function sessionBackend(profileName?: string | null, groupId?: string | null): Backend {
   const profile = profileName ? getProfile(profileName) : undefined;
-  const secretEnv = secretsFor(profile?.secrets, groupId ?? MAIN_GROUP_ID);
+  const secretEnv = secretsForProfile(profileName, profile?.secrets, groupId ?? MAIN_GROUP_ID);
   return backendFor({ ...backendEnv(instanceBackendSource(), secretEnv), ...secretEnv });
 }
 
@@ -4875,7 +4877,7 @@ function installedCapabilities(): { name: string; description: string }[] {
  * byte-identical: a difference always means the agent's context actually
  * changed, never that two code paths spelled it differently.
  */
-function buildPreprompt(profileName?: string | null): PrepromptPart[] {
+function buildPreprompt(profileName?: string | null, groupId?: string | null): PrepromptPart[] {
   const profile = profileName ? getProfile(profileName) : undefined;
   const resolved = effectiveProfile(profile);
   return prepromptParts({
@@ -4885,7 +4887,7 @@ function buildPreprompt(profileName?: string | null): PrepromptPart[] {
     deny: resolved?.deny,
     allow: resolved?.allow,
     permissionMode,
-    secretNames: Object.keys(secretsFor(profile?.secrets)),
+    secretNames: secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets),
     capabilities: installedCapabilities(),
     pilotPrompt: pilotPrompt() ?? undefined,
     ledgerReflex: ledgerEnabled ? ledgerReflex() : null,
@@ -5023,7 +5025,7 @@ function makePilot(
   // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
   // must never print" was noise that buried the real ones. Resolved by the
   // agent's own group (own → shared-in → Main); null/mono-tenant → Main.
-  const secretEnv = secretsFor(profile?.secrets, group ?? MAIN_GROUP_ID);
+  const secretEnv = secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID);
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
   // point off Anthropic, and maps the model aliases. See src/backend.ts.
@@ -5067,7 +5069,7 @@ function makePilot(
   // NAMES only: the values are in `env`, and never travel to a client. Built
   // through the shared `buildPreprompt`, so this spawn snapshot is comparable
   // byte-for-byte with the one the staleness check recomputes later.
-  prepromptById.set(id, buildPreprompt(profileName));
+  prepromptById.set(id, buildPreprompt(profileName, group));
   // Spawn the binary `claudeCommand` resolved, not the bare name `claude`. They
   // differ exactly when the npm launcher is the fallback placeholder: spawning
   // by name would then run the 500-byte stub, which exits 1 on stderr and looks
@@ -5128,6 +5130,9 @@ interface Live {
    *  writes under its own `/home/sk-<id>`. The content tail and `loadHistory`
    *  read from here — without it an isolated agent's reply never streams. */
   transcriptHome: string;
+  /** The isolation group this agent runs in (null = commons / mono-tenant) —
+   *  the scope its profile's secrets resolve from (own → shared-in → Main). */
+  group: string | null;
   pilot: Pilot;
   clients: Set<WebSocket>;
   busy: boolean;
@@ -5451,7 +5456,7 @@ function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
   const profile = s.profile ? getProfile(s.profile) : undefined;
   recordSecretAudit({
     action: "injected",
-    secrets: Object.keys(secretsFor(profile?.secrets)),
+    secrets: Object.keys(secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID)),
     ...by,
     agent: s.id,
     agentName: loadChannels().find((c) => c.sessionId === s.id)?.name,
@@ -5484,7 +5489,7 @@ function sessionStaleness(s: Live, channels?: Channel[]): StaleReason[] {
   if (!ch || ch.spawnFp === undefined) return []; // no anchor yet (brand-new, pre-first-record)
   return stalenessReasons({
     spawnFp: ch.spawnFp,
-    currentFp: prepromptFingerprint(buildPreprompt(s.profile)),
+    currentFp: prepromptFingerprint(buildPreprompt(s.profile, s.group)),
     hasPassword: !!GUI_PASSWORD,
     spawnedAt: ch.spawnAt ?? null,
     now: Date.now(),
@@ -5672,6 +5677,7 @@ async function createSession(
     id,
     cwd,
     transcriptHome,
+    group,
     pilot,
     profile,
     appliedProfile: profile,   // the process we just spawned did receive it

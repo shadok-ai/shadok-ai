@@ -61,23 +61,61 @@ const strList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is
 const ownOf = <T>(obj: Record<string, T> | undefined, key: string): T | undefined =>
   obj && Object.hasOwn(obj, key) ? obj[key] : undefined;
 
+/**
+ * The ONE entry a `name` resolves to from `groupId` — own → shared-in → Main,
+ * first match wins — or undefined. The single selection rule behind both the
+ * value resolution and the profile-binding lookup, so they can never disagree.
+ */
+export function resolveSecretEntry(vault: Vault, groupId: string, name: string): SecretEntry | undefined {
+  const mine = ownOf(ownOf(vault, groupId), name);
+  if (mine) return mine;
+  // When two groups share the same name with the caller, the winner is
+  // insertion-order-deterministic: the first such group in `Object.entries` order.
+  for (const [gid, gv] of Object.entries(vault)) {
+    const e = ownOf(gv, name);
+    if (gid !== groupId && e && e.sharedWith.includes(groupId)) return e;
+  }
+  return ownOf(ownOf(vault, MAIN_GROUP_ID), name);
+}
+
 export function resolveSecretValues(vault: Vault, groupId: string, names: readonly string[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of names) {
-    const mine = ownOf(ownOf(vault, groupId), name);
-    if (mine) { out[name] = mine.value; continue; }
-    // When two groups share the same name with the caller, the winner is
-    // insertion-order-deterministic: the first such group in `Object.entries` order.
-    let shared: SecretEntry | undefined;
-    for (const [gid, gv] of Object.entries(vault)) {
-      const e = ownOf(gv, name);
-      if (gid !== groupId && e && e.sharedWith.includes(groupId)) { shared = e; break; }
-    }
-    if (shared) { out[name] = shared.value; continue; }
-    const main = ownOf(ownOf(vault, MAIN_GROUP_ID), name);
-    if (main) out[name] = main.value;
+    const e = resolveSecretEntry(vault, groupId, name);
+    if (e) out[name] = e.value;
   }
   return out;
+}
+
+/**
+ * The secret NAMES to inject into an agent running `profileName` in `groupId`.
+ *
+ * The binding lives on the SECRET (`entry.profiles`, set by the grouped panel's
+ * "attach to profiles"), NOT on the profile — so injecting `profile.secrets`
+ * alone (the legacy field, empty in grouped mode) delivered NOTHING to the agent.
+ * This is the authoritative set: every vault name whose group-resolved entry
+ * binds this profile, UNION the legacy `profileSecrets` (kept so a mono-tenant /
+ * flat instance, where the binding still lives on the profile, is unchanged).
+ */
+export function secretNamesForProfile(
+  vault: Vault,
+  groupId: string,
+  profileName: string,
+  profileSecrets: readonly string[] = [],
+): string[] {
+  const out = new Set<string>(profileSecrets.filter((n) => typeof n === "string" && n));
+  if (profileName) {
+    const names = new Set<string>();
+    for (const slice of Object.values(vault)) {
+      if (!slice || typeof slice !== "object") continue;
+      for (const n of Object.keys(slice)) if (Object.hasOwn(slice, n)) names.add(n);
+    }
+    for (const name of names) {
+      const e = resolveSecretEntry(vault, groupId, name);
+      if (e && e.profiles.includes(profileName)) out.add(name);
+    }
+  }
+  return [...out];
 }
 
 /**
@@ -443,4 +481,22 @@ export function recordOrigin(name: string, profile: string): void {
 export function secretsFor(names: string[] | undefined, groupId: string = MAIN_GROUP_ID): Record<string, string> {
   if (!names?.length) return {};
   return resolveSecretValues(loadVault(), groupId, names);
+}
+
+/**
+ * The `{NAME: value}` env for an agent running `profileName` in `groupId` — the
+ * authoritative injection: every secret bound to the profile (`entry.profiles`,
+ * the grouped-panel binding) that resolves from the agent's group, PLUS the
+ * legacy `profileSecrets` (so a flat/mono-tenant instance is unchanged). Reading
+ * `profileSecrets` alone delivered nothing in grouped mode, where the binding
+ * lives on the secret, not the profile.
+ */
+export function secretsForProfile(
+  profileName: string | null | undefined,
+  profileSecrets: string[] | undefined,
+  groupId: string = MAIN_GROUP_ID,
+): Record<string, string> {
+  const vault = loadVault();
+  const names = secretNamesForProfile(vault, groupId, profileName ?? "", profileSecrets ?? []);
+  return names.length ? resolveSecretValues(vault, groupId, names) : {};
 }
