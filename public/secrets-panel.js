@@ -34,7 +34,10 @@ export function panelGroupOptions(groups) {
     if (!g || g.id == null) continue;
     const id = String(g.id);
     if (id === MAIN_ID || g.nature === "public") continue; // public → the bucket; main → the commons
-    out.push({ value: id, label: g.name });
+    // A private group is the owner's sealed "Personal" space — label it that way
+    // (as the rail does), never its raw name, which otherwise collides with a
+    // same-named restricted group and makes the private one unselectable.
+    out.push({ value: id, label: g.nature === "private" ? "Personal" : g.name });
   }
   if (publicGroupIds(groups).length) out.push({ value: PUBLIC_BUCKET, label: "Public groups" });
   return out;

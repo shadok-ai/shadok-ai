@@ -9704,7 +9704,10 @@
   function groupName(id) {
     if (String(id) === PUBLIC_BUCKET) return "Public groups";
     const g = vaultGroups.find((x) => String(x.id) === String(id));
-    return g ? g.name : String(id);
+    if (!g) return String(id);
+    // Match the rail + the selector: a private group is the sealed "Personal"
+    // space, never its raw (account) name.
+    return g.nature === "private" ? "Personal" : g.name;
   }
   // The TARGET group a write/share/profiles call lands in: in grouped mode the
   // panel is scoped to one group, so a write lands in the section the user is
