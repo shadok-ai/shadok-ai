@@ -120,7 +120,7 @@ import {
   canSeeSession,
   listableGroups,
   visibleChannels,
-  memberGroupIds,
+  secretOwnGroupIds,
   ledgerGroupsFor,
   groupsPutFlow,
   privateGroupFor,
@@ -2829,7 +2829,11 @@ function body_id(req: { body?: any }): string {
 // Mono-tenant resolves everyone to Main, so this is byte-for-byte today.
 app.get("/secrets", (req, res) => {
   const { viewer } = secretCaller(req);
-  const list = visibleSecrets(loadVault(), memberGroupIds(loadGroups(), viewer));
+  // A public non-Main group's secrets are visible to everyone who sees the group
+  // (operator decision 2026-11-03: "public = commun") — `secretOwnGroupIds` adds
+  // them to the member set, so a secret added to a public group no longer
+  // vanishes from the panel. Member-only groups stay member-gated.
+  const list = visibleSecrets(loadVault(), secretOwnGroupIds(loadGroups(), viewer));
   // `names` stays a string[] for the existing client; `secrets` carries the tags.
   res.json({ names: list.map((s) => s.name), secrets: list });
 });

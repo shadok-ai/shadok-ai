@@ -16,6 +16,7 @@ import {
   membersWithout,
   accountDeleteGroups,
   mergeGroupsPut,
+  secretOwnGroupIds,
   type Group,
 } from "../src/groups.js";
 
@@ -191,6 +192,26 @@ test("visibleChannels drops a restricted channel for a null viewer", () => {
 
 test("visibleChannels drops a restricted channel for a non-member admin", () => {
   assert.deepEqual(visibleChannels([ch("b", "r")], gs, { name: "root", role: "admin" }).map((c) => c.sessionId), []);
+});
+
+test("secretOwnGroupIds: member groups PLUS public non-Main groups (a public group's secrets are visible to all)", () => {
+  const groups: Group[] = [
+    { id: "main", name: "main", nature: "public", members: [], createdAt: 0 },
+    { id: "pub", name: "Pub", nature: "public", members: [], createdAt: 0 },
+    { id: "r", name: "R", nature: "restricted", members: ["ann"], createdAt: 0 },
+    { id: "s", name: "S", nature: "restricted", members: ["zoe"], createdAt: 0 },
+    { id: "p", name: "Ada", nature: "private", members: ["ada"], owner: "ada", createdAt: 0 },
+  ];
+  // A non-member, non-admin still sees the public group "pub" — the bug was a
+  // secret added to a public group being invisible to everyone, author included.
+  // Main is NOT in the set (it is surfaced as source "main", the commons).
+  // A restricted group they are not in, and someone else's private group, stay out.
+  assert.deepEqual([...secretOwnGroupIds(groups, { name: "ann", role: "member" })].sort(), ["pub", "r"]);
+  // An admin is not special here either: membership + public only, never a
+  // restricted group they do not belong to.
+  assert.deepEqual([...secretOwnGroupIds(groups, { name: "root", role: "admin" })].sort(), ["pub"]);
+  // A null viewer (no session) still sees public groups.
+  assert.deepEqual([...secretOwnGroupIds(groups, null)].sort(), ["pub"]);
 });
 
 test("visibleChannels drops a restricted channel for a non-member", () => {

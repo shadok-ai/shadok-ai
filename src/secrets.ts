@@ -171,16 +171,18 @@ export function longLivedTokenInfo(
 
 /**
  * Pure: the secret NAMES a caller may see, tagged by why — NEVER the values.
- * `memberGroupIds` is the set of groups the caller belongs to (from
- * `groups.memberGroupIds`). A name is visible when it is:
- *   - `own`    — owned by one of the caller's groups;
- *   - `shared` — owned elsewhere but shared WITH one of the caller's groups;
+ * `ownGroupIds` is the set of groups whose secrets the caller sees in that
+ * group's OWN section (from `groups.secretOwnGroupIds`): the groups they belong
+ * to PLUS every public non-Main group (public = visible to all). A name is
+ * visible when it is:
+ *   - `own`    — owned by one of those groups;
+ *   - `shared` — owned elsewhere but shared WITH one of those groups;
  *   - `main`   — in the instance-wide commons, visible to everyone.
  * Precedence on a name present several ways mirrors `resolveSecretValues`:
  * own > shared > main. In mono-tenant the caller resolves to Main only, so this
  * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
  */
-export function visibleSecrets(vault: Vault, memberGroupIds: ReadonlySet<string>): VisibleSecret[] {
+export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>): VisibleSecret[] {
   const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2 };
   const chosen = new Map<string, VisibleSecret>();
   const consider = (cand: VisibleSecret) => {
@@ -195,9 +197,9 @@ export function visibleSecrets(vault: Vault, memberGroupIds: ReadonlySet<string>
       const e = slice[name];
       const audit = { createdBy: e.createdBy, createdAt: e.createdAt, updatedAt: e.updatedAt };
       if (gid === MAIN_GROUP_ID) consider({ name, source: "main", ...audit });
-      else if (memberGroupIds.has(gid))
+      else if (ownGroupIds.has(gid))
         consider({ name, source: "own", ownerGroup: gid, ...audit, sharedWith: [...e.sharedWith], profiles: [...e.profiles] });
-      else if (e.sharedWith.some((g) => memberGroupIds.has(g)))
+      else if (e.sharedWith.some((g) => ownGroupIds.has(g)))
         consider({ name, source: "shared", ownerGroup: gid, ...audit });
     }
   }

@@ -353,6 +353,26 @@ export function memberGroupIds(groups: readonly Group[], viewer: Viewer | null):
 }
 
 /**
+ * The group ids whose secrets a viewer sees in that group's OWN section: the
+ * groups they are a member of, PLUS every PUBLIC non-Main group. A public group
+ * is visible to everyone (operator decision 2026-11-03: "public = commun"), so
+ * its secrets must be too — otherwise a secret added to a public group was
+ * invisible to all, author included, because a public group has no members and
+ * `memberGroupIds` never contains it. Main is deliberately EXCLUDED: it is the
+ * commons, surfaced as its own `main` source, not a per-group "own" section.
+ *
+ * This is the READ counterpart of `canWriteSecretGroup` — it makes the GET
+ * visibility consistent with the panel's group selector (`listableGroups`) and
+ * the write path. Editability still goes through `canWriteSecretGroup`: a
+ * non-admin seeing a public group's secret cannot overwrite it.
+ */
+export function secretOwnGroupIds(groups: readonly Group[], viewer: Viewer | null): Set<string> {
+  const out = memberGroupIds(groups, viewer);
+  for (const g of groups) if (g.nature === "public" && g.id !== MAIN_GROUP_ID) out.add(g.id);
+  return out;
+}
+
+/**
  * The authoring groups a VIEWER may read ledger rows of (the group-scoped ones;
  * public rows are added by the caller regardless). It is the groups they belong
  * to, PLUS their commons home (`spawnGroupFor` — Main when they have no single
