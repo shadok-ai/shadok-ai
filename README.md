@@ -453,6 +453,9 @@ know before opening it up:
   else you do. Accounts belong to **one instance** (one launch directory), like
   its channels and its scheduled prompts. With no password there are no
   accounts and no login screen — nothing changes for a machine you use alone.
+  When a signed-in session **expires** (the cookie lasts a week), the open tab
+  returns you to the login screen on its next request instead of failing in
+  place — a paste that would not send, an agent list that would not refresh.
 - **Two-factor sign-in (passkeys).** From the **Users** panel, anyone signed in
   with a named account can register a passkey on their device — the
   fingerprint / face / PIN unlock of the phone or laptop (WebAuthn, user
