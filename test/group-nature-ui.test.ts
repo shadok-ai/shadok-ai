@@ -284,3 +284,22 @@ test("panel locks the group's owner (not /me); locked tile is aria-pressed; surr
   assert.match(html, /\[\.\.\.String\(name\)\]\[0\]/);
   assert.match(html, /isSelf\) \{ b\.setAttribute\("aria-disabled", "true"\); b\.setAttribute\("aria-pressed", "true"\)/);
 });
+
+test("syncChannels prunes a server-seen group absent from a fulfilled /groups", () => {
+  const create = html.match(/function createGroup\(opts = \{\}\)[\s\S]*?\n  \}\n/);
+  assert.ok(create);
+  assert.match(create![0], /serverSeen:\s*false/);
+  const sync = html.match(/async function syncChannels\(\)[\s\S]*?const current = new Set/);
+  assert.ok(sync);
+  const body = sync![0];
+  // Additive create/update is intact and marks groups as server-seen.
+  assert.match(body, /createGroup\(sg\)\.serverSeen = true/);
+  assert.match(body, /g\.serverSeen = true/);
+  // The prune lives inside the fulfilled-array guard (a null /groups never prunes).
+  const guard = body.indexOf("if (Array.isArray(srvGroups))");
+  const prune = body.indexOf("g.serverSeen !== true");
+  assert.ok(guard >= 0 && prune > guard, "prune must sit inside the Array.isArray(srvGroups) guard");
+  assert.match(body, /COMMONS_GROUP_ID \|\| g\.serverSeen !== true \|\| visible\.has/);
+  assert.match(body, /g\.el\.remove\(\)/);
+  assert.doesNotMatch(body.slice(prune), /dissolveGroup/);
+});

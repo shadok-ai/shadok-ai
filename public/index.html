@@ -4954,7 +4954,7 @@
     // icons existed) gets a random one, persisted once the restore is over.
     const icon = opts.icon || window.randomGroupIcon();
     if (!opts.icon) groupIconsMinted = true;
-    const group = { id, el, headEl: head, bodyEl: body, nameEl: gname, icon, iconDrawn: !opts.icon,
+    const group = { serverSeen: false, id, el, headEl: head, bodyEl: body, nameEl: gname, icon, iconDrawn: !opts.icon,
       nature: opts.nature || "public", owner: opts.owner || null, name: storedName };
     el._group = group;
     const paintCaret = () => {
@@ -5648,12 +5648,26 @@
         if (sg == null || sg.id == null) continue;
         if (String(sg.id) === COMMONS_GROUP_ID) continue; // the commons is the "Main" view, not a rail group
         const g = groups.find((x) => String(x.id) === String(sg.id));
-        if (!g) { createGroup(sg); continue; }
+        if (!g) { createGroup(sg).serverSeen = true; continue; }
+        g.serverSeen = true;
         if (sg.name && sg.name !== g.name && !renamingAGroup()) {
           g.name = sg.name;
           g.nameEl.textContent = groupDisplayName(g);
         }
         if (sg.icon && sg.icon !== g.icon) g.icon = sg.icon;
+      }
+      // A fulfilled /groups is AUTHORITATIVE for what this viewer may see: a group
+      // the server showed us before and now omits belongs to a prior identity (a
+      // shared session cookie switched user under this tab) and must leave the
+      // rail. Spared: the commons, and a local group never confirmed by the server
+      // (serverSeen false: made here, not pushed yet). Removed directly, NOT via
+      // dissolveGroup: its persist would PUT this stale list to the server.
+      const visible = new Set(srvGroups.filter((sg) => sg && sg.id != null).map((sg) => String(sg.id)));
+      for (const g of groups.slice()) {
+        if (String(g.id) === COMMONS_GROUP_ID || g.serverSeen !== true || visible.has(String(g.id))) continue;
+        while (g.bodyEl.firstChild) ungroupedEl.appendChild(g.bodyEl.firstChild);
+        g.el.remove();
+        groups = groups.filter((x) => x !== g);
       }
       renderRail(); // an icon lives outside the column, so no observer sees it
     }
