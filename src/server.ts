@@ -2381,21 +2381,18 @@ const GROUP_SEEDED_SKILLS: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /**
- * Seed a group user's HOME at provision time. The directory itself is
- * created+owned by `useradd --create-home`; here we mirror the shadok SKILLS
- * into `<home>/.claude/skills`.
+ * Mirror the shadok SKILLS into a group user's `<home>/.claude/skills`.
  *
  * The skills are installed only in the SERVER's `/root/.claude/skills`
  * (`seedXxxSkill`), which a dropped group agent (HOME `/home/sk-<id>`) cannot
  * read — so without this an isolated agent has NONE of the shadok skills
  * (scheduler, secrets, ledger, agents, reload). Copied FROM THE PACKAGE source
  * (world-readable, never `/root` which is 0700) and written AS THE GROUP USER
- * (root must not write through a 0700 HOME it does not own). Re-applied on every
- * boot by `ensureGroupsProvisioned`, so a merged skill update reaches group
- * HOMEs the same way it reaches the server's. Best-effort: a failure is logged,
- * not fatal — a missing skill degrades an agent, a thrown provision breaks it.
+ * (root must not write through a 0700 HOME it does not own). Idempotent (`cp`
+ * overwrites in place), best-effort: a failure is logged, not fatal — a missing
+ * skill degrades an agent, a thrown provision breaks it.
  */
-async function seedGroupHome(home: string, user: string): Promise<void> {
+function seedGroupSkills(user: string, home: string): void {
   try {
     const skillsRoot = `${home}/.claude/skills`;
     spawnAsUserSync(user, "mkdir", ["-p", skillsRoot]);
@@ -2412,6 +2409,23 @@ async function seedGroupHome(home: string, user: string): Promise<void> {
   } catch (e) {
     console.log(`groups: could not seed skills into ${home} — ${e instanceof Error ? e.message : String(e)}`);
   }
+}
+
+/** The sentinel a seeded group skills dir carries — its presence means the skills
+ *  were already mirrored, so a steady-state spawn skips the copy. */
+function groupSkillsSeeded(user: string, home: string): boolean {
+  return spawnAsUserSync(user, "test", ["-f", `${home}/.claude/skills/shadok-ledger/SKILL.md`]).ok;
+}
+
+/**
+ * Seed a group user's HOME at PROVISION time (fresh user, new group). The
+ * directory itself is created+owned by `useradd --create-home`; here we mirror
+ * the skills. Existing groups are NOT re-provisioned (`reconcileGroupProvisioning`
+ * skips a user that already exists), so the spawn-time `seedGroupSkills` guard in
+ * `makePilot` is what heals a group that predates this change.
+ */
+async function seedGroupHome(home: string, user: string): Promise<void> {
+  seedGroupSkills(user, home);
 }
 
 /** Does an OS user already exist? Used to make provisioning idempotent. */
@@ -5057,7 +5071,14 @@ function makePilot(
   // the per-directory trust dialog. `ensureProjectTrusted(cwd)` above seeds the
   // SERVER's HOME (still needed for a commons/mono agent that runs as the server
   // user); this adds the same state to the group user's HOME, as that user.
-  if (user && home) seedGroupAgentHome(user, home, cwd);
+  if (user && home) {
+    seedGroupAgentHome(user, home, cwd);
+    // Skills live only in the server HOME; mirror them into the group HOME so an
+    // isolated agent actually has them. Guarded by a sentinel so steady-state is
+    // one `test -f`, not a full re-copy — and it heals a group that predates the
+    // provision-time seeding (which never re-runs for an existing OS user).
+    if (!groupSkillsSeeded(user, home)) seedGroupSkills(user, home);
+  }
   // Isolated groups share the subscription token, injected in the forced-last
   // env layer. Mono-tenant (no user) reads and passes nothing.
   const oauthToken = user
