@@ -4941,7 +4941,7 @@
     paintCaret();
     head.addEventListener("click", (e) => {
       if (e.target === gclose) return closeGroupGesture(group);
-      if (e.target === gicon) { e.stopPropagation(); if (isWalled(group.nature)) return; return openIconPicker(group, gicon); }
+      if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
       if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
       if (e.target === gkey) { e.stopPropagation(); return openSecretsPanel(group.id); }
       if (e.target === ggear) { e.stopPropagation(); return openGroupPanel(group.id); }
@@ -5434,7 +5434,8 @@
     $("iconEmpty").hidden = !(q && !window.looksLikeEmoji(q) && list.length === 0);
   }
   function openIconPicker(group, anchor) {
-    if (isWalled(group.nature)) return; // a walled group shows 🔒: its icon has no visible effect
+    // A walled group (private/personal) keeps its OWN icon — the padlock is a
+    // small corner badge, not the icon — so its icon is editable like any other.
     iconTarget = group;
     iconInput.value = "";
     paintIconGrid("");

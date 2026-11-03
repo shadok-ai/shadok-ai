@@ -30,6 +30,21 @@ test("the lock is gated on isWalled in the group head and in the rail", () => {
   assert.match(html, /\.rail-lock\s*\{/);
 });
 
+test("a walled group's icon stays editable — openIconPicker is not gated on isWalled", () => {
+  // Since TWEAK 1 the padlock is a small corner badge over the group's OWN
+  // icon, not the icon itself, so a private/personal group's icon is editable
+  // like any other. A stale `isWalled(...) return` guard used to block it.
+  const fn = html.match(/function openIconPicker\([\s\S]*?\n  \}/);
+  assert.ok(fn, "openIconPicker must exist");
+  assert.doesNotMatch(
+    fn![0],
+    /isWalled\([^)]*\)\)\s*return/,
+    "openIconPicker must not early-return for a walled group",
+  );
+  // The group-head icon click must not gate the picker on isWalled either.
+  assert.doesNotMatch(html, /gicon\)\s*\{[^}]*isWalled\([^)]*\)\)\s*return/);
+});
+
 test("createGroup threads nature and owner onto the group object", () => {
   const m = html.match(/function createGroup\(opts = \{\}\)[\s\S]*?\n  \}\n/);
   assert.ok(m);
@@ -187,11 +202,6 @@ test("Personal exposes neither delete nor rename", () => {
   const b = fnBlock("async function closeGroupGesture(group, after)");
   assert.match(b, /group\.nature === "private"\) return/);
   assert.match(html, /group\.nature === "private"\) return; \/\/ the personal space is not renamable/);
-});
-
-test("icon picker is skipped for walled groups", () => {
-  assert.match(html, /isWalled\(group\.nature\)\) return; return openIconPicker\(group, gicon\)/);
-  assert.match(fnBlock("function openIconPicker(group, anchor)"), /isWalled\(group\.nature\)\) return/);
 });
 
 test("the restricted × title is destructive wording, not Ungroup; Personal's is not Ungroup", () => {
