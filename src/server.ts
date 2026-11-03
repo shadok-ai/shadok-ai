@@ -4954,6 +4954,59 @@ function writeAsUserAtomic(user: string, file: string, content: string): void {
   if (!spawnAsUserSync(user, "mv", ["-f", tmp, file]).ok) throw new Error(`mv ${tmp} → ${file} failed`);
 }
 
+/** The SSH key store on the shadok-data VOLUME (survives a docker recreate, which
+ *  wipes `/home`). The container's historical identity lives here (`id_ed25519`);
+ *  per-group keys go under `groups/<os-user>/`. `/root` is 0700, so a dropped
+ *  agent cannot read this — the server (root) copies the material into the
+ *  agent's own HOME at spawn. Mirrors `ensureSshIdentity` (src/ssh.ts). */
+const SHADOK_SSH_DIR = path.join(os.homedir(), ".shadok-ai", "ssh");
+const SSH_AGENT_CONFIG =
+  "# Managed by shadok-ai — SSH identity for this agent.\n" +
+  "Host *\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile ~/.ssh/known_hosts\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n";
+
+/**
+ * Give a DROPPED agent a working `~/.ssh` (git-over-SSH, private clones).
+ *
+ * The source keypair lives on the VOLUME under `SHADOK_SSH_DIR` (persists a
+ * recreate): the COMMONS (`main`) reuses the container's HISTORICAL key — the
+ * identity already registered on the forge (operator: "récupère la clef
+ * historique") — while each ISOLATED group has its OWN key under
+ * `groups/<os-user>/` (operator decision: one key per group). A dropped user
+ * cannot read the volume dir (it is under the 0700 `/root`), so the server
+ * (root) reads/generates the keypair there and writes a COPY into the agent's
+ * own HOME AS THE USER (never root writing through a 0700 HOME). Idempotent
+ * (skips when the HOME key is already present — so a recreate re-copies the same
+ * volume key, keeping the identity stable). Best-effort: SSH just stays
+ * unavailable to that agent on failure, never a spawn failure.
+ */
+function ensureAgentSshKey(user: string, home: string): void {
+  try {
+    const ssh = `${home}/.ssh`;
+    if (spawnAsUserSync(user, "test", ["-f", `${ssh}/id_ed25519`]).ok) return; // already wired
+    const isCommons = user === COMMONS_USER;
+    const srcDir = isCommons ? SHADOK_SSH_DIR : path.join(SHADOK_SSH_DIR, "groups", user);
+    const srcKey = path.join(srcDir, "id_ed25519");
+    if (!fs.existsSync(srcKey)) {
+      // No historical key for the commons (a fresh instance), or a new group:
+      // mint one on the VOLUME, as root. accept-new keys are registered later.
+      fs.mkdirSync(srcDir, { recursive: true, mode: 0o700 });
+      execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-q", "-f", srcKey, "-C", `shadok-${user}`]);
+    }
+    const priv = fs.readFileSync(srcKey, "utf8");
+    const pub = fs.readFileSync(`${srcKey}.pub`, "utf8");
+    spawnAsUserSync(user, "mkdir", ["-p", ssh]);
+    spawnAsUserSync(user, "chmod", ["700", ssh]);
+    writeAsUserAtomic(user, `${ssh}/id_ed25519`, priv);
+    spawnAsUserSync(user, "chmod", ["600", `${ssh}/id_ed25519`]);
+    writeAsUserAtomic(user, `${ssh}/id_ed25519.pub`, pub);
+    writeAsUserAtomic(user, `${ssh}/config`, SSH_AGENT_CONFIG);
+    spawnAsUserSync(user, "chmod", ["600", `${ssh}/config`]);
+    console.log(`ssh: wired ${isCommons ? "historical" : "per-group"} key for ${user} — pub: ${pub.trim()}`);
+  } catch (e) {
+    console.log(`ssh: could not set up a key for ${user} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 /**
  * Seed Claude Code's first-run state into a DROPPED group agent's OWN HOME —
  * `<home>/.claude.json` (global onboarding + this worktree's trust) and
@@ -5102,7 +5155,11 @@ function makePilot(
   // user); this adds the same state to the group user's HOME, as that user.
   // Skills are machine-wide (the Enterprise tier, `seedSystemSkills`), so only
   // the per-HOME onboarding/trust state needs seeding into the group user's HOME.
-  if (user && home) seedGroupAgentHome(user, home, cwd);
+  // The group also gets its OWN SSH identity (one key per group).
+  if (user && home) {
+    seedGroupAgentHome(user, home, cwd);
+    ensureAgentSshKey(user, home);
+  }
   // Isolated groups share the subscription token, injected in the forced-last
   // env layer. Mono-tenant (no user) reads and passes nothing.
   const oauthToken = user
