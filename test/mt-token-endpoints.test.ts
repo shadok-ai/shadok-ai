@@ -37,6 +37,12 @@ test("server: the code route stores the token via setSecret under the reserved n
   assert.ok(!/\.token/.test(handler.replace(/\(token\) =>/g, "")), "the handler never reads a .token field into the response");
 });
 
+test("server: DELETE /mt-token is gated like start/code (no un-gated cancel)", () => {
+  const route = SERVER.slice(SERVER.indexOf('app.delete("/mt-token"'));
+  const handler = route.slice(0, route.indexOf("\n});"));
+  assert.ok(/if \(!mtTokenGate\(req, res\)\) return;/.test(handler), "DELETE also goes through mtTokenGate");
+});
+
 test("server: a successful mint invalidates the auth cache and clears the token warning", () => {
   const route = SERVER.slice(SERVER.indexOf('app.post("/mt-token/code"'));
   const handler = route.slice(0, route.indexOf("\n});"));

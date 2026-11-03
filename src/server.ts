@@ -604,7 +604,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie());
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant");
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -2125,7 +2125,11 @@ app.post("/mt-token/code", async (req, res) => {
   res.status(r.ok ? 200 : 400).json(r); // {ok} — never the token
 });
 
-app.delete("/mt-token", (_req, res) => {
+app.delete("/mt-token", (req, res) => {
+  // Same gate as start/code: a cancel is still a write on a credential flow, so
+  // a non-admin/non-browser caller must not be able to kill an admin's live
+  // mint mid-rotation.
+  if (!mtTokenGate(req, res)) return;
   cancelSetupToken();
   res.json({ ok: true });
 });
@@ -7884,7 +7888,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie());
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant");
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).

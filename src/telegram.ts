@@ -1151,7 +1151,13 @@ const NOOP_HANDLE: TelegramHandle = {
   status: () => ({ username: null, tokenError: null }),
 };
 
-export function startTelegram(port: number, authCookie?: string): TelegramHandle {
+// Whether this instance runs multi-tenant, so `/mttoken` (which provisions the
+// group-agents' subscription token) is inert on a single-tenant box — mirroring
+// the web /mt-token/start "not applicable" gate. Set by startTelegram.
+let tgMultiTenant = false;
+
+export function startTelegram(port: number, authCookie?: string, multiTenant = false): TelegramHandle {
+  tgMultiTenant = multiTenant;
   // Config is the source of truth (env still overrides, resolved by telegramConfig).
   const cfg = telegramConfig(loadConfig(), process.cwd());
   if (!cfg.enabled || !cfg.token) return NOOP_HANDLE; // off or no token → nothing polling
@@ -2033,7 +2039,12 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         case "mttoken": {
           // Provision/rotate the long-lived subscription token group agents use
           // on a multi-tenant instance. Same gate as /login (reaching here IS
-          // the gate); same two-step URL→code shape.
+          // the gate); same two-step URL→code shape. Inert on a single-tenant
+          // instance (it needs no token), mirroring the web /mt-token gate.
+          if (!tgMultiTenant) {
+            await reply(chat.id, threadId, "ℹ️ Not applicable: this instance is single-tenant and needs no subscription token.");
+            return;
+          }
           const r = await startSetupToken();
           if ("error" in r) {
             await reply(chat.id, threadId, `⚠️ Couldn't start: ${r.error}`);

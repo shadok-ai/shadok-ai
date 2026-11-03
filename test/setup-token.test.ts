@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   stripTokenEscapes,
   parseSetupTokenUrl,
@@ -58,4 +61,19 @@ test("parseSetupToken: NEVER matches the URL stage or the prompt (no false token
 test("parseSetupTokenOutcome: detects the invalid-code refusal, else null", () => {
   assert.equal(parseSetupTokenOutcome("\x1b[31mInvalid code\x1b[39m. Please make sure…"), "invalid-code");
   assert.equal(parseSetupTokenOutcome(URL_STAGE), null);
+});
+
+// The minted token must never linger in a buffer we don't scrub. The URL-finding
+// accumulator `all` is dropped the instant the URL is found, so the later token
+// (which arrives only after the code is submitted) never lands in it; the token
+// flows solely into `f.out`, scrubbed on settle.
+test("setup-token: the URL buffer is cleared once the URL is found, and f.out is scrubbed", () => {
+  const SRC = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "setup-token.ts"),
+    "utf8",
+  );
+  const onData = SRC.slice(SRC.indexOf("proc.onData"), SRC.indexOf("proc.onExit"));
+  assert.ok(/f\.url = u;\s*\n\s*all = "";/.test(onData), "`all` is cleared when the URL is found");
+  const submit = SRC.slice(SRC.indexOf("if (verdict.kind === \"success\")"));
+  assert.ok((submit.match(/f\.out = "";/g) ?? []).length >= 2, "f.out is scrubbed on both success and store-failure paths");
 });

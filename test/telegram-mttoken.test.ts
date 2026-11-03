@@ -29,6 +29,13 @@ test("telegram: /mtcode stores via the reserved name, deletes the code message, 
   assert.ok(!/\$\{.*token.*\}/.test(block), "the token is never interpolated into a reply");
 });
 
+test("telegram: /mttoken is inert on a single-tenant instance", () => {
+  const start = TG.indexOf('case "mttoken"');
+  const block = TG.slice(start, TG.indexOf('case "mtcode"', start));
+  assert.ok(/if \(!tgMultiTenant\)/.test(block), "/mttoken refuses when not multi-tenant");
+  assert.ok(/let tgMultiTenant = false/.test(TG) && /multiTenant = false\): TelegramHandle/.test(TG), "the flag is set by startTelegram");
+});
+
 test("telegram: help lists the two new commands", () => {
   assert.ok(/\/mttoken —.*\/mtcode <code>/.test(TG), "help mentions /mttoken and /mtcode");
 });

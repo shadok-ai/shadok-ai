@@ -159,15 +159,19 @@ export async function startSetupToken(): Promise<{ url: string } | { error: stri
     f.pending = null;
     done?.(v);
   };
-  // The whole stream is scanned for the URL; only AFTER a code is submitted
-  // (f.pending set) do we look for the token or the refusal. parseSetupToken
-  // never matches the URL stage, so a stray early match is impossible anyway.
+  // `all` accumulates ONLY until the URL is found (the URL can span PTY chunks),
+  // then is dropped — so the later token never lands in a buffer we do not
+  // scrub. The token flows solely into `f.out` (scrubbed on settle), and only
+  // while `f.pending` is set, i.e. strictly after the URL and the code.
   let all = "";
   proc.onData((d: string) => {
-    all += d;
     if (!f.url) {
+      all += d;
       const u = parseSetupTokenUrl(all);
-      if (u) f.url = u;
+      if (u) {
+        f.url = u;
+        all = ""; // done with it — never hold the minted token here
+      }
     }
     if (f.pending) {
       f.out += d;
@@ -243,12 +247,17 @@ export async function submitSetupTokenCode(
     try {
       store(verdict.token);
     } catch (e) {
-      // Do not leak the token in the error; the flow stays open for a retry.
-      return { ok: false, error: "storing the token failed: " + (e instanceof Error ? e.message : "unknown") };
-    } finally {
-      // Scrub the buffer holding the token, then tear the flow down.
+      // Never leak the token in the error. The CLI prints the token then exits,
+      // so there is no live flow to retry here — tear it down and scrub, and
+      // tell the caller to start a fresh one.
       f.out = "";
+      cancelSetupToken();
+      return {
+        ok: false,
+        error: "storing the token failed — start a new one: " + (e instanceof Error ? e.message : "unknown"),
+      };
     }
+    f.out = ""; // scrub the buffer that held the token
     cancelSetupToken();
     return { ok: true };
   }
