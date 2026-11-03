@@ -345,9 +345,9 @@ export interface HistoryTurn {
  * still resolves. Shared by loadHistory and GET /download (which reads the raw
  * transcript to verify a requested file was actually sent).
  */
-export function transcriptFilePath(cwd: string, sessionId: string): string {
+export function transcriptFilePath(cwd: string, sessionId: string, home: string = os.homedir()): string {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  return newestTranscriptById(sessionId) ?? path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+  return newestTranscriptById(sessionId, home) ?? path.join(home, ".claude", "projects", encoded, sessionId + ".jsonl");
 }
 
 /**
@@ -355,8 +355,8 @@ export function transcriptFilePath(cwd: string, sessionId: string): string {
  * (~/.claude/projects/<encoded cwd>/<session-id>.jsonl) so the history can
  * be replayed when resuming the session.
  */
-export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
-  const file = transcriptFilePath(cwd, sessionId);
+export function loadHistory(cwd: string, sessionId: string, home: string = os.homedir()): HistoryTurn[] {
+  const file = transcriptFilePath(cwd, sessionId, home);
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -459,9 +459,9 @@ export interface SessionInfo {
  * first user prompt as a preview so a session can be recognized by more
  * than its id.
  */
-export function listSessions(cwd: string): SessionInfo[] {
+export function listSessions(cwd: string, home: string = os.homedir()): SessionInfo[] {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  const dir = path.join(os.homedir(), ".claude", "projects", encoded);
+  const dir = path.join(home, ".claude", "projects", encoded);
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
@@ -525,11 +525,11 @@ function firstUserPrompt(file: string): string {
  * ignore technical `user` lines — a tool result arrives MID-turn and would date
  * the origin a few seconds before now.
  */
-export function lastPromptAt(cwd: string, sessionId: string): number | null {
+export function lastPromptAt(cwd: string, sessionId: string, home: string = os.homedir()): number | null {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
   const file =
-    newestTranscriptById(sessionId) ??
-    path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+    newestTranscriptById(sessionId, home) ??
+    path.join(home, ".claude", "projects", encoded, sessionId + ".jsonl");
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -583,9 +583,9 @@ export function resumedTurnStart(
  * Finds the id of the most recent session of a directory: Claude Code
  * writes each session to ~/.claude/projects/<encoded cwd>/<session-id>.jsonl.
  */
-export function findSessionId(cwd: string): string | null {
+export function findSessionId(cwd: string, home: string = os.homedir()): string | null {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  const dir = path.join(os.homedir(), ".claude", "projects", encoded);
+  const dir = path.join(home, ".claude", "projects", encoded);
   try {
     const newest = fs
       .readdirSync(dir)

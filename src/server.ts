@@ -2348,6 +2348,27 @@ app.post("/groups/members", (req, res) => {
 /** Where a group's HOME is created (`SHADOK_HOME_BASE` override, else `/home`). */
 const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_HOME_BASE;
 
+/** The HOME whose `.claude/projects` holds a given agent's transcript: the drop
+ *  user's own home when the agent is privilege-dropped (multi-tenant isolation),
+ *  else the server's own home (commons / mono-tenant). The single answer the
+ *  content tail and `loadHistory` must use so an isolated agent's reply streams. */
+function agentTranscriptHome(user: string | null | undefined): string {
+  return user ? homeForUser(user, GROUP_HOME_BASE) : os.homedir();
+}
+
+/** The transcript HOME for a CHANNEL that may not be live (e.g. GET /download of
+ *  a past session): a live session's own `transcriptHome` when we have it, else
+ *  re-derived from the channel's group the same way a spawn's drop user is —
+ *  the group's `sk-*` user, or the commons user when migrated, else the server. */
+function channelTranscriptHome(chan: Channel): string {
+  const live = sessions.get(chan.sessionId);
+  if (live) return live.transcriptHome;
+  if (DEPLOYMENT_MODE !== "multi-tenant") return os.homedir();
+  const g = chan.group ? loadGroups().find((x) => x.id === chan.group) : null;
+  const user = (g ? osUserFor(g) : null) ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  return agentTranscriptHome(user);
+}
+
 /** Task 12: the one shared pot every group HOME links as `~/shared`. */
 const SHARED_POT_PATH =
   (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
@@ -4285,7 +4306,7 @@ app.get("/download", (req, res) => {
   let allowed = offeredPaths(loadOffers(filesFileFor(process.cwd())), session).has(wanted);
   if (!allowed) {
     let raw: string;
-    try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session), "utf8"); }
+    try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session, channelTranscriptHome(chan)), "utf8"); }
     catch { return res.status(403).type("text").send("that file was not sent by this agent"); }
     allowed = sentFilePaths(raw).has(wanted);
   }
@@ -5102,6 +5123,11 @@ interface Live {
    *  In-memory (near-real-time, not an audit); a restart re-anchors it to now. */
   ledgerSeenAt?: number;
   cwd: string;
+  /** The HOME whose `.claude/projects` holds this agent's transcript: the
+   *  server's own, EXCEPT a privilege-dropped group agent (multi-tenant) that
+   *  writes under its own `/home/sk-<id>`. The content tail and `loadHistory`
+   *  read from here — without it an isolated agent's reply never streams. */
+  transcriptHome: string;
   pilot: Pilot;
   clients: Set<WebSocket>;
   busy: boolean;
@@ -5307,7 +5333,7 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
   broadcast(s, { type: "working", startedAt: Date.now(), elapsedMs: 0 });
   // Resume only if there's a transcript; a never-used session has
   // nothing to resume (claude --resume would exit) — re-create it.
-  const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id));
+  const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id, s.transcriptHome));
   // A restart respawns without passing through the `start` handler, so it is
   // its own chance to notice that the launcher has become the placeholder since
   // this session was created. Non-fatal: a restart that cannot re-resolve still
@@ -5493,7 +5519,7 @@ function destroySession(s: Live) {
   s.stopTail?.();
   s.stopTail = null;
   // The session is over: its tail position has nothing left to resume.
-  clearTailPos(sessionFilePath(s.cwd, s.id));
+  clearTailPos(sessionFilePath(s.cwd, s.id, s.transcriptHome));
   s.pilot.kill();
   // Worktrees are durable: never auto-removed. They persist (with their
   // branch and any uncommitted changes) until an explicit merge/discard,
@@ -5629,8 +5655,12 @@ async function createSession(
   group: string | null = null,
 ): Promise<Live> {
   const pilot = makePilot(id, cwd, args, profile, model, effort, user, group);
+  // A dropped group agent writes its transcript under ITS OWN home, not the
+  // server's — so the content tail / history must read from there (invariant:
+  // all content comes from the .jsonl). `agentTranscriptHome` is the one answer.
+  const transcriptHome = agentTranscriptHome(user);
   // Resumed sessions start with what the transcript already consumed.
-  const seededUsage = scanUsage(sessionFilePath(cwd, id));
+  const seededUsage = scanUsage(sessionFilePath(cwd, id, transcriptHome));
   const backend = sessionBackend(profile, group);
   // A custom backend's window is whatever its server was started with, which
   // no model name can tell us: SHADOK_CONTEXT_WINDOW says it, and without it
@@ -5641,6 +5671,7 @@ async function createSession(
   const s: Live = {
     id,
     cwd,
+    transcriptHome,
     pilot,
     profile,
     appliedProfile: profile,   // the process we just spawned did receive it
@@ -5700,7 +5731,7 @@ function startContentTail(s: Live): void {
   s.stopTail?.();
   const cwd = s.cwd;
   const tid = () => s.tailId ?? s.id;
-  s.stopTail = tailSession(sessionFilePath(cwd, tid()), (e) => {
+  s.stopTail = tailSession(sessionFilePath(cwd, tid(), s.transcriptHome), (e) => {
     // Any content from the tracked transcript means it is alive: stamp it so the
     // fork detector only hunts when THIS file has actually gone silent.
     s.lastContentAt = Date.now();
@@ -5762,7 +5793,7 @@ function startContentTail(s: Live): void {
         text: e.text,
         isError: e.isError,
       });
-  }, 250, () => sessionFilePath(cwd, tid()));
+  }, 250, () => sessionFilePath(cwd, tid(), s.transcriptHome));
 }
 
 /**
@@ -5788,7 +5819,7 @@ function maybeFollowFork(s: Live): void {
   if (!s.pilot.isWorking()) return;
   if (Date.now() - (s.lastContentAt ?? 0) < FORK_STALL_MS) return;
   const tailId = s.tailId ?? s.id;
-  const myFile = sessionFilePath(s.cwd, tailId);
+  const myFile = sessionFilePath(s.cwd, tailId, s.transcriptHome);
   // Lineage root: read once from the file we currently tail, then cache. The
   // original session's root is its own id, so `?? s.id` is the right fallback
   // when the file has no root record yet (a session that never took a turn).
@@ -5813,7 +5844,7 @@ function maybeFollowFork(s: Live): void {
   // a stored position and a history the chat already replayed, and seeding 0
   // would dump the whole transcript — 56 MB on the session this was found on —
   // into the chat. Let `startOffset` resume from the stored position instead.
-  if (!home) seedTailPos(sessionFilePath(s.cwd, target), 0);
+  if (!home) seedTailPos(sessionFilePath(s.cwd, target, s.transcriptHome), 0);
   startContentTail(s);
   broadcast(s, {
     type: "stream-text",
@@ -6031,7 +6062,7 @@ async function finishTurn(s: Live) {
   // restart, the tmux agent having carried on without it. `turnStartedAt` lives
   // in memory, so restarting from `now` reset the stopwatch while the agent had
   // been thinking for ten minutes; the transcript, though, survived.
-  if (!s.turnStartedAt) s.turnStartedAt = resumedTurnStart(Date.now(), lastPromptAt(s.cwd, s.id));
+  if (!s.turnStartedAt) s.turnStartedAt = resumedTurnStart(Date.now(), lastPromptAt(s.cwd, s.id, s.transcriptHome));
   s.errorsAtTurnStart = findTransientErrors(s.pilot.screen());
   broadcast(s, workingMessage(s));
   try {
@@ -6615,7 +6646,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               session.idleTimer = null;
             }
             session.clients.add(ws);
-            const turns = historyWithOffers(loadHistory(session.cwd, id), id);
+            const turns = historyWithOffers(loadHistory(session.cwd, id, session.transcriptHome), id);
             if (turns.length) send({ type: "history", turns });
             send({
               type: "ready",
@@ -6751,7 +6782,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           );
           session.clients.add(ws);
           if (resumed) {
-            const turns = historyWithOffers(loadHistory(effectiveCwd, id), id);
+            const turns = historyWithOffers(loadHistory(effectiveCwd, id, session.transcriptHome), id);
             if (turns.length) send({ type: "history", turns });
           }
           send({
