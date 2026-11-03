@@ -27,7 +27,7 @@ test("a channel DISCOVERED on the server never steals the view", () => {
   // machine must not move the user mid-sentence.
   assert.match(
     html,
-    /const nt = createTab\(c\.group, \{ focus: !active \}\)/,
+    /const nt = createTab\(foldCommons\(c\.group\), \{ focus: !active \}\)/,
     "syncChannels must pass an explicit focus, tied to there being nothing active",
   );
 });

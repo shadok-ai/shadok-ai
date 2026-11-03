@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { rowKind, LABEL_MAX } from "../context/ledger-skill/ledger-core.mjs";
+import { MAIN_GROUP_ID } from "./groups.js";
+import { rowKind, LABEL_MAX, upsertEntry, resolveId, normEntity } from "../context/ledger-skill/ledger-core.mjs";
 
 /**
  * Server side of the shared ledger. Two jobs the `shadok-ledger` skill's own
@@ -35,13 +36,114 @@ export interface LedgerRow {
   /** When its claim was last CONFIRMED — the freshness, which an edit must not
    *  move. Absent on older rows; `ageDays` falls back to `updatedAt`. */
   verifiedAt?: number;
+  /** `group` (default when absent) = the writer's own group only; `public` = the
+   *  commons. Group-private by default: a row nobody marked can never leak. */
+  scope?: "group" | "public";
+  /** The AUTHORING group, STORED on the row (one table per instance, not a file
+   *  per group). `null`/absent is the commons (Main). It is stamped SERVER-SIDE
+   *  from the caller's session→channel, never from a client, so it cannot be
+   *  forged — which is what lets one shared file scope reads/writes by group
+   *  without the OS-user-wall crash a per-group file hit (a privilege-dropped
+   *  `sk-<id>` agent cannot write the server's 0600 ledger). */
+  group?: string | null;
 }
 
 /** The per-instance ledger file, keyed by the launch dir (same encoding as
- *  channels/crons). Distinct launch dirs → distinct ledgers. */
+ *  channels/crons). Distinct launch dirs → distinct ledgers. ONE table for the
+ *  whole instance: scope is a per-ROW `group`/`scope` pair filtered server-side,
+ *  not a file per group. */
 export function ledgerFileFor(cwd: string): string {
   const enc = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
   return path.join(os.homedir(), ".shadok-ai", "ledger", enc + ".json");
+}
+
+/** Normalise an authoring group for comparison: the commons (`null`/absent)
+ *  collapses to Main, so a mono-tenant row (group `null`) and a Main-group row
+ *  are one bucket and nothing silently falls between them. */
+function groupKey(g: string | null | undefined): string {
+  return g ?? MAIN_GROUP_ID;
+}
+
+/**
+ * The rows a principal may SEE out of the one table: every `public` row (the
+ * commons, visible to all) plus every row whose AUTHORING group is in
+ * `groupIds`. A group's group-scoped rows never reach another group — this is
+ * the filter the per-group files used to stand in for, now applied server-side
+ * on the single table so there is no cross-user-wall write and no `GET /ledger`
+ * leak (a browser gets its own groups ∪ public; an agent gets its channel's
+ * group ∪ public). Pure.
+ */
+export function scopeVisible(
+  rows: readonly LedgerRow[],
+  groupIds: ReadonlySet<string>,
+  includePublic: boolean,
+): LedgerRow[] {
+  return rows.filter(
+    (r) => (includePublic && r.scope === "public") || groupIds.has(groupKey(r.group)),
+  );
+}
+
+/**
+ * Record a row into the one shared table ON BEHALF of `callerGroup` — the single
+ * server-mediated write path (the CLI reaches it over `POST /ledger/record`,
+ * authenticated by the session key like the secrets skill). Pure, so the
+ * authoring-group invariant is unit-tested without a server.
+ *
+ * It is scoped to the caller's OWN rows, and that scoping is what dissolves the
+ * two bugs the per-group-file + mirror design had:
+ *  - the entity upsert runs over the caller's partition only, so group A
+ *    recording an entity group B also tracks creates A's OWN row and never
+ *    supersedes (nor DELETES) B's — the demotion-delete is gone;
+ *  - an `--id` edit resolves against the caller's partition only, so an id that
+ *    belongs to another group is `no ledger entry with id …` (THROWS) rather
+ *    than a cross-group overwrite.
+ * The authoring `group` is stamped from `callerGroup` (the session, never the
+ * body), and `--public` is the only thing that flips `scope`.
+ */
+export function recordIntoTable(
+  rows: readonly LedgerRow[],
+  callerGroup: string | null,
+  patch: {
+    id?: string;
+    entity?: string;
+    status?: string;
+    kind?: string;
+    note?: string;
+    source?: string;
+    verified?: boolean;
+    /** true → publish to the commons, false → demote to group-private, undefined
+     *  → leave the row's scope as it is (default `group` on a new row). */
+    public?: boolean;
+  },
+  now: number,
+  newId: string,
+): { rows: LedgerRow[]; row: LedgerRow } {
+  const key = groupKey(callerGroup);
+  const mine = rows.filter((r) => groupKey(r.group) === key);
+  const others = rows.filter((r) => groupKey(r.group) !== key);
+  const scope = patch.public === true ? "public" : patch.public === false ? "group" : undefined;
+  // upsertEntry refuses an unknown id — and `mine` is only the caller's rows, so
+  // an id owned by another group is unknown HERE: a cross-group edit throws.
+  const next = upsertEntry(
+    mine,
+    {
+      id: patch.id,
+      entity: patch.entity,
+      status: patch.status,
+      kind: patch.kind,
+      verified: patch.verified === true,
+      note: patch.note,
+      source: patch.source,
+      scope,
+    },
+    now,
+    newId,
+  ).map((r: LedgerRow) => ({ ...r, group: callerGroup ?? null }));
+  const written =
+    patch.id != null && String(patch.id).trim()
+      ? resolveId(next, patch.id)
+      : next.find((r: LedgerRow) => normEntity(r.entity) === normEntity(patch.entity));
+  return { rows: [...others, ...next], row: written as LedgerRow };
 }
 
 /** The legacy single-file ledger, before it was scoped per instance. */
@@ -115,14 +217,31 @@ export function loadLedger(file: string): LedgerRow[] {
   return readRows(file);
 }
 
+/** Write the whole table back, atomically (0600). The ONE place the server
+ *  persists a `POST /ledger/record`: agents no longer write the file themselves
+ *  (it lives in the server HOME, unreadable to a privilege-dropped group user). */
+export function saveLedger(file: string, rows: readonly LedgerRow[]): void {
+  writeRows(file, rows as LedgerRow[]);
+}
+
 /** The rows changed since `watermark`, newest-first, capped at `cap`. `total` is
  *  the full count of changed rows (may exceed `rows.length` when capped). */
 export function deltaSince(
   rows: LedgerRow[],
   watermark: number,
   cap: number,
+  /** When given, keep only what that group may see: public rows (if
+   *  `includePublic`) and rows it authored. A row with no `scope` is `group`. */
+  visibleScope?: { groupId: string | null; includePublic: boolean },
 ): { rows: LedgerRow[]; total: number } {
+  const visible = (r: LedgerRow): boolean =>
+    !visibleScope ||
+    (visibleScope.includePublic && r.scope === "public") ||
+    // Normalise both sides: a commons row (group `null`) and a Main-group row
+    // are one bucket, so a mono-tenant push (groupId Main) still sees them.
+    groupKey(r.group) === groupKey(visibleScope.groupId);
   const changed = rows
+    .filter(visible)
     .filter((r) => (r.updatedAt ?? 0) > watermark)
     .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
   return { rows: changed.slice(0, cap), total: changed.length };

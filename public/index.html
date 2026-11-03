@@ -375,6 +375,16 @@
     border: 1px solid currentColor; border-radius: 4px;
     background: transparent; color: inherit;
   }
+  /* Multi-tenant group-isolation migration status. Same top strip as the update
+     banner; LOUD and persistent while the commons runs un-isolated (pending =
+     amber, failed = red), so a never-completing migration is never silent. */
+  #migrationBanner {
+    flex: 0 0 auto; width: 100%; z-index: 1000;
+    font-family: var(--sans); font-size: 12px; font-weight: 600; text-align: center;
+    padding: 6px 12px;
+  }
+  #migrationBanner.pending { background: var(--amber); color: var(--on-accent); }
+  #migrationBanner.failed { background: #b91c1c; color: #fff; }
   .gauge { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .gauge .value {
     font-family: var(--sans);
@@ -833,6 +843,18 @@
       display: inline-flex; align-items: center; justify-content: center;
       border: 1px solid transparent; border-radius: 5px; background: none; font-size: 18px; line-height: 1;
     }
+    .rail-icon-wrap { position: relative; flex: none; display: inline-flex; }
+    .rail-lock { position: absolute; right: -3px; bottom: -3px; font-size: 10px; line-height: 1; pointer-events: none; }
+    .nature-cards { display: flex; gap: 8px; }
+    .nature-card {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 10px 8px;
+      background: var(--bg-inset); border: 1px solid var(--line); border-radius: 8px; color: var(--text); cursor: pointer;
+    }
+    .nature-card .nature-ico { font-size: 22px; line-height: 1; }
+    .nature-card:hover:not(:disabled) { background: var(--bg-raised); }
+    .nature-card.active { border-color: var(--amber); background: var(--bg-raised); }
+    .nature-card:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+    .nature-card:disabled { opacity: 0.45; cursor: not-allowed; }
     .rail-item.editable .rail-icon:hover { border-color: var(--line); background: var(--bg-inset); }
     .rail-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .rail-item input.rename {
@@ -856,14 +878,15 @@
     .rail-item.needs-answer { background: color-mix(in srgb, var(--amber) 28%, transparent); color: var(--text); }
     .rail-item.unread { background: rgba(127, 201, 127, 0.14); border-left-color: var(--ok); color: var(--text); }
     @media (prefers-reduced-motion: reduce) { .rail-item.working { animation: none !important; } }
-    .rail-add, .rail-del {
+    .rail-add, .rail-del, .rail-gear {
       flex: none; display: none; border: none; background: none;
       padding: 0 3px; font-size: 13px; line-height: 1; color: var(--text-dim);
     }
-    .rail-item:hover .rail-add, .rail-item:hover .rail-del { display: inline-block; }
+    .rail-item:hover .rail-add, .rail-item:hover .rail-del, .rail-item:hover .rail-gear { display: inline-block; }
     .rail-item:hover .rail-count { display: none; }
     .rail-add:hover { color: var(--amber); }
     .rail-del:hover { color: var(--err); }
+    .rail-gear:hover { color: var(--amber); }
     #groupRail #newGroup {
       margin-top: 6px; border-color: transparent; text-align: left;
       font-size: 13px; color: var(--text-dim); padding: 8px 10px;
@@ -875,7 +898,7 @@
     body.rail-mini .rail-head { justify-content: center; padding: 0 0 8px; }
     body.rail-mini .rail-head .label,
     body.rail-mini .rail-count,
-    body.rail-mini .rail-add, body.rail-mini .rail-del,
+    body.rail-mini .rail-add, body.rail-mini .rail-del, body.rail-mini .rail-gear,
     body.rail-mini .rail-txt { display: none !important; }
     body.rail-mini .rail-item { flex-direction: column; justify-content: center; gap: 3px; padding: 7px 2px; text-align: center; }
     body.rail-mini .rail-icon { width: 34px; height: 34px; font-size: 22px; border-radius: 8px; }
@@ -1041,6 +1064,47 @@
     position: fixed; left: 50%; transform: translateX(-50%); bottom: 12px; z-index: 200;
     background: #e2564a; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 13px;
   }
+  .sec-sect { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+  .sec-scope { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; }
+  .sec-scope select { font-size: 16px; }
+  #secretsList li.sec-ro code { opacity: .85; }
+  #secretsList li.sec-row { flex-wrap: wrap; }
+  .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
+  #secretAttach[data-grouped="1"] { display: none; }
+  .sec-from { margin-left: 8px; font-size: 11px; color: var(--text-dim); font-family: var(--sans, inherit); }
+  .sec-ctl { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; margin-top: 4px; }
+  .sec-ctl label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  .group-head .gkey { flex: none; font-size: 12px; padding: 0 4px; cursor: pointer; visibility: hidden; }
+  .group-head:hover .gkey { visibility: visible; }
+  /* A touch screen has no hover, so the group-head ⚙/🔑 (the single-column /
+     mobile layout's only door to a group's settings, members and secrets) were
+     unreachable. Keep them visible where there is no hover. */
+  @media (hover: none) { .group-head .gkey { visibility: visible; } }
+  #groupPanelBody .gp-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
+  #groupPanelBody .gp-row span { flex: 1; }
+  /* Avatar toggle grid: one tile per person (create-group picker + group panel). */
+  .member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(74px, 1fr)); gap: 12px; margin: 6px 0; }
+  .member-tile { border: 0; background: none; padding: 6px 2px 4px; border-radius: 10px; cursor: pointer; color: inherit; font: inherit;
+    display: flex; flex-direction: column; align-items: center; gap: 7px; transition: background .12s; }
+  .member-tile:hover { background: var(--bg-inset); }
+  .member-av { position: relative; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
+    font-weight: 600; font-size: 18px; color: #fff; box-shadow: inset 0 0 0 2px transparent;
+    transition: box-shadow .12s, filter .12s; filter: grayscale(.35) brightness(.82); }
+  .member-nm { font-size: 12px; color: var(--text-dim); max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .12s; }
+  .member-tile[aria-pressed="true"] .member-av,
+  .member-tile.me .member-av { box-shadow: inset 0 0 0 2px var(--amber), 0 0 0 3px color-mix(in srgb, var(--amber) 22%, transparent); filter: none; }
+  .member-tile[aria-pressed="true"] .member-nm,
+  .member-tile.me .member-nm { color: var(--text); }
+  .member-check, .member-lock { position: absolute; right: -2px; bottom: -2px; width: 18px; height: 18px; border-radius: 50%;
+    display: none; place-items: center; border: 2px solid var(--bg-raised); }
+  .member-check { background: var(--amber); }
+  .member-check svg { width: 10px; height: 10px; display: block; }
+  .member-tile[aria-pressed="true"] .member-check { display: grid; }
+  .member-lock { display: grid; background: var(--bg-inset); font-size: 9px; }
+  .member-tile.me { cursor: default; }
+  .member-tile.me:hover { background: none; }
+  #gpSave { margin-top: 10px; }
+  .prof-secrets-ro { list-style: none; padding: 0; margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
   .sec-users { margin-left: 8px; font-size: 11px; color: var(--text-dim); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
   /* Profile picker for a running agent (the tab's context menu). */
@@ -2193,9 +2257,6 @@
   #profilesList li:nth-child(odd) { background: rgba(255,255,255,.04); }
   #profilesList .pmeta { font-size: 12px; opacity: .7; }
   #profilesList button { background: none; border: 1px solid rgba(255,255,255,.15); border-radius: 5px; color: inherit; cursor: pointer; font-size: 12px; padding: 2px 8px; }
-  #profSecretsList { list-style: none; padding: 0; margin: 4px 0; }
-  #profSecretsList li { display: flex; justify-content: space-between; padding: 3px 6px; }
-  #profSecretsList button { background: none; border: none; color: #e26; cursor: pointer; }
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
@@ -2695,6 +2756,7 @@
         <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
     </div>
     <div class="pin-body">
+      <div id="secretsScope" class="sec-scope" hidden><span>Group</span><select id="secretsGroup" aria-label="Group whose secrets are shown"></select></div>
       <ul id="secretsList"></ul>
       <form id="secretsAdd">
         <div class="sec-add-row">
@@ -2820,6 +2882,48 @@
   </div>
 </div>
 
+<div id="groupPanelOverlay" class="overlay" hidden>
+  <div id="groupPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong id="groupPanelTitle"></strong>
+      <button id="groupPanelClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body" id="groupPanelBody"></div>
+  </div>
+</div>
+
+<div id="groupCreateOverlay" class="overlay" hidden>
+  <div id="groupCreatePanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>New <span class="obj">group</span></strong>
+      <button id="groupCreateClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <span class="label">Name</span>
+        <input id="groupCreateName" type="text" maxlength="60" autocomplete="off" placeholder="e.g. Backend" />
+      </div>
+      <div class="field">
+        <span class="label">Type</span>
+        <div id="groupCreateType" class="nature-cards" role="group" aria-label="Group type">
+          <button type="button" class="nature-card active" data-nature="public" aria-pressed="true"><span class="nature-ico">🌐</span><span class="nature-name">Public</span></button>
+          <button type="button" class="nature-card" data-nature="restricted" aria-pressed="false"><span class="nature-ico">🔒</span><span class="nature-name">Private</span></button>
+        </div>
+        <span class="check-hint" id="groupCreateNoPrivate" hidden>Private groups need a multi-tenant instance.</span>
+      </div>
+      <div class="field" id="groupMembersField" hidden>
+        <span class="label">Members</span>
+        <div id="groupMembersPick" class="member-grid" role="group" aria-label="Initial members"></div>
+        <span class="check-hint">Optional. You are always a member. Click to add others.</span>
+      </div>
+      <p class="sec-note warn" id="groupCreateErr" hidden></p>
+    </div>
+    <div class="modal-foot">
+      <button class="primary" id="groupCreateSubmit">Create group</button>
+    </div>
+  </div>
+</div>
+<!-- END group-create-form -->
 <div id="setupOverlay" class="overlay" hidden>
   <div id="setupPanel" class="sec-panel modal">
     <div class="sec-head">
@@ -3033,7 +3137,7 @@
     <div class="field"><span class="label">Deny (one per line)</span><textarea id="profDeny" rows="2" placeholder="Bash(git commit:*)"></textarea></div>
     <div class="field"><span class="label">Model (optional)</span><input id="profModel" placeholder="claude-opus-4-8" autocomplete="off" spellcheck="false"></div>
     <div class="field"><span class="label">Thinking effort <span class="check-hint">— how hard agents of this role think before answering; higher costs more tokens</span></span><select id="profEffort"></select></div>
-    <div class="field"><span class="label">Secrets to inject <span class="check-hint">— tick which vault secrets this profile passes to its agents</span></span><ul id="profSecretsList"></ul></div>
+    <div class="field"><span class="label">Secrets injected <span class="check-hint">— read-only: values resolve per group when an agent starts (its own group's, then shared with it, then Main's)</span></span><ul id="profSecretsList" class="prof-secrets-ro"></ul><button type="button" class="linkish" id="profToSecrets">→ Manage secrets</button></div>
     <div class="field"><span class="label">MCP servers (JSON, optional) <span class="check-hint">— passed to its agents at spawn; write a secret as <code>${NAME}</code> and tick NAME above, never its value</span></span><textarea id="profMcp" rows="4" spellcheck="false" placeholder='{ "matomo": { "type": "http", "url": "https://…", "headers": { "Authorization": "Bearer ${MATOMO_TOKEN}" } } }'></textarea></div>
     <div style="display:flex;gap:8px;margin-top:12px">
       <button id="profSave" class="primary">Save profile</button>
@@ -3419,6 +3523,7 @@
     defaultAgentName,
     hasReadonlyPreset,
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
+  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
@@ -3451,9 +3556,10 @@
   window.looksLikeEmoji = looksLikeEmoji;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
-  import { fmtExpiry, expiryWarning } from "/auth-expiry.js?v=__ASSET_V__";
+  import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
+  window.accountExpiryLine = accountExpiryLine;
   import { filterLedger, ledgerFacets, ledgerAge, LEDGER_AGES, LEDGER_SORTS } from "/ledger-view.js?v=__ASSET_V__";
   window.filterLedger = filterLedger;
   window.ledgerFacets = ledgerFacets;
@@ -3477,6 +3583,13 @@
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
   window.secretUsers = secretUsers;
+  window.secretsPanelMode = secretsPanelMode;
+  window.secretSections = secretSections;
+  window.panelGroupOptions = panelGroupOptions;
+  window.publicWriteTarget = publicWriteTarget;
+  window.keyGroups = keyGroups;
+  window.shareTargets = shareTargets;
+  window.auditLine = auditLine;
   window.profileSaveBody = profileSaveBody;
   window.isManagedProfile = isManagedProfile;
   window.hasReadonlyPreset = hasReadonlyPreset;
@@ -3527,6 +3640,14 @@
     isManagedProfile: () => false,
     profileSaveBody: (form) => ({ ...form }),
     secretUsers: () => [],
+    // Before the module lands: the flat list (today's look) and no groups.
+    secretsPanelMode: () => "flat",
+    secretSections: () => ({ own: [], sharedIn: [], inheritedMain: [] }),
+    panelGroupOptions: () => [],
+    publicWriteTarget: () => null,
+    keyGroups: () => [],
+    shareTargets: () => [],
+    auditLine: () => "",
     extractLiveText: () => "",
     livePreviewDecision: () => null,
     echoAuthor: () => "",
@@ -3575,6 +3696,7 @@
     // after the /auth fetch), and the re-login reminder never nags blind.
     fmtExpiry: () => "—",
     expiryWarning: () => null,
+    accountExpiryLine: () => null,
     // No module → no link button, and a link opened before it lands is read
     // again on `shadok-bridge-ready`.
     buildMessageLink: () => null,
@@ -3875,7 +3997,7 @@
     ctxFill.className = "ctxfill";
     ctxBar.appendChild(ctxFill);
     btn.appendChild(ctxBar);
-    const group = groupId != null && groups.find((g) => g.id === groupId);
+    const group = groupId != null && groups.find((g) => String(g.id) === String(groupId));
     (group ? group.bodyEl : ungroupedEl).appendChild(btn);
 
     const tab = {
@@ -3948,6 +4070,7 @@
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", "tab");
       dragTabEl = btn;
+      dragTabHome = btn.parentNode;
       document.body.classList.add("dragging-tab");
       requestAnimationFrame(() => btn.classList.add("dragging"));
     });
@@ -4810,16 +4933,60 @@
   let groupIconsMinted = false;
   let groupSeq = Number(localStorage.getItem("cp.groupSeq") || 0);
 
+  // The server's commons group (src/groups.ts MAIN_GROUP_ID) is the SAME shared,
+  // no-wall home the client has always shown as the "Main" view — the ungrouped
+  // (📥) rail entry. Multi-tenant made it an explicit server group row so agents
+  // can be FILED into it (a channel then carries group === "main"); but rendered
+  // as its own rail group it becomes a SECOND "Main" beside that view — the exact
+  // confusion a user hit ("two main groups", general in the second). So the tab
+  // rail FOLDS it into the ungrouped view: it is never turned into a rail group,
+  // and a channel whose group is the commons is shown there. The server row stays
+  // untouched (group is SERVER_OWNED; the secrets panel still treats "main" as a
+  // real group, because Main HAS its own vault).
+  const COMMONS_GROUP_ID = "main";
+  const foldCommons = (id) => (id != null && String(id) === COMMONS_GROUP_ID ? null : id);
+
+  // Group nature (server-owned): public / restricted / private. A walled group
+  // (restricted or private) carries a padlock. The operator never sees the
+  // internal word "restricted": the type reads Private, and the personal
+  // space reads Personal.
+  function isWalled(nature) {
+    return nature === "private" || nature === "restricted";
+  }
+  function groupTypeLabel(nature) {
+    if (nature === "private") return "Personal";
+    if (nature === "restricted") return "Private";
+    return "Public";
+  }
+  // The name a group SHOWS: the personal space is always "Personal" (its stored
+  // name is the account name); any other group shows its own name.
+  function groupDisplayName(g) {
+    return g.nature === "private" ? "Personal" : g.name;
+  }
+  // What is persisted back is the STORED name, never the display override.
+  const storedGroupName = (g) => (g.nature === "private" ? g.name : g.nameEl.textContent);
+
   function groupIdOf(tabEl) {
     const g = tabEl.closest(".group");
     return g ? g._group.id : null;
   }
 
   let groupPushTimer = null;
+  // No two groups with the same name (trimmed, case-insensitive). Private groups
+  // are excluded — they are auto-named and shown as "Personal", one per user.
+  // Mirror of the server guard (groupNameConflict) for immediate UX feedback;
+  // the server stays the source of truth for non-UI paths.
+  function groupNameTaken(name, exceptId) {
+    const norm = String(name).trim().toLowerCase();
+    if (!norm) return false;
+    return groups.some(
+      (g) => String(g.id) !== String(exceptId) && g.nature !== "private" && String(g.name).trim().toLowerCase() === norm,
+    );
+  }
   function persistGroups() {
     const list = [...groupsEl.children].map((el) => ({
       id: el._group.id,
-      name: el._group.nameEl.textContent,
+      name: storedGroupName(el._group),
       icon: el._group.icon,
       collapsed: el.classList.contains("collapsed"),
     }));
@@ -4837,8 +5004,8 @@
   }
 
   function createGroup(opts = {}) {
-    const id = opts.id != null ? opts.id : ++groupSeq;
-    groupSeq = Math.max(groupSeq, id);
+    const id = opts.id != null ? String(opts.id) : String(++groupSeq);
+    groupSeq = Math.max(groupSeq, Number(id) || 0);
     const el = document.createElement("div");
     el.className = "group" + (opts.collapsed ? " collapsed" : "");
     const head = document.createElement("div");
@@ -4848,12 +5015,17 @@
     caret.className = "caret";
     const gname = document.createElement("span");
     gname.className = "gname";
-    gname.textContent = opts.name || "group " + id;
-    gname.title = "Double-click to rename";
+    const storedName = opts.name || "group " + id;
+    gname.textContent = groupDisplayName({ nature: opts.nature, name: storedName });
+    gname.title = opts.nature === "private" ? "" : "Double-click to rename";
+    const glock = document.createElement("span");
+    glock.className = "glock";
+    glock.textContent = "🔒";
+    glock.title = groupTypeLabel(opts.nature);
     const gclose = document.createElement("span");
     gclose.className = "gclose";
     gclose.textContent = "×";
-    gclose.title = "Ungroup (tabs are kept)";
+    gclose.title = groupCloseTitle(opts.nature);
     const gicon = document.createElement("span");
     gicon.className = "gicon";
     gicon.title = "Change the group's icon";
@@ -4861,7 +5033,18 @@
     gadd.className = "gadd";
     gadd.textContent = "＋";
     gadd.title = "New agent in this group";
-    head.append(caret, gicon, gname, gadd, gclose);
+    // 🔑 opens THIS group's secrets directly (a flat panel when only Main exists).
+    const gkey = document.createElement("span");
+    gkey.className = "gkey";
+    gkey.textContent = "🔑";
+    gkey.title = "Secrets of this group";
+    head.append(caret, gicon, gname);
+    if (isWalled(opts.nature)) head.append(glock);
+    const ggear = document.createElement("span");
+    ggear.className = "gkey";
+    ggear.textContent = "⚙";
+    ggear.title = "Settings and members of this group";
+    head.append(ggear, gkey, gadd, gclose);
     const body = document.createElement("div");
     body.className = "group-body";
     el.append(head, body);
@@ -4871,24 +5054,30 @@
     // icons existed) gets a random one, persisted once the restore is over.
     const icon = opts.icon || window.randomGroupIcon();
     if (!opts.icon) groupIconsMinted = true;
-    const group = { id, el, headEl: head, bodyEl: body, nameEl: gname, icon, iconDrawn: !opts.icon };
+    const group = { serverSeen: false, id, el, headEl: head, bodyEl: body, nameEl: gname, icon, iconDrawn: !opts.icon,
+      nature: opts.nature || "public", owner: opts.owner || null, name: storedName };
     el._group = group;
     const paintCaret = () => {
       caret.textContent = el.classList.contains("collapsed") ? "▸" : "▾";
     };
     paintCaret();
     head.addEventListener("click", (e) => {
-      if (e.target === gclose) return dissolveGroup(group);
+      if (e.target === gclose) return closeGroupGesture(group);
       if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
       if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
+      if (e.target === gkey) { e.stopPropagation(); return openSecretsPanel(group.id); }
+      if (e.target === ggear) { e.stopPropagation(); return openGroupPanel(group.id); }
       el.classList.toggle("collapsed");
       paintCaret();
       persistGroups();
     });
     gname.addEventListener("dblclick", (e) => {
       e.stopPropagation();
+      if (group.nature === "private") return; // the personal space is not renamable
       inlineRename(head, gname, (v) => {
+        if (groupNameTaken(v, group.id)) return alert(`A group named "${v}" already exists.`);
         gname.textContent = v;
+        group.name = v;
         persistGroups();
       });
     });
@@ -4903,6 +5092,36 @@
     return group;
   }
 
+  function groupCloseTitle(nature) {
+    if (nature === "restricted") return "Delete group (destroys its agents and files)";
+    if (nature === "private") return "Personal space (sealed)";
+    return "Ungroup (its agents move to Main)";
+  }
+
+  /** The group's × per nature. Public: the cosmetic ungroup. Restricted (Private):
+   * the privileged teardown, behind a confirmation. Private (Personal): nothing.
+   * Ungrouping a walled group would drop its agents into the commons. */
+  async function closeGroupGesture(group, after) {
+    if (group.nature === "private") return;
+    if (group.nature === "restricted") {
+      if (!confirm("Delete group " + (group.name || "") + "? Its agents and files are destroyed.")) return;
+      try {
+        const res = await fetch("/groups", {
+          method: "DELETE",
+          headers: { "content-type": "application/json", "x-shadok-instance": instanceKey },
+          body: JSON.stringify({ id: group.id }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || "Could not delete the group.");
+          return;
+        }
+      } catch { alert("Could not delete the group."); return; }
+    }
+    dissolveGroup(group);
+    if (after) after();
+  }
+
   /** Removes a group; its tabs move back to the ungrouped zone. */
   function dissolveGroup(group) {
     while (group.bodyEl.firstChild) ungroupedEl.appendChild(group.bodyEl.firstChild);
@@ -4914,13 +5133,21 @@
 
   // ── Drag & drop (tabs + groups, live-sort while dragging) ──
   let dragTabEl = null;
+  let dragTabHome = null;
   let dragGroupEl = null;
+  // On a capable (multi-tenant) instance `channel.group` is SERVER_OWNED, set at
+  // spawn from identity: a cross-group drop would only LIE (the server ignores
+  // it, and a private agent would look like it sits in the commons). Reordering
+  // inside its own group stays free; mono-tenant groups are cosmetic and move.
+  function tabMoveAllowed(zone) {
+    return groupCapable !== true || !dragTabHome || zone === dragTabHome;
+  }
 
   function endDrag() {
     const wasGroup = !!dragGroupEl;
     if (dragTabEl) dragTabEl.classList.remove("dragging");
     if (dragGroupEl) dragGroupEl.classList.remove("dragging");
-    dragTabEl = dragGroupEl = null;
+    dragTabEl = dragGroupEl = dragTabHome = null;
     document.body.classList.remove("dragging-tab");
     document.querySelectorAll(".rail-item.drop-target, .rail-item.dragging").forEach((r) => r.classList.remove("drop-target", "dragging"));
     persistChannels();
@@ -4938,6 +5165,7 @@
       // The bottom slot ONLY hosts the tweak channel: without this guard, a tab
       // dragged over it would be inserted there and end up pinned in place.
       if (overTab && overTab !== dragTabEl && !overTab.classList.contains("tweak")) {
+        if (!tabMoveAllowed(overTab.parentNode)) return;
         const r = overTab.getBoundingClientRect();
         const after = e.clientY > r.top + r.height / 2;
         overTab.parentNode.insertBefore(dragTabEl, after ? overTab.nextSibling : overTab);
@@ -4946,6 +5174,7 @@
       const head = e.target.closest(".group-head");
       if (head) {
         const g = head.parentNode;
+        if (!tabMoveAllowed(g._group.bodyEl)) return;
         // Dropping on a header files the tab into that group; unfold it so
         // the tab stays visible.
         g.classList.remove("collapsed");
@@ -4955,7 +5184,7 @@
         return;
       }
       const zone = e.target.closest("#ungrouped, .group-body");
-      if (zone && dragTabEl.parentNode !== zone) zone.appendChild(dragTabEl);
+      if (zone && dragTabEl.parentNode !== zone && tabMoveAllowed(zone)) zone.appendChild(dragTabEl);
     } else if (dragGroupEl) {
       const overGroup = e.target.closest(".group");
       if (overGroup && overGroup !== dragGroupEl) {
@@ -4991,7 +5220,7 @@
     if (setupGroup != null) return setupGroup;
     if (!railShown()) return null;
     const v = currentView();
-    return v === "ungrouped" ? null : Number(v);
+    return v === "ungrouped" ? null : String(v);
   }
   const viewOfTab = (tab) => {
     const id = groupIdOf(tab.btnEl);
@@ -5067,10 +5296,12 @@
   // rewrites its text, never the element.
   viewLabelEl.addEventListener("click", (e) => {
     const g = groups.find((x) => String(x.id) === currentView());
-    if (!g) return;
+    if (!g || g.nature === "private") return; // the personal space is not renamable
     e.stopPropagation();
     inlineRename(tabbar, viewLabelEl, (v) => {
+      if (groupNameTaken(v, g.id)) return alert(`A group named "${v}" already exists.`);
       g.nameEl.textContent = v;
+      g.name = v;
       persistGroups();
       applyView();
     });
@@ -5123,19 +5354,38 @@
     add.className = "rail-add";
     add.textContent = "＋";
     add.title = "New agent in " + name;
-    item.append(ic, nm, dot, count, add);
+    // A walled group keeps its own icon; the padlock is a small corner badge.
+    let lead = ic;
+    if (group && isWalled(group.nature)) {
+      lead = document.createElement("span");
+      lead.className = "rail-icon-wrap";
+      const lock = document.createElement("span");
+      lock.className = "rail-lock";
+      lock.textContent = "🔒";
+      lead.append(ic, lock);
+    }
+    item.append(lead, nm, dot, count, add);
     if (group) {
+      // Settings + members. The rail IS the group header on desktop (the
+      // `.group-head` gear is display:none here), so without this the members
+      // panel (POST /groups/members) had no reachable door — membership was
+      // create-time only. Opens the same openGroupPanel, scoped by nature.
+      const gear = document.createElement("button");
+      gear.type = "button";
+      gear.className = "rail-gear";
+      gear.textContent = "⚙";
+      gear.title = "Settings and members of " + name;
+      item.appendChild(gear);
+      gear.addEventListener("click", (e) => { e.stopPropagation(); openGroupPanel(group.id); });
       const del = document.createElement("button");
       del.type = "button";
       del.className = "rail-del";
       del.textContent = "×";
-      del.title = "Ungroup (its agents move to Main)";
+      del.title = groupCloseTitle(group.nature);
       item.appendChild(del);
       del.addEventListener("click", (e) => {
         e.stopPropagation();
-        dissolveGroup(group);
-        persistGroups();
-        applyView();
+        closeGroupGesture(group, () => { persistGroups(); applyView(); });
       });
       ic.addEventListener("click", (e) => {
         // stopPropagation so the item's own click doesn't double-fire setView,
@@ -5147,11 +5397,14 @@
       });
       nm.addEventListener("click", (e) => {
         if (!isSecondClick(e)) return; // the item's own click selects the group
+        if (group.nature === "private") return; // the personal space is not renamable
         // Not to the item: its setView could move the focus to the composer
         // and blur (= close) the field we are opening.
         e.stopPropagation();
         inlineRename(item, nm, (v) => {
+          if (groupNameTaken(v, group.id)) return alert(`A group named "${v}" already exists.`);
           group.nameEl.textContent = v;
+          group.name = v;
           persistGroups();
           applyView();
         });
@@ -5195,7 +5448,7 @@
       e.preventDefault();
       if (!dragTabEl) return;
       const body = group ? group.bodyEl : ungroupedEl;
-      if (dragTabEl.parentNode !== body) body.appendChild(dragTabEl);
+      if (dragTabEl.parentNode !== body && tabMoveAllowed(body)) body.appendChild(dragTabEl);
       endDrag();
     });
     return item;
@@ -5317,6 +5570,8 @@
     $("iconEmpty").hidden = !(q && !window.looksLikeEmoji(q) && list.length === 0);
   }
   function openIconPicker(group, anchor) {
+    // A walled group (private/personal) keeps its OWN icon — the padlock is a
+    // small corner badge, not the icon — so its icon is editable like any other.
     iconTarget = group;
     iconInput.value = "";
     paintIconGrid("");
@@ -5489,6 +5744,16 @@
   }
 
   let lastChannelIds = new Set();
+  // Channels confirmed present in a /channels response at least once, and — for
+  // one currently ABSENT — when it first went missing. The "ended elsewhere"
+  // removal waits for a SUSTAINED absence (CHANNEL_REMOVE_AFTER_MS): a single
+  // poll that omits a channel is NOT proof it was closed. A server mid-restart,
+  // or a transient viewer=null, returns an ACL-narrowed /channels that drops a
+  // PRIVATE-group channel (visibleChannels fails closed) — deleting the tab on
+  // the first miss is what made the "perso" agent vanish on every restart.
+  const everSeenChannelIds = new Set();
+  const channelMissedSince = new Map();
+  const CHANNEL_REMOVE_AFTER_MS = 20000;
   async function syncChannels() {
     if (restoring) return;
     let chans, srvGroups;
@@ -5505,11 +5770,28 @@
     if (Array.isArray(srvGroups)) {
       for (const sg of srvGroups) {
         if (sg == null || sg.id == null) continue;
-        const g = groups.find((x) => x.id === sg.id);
-        if (!g) { createGroup(sg); continue; }
-        if (sg.name && sg.name !== g.nameEl.textContent && !renamingAGroup())
-          g.nameEl.textContent = sg.name;
+        if (String(sg.id) === COMMONS_GROUP_ID) continue; // the commons is the "Main" view, not a rail group
+        const g = groups.find((x) => String(x.id) === String(sg.id));
+        if (!g) { createGroup(sg).serverSeen = true; continue; }
+        g.serverSeen = true;
+        if (sg.name && sg.name !== g.name && !renamingAGroup()) {
+          g.name = sg.name;
+          g.nameEl.textContent = groupDisplayName(g);
+        }
         if (sg.icon && sg.icon !== g.icon) g.icon = sg.icon;
+      }
+      // A fulfilled /groups is AUTHORITATIVE for what this viewer may see: a group
+      // the server showed us before and now omits belongs to a prior identity (a
+      // shared session cookie switched user under this tab) and must leave the
+      // rail. Spared: the commons, and a local group never confirmed by the server
+      // (serverSeen false: made here, not pushed yet). Removed directly, NOT via
+      // dissolveGroup: its persist would PUT this stale list to the server.
+      const visible = new Set(srvGroups.filter((sg) => sg && sg.id != null).map((sg) => String(sg.id)));
+      for (const g of groups.slice()) {
+        if (String(g.id) === COMMONS_GROUP_ID || g.serverSeen !== true || visible.has(String(g.id))) continue;
+        while (g.bodyEl.firstChild) ungroupedEl.appendChild(g.bodyEl.firstChild);
+        g.el.remove();
+        groups = groups.filter((x) => x !== g);
       }
       renderRail(); // an icon lives outside the column, so no observer sees it
     }
@@ -5554,8 +5836,9 @@
         // An agent moved to another group elsewhere follows here — never mid-drag,
         // and never over a move of this tab's own that has not landed yet.
         if (!dragTabEl && !t.btnEl.closest("#tweakSlot")) {
-          const r = window.reconcileTabGroup(groupIdOf(t.btnEl), t.syncedGroup, c.group);
-          const dest = r.move && (c.group == null ? ungroupedEl : groups.find((g) => g.id === c.group)?.bodyEl);
+          const cg = foldCommons(c.group); // commons → the ungrouped "Main" view
+          const r = window.reconcileTabGroup(groupIdOf(t.btnEl), t.syncedGroup, cg);
+          const dest = r.move && (cg == null ? ungroupedEl : groups.find((g) => String(g.id) === String(cg))?.bodyEl);
           if (dest) dest.appendChild(t.btnEl);
           if (!r.move || dest) t.syncedGroup = r.synced;
         }
@@ -5564,9 +5847,9 @@
         // an empty cockpit — with `active === null` the user is looking at
         // #emptyState (invariant 18), so this displaces nobody, and showing the
         // channel beats leaving them in front of nothing.
-        const nt = createTab(c.group, { focus: !active });
+        const nt = createTab(foldCommons(c.group), { focus: !active });
         nt.sessionId = c.sessionId;
-        nt.syncedGroup = c.group ?? null;
+        nt.syncedGroup = foldCommons(c.group) ?? null;
         nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
@@ -5590,10 +5873,18 @@
         });
       }
     }
-    // A channel that was in the registry and is now gone was ended elsewhere.
-    // Never drop the main channel this way (it's the environment's home base).
+    // A channel confirmed present before and now absent was ended elsewhere —
+    // but only once it STAYS absent (a transient ACL-narrowed list on restart
+    // must not delete it). Never drop the main channel (it's the home base).
+    for (const id of current) everSeenChannelIds.add(id);
     for (const t of [...tabs]) {
-      if (!t.isMain && t.sessionId && lastChannelIds.has(t.sessionId) && !current.has(t.sessionId)) {
+      if (t.isMain || !t.sessionId) continue;
+      if (current.has(t.sessionId)) { channelMissedSince.delete(t.sessionId); continue; }
+      if (!everSeenChannelIds.has(t.sessionId)) continue; // never confirmed present → not a close
+      const since = channelMissedSince.get(t.sessionId);
+      if (since == null) channelMissedSince.set(t.sessionId, Date.now());
+      else if (Date.now() - since >= CHANNEL_REMOVE_AFTER_MS) {
+        channelMissedSince.delete(t.sessionId);
         removeTabLocal(t);
       }
     }
@@ -7775,6 +8066,12 @@
       localStorage.setItem("cp.profile", selectedProfile);
       if (cwd) localStorage.setItem("cp.profile:" + cwd, selectedProfile);
     }
+    // A NEW agent names the group on screen; the server honours it only for a
+    // group the caller belongs to. Null (commons) omits it. Never on resume.
+    if (mode === "new") {
+      const tg = viewGroupId();
+      if (tg) msg.group = tg;
+    }
     $("startBtn").disabled = true;
     closeSetup();
     // createTab activates the created tab; launchTab opens the link. A new agent
@@ -7824,6 +8121,8 @@
     lastVersion = msg;
     const tv = document.getElementById("tweakVer");
     if (tv) tv.textContent = msg.current ? "v" + msg.current : "";
+    // Independent of the version view: a page without #verView still needs it.
+    showMigrationBanner(msg.migrationState);
     if (!verView) return;
     const ahead = msg.latest && verIsNewer(msg.latest, msg.current);
     verView.textContent = ahead ? "v" + msg.current + " → " + msg.latest : "v" + (msg.current || "?");
@@ -7838,6 +8137,27 @@
       verChan.title = "Release channel — click the version for options";
     }
     renderVerMenu();
+  }
+
+  // The group-isolation migration banner. Persistent (not auto-dismissed) and
+  // reused via the version/status channel: a never-completing migration must be
+  // visible, not a log line nobody reads. "ok"/absent → removed.
+  function showMigrationBanner(state) {
+    let el = document.getElementById("migrationBanner");
+    if (state !== "pending" && state !== "failed") {
+      if (el) el.remove();
+      return;
+    }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "migrationBanner";
+      document.body.insertBefore(el, document.body.firstChild);
+    }
+    el.classList.toggle("pending", state === "pending");
+    el.classList.toggle("failed", state === "failed");
+    el.textContent = state === "pending"
+      ? "Setting up isolated groups… agents are running un-isolated until this completes."
+      : "Group isolation did NOT complete — agents are running un-isolated (commons). Check the server logs; it retries on the next restart.";
   }
 
   function renderVerMenu() {
@@ -7907,7 +8227,12 @@
     if (relBtn) relBtn.hidden = false;
     accEl.textContent = (a.email || "signed in") + (a.subscriptionType ? " · " + a.subscriptionType : "");
     accEl.title = a.authMethod ? "via " + a.authMethod : "";
-    if (typeof a.tokenExpiresAt === "number") {
+    if (a.longLived) {
+      tokEl.style.color = "";
+      tokEl.textContent = window.accountExpiryLine(a) || "—";
+      tokEl.title = "Agents authenticate with a long-lived token (opaque, so the date is approximate: " +
+        "one year from when it was last provisioned).";
+    } else if (typeof a.tokenExpiresAt === "number") {
       const ms = a.tokenExpiresAt - Date.now();
       tokEl.textContent = window.fmtExpiry(a.tokenExpiresAt);
       tokEl.style.color = ms <= 0 ? "var(--err)" : ms < 3 * 86400000 ? "var(--amber)" : "";
@@ -9596,11 +9921,13 @@
     // must change nothing (neither save nor restart).
     if (!$("profConfirmOverlay").hidden) { closeProfConfirm(); e.preventDefault(); return; }
     if (!$("profSwitchOverlay").hidden) { closeProfSwitch(); e.preventDefault(); return; }
+    if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
+    if (!$("groupCreateOverlay").hidden) { closeGroupCreate(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
     if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("telegramOverlay").hidden) { $("telegramOverlay").hidden = true; e.preventDefault(); return; }
@@ -9631,60 +9958,187 @@
 
   // ── Secret vault panel (central, global; profiles pick which to inject) ──
   let vaultNames = [];
+  let vaultSecrets = [];   // the server's tagged list: {name, source, ownerGroup?, audit…}
+  let vaultGroups = [];    // GET /groups — decides flat vs grouped
+  let panelGroup = null;   // the group the panel is scoped to (null = the caller's own view)
   async function loadVault() {
-    try { vaultNames = (await (await fetch("/secrets")).json()).names || []; } catch { vaultNames = []; }
+    try {
+      const [v, g] = await Promise.all([
+        fetch("/secrets").then((r) => r.json()),
+        fetch("/groups").then((r) => r.json()).catch(() => null),
+      ]);
+      vaultNames = v.names || [];
+      vaultSecrets = Array.isArray(v.secrets) ? v.secrets : vaultNames.map((name) => ({ name, source: "main" }));
+      vaultGroups = Array.isArray(g) ? g : [];
+    } catch { vaultNames = []; vaultSecrets = []; vaultGroups = []; }
     if (!Array.isArray(vaultNames)) vaultNames = [];
     return vaultNames;
+  }
+  // The synthetic "all public groups" selector value (mirrors secrets-panel.js's
+  // PUBLIC_BUCKET; a local const so panel code never depends on the bridged
+  // window value being loaded).
+  const PUBLIC_BUCKET = "__public__";
+  function groupName(id) {
+    if (String(id) === PUBLIC_BUCKET) return "Public groups";
+    const g = vaultGroups.find((x) => String(x.id) === String(id));
+    if (!g) return String(id);
+    // Match the rail + the selector: a private group is the sealed "Personal"
+    // space, never its raw (account) name.
+    return g.nature === "private" ? "Personal" : g.name;
+  }
+  // The TARGET group a write/share/profiles call lands in: in grouped mode the
+  // panel is scoped to one group, so a write lands in the section the user is
+  // looking at (not the caller's identity-derived default). The server still
+  // authorizes it (`canWriteSecretGroup`); this is a request, not a trusted
+  // value. Flat / mono-tenant mode omits it — the server keeps today's
+  // identity-derived behaviour (back-compat).
+  function secretWriteGroup() {
+    if (window.secretsPanelMode(vaultGroups) !== "grouped" || panelGroup == null) return null;
+    // "Public groups" is a view over several groups; a write needs a concrete
+    // target, so it lands in the canonical (first) public group — all public
+    // groups are visible-to-all, so which one physically holds it is immaterial.
+    if (String(panelGroup) === PUBLIC_BUCKET) return window.publicWriteTarget(vaultGroups);
+    return String(panelGroup);
+  }
+  // Add `group` to a write body only in grouped mode (omit otherwise).
+  function withSecretGroup(body) {
+    const g = secretWriteGroup();
+    return g ? { ...body, group: g } : body;
+  }
+  function actionBtn(cls, text, title, fn) {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = cls; b.textContent = text; b.title = title;
+    b.addEventListener("click", fn);
+    return b;
+  }
+  /** One secret row. `ro` = a secret that belongs to someone else: no value
+   *  editing, no deletion, no controls — only the audit history. The value is
+   *  never shown in any case (write-only vault). */
+  function secretRow(sec, { ro, grouped }) {
+    const k = sec.name;
+    const li = document.createElement("li");
+    if (grouped) li.className = "sec-row" + (ro ? " sec-ro" : "");
+    const code = document.createElement("code"); code.textContent = k;
+    if (ro && sec.ownerGroup) {
+      const from = document.createElement("span"); from.className = "sec-from";
+      from.textContent = "from " + groupName(sec.ownerGroup);
+      code.appendChild(from);
+    }
+    // Who receives it. Bridge guard (invariant 10): no module, no mention,
+    // rather than an exception that would empty the list.
+    const users = !ro && window.secretUsers ? window.secretUsers(profileCache, k) : null;
+    if (users && !grouped) {
+      const tag = document.createElement("span");
+      if (users.length) {
+        tag.className = "sec-users";
+        tag.textContent = "→ " + users.join(", ");
+        tag.title = users.length === 1
+          ? "Injected as an environment variable into agents running " + users[0]
+          : "Injected as an environment variable into agents running any of: " + users.join(", ");
+      } else {
+        tag.className = "sec-orphan";
+        tag.textContent = "⚠ no profile uses it";
+        tag.title = "No agent will ever receive this secret until a profile references it";
+      }
+      code.appendChild(tag);
+    }
+    const actions = document.createElement("div");
+    actions.className = "s-actions";
+    actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
+    if (!ro) {
+      actions.append(
+        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
+        actionBtn("s-del", "✕", "Remove from vault", async () => {
+          const g = secretWriteGroup();
+          await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
+          if (editingSecret === k) resetSecretForm();
+          await loadVault(); renderSecrets();
+        }),
+      );
+    }
+    li.append(code, actions);
+    if (grouped) {
+      const line = window.auditLine ? window.auditLine(sec) : "";
+      if (line) { const m = document.createElement("div"); m.className = "sec-meta"; m.textContent = line; li.appendChild(m); }
+      if (!ro) li.appendChild(secretControls(sec));
+    }
+    return li;
+  }
+  /** Own secret, grouped mode: who it is lent to (PUT /secrets/share) and which
+   *  profiles inject it (PUT /secrets/profiles). Each saves on its own button so
+   *  a half-ticked state never reaches the server. */
+  function secretControls(sec) {
+    const box = document.createElement("div"); box.className = "sec-ctl";
+    const targets = window.shareTargets ? window.shareTargets(vaultGroups, sec.ownerGroup) : [];
+    const profs = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n))).sort();
+    const picker = (label, options, current, onSave) => {
+      if (!options.length) return;
+      const wrap = document.createElement("span");
+      wrap.append(label + ": ");
+      const cbs = options.map((o) => {
+        const l = document.createElement("label");
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = (current || []).includes(o.value);
+        const t = document.createElement("span"); t.textContent = o.label;
+        l.append(cb, t); wrap.appendChild(l); return cb;
+      });
+      wrap.appendChild(actionBtn("linkish", "save", "Save", async () => {
+        await onSave(cbs.filter((c) => c.checked).map((c) => c.value));
+        await loadVault(); renderSecrets();
+      }));
+      box.appendChild(wrap);
+    };
+    // A secret's own controls target its OWNER group (the section it lives in).
+    picker("shared read with", targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith, (sharedWith) =>
+      fetch("/secrets/share", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, sharedWith })) }));
+    picker("attach to profiles", profs.map((n) => ({ value: n, label: n })), sec.profiles, (profiles) =>
+      fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, profiles })) }));
+    return box;
   }
   function renderSecrets() {
     const ul = $("secretsList");
     ul.innerHTML = "";
-    if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
-    for (const k of vaultNames) {
-      const li = document.createElement("li");
-      const code = document.createElement("code"); code.textContent = k;
-      // Qui reçoit ce secret. Le panneau disait déjà « personne » ; il ne disait
-      // pas À QUI il sert quand il sert, ce qui obligeait à ouvrir les profils
-      // un par un. Garde du pont ESM (invariant 10) : pas de module, pas de
-      // mention, plutôt qu'une exception qui viderait la liste.
-      const users = window.secretUsers ? window.secretUsers(profileCache, k) : null;
-      if (users) {
-        const tag = document.createElement("span");
-        if (users.length) {
-          tag.className = "sec-users";
-          tag.textContent = "→ " + users.join(", ");
-          tag.title = users.length === 1
-            ? "Injected as an environment variable into agents running " + users[0]
-            : "Injected as an environment variable into agents running any of: " + users.join(", ");
-        } else {
-          tag.className = "sec-orphan";
-          tag.textContent = "⚠ no profile uses it";
-          tag.title = "No agent will ever receive this secret until a profile references it";
-        }
-        code.appendChild(tag);
-      }
-      const actions = document.createElement("div");
-      actions.className = "s-actions";
-      const edit = document.createElement("button");
-      edit.type = "button"; edit.className = "s-edit"; edit.textContent = "✎";
-      edit.title = "Update this secret's value / the profiles it feeds";
-      edit.addEventListener("click", () => startEditSecret(k));
-      const del = document.createElement("button");
-      del.type = "button"; del.className = "s-del"; del.textContent = "✕"; del.title = "Remove from vault";
-      del.addEventListener("click", async () => {
-        await fetch("/secrets?name=" + encodeURIComponent(k), { method: "DELETE" });
-        if (editingSecret === k) resetSecretForm();
-        await loadVault(); renderSecrets();
-      });
-      const hist = document.createElement("button");
-      hist.type = "button"; hist.className = "s-edit"; hist.textContent = "🕘";
-      hist.title = "Audit log for this secret — who wrote it and which agents received it";
-      hist.addEventListener("click", () => openSecretAudit(k));
-      actions.append(hist, edit, del);
-      li.append(code, actions);
-      ul.appendChild(li);
+    const grouped = window.secretsPanelMode(vaultGroups) === "grouped";
+    $("secretsScope").hidden = !grouped;
+    // Grouped mode attaches profiles per row (PUT /secrets/profiles); the flat
+    // form keeps today's profile ticks, byte for byte.
+    $("secretAttach").dataset.grouped = grouped ? "1" : "";
+    if (!grouped) {
+      if (!vaultNames.length) ul.innerHTML = '<li><span style="opacity:.6">the vault is empty</span></li>';
+      for (const k of vaultNames) ul.appendChild(secretRow(vaultSecrets.find((x) => x.name === k) || { name: k }, { ro: false, grouped: false }));
+      return;
     }
+    const sel = $("secretsGroup");
+    // Each restricted/private group individually + ONE "Public groups" entry
+    // (public = visible to all, so not listed one by one). Main is the commons,
+    // shown as the "Inherited from Main" section, never a selector entry.
+    const opts = window.panelGroupOptions(vaultGroups);
+    sel.replaceChildren(...opts.map((o) => { const el = document.createElement("option"); el.value = o.value; el.textContent = o.label; return el; }));
+    const valid = new Set(opts.map((o) => o.value));
+    // Map a selection to a valid option: a concrete public group id collapses
+    // into the bucket; an unknown one falls back to where an own secret lives,
+    // else the first option.
+    const toOption = (id) => {
+      if (id == null) return null;
+      if (valid.has(String(id))) return String(id);
+      const g = vaultGroups.find((x) => String(x.id) === String(id));
+      return g && g.nature === "public" && String(g.id) !== "main" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
+    };
+    panelGroup =
+      toOption(panelGroup) ??
+      toOption((vaultSecrets.find((x) => x.source === "own") || {}).ownerGroup) ??
+      (opts[0] ? opts[0].value : null);
+    if (panelGroup != null) sel.value = String(panelGroup);
+    const sec = window.secretSections(vaultSecrets, panelGroup, vaultGroups);
+    const section = (title, rows, ro, empty) => {
+      const h = document.createElement("li"); h.className = "sec-sect"; h.textContent = title; ul.appendChild(h);
+      if (!rows.length) { const e = document.createElement("li"); e.innerHTML = '<span style="opacity:.6"></span>'; e.firstChild.textContent = empty; ul.appendChild(e); }
+      for (const r of rows) ul.appendChild(secretRow(r, { ro, grouped: true }));
+    };
+    section("Own — " + groupName(panelGroup), sec.own, false, "no secret of its own yet");
+    section("Shared with this group", sec.sharedIn, true, "nothing lent by another group");
+    section("Inherited from Main", sec.inheritedMain, true, "nothing in Main");
   }
+  $("secretsGroup").addEventListener("change", () => { panelGroup = $("secretsGroup").value; renderSecrets(); });
 
   // ── Add / update a secret, and wire it to profiles ──────────────────────
   // The vault add form doubles as an editor: ✎ on a row loads the name (locked)
@@ -9774,14 +10228,163 @@
   }
   // profileCache feeds the "no profile uses it" warning: it must be fresh when
   // the panel opens, or we would show a stale diagnosis.
-  $("secretsBtn").addEventListener("click", async () => {
+  async function openSecretsPanel(groupId) {
+    panelGroup = groupId == null ? null : String(groupId);
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
     resetSecretForm();
     $("secretsReload").hidden = true;
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
-  });
+  }
+  $("secretsBtn").addEventListener("click", () => openSecretsPanel(null));
+  // ── Member picker: avatar toggle grid ───────────────────────────────
+  // Shared by the create-group form and the group panel. Names go through
+  // textContent (invariant 13); the only innerHTML is the constant check SVG.
+  const MEMBER_PALETTE = ["#e0567a", "#e08a3c", "#c9a227", "#49b36b", "#3aa6b0", "#4f8cff", "#7b6cf0", "#b05ad6", "#c2566e", "#5a8f6f"];
+  const MEMBER_CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
+  function memberColor(name) {
+    let h = 0;
+    for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    return MEMBER_PALETTE[h % MEMBER_PALETTE.length];
+  }
+  function memberInitial(name) { return ([...String(name)][0] || "?").toUpperCase(); }
+  /** Render the grid into `container`. `lockedSelf` (or null) is the current
+   *  account: always selected, not clickable. `onChange` fires on each toggle. */
+  function renderMemberGrid(container, { accounts, selected, lockedSelf, onChange }) {
+    container.textContent = "";
+    const sel = new Set(selected || []);
+    const names = (Array.isArray(accounts) ? accounts : []).filter((n) => n !== lockedSelf);
+    const all = lockedSelf ? [lockedSelf, ...names] : names;
+    for (const name of all) {
+      const isSelf = name === lockedSelf;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "member-tile" + (isSelf ? " me" : "");
+      b.dataset.name = name;
+      if (isSelf) { b.setAttribute("aria-disabled", "true"); b.setAttribute("aria-pressed", "true"); }
+      else b.setAttribute("aria-pressed", String(sel.has(name)));
+      const av = document.createElement("div");
+      av.className = "member-av";
+      av.style.background = memberColor(name);
+      av.textContent = memberInitial(name);
+      const badge = document.createElement("span");
+      if (isSelf) { badge.className = "member-lock"; badge.textContent = "🔒"; }
+      else { badge.className = "member-check"; badge.innerHTML = MEMBER_CHECK_SVG; }
+      av.append(badge);
+      const nm = document.createElement("div");
+      nm.className = "member-nm";
+      nm.textContent = isSelf ? name + " (you)" : name;
+      b.append(av, nm);
+      if (!isSelf) b.addEventListener("click", () => {
+        b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"));
+        if (onChange) onChange();
+      });
+      container.append(b);
+    }
+  }
+  /** Names currently selected (the locked self is NOT included — it is implicit). */
+  function readMemberGrid(container) {
+    // Exclude the locked self/owner tile: it carries aria-pressed="true" for the
+    // screen reader (it IS a member), but the owner is implicit and must never be
+    // returned as a pick — otherwise creation re-adds the creator and the panel's
+    // save-diff POSTs a redundant add of the owner on every save.
+    return [...container.querySelectorAll('.member-tile[aria-pressed="true"]:not(.me)')].map((b) => b.dataset.name);
+  }
+  async function currentAccountName() {
+    if (!me) { try { me = await (await fetch("/me")).json(); } catch { me = null; } }
+    return (me && me.name) || null;
+  }
+  // BEGIN group-panel
+  // Group settings: name + type, and the member list for a Private group only.
+  async function openGroupPanel(groupId) {
+    const body = $("groupPanelBody");
+    const hdr = $("groupPanelTitle");
+    $("groupPanelOverlay").hidden = false;
+    let g = null;
+    try {
+      const r = await fetch("/groups");
+      const list = r.ok ? await r.json() : [];
+      g = (Array.isArray(list) ? list : []).find((x) => String(x.id) === String(groupId)) || null;
+    } catch { /* leave g null */ }
+    body.textContent = "";
+    if (!g) { hdr.textContent = "Group"; body.textContent = "Could not load this group."; return; }
+    hdr.textContent = groupDisplayName(g) + " · " + groupTypeLabel(g.nature);
+    const note = (t) => { const p = document.createElement("p"); p.className = "sec-note"; p.textContent = t; body.append(p); };
+    if (g.nature === "private") {
+      note("🔒 Only you — this space is sealed.");
+      return;
+    }
+    if (g.nature === "restricted") {
+      const members = Array.isArray(g.members) ? g.members : [];
+      const post = async (payload) => {
+        let failure = "";
+        try {
+          const res = await fetch("/groups/members", { method: "POST",
+            headers: { "content-type": "application/json", "x-shadok-instance": instanceKey },
+            body: JSON.stringify(payload) });
+          if (!res.ok) {
+            const j = await res.json().catch(() => ({}));
+            failure = (j && j.error) || ("Request failed (" + res.status + ")");
+          }
+        } catch (e) { failure = "Network error: " + ((e && e.message) || e); }
+        if (!failure) return true;
+        let warn = body.querySelector("#gpError");
+        if (!warn) {
+          warn = document.createElement("p");
+          warn.id = "gpError"; warn.className = "sec-note warn";
+          body.prepend(warn);
+        }
+        warn.textContent = failure;
+        return false;
+      };
+      let names = [];
+      try {
+        const r = await fetch("/accounts");
+        names = r.ok ? await r.json() : [];
+      } catch { /* grid shows only the members we know */ }
+      // The owner comes from the group itself, so the lock never depends on /me.
+      const self = g.owner || (await currentAccountName());
+      const accounts = [...new Set([...(Array.isArray(names) ? names : []), ...members])];
+      const grid = document.createElement("div");
+      grid.id = "gpGrid";
+      grid.className = "member-grid";
+      const save = document.createElement("button");
+      save.type = "button"; save.id = "gpSave"; save.className = "primary";
+      save.textContent = "Save members";
+      // Self is locked/implicit: never part of the diff.
+      const current = members.filter((m) => m !== self);
+      const diff = () => {
+        const now = readMemberGrid(grid);
+        return { add: now.filter((n) => !current.includes(n)), remove: current.filter((n) => !now.includes(n)) };
+      };
+      const refresh = () => { const d = diff(); save.disabled = !d.add.length && !d.remove.length; };
+      renderMemberGrid(grid, { accounts, selected: current, lockedSelf: self, onChange: refresh });
+      refresh();
+      save.addEventListener("click", async () => {
+        const d = diff();
+        save.disabled = true;
+        // Keep `current` equal to server truth after EACH successful POST, so a
+        // partial failure leaves a diff that retries only what really failed.
+        for (const n of d.add) {
+          if (!(await post({ group: g.id, add: n }))) return refresh();
+          current.push(n);
+        }
+        for (const n of d.remove) {
+          if (!(await post({ group: g.id, remove: n }))) return refresh();
+          const i = current.indexOf(n);
+          if (i >= 0) current.splice(i, 1);
+        }
+        return openGroupPanel(groupId);
+      });
+      body.append(grid, save);
+      return;
+    }
+    note("Anyone can see this — it is a label.");
+  }
+  $("groupPanelClose").addEventListener("click", () => { $("groupPanelOverlay").hidden = true; });
+  $("groupPanelOverlay").addEventListener("click", (e) => { if (e.target === $("groupPanelOverlay")) $("groupPanelOverlay").hidden = true; });
+  // END group-panel
   /** The vault, opened on ONE name an agent asked for: the name filled in (or the
    *  existing secret in edit mode), the asking agent's profile pre-ticked so the
    *  value actually reaches it, the cursor on the value. Saving then goes through
@@ -10047,9 +10650,11 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     if (!keepValue) {
-      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
+      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
     }
-    await syncSecretToProfiles(name, wanted); // refreshes profileCache
+    // Grouped mode binds profiles per row (PUT /secrets/profiles) and hides the
+    // ticks: syncing here would read an empty selection and detach everything.
+    if (window.secretsPanelMode(vaultGroups) === "flat") await syncSecretToProfiles(name, wanted); // refreshes profileCache
     await loadVault(); renderSecrets();
     offerReload(name); // propose reloading the live agents that now feed on it
     resetSecretForm();
@@ -10087,7 +10692,7 @@
     // Sequential: each PUT does a read-modify-write of secrets.json on the
     // server; the awaits avoid a race on the file.
     for (const { name, value } of pairs) {
-      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, value, overwrite: true }) });
+      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
     }
     $("secretKey").value = ""; $("secretVal").value = "";
     await loadVault(); renderSecrets();
@@ -10576,22 +11181,23 @@
   }
   // The profile's secrets are checkboxes over the vault: pick which named
   // secrets this profile injects. (Values live in the vault, defined once.)
-  async function renderProfSecrets() {
+  // Read-only on purpose: the name↔profile link is edited from the SECRETS side
+  // (per group), so the same secret can mean different values in different
+  // groups without the role carrying any of them. Shown so a role's needs stay
+  // visible; editSecretRefs is still sent back unchanged so a save never drops them.
+  function renderProfSecrets() {
     const ul = $("profSecretsList"); ul.innerHTML = "";
-    const names = await loadVault();
-    if (!names.length) { ul.innerHTML = '<li><span style="opacity:.6">vault is empty — add secrets in the Secrets panel</span></li>'; return; }
-    for (const k of names) {
+    if (!editSecretRefs.length) { ul.innerHTML = '<li><span style="opacity:.6">no secret injected</span></li>'; return; }
+    for (const k of editSecretRefs) {
       const li = document.createElement("li");
-      const label = document.createElement("label"); label.style.display = "flex"; label.style.gap = "6px"; label.style.cursor = "pointer";
-      const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = editSecretRefs.includes(k);
-      cb.addEventListener("change", () => {
-        if (cb.checked) { if (!editSecretRefs.includes(k)) editSecretRefs.push(k); }
-        else editSecretRefs = editSecretRefs.filter((x) => x !== k);
-      });
       const code = document.createElement("code"); code.textContent = k;
-      label.append(cb, code); li.append(label); ul.appendChild(li);
+      li.appendChild(code); ul.appendChild(li);
     }
   }
+  $("profToSecrets").addEventListener("click", () => {
+    $("profilesOverlay").hidden = true;
+    openSecretsPanel(null);
+  });
   const READONLY_DENY = ["Bash(git commit:*)","Bash(git push:*)","Bash(git add:*)","Bash(git reset:*)","Bash(git rebase:*)","Bash(git merge:*)","Bash(git checkout:*)"];
   /** The typed patterns, one per line, without the empty ones. */
   function denyLines() {
@@ -11733,18 +12339,110 @@
     markTweakTab(t);
     launchTab(t, { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" });
   });
-  function addGroup() {
-    const g = createGroup();
-    persistGroups();
-    // applyView first, so has-groups is set and the column is shown SYNCHRONOUSLY
-    // — otherwise railShown() below is still false on the first group (created
-    // from the bare button, while the rail was hidden) and it would not select.
-    applyView();
-    // A new group is where you are going next: select it (it starts empty).
-    if (railShown()) setView(g.id, { follow: false });
+  // ── Create-group form ─────────────────────────────────────────
+  // "Public" is nature "public"; "Private" is the server's "restricted".
+  // Private needs a multi-tenant instance: /version reports it as `mode`.
+  let groupCapable = null;
+  async function isGroupCapable() {
+    if (groupCapable !== null) return groupCapable;
+    try {
+      const v = await (await fetch("/version")).json();
+      groupCapable = v.mode === "multi-tenant";
+    } catch { return false; } // unknown: refuse Private now, retry next opening
+    return groupCapable;
   }
-  newGroupBtn.addEventListener("click", addGroup);
-  $("newGroupBare").addEventListener("click", addGroup);
+  isGroupCapable(); // warm the cache: the drag guard reads it synchronously
+  function groupCreateError(msg) {
+    const el = $("groupCreateErr");
+    el.textContent = msg || "";
+    el.hidden = !msg;
+  }
+  function groupNature() {
+    const a = $("groupCreateType").querySelector(".nature-card.active");
+    return a && a.dataset.nature === "restricted" ? "restricted" : "public";
+  }
+  function setGroupNature(nature) {
+    for (const c of $("groupCreateType").querySelectorAll(".nature-card")) {
+      const on = c.dataset.nature === nature && !c.disabled;
+      c.classList.toggle("active", on);
+      c.setAttribute("aria-pressed", String(on));
+    }
+    const priv = groupNature() === "restricted";
+    $("groupMembersField").hidden = !priv;
+    if (priv) loadGroupAccounts();
+  }
+  async function openGroupCreate() {
+    $("groupCreateName").value = "";
+    setGroupNature("public");
+    $("groupMembersField").hidden = true;
+    $("groupMembersPick").textContent = "";
+    groupCreateError("");
+    $("groupCreateSubmit").disabled = false;
+    const capable = await isGroupCapable();
+    $("groupCreateType").querySelector('.nature-card[data-nature="restricted"]').disabled = !capable;
+    $("groupCreateNoPrivate").hidden = capable;
+    $("groupCreateOverlay").hidden = false;
+    $("groupCreateName").focus();
+  }
+  function closeGroupCreate() { $("groupCreateOverlay").hidden = true; }
+  async function loadGroupAccounts() {
+    const pick = $("groupMembersPick");
+    try {
+      const r = await fetch("/accounts");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const names = await r.json();
+      renderMemberGrid(pick, { accounts: names, selected: [], lockedSelf: await currentAccountName() });
+    } catch (e) {
+      groupCreateError("Could not load accounts: " + e.message);
+    }
+  }
+  async function submitGroupCreate() {
+    // In-flight guard, set synchronously: Enter and a double-click both land here.
+    if ($("groupCreateSubmit").disabled) return;
+    $("groupCreateSubmit").disabled = true;
+    const name = $("groupCreateName").value.trim();
+    const nature = groupNature();
+    if (!name) { $("groupCreateSubmit").disabled = false; return groupCreateError("Give the group a name."); }
+    if (groupNameTaken(name)) { $("groupCreateSubmit").disabled = false; return groupCreateError(`A group named "${name}" already exists.`); }
+    const members = nature === "restricted"
+      ? readMemberGrid($("groupMembersPick")) : [];
+    groupCreateError("");
+    const headers = { "Content-Type": "application/json", "x-shadok-instance": instanceKey };
+    try {
+      const r = await fetch("/groups", { method: "POST", headers, body: JSON.stringify({ name, nature }) });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok || !data.ok) throw new Error(data.error || data.message || "HTTP " + r.status);
+      const g = createGroup(data.group);
+      persistGroups();
+      applyView();
+      if (railShown()) setView(g.id, { follow: false });
+      closeGroupCreate();
+      const failed = [];
+      // Own try/catch: the group EXISTS now, so a failure here must not re-arm Submit.
+      try {
+        for (const add of members) {
+          const mr = await fetch("/groups/members", { method: "POST", headers, body: JSON.stringify({ group: data.group.id, add }) });
+          if (!mr.ok) failed.push(add);
+        }
+      } catch (e2) {
+        for (const add of members) if (!failed.includes(add)) failed.push(add);
+      }
+      if (failed.length) alert("Group created, but could not add: " + failed.join(", "));
+    } catch (e) {
+      groupCreateError(e.message);
+      $("groupCreateSubmit").disabled = false;
+    }
+  }
+  for (const card of $("groupCreateType").querySelectorAll(".nature-card")) {
+    card.addEventListener("click", () => { if (!card.disabled) setGroupNature(card.dataset.nature); });
+  }
+  $("groupCreateClose").addEventListener("click", closeGroupCreate);
+  $("groupCreateOverlay").addEventListener("click", (e) => { if (e.target === $("groupCreateOverlay")) closeGroupCreate(); });
+  $("groupCreateSubmit").addEventListener("click", submitGroupCreate);
+  $("groupCreateName").addEventListener("keydown", (e) => { if (e.key === "Enter") submitGroupCreate(); });
+  // END group-create
+  newGroupBtn.addEventListener("click", openGroupCreate);
+  $("newGroupBare").addEventListener("click", openGroupCreate);
 
   // ── Quota gauges (5h / 7d) ──────────────────────────────
   function fmtReset(sec) {
@@ -11871,7 +12569,8 @@
     // A fulfilled /groups (or /channels) response is authoritative — even when
     // empty. Only a failed fetch falls back to the (now dir-scoped) cache.
     let savedGroups = pickChannelSource(groupsR, JSON.parse(localStorage.getItem(dirKey("cp.groups", instanceKey)) || "[]"));
-    for (const g of savedGroups) createGroup(g);
+    // The commons group ("main") is the "Main" view, never a rail group (see foldCommons).
+    for (const g of savedGroups) if (String(g.id) !== COMMONS_GROUP_ID) createGroup(g);
 
     let saved = pickChannelSource(channelsR, JSON.parse(localStorage.getItem(dirKey("cp.channels", instanceKey)) || "[]"));
 
@@ -11885,8 +12584,8 @@
       //    afterwards, prioritising the visible one.
       const pending = [];
       for (const s of uniqueChannels) {
-        const t = createTab(s.group);
-        t.syncedGroup = s.group ?? null;
+        const t = createTab(foldCommons(s.group));
+        t.syncedGroup = foldCommons(s.group) ?? null;
         // Know the session id from the start, so a slow or failed reattach never
         // drops the channel from a persist (which eroded the list to one).
         t.sessionId = s.sessionId;

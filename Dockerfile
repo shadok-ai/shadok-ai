@@ -41,6 +41,16 @@ RUN npm install -g @anthropic-ai/claude-code shadok-ai
 WORKDIR /workspace
 EXPOSE 3789
 
+# --- No USER directive, on purpose (Task 15) ---------------------------------
+# The container runs as root so the server can provision OS users (`useradd`,
+# `chown`, `setpriv`) — that is the whole isolation wall between groups. The
+# commons must still NOT run as root: the first boot of a capable instance runs
+# the automatic migration (`src/migrate-groups.ts`), which creates the non-root
+# `main` user, chowns the existing root-owned tree to it, and from then on drops
+# every commons/public spawn to `main` (`commonsOsUser`). So the non-root commons
+# user is created at RUNTIME by migration, not baked in here — a static `USER`
+# would strip the server of the privilege it needs to build the wall.
+
 # --- pid 1 reaps -------------------------------------------------------------
 # Without this the supervisor is pid 1, and pid 1 is the only process that can
 # reap an ORPHAN: a child whose own parent exited is re-parented to it, and

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fmtExpiry, expiryWarning, EXPIRY_WARN_MS } from "../public/auth-expiry.js";
+import { fmtExpiry, expiryWarning, accountExpiryLine, EXPIRY_WARN_MS } from "../public/auth-expiry.js";
 
 const NOW = 1_800_000_000_000; // a fixed "now" so the clock is deterministic
 const h = (n: number) => n * 3600_000;
@@ -64,4 +64,27 @@ test("expiryWarning: no numeric deadline (env token, or missing) → nothing to 
   assert.equal(expiryWarning({ state: "signed-in", loggedIn: true }, NOW), null);
   assert.equal(expiryWarning({ state: "signed-in", tokenExpiresAt: "soon" as unknown as number }, NOW), null);
   assert.equal(expiryWarning(null, NOW), null);
+});
+
+test("longLived: never nags, even with an imminent tokenExpiresAt", () => {
+  const auth = { state: "signed-in", loggedIn: true, tokenExpiresAt: NOW + h(1), longLived: true, longLivedExpiresAt: NOW + d(300) };
+  assert.equal(expiryWarning(auth, NOW), null);
+});
+
+test("accountExpiryLine: longLived with a date → approximate wording", () => {
+  const auth = { state: "signed-in", longLived: true, longLivedExpiresAt: new Date(2027, 10, 15).getTime() };
+  assert.equal(accountExpiryLine(auth, NOW), "Long-lived token — expires ≈ Nov 2027");
+});
+
+test("accountExpiryLine: longLived without a date → no fixed expiry", () => {
+  const line = accountExpiryLine({ state: "signed-in", longLived: true, longLivedExpiresAt: null }, NOW);
+  assert.match(line!, /^Long-lived token — no fixed expiry/);
+  assert.match(line!, /claude setup-token/);
+});
+
+test("non-longLived: unchanged behaviour", () => {
+  const auth = { state: "signed-in", loggedIn: true, tokenExpiresAt: NOW + h(10) };
+  assert.equal(accountExpiryLine(auth, NOW), "in 10 h");
+  assert.ok(expiryWarning(auth, NOW));
+  assert.equal(accountExpiryLine({ state: "signed-in" }, NOW), null);
 });

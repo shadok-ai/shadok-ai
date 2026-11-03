@@ -13,6 +13,9 @@ import {
   channelWriteAllowed,
   dropForeignHomes,
   profilePatch,
+  normalizeGroups,
+  normalizeChannelGroups,
+  ensureMainGroup,
   type Channel,
 } from "../src/channels.js";
 
@@ -127,20 +130,36 @@ test("mergeChannels: client drives name/group; server-owned fields preserved", (
     // A topic channel (threadId set) — not the General, so the client name wins.
     { sessionId: "a", cwd: "/real", branch: "b", telegram: { chatId: 7, threadId: 3 }, name: "srv" },
   ];
-  const client: Channel[] = [{ sessionId: "a", cwd: "/wrong", name: "renamed", group: 2 }];
+  const client: Channel[] = [{ sessionId: "a", cwd: "/wrong", name: "renamed", group: "2" }];
   const out = mergeChannels(stored, client, new Set());
   assert.deepEqual(out, [
-    { sessionId: "a", cwd: "/real", name: "renamed", group: 2, branch: "b", telegram: { chatId: 7, threadId: 3 } },
+    { sessionId: "a", cwd: "/real", name: "renamed", group: "2", branch: "b", telegram: { chatId: 7, threadId: 3 } },
   ]);
 });
 
-test("mergeChannels: an omitted group keeps the stored one, an explicit null ungroups", () => {
-  // A tab that did not move the agent omits `group`: it must not undo a move
-  // another tab just made (the agent used to jump back to its old group).
-  const stored: Channel[] = [{ sessionId: "a", cwd: "/r", group: 5 }];
-  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", name: "x" }], new Set())[0].group, 5);
-  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: 2 }], new Set())[0].group, 2);
-  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: null }], new Set())[0].group, null);
+test("mergeChannels: group is server-owned — a client can neither move nor clear it", () => {
+  // An agent is born into its group and never moves; a PUT must not reassign it
+  // across an isolation wall.
+  const stored: Channel[] = [{ sessionId: "a", cwd: "/r", group: "5" }];
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", name: "x" }], new Set())[0].group, "5");
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: "2" }], new Set())[0].group, "5");
+  assert.equal(mergeChannels(stored, [{ sessionId: "a", cwd: "/r", group: null }], new Set())[0].group, "5");
+});
+
+test("mergeChannels: a brand-new row cannot be BORN with a client-supplied group", () => {
+  // The privilege-escalation vector (security fix): zoe closes her agent (the
+  // row is gone, the .jsonl persists), then PUTs a brand-new row reusing that
+  // transcript id with {group:"comex"}. `group` is SERVER_OWNED — but the
+  // existing-row guard only protects rows that already exist, so a NEW row used
+  // to carry the client's group verbatim, which the resume path then turned into
+  // a drop to comex's OS user. A new row must be born group-less; only the
+  // server's start-path upsert sets a group, from the caller's identity.
+  const out = mergeChannels([], [{ sessionId: "Z", cwd: "/r", name: "evil", group: "comex" }], new Set());
+  assert.equal(out.length, 1);
+  assert.equal(out[0].sessionId, "Z");
+  assert.equal(out[0].name, "evil"); // client still drives its own name
+  assert.equal(out[0].group, undefined); // but NOT the group
+  assert.equal("group" in out[0], false);
 });
 
 test("mergeChannels: a client can neither change nor clear a channel's profile", () => {
@@ -326,6 +345,7 @@ test("resolveSessionTarget: a worktree channel resolves to its OWN directory", (
     profile: "reviewer",
     branch: "shadok-ai/wt",
     repo: "/repo",
+    group: null,
     known: true,
   });
 });
@@ -338,6 +358,7 @@ test("resolveSessionTarget: an unknown session falls back to the server cwd", ()
     profile: null,
     branch: null,
     repo: null,
+    group: null,
     known: false,
   });
 });
@@ -349,6 +370,13 @@ test("resolveSessionTarget: missing fields normalize to null, blank cwd falls ba
   assert.equal(t.repo, null);
   assert.equal(t.profile, null);
   assert.equal(t.known, true); // the channel exists — only its cwd was unusable
+});
+
+test("resolveSessionTarget: carries the channel's isolation group (for cron secret scoping)", () => {
+  const list = [chan("g", { group: "comex" }), chan("n", {})];
+  assert.equal(resolveSessionTarget(list, "g", "/x").group, "comex");
+  assert.equal(resolveSessionTarget(list, "n", "/x").group, null); // group-less = commons
+  assert.equal(resolveSessionTarget(list, "ghost", "/x").group, null);
 });
 
 test("resolveSessionTarget: matches on sessionId, not on cwd", () => {
@@ -375,7 +403,7 @@ test("resumeTarget: the registry beats a cwd the caller invented", () => {
 test("resumeTarget: an unknown session still honours what the caller sent", () => {
   // A channel whose registry entry was lost must still resume where it lived.
   const t = resumeTarget([], "ghost", { cwd: "/wt", branch: "b", repo: "/r" }, "/server-cwd");
-  assert.deepEqual(t, { cwd: "/wt", profile: null, branch: "b", repo: "/r", known: false });
+  assert.deepEqual(t, { cwd: "/wt", profile: null, branch: "b", repo: "/r", group: null, known: false });
 });
 
 test("resumeTarget: with nothing anywhere, the server cwd is the last resort", () => {
@@ -410,4 +438,60 @@ test("resolveResumeId: a shortened id nobody carries is refused, never passed to
 test("resolveResumeId: a complete id is kept even when the registry has forgotten it", () => {
   const id = "113f3745-b8bc-4d73-b5c4-93b1557fb921";
   assert.deepEqual(resolveResumeId([], id), { ok: true, id }); // /recover
+});
+
+test("normalizeGroups: a legacy tab-group row becomes a public Group with a string id", () => {
+  const out = normalizeGroups([{ id: 3, name: "SALES", collapsed: true, order: 1 }]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, "3");
+  assert.equal(out[0].name, "SALES");
+  assert.equal(out[0].nature, "public");
+  assert.deepEqual(out[0].members, []);
+  assert.equal(out[0].osUser, null);
+  assert.equal(out[0].createdAt, 0); // stable fallback: repeated loads agree
+  assert.deepEqual(normalizeGroups([{ id: 3 }]), normalizeGroups([{ id: 3 }]));
+});
+
+test("normalizeGroups: unparseable rows are dropped, non-arrays give []", () => {
+  assert.deepEqual(normalizeGroups(null), []);
+  assert.deepEqual(normalizeGroups("x"), []);
+  assert.deepEqual(normalizeGroups([null, 5, {}, { name: "no id" }]), []);
+});
+
+test("normalizeGroups: an already-typed Group keeps its nature and members", () => {
+  const out = normalizeGroups([{ id: "g1", name: "T", nature: "restricted", members: ["ada"], owner: "ada", createdAt: 7 }]);
+  assert.equal(out[0].nature, "restricted");
+  assert.deepEqual(out[0].members, ["ada"]);
+  assert.equal(out[0].createdAt, 7);
+});
+
+test("ensureMainGroup: [] yields exactly one public main group", () => {
+  const out = ensureMainGroup([]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, "main");
+  assert.equal(out[0].nature, "public");
+});
+
+test("ensureMainGroup is idempotent", () => {
+  const once = ensureMainGroup([]);
+  assert.deepEqual(ensureMainGroup(once), once);
+});
+
+test("mergeChannels: group is server-owned once the channel exists", () => {
+  const stored = [{ sessionId: "a", cwd: "/x", group: "g1" }] as Channel[];
+  const out = mergeChannels(stored, [{ sessionId: "a", cwd: "/x", group: "other" }] as Channel[], new Set());
+  assert.equal(out[0].group, "g1");
+});
+
+test("normalizeChannelGroups: a legacy numeric group comes back as the equivalent string", () => {
+  const out = normalizeChannelGroups([
+    { sessionId: "a", cwd: "/x", group: 3 },
+    { sessionId: "b", cwd: "/x", group: "g1" },
+    { sessionId: "c", cwd: "/x", group: null },
+    { sessionId: "d", cwd: "/x" },
+  ] as any);
+  assert.strictEqual(out[0].group, "3");
+  assert.strictEqual(out[1].group, "g1");
+  assert.strictEqual(out[2].group, null);
+  assert.ok(!("group" in out[3]));
 });

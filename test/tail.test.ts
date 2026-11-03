@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, startOffset } from "../src/tail.js";
+import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, startOffset, sessionFilePath, newestTranscriptById } from "../src/tail.js";
 
 test("parseLine: assistant text block → one text event", () => {
   const ev = parseLine(
@@ -262,6 +262,26 @@ test("scanUsage: last record per message id wins (streaming writes growing count
   assert.equal(map.get("m1")!.output, 9); // last record
   assert.equal(map.get("m2")!.input, 4);
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("sessionFilePath/newestTranscriptById read the given HOME, not only the server's", () => {
+  // A privilege-dropped group agent writes its transcript under ITS OWN home
+  // (/home/sk-<id>), so the content tail must search that home. Passing `home`
+  // must find the agent's .jsonl; the default (server home) must NOT see it.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
+  const cwd = "/some/worktree/path";
+  const id = "sess-abc123";
+  const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
+  const dir = path.join(home, ".claude", "projects", encoded);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, id + ".jsonl");
+  fs.writeFileSync(file, JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }));
+
+  assert.equal(newestTranscriptById(id, home), file);
+  assert.equal(sessionFilePath(cwd, id, home), file);
+  // The server's own home has no such transcript → it must not resolve to the file.
+  assert.notEqual(newestTranscriptById(id), file);
+  fs.rmSync(home, { recursive: true, force: true });
 });
 
 test("a silence placeholder is SIGNALLED, not swallowed", () => {

@@ -1,6 +1,7 @@
 import pty from "node-pty";
 import xterm from "@xterm/headless";
 import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, typeIntoBox } from "./detect.js";
+import { dropArgv, dropEnv } from "./osusers.js";
 
 const { Terminal } = xterm;
 
@@ -29,6 +30,34 @@ export const FORCED_CLAUDE_ENV: Record<string, string> = {
   CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1",
 };
 
+/**
+ * The forced layer: `FORCED_CLAUDE_ENV` plus, for an isolated group's agent, the
+ * shared subscription token. `CLAUDE_CODE_OAUTH_TOKEN` begins with `CLAUDE`, so
+ * any layer before the strip would lose it, and a profile secret of the same
+ * name must not shadow it — hence the forced layer, applied LAST by both pilots.
+ * Gated on BOTH a drop `user` and a non-empty token: mono-tenant gets no key.
+ */
+export function forcedEnv(opts: { user?: string | null; oauthToken?: string }): Record<string, string> {
+  return {
+    ...FORCED_CLAUDE_ENV,
+    ...(opts.user && opts.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: opts.oauthToken } : {}),
+  };
+}
+
+/** The full spawn env of a PTY pilot, pure so it is testable without a PTY. */
+export function spawnEnv(
+  opts: { user?: string | null; home?: string | null; env?: Record<string, string>; oauthToken?: string },
+  baseEnv: Record<string, string>,
+): Record<string, string> {
+  return {
+    ...baseEnv,
+    TERM: "xterm-256color",
+    ...opts.env,
+    ...dropEnv(opts.user, opts.home),
+    ...forcedEnv(opts),
+  };
+}
+
 export interface PilotOptions {
   /** Path to the claude executable (default: "claude" from PATH). */
   claudePath?: string;
@@ -39,6 +68,27 @@ export interface PilotOptions {
   cols?: number;
   rows?: number;
   env?: Record<string, string>;
+  /**
+   * The OS user to drop to before exec (multi-tenant isolation). When set, the
+   * spawn is wrapped in `setpriv` (`src/osusers.ts`); unset = today's behaviour,
+   * running as the server's own user. The multi-tenant gate lives in the caller
+   * (`makePilot`), so an unset `user` is the only thing a mono-tenant spawn ever
+   * sees — the spawn path then stays byte-for-byte what it was.
+   */
+  user?: string | null;
+  /**
+   * The HOME directory of the drop `user`. `setpriv` changes the uid but not
+   * `$HOME`, so without this a dropped agent keeps the server's `HOME=/root` and
+   * never reaches its per-group `~/.claude` (auth + skills break). Only ever set
+   * alongside `user`; when `user` is unset this is ignored and HOME is left as
+   * today. See `dropEnv` (`src/osusers.ts`).
+   */
+  home?: string | null;
+  /**
+   * The shared subscription token, injected as CLAUDE_CODE_OAUTH_TOKEN in the
+   * forced-last layer. Honoured only together with `user` (see `forcedEnv`).
+   */
+  oauthToken?: string;
 }
 
 export interface WaitOptions {
@@ -110,15 +160,28 @@ export class PtyPilot {
       if (/^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k)) continue;
       env[k] = v;
     }
-    this.proc = pty.spawn(this.opts.claudePath ?? "claude", this.opts.args ?? [], {
+    // Drop to the target group's OS user when one is set (node-pty has no uid
+    // option, so we wrap the command in setpriv). `user` is only ever set in
+    // multi-tenant — the gate lives in `makePilot` — so this branch is dead in
+    // mono-tenant and the spawn below is unchanged.
+    const bin0 = this.opts.claudePath ?? "claude";
+    const args0 = this.opts.args ?? [];
+    const drop = this.opts.user ? dropArgv(this.opts.user, bin0, args0) : null;
+    this.proc = pty.spawn(drop ? drop.cmd : bin0, drop ? drop.argv : args0, {
       name: "xterm-256color",
       cols: this.opts.cols,
       rows: this.opts.rows,
       cwd: this.opts.cwd ?? process.cwd(),
+      // `dropEnv` sets HOME/USER/LOGNAME to the drop user's own when we are
+      // dropping privilege: setpriv changes the uid but not $HOME, so without
+      // this the agent keeps the server's HOME=/root and never reaches its
+      // per-group ~/.claude (auth + skills break). It goes AFTER `...env` (the
+      // inherited process env, which carries the server's HOME) so it overrides
+      // it, and is `{}` when no user is set, so the mono-tenant env is unchanged.
       // FORCED_CLAUDE_ENV goes LAST, after the profile's secrets: a transcript
       // is what the cockpit is made of, so nothing a profile carries may switch
       // it off, even by accident of naming.
-      env: { ...env, TERM: "xterm-256color", ...this.opts.env, ...FORCED_CLAUDE_ENV },
+      env: spawnEnv(this.opts, env),
     });
     this.proc.onData((chunk) => {
       this.lastDataAt = Date.now();

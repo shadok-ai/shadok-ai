@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { type Group, type Nature, MAIN_GROUP_ID } from "./groups.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -17,8 +18,10 @@ export interface Channel {
   branch?: string | null;
   /** Repo the worktree belongs to, to recreate a reclaimed checkout. */
   repo?: string;
-  /** Tab group id (client-owned metadata). */
-  group?: number | null;
+  /** Id of the `Group` this agent was born into. Server-owned: an agent never
+   *  moves between groups, so a client PUT must not reassign it across an
+   *  isolation wall. */
+  group?: string | null;
   /** The environment's home base: pinned, never closable. Server-owned, so a
    *  stale client's PUT cannot clear it. See `isHomeChannel`. */
   home?: boolean;
@@ -100,7 +103,7 @@ export function isMirrored(c: Channel): boolean {
  * only resume its own agents" — which broke any multi-step remote exchange
  * (the holder's first resume ran; the browser's next sync wiped the owner). Same
  * loss as `profile`/`parent` before they were listed here. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer"] as const;
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "group", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
@@ -199,12 +202,21 @@ export function dedupById(list: Channel[]): Channel[] {
   }
   return out;
 }
+/** A legacy file holds numeric `group` ids; the type says `string | null`, and
+ *  the client compares with `===`, so coerce on read. Absent stays absent. */
+export function normalizeChannelGroups(list: Channel[]): Channel[] {
+  return list.map((c) => {
+    const g = (c as any).group;
+    if (g === undefined || g === null || typeof g === "string") return c;
+    return { ...c, group: String(g) };
+  });
+}
 export function loadChannels(): Channel[] {
   // dropForeignHomes on READ too: a file poisoned by an older build (a stale tab
   // that PUT another instance's home before the write guard existed) is cleaned
   // the moment it is read, so /channels never surfaces a foreign "general".
   return dropForeignHomes(
-    dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string")),
+    normalizeChannelGroups(dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string"))),
     process.cwd(),
   );
 }
@@ -315,7 +327,17 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
     seen.add(c.sessionId);
     const prev = byId.get(c.sessionId);
     if (!prev) {
-      result.push(c); // a new channel the client just created
+      // A brand-new row the client just created. `group` is SERVER_OWNED and
+      // drives a privilege drop to that group's OS user on resume, so a client
+      // must NOT be able to plant one at birth — otherwise a member could PUT a
+      // row `{sessionId:"Z", group:"comex"}` (reusing a transcript id they can
+      // read) and then resume it to come up under comex's Unix user. Only the
+      // server's start-path upsert sets a group, from the caller's identity.
+      // The existing-row guard below (SERVER_OWNED) already protects births that
+      // are UPDATES; this extends the same wall to genuinely new rows.
+      const born = { ...c };
+      delete born.group;
+      result.push(born);
       continue;
     }
     const merged: Channel = { ...c };
@@ -347,12 +369,49 @@ export function mergeClientChannels(clientList: Channel[], liveIds: Set<string>)
   return result;
 }
 
-/** Tab groups (id, name, collapsed, order), persisted the same way as channels. */
-export function loadGroups(): any[] {
-  return readJson("groups");
+/**
+ * Coerce whatever is on disk (or in a PUT body) into typed Groups. Legacy rows
+ * were cosmetic tab groups (`{id:number, name, collapsed, order}`); they become
+ * PUBLIC groups with no members, so nobody loses sight of an existing tab.
+ * Display extras (icon, collapsed, order) are kept. Rows with no usable id are
+ * dropped rather than invented.
+ */
+export function normalizeGroups(raw: unknown): Group[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Group[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const row = r as Record<string, any>;
+    const idOk = (typeof row.id === "string" && row.id !== "") || (typeof row.id === "number" && Number.isFinite(row.id));
+    if (!idOk) continue;
+    const nature: Nature = row.nature === "private" || row.nature === "restricted" || row.nature === "public" ? row.nature : "public";
+    const g: Group = {
+      ...row,
+      id: String(row.id),
+      name: typeof row.name === "string" ? row.name : "",
+      nature,
+      members: Array.isArray(row.members) ? row.members.filter((m: unknown) => typeof m === "string") : [],
+      osUser: typeof row.osUser === "string" ? row.osUser : null,
+      createdAt: typeof row.createdAt === "number" ? row.createdAt : 0, // stable: Date.now() made repeated loads differ
+    };
+    if (typeof row.owner !== "string") delete g.owner;
+    out.push(g);
+  }
+  return out;
 }
-export function saveGroups(list: any[]): void {
-  writeJson("groups", list);
+
+/** Guarantee the shared public group exists. Idempotent: never adds a second. */
+export function ensureMainGroup(list: Group[]): Group[] {
+  if (list.some((g) => g.id === MAIN_GROUP_ID)) return list;
+  return [{ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], osUser: null, createdAt: Date.now() }, ...list];
+}
+
+/** Groups, persisted per launch dir like channels. */
+export function loadGroups(): Group[] {
+  return normalizeGroups(readJson("groups"));
+}
+export function saveGroups(list: Group[]): void {
+  writeJson("groups", normalizeGroups(list));
 }
 
 /** The single group this instance is bound to (one board per instance), or null.
@@ -473,6 +532,9 @@ export interface SessionTarget {
   /** Worktree branch + origin repo, to recreate a reclaimed checkout. */
   branch: string | null;
   repo: string | null;
+  /** The isolation group the agent belongs to (null = commons / mono-tenant),
+   *  so a cron guard resolves this agent's secrets by its REAL group, not Main. */
+  group: string | null;
   /** False when no channel carries this sessionId: `cwd` is the fallback. */
   known: boolean;
 }
@@ -503,6 +565,7 @@ export function resolveSessionTarget(
     profile: ch?.profile ?? null,
     branch: ch?.branch ?? null,
     repo: ch?.repo ?? null,
+    group: ch?.group ?? null,
     known: !!ch,
   };
 }

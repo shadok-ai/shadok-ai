@@ -412,6 +412,31 @@ export function claudeStubMessage(): string {
   );
 }
 
+/**
+ * Why a multi-tenant instance cannot start isolated-group agents: they run as
+ * non-root OS users with no keychain, so they authenticate from the injected
+ * subscription token. Absent, every group spawn would die on a bare auth error.
+ * `null` when fine (not capable, or the token is present).
+ */
+/**
+ * Does THIS spawn need the injected subscription token? Exactly when it drops
+ * to a non-root OS user (the condition under which `makePilot` injects it) AND
+ * uses the subscription — a custom backend authenticates with its own key.
+ */
+export function mtTokenNeeded(dropsToUser: boolean, backendIsCustom: boolean): boolean {
+  return dropsToUser && !backendIsCustom;
+}
+
+export function mtCredentialMessage(capable: boolean, hasToken: boolean): string | null {
+  if (!capable || hasToken) return null;
+  return (
+    `This multi-tenant instance has no subscription token for its group agents: ` +
+    `the vault secret MT_CLAUDE_OAUTH_TOKEN is missing. ` +
+    `Run 'claude setup-token' once (as the signed-in operator) and store the result ` +
+    `as the vault secret MT_CLAUDE_OAUTH_TOKEN, then retry.`
+  );
+}
+
 export interface EnsureClaudeDeps {
   /** Locate a RUNNABLE claude now. Called again after an install. */
   find: () => Promise<ClaudeBin>;

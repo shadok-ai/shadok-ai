@@ -434,6 +434,56 @@ supplies the reaper. And either way it is decided when the container is
 **created**: `docker restart` empties the table — pid 1 restarts, the kernel
 drops the lot — but the leak starts over, so a recreate is what makes it stop.
 
+### Groups and deployment modes
+
+An agent lives in a **group**, and a group is both what is isolated and who can
+see it:
+
+- **Private** — only you. One per person, sealed, invisible even to an admin.
+- **Restricted** — your team: a member list, any member can invite.
+- **Public** — everyone. `Main` is the default public group.
+
+You see and drive only your own groups plus the public ones; that covers the
+agent list, secrets, the shared ledger and messaging between agents. Private and
+restricted groups are real walls: each agent runs as its **own OS user** with its
+own home and secrets, never as root. Crossing a wall is always a deliberate act:
+drop a file in the shared `~/shared/` folder, record a ledger line with
+`--public`, push a branch, or message an agent (public groups freely, restricted
+ones only with a handle they gave you; private groups cannot be messaged).
+
+Real isolation needs two things, checked once at boot:
+
+1. the server can create OS users (it runs as root or has passwordless `sudo` —
+   the official Docker image or a VPS deploy), **and**
+2. a GUI password is set (`SHADOK_GUI_PASSWORD`), because accounts are who the
+   walls protect.
+
+Both → **multi-tenant**. Anything else — `npx shadok-ai` on your machine, Docker
+without the password — stays **single-tenant**, exactly as before: it says so and
+refuses to create a private or restricted group rather than drawing one that
+protects nothing. You don't configure this; it follows from how you run it. The
+boot log prints `deployment mode: …`.
+
+An existing single-tenant instance that comes up capable is migrated
+automatically: what you have becomes the public `Main` group, each account gets
+a private group, and agents restart one at a time. A banner shows progress. Once
+migration completes, private and restricted agents run as their own non-root
+user, and `Main` agents run as a shared non-root `main` user. Until migration
+completes (or if it fails), agents keep running as before, so the non-root
+guarantee does not yet hold for them. On a **brand-new** instance one migration
+step — seeding the shared Claude credential — can only run once you have signed
+in to Claude, which happens after boot; the banner stays up until then and the
+migration **finishes on its own the moment you sign in** (no restart needed).
+**One-time provisioning:** isolated-group agents authenticate with a
+subscription token injected into their environment, not a shared credential
+file. Run `claude setup-token` once and store the result as the vault secret
+`MT_CLAUDE_OAUTH_TOKEN`. Without it, group spawns are refused with a message
+naming this step. The token is valid for about a year; re-mint it by hand
+(`claude setup-token`, then overwrite the secret) before it expires.
+
+Telegram stays single-owner, and there are no
+disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
+
 ### Exposing it beyond this machine
 
 The cockpit runs arbitrary commands on the host by design, so it binds

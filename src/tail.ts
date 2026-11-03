@@ -71,16 +71,23 @@ const MAX_RESULT = 4000;
  * file being actively appended is always the newest. Falls back to the
  * cwd-derived path for a brand-new session whose file doesn't exist yet.
  */
-export function sessionFilePath(cwd: string, sessionId: string): string {
-  const newest = newestTranscriptById(sessionId);
+export function sessionFilePath(cwd: string, sessionId: string, home: string = os.homedir()): string {
+  const newest = newestTranscriptById(sessionId, home);
   if (newest) return newest;
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  return path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+  return path.join(home, ".claude", "projects", encoded, sessionId + ".jsonl");
 }
 
-/** The most-recently-modified `<id>.jsonl` across all project dirs, or null. */
-export function newestTranscriptById(sessionId: string): string | null {
-  const root = path.join(os.homedir(), ".claude", "projects");
+/**
+ * The most-recently-modified `<id>.jsonl` across all project dirs, or null.
+ *
+ * `home` is the HOME whose `.claude/projects` to search — the SERVER's by
+ * default, but a privilege-dropped group agent (multi-tenant) writes its
+ * transcript under ITS OWN home (`/home/sk-<id>`), so the caller must pass that
+ * home or the content tail follows an empty path and the reply never streams.
+ */
+export function newestTranscriptById(sessionId: string, home: string = os.homedir()): string | null {
+  const root = path.join(home, ".claude", "projects");
   let best: string | null = null;
   let bestMtime = -1;
   let dirs: string[];

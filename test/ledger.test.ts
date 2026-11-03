@@ -248,3 +248,141 @@ test("ageDays is days since the claim was CONFIRMED, not since it was written", 
   // no verifiedAt → fall back to updatedAt, so older rows are unaffected
   assert.equal(ageDays({ updatedAt: 7 * day }, 10 * day), 3);
 });
+
+/* ---- Task 13 (PIVOT): one table, per-row authoring group, server-mediated ----
+ *
+ * The first attempt used a FILE PER GROUP with a `--public` mirror into Main.
+ * That broke on the OS-user wall (a privilege-dropped `sk-<id>` agent cannot
+ * write the server's 0600 ledger → EACCES + a half-published row), let a bare
+ * record DELETE another group's public row, and leaked Main-private rows through
+ * `GET /ledger`. The model is now ONE table per instance; each row carries its
+ * AUTHORING `group`; reads/writes are scoped SERVER-SIDE. `upsertEntry`'s
+ * `scope` threading is unchanged and still covered just above; these pin the new
+ * one-table cores. */
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { deltaSince, scopeVisible, recordIntoTable } from "../src/ledger.ts";
+
+test("upsertEntry carries scope; absent scope is NOT written (reads as group)", () => {
+  const pub: any[] = upsertEntry([], { entity: "A", status: "open", scope: "public" }, 1, "a1");
+  assert.equal(pub[0].scope, "public");
+  const bare: any[] = upsertEntry([], { entity: "B", status: "open" }, 1, "b1");
+  assert.equal(bare[0].scope, "group"); // the SAFE default, stored explicitly
+  const upd: any[] = upsertEntry(pub, { id: "a1", note: "n" }, 2);
+  assert.equal(upd[0].scope, "public"); // an edit that omits scope keeps it
+  const demote: any[] = upsertEntry(pub, { id: "a1", scope: "group" }, 3);
+  assert.equal(demote[0].scope, "group");
+});
+
+test("deltaSince with a visibleScope drops another group's private rows, keeps public", () => {
+  const rows: any[] = [
+    { id: "1", entity: "mine", status: "open", updatedAt: 10, group: "g1", scope: "group" },
+    { id: "2", entity: "theirs", status: "open", updatedAt: 11, group: "g2", scope: "group" },
+    { id: "3", entity: "shared", status: "open", updatedAt: 12, group: "g2", scope: "public" },
+    { id: "4", entity: "legacy", status: "open", updatedAt: 13, group: "g2" }, // no scope = group
+  ];
+  const d = deltaSince(rows, 0, 10, { groupId: "g1", includePublic: true });
+  assert.deepEqual(d.rows.map((r) => r.id).sort(), ["1", "3"]);
+  assert.equal(d.total, 2);
+  const noPub = deltaSince(rows, 0, 10, { groupId: "g1", includePublic: false });
+  assert.deepEqual(noPub.rows.map((r) => r.id), ["1"]);
+  assert.equal(deltaSince(rows, 0, 10).total, 4); // unscoped call unchanged
+});
+
+test("deltaSince: a commons row (group null) normalises to Main — a mono-tenant push still sees it", () => {
+  // In mono-tenant every row's authoring group is null; the push asks with
+  // groupId "main". Without the null→Main normalisation the delta came back
+  // empty, which is the whole-feature-off failure.
+  const rows: any[] = [
+    { id: "x", entity: "legacy commons row", status: "open", updatedAt: 10 }, // no group, no scope
+    { id: "y", entity: "explicit main row", status: "open", updatedAt: 11, group: "main" },
+  ];
+  const d = deltaSince(rows, 0, 10, { groupId: "main", includePublic: true });
+  assert.deepEqual(d.rows.map((r) => r.id).sort(), ["x", "y"]);
+});
+
+test("scopeVisible: own-group rows ∪ public; another group's group-scoped rows are dropped", () => {
+  const rows: any[] = [
+    { id: "a", entity: "a-private", status: "open", group: "A", scope: "group" },
+    { id: "b", entity: "b-private", status: "open", group: "B", scope: "group" },
+    { id: "p", entity: "b-public", status: "open", group: "B", scope: "public" },
+    { id: "m", entity: "main-private", status: "open", scope: "group" }, // group null → Main
+  ];
+  // Group A: its own rows + every public row; never B's private one.
+  assert.deepEqual(scopeVisible(rows, new Set(["A"]), true).map((r) => r.id).sort(), ["a", "p"]);
+  // Group B: its own private AND public rows.
+  assert.deepEqual(scopeVisible(rows, new Set(["B"]), true).map((r) => r.id).sort(), ["b", "p"]);
+  // A member who can see Main sees the Main-private row and public, not A/B.
+  assert.deepEqual(scopeVisible(rows, new Set(["main"]), true).map((r) => r.id).sort(), ["m", "p"]);
+  // includePublic false → strictly own group (the push's "no public" variant).
+  assert.deepEqual(scopeVisible(rows, new Set(["A"]), false).map((r) => r.id), ["a"]);
+});
+
+test("recordIntoTable: stamps the authoring group, scopes the upsert to it", () => {
+  let rows: any[] = [];
+  ({ rows } = recordIntoTable(rows, "A", { entity: "thing", status: "open" }, 100, "a1"));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].group, "A"); // stamped from the caller, not the patch
+  assert.equal(rows[0].scope, "group"); // group-private by default
+  // --public flips scope, group unchanged
+  ({ rows } = recordIntoTable(rows, "A", { id: "a1", public: true }, 200, "zz"));
+  assert.equal(rows[0].scope, "public");
+  assert.equal(rows[0].group, "A");
+});
+
+test("recordIntoTable: a bare record by group A never supersedes OR deletes group B's row with the same entity", () => {
+  // The per-group-file demotion bug: A recording the entity B also tracks wiped
+  // B's public row. One table, scoped upsert → A gets its OWN row, B's is untouched.
+  let rows: any[] = [
+    { id: "b1", entity: "shared topic", status: "resolved", group: "B", scope: "public", updatedAt: 1 },
+  ];
+  const out = recordIntoTable(rows, "A", { entity: "shared topic", status: "open" }, 100, "a1");
+  rows = out.rows;
+  assert.equal(rows.length, 2); // a NEW row for A, B's still there
+  const b = rows.find((r) => r.group === "B");
+  assert.equal(b.scope, "public"); // B's public row survives, unchanged
+  assert.equal(b.status, "resolved");
+  const a = rows.find((r) => r.group === "A");
+  assert.equal(a.entity, "shared topic");
+  assert.equal(a.scope, "group");
+});
+
+test("recordIntoTable: an --id edit cannot touch a row authored by another group", () => {
+  const rows: any[] = [
+    { id: "b1", entity: "theirs", status: "open", group: "B", scope: "group", updatedAt: 1 },
+  ];
+  // A tries to edit B's row by its (quotable) id → refused, never a cross-group overwrite.
+  assert.throws(() => recordIntoTable(rows, "A", { id: "b1", status: "resolved" }, 100, "a1"));
+  // B editing its own row is fine.
+  const ok = recordIntoTable(rows, "B", { id: "b1", status: "resolved" }, 100, "zz");
+  assert.equal(ok.row.status, "resolved");
+  assert.equal(ok.row.group, "B");
+});
+
+test("CLI off-server fallback: one file, --public stored as scope (no mirror file)", () => {
+  // With no SHADOK_PORT/SHADOK_SESSION_KEY the CLI writes the local file directly
+  // (hand-run / mono-tenant). This is the path that must behave exactly as before
+  // the scope work, minus the removed per-group mirror.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ledcli-"));
+  const file = path.join(dir, "ledger.json");
+  const run = (...a: string[]) =>
+    spawnSync(process.execPath, ["context/ledger-skill/ledger.mjs", ...a], {
+      encoding: "utf8",
+      // No PORT/KEY → fallback. Strip any inherited ones so the test is hermetic.
+      env: { ...process.env, SHADOK_LEDGER_FILE: file, SHADOK_PORT: "", SHADOK_SESSION_KEY: "" },
+    });
+  assert.equal(run("record", "--entity", "secret thing", "--status", "open").status, 0);
+  assert.equal(run("record", "--public", "--entity", "shared thing", "--status", "open").status, 0);
+  const rows = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(rows.find((r: any) => r.entity === "secret thing").scope, "group");
+  assert.equal(rows.find((r: any) => r.entity === "shared thing").scope, "public");
+  assert.equal(rows.length, 2); // ONE file, both rows in it — no separate commons file
+  assert.ok(!fs.existsSync(path.join(dir, "commons.json")));
+  // list shows both; the public one is marked
+  const ls = run("list");
+  assert.match(ls.stdout, /shared thing/);
+  assert.match(ls.stdout, /secret thing/);
+  assert.match(ls.stdout, /· public/);
+});

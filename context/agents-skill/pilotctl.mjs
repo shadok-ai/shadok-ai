@@ -567,6 +567,50 @@ async function cmdProfilePrompt(text, flags) {
   return out;
 }
 
+// Cross-group TALK: send another agent a one-way LETTER, the sanctioned
+// server-mediated channel (there is no native SendMessage). This is NOT a drive:
+// the recipient reads the message in its OWN context under its own guardrails,
+// and you never receive its transcript/stream back — the call returns only that
+// the letter was accepted and dispatched.
+//
+// ACL (enforced server-side): a PUBLIC-group agent is messageable freely; an
+// agent in another RESTRICTED group only if you hold its HANDLE (an opaque token
+// it shared — there is no roster to browse); a PRIVATE group is SEALED inbound.
+// A private-group agent may still send OUTWARD.
+//
+// `handle` identifies the recipient. Get your OWN handle to share with
+// `pilotctl talk-handle`; obtaining someone else's is out of band (a human or a
+// prompt relays it) — pilotctl deliberately offers no way to enumerate handles.
+async function cmdTalk(handle, message) {
+  const key = process.env.SHADOK_SESSION_KEY;
+  if (!key) throw new Error("no SHADOK_SESSION_KEY in env — not running as a piloted agent");
+  if (!handle) throw new Error("usage: pilotctl talk <handle> <message>");
+  if (!message || !message.trim()) throw new Error("a message is required");
+  const r = await fetch(`${httpBase()}/talk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ key, handle, message }),
+  });
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error ?? `HTTP ${r.status}`);
+  return out;
+}
+
+// Your OWN talk handle — the "here is a handle to me" an agent shares so another
+// agent can send it a letter. Scoped to yourself by the session key: there is no
+// way to mint or look up someone else's.
+async function cmdTalkHandle() {
+  const key = process.env.SHADOK_SESSION_KEY;
+  if (!key) throw new Error("no SHADOK_SESSION_KEY in env — not running as a piloted agent");
+  const r = await fetch(`${httpBase()}/talk/handle`, {
+    method: "GET",
+    headers: { ...authHeaders() },
+  });
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error ?? `HTTP ${r.status}`);
+  return out;
+}
+
 async function cmdScreen(id, flags) {
   await ensureServer();
   const st = readState(id);
@@ -579,7 +623,7 @@ async function cmdScreen(id, flags) {
 }
 
 const HELP =
-  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt|peer> …\n" +
+  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt|talk|talk-handle|peer> …\n" +
   "       add --peer <alias> to any command to run it against another instance's agents\n" +
   "       pilotctl peer <add <alias> <url> <ticket> [--token]|list|rm <alias>>";
 
@@ -685,6 +729,10 @@ export async function run(argv) {
       return cmdScreen(pos[0], flags);
     case "profile-prompt":
       return cmdProfilePrompt(pos[0], flags);
+    case "talk":
+      return cmdTalk(pos[0], pos[1]);
+    case "talk-handle":
+      return cmdTalkHandle();
     default:
       throw new Error(HELP);
   }

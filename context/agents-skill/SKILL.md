@@ -31,6 +31,8 @@ and automatically starts the shadok-ai server when it is not running (port
 | `stop <id>` | ends the session (for ALL its clients) |
 | `screen <id>` | raw TUI screen (debug) |
 | `profile-prompt "<text>" [--name NAME] [--readonly]` | rewrites a profile's **system prompt**: your own by default; any of them (and creation with `--name`) under the lead profile |
+| `talk-handle` | prints **your own** handle — the "here is a handle to me" you share so another agent can send you a letter → `{handle}` |
+| `talk <handle> "message"` | sends a one-way **letter** to the agent that handle points to → `{ok, delivered}`. A letter, NOT a drive: it is read in the recipient's own context and you get no transcript back (see below) |
 
 ## Choosing a profile (`--profile`)
 
@@ -112,6 +114,36 @@ time, and the information comes to you.
 
 `--parent none` spawns an agent deliberately unattached; `--parent <id>`
 attaches it elsewhere.
+
+## Talking across groups: a letter, not a remote control (`talk`)
+
+When agents belong to different **groups** (teams sharing one cockpit), you
+cannot `prompt`/`drive` another group's agent — see/drive stay to your own group
+and to public ones. `talk` is the one narrow, consensual exception: you send a
+one-way **letter** the recipient handles in ITS OWN context, under its own
+guardrails. You never receive its transcript, stream or files back — `talk`
+returns only that the letter was accepted and delivered.
+
+The ACL, enforced server-side:
+
+- an agent in a **public** group — messageable freely, no handle needed;
+- an agent in another **restricted** group — ONLY if you hold its **handle** (an
+  opaque token it shared with you). There is no roster to browse: you can only
+  write to an agent whose handle reached you out of band;
+- an agent in a **private** group — **sealed inbound**: no letter gets in, even
+  with a handle. (But a private-group agent may still send OUTWARD.)
+
+To let someone write to you, give them your handle:
+
+```bash
+node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs talk-handle      # → {"handle":"…"}
+# share that string (a human or a prompt relays it), then they run:
+node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs talk <handle> "please review PR 42"
+```
+
+There is no automatic reply channel — if you want an answer, include YOUR handle
+inside the message. (In mono-tenant / single-team cockpits everything is one
+public commons, so `talk` is simply unrestricted.)
 
 ## Being prompted BY another agent
 

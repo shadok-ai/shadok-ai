@@ -253,43 +253,17 @@ real change to `src/channels.ts`'s group model (today purely cosmetic) and to
 
 The morning draft flagged, as the #1 risk that could sink the whole design, that
 `claude` authenticates from a single place (one `claude auth login`) while this
-model gives each group its own HOME with its own `~/.claude`. **Measured on the
-live instance, the blocker dissolves:**
+model gives each group its own HOME with its own `~/.claude`.
 
-- The Claude credential is a **single plain file**,
-  `~/.claude/.credentials.json` (~560 bytes, mode `600`).
-- **It is already shared today.** The running instance has **~30 `claude`
-  processes under ONE OS user**, all reading that **one** credential file. The
-  "shared credential across many agents" model is not new — it is exactly how
-  shadok runs now.
-
-So the design is just to **generalise what already works**: put the credential in
-a location **readable (and writable) by every group's OS user** — e.g. one
-server-owned file that each HOME's `~/.claude/.credentials.json` symlinks to.
-
-- **[DECIDED]** This does **not** breach isolation. The subscription is **global
-  by nature** — it is the company's one Claude account, **not a per-group
-  secret**. Isolation protects each group's **vault secrets** and **work files**;
-  the subscription auth is legitimately shared. The user explicitly **accepted**
-  that any group's agent can therefore read the subscription token — unavoidable
-  with a single subscription, and within the trusted-insider model.
-- **Residual constraint (inherited, not new):** `claude` **refreshes** the OAuth
-  token and **writes it back** to that file, so it must be **writable** by each
-  group's OS user, and concurrent refreshes are the known **refresh-token race**
-  (shadok already mitigates it by restarting agents **one at a time** — see the
-  `restart-all` note in CLAUDE.md). **[OPEN]** whether to keep the one-at-a-time
-  discipline as-is or add a small **auth broker** that owns the refresh and hands
-  read-only copies out. The `CLAUDE_CODE_OAUTH_TOKEN` env var is **not** a
-  substitute — it only feeds the `/usage` endpoint, not the TUI's own auth.
-- **[builder — verify BEFORE planning the auth path]** The measurement that
-  "resolved" this blocker only proved many processes under **one** OS user read
-  one file; it did **not** test cross-user **write-back**. The symlink scheme
-  assumes `claude` **writes the credential in place**. If instead it
-  **writes-new-then-renames**, every refresh produces a fresh file owned by the
-  refreshing group's user at mode `600`, silently breaking every *other* group's
-  read — in which case the **auth broker is mandatory from day one**, not a
-  deferrable `[OPEN]`. This single fact (in-place vs rename) decides the shape of
-  the whole auth path, so confirm it against the running binary first.
+> **Superseded.** The shared-credential-file + symlink + auth-broker scheme that
+> used to be described here is replaced by env-token injection. See
+> `docs/superpowers/specs/2026-11-03-group-credential-injection-design.md`.
+> Measured reframing: an injected `CLAUDE_CODE_OAUTH_TOKEN` (minted once with
+> `claude setup-token`, stored as the vault secret `MT_CLAUDE_OAUTH_TOKEN`)
+> authenticates the TUI on its own, so there is no shared credential file, no
+> symlink, no cross-user write-back and no refresh race to broker. The token is
+> valid ~1 year and re-minted manually; a capable instance without it refuses
+> group spawns with a message naming the step (`mtCredentialMessage`).
 
 ## Execution isolation (the light form — no containers)
 
@@ -439,22 +413,23 @@ level, not inside the cockpit.
   browser filtering is cosmetic only.
 - **[DECIDED]** A **private** group is fully private: invisible **and**
   non-pilotable **even to an admin**, with **no break-glass**.
-- **[DECIDED]** An **`admin`-role** user **manages the member list and the secrets
-  of every restricted group**, even ones they do not belong to — this is what lets
-  an admin remove members (above) and administer restricted secrets. A **member**
-  (non-admin) still sees a restricted group only if invited. The private group is
-  the one exception: it stays invisible and unmanageable **even to an admin** (no
-  break-glass, per the line above).
-- **[DECIDED] Admin reach is ADMINISTRATIVE, not operational.** An admin's extra
-  power over restricted groups is **membership + secrets management only** — it
-  does **not** let them **see or drive the agents** of a restricted group they do
-  not belong to. The universal rule still holds for everyone, admins included:
-  **see/drive = your own groups + public.** To actually work inside a restricted
-  group, an admin gets invited like anyone else. (This resolves an inconsistency a
-  builder-check flagged between this section and "Collaboration": administering a
-  team is not the same as reading its agents' work.) So: administrative reach = all
-  public ∪ all restricted (membership/secrets); operational reach (see/drive) = own
-  groups ∪ public; private = neither, ever.
+- **[DECIDED, REVERSED 2026-11-03]** ~~An admin manages every restricted group.~~
+  Operator decision: **an admin sees ONLY the groups they are a member of, plus
+  public ones.** Visibility, deletion and membership management of a restricted
+  group are **member-only** — an admin is treated like a non-member. The only
+  admin specialness left is account management and the agent-credential secret
+  path (`canWriteSecretGroup`, which agents use as the bootstrap admin). The
+  private group stays invisible and unmanageable even to an admin.
+- **[DECIDED] Admin reach is ADMINISTRATIVE, not operational.** An admin does
+  **not** see or drive the agents of a restricted group they do not belong to.
+  The universal rule holds for everyone, admins included: **see/drive = your own
+  groups + public.** To work inside a restricted group, an admin gets invited
+  like anyone else. Membership, visibility and delete reach over restricted
+  groups was REMOVED (2026-11-03): an admin is treated like a non-member there
+  (including `PUT /groups` nature/members/owner changes, which are gated on
+  membership). The only admin specialness left is account management and the
+  agent-credential secret path (`canWriteSecretGroup`). Operational reach
+  (see/drive) = own groups ∪ public; private = neither, ever.
 
 ## Collaboration across boundaries (spawn, drive, talk, git)
 

@@ -1,7 +1,7 @@
-import { randomUUID, timingSafeEqual, createHmac } from "node:crypto";
+import { randomUUID, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import { newRequest, askVerdict, approveVerdict, cancelVerdict, dueRequests, expire, upsertRequest, requestsFor, describeRequest, loadRequests, saveRequests, isOpen, REQUEST_TTL_MS, type AdminRequest, type RequestKind } from "./admin-requests.js";
 import { recordEvent, loadEvents, saveEvents, inboxFor, markSeen, notMeEffect, describeEvent, type SecEvent } from "./security-events.js";
-import { execFile, execFileSync, spawn as spawnChild } from "node:child_process";
+import { execFile, execFileSync, spawnSync, spawn as spawnChild } from "node:child_process";
 import type { IncomingMessage } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -39,12 +39,17 @@ import { ensureClaudeHome, ensureProjectTrusted,
   getDefaultModel,
   setDefaultModel,
   parseClaudeVersion,
+  seedPlan,
+  settingsPlan,
+  type ClaudeHome,
+  type ClaudeSettings,
 } from "./claude-home.js";
 import { authStatus, cancelLogin, startLogin, submitLoginCode } from "./claude-auth.js";
 import { readTokenExpiry } from "./claude-creds.js";
 import { starCount } from "./stars.js";
 import {
   announceFirstAgent,
+  countMainChannels,
   ensureFirstAgent,
   firstAgentStatus,
   settleFirstAgent,
@@ -52,6 +57,15 @@ import {
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
 import { ensureSshIdentity } from "./ssh.js";
+import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
+import {
+  migrationPlan,
+  runMigration,
+  respawnPlan,
+  commonsOsUser,
+  COMMONS_USER,
+  MIGRATION_MARKER_FILE,
+} from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
 import {
@@ -68,6 +82,8 @@ import {
   loadChannels,
   loadGroups,
   saveGroups,
+  normalizeGroups,
+  ensureMainGroup,
   upsertChannel,
   removeChannel,
   mergeClientChannels,
@@ -100,6 +116,40 @@ import {
 import { transcribe, audioClipExtension } from "./whisper.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
+import {
+  viewerFor,
+  canResumeAs,
+  canRestartInto,
+  canSeeGroup,
+  membershipVerdict,
+  canSeeSession,
+  listableGroups,
+  visibleChannels,
+  secretOwnGroupIds,
+  ledgerGroupsFor,
+  groupsPutFlow,
+  privateGroupFor,
+  newPrivateGroup,
+  accountDeleteGroups,
+  MAIN_GROUP_ID,
+  type Viewer,
+  type Group,
+  type Nature,
+} from "./groups.js";
+import {
+  resolveSpawnIsolation,
+  osUserFor,
+  homeForUser,
+  runAsUser,
+  provisionGroupUser,
+  teardownGroupUser,
+  reconcileGroupProvisioning,
+  DEFAULT_HOME_BASE,
+  createGroupFlow,
+  deleteGroupFlow,
+  SHARED_POT_GROUP,
+  DEFAULT_SHARED_POT_PATH,
+} from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
   peerFileFor,
@@ -145,6 +195,10 @@ import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
   ledgerFileFor,
+  scopeVisible,
+  recordIntoTable,
+  saveLedger,
+  mintLedgerId,
   ensureLedgerFile,
   loadLedger,
   deltaSince,
@@ -163,6 +217,7 @@ import {
   notificationText,
   type ChildReport,
 } from "./kinship.js";
+import { talkVerdict, talkLetter } from "./talk.js";
 import {
   loadConfig,
   saveConfig,
@@ -182,10 +237,21 @@ import {
 } from "./config.js";
 import {
   secretsFor,
+  secretsForProfile,
+  secretNamesForProfile,
   secretNames,
   setSecret,
   deleteSecret,
+  setSecretSharing,
+  setSecretProfiles,
   secretWriteVerdict,
+  secretWriteDecision,
+  secretOwnerGroup,
+  visibleSecrets,
+  RESERVED_SECRET_NAMES,
+  MT_CLAUDE_OAUTH_TOKEN_NAME,
+  longLivedTokenInfo,
+  loadVault,
   recordOrigin,
   originProfile,
 } from "./secrets.js";
@@ -240,6 +306,8 @@ import {
   type Role,
   signSessionKey,
   readSessionKey,
+  signTalkHandle,
+  readTalkHandle,
   type Account,
 } from "./accounts.js";
 import {
@@ -309,6 +377,8 @@ import {
   resolveBin,
   sampleBin,
   type EnsureClaudeResult,
+  mtCredentialMessage,
+  mtTokenNeeded,
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
@@ -349,6 +419,32 @@ const PASTE_LIMIT = "50mb";
 // flag), the whole GUI — pages, endpoints AND the WebSocket — requires a login.
 // Unset → no auth (the default).
 const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
+// Deployment mode, resolved ONCE at boot: the single source of truth for every
+// privileged / isolation path. Multi-tenant needs BOTH the ability to provision
+// an OS user and accounts; otherwise isolation is refused, never faked.
+const DEPLOYMENT_MODE = deploymentMode({
+  canProvision: probeCanProvision(),
+  accountsEnabled: accountsEnabled(GUI_PASSWORD),
+});
+console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
+
+// The server drives channels it manages over its OWN loopback WS (cron fires,
+// parent notifications, the reload nudge — all through `driveChannel`). Those
+// deliveries authenticate as the bootstrap admin, but in multi-tenant the
+// per-group drive gate (`mayDriveSession`) does NOT exempt the bootstrap admin,
+// so a legitimate system delivery to a RESTRICTED or PRIVATE group's own channel
+// would be refused `forbidden` — breaking crons/notifications/reload for every
+// non-commons agent. This secret is the unforgeable proof that a drive comes
+// from the server itself: `driveChannel` presents it as `x-shadok-system-drive`,
+// the WS connect verifies it in constant time, and `mayDriveSession`/`canResumeAs`
+// treat a verified system connection as authorized regardless of group.
+//
+// It is per-process and in-memory ONLY: a fresh random value every boot, never
+// written to disk, never sent to any client, never logged. A client cannot forge
+// it, and — unlike a client-settable field such as `origin` — a browser cannot
+// claim it, which is why the exemption is gated on THIS and nothing else.
+const SYSTEM_DRIVE_SECRET = randomBytes(32).toString("hex");
+
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
 // restart — so an auto-update reload stays logged in instead of bouncing the
@@ -475,7 +571,7 @@ function greetHomeAgent(id: string): void {
 async function startFirstAgent(): Promise<void> {
   // Before the attempt, not after it: the browser may already be loading, and
   // the empty state it would otherwise paint invites a SECOND lead agent.
-  announceFirstAgent(loadChannels().length);
+  announceFirstAgent(countMainChannels(loadChannels()));
   try {
     const why = await ensureFirstAgent({
       port: boundPort,
@@ -544,7 +640,9 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
   if (!c.check?.trim()) return Promise.resolve({ kind: "quiet" }); // no guard → the agent always runs
   return new Promise((resolve) => {
     const profile = target.profile ? getProfile(target.profile) : undefined;
-    const secretEnv = secretsFor(profile?.secrets);
+    // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
+    // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
+    const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
     const env = { ...process.env, ...secretEnv };
     recordSecretAudit({
       action: "cron-check",
@@ -626,7 +724,14 @@ async function fireCron(c: Cron): Promise<{ outcome: string; reason?: DriveReaso
 function driveChannel(sessionId: string, text: string, target: SessionTarget): Promise<DriveOutcome> {
   return new Promise((resolve) => {
     const cookie = tgCookie();
-    const ws = new WebSocket(`ws://127.0.0.1:${boundPort}/ws`, cookie ? { headers: { cookie } } : {});
+    // The system-drive secret rides alongside the auth cookie: it is what tells
+    // the WS connect this is the SERVER driving a channel it manages, so the
+    // per-group gate (`mayDriveSession`) lets a cron/notification/reload delivery
+    // through even when the channel's group is restricted or private (the
+    // bootstrap admin alone is not exempt). The cookie still authenticates; the
+    // secret only grants the group-boundary exemption.
+    const headers = { ...(cookie ? { cookie } : {}), "x-shadok-system-drive": SYSTEM_DRIVE_SECRET };
+    const ws = new WebSocket(`ws://127.0.0.1:${boundPort}/ws`, { headers });
     let done = false;
     const finish = (out: DriveOutcome) => {
       if (done) return;
@@ -941,6 +1046,10 @@ function currentAccount(req: Caller): { name: string; role: Role } | null {
   if (isInternalClient(cookieSession(req))) return { name: BOOTSTRAP_ADMIN, role: "admin" };
   return cookieAccount(req);
 }
+/** Who is asking and which groups exist; routes filter with `visibleChannels`. */
+export function callerGroups(req: Caller): { viewer: Viewer | null; groups: Group[] } {
+  return { viewer: viewerFor(currentAccount(req)), groups: loadGroups() };
+}
 
 /** Is two-factor sign-in on for this instance? Meaningless with no password. */
 function twoFactorOn(): boolean {
@@ -1239,6 +1348,63 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
 }
 
 /**
+ * The identity a secret WRITE is scoped by, resolved SERVER-SIDE (never the
+ * body). An AGENT (carrying its per-session key) owns its channel's group —
+ * `agentGroupId` present (possibly null = its agent has no group → Main). A
+ * browser leaves `agentGroupId` undefined and is resolved by `spawnGroupFor`
+ * from its account. The `viewer` is the authorization principal either way (an
+ * agent authenticates as the bootstrap admin).
+ */
+function secretCaller(req: Caller & { body?: unknown }): {
+  agentGroupId?: string | null;
+  viewer: Viewer | null;
+} {
+  const viewer = viewerFor(currentAccount(req));
+  const agentId = callerOf(req).id;
+  if (agentId) {
+    const group = loadChannels().find((c) => c.sessionId === agentId)?.group ?? null;
+    return { agentGroupId: group, viewer };
+  }
+  return { viewer };
+}
+
+/** The `createdBy` STAMPED on a secret — the agent's session id, or the signed-in
+ *  account — never a value the client sent (which it could forge). */
+function secretCreatedBy(req: Caller & { body?: unknown }): string {
+  const agentId = callerOf(req).id;
+  if (agentId) return `agent:${agentId}`;
+  return currentAccount(req)?.name ?? "";
+}
+
+/**
+ * The OWNER group a secret write lands in + the authorization verdict. The
+ * owner-group membership gate is applied ONLY in multi-tenant: mono-tenant
+ * cannot pose a real isolation wall (capability design, T3), so it keeps
+ * today's behaviour — any authenticated caller writes the commons (Main). The
+ * owner group is still derived from identity in BOTH modes (null/Main in
+ * mono-tenant), so an agent always writes its own group and `createdBy` is
+ * always stamped server-side.
+ */
+function secretWriteTarget(
+  req: Caller & { body?: unknown; query?: Record<string, unknown> },
+): { ownerGroup: string } | { refused: string } {
+  const caller = secretCaller(req);
+  const groups = loadGroups();
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    // The client may REQUEST a target group (the panel's selected group), in the
+    // body (PUT/share/profiles) or the query (DELETE). It is only a request:
+    // `secretWriteDecision` applies `canWriteSecretGroup` to it, and an agent's
+    // is ignored (it writes only its own group). Mono-tenant drops the request
+    // entirely — everything is Main, unchanged.
+    const raw = (req.body as { group?: unknown } | undefined)?.group ?? req.query?.group;
+    const requestedGroup = typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+    const decision = secretWriteDecision({ ...caller, requestedGroup, groups });
+    return decision.ok ? { ownerGroup: decision.ownerGroup } : { refused: decision.error };
+  }
+  return { ownerGroup: secretOwnerGroup({ ...caller, groups }) };
+}
+
+/**
  * The AGENT whose session key signs this request, if any — its cockpit name for
  * the byline, and its id for the reply address.
  *
@@ -1416,7 +1582,7 @@ app.get("/invite/:token", (req, res) => {
   return sendAuthPage(res, invitePage(acct!.name, token), 200);
 });
 
-app.post("/invite/:token", (req, res) => {
+app.post("/invite/:token", async (req, res) => {
   const token = String(req.params.token ?? "");
   const password = String(req.body?.password ?? "");
   const list = loadAccounts();
@@ -1454,6 +1620,10 @@ app.post("/invite/:token", (req, res) => {
   );
   console.log(`users: ${acct!.name} redeemed their invitation`);
   recordEvent({ kind: "invite-redeemed", actor: acct!.name, target: acct!.name });
+  // Task 16: redeeming kicks the privileged private-group provision for this
+  // person (multi-tenant only). Best-effort — a failure never blocks sign-in,
+  // which is why it is awaited but cannot throw out of the handler.
+  await ensurePrivateGroupProvisioned(acct!.name);
   if (tfa) {
     res.setHeader("Set-Cookie", pendingCookie(acct!.name));
     if (keptPasskey) return res.json({ ok: true, user: acct!.name, next: "passkey" });
@@ -1670,15 +1840,42 @@ app.get("/vendor/addon-fit.js", (_req, res) =>
 // Resumable sessions of a directory (for the "resume by id" picker).
 app.get("/sessions", (req, res) => {
   const cwd = String(req.query.cwd ?? "").trim() || process.cwd();
-  res.json(listSessions(cwd));
+  const list = listSessions(cwd);
+  // `cwd` is a caller-supplied path, so a caller who knows another group's HOME
+  // could enumerate that group's resumable sessions (ids + first-prompt preview).
+  // Filter each to the caller's visible groups — the same session-level boundary
+  // as /diff and /live. A session with no channel row (legacy/commons) stays
+  // visible to all. Mono-tenant returns the list unchanged.
+  if (DEPLOYMENT_MODE !== "multi-tenant") return res.json(list);
+  const chans = loadChannels();
+  const groups = loadGroups();
+  const viewer = viewerFor(currentAccount(req));
+  res.json(list.filter((s) => canSeeSession(s.id, chans, groups, viewer)));
 });
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
 // /sessions cannot see them — this is the only way the UI can list them.
-app.get("/live", (_req, res) => {
+app.get("/live", (req, res) => {
+  // Scope to the caller's visible groups: /live leaks `lastPrompt` (content) and
+  // `cwd`/`branch` (location), and is the id-discovery vector for the WS resume
+  // and term-* attach paths. Mirror `mayDriveSession` per session — mono-tenant
+  // and any group-less (commons) channel resolve to always-visible, so the list
+  // stays byte-for-byte today's outside multi-tenant. A dangling group id fails
+  // closed, the twin of `visibleChannels`.
+  const viewer = viewerFor(currentAccount(req));
+  const chans = loadChannels();
+  const groups = loadGroups();
+  const visible = (id: string): boolean => {
+    if (DEPLOYMENT_MODE !== "multi-tenant") return true;
+    const gid = chans.find((c) => c.sessionId === id)?.group ?? null;
+    if (!gid) return true; // commons / group-less
+    const g = groups.find((x) => x.id === gid);
+    if (!g) return false; // unresolvable → fail closed
+    return canSeeGroup(g, viewer);
+  };
   res.json(
     [...sessions.values()]
-      .filter((s) => !s.pilot.hasExited)
+      .filter((s) => !s.pilot.hasExited && visible(s.id))
       .map((s) => ({
         id: s.id,
         cwd: s.cwd,
@@ -1714,17 +1911,39 @@ app.get("/diff", (req, res) => {
   // one (invariant 1), and a multi-day agent — the very case the live base
   // exists for — has certainly been resumed by then, so fall back to the
   // channel's own `repo`, as endChannel already does.
-  const ch = loadChannels().find((c) => c.sessionId === s.id);
+  const chans = loadChannels();
+  const ch = chans.find((c) => c.sessionId === s.id);
   // A RESTRICTED peer sees the diff of ITS OWN agents only. A member peer (and
   // any account) passed the gate as a member and sees any.
   if (peerScopeFor(req) === "restricted" && !ownedByPeer(ch, peerName(req)!))
+    return res.status(403).json({ error: "not your agent" });
+  // /diff returns a session's git status + working-tree FILE CONTENTS, so it is a
+  // cross-group confidentiality decision just like the drive/`/live` paths. Gate
+  // it on the SAME group boundary (canSeeSession mirrors `mayDriveSession` /
+  // `/live visible()`): agent-by-session-key and browser-by-account both resolve
+  // through currentAccount. A group-less/commons session stays visible to all; an
+  // unresolvable group fails closed. Mono-tenant short-circuits to visible.
+  if (
+    DEPLOYMENT_MODE === "multi-tenant" &&
+    !canSeeSession(s.id, chans, loadGroups(), viewerFor(currentAccount(req)))
+  )
     return res.status(403).json({ error: "not your agent" });
   res.json(gitDiff(s.cwd, s.worktree?.repo ?? ch?.repo ?? null));
 });
 // Past worktree sessions of a repo (for reopening unfinished work).
 app.get("/recover", (req, res) => {
   const repo = String(req.query.repo ?? "").trim() || process.cwd();
-  res.json(isGitRepo(repo) ? listPastSessions(repo) : []);
+  const list = isGitRepo(repo) ? listPastSessions(repo) : [];
+  // `repo` is a caller-supplied path: a caller who knows another group's HOME
+  // could enumerate that group's past worktree sessions (branch/commit metadata +
+  // first-prompt preview). Filter each past session to the caller's visible
+  // groups — the same boundary as /diff and /sessions. A session with no channel
+  // row (legacy/commons) stays visible to all. Mono-tenant returns it unchanged.
+  if (DEPLOYMENT_MODE !== "multi-tenant") return res.json(list);
+  const chans = loadChannels();
+  const groups = loadGroups();
+  const viewer = viewerFor(currentAccount(req));
+  res.json(list.filter((s) => canSeeSession(s.sessionId, chans, groups, viewer)));
 });
 // Server-side defaults (the launch directory pre-fills the working dir field).
 app.get("/defaults", (_req, res) => {
@@ -1800,6 +2019,7 @@ app.get("/auth", async (_req, res) =>
   res.json({
     ...(await authStatus()),
     ...readTokenExpiry(),
+    ...longLivedTokenInfo(loadVault(), DEPLOYMENT_MODE),
     ...customBackendFields(),
   }),
 );
@@ -1828,7 +2048,14 @@ app.post("/auth/code", async (req, res) => {
   // A brand-new instance was signed out at boot, so this is where its lead
   // agent is really born. Answer the browser FIRST — the spawn takes seconds
   // and the sign-in card has no reason to wait for it.
-  if (r.ok) void startFirstAgent();
+  if (r.ok) {
+    void startFirstAgent();
+    // Re-try the group migration once signed in (the credential seed it used to
+    // need is gone, but a core step that failed while signed out is still retried
+    // here instead of waiting for a MANUAL restart) — mirror of `startFirstAgent`
+    // above. Idempotent + guarded against overlapping a boot run that is still going.
+    void maybeRunGroupsMigration("post-sign-in");
+  }
 });
 
 app.delete("/auth/login", (_req, res) => {
@@ -1976,10 +2203,15 @@ app.get("/stars", async (_req, res) => res.json({ count: await starCount() }));
  * (see invariant 6), so this field cannot pollute the registry. And it is what
  * avoids a second poll — `/channels` is already re-read every 4 s.
  */
-app.get("/channels", (_req, res) => {
+app.get("/channels", (req, res) => {
   const active = loadCrons().filter((c) => c.enabled);
+  // ACL: a caller sees only its own groups' channels + public/commons. The
+  // registry is the authority — the client is never trusted to filter. A null
+  // viewer (deleted account / no session) resolves to public-only, never a 500.
+  // Mono-tenant leaves every channel group-less, so visibleChannels is a no-op.
+  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req)));
   res.json(
-    loadChannels().map((ch) => {
+    visible.map((ch) => {
       const mine = active.filter((c) => c.sessionId === ch.sessionId);
       return mine.length ? { ...ch, crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : ch;
     }),
@@ -2124,29 +2356,694 @@ app.delete("/channel", async (req, res) => {
   // client that believes it succeeded removes a tab the registry still has.
   res.status(ok ? 200 : 409).json(ok ? { ok } : { ok, error: "the home channel can't be closed" });
 });
-app.get("/groups", (_req, res) => res.json(loadGroups()));
+app.get("/groups", (req, res) => {
+  // A group row carries `members`/`owner`/`osUser`, so an unfiltered list leaks a
+  // restricted group's roster to non-members and a private group's very existence
+  // ("a private group is invisible even to an admin"). Filter by the caller via
+  // listableGroups: member-of plus public groups only. An admin is NOT special
+  // (operator decision 2026-11-03): a restricted group they don't belong to, and
+  // a private group they don't own, are hidden from them too. Row-level only; no field trimming is needed
+  // (a visible-but-not-member group is public, whose members are already empty).
+  // Mono-tenant (only a public Main) keeps Main for everyone, unchanged.
+  res.json(listableGroups(loadGroups(), viewerFor(currentAccount(req))));
+});
 app.put("/groups", (req, res) => {
-  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
-    return res.status(409).json({ error: "instance-mismatch" });
-  }
-  saveGroups(Array.isArray(req.body) ? req.body : []);
-  res.json({ ok: true });
+  // BROWSER-ONLY (T2/T6 carry): an agent authenticates as the bootstrap admin,
+  // so without this it could edit membership/nature by curl. The flow also
+  // keeps the instance guard and refuses a non-member membership/nature change —
+  // and MERGES cosmetic fields onto the stored rows, so the cosmetic client PUT
+  // can never silently wipe a restricted group down to an empty public one.
+  const r = groupsPutFlow({
+    fromBrowser: requestFromBrowser(req),
+    instanceOk: channelWriteAllowed(instanceKey(), req.get("x-shadok-instance")),
+    actor: currentAccount(req)?.name ?? null,
+    stored: loadGroups(),
+    incoming: Array.isArray(req.body) ? req.body : [],
+  });
+  if (r.groups) saveGroups(r.groups);
+  res.status(r.status).json(r.body);
 });
 
-// Central secret vault (global, stored 600 outside any repo). Values are NEVER
-// returned — only names. A profile references names to inject them.
-app.get("/secrets", (_req, res) => res.json({ names: secretNames() }));
+// Add and/or remove members of a Private (`restricted`) group. Any MEMBER may do
+// both (membershipVerdict owns that rule); browser-only for the same reason as
+// PUT /groups: an agent holds the bootstrap admin cookie and sends no Origin.
+// A group the caller cannot see is a 404 (fail closed — never confirm it exists).
+app.post("/groups/members", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "browser only" });
+  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
+    return res.status(409).json({ error: "this page belongs to another instance" });
+  }
+  const body = req.body ?? {};
+  const add = typeof body.add === "string" ? body.add.trim() : "";
+  const remove = typeof body.remove === "string" ? body.remove.trim() : "";
+  if (!add && !remove) return res.status(400).json({ error: "nothing to add or remove" });
+  const viewer = viewerFor(currentAccount(req));
+  const list = loadGroups();
+  const group = list.find((g) => g.id === body.group);
+  if (!group || !canSeeGroup(group, viewer)) return res.status(404).json({ error: "unknown group" });
+  if (add) {
+    const v = membershipVerdict(viewer, group, "invite", add);
+    if (!v.ok) return res.status(403).json({ error: v.error });
+  }
+  if (remove) {
+    const v = membershipVerdict(viewer, group, "remove", remove);
+    if (!v.ok) return res.status(403).json({ error: v.error });
+  }
+  let members = group.members.filter((m) => m !== remove);
+  if (add && !members.includes(add)) members = [...members, add];
+  const updated = { ...group, members };
+  saveGroups(list.map((g) => (g.id === group.id ? updated : g)));
+  res.json({ ok: true, group: updated });
+});
+
+// ── Privileged group lifecycle (multi-tenant): provision on create, tear down
+// on delete. These are the ONLY paths that create/destroy an OS user, so the
+// DEPLOYMENT_MODE gate and the honest-failure rules (T3/T4) all live here. ──────
+
+/** Where a group's HOME is created (`SHADOK_HOME_BASE` override, else `/home`). */
+const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_HOME_BASE;
+
+/** The HOME whose `.claude/projects` holds a given agent's transcript: the drop
+ *  user's own home when the agent is privilege-dropped (multi-tenant isolation),
+ *  else the server's own home (commons / mono-tenant). The single answer the
+ *  content tail and `loadHistory` must use so an isolated agent's reply streams. */
+function agentTranscriptHome(user: string | null | undefined): string {
+  return user ? homeForUser(user, GROUP_HOME_BASE) : os.homedir();
+}
+
+/** The COMMONS tier for secret resolution: Main plus every PUBLIC non-Main group.
+ *  A public group is visible-to-all ("public = commun"), so its secrets resolve
+ *  for every agent like Main's — not only for an agent that happens to run in it.
+ *  Mono-tenant (no groups) collapses to Main alone, today's behaviour. */
+function commonsGroupIds(): string[] {
+  const ids: string[] = [MAIN_GROUP_ID];
+  for (const g of loadGroups()) if (g.nature === "public" && g.id !== MAIN_GROUP_ID) ids.push(g.id);
+  return ids;
+}
+
+/** The transcript HOME for a CHANNEL that may not be live (e.g. GET /download of
+ *  a past session): a live session's own `transcriptHome` when we have it, else
+ *  re-derived from the channel's group the same way a spawn's drop user is —
+ *  the group's `sk-*` user, or the commons user when migrated, else the server. */
+function channelTranscriptHome(chan: Channel): string {
+  const live = sessions.get(chan.sessionId);
+  if (live) return live.transcriptHome;
+  if (DEPLOYMENT_MODE !== "multi-tenant") return os.homedir();
+  const g = chan.group ? loadGroups().find((x) => x.id === chan.group) : null;
+  const user = (g ? osUserFor(g) : null) ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  return agentTranscriptHome(user);
+}
+
+/** Task 12: the one shared pot every group HOME links as `~/shared`. */
+const SHARED_POT_PATH =
+  (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
+
+/** Run a privileged account command. Root runs it directly; otherwise go through
+ *  NON-interactive sudo (`-n`) so a MISSING right fails fast with a non-zero exit
+ *  instead of prompting — the T3 false positive (sudoers allows `true` but not
+ *  `useradd`) surfaces here and `provisionGroupUser` turns it into a refusal. */
+function runPrivileged(cmd: string, argv: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let c = cmd;
+    let a = argv;
+    if (typeof process.getuid === "function" && process.getuid() !== 0) {
+      a = ["-n", c, ...a];
+      c = "sudo";
+    }
+    const p = spawnChild(c, a, { stdio: ["ignore", "inherit", "inherit"], timeout: 60_000 });
+    p.on("error", reject);
+    p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with code ${code}`))));
+  });
+}
+
+/** The shadok skills to install: [package source dir, installed name]. Mirrored
+ *  into the SERVER HOME by `seedXxxSkill` and, for multi-user isolation, into the
+ *  machine-wide ENTERPRISE tier by `seedSystemSkills`. */
+const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
+  ["scheduler-skill", "shadok-scheduler"],
+  ["secrets-skill", "shadok-secrets"],
+  ["reload-skill", "shadok-reload"],
+  ["ledger-skill", "shadok-ledger"],
+  ["agents-skill", "shadok-ai-agents"],
+];
+
+/** Claude Code's machine-wide ("Enterprise"/managed) skills directory — read by
+ *  EVERY OS user regardless of HOME, with precedence over a personal
+ *  `~/.claude/skills`. `/etc/claude-code/.claude/skills` on Linux (overridable
+ *  for other layouts). Disable in the CLI with `CLAUDE_CODE_DISABLE_POLICY_SKILLS`. */
+const SYSTEM_SKILLS_DIR =
+  (process.env.SHADOK_SYSTEM_SKILLS_DIR ?? "").trim() || "/etc/claude-code/.claude/skills";
+
+/**
+ * Install the shadok skills GLOBALLY, into the machine-wide Enterprise tier, so
+ * every dropped group agent (`sk-<id>`, HOME `/home/sk-<id>`) gets them with NO
+ * per-HOME copy. The per-HOME `~/.claude/skills` is only the SERVER user's;
+ * `/etc/claude-code/.claude/skills` is read by all users. Copied from the package
+ * source and made world-readable (root-owned dir, `a+rX`; `.mjs` entrypoints
+ * executable). Idempotent, best-effort. Multi-tenant only: a mono-tenant / dev
+ * instance keeps using its personal `~/.claude/skills` and never writes to /etc.
+ */
+function seedSystemSkills(): void {
+  try {
+    for (const [srcName, dstName] of SKILL_SOURCES) {
+      const src = path.join(__dirname, "..", "context", srcName);
+      if (!fs.existsSync(path.join(src, "SKILL.md"))) continue;
+      const dst = path.join(SYSTEM_SKILLS_DIR, dstName);
+      fs.mkdirSync(dst, { recursive: true });
+      fs.cpSync(src, dst, { recursive: true });
+    }
+    // World-readable (every sk-* user reads the same install) and .mjs runnable.
+    execFileSync("chmod", ["-R", "a+rX", SYSTEM_SKILLS_DIR]);
+    execFileSync("find", [SYSTEM_SKILLS_DIR, "-name", "*.mjs", "-exec", "chmod", "a+rx", "{}", "+"]);
+    console.log(`skills: seeded machine-wide skills into ${SYSTEM_SKILLS_DIR}`);
+  } catch (e) {
+    console.log(`skills: could not seed machine-wide skills into ${SYSTEM_SKILLS_DIR} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * Seed a group user's HOME at PROVISION time. Skills are no longer copied here —
+ * they live in the machine-wide Enterprise tier (`seedSystemSkills`), read by
+ * every user. Kept as the hook for any future per-HOME provisioning step.
+ */
+async function seedGroupHome(_home: string, _user: string): Promise<void> {
+  /* skills are machine-wide now; nothing per-HOME to seed */
+}
+
+/** Does an OS user already exist? Used to make provisioning idempotent. */
+async function osUserExists(u: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    execFile("id", ["-u", u], { timeout: 5000 }, (err) => resolve(!err));
+  });
+}
+
+/** Best-effort: end every channel that belongs to a group (used on teardown). */
+async function killGroupAgents(groupId: string): Promise<void> {
+  const ids = loadChannels().filter((c) => c.group === groupId).map((c) => c.sessionId);
+  for (const id of ids) await endChannel(id).catch(() => {});
+}
+
+// ── Task 15: automatic root→non-root commons migration ────────────────────────
+//
+// On the first boot of a CAPABLE (multi-tenant) instance, move the running
+// single-tenant instance into isolated groups: create the non-root commons user
+// `main`, chown the root-owned tree to it, lift the flat vault into Main,
+// auto-provision each account's private group, and label what exists as public.
+// The pure plan + fail-safe runner live in `src/migrate-groups.ts`; this is the
+// impure plumbing (the injected side effects). See that file and invariant notes.
+//
+// The marker lives on the shadok-data volume (`~/.shadok-ai`, the one mount that
+// survives `docker rm`+recreate — see `src/ssh.ts`), so the DATA migration never
+// re-runs. The OS layer is a separate idempotency concern: a recreate keeps the
+// volume but wipes `/etc/passwd` + the HOMEs, so we treat the instance as already
+// migrated only when the marker is present AND `main` actually exists — the
+// second term is what re-triggers the idempotent OS provisioning after a recreate.
+
+/** Has the commons migration moved this instance to isolated groups yet? Drives
+ *  `commonsOsUser`: only once true (and multi-tenant) do commons agents drop to
+ *  the non-root `main`. Flipped on at boot if already migrated, and after a
+ *  successful `runGroupsMigration`. Fail-safe default is `false` (commons as the
+ *  server's own user — today's behaviour). */
+let groupsMigrated = false;
+/** Log the missing group token once, not on every spawn. */
+let mtTokenWarned = false;
+
+/**
+ * A LOUD, persistent signal (surfaced on `/version` + the WS `version` message,
+ * so the client can show a banner) for when the commons is running UN-ISOLATED:
+ *  - `"ok"` — nothing to show: mono-tenant, or migration already completed;
+ *  - `"pending"` — a capable instance is MID-migration (the long chown), so a
+ *    commons agent is still running as the server's own (root) user for now;
+ *  - `"failed"` — a capable instance RAN the migration but a core step failed
+ *    (the marker was withheld), so it will NOT retry until the next boot and the
+ *    commons stays un-isolated. Without this it is INVISIBLE (the only
+ *    trace is a log line nobody reads). This turns it into an on-screen warning.
+ */
+let migrationState: "ok" | "pending" | "failed" = "ok";
+
+/** Serialises the migration: it runs at boot AND is re-tried after a Claude
+ *  sign-in (see `maybeRunGroupsMigration`). The two must never overlap: both
+ *  chown the same tree and respawn the same panes. `maybeRunGroupsMigration`
+ *  skips while this is set. */
+let migrationInFlight = false;
+
+function migrationMarkerPath(): string {
+  return path.join(os.homedir(), ".shadok-ai", MIGRATION_MARKER_FILE);
+}
+function migrationMarkerExists(): boolean {
+  try {
+    return fs.existsSync(migrationMarkerPath());
+  } catch {
+    return false;
+  }
+}
+function writeMigrationMarker(): void {
+  const p = migrationMarkerPath();
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ at: Date.now() }, null, 2));
+}
+/** Synchronous `id -u <user>` — boot-time, so it must not be async. */
+function osUserExistsSync(u: string): boolean {
+  try {
+    execFileSync("id", ["-u", u], { stdio: "ignore", timeout: 5000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+/** Already migrated iff the marker is present AND `main` exists (the latter is
+ *  what a docker recreate loses, re-triggering the idempotent provisioning). */
+function alreadyMigratedNow(): boolean {
+  return migrationMarkerExists() && osUserExistsSync(COMMONS_USER);
+}
+
+/** The full provisioning deps a group's OS user needs (shared with POST /groups):
+ *  pot wiring. */
+function provisionOsUserFor(g: Group): Promise<unknown> {
+  return provisionGroupUser(g, {
+    run: runPrivileged,
+    seed: seedGroupHome,
+    homeBase: GROUP_HOME_BASE,
+    userExists: osUserExists,
+    sharedPotPath: SHARED_POT_PATH,
+  });
+}
+
+/**
+ * Task 16 — the invite→provision hook. When a person REDEEMS their invitation
+ * (the unprivileged path kicks this privileged step server-side), make sure their
+ * SEALED private group exists and its OS user is provisioned.
+ *
+ * No-op in mono-tenant (there are no private groups), so a non-capable instance
+ * stays byte-for-byte today. Idempotent: a password-reset redeem (the account +
+ * group already exist) re-provisions the EXISTING group rather than minting a
+ * twin — `provisionGroupUser` is itself idempotent (`userExists` skips useradd).
+ *
+ * PROVISION POLICY — best-effort, never block sign-in (the brief). The group ROW
+ * is persisted FIRST, then the OS user is provisioned; a provision failure is
+ * CAUGHT and logged loudly, not thrown into the redeem. Persisting the row first
+ * is what makes the failure self-heal: `ensureGroupsProvisioned()` runs on EVERY
+ * capable boot — INDEPENDENT of the migration marker — and re-provisions any
+ * persisted private/restricted group whose OS user is missing. So a transient
+ * failure here does not strand the person even on an already-migrated instance
+ * (where the migration's own reprovision list never runs), and meanwhile the
+ * account exists and they can sign in.
+ */
+async function ensurePrivateGroupProvisioned(accountName: string): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const groups = loadGroups();
+  let g = privateGroupFor(accountName, groups);
+  if (!g) {
+    g = newPrivateGroup(accountName, randomUUID(), Date.now());
+    g.osUser = osUserFor(g);
+    saveGroups([...groups, g]);
+    console.log(`groups: created private group ${g.id.slice(0, 8)} for ${accountName} (invite redeemed)`);
+  }
+  try {
+    await provisionOsUserFor(g);
+  } catch (e) {
+    // Best-effort: the account exists and the person signs in regardless; the
+    // persisted row is re-provisioned at the next capable boot (reprovision list).
+    console.error(
+      `groups: provisioning private group for ${accountName} failed (will retry at next boot): ` +
+        `${(e as Error)?.message ?? e}`,
+    );
+  }
+}
+
+/**
+ * Task 16 (Important #1) — the boot provisioning reconciler. Runs on EVERY
+ * capable (multi-tenant) boot, INDEPENDENT of the migration marker, so a persisted
+ * private/restricted group whose OS user is missing is healed even on an already-
+ * migrated instance — where `runGroupsMigration` returns early (marker + `main`
+ * present) and its own reprovision list never runs. That is the gap that left a
+ * person whose private-group ROW persisted but whose OS user failed to provision
+ * (a transient `useradd`/credential error) permanently un-healed.
+ *
+ * Best-effort; `provisionGroupUser` is idempotent, so a group whose user already
+ * exists is skipped (no `useradd`) and running this right after a fresh migration
+ * finds everything present — which is why it is safe to wire AFTER migration.
+ * Subsumes the docker-recreate reprovision for the steady state. No-op in
+ * mono-tenant (no private groups), so a non-capable instance is byte-for-byte today.
+ */
+async function ensureGroupsProvisioned(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const r = await reconcileGroupProvisioning(loadGroups(), {
+    userExists: osUserExists,
+    provision: async (g) => {
+      await provisionOsUserFor(g);
+    },
+    log: (m) => console.log(m),
+  });
+  if (r.provisioned.length || r.failed.length) {
+    console.log(
+      `groups: boot reprovision — ${r.provisioned.length} (re)provisioned, ` +
+        `${r.present.length} already present, ${r.failed.length} failed`,
+    );
+  }
+  // The bootstrap admin (the operator) has no accounts.json row, so neither the
+  // invite-redeem hook nor the per-account migration loop ever fires for it.
+  // Give it a Personal group here; idempotent (reuses an existing private group).
+  await ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN);
+}
+
+/** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
+async function migCreateCommonsUser(): Promise<void> {
+  if (osUserExistsSync(COMMONS_USER)) return;
+  const home = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
+  await runPrivileged("useradd", ["--create-home", "--home-dir", home, "--shell", "/bin/bash", COMMONS_USER]);
+}
+
+/** Step 2 — chown the root-owned tree (workspace, server data, Claude home) to
+ *  `main`, ONCE. Files DO NOT move; only ownership changes, so the commons agent
+ *  (now `main`) can read/write what it already worked on. Idempotent (chowning
+ *  already-`main`-owned files is a no-op), best-effort per target. */
+async function migChownTreeToCommons(): Promise<void> {
+  const targets = [process.cwd(), path.join(os.homedir(), ".shadok-ai"), path.join(os.homedir(), ".claude")];
+  const owner = `${COMMONS_USER}:${COMMONS_USER}`;
+  for (const t of targets) {
+    if (!t || !fs.existsSync(t)) continue;
+    await runPrivileged("chown", ["-R", owner, t]);
+  }
+  // RELOCATE the commons agent's Claude state into its OWN HOME. Chowning
+  // ~/.claude alone is useless: the files stay under `/root` (0700), which `main`
+  // cannot even traverse — so `claude --resume <id>` (now running as `main` from
+  // /home/main) never finds a PRE-migration transcript and exits instantly,
+  // stranding every agent that predates the migration on the FIRST restart (the
+  // home agent included). `--resume` reads `~/.claude/projects`; move that and
+  // the state a resumed session reads beside it. Copy (never destructive in a
+  // migration) and non-clobbering (a re-run, or a hand-repair, may already hold
+  // the file). chown each to `main`.
+  const srcClaude = path.join(os.homedir(), ".claude");
+  const dstClaude = path.join(homeForUser(COMMONS_USER, GROUP_HOME_BASE), ".claude");
+  if (fs.existsSync(srcClaude)) {
+    await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, "-m", "700", dstClaude]);
+    for (const sub of ["projects", "todos", "shell-snapshots", "file-history"]) {
+      const s = path.join(srcClaude, sub);
+      if (!fs.existsSync(s)) continue;
+      const d = path.join(dstClaude, sub);
+      await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, d]);
+      await runPrivileged("cp", ["-rn", `${s}/.`, `${d}/`]);
+      await runPrivileged("chown", ["-R", owner, d]);
+    }
+    const hist = path.join(srcClaude, "history.jsonl");
+    const dhist = path.join(dstClaude, "history.jsonl");
+    if (fs.existsSync(hist) && !fs.existsSync(dhist)) {
+      await runPrivileged("cp", ["-n", hist, dhist]);
+      await runPrivileged("chown", [owner, dhist]);
+    }
+  }
+}
+
+/** Step 3 — wire the commons HOME to the shared pot: the shared group, the pot
+ *  base, and the `~/shared` link. Mirrors `sharedPotPlan` for the commons `main`
+ *  user. Non-core: there is no credential to seed (the agent token is injected at
+ *  spawn), so nothing here withholds the migration marker. */
+async function migWireCommonsPot(): Promise<void> {
+  const mainHome = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
+  await runPrivileged("groupadd", ["-f", SHARED_POT_GROUP]);
+  await runPrivileged("usermod", ["-aG", SHARED_POT_GROUP, COMMONS_USER]);
+  // Shared pot base (setgid, group shadok-shared).
+  await runPrivileged("install", ["-d", "-o", "root", "-g", SHARED_POT_GROUP, "-m", "2770", SHARED_POT_PATH]);
+  await runPrivileged("chmod", ["2770", SHARED_POT_PATH]);
+  // HOME-side AS `main` (TOCTOU: root never writes through an agent-owned path).
+  await runPrivileged("runuser", ["-u", COMMONS_USER, "--", "ln", "-sfn", SHARED_POT_PATH, `${mainHome}/shared`]);
+}
+
+/** Step 4 — flat vault → Main's slice. `loadVault` runs `normalizeVault`, which
+ *  lifts a flat `{NAME:value}` map into Main (`migrateFlatVault`) and persists it;
+ *  idempotent (an already-nested vault has nothing flat to migrate). */
+function migVaultToMain(): void {
+  loadVault();
+}
+
+/** Step 5a — provision one private group per account (owner as sole member).
+ *  Idempotent: reuse an existing private group owned by the account rather than
+ *  minting a twin. Minor #3: the group shape comes from the SAME `newPrivateGroup`
+ *  the invite hook uses, so both creators agree on `members:[name]` (the owner is
+ *  a member) — one source of truth rather than a members:[] / members:[name] split. */
+async function migProvisionPrivateGroup(account: string): Promise<void> {
+  const groups = loadGroups();
+  let g = privateGroupFor(account, groups);
+  if (!g) {
+    g = newPrivateGroup(account, randomUUID(), Date.now());
+    g.osUser = osUserFor(g);
+    saveGroups([...groups, g]);
+  }
+  await provisionOsUserFor(g);
+}
+
+/** Step 5b — re-provision a persisted private/restricted group (docker-recreate
+ *  carry: the group list survived on the volume but its OS user+HOME did not). */
+async function migReprovisionGroup(gid: string): Promise<void> {
+  const g = loadGroups().find((x) => x.id === gid);
+  if (!g) return;
+  await provisionOsUserFor(g);
+}
+
+/** Step 6 — label existing channels/groups public/commons: guarantee Main and
+ *  normalise the group list. Channels with no group are already commons (Task 2),
+ *  so nothing there is reclassified; the migration is additive. */
+function migLabelExistingPublic(): void {
+  saveGroups(ensureMainGroup(normalizeGroups(loadGroups())));
+}
+
+/** Respawn the running agents ONCE, one at a time — respawned, NOT re-adopted. A
+ *  pre-migration tmux pane runs as root (invariant 25); killing it forces a fresh
+ *  spawn under the new `main` drop on the next resume (history kept via --resume).
+ *  Best-effort: a kill failure is logged, never fatal. */
+async function migRespawnRunningAgents(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    const name = "sk-" + id;
+    try {
+      if (!tmuxHasSession(name)) continue;
+      // ENFORCE the kill, don't just fire it: a pane that outlives the kill would
+      // be re-adopted as ROOT on the next resume (invariant 23/25 — `restartSession`
+      // enforces for the same reason). Re-check, hard-kill again, and verify gone.
+      tmuxKillSession(name);
+      for (let i = 0; i < 30 && tmuxHasSession(name); i++) await sleep(100);
+      if (tmuxHasSession(name)) {
+        tmuxKillSession(name);
+        for (let i = 0; i < 20 && tmuxHasSession(name); i++) await sleep(100);
+      }
+      if (tmuxHasSession(name)) {
+        console.warn(
+          `migrate: pane ${name.slice(0, 11)} OUTLIVED the kill — next resume may re-adopt a root pane ` +
+            `(the adoption guard in TmuxPilot.start will then respawn it as ${COMMONS_USER})`,
+        );
+      } else {
+        console.log(`migrate: killed root pane ${name.slice(0, 11)} — will respawn as ${COMMONS_USER} on next resume`);
+      }
+    } catch (e) {
+      console.warn(`migrate: could not kill pane ${name.slice(0, 11)}: ${(e as Error)?.message ?? e}`);
+    }
+  }
+}
+
+/** Build the plan from what the instance IS and run it (fail-safe). Fire-and-
+ *  forget at boot: a migration that is slow must never hang the boot, and a
+ *  spawn that races it simply uses the pre-migration (root) drop until the
+ *  marker flips. Flips `groupsMigrated` on success so later spawns drop to `main`. */
+async function runGroupsMigration(): Promise<void> {
+  groupsMigrated = alreadyMigratedNow();
+  const plan = migrationPlan({
+    alreadyMigrated: groupsMigrated,
+    mode: DEPLOYMENT_MODE,
+    accounts: loadAccounts().map((a) => a.name),
+    existingGroups: loadGroups(),
+  });
+  if (!plan) return; // already migrated, or mono-tenant: nothing to do
+  // A real migration is about to run: the commons is un-isolated until it lands.
+  migrationState = "pending";
+  broadcastAll(versionMessage()); // open tabs show the pending banner live
+  await runMigration(plan, {
+    createCommonsUser: migCreateCommonsUser,
+    chownTreeToCommons: migChownTreeToCommons,
+    wireCommonsPot: migWireCommonsPot,
+    migrateVaultToMain: migVaultToMain,
+    provisionPrivateGroup: migProvisionPrivateGroup,
+    reprovisionGroup: migReprovisionGroup,
+    labelExistingPublic: migLabelExistingPublic,
+    markerExists: migrationMarkerExists,
+    writeMarker: writeMigrationMarker,
+    respawnIds: respawnPlan(loadChannels()),
+    respawn: migRespawnRunningAgents,
+    log: (m) => console.log(m),
+  });
+  // Re-evaluate: the marker is written only when the core steps succeeded, so
+  // this flips to `main`-commons exactly when it is safe.
+  groupsMigrated = alreadyMigratedNow();
+  // If the marker did not land (a core step failed), the instance will NOT retry
+  // until the next boot — surface it LOUDLY rather than let the commons sit
+  // un-isolated in silence. Otherwise migration is done and there is nothing to show.
+  migrationState = groupsMigrated ? "ok" : "failed";
+  broadcastAll(versionMessage()); // tabs that saw "pending" must see the outcome
+}
+
+/**
+ * Run the migration if it has something to do — at boot, AND re-tried after a
+ * successful Claude sign-in. The second trigger is the fix for the fresh-instance
+ * failure: a brand-new instance signs in AFTER boot, via the web card, and a
+ * core step that failed in between would withhold the marker and show the red
+ * "isolation did NOT complete" banner until a MANUAL restart. `startFirstAgent` is already re-fired from the same sign-in handler
+ * for the mirror-image reason (a lead agent a signed-out boot could not start);
+ * re-running the migration there makes a fresh instance heal itself the moment it
+ * is signed in — no restart, no scary banner.
+ *
+ * Idempotent and safe to call repeatedly: `runGroupsMigration` short-circuits
+ * once the instance is already migrated (the marker + `main` present), and the
+ * in-flight guard keeps a sign-in that lands mid-boot-migration from starting a
+ * second, overlapping run (both chown the same tree, both respawn the same panes).
+ * No-op in mono-tenant. `reason` is logged so the two triggers stay legible.
+ */
+async function maybeRunGroupsMigration(reason: string): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") {
+    groupsMigrated = migrationMarkerExists() && osUserExistsSync(COMMONS_USER);
+    return;
+  }
+  if (migrationInFlight) {
+    console.log(`migrate: ${reason} re-run skipped — a migration is already running`);
+    return;
+  }
+  if (alreadyMigratedNow()) {
+    // The DATA migration is done, but the boot RECONCILE still has to run on
+    // every capable boot — it is INDEPENDENT of the migration marker (Task 16).
+    // It heals a persisted private/restricted group whose OS user vanished on a
+    // `docker rm`+recreate, and provisions the bootstrap admin's Personal group.
+    // Regression guard: the pre-refactor boot path called `ensureGroupsProvisioned`
+    // unconditionally via `.then()`; folding the migration into this helper must
+    // NOT drop that call on an already-migrated instance (measured missing on the
+    // mt373 test instance — no admin Personal group, no reprovision, after a plain
+    // restart of a migrated instance).
+    groupsMigrated = true;
+    if (migrationState === "failed") {
+      migrationState = "ok";
+      broadcastAll(versionMessage());
+    }
+    await ensureGroupsProvisioned();
+    return;
+  }
+  migrationInFlight = true;
+  try {
+    console.log(`migrate: running (${reason})`);
+    await runGroupsMigration();
+    await ensureGroupsProvisioned();
+  } catch (e) {
+    console.error(`migrate: ${reason} run error (ignored, boot/sign-in continues):`, (e as Error)?.message ?? e);
+  } finally {
+    migrationInFlight = false;
+  }
+}
+
+// Create a group. A private/restricted group needs the privileged deployment:
+// refuse CLEARLY in mono-tenant (capabilityRefusal) rather than create a group
+// that cannot actually isolate. A public group provisions nothing (commons).
+//
+// BROWSER-ONLY (invariant 26, like `PUT /profiles`): this route provisions an
+// OS user via `useradd` as root — an agent carries the bootstrap admin cookie
+// and sends no `Origin`, so without this gate it could `curl` a privileged
+// `useradd`. The flow (createGroupFlow) owns the guard order and the ordering.
+app.post("/groups", async (req, res) => {
+  const body = req.body ?? {};
+  const nature: Nature =
+    body.nature === "private" || body.nature === "restricted" || body.nature === "public" ? body.nature : "restricted";
+  const r = await createGroupFlow(
+    {
+      fromBrowser: requestFromBrowser(req),
+      instanceOk: channelWriteAllowed(instanceKey(), req.get("x-shadok-instance")),
+      account: currentAccount(req),
+      name: typeof body.name === "string" ? body.name : "",
+      nature,
+      mode: DEPLOYMENT_MODE,
+    },
+    {
+      provision: (g) =>
+        provisionGroupUser(g, {
+          run: runPrivileged,
+          seed: seedGroupHome,
+          homeBase: GROUP_HOME_BASE,
+          userExists: osUserExists,
+          sharedPotPath: DEPLOYMENT_MODE === "multi-tenant" ? SHARED_POT_PATH : undefined,
+        }).then(() => void 0),
+      loadGroups,
+      saveGroups,
+      newId: randomUUID,
+      now: Date.now,
+    },
+  );
+  res.status(r.status).json(r.body);
+});
+
+// Delete a group: tear down its OS user and never strand its channels.
+// BROWSER-ONLY for the same reason as POST (its mirror runs `userdel --remove`).
+app.delete("/groups", async (req, res) => {
+  const r = await deleteGroupFlow(
+    {
+      fromBrowser: requestFromBrowser(req),
+      instanceOk: channelWriteAllowed(instanceKey(), req.get("x-shadok-instance")),
+      account: currentAccount(req),
+      id: String(req.query.id ?? body_id(req)),
+      mode: DEPLOYMENT_MODE,
+    },
+    {
+      loadGroups,
+      saveGroups,
+      loadChannels,
+      teardown: (g) =>
+        teardownGroupUser(g, {
+          run: runPrivileged,
+          homeBase: GROUP_HOME_BASE,
+          killAgents: () => killGroupAgents(g.id),
+        }),
+    },
+  );
+  res.status(r.status).json(r.body);
+});
+
+/** The group id may arrive on the query string or in a JSON body. */
+function body_id(req: { body?: any }): string {
+  return typeof req.body?.id === "string" ? req.body.id : "";
+}
+
+// Central secret vault (per-group, stored 600 outside any repo). Values are
+// NEVER returned — only names. A profile references names to inject them.
+//
+// ACL (T10): GET returns only the names the caller's groups resolve (own +
+// shared-in + Main), each tagged by source; a WRITE lands in the caller's OWN
+// group (identity-derived, never the body) and requires owner-group membership.
+// Mono-tenant resolves everyone to Main, so this is byte-for-byte today.
+app.get("/secrets", (req, res) => {
+  const { viewer } = secretCaller(req);
+  // A public non-Main group's secrets are visible to everyone who sees the group
+  // (operator decision 2026-11-03: "public = commun") — `secretOwnGroupIds` adds
+  // them to the member set, so a secret added to a public group no longer
+  // vanishes from the panel. Member-only groups stay member-gated.
+  const list = visibleSecrets(loadVault(), secretOwnGroupIds(loadGroups(), viewer));
+  // `names` stays a string[] for the existing client; `secrets` carries the tags.
+  res.json({ names: list.map((s) => s.name), secrets: list });
+});
 app.put("/secrets", (req, res) => {
   const { name, value, overwrite } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
     return res.status(400).json({ error: "name and value required" });
   const key = name.trim();
+  // Reserved server-owned secrets are set only via setSecret() server-side,
+  // never through this endpoint (the filtered listing would make them look new).
+  if (RESERVED_SECRET_NAMES.has(key)) return res.status(403).json({ error: "reserved" });
   // HTTP is the ONLY way an agent can reach the vault — it is a separate
   // process, and Telegram's /secret calls setSecret() directly. So guarding
   // here guards exactly the machine path, and nothing a human does by hand.
-  const verdict = secretWriteVerdict(secretNames().includes(key), overwrite === true);
+  //
+  // Owner-group gate (T9/T10 carry): resolve the target group from the caller's
+  // IDENTITY (never the body) and refuse a write the caller may not make.
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const ownerGroup = target.ownerGroup;
+  const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
-  setSecret(key, value);
+  // createdBy is STAMPED server-side (the agent's session or the account) — a
+  // client-claimed owner/createdBy is ignored by construction.
+  setSecret(key, value, ownerGroup, secretCreatedBy(req));
   recordSecretAudit({ action: verdict, secrets: [key], ...auditActorOf(req), instance: process.cwd() });
   // Remember WHO created it, so the agent can later attach it to its own
   // profile (`PUT /profiles/secret`). Only on a creation: recording an
@@ -2156,7 +3053,30 @@ app.put("/secrets", (req, res) => {
     const { profile } = callerOf(req);
     if (profile) recordOrigin(key, profile);
   }
-  res.json({ names: secretNames(), result: verdict });
+  res.json({ names: secretNames(ownerGroup), result: verdict });
+});
+// Edit a secret's SHARING (the groups it is lent to) — the name↔group link
+// lives on the secrets side. Owner-group gated, like every vault write.
+app.put("/secrets/share", (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  const sharedWith = Array.isArray(req.body?.sharedWith) ? req.body.sharedWith.map(String) : [];
+  if (!name) return res.status(400).json({ error: "name required" });
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  if (!setSecretSharing(name, target.ownerGroup, sharedWith))
+    return res.status(404).json({ error: "no such secret in your group", name });
+  res.json({ ok: true });
+});
+// Edit a secret's PROFILE binding (the profiles it is injected into). Same gate.
+app.put("/secrets/profiles", (req, res) => {
+  const name = String(req.body?.name ?? "").trim();
+  const profiles = Array.isArray(req.body?.profiles) ? req.body.profiles.map(String) : [];
+  if (!name) return res.status(400).json({ error: "name required" });
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  if (!setSecretProfiles(name, target.ownerGroup, profiles))
+    return res.status(404).json({ error: "no such secret in your group", name });
+  res.json({ ok: true });
 });
 // Who wrote, attached and RECEIVED which secret (names only). Admin only: it
 // maps every credential to the agents and people that held it. See
@@ -2180,11 +3100,15 @@ app.get("/secrets/audit", (req, res) => {
 });
 app.delete("/secrets", (req, res) => {
   const name = String(req.query.name ?? req.body?.name ?? "").trim();
-  if (name && secretNames().includes(name)) {
-    deleteSecret(name);
+  // Owner-group gated, like PUT: you can only delete from your own group.
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const ownerGroup = target.ownerGroup;
+  if (name && secretNames(ownerGroup).includes(name)) {
+    deleteSecret(name, ownerGroup);
     recordSecretAudit({ action: "deleted", secrets: [name], ...auditActorOf(req), instance: process.cwd() });
   }
-  res.json({ names: secretNames() });
+  res.json({ names: secretNames(ownerGroup) });
 });
 
 // Finish an OAuth sign-in whose redirect points at an agent's localhost port,
@@ -2275,6 +3199,17 @@ app.get("/users", (req, res) => {
   );
 });
 
+// The roster a member-picker needs: NAMES ONLY. `GET /users` is admin-only and
+// carries role/pending/passkeys; a group's members must be choosable by anyone
+// who can see the group, so this exposes the one field that is not sensitive.
+app.get("/accounts", (req, res) => {
+  if (!currentAccount(req)) return res.status(401).json({ error: "sign in first" });
+  const names = loadAccounts().map((a) => a.name);
+  // The bootstrap admin is the password itself, not a stored account.
+  if (GUI_PASSWORD && !names.includes(BOOTSTRAP_ADMIN)) names.unshift(BOOTSTRAP_ADMIN);
+  res.json(names);
+});
+
 // Create AND issue the invitation in one step: an account with no way in is a
 // dead row, and two calls would let one succeed without the other.
 app.post("/users", async (req, res) => {
@@ -2312,11 +3247,68 @@ app.delete("/users", async (req, res) => {
   if (!v.ok) return res.status(me?.role === "admin" ? 400 : 403).json({ error: v.error });
   const keep = keepsTwoAdminsVerdict(twoFactorOn(), list.filter((a) => a.name !== name));
   if (!keep.ok) return res.status(400).json({ error: keep.error });
+
+  // Task 16 — deleting an account in multi-tenant CASCADES to its sealed private
+  // group: OS user, HOME and running agents are destroyed, and the data is gone
+  // for good (no break-glass — nobody, not even this admin, ever reads it). That
+  // is irreversible, so demand an EXPLICIT confirmation before the destroy; the
+  // body names what will be lost so the client can show "permanently destroys X's
+  // private space, which cannot be inspected". Server-authoritative: a client that
+  // does not pass `confirm` gets a 409 and must re-submit. A person with no private
+  // group (or mono-tenant) is NOT gated — nothing irreversible happens.
+  const priv = DEPLOYMENT_MODE === "multi-tenant" ? privateGroupFor(name, loadGroups()) : null;
+  const confirmed =
+    req.query.confirm === "1" || req.query.confirm === "true" || req.body?.confirm === true;
+  if (priv && !confirmed) {
+    return res.status(409).json({
+      error: "confirmation required",
+      confirmation: {
+        account: name,
+        group: priv.id,
+        message: `Deleting ${name} permanently destroys ${name}'s private space, which cannot be inspected. This cannot be undone.`,
+      },
+    });
+  }
+
   if (!(await stepUpIfTwoFactor(req, res, me!))) return;
   saveAccounts(loadAccounts().filter((a) => a.name !== name));
   console.log(`users: ${me!.name} removed ${name}`);
   recordEvent({ kind: "removed", actor: me!.name, target: name });
-  res.json({ ok: true });
+
+  // The cascade (multi-tenant only). `accountDeleteGroups` decides: tear down ONLY
+  // this person's private group (its agents + OS user + HOME), and DROP them from
+  // every restricted group they belonged to WITHOUT tearing those down.
+  //
+  // ORDERING IS LOAD-BEARING — the group row is REMOVED (and memberships dropped)
+  // via `saveGroups` BEFORE the `await teardownGroupUser`, for two reasons:
+  //  1. STALE-SAVE: the `userdel --remove` can take a while; persisting AFTER it
+  //     would let a concurrent group edit during that wait be overwritten by the
+  //     pre-await snapshot. So we re-read `loadGroups()` immediately before the
+  //     save (invariant 6 — also covers the step-up await above, a passkey wait).
+  //  2. OWNERLESS-ROW REUSE LEAK: if a crash interrupted the teardown with the row
+  //     still on disk, it would be an OWNERLESS private-group row; re-inviting the
+  //     SAME account name matches it via `privateGroupFor` (owner match) and would
+  //     REUSE its `sk-<id>` user + HOME — handing the new person the deleted
+  //     person's data. With the row gone FIRST, a re-invite always mints a FRESH
+  //     private group (new id → new user) and can never reuse the old HOME; a
+  //     teardown failure then leaves at worst an ORPHAN OS user/HOME (surfaced as a
+  //     warning), never a reusable owner-matched row.
+  // The teardown never throws, but its `userdel` warning is SURFACED to the admin
+  // so an orphaned OS user/HOME does not go unnoticed.
+  let warning: string | undefined;
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    const { torndown, groups } = accountDeleteGroups(name, loadGroups());
+    saveGroups(groups); // row removed + memberships dropped BEFORE any await
+    if (torndown) {
+      const r = await teardownGroupUser(torndown, {
+        run: runPrivileged,
+        homeBase: GROUP_HOME_BASE,
+        killAgents: () => killGroupAgents(torndown.id),
+      });
+      if (!r.ok) warning = r.warning;
+    }
+  }
+  res.json(warning ? { ok: true, warning } : { ok: true });
 });
 
 app.post("/users/role", async (req, res) => {
@@ -3189,7 +4181,7 @@ function broadcastAll(msg: object): void {
  *  whether auto-update is armed, and the spawn permission mode. */
 /** What both /version and the WS `version` message report. */
 function versionState() {
-  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel };
+  return { current: OWN_VERSION, latest: latestKnown, autoUpdate, ledgerEnabled, permissionMode, updateChannel, mode: DEPLOYMENT_MODE, migrated: groupsMigrated, migrationState };
 }
 
 function versionMessage(): object {
@@ -3427,7 +4419,7 @@ app.get("/download", (req, res) => {
   let allowed = offeredPaths(loadOffers(filesFileFor(process.cwd())), session).has(wanted);
   if (!allowed) {
     let raw: string;
-    try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session), "utf8"); }
+    try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session, channelTranscriptHome(chan)), "utf8"); }
     catch { return res.status(403).type("text").send("that file was not sent by this agent"); }
     allowed = sentFilePaths(raw).has(wanted);
   }
@@ -3486,20 +4478,177 @@ app.post("/claude-update", async (req, res) => {
   }
 });
 
-// The shared-ledger table for the GUI viewer (the version-menu / header button).
-// Reads the same file the `shadok-ledger` skill writes; most-recent first; an
-// absent or unreadable file → []. Read-only — agents write it via the skill.
-app.get("/ledger", (_req, res) => {
-  // This instance's own ledger (keyed by the launch dir), the same file agents
-  // write through SHADOK_LEDGER_FILE.
+// The shared-ledger table — ONE per instance (keyed by the launch dir). Read by
+// the GUI viewer (the version-menu / header button) AND by the `shadok-ledger`
+// CLI's `check`/`list` (which run their own recall over these rows). Filtered by
+// the CALLER's group, so another group's group-scoped rows never leak:
+//  - an AGENT (its per-session key) → its CHANNEL's group ∪ public;
+//  - a BROWSER → its member groups ∪ its commons home ∪ public (NO super-view,
+//    so an admin sees no more than the groups they belong to).
+// This replaces the old "return the Main file unfiltered" viewer, which showed
+// Main-private rows to any authenticated member.
+app.get("/ledger", (req, res) => {
   const rows = loadLedger(ledgerFileFor(process.cwd()));
-  rows.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
+  // The agent path FIRST: a session key makes `currentAccount` the bootstrap
+  // admin, so reading the viewer's membership for an agent would hand it the
+  // admin's whole reach instead of its own channel's group.
+  const agentId = callerOf(req).id;
+  const groupIds = agentId
+    ? new Set([loadChannels().find((c) => c.sessionId === agentId)?.group ?? MAIN_GROUP_ID])
+    : ledgerGroupsFor(loadGroups(), viewerFor(currentAccount(req)));
+  const visible = scopeVisible(rows, groupIds, true);
+  visible.sort((a, b) => (b?.updatedAt ?? 0) - (a?.updatedAt ?? 0));
   // `kind` is DERIVED here, never stored (cf. the derived `crons` on /channels
   // and `origin` on /profiles): the rows recorded before kinds existed carry
   // none, and the inference belongs to the skill's core — one source, so the
   // client needs no copy of it.
-  const entries = rows.map((r) => ({ ...r, kind: rowKind(r) }));
+  const entries = visible.map((r) => ({ ...r, kind: rowKind(r) }));
   res.json({ entries, enabled: ledgerEnabled });
+});
+
+// The ONE write path into the shared ledger. Agents never touch the file (it
+// lives 0600 in the server HOME, unreadable to a privilege-dropped group user —
+// the OS-user wall that the per-group-file `--public` mirror crashed on). The
+// `shadok-ledger` CLI POSTs here with its `x-shadok-session-key`, exactly like
+// the `shadok-secrets` skill reaches the vault. The authoring group is derived
+// SERVER-SIDE from the caller's session→channel — never the body — and
+// `recordIntoTable` scopes the upsert to that group, so a bare record can't
+// delete another group's public row and an `--id` edit can't touch a row a
+// different group authored.
+app.post("/ledger/record", (req, res) => {
+  const agentId = callerOf(req).id;
+  if (!agentId) return res.status(403).json({ error: "ledger record requires an agent session key" });
+  const group = loadChannels().find((c) => c.sessionId === agentId)?.group ?? null;
+  const file = ledgerFileFor(process.cwd());
+  const rows = loadLedger(file);
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
+  try {
+    const { rows: next, row } = recordIntoTable(
+      rows,
+      group,
+      {
+        id: str(b.id),
+        entity: str(b.entity),
+        status: str(b.status),
+        kind: str(b.kind),
+        note: str(b.note),
+        source: str(b.source),
+        verified: b.verified === true,
+        public: b.public === true ? true : b.public === false ? false : undefined,
+      },
+      Date.now(),
+      mintLedgerId(new Set(rows.map((r) => r.id).filter((x): x is string => !!x))),
+    );
+    saveLedger(file, next);
+    res.json({ row });
+  } catch (e) {
+    // A bad id / missing entity / unknown kind is the agent's mistake, not ours.
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
+});
+
+/**
+ * Resolve a stored group id to a `Group` for the talk ACL.
+ *
+ * A NULL id = the commons / group-less channel: synthesize a public Main group
+ * so talk treats it as public (which is what the commons is), and mono-tenant —
+ * where every channel is group-less — never trips the "cannot be verified" 403.
+ * A NON-NULL id that does not resolve fails CLOSED (null), the twin of
+ * `visibleChannels`/`canResumeAs`: never deliver a letter into a group we cannot
+ * verify.
+ */
+function groupForTalk(gid: string | null): Group | null {
+  if (!gid) {
+    const groups = loadGroups();
+    return (
+      groups.find((g) => g.id === MAIN_GROUP_ID) ??
+      groups.find((g) => g.nature === "public") ?? {
+        id: MAIN_GROUP_ID,
+        name: "Main",
+        nature: "public",
+        members: [],
+        createdAt: 0,
+      }
+    );
+  }
+  return loadGroups().find((g) => g.id === gid) ?? null;
+}
+
+// Cross-group TALK: a narrow, consensual LETTER from one agent to another — the
+// SANCTIONED, server-mediated channel that replaced native SendMessage. It is
+// NOT a drive: the recipient reads the message in ITS OWN context under its own
+// guardrails, and the sender NEVER receives the recipient's transcript/stream/
+// files. Delivery is a server-side loopback (`driveChannel`), fully detached
+// from the caller's HTTP request — the request only ever learns the letter was
+// accepted and dispatched.
+//
+// The ACL is `talkVerdict`: a PUBLIC recipient is messageable freely; an agent
+// in another RESTRICTED group only if the caller holds its HANDLE (an opaque
+// token someone shared — there is no roster to enumerate); a PRIVATE recipient
+// is sealed inbound with no break-glass. A PRIVATE sender may still write
+// OUTWARD. The cross-group gate applies only in multi-tenant; mono-tenant is all
+// Main/public, so talk is unrestricted (the verdict returns ok there anyway —
+// public recipient — but the gate is explicit so the intent is readable).
+//
+// The SENDER's group is resolved SERVER-SIDE from its session→channel (never the
+// body — a client could forge it). The RECIPIENT is resolved ONLY from a valid
+// handle; a handle that does not verify, or verifies but names a channel that no
+// longer exists, is ONE indistinguishable "unknown handle", so a caller cannot
+// enumerate recipients by probing handles beyond a yes/no on one they already
+// hold.
+app.post("/talk", (req, res) => {
+  const agentId = callerOf(req).id;
+  if (!agentId) return res.status(403).json({ error: "talk requires an agent session key" });
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const handle = typeof b.handle === "string" ? b.handle.trim() : "";
+  const message = typeof b.message === "string" ? b.message : "";
+  if (!handle) return res.status(400).json({ error: "a recipient handle is required" });
+  if (!message.trim()) return res.status(400).json({ error: "a message is required" });
+
+  const recipientId = readTalkHandle(handle, signingSecret());
+  const channels = loadChannels();
+  const recipient = recipientId ? channels.find((c) => c.sessionId === recipientId) : undefined;
+  if (!recipient) return res.status(404).json({ error: "unknown handle" });
+
+  const senderGroupId = channels.find((c) => c.sessionId === agentId)?.group ?? null;
+  const senderGroup = groupForTalk(senderGroupId);
+  const recipientGroup = groupForTalk(recipient.group ?? null);
+  if (!senderGroup || !recipientGroup)
+    return res.status(403).json({ error: "that agent's group cannot be verified" });
+
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    // `hasHandle` is TRUE by construction: we only ever reach here with a handle
+    // that verified to this recipient.
+    const verdict = talkVerdict(senderGroup, recipientGroup, true);
+    if (!verdict.ok) return res.status(403).json({ error: verdict.error });
+  }
+
+  // Deliver as a hidden agent-prompt LETTER over the SAME server-side loopback a
+  // parent notification uses: the recipient's own context, its own guardrails,
+  // and the SENDER's request is never wired to the recipient's output. Fire and
+  // forget — awaiting would couple the sender to a turn that can run 30 minutes,
+  // which is exactly what would make talk a drive.
+  const letter = markAgentPrompt(talkLetter({ group: senderGroup.name }, message));
+  const target = resolveSessionTarget(channels, recipient.sessionId, process.cwd());
+  const tag = `talk: ${agentId.slice(0, 8)} → ${recipient.sessionId.slice(0, 8)}`;
+  void driveChannel(recipient.sessionId, letter, target).then((r) => {
+    console.log(r.ok ? `${tag} delivered` : `${tag} failed (${r.reason})`);
+  });
+  res.json({ ok: true, delivered: recipient.sessionId.slice(0, 8) });
+});
+
+// An agent's OWN talk handle — the minimal "here is a handle to me" exposure.
+// Scoped by the caller's session key (`callerOf`), so an agent can mint a handle
+// only to ITSELF: there is no route that lists or looks up another agent's
+// handle, which is what keeps talk free of roster enumeration. HOW a handle then
+// travels to a would-be sender is left OPEN (out of band — a human relays it, a
+// shared note, a prompt); building a cross-group directory is explicitly out of
+// scope for this task.
+app.get("/talk/handle", (req, res) => {
+  const agentId = callerOf(req).id;
+  if (!agentId) return res.status(403).json({ error: "a talk handle requires an agent session key" });
+  res.json({ handle: signTalkHandle(agentId, signingSecret()) });
 });
 
 // Toggle the shared-ledger reflex from the GUI. Persisted. The reflex is fixed
@@ -3593,6 +4742,8 @@ app.post("/models/default", (req, res) => {
 type ClientMessage =
   | {
       type: "start";
+      /** NEW agent only: the target group; honoured iff the caller can see it. */
+      group?: string;
       cwd?: string;
       resume?: string;
       continue?: boolean;
@@ -3750,9 +4901,9 @@ function ledgerReflex(): string | null {
  */
 /** The backend an agent on this profile talks to — the same inputs
  *  `makePilot` hands the process, so the verdict cannot disagree with it. */
-function sessionBackend(profileName?: string | null): Backend {
+function sessionBackend(profileName?: string | null, groupId?: string | null): Backend {
   const profile = profileName ? getProfile(profileName) : undefined;
-  const secretEnv = secretsFor(profile?.secrets);
+  const secretEnv = secretsForProfile(profileName, profile?.secrets, groupId ?? MAIN_GROUP_ID, commonsGroupIds());
   return backendFor({ ...backendEnv(instanceBackendSource(), secretEnv), ...secretEnv });
 }
 
@@ -3837,7 +4988,7 @@ function installedCapabilities(): { name: string; description: string }[] {
  * byte-identical: a difference always means the agent's context actually
  * changed, never that two code paths spelled it differently.
  */
-function buildPreprompt(profileName?: string | null): PrepromptPart[] {
+function buildPreprompt(profileName?: string | null, groupId?: string | null): PrepromptPart[] {
   const profile = profileName ? getProfile(profileName) : undefined;
   const resolved = effectiveProfile(profile);
   return prepromptParts({
@@ -3847,7 +4998,7 @@ function buildPreprompt(profileName?: string | null): PrepromptPart[] {
     deny: resolved?.deny,
     allow: resolved?.allow,
     permissionMode,
-    secretNames: Object.keys(secretsFor(profile?.secrets)),
+    secretNames: secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets, commonsGroupIds()),
     capabilities: installedCapabilities(),
     pilotPrompt: pilotPrompt() ?? undefined,
     ledgerReflex: ledgerEnabled ? ledgerReflex() : null,
@@ -3875,6 +5026,139 @@ function currentClaudeVersion(): string | null {
   return v;
 }
 
+/**
+ * Run a command AS a group's OS user, SYNCHRONOUSLY, for spawn-time HOME
+ * seeding. Mirrors `runPrivileged`'s sudo-when-non-root rule, but sync (the seed
+ * must land before the claude process reads its config) and able to pass stdin /
+ * capture stdout. `runAsUser` builds the `runuser -u <user> -- …` wrapping shared
+ * with the provisioning plans, so the privilege drop is byte-for-byte identical.
+ */
+function spawnAsUserSync(user: string, cmd: string, argv: string[], input?: string): { ok: boolean; stdout: string } {
+  let [c, a] = runAsUser(user, cmd, argv);
+  if (typeof process.getuid === "function" && process.getuid() !== 0) {
+    a = ["-n", c, ...a];
+    c = "sudo";
+  }
+  const r = spawnSync(c, a, { input, encoding: "utf8", timeout: 15_000 });
+  return { ok: r.status === 0, stdout: typeof r.stdout === "string" ? r.stdout : "" };
+}
+
+/** Atomic write of `content` to `file`, performed AS `user` (tee to a temp then
+ *  mv, both dropped to the user) so root never writes through a 0700 HOME it does
+ *  not own — an agent could plant a symlink there otherwise (same TOCTOU rule as
+ *  the provisioning plans' root/user split). */
+function writeAsUserAtomic(user: string, file: string, content: string): void {
+  const dir = file.slice(0, file.lastIndexOf("/"));
+  const tmp = `${file}.shadok.tmp`;
+  spawnAsUserSync(user, "mkdir", ["-p", dir]);
+  if (!spawnAsUserSync(user, "tee", [tmp], content).ok) throw new Error(`tee ${tmp} failed`);
+  if (!spawnAsUserSync(user, "mv", ["-f", tmp, file]).ok) throw new Error(`mv ${tmp} → ${file} failed`);
+}
+
+/** The SSH key store on the shadok-data VOLUME (survives a docker recreate, which
+ *  wipes `/home`). The container's historical identity lives here (`id_ed25519`);
+ *  per-group keys go under `groups/<os-user>/`. `/root` is 0700, so a dropped
+ *  agent cannot read this — the server (root) copies the material into the
+ *  agent's own HOME at spawn. Mirrors `ensureSshIdentity` (src/ssh.ts). */
+const SHADOK_SSH_DIR = path.join(os.homedir(), ".shadok-ai", "ssh");
+const SSH_AGENT_CONFIG =
+  "# Managed by shadok-ai — SSH identity for this agent.\n" +
+  "Host *\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile ~/.ssh/known_hosts\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n";
+
+/**
+ * Give a DROPPED agent a working `~/.ssh` (git-over-SSH, private clones).
+ *
+ * The source keypair lives on the VOLUME under `SHADOK_SSH_DIR` (persists a
+ * recreate): the COMMONS (`main`) reuses the container's HISTORICAL key — the
+ * identity already registered on the forge (operator: "récupère la clef
+ * historique") — while each ISOLATED group has its OWN key under
+ * `groups/<os-user>/` (operator decision: one key per group). A dropped user
+ * cannot read the volume dir (it is under the 0700 `/root`), so the server
+ * (root) reads/generates the keypair there and writes a COPY into the agent's
+ * own HOME AS THE USER (never root writing through a 0700 HOME). Idempotent
+ * (skips when the HOME key is already present — so a recreate re-copies the same
+ * volume key, keeping the identity stable). Best-effort: SSH just stays
+ * unavailable to that agent on failure, never a spawn failure.
+ */
+function ensureAgentSshKey(user: string, home: string): void {
+  try {
+    const ssh = `${home}/.ssh`;
+    if (spawnAsUserSync(user, "test", ["-f", `${ssh}/id_ed25519`]).ok) return; // already wired
+    const isCommons = user === COMMONS_USER;
+    const srcDir = isCommons ? SHADOK_SSH_DIR : path.join(SHADOK_SSH_DIR, "groups", user);
+    const srcKey = path.join(srcDir, "id_ed25519");
+    if (!fs.existsSync(srcKey)) {
+      // No historical key for the commons (a fresh instance), or a new group:
+      // mint one on the VOLUME, as root. accept-new keys are registered later.
+      fs.mkdirSync(srcDir, { recursive: true, mode: 0o700 });
+      execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-q", "-f", srcKey, "-C", `shadok-${user}`]);
+    }
+    const priv = fs.readFileSync(srcKey, "utf8");
+    const pub = fs.readFileSync(`${srcKey}.pub`, "utf8");
+    spawnAsUserSync(user, "mkdir", ["-p", ssh]);
+    spawnAsUserSync(user, "chmod", ["700", ssh]);
+    writeAsUserAtomic(user, `${ssh}/id_ed25519`, priv);
+    spawnAsUserSync(user, "chmod", ["600", `${ssh}/id_ed25519`]);
+    writeAsUserAtomic(user, `${ssh}/id_ed25519.pub`, pub);
+    writeAsUserAtomic(user, `${ssh}/config`, SSH_AGENT_CONFIG);
+    spawnAsUserSync(user, "chmod", ["600", `${ssh}/config`]);
+    console.log(`ssh: wired ${isCommons ? "historical" : "per-group"} key for ${user} — pub: ${pub.trim()}`);
+  } catch (e) {
+    console.log(`ssh: could not set up a key for ${user} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * Seed Claude Code's first-run state into a DROPPED group agent's OWN HOME —
+ * `<home>/.claude.json` (global onboarding + this worktree's trust) and
+ * `<home>/.claude/settings.json`. An isolated-group agent runs as `sk-<id>` with
+ * HOME `/home/sk-<id>` (not /root), so the boot-time `ensureClaudeHome` seeding of
+ * the SERVER's HOME never reaches it: without this EVERY private/restricted agent
+ * opened on Claude Code's theme picker + per-directory trust dialog and never
+ * reached a prompt (the zombie shape of invariant 23).
+ *
+ * Runs AS THE GROUP USER (never root writing into a HOME it does not own),
+ * SYNCHRONOUSLY (the files must exist before claude reads them) and ADDITIVELY
+ * (reuses the pure `seedPlan`/`settingsPlan`, so a value the agent already set is
+ * kept and other worktrees' trust survives). Best-effort: a failure is logged,
+ * never fatal — a first-run screen beats a refused spawn. NB: this does NOT yet
+ * seed the shadok SKILLS into the group HOME (they live only in the server's
+ * ~/.claude/skills); that gap is tracked separately.
+ */
+function seedGroupAgentHome(user: string, home: string, cwd: string): void {
+  const version = currentClaudeVersion() ?? "0.0.0";
+  const readObj = (file: string): Record<string, unknown> | null => {
+    const r = spawnAsUserSync(user, "cat", [file]);
+    if (!r.ok || !r.stdout.trim()) return {}; // absent / empty → seed from scratch
+    try {
+      const p = JSON.parse(r.stdout);
+      // Unreadable/!object → null: "leave it alone", never clobber (same rule as
+      // claude-home's readHome).
+      return p && typeof p === "object" && !Array.isArray(p) ? (p as Record<string, unknown>) : null;
+    } catch {
+      return null;
+    }
+  };
+  try {
+    const homeJson = `${home}/.claude.json`;
+    const existing = readObj(homeJson);
+    if (existing) {
+      const plan = seedPlan(existing as ClaudeHome, { version, cwd });
+      if (plan) writeAsUserAtomic(user, homeJson, JSON.stringify(plan, null, 2));
+    } else {
+      console.log(`claude-home: ${homeJson} unreadable — left alone, first-run screens may appear`);
+    }
+    const settingsJson = `${home}/.claude/settings.json`;
+    const sExisting = readObj(settingsJson);
+    if (sExisting) {
+      const splan = settingsPlan(sExisting as ClaudeSettings);
+      if (splan) writeAsUserAtomic(user, settingsJson, JSON.stringify(splan, null, 2));
+    }
+  } catch (e) {
+    console.log(`claude-home: could not seed group HOME ${home} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function makePilot(
   id: string,
   cwd: string,
@@ -3882,6 +5166,19 @@ function makePilot(
   profileName?: string | null,
   model?: string | null,
   effort?: string | null,
+  /**
+   * The OS user to drop this agent to (multi-tenant isolation, `src/osusers.ts`).
+   * The multi-tenant gate lives at the call sites (the only place `DEPLOYMENT_MODE`
+   * is known), so this is `null`/undefined on every mono-tenant spawn and the
+   * pilots' spawn path stays byte-for-byte what it was.
+   */
+  user?: string | null,
+  /**
+   * The isolation GROUP this agent belongs to, so its profile's secrets resolve
+   * by the agent's REAL group (own → shared-in → Main), not always Main. Null /
+   * undefined on every mono-tenant (and group-less) spawn → Main, i.e. today.
+   */
+  group?: string | null,
 ): Pilot {
   // A worktree is a brand-new directory, so it carries a brand-new trust
   // dialog. Seed it before the process exists, not after it is stuck on it.
@@ -3890,8 +5187,9 @@ function makePilot(
   // Env = the vault secrets the profile references (none without a profile).
   // Kept apart from the SHADOK_* plumbing below: only THESE are secrets, and
   // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
-  // must never print" was noise that buried the real ones.
-  const secretEnv = secretsFor(profile?.secrets);
+  // must never print" was noise that buried the real ones. Resolved by the
+  // agent's own group (own → shared-in → Main); null/mono-tenant → Main.
+  const secretEnv = secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds());
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
   // point off Anthropic, and maps the model aliases. See src/backend.ts.
@@ -3905,8 +5203,12 @@ function makePilot(
   // Proves WHO calls /profiles/prompt: without it "my own profile" means
   // nothing, since the session id is public.
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
-  // The PER-INSTANCE ledger file: an agent's cwd is a worktree, not the launch
-  // dir, so it cannot derive the scope itself — hand it the path the skill writes.
+  // The PER-INSTANCE ledger file (ONE table, keyed by the launch dir). On-server
+  // the CLI writes it THROUGH the server (`POST /ledger/record`, session-key
+  // auth), so group scoping and the OS-user wall are the server's problem, not
+  // the file's. This path is only the hand-run / server-unreachable FALLBACK;
+  // an agent's cwd is a worktree, so it still cannot derive the launch dir
+  // itself. No per-group / commons path any more — the group is a per-row field.
   env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
   // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
   // reads it to reach another instance's agents. See src/peers.ts.
@@ -3931,16 +5233,42 @@ function makePilot(
   // NAMES only: the values are in `env`, and never travel to a client. Built
   // through the shared `buildPreprompt`, so this spawn snapshot is comparable
   // byte-for-byte with the one the staleness check recomputes later.
-  prepromptById.set(id, buildPreprompt(profileName));
+  prepromptById.set(id, buildPreprompt(profileName, group));
   // Spawn the binary `claudeCommand` resolved, not the bare name `claude`. They
   // differ exactly when the npm launcher is the fallback placeholder: spawning
   // by name would then run the 500-byte stub, which exits 1 on stderr and looks
   // like an agent that died for no reason. With nothing resolvable it falls
   // back to the bare name, i.e. the historical behaviour.
   const claudePath = claudeCommand();
+  // When we drop to an OS user, set its HOME too: setpriv changes the uid but not
+  // $HOME, so without this the agent keeps the server's HOME=/root — un-traversable
+  // (mode 700) — and never reaches its per-group ~/.claude (the skills
+  // + settings Tasks 6/12 wired there), breaking auth and skills for
+  // EVERY dropped agent. `homeForUser` is the SAME derivation the provisioning used
+  // (`${GROUP_HOME_BASE}/<user>`: commons `main` → GROUP_HOME_BASE/main, a private
+  // group → GROUP_HOME_BASE/sk-<id>), so the spawn's HOME is exactly where the
+  // credential was provisioned. Undefined without a drop user → HOME left as today.
+  const home = user ? homeForUser(user, GROUP_HOME_BASE) : undefined;
+  // A dropped agent reads its OWN HOME, not the server's: seed the onboarding +
+  // trust there too, or every isolated-group agent stalls on the theme picker and
+  // the per-directory trust dialog. `ensureProjectTrusted(cwd)` above seeds the
+  // SERVER's HOME (still needed for a commons/mono agent that runs as the server
+  // user); this adds the same state to the group user's HOME, as that user.
+  // Skills are machine-wide (the Enterprise tier, `seedSystemSkills`), so only
+  // the per-HOME onboarding/trust state needs seeding into the group user's HOME.
+  // The group also gets its OWN SSH identity (one key per group).
+  if (user && home) {
+    seedGroupAgentHome(user, home, cwd);
+    ensureAgentSshKey(user, home);
+  }
+  // Isolated groups share the subscription token, injected in the forced-last
+  // env layer. Mono-tenant (no user) reads and passes nothing.
+  const oauthToken = user
+    ? secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME]
+    : undefined;
   return USE_TMUX
-    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath })
-    : new PtyPilot({ cwd, args: fullArgs, env, claudePath });
+    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home, oauthToken })
+    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home, oauthToken });
 }
 
 interface Live {
@@ -3965,6 +5293,14 @@ interface Live {
    *  In-memory (near-real-time, not an audit); a restart re-anchors it to now. */
   ledgerSeenAt?: number;
   cwd: string;
+  /** The HOME whose `.claude/projects` holds this agent's transcript: the
+   *  server's own, EXCEPT a privilege-dropped group agent (multi-tenant) that
+   *  writes under its own `/home/sk-<id>`. The content tail and `loadHistory`
+   *  read from here — without it an isolated agent's reply never streams. */
+  transcriptHome: string;
+  /** The isolation group this agent runs in (null = commons / mono-tenant) —
+   *  the scope its profile's secrets resolve from (own → shared-in → Main). */
+  group: string | null;
   pilot: Pilot;
   clients: Set<WebSocket>;
   busy: boolean;
@@ -4109,6 +5445,26 @@ function broadcast(s: Live, msg: object, except?: WebSocket) {
  * Shared by the `restart` message and by `set-profile` with `restart: true`.
  */
 async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void> {
+  // Fail-closed group check BEFORE any teardown. A restart re-derives the OS
+  // user from the channel's stored group; if that group no longer resolves,
+  // `resolveSpawnIsolation` would derive a null user and respawn a private agent
+  // as the server's own (commons/root) user — a silent privilege DOWNGRADE that
+  // keeps the foreign transcript running. Refuse instead (no people-membership
+  // check: the session's entitlement was established at spawn, and no human
+  // principal drives a restart — see `canRestartInto`). Mono-tenant has no group,
+  // so this is a trivial pass and byte-for-byte today's behaviour.
+  const restartGroupId = loadChannels().find((c) => c.sessionId === s.id)?.group ?? null;
+  if (DEPLOYMENT_MODE === "multi-tenant" && !canRestartInto(restartGroupId, loadGroups())) {
+    console.error(
+      `[sk-${s.id}] restart refused — group ${restartGroupId} no longer resolves (would drop to commons/root)`,
+    );
+    broadcast(s, {
+      type: "error",
+      message: "restart refused: this agent's group no longer exists",
+      code: "forbidden",
+    });
+    return;
+  }
   s.restarting = true;
   // The raw pipe is bound to the pilot we're about to replace — close it;
   // clients re-attach on the next "ready" if the terminal is open.
@@ -4150,13 +5506,29 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
   broadcast(s, { type: "working", startedAt: Date.now(), elapsedMs: 0 });
   // Resume only if there's a transcript; a never-used session has
   // nothing to resume (claude --resume would exit) — re-create it.
-  const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id));
+  const hasTranscript = fs.existsSync(sessionFilePath(s.cwd, s.id, s.transcriptHome));
   // A restart respawns without passing through the `start` handler, so it is
   // its own chance to notice that the launcher has become the placeholder since
   // this session was created. Non-fatal: a restart that cannot re-resolve still
   // respawns on the last known path, which is what it did before.
   const claude = await ensureClaudeOnce();
   if (!claude.ok) console.error(`[sk-${s.id}] restart: ${claude.error}`);
+  // A reload respawns a fresh process (for PtyPilot; TmuxPilot re-adopts the
+  // live pane and keeps its original uid — invariant 25 / Task 15). It is a
+  // resume, so it never reassigns the group: derive the OS user from the
+  // channel's stored group so a private agent comes back under its own user,
+  // not as root. Mono-tenant resolves to null — unchanged from before.
+  const restartUser =
+    resolveSpawnIsolation({
+      mode: DEPLOYMENT_MODE,
+      resumed: true,
+      viewer: null,
+      groups: loadGroups(),
+      storedGroupId: restartGroupId,
+    }).user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  // Task 7 verify-first gate (same as the spawn path): a restart re-adopts the
+  // HOME, so it is another moment the symlink could have been overwritten by a
+  // rename refresh — warn LOUDLY rather than let auth break in silence.
   s.pilot = makePilot(
     s.id,
     s.cwd,
@@ -4164,6 +5536,8 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
     s.profile,
     s.model,
     s.effort,
+    restartUser,
+    restartGroupId,
   );
   s.appliedProfile = s.profile;   // the new process carries the desired profile
   await attachPilot(s);
@@ -4250,7 +5624,7 @@ function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
   const profile = s.profile ? getProfile(s.profile) : undefined;
   recordSecretAudit({
     action: "injected",
-    secrets: Object.keys(secretsFor(profile?.secrets)),
+    secrets: Object.keys(secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID, commonsGroupIds())),
     ...by,
     agent: s.id,
     agentName: loadChannels().find((c) => c.sessionId === s.id)?.name,
@@ -4283,7 +5657,7 @@ function sessionStaleness(s: Live, channels?: Channel[]): StaleReason[] {
   if (!ch || ch.spawnFp === undefined) return []; // no anchor yet (brand-new, pre-first-record)
   return stalenessReasons({
     spawnFp: ch.spawnFp,
-    currentFp: prepromptFingerprint(buildPreprompt(s.profile)),
+    currentFp: prepromptFingerprint(buildPreprompt(s.profile, s.group)),
     hasPassword: !!GUI_PASSWORD,
     spawnedAt: ch.spawnAt ?? null,
     now: Date.now(),
@@ -4318,7 +5692,7 @@ function destroySession(s: Live) {
   s.stopTail?.();
   s.stopTail = null;
   // The session is over: its tail position has nothing left to resume.
-  clearTailPos(sessionFilePath(s.cwd, s.id));
+  clearTailPos(sessionFilePath(s.cwd, s.id, s.transcriptHome));
   s.pilot.kill();
   // Worktrees are durable: never auto-removed. They persist (with their
   // branch and any uncommitted changes) until an explicit merge/discard,
@@ -4445,11 +5819,22 @@ async function createSession(
   model: string | null = null,
   effort: string | null = null,
   by: SpawnBy = SYSTEM_SPAWN,
+  /** Multi-tenant isolation: the OS user to drop the agent to (null = commons /
+   *  mono-tenant, i.e. the server's own user). Resolved by the caller, which is
+   *  where `DEPLOYMENT_MODE` and the channel's group are both known. */
+  user: string | null = null,
+  /** The isolation group the agent belongs to (null = commons / mono-tenant),
+   *  so its profile's secrets resolve by the agent's REAL group, not always Main. */
+  group: string | null = null,
 ): Promise<Live> {
-  const pilot = makePilot(id, cwd, args, profile, model, effort);
+  const pilot = makePilot(id, cwd, args, profile, model, effort, user, group);
+  // A dropped group agent writes its transcript under ITS OWN home, not the
+  // server's — so the content tail / history must read from there (invariant:
+  // all content comes from the .jsonl). `agentTranscriptHome` is the one answer.
+  const transcriptHome = agentTranscriptHome(user);
   // Resumed sessions start with what the transcript already consumed.
-  const seededUsage = scanUsage(sessionFilePath(cwd, id));
-  const backend = sessionBackend(profile);
+  const seededUsage = scanUsage(sessionFilePath(cwd, id, transcriptHome));
+  const backend = sessionBackend(profile, group);
   // A custom backend's window is whatever its server was started with, which
   // no model name can tell us: SHADOK_CONTEXT_WINDOW says it, and without it
   // the usual assumption stands (and `effectiveWindow` still promotes on proof).
@@ -4459,6 +5844,8 @@ async function createSession(
   const s: Live = {
     id,
     cwd,
+    transcriptHome,
+    group,
     pilot,
     profile,
     appliedProfile: profile,   // the process we just spawned did receive it
@@ -4518,7 +5905,7 @@ function startContentTail(s: Live): void {
   s.stopTail?.();
   const cwd = s.cwd;
   const tid = () => s.tailId ?? s.id;
-  s.stopTail = tailSession(sessionFilePath(cwd, tid()), (e) => {
+  s.stopTail = tailSession(sessionFilePath(cwd, tid(), s.transcriptHome), (e) => {
     // Any content from the tracked transcript means it is alive: stamp it so the
     // fork detector only hunts when THIS file has actually gone silent.
     s.lastContentAt = Date.now();
@@ -4580,7 +5967,7 @@ function startContentTail(s: Live): void {
         text: e.text,
         isError: e.isError,
       });
-  }, 250, () => sessionFilePath(cwd, tid()));
+  }, 250, () => sessionFilePath(cwd, tid(), s.transcriptHome));
 }
 
 /**
@@ -4606,7 +5993,7 @@ function maybeFollowFork(s: Live): void {
   if (!s.pilot.isWorking()) return;
   if (Date.now() - (s.lastContentAt ?? 0) < FORK_STALL_MS) return;
   const tailId = s.tailId ?? s.id;
-  const myFile = sessionFilePath(s.cwd, tailId);
+  const myFile = sessionFilePath(s.cwd, tailId, s.transcriptHome);
   // Lineage root: read once from the file we currently tail, then cache. The
   // original session's root is its own id, so `?? s.id` is the right fallback
   // when the file has no root record yet (a session that never took a turn).
@@ -4631,7 +6018,7 @@ function maybeFollowFork(s: Live): void {
   // a stored position and a history the chat already replayed, and seeding 0
   // would dump the whole transcript — 56 MB on the session this was found on —
   // into the chat. Let `startOffset` resume from the stored position instead.
-  if (!home) seedTailPos(sessionFilePath(s.cwd, target), 0);
+  if (!home) seedTailPos(sessionFilePath(s.cwd, target, s.transcriptHome), 0);
   startContentTail(s);
   broadcast(s, {
     type: "stream-text",
@@ -4849,7 +6236,7 @@ async function finishTurn(s: Live) {
   // restart, the tmux agent having carried on without it. `turnStartedAt` lives
   // in memory, so restarting from `now` reset the stopwatch while the agent had
   // been thinking for ten minutes; the transcript, though, survived.
-  if (!s.turnStartedAt) s.turnStartedAt = resumedTurnStart(Date.now(), lastPromptAt(s.cwd, s.id));
+  if (!s.turnStartedAt) s.turnStartedAt = resumedTurnStart(Date.now(), lastPromptAt(s.cwd, s.id, s.transcriptHome));
   s.errorsAtTurnStart = findTransientErrors(s.pilot.screen());
   broadcast(s, workingMessage(s));
   try {
@@ -5140,6 +6527,22 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // profile's `deny` (measured), so pilotctl and the agents, which connect with
   // no Origin at all (invariant 11), must not be able to reach it.
   const fromBrowser = requestFromBrowser(req);
+  // Is this the SERVER driving one of its own channels? Decided ONCE at connect
+  // from an unforgeable per-process secret on the upgrade headers (set by
+  // `driveChannel`), compared in CONSTANT time with a length guard. A missing or
+  // wrong header is simply `false`. This — and ONLY this — exempts a connection
+  // from the per-group drive gate below: it must be the secret, never a
+  // client-settable field like `origin` (a browser could forge that), so the
+  // server's cron/notification/reload deliveries reach a restricted/private
+  // group's own channel while an interactive human/agent stays group-gated.
+  const isSystemDrive = ((): boolean => {
+    const raw = req.headers["x-shadok-system-drive"];
+    const header = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof header !== "string") return false;
+    const a = Buffer.from(header);
+    const b = Buffer.from(SYSTEM_DRIVE_SECRET);
+    return a.length === b.length && timingSafeEqual(a, b);
+  })();
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
   const wsBy = (): SpawnBy =>
@@ -5157,6 +6560,26 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // driver) tell "the session is busy" — a transient miss worth replaying —
   // apart from any other refusal, without matching on the message text.
   const fail = (message: string, code?: string) => send({ type: "error", message, ...(code ? { code } : {}) });
+
+  // ACL backstop on every per-turn DRIVE action (prompt, dialog answers, keys,
+  // restart, set-*, stop): may THIS caller see/drive the session's group? The
+  // spawn/resume path already gates with `canResumeAs`, but a socket attached to
+  // a foreign session must not act on it either. See/drive = own + public.
+  // Mono-tenant (and any group-less channel) resolves to no group → always true,
+  // so this changes nothing outside the privileged deployment. A dangling group
+  // id fails closed, the twin of `visibleChannels`.
+  const mayDriveSession = (id: string | undefined): boolean => {
+    if (!id || DEPLOYMENT_MODE !== "multi-tenant") return true;
+    // The server driving a channel it manages (cron/notification/reload) is
+    // authorized regardless of group — the delivery proved itself with the
+    // system-drive secret at connect, which no client can forge.
+    if (isSystemDrive) return true;
+    const gid = loadChannels().find((c) => c.sessionId === id)?.group ?? null;
+    if (!gid) return true; // commons / group-less
+    const g = loadGroups().find((x) => x.id === gid);
+    if (!g) return false; // unresolvable → fail closed
+    return canSeeGroup(g, viewerFor(me));
+  };
 
   // Announce the running version on connect. The client remembers the first
   // one it sees and reloads if a later (re)connect reports a different one —
@@ -5298,6 +6721,37 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const paneCwd = tmuxPaneCwd("sk-" + id);
             if (paneCwd && fs.existsSync(paneCwd)) effectiveCwd = paneCwd;
           }
+          // MT-token guard, hoisted ABOVE `createWorktree`: a refusal must leave NO
+          // worktree/branch behind (a token-less retry loop would otherwise pile up
+          // empty checkouts). Keyed on the same `dropUser` the spawn will use; the
+          // late call below re-checks the (resume / live-attach) paths unchanged.
+          const mtRefusal = (dropUser: string | null | undefined): string | null => {
+            const m = mtCredentialMessage(
+              mtTokenNeeded(!!dropUser, sessionBackend(gateProfile(msg)).kind === "custom"),
+              !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
+            );
+            if (m && !mtTokenWarned) {
+              mtTokenWarned = true;
+              console.error(`mt: ${m}`);
+            }
+            return m ?? null;
+          };
+          if (!resumed) {
+            // A new spawn has no stored group; same inputs as the isolation
+            // resolution further down.
+            const earlyIso = resolveSpawnIsolation({
+              mode: DEPLOYMENT_MODE,
+              resumed,
+              viewer: viewerFor(me),
+              groups: loadGroups(),
+              storedGroupId: null,
+              requestedGroupId: typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null,
+            });
+            const earlyUser =
+              earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+            const earlyMsg = mtRefusal(earlyUser);
+            if (earlyMsg) return fail(earlyMsg);
+          }
           if (msg.worktree && !resumed && isGitRepo(cwd)) {
             try {
               worktree = createWorktree(cwd, id.slice(0, 8));
@@ -5326,6 +6780,42 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             });
           }
 
+          // People-boundary authorization on RESUME (security gate), hoisted
+          // ABOVE the live-attach branch below. The stored group drives a
+          // privilege drop to that group's OS user, so resuming a group's agent
+          // is driving a process AS that group. A caller who cannot SEE the
+          // stored group must be refused — never resumed under the commons user
+          // either, which would still open someone else's transcript. This MUST
+          // run before the `sessions.get(id)` attach: attaching to a CURRENTLY
+          // LIVE foreign-group session would otherwise bypass the check entirely
+          // and leak its history/screen/stream broadcasts to an unauthorized
+          // client. Only matters in multi-tenant (mono-tenant writes no group and
+          // drops to no user, so `canResumeAs` is a trivial pass; the mode gate
+          // keeps a stray legacy group from ever producing a false refusal
+          // there). `storedGroupId`/`groupsNow` are reused by the isolation
+          // policy and `agentGroupId` below.
+          const storedGroupId = resumed
+            ? loadChannels().find((c) => c.sessionId === id)?.group ?? null
+            : null;
+          const groupsNow = loadGroups();
+          if (
+            resumed &&
+            DEPLOYMENT_MODE === "multi-tenant" &&
+            // The server resuming a channel it manages (every `driveChannel`
+            // delivery is a resume) is authorized regardless of group — same
+            // unforgeable secret-based exemption as `mayDriveSession`.
+            !isSystemDrive &&
+            !canResumeAs(storedGroupId, groupsNow, viewerFor(me))
+          ) {
+            console.log(
+              `resume: ${id.slice(0, 8)} refused — ${me?.name ?? "anon"} is not entitled to group ${storedGroupId}`,
+            );
+            return fail(
+              "you are not entitled to resume this agent — its group is not yours",
+              "forbidden",
+            );
+          }
+
           const existing = sessions.get(id);
           if (existing && !existing.pilot.hasExited) {
             // Session already piloted: attach to it (shared process). Cancel
@@ -5336,7 +6826,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               session.idleTimer = null;
             }
             session.clients.add(ws);
-            const turns = historyWithOffers(loadHistory(session.cwd, id), id);
+            const turns = historyWithOffers(loadHistory(session.cwd, id, session.transcriptHome), id);
             if (turns.length) send({ type: "history", turns });
             send({
               type: "ready",
@@ -5427,13 +6917,52 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             !resumed && typeof msg.name === "string" && msg.name.trim()
               ? msg.name.trim().slice(0, 80)
               : undefined;
+          // Isolation wall: the OS user to drop to, and the group a NEW agent is
+          // born into — BOTH derived from the caller's own identity (`me`), never
+          // from the caller's identity. A start msg MAY name its target group,
+          // honoured only when `canSeeGroup` (public or member), else ignored: it
+          // can place an agent in a group you belong to, never plant one in a
+          // group you don't. A resume keeps the channel's stored group and runs as
+          // that group's user. Mono-tenant resolves to no user / no group, so the
+          // spawn and the channel record stay byte-for-byte today's.
+          // `storedGroupId`/`groupsNow` and the resume people-boundary gate were
+          // resolved ABOVE the live-attach branch (see CRIT1 note there).
+          const requestedGroupId =
+            !resumed && typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null;
+          const isolation = resolveSpawnIsolation({
+            mode: DEPLOYMENT_MODE,
+            resumed,
+            viewer: viewerFor(me),
+            groups: groupsNow,
+            storedGroupId,
+            requestedGroupId,
+          });
+          // The group this agent really belongs to: a resume keeps the channel's
+          // stored group; a new spawn gets the one the isolation policy derived
+          // from the caller's identity. Both null in mono-tenant → secrets = Main.
+          const agentGroupId = resumed ? storedGroupId : isolation.groupPatch.group ?? null;
+          // T15 carry: a COMMONS agent (no dedicated group user) must not run as
+          // root post-migration — drop it to the non-root `main` once migration
+          // has completed. Before migration (or mono-tenant) this is null and the
+          // commons stays the server's own user, byte-for-byte today's.
+          const dropUser = isolation.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+          // Agents that drop to a non-root OS user have no keychain and authenticate
+          // from the injected MT_CLAUDE_OAUTH_TOKEN (`makePilot` injects it exactly
+          // when it has a user). Keyed on THIS spawn's `dropUser` — the same value
+          // handed to makePilot — and skipped for a custom backend, which uses its
+          // own key and never the subscription. Without the token, say so plainly
+          // instead of letting the spawn die on a bare auth error.
+          const mtMsg = mtRefusal(dropUser);
+          if (mtMsg) return fail(mtMsg);
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
+            dropUser,
+            agentGroupId,
           );
           session.clients.add(ws);
           if (resumed) {
-            const turns = historyWithOffers(loadHistory(effectiveCwd, id), id);
+            const turns = historyWithOffers(loadHistory(effectiveCwd, id, session.transcriptHome), id);
             if (turns.length) send({ type: "history", turns });
           }
           send({
@@ -5510,6 +7039,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // The spawn-time name (pilotctl `--name`). ASSERT-only and computed
             // above so it can never fire on a resume — a UI rename must win.
             ...(initialName ? { name: initialName } : {}),
+            // The group a NEW agent is born into, set SERVER-SIDE from the
+            // caller's own identity (never the client payload — `group` is
+            // SERVER_OWNED, so a PUT /channels cannot touch it either). Empty on
+            // a resume (the stored group is kept) and in mono-tenant (group-less
+            // = commons, today's behaviour). A channel is never born with a
+            // dangling group id: `spawnGroupFor` returns a real group or null.
+            ...isolation.groupPatch,
           });
           send({ type: "tokens", tokens: tokenTotals(session) });
           send(profileMessage(session));
@@ -5522,6 +7058,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
 
         case "prompt": {
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (session.busy) return fail("a response is already in progress", "busy");
           const text = msg.text.trim();
           if (!text) return;
@@ -5635,10 +7172,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             let ledgerSeen: number | null = null;
             let ledgerPrelude: string[] | undefined;
             if (ledgerEnabled) {
+              // The agent's group comes from its CHANNEL (server-side, never the
+              // message). One table; `deltaSince`'s visibleScope keeps only this
+              // group's own rows + the commons' public ones — another group's
+              // group-scoped rows never reach it.
+              const ledgerGroup = loadChannels().find((c) => c.sessionId === session!.id)?.group ?? null;
               const { rows, total } = deltaSince(
                 loadLedger(ledgerFileFor(process.cwd())),
                 session.ledgerSeenAt ?? 0,
                 LEDGER_PUSH_CAP,
+                { groupId: ledgerGroup ?? MAIN_GROUP_ID, includePublic: true },
               );
               ledgerSeen = Date.now();
               // One paste per chunk, and the threshold is applied per paste —
@@ -5666,6 +7209,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
 
         case "run": {
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (!fromBrowser) return fail("running a shell-mode command is reserved to the cockpit's browser");
           const refusal = runRefusal(msg.command);
           if (refusal) return fail(refusal);
@@ -5703,6 +7247,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // navigate") ignore digit keys, so navigate the ❯ cursor to the
           // target option with arrows, then Enter (works for all variants).
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           // You can only answer a dialog that's actually on screen. If it's not,
           // the keyboard is stale (the session moved past it) or a turn is
           // running — either way there's nothing to select here.
@@ -5717,6 +7262,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "toggle": {
           // Multi-select: toggle the checkbox then rebroadcast the state.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (!detectDialog(session.pilot.screen()))
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
           await toggleOption(session.pilot, msg.n);
@@ -5730,6 +7276,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "freetext": {
           // "Type something" option: digit → paste the text → Enter.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (!detectDialog(session.pilot.screen()))
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
           const t = msg.text.trim();
@@ -5749,6 +7296,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "confirm": {
           // Multi-select: commit the checkboxes with Tab, then submit.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const before = detectDialog(session.pilot.screen());
           if (!before)
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
@@ -5784,6 +7332,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "key": {
           // Manual keystroke from the terminal view (dialogs, menus…).
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const named = [
             "enter",
             "escape",
@@ -5817,6 +7366,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         // ── Experimental raw interactive terminal (tmux transport only) ──
         case "term-attach": {
           if (!session) return fail("no session started");
+          // SEE gate: the raw term-data stream carries the foreign agent's full
+          // screen, so an attach is a cross-group content leak just like history.
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           if (!(s.pilot instanceof TmuxPilot)) return fail("interactive terminal needs the tmux transport");
           s.rawClients ??= new Set();
@@ -5838,6 +7390,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         }
         case "term-input": {
           if (!session || !(session.pilot instanceof TmuxPilot)) return;
+          // DRIVE gate: raw keystrokes go straight to the pilot process.
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (typeof msg.data === "string") session.pilot.sendRaw(Buffer.from(msg.data, "base64"));
           break;
         }
@@ -5845,6 +7399,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Fit the pane to the browser terminal so the full-screen view fills.
           // Original size is remembered and restored when the pipe detaches.
           if (!session || !(session.pilot instanceof TmuxPilot)) return;
+          // DRIVE gate: resizing another group's pane perturbs its process.
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           if (typeof msg.cols === "number" && typeof msg.rows === "number")
             session.pilot.resizeWindow(msg.cols, msg.rows);
           break;
@@ -5862,12 +7418,14 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         case "settle": {
           // After a manual intervention: wait for the turn to finish.
           if (!session || session.busy) return;
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           await finishTurn(session);
           break;
         }
 
         case "restart": {
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           await restartSession(session, wsBy());
           break;
         }
@@ -5876,6 +7434,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // the fact. `profile` is SERVER_OWNED on the channel, so a browser PUT
           // can't touch it — this is the only legitimate path.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const name = msg.profile ?? null;
           // Refuse an unknown name rather than silently spawning bare: a typo
@@ -5894,6 +7453,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // The old process is cut short like Reload agent — catching an agent on
           // the wrong model is exactly the point.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const model = msg.model?.trim() || null;
           s.model = model ?? undefined;
@@ -5908,6 +7468,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // respawns rather than recording a wish, because an effort shown as
           // running while it is not is the failure this feature would be.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const wanted = msg.effort?.trim() || null;
           // Refuse out loud. The CLI would merely warn and fall back to the
@@ -5926,6 +7487,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // SERVER_OWNED on the channel, so a browser PUT can't touch it —
           // this is the only legitimate path, exactly like `set-profile`.
           if (!session) return fail("no session started");
+          if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const wanted = msg.parent ?? null;
           const refusal = linkRefusal(loadChannels(), s.id, wanted);
@@ -5943,6 +7505,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // web ✕. Falls back to this connection's attached session.
           const id = msg.sessionId ?? session?.id;
           if (!id) return;
+          if (!mayDriveSession(id)) return fail("you are not entitled to drive this agent", "forbidden");
           // A RESTRICTED peer may only stop ITS OWN agents; a member peer stops
           // any (like a member). The guard is for an explicit `sessionId` naming
           // someone else's — the bound `session` is already its own.
@@ -6124,6 +7687,12 @@ function seedAgentsSkill(): void {
 }
 seedAgentsSkill();
 
+// Multi-tenant: also install every skill machine-wide (Enterprise tier), so the
+// per-tenant `sk-*` agents — which run under their own HOME, not the server's —
+// get them without a per-HOME copy. Mono-tenant/dev keeps the personal install
+// above and never touches /etc.
+if (DEPLOYMENT_MODE === "multi-tenant") seedSystemSkills();
+
 /** Run a package-manager install. Linux managers need root; if we aren't root,
  *  go through NON-interactive sudo so a password prompt fails fast rather than
  *  hanging the boot. brew (needsRoot:false) must never be sudo'd. */
@@ -6222,6 +7791,20 @@ ensureClaudeHome();
 // the env every spawned agent inherits.
 Object.assign(process.env, ensureSshIdentity());
 
+// Task 15: on the first boot of a CAPABLE instance, move the running
+// single-tenant instance into isolated groups (create the non-root commons user
+// `main`, chown the tree to it, vault→Main, provision per-account private
+// groups, label what exists public). Gated by a shadok-data-volume marker +
+// DEPLOYMENT_MODE, fully fail-safe. Runs here — after the Claude home + SSH
+// identity, BEFORE any spawn (reconcileOnBoot / startFirstAgent) — and
+// fire-and-forget so a slow migration never hangs the boot. A spawn that races
+// it uses the pre-migration (root) drop until `groupsMigrated` flips.
+// `maybeRunGroupsMigration` owns the mono-tenant no-op (it sets `groupsMigrated`
+// from the marker), the in-flight guard, and the post-migration reprovision
+// (`ensureGroupsProvisioned`) — so the boot trigger and the post-sign-in retry
+// (in `/auth/code`) share one code path.
+void maybeRunGroupsMigration("boot");
+
 server.listen(port, HOST, () => {
   console.log(`shadok-ai web: http://localhost:${port}${HOST === "127.0.0.1" ? "" : `  (bind ${HOST})`}`);
   console.log(
@@ -6263,6 +7846,6 @@ server.listen(port, HOST, () => {
   // Announce here, not only inside the deferred call: the browser is opening
   // NOW and would otherwise be told there is nothing coming for a second and a
   // half — the whole window this status exists to fill.
-  announceFirstAgent(loadChannels().length);
+  announceFirstAgent(countMainChannels(loadChannels()));
   setTimeout(() => void startFirstAgent(), 1500).unref?.();
 });

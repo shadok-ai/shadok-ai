@@ -1,3 +1,4 @@
+import { MAIN_GROUP_ID } from "./groups.js";
 import WebSocket from "ws";
 import { loadChannels } from "./channels.js";
 import { authStatus, type AuthState } from "./claude-auth.js";
@@ -17,6 +18,12 @@ import { BOSS_PROFILE_NAME } from "./profiles.js";
  */
 
 /** The name every instance's first channel carries. */
+/** Pure: how many channels live in the commons. A null/missing group is the
+ *  commons too (pre-groups channels), so a mono-tenant instance counts them all. */
+export function countMainChannels(channels: ReadonlyArray<{ group?: string | null }>): number {
+  return channels.filter((c) => c.group == null || c.group === MAIN_GROUP_ID).length;
+}
+
 export const FIRST_AGENT_NAME = "general";
 
 export interface FirstAgentPlan {
@@ -34,13 +41,16 @@ export interface FirstAgentPlan {
  * a log line, so the reason has to be the true one.
  */
 export function firstAgentPlan(input: {
-  channelCount: number;
+  /** Channels in `Main` (the commons) ONLY. Every other group starts empty and
+   *  the user launches its first agent on demand, so a brand-new private group
+   *  must never read as "no channel, spawn a lead". */
+  mainChannelCount: number;
   authState: AuthState;
   /** The whole instance runs on a custom model backend (src/backend.ts): its
    *  agents carry their own token, so the Claude sign-in is irrelevant. */
   customBackend?: boolean;
 }): FirstAgentPlan {
-  if (input.channelCount > 0) return { spawn: false, reason: "channels-exist" };
+  if (input.mainChannelCount > 0) return { spawn: false, reason: "channels-exist" };
   if (input.customBackend)
     return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
   // "unknown" is not "signed in": the probe failed. Waiting costs one boot,
@@ -129,7 +139,7 @@ export async function ensureFirstAgent(deps: {
   // backend reaches it through the instance's source (env or saved choice).
   const customBackend = deps.customBackend ?? false;
   const plan = firstAgentPlan({
-    channelCount: loadChannels().length,
+    mainChannelCount: countMainChannels(loadChannels()),
     // No probe when it cannot change the answer (~850ms, and a process spawn).
     authState: customBackend ? "unknown" : (await authStatus()).state,
     customBackend,
