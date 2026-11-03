@@ -507,6 +507,24 @@ test("createGroupFlow: a provision THROW means NO saveGroups and a 500 (provisio
   assert.equal(provisionedBeforeSave, true);
 });
 
+test("createGroupFlow: a duplicate name is refused (409), case-insensitive, before any provision", async () => {
+  const existing: Group = { id: "old", name: "comex", nature: "restricted", members: ["zoe"], createdAt: 0 };
+  const { deps, saved, provisioned } = createDeps({ loadGroups: () => [existing] });
+  const r = await createGroupFlow(okCreateInput({ name: "COMEX" }), deps); // differs only in case
+  assert.equal(r.status, 409);
+  assert.match(String(r.body.error), /already exists/);
+  assert.equal(saved.length, 0);
+  assert.equal(provisioned.length, 0);
+});
+
+test("createGroupFlow: a name equal to a PRIVATE group's (auto-named) is allowed", async () => {
+  const perso: Group = { id: "p", name: "COMEX", nature: "private", members: ["ada"], owner: "ada", createdAt: 0 };
+  const { deps, saved } = createDeps({ loadGroups: () => [perso] });
+  const r = await createGroupFlow(okCreateInput({ name: "COMEX" }), deps);
+  assert.equal(r.status, 200); // private groups are excluded from the name space
+  assert.equal(saved.length, 1);
+});
+
 test("createGroupFlow: a PUBLIC group provisions nothing yet is still persisted", async () => {
   const { deps, saved, provisioned } = createDeps();
   const r = await createGroupFlow(okCreateInput({ nature: "public" }), deps);

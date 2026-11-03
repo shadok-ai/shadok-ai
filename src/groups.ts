@@ -439,6 +439,21 @@ const sameMembers = (a: readonly string[], b: readonly string[]): boolean => {
  *   (`main`, any non-public group, or one with members): a cosmetic PUT must
  *   never DELETE a real group — that is `DELETE /groups`' job (with teardown).
  */
+/**
+ * Does `candidate` collide (trimmed, case-insensitive) with an existing group's
+ * name? PRIVATE groups are EXCLUDED: they are auto-named after their account and
+ * shown as "Personal" (one per viewer, invisible to each other), so they are not
+ * part of the user-facing name space and must not block a normal name.
+ * `excludeId` skips the group being renamed in place.
+ */
+export function groupNameConflict(candidate: string, groups: readonly Group[], excludeId?: string): boolean {
+  const norm = candidate.trim().toLowerCase();
+  if (!norm) return false;
+  return groups.some(
+    (g) => g.id !== excludeId && g.nature !== "private" && g.name.trim().toLowerCase() === norm,
+  );
+}
+
 export function mergeGroupsPut(
   stored: readonly Group[],
   incoming: readonly unknown[],
@@ -447,6 +462,9 @@ export function mergeGroupsPut(
   const byId = new Map(stored.map((g) => [g.id, g]));
   const seen = new Set<string>();
   const out: Group[] = [];
+  // Non-private groups renamed by this PUT, checked for a name clash once the
+  // merged list is assembled (so a rename onto an existing name is refused).
+  const renamed: Array<{ id: string; name: string }> = [];
   for (const raw of incoming) {
     if (!raw || typeof raw !== "object") continue;
     const row = raw as Record<string, unknown>;
@@ -482,7 +500,11 @@ export function mergeGroupsPut(
       // Display extras (icon/collapsed/order) travel on the row but aren't on
       // the Group type — carry them through a loose record, like normalizeGroups.
       const cosmetic: Record<string, unknown> = {};
-      if (typeof row.name === "string") cosmetic.name = row.name;
+      if (typeof row.name === "string") {
+        cosmetic.name = row.name;
+        if (prev.nature !== "private" && row.name.trim().toLowerCase() !== prev.name.trim().toLowerCase())
+          renamed.push({ id, name: row.name });
+      }
       if ("icon" in row) cosmetic.icon = row.icon;
       if ("collapsed" in row) cosmetic.collapsed = row.collapsed;
       if ("order" in row) cosmetic.order = row.order;
@@ -515,6 +537,11 @@ export function mergeGroupsPut(
   for (const g of stored) {
     if (seen.has(g.id)) continue;
     if (g.id === MAIN_GROUP_ID || g.nature !== "public" || g.members.length > 0) out.push(g);
+  }
+  // A rename must not land on a name another (non-private) group already uses.
+  for (const r of renamed) {
+    if (groupNameConflict(r.name, out, r.id))
+      return { ok: false, error: `a group named "${r.name.trim()}" already exists` };
   }
   return { ok: true, groups: out };
 }

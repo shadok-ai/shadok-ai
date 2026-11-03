@@ -16,6 +16,7 @@ import {
   membersWithout,
   accountDeleteGroups,
   mergeGroupsPut,
+  groupNameConflict,
   secretOwnGroupIds,
   type Group,
 } from "../src/groups.js";
@@ -192,6 +193,34 @@ test("visibleChannels drops a restricted channel for a null viewer", () => {
 
 test("visibleChannels drops a restricted channel for a non-member admin", () => {
   assert.deepEqual(visibleChannels([ch("b", "r")], gs, { name: "root", role: "admin" }).map((c) => c.sessionId), []);
+});
+
+test("groupNameConflict: case-insensitive, excludes private groups and the renamed group itself", () => {
+  const groups: Group[] = [
+    { id: "a", name: "Backend", nature: "restricted", members: ["ada"], createdAt: 0 },
+    { id: "b", name: "Design", nature: "public", members: [], createdAt: 0 },
+    { id: "p", name: "Backend", nature: "private", members: ["zoe"], owner: "zoe", createdAt: 0 },
+  ];
+  assert.equal(groupNameConflict("backend", groups), true); // matches "Backend" (restricted), case-insensitive
+  assert.equal(groupNameConflict("  DESIGN ", groups), true); // trimmed + case-insensitive
+  assert.equal(groupNameConflict("Sales", groups), false); // free
+  assert.equal(groupNameConflict("Backend", groups, "a"), false); // excluding the group itself (a rename no-op)
+  // A name equal only to a PRIVATE group's is NOT a conflict (private excluded).
+  assert.equal(groupNameConflict("backend", [groups[2]]), false);
+});
+
+test("mergeGroupsPut: a rename onto an existing (non-private) group's name is refused", () => {
+  const stored: Group[] = [
+    { id: "a", name: "Backend", nature: "restricted", members: ["ada"], createdAt: 0 },
+    { id: "b", name: "Design", nature: "restricted", members: ["ada"], createdAt: 0 },
+  ];
+  // Rename "Design" → "backend" (clashes with group a, case-insensitive) → refused.
+  const bad = mergeGroupsPut(stored, [{ id: "b", name: "backend" }], "ada");
+  assert.equal(bad.ok, false);
+  if (!bad.ok) assert.match(bad.error, /already exists/);
+  // A distinct rename is fine.
+  const good = mergeGroupsPut(stored, [{ id: "b", name: "Frontend" }], "ada");
+  assert.equal(good.ok, true);
 });
 
 test("secretOwnGroupIds: member groups PLUS public non-Main groups (a public group's secrets are visible to all)", () => {

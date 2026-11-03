@@ -4887,6 +4887,17 @@
   }
 
   let groupPushTimer = null;
+  // No two groups with the same name (trimmed, case-insensitive). Private groups
+  // are excluded — they are auto-named and shown as "Personal", one per user.
+  // Mirror of the server guard (groupNameConflict) for immediate UX feedback;
+  // the server stays the source of truth for non-UI paths.
+  function groupNameTaken(name, exceptId) {
+    const norm = String(name).trim().toLowerCase();
+    if (!norm) return false;
+    return groups.some(
+      (g) => String(g.id) !== String(exceptId) && g.nature !== "private" && String(g.name).trim().toLowerCase() === norm,
+    );
+  }
   function persistGroups() {
     const list = [...groupsEl.children].map((el) => ({
       id: el._group.id,
@@ -4979,6 +4990,7 @@
       e.stopPropagation();
       if (group.nature === "private") return; // the personal space is not renamable
       inlineRename(head, gname, (v) => {
+        if (groupNameTaken(v, group.id)) return alert(`A group named "${v}" already exists.`);
         gname.textContent = v;
         group.name = v;
         persistGroups();
@@ -5202,6 +5214,7 @@
     if (!g || g.nature === "private") return; // the personal space is not renamable
     e.stopPropagation();
     inlineRename(tabbar, viewLabelEl, (v) => {
+      if (groupNameTaken(v, g.id)) return alert(`A group named "${v}" already exists.`);
       g.nameEl.textContent = v;
       g.name = v;
       persistGroups();
@@ -5293,6 +5306,7 @@
         // and blur (= close) the field we are opening.
         e.stopPropagation();
         inlineRename(item, nm, (v) => {
+          if (groupNameTaken(v, group.id)) return alert(`A group named "${v}" already exists.`);
           group.nameEl.textContent = v;
           group.name = v;
           persistGroups();
@@ -12126,6 +12140,7 @@
     const name = $("groupCreateName").value.trim();
     const nature = groupNature();
     if (!name) { $("groupCreateSubmit").disabled = false; return groupCreateError("Give the group a name."); }
+    if (groupNameTaken(name)) { $("groupCreateSubmit").disabled = false; return groupCreateError(`A group named "${name}" already exists.`); }
     const members = nature === "restricted"
       ? readMemberGrid($("groupMembersPick")) : [];
     groupCreateError("");

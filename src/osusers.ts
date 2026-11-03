@@ -1,5 +1,5 @@
 import { capabilityRefusal, type DeploymentMode } from "./capability.js";
-import { spawnGroupFor, spawnGroupForRequest, canAdministerGroup, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
+import { spawnGroupFor, spawnGroupForRequest, canAdministerGroup, groupNameConflict, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
 
 /**
  * OS-user isolation: the pure policy behind dropping a spawned agent to the
@@ -525,6 +525,12 @@ export async function createGroupFlow(
     // The ONE refusal primitive (capability.ts): same 400 + message everywhere.
     const refusal = capabilityRefusal(input.mode);
     if (refusal) return refusal;
+  }
+
+  // No two groups with the same name (private/Personal excluded — auto-named).
+  // Checked before provisioning so a clash never leaves a stray OS user behind.
+  if (groupNameConflict(name, deps.loadGroups())) {
+    return { status: 409, body: { error: `a group named "${name}" already exists` } };
   }
 
   const id = deps.newId();
