@@ -2290,13 +2290,13 @@ app.get("/groups", (req, res) => {
 app.put("/groups", (req, res) => {
   // BROWSER-ONLY (T2/T6 carry): an agent authenticates as the bootstrap admin,
   // so without this it could edit membership/nature by curl. The flow also
-  // keeps the instance guard and refuses a non-admin membership/nature change —
+  // keeps the instance guard and refuses a non-member membership/nature change —
   // and MERGES cosmetic fields onto the stored rows, so the cosmetic client PUT
   // can never silently wipe a restricted group down to an empty public one.
   const r = groupsPutFlow({
     fromBrowser: requestFromBrowser(req),
     instanceOk: channelWriteAllowed(instanceKey(), req.get("x-shadok-instance")),
-    isAdmin: currentAccount(req)?.role === "admin",
+    actor: currentAccount(req)?.name ?? null,
     stored: loadGroups(),
     incoming: Array.isArray(req.body) ? req.body : [],
   });

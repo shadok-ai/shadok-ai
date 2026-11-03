@@ -192,14 +192,14 @@ test("secretWriteDecision: an agent sending group:G2 writes ONLY its own G1 (req
 
 // ── PUT /groups: browser-only + admin-gated membership/nature ──────────────────
 test("groupsPutFlow: a non-browser (agent) is refused 403", () => {
-  const r = groupsPutFlow({ fromBrowser: false, instanceOk: true, isAdmin: true, stored: groups, incoming: [] });
+  const r = groupsPutFlow({ fromBrowser: false, instanceOk: true, actor: "root", stored: groups, incoming: [] });
   assert.equal(r.status, 403);
 });
 
 test("mergeGroupsPut: a non-admin cosmetic PUT preserves membership/nature (no silent wipe)", () => {
   // The client sends cosmetic-only rows (no members/nature) — COMEX must stay restricted.
   const cosmetic = [{ id: "comex", name: "COMEX renamed", collapsed: true }, { id: "main", name: "main" }];
-  const r = mergeGroupsPut(groups, cosmetic, false);
+  const r = mergeGroupsPut(groups, cosmetic, "mallory");
   assert.ok(r.ok);
   const comex = (r as { groups: Group[] }).groups.find((g) => g.id === "comex")!;
   assert.equal(comex.nature, "restricted");
@@ -211,23 +211,42 @@ test("mergeGroupsPut: a non-admin cosmetic PUT preserves membership/nature (no s
 });
 
 test("mergeGroupsPut: a non-admin changing membership is REFUSED", () => {
-  const r = mergeGroupsPut(groups, [{ id: "comex", nature: "restricted", members: ["ada", "mallory"] }], false);
+  const r = mergeGroupsPut(groups, [{ id: "comex", nature: "restricted", members: ["ada", "mallory"] }], "mallory");
   assert.equal(r.ok, false);
 });
 
-test("mergeGroupsPut: an admin MAY change membership", () => {
-  const r = mergeGroupsPut(groups, [{ id: "comex", members: ["ada", "newbie"] }], true);
+test("mergeGroupsPut: a NON-member admin cannot change a restricted group's members/nature/owner", () => {
+  for (const patch of [{ members: ["ada", "root"] }, { nature: "public" }, { owner: "root" }]) {
+    assert.equal(mergeGroupsPut(groups, [{ id: "comex", ...patch }], "root").ok, false);
+  }
+  const f = groupsPutFlow({ fromBrowser: true, instanceOk: true, actor: "root", stored: groups, incoming: [{ id: "comex", members: ["root"] }] });
+  assert.equal(f.status, 403);
+  assert.equal(f.groups, undefined);
+});
+
+test("mergeGroupsPut: a non-member (admin or not) may still change cosmetics of a visible group", () => {
+  for (const who of ["root", "mallory", null]) {
+    const r = mergeGroupsPut(groups, [{ id: "comex", name: "Renamed", icon: "x" }], who);
+    assert.ok(r.ok);
+    const c = (r as { groups: Group[] }).groups.find((g) => g.id === "comex")!;
+    assert.equal(c.name, "Renamed");
+    assert.deepEqual(c.members, ["ada"]);
+  }
+});
+
+test("mergeGroupsPut: a MEMBER may change membership", () => {
+  const r = mergeGroupsPut(groups, [{ id: "comex", members: ["ada", "newbie"] }], "ada");
   assert.ok(r.ok);
   assert.deepEqual((r as { groups: Group[] }).groups.find((g) => g.id === "comex")!.members, ["ada", "newbie"]);
 });
 
 test("mergeGroupsPut: a new non-public group via PUT is refused (use POST /groups)", () => {
-  const r = mergeGroupsPut(groups, [{ id: "new", nature: "private" }], true);
+  const r = mergeGroupsPut(groups, [{ id: "new", nature: "private" }], "ada");
   assert.equal(r.ok, false);
 });
 
 test("mergeGroupsPut: a new PUBLIC cosmetic group is accepted", () => {
-  const r = mergeGroupsPut(groups, [{ id: "tab9", name: "Tab 9" }], false);
+  const r = mergeGroupsPut(groups, [{ id: "tab9", name: "Tab 9" }], "mallory");
   assert.ok(r.ok);
   const g = (r as { groups: Group[] }).groups.find((x) => x.id === "tab9")!;
   assert.equal(g.nature, "public");

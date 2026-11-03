@@ -409,8 +409,8 @@ const sameMembers = (a: readonly string[], b: readonly string[]): boolean => {
  * So this MERGES onto the stored rows and treats the ACL fields as privileged:
  *
  * - cosmetic fields are always taken from the incoming row;
- * - `members`/`nature`/`owner` are changed ONLY when the caller is an admin AND
- *   the field is actually present; a non-admin attempting such a change is
+ * - `members`/`nature`/`owner` are changed ONLY when the caller is a MEMBER of that
+ *   group (an admin is no exception) AND the field is present; anyone else attempting such a change is
  *   REFUSED (never a silent no-op, so the UI can say why);
  * - a brand-new id is accepted only as a PUBLIC cosmetic group — real
  *   private/restricted groups are minted by `POST /groups` (which provisions an
@@ -422,7 +422,7 @@ const sameMembers = (a: readonly string[], b: readonly string[]): boolean => {
 export function mergeGroupsPut(
   stored: readonly Group[],
   incoming: readonly unknown[],
-  isAdmin: boolean,
+  actor: string | null,
 ): { ok: true; groups: Group[] } | { ok: false; error: string } {
   const byId = new Map(stored.map((g) => [g.id, g]));
   const seen = new Set<string>();
@@ -454,8 +454,10 @@ export function mergeGroupsPut(
       if (prev.nature === "private" && (natureChange || membersChange || ownerChange)) {
         return { ok: false, error: "a personal group is sealed and cannot be changed" };
       }
-      if ((natureChange || membersChange || ownerChange) && !isAdmin) {
-        return { ok: false, error: "only an admin can change a group's membership or nature" };
+      // Membership, not role: an admin has no reach over a restricted group.
+      const isMember = actor !== null && memberOf(prev, actor);
+      if ((natureChange || membersChange || ownerChange) && !isMember) {
+        return { ok: false, error: "only a member can change a group's membership or nature" };
       }
       // Display extras (icon/collapsed/order) travel on the row but aren't on
       // the Group type — carry them through a loose record, like normalizeGroups.
@@ -464,7 +466,7 @@ export function mergeGroupsPut(
       if ("icon" in row) cosmetic.icon = row.icon;
       if ("collapsed" in row) cosmetic.collapsed = row.collapsed;
       if ("order" in row) cosmetic.order = row.order;
-      const acl: Partial<Group> = isAdmin
+      const acl: Partial<Group> = isMember
         ? {
             ...(wantsNature !== undefined ? { nature: wantsNature } : {}),
             ...(wantsMembers !== undefined ? { members: wantsMembers } : {}),
@@ -507,18 +509,18 @@ export function mergeGroupsPut(
  *   agent authenticates as the bootstrap admin and would otherwise edit
  *   membership/nature by `curl` (T2/T6 carry, same spirit as `POST /groups`).
  * - instance (409): the stale-tab guard, kept.
- * - the ACL merge (`mergeGroupsPut`): a non-admin membership/nature change → 403.
+ * - the ACL merge (`mergeGroupsPut`): a non-member membership/nature change → 403.
  */
 export function groupsPutFlow(input: {
   fromBrowser: boolean;
   instanceOk: boolean;
-  isAdmin: boolean;
+  actor: string | null;
   stored: readonly Group[];
   incoming: readonly unknown[];
 }): { status: number; body: Record<string, unknown>; groups?: Group[] } {
   if (!input.fromBrowser) return { status: 403, body: { error: "group management is done from the web UI only" } };
   if (!input.instanceOk) return { status: 409, body: { error: "instance-mismatch" } };
-  const r = mergeGroupsPut(input.stored, input.incoming, input.isAdmin);
+  const r = mergeGroupsPut(input.stored, input.incoming, input.actor);
   if (!r.ok) return { status: 403, body: { error: r.error } };
   return { status: 200, body: { ok: true }, groups: r.groups };
 }

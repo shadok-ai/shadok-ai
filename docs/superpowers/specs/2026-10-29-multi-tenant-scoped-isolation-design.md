@@ -420,16 +420,16 @@ level, not inside the cockpit.
   admin specialness left is account management and the agent-credential secret
   path (`canWriteSecretGroup`, which agents use as the bootstrap admin). The
   private group stays invisible and unmanageable even to an admin.
-- **[DECIDED] Admin reach is ADMINISTRATIVE, not operational.** An admin's extra
-  power over restricted groups was **membership + secrets management only**
-  (membership reach removed 2026-11-03, see above) — it does **not** let them **see or drive the agents** of a restricted group they do
-  not belong to. The universal rule still holds for everyone, admins included:
-  **see/drive = your own groups + public.** To actually work inside a restricted
-  group, an admin gets invited like anyone else. (This resolves an inconsistency a
-  builder-check flagged between this section and "Collaboration": administering a
-  team is not the same as reading its agents' work.) So: administrative reach = all
-  public ∪ all restricted (membership/secrets); operational reach (see/drive) = own
-  groups ∪ public; private = neither, ever.
+- **[DECIDED] Admin reach is ADMINISTRATIVE, not operational.** An admin does
+  **not** see or drive the agents of a restricted group they do not belong to.
+  The universal rule holds for everyone, admins included: **see/drive = your own
+  groups + public.** To work inside a restricted group, an admin gets invited
+  like anyone else. Membership, visibility and delete reach over restricted
+  groups was REMOVED (2026-11-03): an admin is treated like a non-member there
+  (including `PUT /groups` nature/members/owner changes, which are gated on
+  membership). The only admin specialness left is account management and the
+  agent-credential secret path (`canWriteSecretGroup`). Operational reach
+  (see/drive) = own groups ∪ public; private = neither, ever.
 
 ## Collaboration across boundaries (spawn, drive, talk, git)
 

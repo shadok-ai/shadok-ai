@@ -248,15 +248,16 @@ test("canRestartInto: resolution-only (no membership) — a restart re-derives t
 test("mergeGroupsPut: a private group is sealed even against an admin", () => {
   const p: Group = { id: "p", name: "Ada", nature: "private", members: ["ada"], owner: "ada", createdAt: 0 };
   for (const patch of [{ members: ["intruder"] }, { nature: "public" }, { owner: "intruder" }]) {
-    const r = mergeGroupsPut([p], [{ id: "p", ...patch }], true);
+    const r = mergeGroupsPut([p], [{ id: "p", ...patch }], "ada");
     assert.equal(r.ok, false);
   }
 });
 
-test("mergeGroupsPut: an admin may still change a restricted group's members", () => {
+test("mergeGroupsPut: a member may change a restricted group's members", () => {
   const g: Group = { id: "r", name: "R", nature: "restricted", members: ["a"], createdAt: 0 };
-  const r = mergeGroupsPut([g], [{ id: "r", members: ["a", "b"] }], true);
+  const r = mergeGroupsPut([g], [{ id: "r", members: ["a", "b"] }], "a");
   assert.equal(r.ok, true);
+  assert.equal(mergeGroupsPut([g], [{ id: "r", members: ["a", "b"] }], "root").ok, false);
 });
 
 // ── spawnGroupForRequest ──────────────────────────────────────────────────────
