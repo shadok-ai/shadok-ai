@@ -18,7 +18,9 @@ import {
   tgToolsEnabled,
   setTgTools,
 } from "./channels.js";
-import { secretNames, setSecret, deleteSecret } from "./secrets.js";
+import { secretNames, setSecret, deleteSecret, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
+import { MAIN_GROUP_ID } from "./groups.js";
+import { startSetupToken, submitSetupTokenCode } from "./setup-token.js";
 import { recordSecretAudit } from "./secret-audit.js";
 import { telegramPhotoable } from "./download.js";
 import { transcribe, heardNotice } from "./whisper.js";
@@ -1149,7 +1151,13 @@ const NOOP_HANDLE: TelegramHandle = {
   status: () => ({ username: null, tokenError: null }),
 };
 
-export function startTelegram(port: number, authCookie?: string): TelegramHandle {
+// Whether this instance runs multi-tenant, so `/mttoken` (which provisions the
+// group-agents' subscription token) is inert on a single-tenant box — mirroring
+// the web /mt-token/start "not applicable" gate. Set by startTelegram.
+let tgMultiTenant = false;
+
+export function startTelegram(port: number, authCookie?: string, multiTenant = false): TelegramHandle {
+  tgMultiTenant = multiTenant;
   // Config is the source of truth (env still overrides, resolved by telegramConfig).
   const cfg = telegramConfig(loadConfig(), process.cwd());
   if (!cfg.enabled || !cfg.token) return NOOP_HANDLE; // off or no token → nothing polling
@@ -1796,7 +1804,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       switch (cmd.cmd) {
         case "start":
         case "help":
-          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in\n/setup <code> — pair the bot (code from the cockpit's Telegram panel)");
+          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in\n/mttoken — provision the group-agent subscription token · /mtcode <code> — finish it\n/setup <code> — pair the bot (code from the cockpit's Telegram panel)");
           return;
         case "setup":
           if (isGroup) await reply(chat.id, threadId, "✅ already this instance's board.");
@@ -2023,6 +2031,40 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             // the chat history, same reasoning as /secret.
             await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
             await reply(chat.id, threadId, `✅ Signed in${s.email ? ` as ${s.email}` : ""}.`);
+          } else {
+            await reply(chat.id, threadId, `⚠️ ${r.error}`);
+          }
+          return;
+        }
+        case "mttoken": {
+          // Provision/rotate the long-lived subscription token group agents use
+          // on a multi-tenant instance. Same gate as /login (reaching here IS
+          // the gate); same two-step URL→code shape. Inert on a single-tenant
+          // instance (it needs no token), mirroring the web /mt-token gate.
+          if (!tgMultiTenant) {
+            await reply(chat.id, threadId, "ℹ️ Not applicable: this instance is single-tenant and needs no subscription token.");
+            return;
+          }
+          const r = await startSetupToken();
+          if ("error" in r) {
+            await reply(chat.id, threadId, `⚠️ Couldn't start: ${r.error}`);
+            return;
+          }
+          await reply(
+            chat.id,
+            threadId,
+            `🔑 Open this link, authorise on your Claude subscription, then send the code with /mtcode <the-code>:\n\n${r.url}`,
+          );
+          return;
+        }
+        case "mtcode": {
+          const r = await submitSetupTokenCode(cmd.arg, (token) =>
+            setSecret(MT_CLAUDE_OAUTH_TOKEN_NAME, token, MAIN_GROUP_ID, "operator:setup-token"),
+          );
+          if (r.ok) {
+            // The code has no business lingering in the chat, same as /code.
+            await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(chat.id, threadId, "✅ Subscription token stored. Group agents can start now.");
           } else {
             await reply(chat.id, threadId, `⚠️ ${r.error}`);
           }

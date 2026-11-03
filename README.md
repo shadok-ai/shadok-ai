@@ -476,10 +476,16 @@ in to Claude, which happens after boot; the banner stays up until then and the
 migration **finishes on its own the moment you sign in** (no restart needed).
 **One-time provisioning:** isolated-group agents authenticate with a
 subscription token injected into their environment, not a shared credential
-file. Run `claude setup-token` once and store the result as the vault secret
-`MT_CLAUDE_OAUTH_TOKEN`. Without it, group spawns are refused with a message
-naming this step. The token is valid for about a year; re-mint it by hand
-(`claude setup-token`, then overwrite the secret) before it expires.
+file. Until it is set, group spawns are refused with a message naming this step,
+and the cockpit shows a red "no subscription token" banner. Provide it from the
+cockpit itself — **no shell needed**: as an admin, click **Provide token** on
+that banner (or **Replace subscription token…** in the version menu to rotate
+it), authorise on your Claude subscription in the browser, and paste the code
+back; the server mints and stores it. From Telegram, `/mttoken` then
+`/mtcode <code>` do the same. The token is captured and vaulted server-side and
+is never shown. It is valid for about a year; re-run the card (or `/mttoken`)
+before it expires. The shell path still works as a fallback: `claude setup-token`
+and store the result as the vault secret `MT_CLAUDE_OAUTH_TOKEN`.
 
 Telegram stays single-owner, and there are no
 disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.

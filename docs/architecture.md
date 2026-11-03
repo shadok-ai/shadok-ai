@@ -677,6 +677,23 @@ clean exit, not a string**: the refusal wording was observed, the success
 wording never was, and guessing it would report a completed sign-in as never
 finishing (invariant 27).
 
+**Subscription-token provisioning (`setup-token.ts`).** A multi-tenant instance
+drops its agents to non-root OS users with no keychain, so they authenticate
+from a long-lived subscription token in the vault (`MT_CLAUDE_OAUTH_TOKEN`,
+injected as `CLAUDE_CODE_OAUTH_TOKEN`; see the isolation section). Minting that
+token is `claude setup-token`, and the cockpit drives it so an instance is
+self-sufficient — obtain it when missing, rotate it later, from the web card or
+Telegram `/mttoken`+`/mtcode`, no shell. It looks like the sign-in's twin and
+is **not**: `setup-token` is `isatty`-gated (measured v2.1.317) — on plain
+pipes it prints nothing, so it must run on a **node-pty** (the one place the
+sign-in's "no PTY" rule is reversed). The URL is read from the OSC-8 target; the
+minted token is printed on success and is the whole security surface — it is
+captured from the stream and written straight to the vault by a server-side
+`store`, and `submitSetupTokenCode` resolves only ok/err, so nothing (HTTP body,
+Telegram reply, log, page) ever carries the value. The PTY is spawned wide so a
+long token never line-wraps. Design:
+`docs/superpowers/specs/2026-11-03-mt-token-provisioning-design.md`.
+
 `authStatus` reports **three** states, not two: "I observed it is signed out" and
 "I could not look" are different facts. The probe is a ~850ms process spawn, so
 it flakes on a busy machine — and collapsing a failed probe into *signed out*
