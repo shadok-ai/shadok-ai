@@ -2370,9 +2370,10 @@ function runPrivileged(cmd: string, argv: string[]): Promise<void> {
   });
 }
 
-/** The shadok skills to mirror into every group HOME: [package source dir,
- *  installed name]. The same set `seedXxxSkill` installs into the SERVER HOME. */
-const GROUP_SEEDED_SKILLS: ReadonlyArray<readonly [string, string]> = [
+/** The shadok skills to install: [package source dir, installed name]. Mirrored
+ *  into the SERVER HOME by `seedXxxSkill` and, for multi-user isolation, into the
+ *  machine-wide ENTERPRISE tier by `seedSystemSkills`. */
+const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   ["scheduler-skill", "shadok-scheduler"],
   ["secrets-skill", "shadok-secrets"],
   ["reload-skill", "shadok-reload"],
@@ -2380,52 +2381,47 @@ const GROUP_SEEDED_SKILLS: ReadonlyArray<readonly [string, string]> = [
   ["agents-skill", "shadok-ai-agents"],
 ];
 
+/** Claude Code's machine-wide ("Enterprise"/managed) skills directory — read by
+ *  EVERY OS user regardless of HOME, with precedence over a personal
+ *  `~/.claude/skills`. `/etc/claude-code/.claude/skills` on Linux (overridable
+ *  for other layouts). Disable in the CLI with `CLAUDE_CODE_DISABLE_POLICY_SKILLS`. */
+const SYSTEM_SKILLS_DIR =
+  (process.env.SHADOK_SYSTEM_SKILLS_DIR ?? "").trim() || "/etc/claude-code/.claude/skills";
+
 /**
- * Mirror the shadok SKILLS into a group user's `<home>/.claude/skills`.
- *
- * The skills are installed only in the SERVER's `/root/.claude/skills`
- * (`seedXxxSkill`), which a dropped group agent (HOME `/home/sk-<id>`) cannot
- * read — so without this an isolated agent has NONE of the shadok skills
- * (scheduler, secrets, ledger, agents, reload). Copied FROM THE PACKAGE source
- * (world-readable, never `/root` which is 0700) and written AS THE GROUP USER
- * (root must not write through a 0700 HOME it does not own). Idempotent (`cp`
- * overwrites in place), best-effort: a failure is logged, not fatal — a missing
- * skill degrades an agent, a thrown provision breaks it.
+ * Install the shadok skills GLOBALLY, into the machine-wide Enterprise tier, so
+ * every dropped group agent (`sk-<id>`, HOME `/home/sk-<id>`) gets them with NO
+ * per-HOME copy. The per-HOME `~/.claude/skills` is only the SERVER user's;
+ * `/etc/claude-code/.claude/skills` is read by all users. Copied from the package
+ * source and made world-readable (root-owned dir, `a+rX`; `.mjs` entrypoints
+ * executable). Idempotent, best-effort. Multi-tenant only: a mono-tenant / dev
+ * instance keeps using its personal `~/.claude/skills` and never writes to /etc.
  */
-function seedGroupSkills(user: string, home: string): void {
+function seedSystemSkills(): void {
   try {
-    const skillsRoot = `${home}/.claude/skills`;
-    spawnAsUserSync(user, "mkdir", ["-p", skillsRoot]);
-    for (const [srcName, dstName] of GROUP_SEEDED_SKILLS) {
+    for (const [srcName, dstName] of SKILL_SOURCES) {
       const src = path.join(__dirname, "..", "context", srcName);
       if (!fs.existsSync(path.join(src, "SKILL.md"))) continue;
-      const dst = `${skillsRoot}/${dstName}`;
-      spawnAsUserSync(user, "mkdir", ["-p", dst]);
-      // -T copies the CONTENTS of src into dst (SKILL.md + scripts/), idempotent.
-      spawnAsUserSync(user, "cp", ["-rT", src, dst]);
+      const dst = path.join(SYSTEM_SKILLS_DIR, dstName);
+      fs.mkdirSync(dst, { recursive: true });
+      fs.cpSync(src, dst, { recursive: true });
     }
-    // Skill entrypoints are invoked by path, so every .mjs must be executable.
-    spawnAsUserSync(user, "find", [skillsRoot, "-name", "*.mjs", "-exec", "chmod", "+x", "{}", "+"]);
+    // World-readable (every sk-* user reads the same install) and .mjs runnable.
+    execFileSync("chmod", ["-R", "a+rX", SYSTEM_SKILLS_DIR]);
+    execFileSync("find", [SYSTEM_SKILLS_DIR, "-name", "*.mjs", "-exec", "chmod", "a+rx", "{}", "+"]);
+    console.log(`skills: seeded machine-wide skills into ${SYSTEM_SKILLS_DIR}`);
   } catch (e) {
-    console.log(`groups: could not seed skills into ${home} — ${e instanceof Error ? e.message : String(e)}`);
+    console.log(`skills: could not seed machine-wide skills into ${SYSTEM_SKILLS_DIR} — ${e instanceof Error ? e.message : String(e)}`);
   }
 }
 
-/** The sentinel a seeded group skills dir carries — its presence means the skills
- *  were already mirrored, so a steady-state spawn skips the copy. */
-function groupSkillsSeeded(user: string, home: string): boolean {
-  return spawnAsUserSync(user, "test", ["-f", `${home}/.claude/skills/shadok-ledger/SKILL.md`]).ok;
-}
-
 /**
- * Seed a group user's HOME at PROVISION time (fresh user, new group). The
- * directory itself is created+owned by `useradd --create-home`; here we mirror
- * the skills. Existing groups are NOT re-provisioned (`reconcileGroupProvisioning`
- * skips a user that already exists), so the spawn-time `seedGroupSkills` guard in
- * `makePilot` is what heals a group that predates this change.
+ * Seed a group user's HOME at PROVISION time. Skills are no longer copied here —
+ * they live in the machine-wide Enterprise tier (`seedSystemSkills`), read by
+ * every user. Kept as the hook for any future per-HOME provisioning step.
  */
-async function seedGroupHome(home: string, user: string): Promise<void> {
-  seedGroupSkills(user, home);
+async function seedGroupHome(_home: string, _user: string): Promise<void> {
+  /* skills are machine-wide now; nothing per-HOME to seed */
 }
 
 /** Does an OS user already exist? Used to make provisioning idempotent. */
@@ -5071,14 +5067,9 @@ function makePilot(
   // the per-directory trust dialog. `ensureProjectTrusted(cwd)` above seeds the
   // SERVER's HOME (still needed for a commons/mono agent that runs as the server
   // user); this adds the same state to the group user's HOME, as that user.
-  if (user && home) {
-    seedGroupAgentHome(user, home, cwd);
-    // Skills live only in the server HOME; mirror them into the group HOME so an
-    // isolated agent actually has them. Guarded by a sentinel so steady-state is
-    // one `test -f`, not a full re-copy — and it heals a group that predates the
-    // provision-time seeding (which never re-runs for an existing OS user).
-    if (!groupSkillsSeeded(user, home)) seedGroupSkills(user, home);
-  }
+  // Skills are machine-wide (the Enterprise tier, `seedSystemSkills`), so only
+  // the per-HOME onboarding/trust state needs seeding into the group user's HOME.
+  if (user && home) seedGroupAgentHome(user, home, cwd);
   // Isolated groups share the subscription token, injected in the forced-last
   // env layer. Mono-tenant (no user) reads and passes nothing.
   const oauthToken = user
@@ -7464,6 +7455,12 @@ function seedAgentsSkill(): void {
   }
 }
 seedAgentsSkill();
+
+// Multi-tenant: also install every skill machine-wide (Enterprise tier), so the
+// per-tenant `sk-*` agents — which run under their own HOME, not the server's —
+// get them without a per-HOME copy. Mono-tenant/dev keeps the personal install
+// above and never touches /etc.
+if (DEPLOYMENT_MODE === "multi-tenant") seedSystemSkills();
 
 /** Run a package-manager install. Linux managers need root; if we aren't root,
  *  go through NON-interactive sudo so a password prompt fails fast rather than
