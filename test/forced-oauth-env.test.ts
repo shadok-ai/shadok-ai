@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { spawnEnv, forcedEnv, FORCED_CLAUDE_ENV } from "../src/session.js";
 
 test("forced token wins over an inherited/profile value", () => {
@@ -24,4 +25,9 @@ test("forcedEnv (tmux layer) emits the token after the static forced vars", () =
   const keys = Object.keys(forcedEnv({ user: "sk-x", oauthToken: "T" }));
   assert.equal(keys[keys.length - 1], "CLAUDE_CODE_OAUTH_TOKEN");
   assert.deepEqual(forcedEnv({ user: null, oauthToken: "T" }), FORCED_CLAUDE_ENV);
+});
+
+test("PtyPilot builds its env through spawnEnv (the forced-token helper) — invariant 24", () => {
+  const src = fs.readFileSync(new URL("../src/session.ts", import.meta.url), "utf8");
+  assert.ok(src.includes("spawnEnv(this.opts"), "session.ts must call spawnEnv(this.opts, …)");
 });

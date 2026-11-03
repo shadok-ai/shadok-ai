@@ -365,6 +365,7 @@ import {
   sampleBin,
   type EnsureClaudeResult,
   mtCredentialMessage,
+  mtTokenNeeded,
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
@@ -6266,20 +6267,6 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // "unknown", and the spawn itself would throw "posix_spawnp failed".
           const claude = await ensureClaudeOnce();
           if (!claude.ok) return fail(claude.error);
-          // Isolated-group agents (non-root, no keychain) authenticate from the
-          // injected MT_CLAUDE_OAUTH_TOKEN; without it every spawn dies on a
-          // bare auth error. Only once agents actually drop to users.
-          const mtMsg = mtCredentialMessage(
-            DEPLOYMENT_MODE === "multi-tenant" && groupsMigrated,
-            !!secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"],
-          );
-          if (mtMsg) {
-            if (!mtTokenWarned) {
-              mtTokenWarned = true;
-              console.error(`mt: ${mtMsg}`);
-            }
-            return fail(mtMsg);
-          }
           // An agent on a custom backend authenticates with its own token and
           // never touches the subscription, so the instance's sign-in is not
           // its business. The profile is resolved early (and cheaply) for this
@@ -6560,6 +6547,23 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // has completed. Before migration (or mono-tenant) this is null and the
           // commons stays the server's own user, byte-for-byte today's.
           const dropUser = isolation.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+          // Agents that drop to a non-root OS user have no keychain and authenticate
+          // from the injected MT_CLAUDE_OAUTH_TOKEN (`makePilot` injects it exactly
+          // when it has a user). Keyed on THIS spawn's `dropUser` — the same value
+          // handed to makePilot — and skipped for a custom backend, which uses its
+          // own key and never the subscription. Without the token, say so plainly
+          // instead of letting the spawn die on a bare auth error.
+          const mtMsg = mtCredentialMessage(
+            mtTokenNeeded(!!dropUser, sessionBackend(gateProfile(msg)).kind === "custom"),
+            !!secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"],
+          );
+          if (mtMsg) {
+            if (!mtTokenWarned) {
+              mtTokenWarned = true;
+              console.error(`mt: ${mtMsg}`);
+            }
+            return fail(mtMsg);
+          }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),

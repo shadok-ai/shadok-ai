@@ -1,4 +1,3 @@
-import path from "node:path";
 import { capabilityRefusal, type DeploymentMode } from "./capability.js";
 import { spawnGroupFor, canAdministerGroup, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
 

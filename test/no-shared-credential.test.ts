@@ -40,7 +40,7 @@ for (const sym of GONE) {
 
 test("seedGroupHome and the migration create no .credentials.json symlink", () => {
   assert.ok(!/ln["',\s\]]+.*\.credentials\.json/.test(server), "no credential symlink in server.ts");
-  assert.ok(!migrate.includes(".credentials.json") || /^\s*(\/\/|\*|\/\*)/m.test(migrate));
+  assert.ok(!migrate.includes(".credentials.json"), "migrate-groups must not mention .credentials.json");
 });
 
 test("OS-user + HOME provisioning is still wired", () => {

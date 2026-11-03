@@ -418,6 +418,15 @@ export function claudeStubMessage(): string {
  * subscription token. Absent, every group spawn would die on a bare auth error.
  * `null` when fine (not capable, or the token is present).
  */
+/**
+ * Does THIS spawn need the injected subscription token? Exactly when it drops
+ * to a non-root OS user (the condition under which `makePilot` injects it) AND
+ * uses the subscription — a custom backend authenticates with its own key.
+ */
+export function mtTokenNeeded(dropsToUser: boolean, backendIsCustom: boolean): boolean {
+  return dropsToUser && !backendIsCustom;
+}
+
 export function mtCredentialMessage(capable: boolean, hasToken: boolean): string | null {
   if (!capable || hasToken) return null;
   return (
