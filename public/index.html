@@ -1077,6 +1077,28 @@
   .group-head:hover .gkey { visibility: visible; }
   #groupPanelBody .gp-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
   #groupPanelBody .gp-row span { flex: 1; }
+  /* Avatar toggle grid: one tile per person (create-group picker + group panel). */
+  .member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(74px, 1fr)); gap: 12px; margin: 6px 0; }
+  .member-tile { border: 0; background: none; padding: 6px 2px 4px; border-radius: 10px; cursor: pointer; color: inherit; font: inherit;
+    display: flex; flex-direction: column; align-items: center; gap: 7px; transition: background .12s; }
+  .member-tile:hover { background: var(--bg-inset); }
+  .member-av { position: relative; width: 48px; height: 48px; border-radius: 50%; display: grid; place-items: center;
+    font-weight: 600; font-size: 18px; color: #fff; box-shadow: inset 0 0 0 2px transparent;
+    transition: box-shadow .12s, filter .12s; filter: grayscale(.35) brightness(.82); }
+  .member-nm { font-size: 12px; color: var(--text-dim); max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; transition: color .12s; }
+  .member-tile[aria-pressed="true"] .member-av,
+  .member-tile.me .member-av { box-shadow: inset 0 0 0 2px var(--amber), 0 0 0 3px color-mix(in srgb, var(--amber) 22%, transparent); filter: none; }
+  .member-tile[aria-pressed="true"] .member-nm,
+  .member-tile.me .member-nm { color: var(--text); }
+  .member-check, .member-lock { position: absolute; right: -2px; bottom: -2px; width: 18px; height: 18px; border-radius: 50%;
+    display: none; place-items: center; border: 2px solid var(--bg-raised); }
+  .member-check { background: var(--amber); }
+  .member-check svg { width: 10px; height: 10px; display: block; }
+  .member-tile[aria-pressed="true"] .member-check { display: grid; }
+  .member-lock { display: grid; background: var(--bg-inset); font-size: 9px; }
+  .member-tile.me { cursor: default; }
+  .member-tile.me:hover { background: none; }
+  #gpSave { margin-top: 10px; }
   .prof-secrets-ro { list-style: none; padding: 0; margin: 4px 0; display: flex; flex-wrap: wrap; gap: 4px 8px; }
   .sec-users { margin-left: 8px; font-size: 11px; color: var(--text-dim); }
   .sec-orphan { margin-left: 8px; font-size: 11px; color: var(--amber); font-family: var(--sans, inherit); }
@@ -2815,8 +2837,8 @@
       </div>
       <div class="field" id="groupMembersField" hidden>
         <span class="label">Members</span>
-        <select id="groupMembersPick" multiple size="6" aria-label="Initial members"></select>
-        <span class="check-hint">Optional. You are always a member. Ctrl/Cmd-click to pick several.</span>
+        <div id="groupMembersPick" class="member-grid" role="group" aria-label="Initial members"></div>
+        <span class="check-hint">Optional. You are always a member. Click to add others.</span>
       </div>
       <p class="sec-note warn" id="groupCreateErr" hidden></p>
     </div>
@@ -9889,6 +9911,59 @@
     $("secretKey").focus();
   }
   $("secretsBtn").addEventListener("click", () => openSecretsPanel(null));
+  // ── Member picker: avatar toggle grid ───────────────────────────────
+  // Shared by the create-group form and the group panel. Names go through
+  // textContent (invariant 13); the only innerHTML is the constant check SVG.
+  const MEMBER_PALETTE = ["#e0567a", "#e08a3c", "#c9a227", "#49b36b", "#3aa6b0", "#4f8cff", "#7b6cf0", "#b05ad6", "#c2566e", "#5a8f6f"];
+  const MEMBER_CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>';
+  function memberColor(name) {
+    let h = 0;
+    for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    return MEMBER_PALETTE[h % MEMBER_PALETTE.length];
+  }
+  function memberInitial(name) { return (String(name)[0] || "?").toUpperCase(); }
+  /** Render the grid into `container`. `lockedSelf` (or null) is the current
+   *  account: always selected, not clickable. `onChange` fires on each toggle. */
+  function renderMemberGrid(container, { accounts, selected, lockedSelf, onChange }) {
+    container.textContent = "";
+    const sel = new Set(selected || []);
+    const names = (Array.isArray(accounts) ? accounts : []).filter((n) => n !== lockedSelf);
+    const all = lockedSelf ? [lockedSelf, ...names] : names;
+    for (const name of all) {
+      const me = name === lockedSelf;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "member-tile" + (me ? " me" : "");
+      b.dataset.name = name;
+      if (me) b.setAttribute("aria-disabled", "true");
+      else b.setAttribute("aria-pressed", String(sel.has(name)));
+      const av = document.createElement("div");
+      av.className = "member-av";
+      av.style.background = memberColor(name);
+      av.textContent = memberInitial(name);
+      const badge = document.createElement("span");
+      if (me) { badge.className = "member-lock"; badge.textContent = "🔒"; }
+      else { badge.className = "member-check"; badge.innerHTML = MEMBER_CHECK_SVG; }
+      av.append(badge);
+      const nm = document.createElement("div");
+      nm.className = "member-nm";
+      nm.textContent = me ? name + " (you)" : name;
+      b.append(av, nm);
+      if (!me) b.addEventListener("click", () => {
+        b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"));
+        if (onChange) onChange();
+      });
+      container.append(b);
+    }
+  }
+  /** Names currently selected (the locked self is NOT included — it is implicit). */
+  function readMemberGrid(container) {
+    return [...container.querySelectorAll('.member-tile[aria-pressed="true"]')].map((b) => b.dataset.name);
+  }
+  async function currentAccountName() {
+    if (!me) { try { me = await (await fetch("/me")).json(); } catch { me = null; } }
+    return (me && me.name) || null;
+  }
   // BEGIN group-panel
   // Group settings: name + type, and the member list for a Private group only.
   async function openGroupPanel(groupId) {
@@ -9922,7 +9997,7 @@
             failure = (j && j.error) || ("Request failed (" + res.status + ")");
           }
         } catch (e) { failure = "Network error: " + ((e && e.message) || e); }
-        if (!failure) return openGroupPanel(groupId);
+        if (!failure) return true;
         let warn = body.querySelector("#gpError");
         if (!warn) {
           warn = document.createElement("p");
@@ -9930,42 +10005,38 @@
           body.prepend(warn);
         }
         warn.textContent = failure;
+        return false;
       };
-      const ul = document.createElement("ul");
-      ul.id = "gpMembers";
-      for (const m of members) {
-        const li = document.createElement("li");
-        li.className = "gp-row";
-        const nm = document.createElement("span");
-        nm.textContent = m;
-        const rm = document.createElement("button");
-        rm.type = "button"; rm.textContent = "Remove"; rm.title = "Remove " + m;
-        rm.addEventListener("click", () => post({ group: g.id, remove: m }));
-        li.append(nm, rm);
-        ul.append(li);
-      }
-      body.append(ul);
-      const row = document.createElement("div");
-      row.className = "gp-row";
-      const sel = document.createElement("select");
-      sel.id = "gpAdd";
-      sel.setAttribute("aria-label", "Add a member");
-      const add = document.createElement("button");
-      add.type = "button"; add.textContent = "Add member";
-      row.append(sel, add);
-      body.append(row);
       let names = [];
       try {
         const r = await fetch("/accounts");
         names = r.ok ? await r.json() : [];
-      } catch { /* picker stays empty */ }
-      for (const n of (Array.isArray(names) ? names : []).filter((n) => !members.includes(n))) {
-        const o = document.createElement("option");
-        o.value = n; o.textContent = n;
-        sel.append(o);
-      }
-      add.disabled = !sel.options.length;
-      add.addEventListener("click", () => { if (sel.value) post({ group: g.id, add: sel.value }); });
+      } catch { /* grid shows only the members we know */ }
+      const self = await currentAccountName();
+      const accounts = [...new Set([...(Array.isArray(names) ? names : []), ...members])];
+      const grid = document.createElement("div");
+      grid.id = "gpGrid";
+      grid.className = "member-grid";
+      const save = document.createElement("button");
+      save.type = "button"; save.id = "gpSave"; save.className = "primary";
+      save.textContent = "Save members";
+      // Self is locked/implicit: never part of the diff.
+      const current = members.filter((m) => m !== self);
+      const diff = () => {
+        const now = readMemberGrid(grid);
+        return { add: now.filter((n) => !current.includes(n)), remove: current.filter((n) => !now.includes(n)) };
+      };
+      const refresh = () => { const d = diff(); save.disabled = !d.add.length && !d.remove.length; };
+      renderMemberGrid(grid, { accounts, selected: current, lockedSelf: self, onChange: refresh });
+      refresh();
+      save.addEventListener("click", async () => {
+        const d = diff();
+        save.disabled = true;
+        for (const n of d.add) if (!(await post({ group: g.id, add: n }))) return refresh();
+        for (const n of d.remove) if (!(await post({ group: g.id, remove: n }))) return refresh();
+        return openGroupPanel(groupId);
+      });
+      body.append(grid, save);
       return;
     }
     note("Anyone can see this — it is a label.");
@@ -11979,12 +12050,7 @@
       const r = await fetch("/accounts");
       if (!r.ok) throw new Error("HTTP " + r.status);
       const names = await r.json();
-      pick.textContent = "";
-      for (const n of names) {
-        const o = document.createElement("option");
-        o.value = n; o.textContent = n;
-        pick.appendChild(o);
-      }
+      renderMemberGrid(pick, { accounts: names, selected: [], lockedSelf: await currentAccountName() });
     } catch (e) {
       groupCreateError("Could not load accounts: " + e.message);
     }
@@ -11997,7 +12063,7 @@
     const nature = groupNature();
     if (!name) { $("groupCreateSubmit").disabled = false; return groupCreateError("Give the group a name."); }
     const members = nature === "restricted"
-      ? [...$("groupMembersPick").selectedOptions].map((o) => o.value) : [];
+      ? readMemberGrid($("groupMembersPick")) : [];
     groupCreateError("");
     const headers = { "Content-Type": "application/json", "x-shadok-instance": instanceKey };
     try {

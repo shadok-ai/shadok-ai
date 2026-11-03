@@ -219,3 +219,52 @@ test("closeGroupGesture surfaces the server's error on a failed delete", () => {
   const b = fnBlock("async function closeGroupGesture(group, after)");
   assert.match(b, /data\.error \|\| "Could not delete the group\."/);
 });
+
+// ---- Avatar toggle grid (member picker) ----
+test("create picker is a member-grid container, not a <select multiple>", () => {
+  assert.match(html, /<div id="groupMembersPick" class="member-grid"/);
+  assert.doesNotMatch(html, /<select[^>]*id="groupMembersPick"/);
+  assert.doesNotMatch(html, /Ctrl\/Cmd-click/);
+  assert.match(html, /Click to add others/);
+});
+
+test("renderMemberGrid builds aria-pressed button tiles with textContent and a locked self", () => {
+  const fn = html.match(/function renderMemberGrid\([\s\S]*?\n  \}\n/);
+  assert.ok(fn, "renderMemberGrid defined");
+  assert.match(fn![0], /createElement\("button"\)/);
+  assert.match(fn![0], /type = "button"/);
+  assert.match(fn![0], /"aria-pressed"/);
+  assert.match(fn![0], /nm\.textContent = me \? name \+ " \(you\)" : name/);
+  assert.match(fn![0], /member-lock/);
+  assert.match(fn![0], /style\.background = memberColor\(name\)/);
+  // The only innerHTML is the constant check SVG.
+  assert.deepEqual(fn![0].match(/innerHTML[^\n]*/g), ["innerHTML = MEMBER_CHECK_SVG; }"]);
+  assert.match(html, /\.member-grid\s*\{/);
+  assert.match(html, /\.member-tile\[aria-pressed="true"\]/);
+});
+
+test("submitGroupCreate reads the selected tiles", () => {
+  const fn = html.match(/async function submitGroupCreate\(\)[\s\S]*?\n  \}\n/);
+  assert.ok(fn);
+  assert.match(fn![0], /readMemberGrid\(\$\("groupMembersPick"\)\)/);
+  assert.doesNotMatch(fn![0], /selectedOptions/);
+  assert.match(html, /function readMemberGrid[\s\S]*?\.member-tile\[aria-pressed="true"\]/);
+});
+
+test("restricted panel: avatar grid + 'Save members' that diffs and POSTs /groups/members", () => {
+  const s = groupPanelScript();
+  const restricted = s.slice(s.indexOf('nature === "restricted"'));
+  assert.match(restricted, /renderMemberGrid\(grid,/);
+  assert.match(restricted, /Save members/);
+  assert.match(restricted, /save\.disabled = !d\.add\.length && !d\.remove\.length/);
+  assert.match(restricted, /post\(\{ group: g\.id, add: n \}\)/);
+  assert.match(restricted, /post\(\{ group: g\.id, remove: n \}\)/);
+  assert.match(restricted, /return openGroupPanel\(groupId\)/);
+  assert.doesNotMatch(restricted, /<select|gpAdd|"Remove"/);
+});
+
+test("private panel stays sealed: no grid", () => {
+  const priv = groupPanelScript().match(/nature === "private"[\s\S]*?(?=nature === "restricted")/);
+  assert.ok(priv);
+  assert.doesNotMatch(priv![0], /renderMemberGrid|member-grid/);
+});
