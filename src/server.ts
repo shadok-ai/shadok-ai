@@ -141,14 +141,8 @@ import {
   DEFAULT_HOME_BASE,
   createGroupFlow,
   deleteGroupFlow,
-  checkCredentialDivergence,
-  credentialWiring,
-  reachableFromInspection,
-  SHARED_CRED_GROUP,
   SHARED_POT_GROUP,
-  DEFAULT_SHARED_CREDENTIAL_PATH,
   DEFAULT_SHARED_POT_PATH,
-  type LinkProbe,
 } from "./osusers.js";
 import { instanceKey } from "./paths.js";
 import {
@@ -1970,11 +1964,9 @@ app.post("/auth/code", async (req, res) => {
   // and the sign-in card has no reason to wait for it.
   if (r.ok) {
     void startFirstAgent();
-    // Re-try the group migration now that a Claude credential exists. On a FRESH
-    // capable instance the boot migration always fails its CORE credential-seed
-    // step (not signed in yet) and withholds the marker, so the commons stays
-    // un-isolated behind the red banner until a MANUAL restart. Sign-in is the
-    // exact moment the credential becomes available — mirror of `startFirstAgent`
+    // Re-try the group migration once signed in (the credential seed it used to
+    // need is gone, but a core step that failed while signed out is still retried
+    // here instead of waiting for a MANUAL restart) — mirror of `startFirstAgent`
     // above. Idempotent + guarded against overlapping a boot run that is still going.
     void maybeRunGroupsMigration("post-sign-in");
   }
@@ -2345,150 +2337,9 @@ app.post("/groups/members", (req, res) => {
 /** Where a group's HOME is created (`SHADOK_HOME_BASE` override, else `/home`). */
 const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_HOME_BASE;
 
-/** The ONE Claude credential every group HOME symlinks to (Task 7).
- *  A NEUTRAL, group-traversable path (`DEFAULT_SHARED_CREDENTIAL_PATH`,
- *  overridable via `SHADOK_SHARED_CREDENTIAL_PATH`) — NOT the server's own
- *  `/root/.claude/.credentials.json`, which a group user cannot traverse (mode
- *  700 on `/root`) so it ran credential-less in silence. The directory chain is
- *  wired `root:shadok-cred` 0750 so every group user can traverse it.
- *  T15 CARRY: the migration task SEEDS/populates this neutral file from the
- *  existing credential and symlinks the commons HOME to it; Task 7 only USES it. */
-const SHARED_CREDENTIAL_PATH =
-  (process.env.SHADOK_SHARED_CREDENTIAL_PATH ?? "").trim() || DEFAULT_SHARED_CREDENTIAL_PATH;
-
 /** Task 12: the one shared pot every group HOME links as `~/shared`. */
 const SHARED_POT_PATH =
   (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
-
-/** Real fs probe for `checkCredentialDivergence`: classify `p` into the four
- *  distinct facts the predicate needs. ENOENT → `missing`; any other error
- *  (EACCES: a non-root server cannot read a 700 HOME) → `cannot-stat`, which is
- *  NOT treated as the rename signal — that is what removed the false "rename
- *  divergence" warning on every spawn. */
-function probeCredentialLink(p: string): LinkProbe {
-  try {
-    const st = fs.lstatSync(p);
-    if (st.isSymbolicLink()) {
-      try {
-        return { state: "symlink", target: fs.readlinkSync(p) };
-      } catch {
-        return { state: "cannot-stat" };
-      }
-    }
-    // A regular file (or anything non-symlink) where our symlink should be.
-    return { state: "file" };
-  } catch (e) {
-    return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? { state: "missing" } : { state: "cannot-stat" };
-  }
-}
-
-/** Dedupe the divergence warning: fire at most ONCE per group id, not on every
- *  spawn/restart (it would otherwise spam the log each turn). Module-level. */
-const credentialDivergenceWarned = new Set<string>();
-
-/** Fire the verify-first divergence warning for a group agent about to be
- *  dropped to its OS user (multi-tenant only). A no-op in mono-tenant or for a
- *  commons agent (no dedicated user). Warns only on a genuine `real-file`
- *  divergence, and only once per group. See `checkCredentialDivergence`. */
-function warnIfCredentialDiverged(groupId: string | null, osUser: string | null): void {
-  if (DEPLOYMENT_MODE !== "multi-tenant" || !osUser) return;
-  const gid = groupId ?? osUser;
-  const state = checkCredentialDivergence(
-    { id: gid, home: `${GROUP_HOME_BASE}/${osUser}` },
-    SHARED_CREDENTIAL_PATH,
-    { probe: probeCredentialLink, warn: credentialDivergenceWarned.has(gid) ? () => {} : (m) => console.warn(m) },
-  );
-  if (state === "real-file") credentialDivergenceWarned.add(gid);
-}
-
-/** Group id of the shared unix group, for the reachability inspection fallback.
- *  Read from `/etc/group` (Node has no `getgrnam`); null if absent/unreadable. */
-function sharedCredGroupGid(): number | null {
-  try {
-    const line = fs
-      .readFileSync("/etc/group", "utf8")
-      .split("\n")
-      .find((l) => l.startsWith(SHARED_CRED_GROUP + ":"));
-    if (!line) return null;
-    const gid = Number(line.split(":")[2]);
-    return Number.isFinite(gid) ? gid : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Reachability by MODE/OWNER inspection (the fallback when we cannot run a read
- *  as the user). This is the IMPURE half: it gathers ground-truth stats (resolve
- *  the symlink, stat the file and every ancestor, map each gid to the shadok-cred
- *  group NAME when it matches) and hands the DECISION to the pure
- *  `reachableFromInspection`. The pure half — file group-owned by `shadok-cred` +
- *  group-readable AND every ancestor traversable by the group — is what catches
- *  the /root trap (a 660 file behind a 700 ancestor), now unit-tested on its own. */
-function reachableByInspection(link: string): { ok: boolean; detail?: string } {
-  const gid = sharedCredGroupGid();
-  // Map a directory/file gid to the shared group NAME only when it matches the
-  // resolved shadok-cred gid, so the pure decision never credits the wrong group.
-  const groupName = (g: number): string | undefined => (gid != null && g === gid ? SHARED_CRED_GROUP : undefined);
-  let real: string;
-  try {
-    real = fs.realpathSync(link);
-  } catch (e) {
-    return { ok: false, detail: `cannot resolve ${link}: ${(e as Error)?.message ?? e}` };
-  }
-  let fileStat: fs.Stats;
-  try {
-    fileStat = fs.statSync(real);
-  } catch (e) {
-    return { ok: false, detail: `cannot stat ${real}: ${(e as Error)?.message ?? e}` };
-  }
-  // Walk ancestors up to `/`, collecting each one's mode + (possibly) group.
-  const ancestors: Array<{ mode: number; group?: string }> = [];
-  let dir = path.dirname(real);
-  for (;;) {
-    let dst: fs.Stats;
-    try {
-      dst = fs.statSync(dir);
-    } catch (e) {
-      return { ok: false, detail: `cannot stat ${dir}: ${(e as Error)?.message ?? e}` };
-    }
-    ancestors.push({ mode: dst.mode, group: groupName(dst.gid) });
-    const parent = path.dirname(dir);
-    if (parent === dir) break; // reached /
-    dir = parent;
-  }
-  const ok = reachableFromInspection({
-    fileOwnerGroup: groupName(fileStat.gid) ?? "",
-    fileGroupReadable: (fileStat.mode & 0o040) !== 0,
-    ancestors,
-  });
-  return ok
-    ? { ok: true }
-    : {
-        ok: false,
-        detail: `${real} is not reachable by group ${SHARED_CRED_GROUP} — the file is not group-owned+readable by it, or an ancestor directory is not traversable (e.g. a mode-700 ancestor like /root)`,
-      };
-}
-
-/** Best-effort reachability check for the wired credential. Ground truth first:
- *  an ACTUAL read as the group user (`runuser` as root, else `sudo -n -u`). If
- *  that mechanism is unavailable, fall back to mode/owner inspection. Only a
- *  concluded "unreachable" is a false verdict — `provisionGroupUser` turns it
- *  into a loud refusal (never a silent credential-less spawn). */
-function credentialReachableReal(user: string, link: string): Promise<{ ok: boolean; detail?: string }> {
-  return new Promise((resolve) => {
-    const asRoot = typeof process.getuid === "function" && process.getuid() === 0;
-    const cmd = asRoot ? "runuser" : "sudo";
-    const argv = asRoot ? ["-u", user, "--", "test", "-r", link] : ["-n", "-u", user, "test", "-r", link];
-    const p = spawnChild(cmd, argv, { stdio: ["ignore", "ignore", "ignore"], timeout: 10_000 });
-    p.on("error", () => resolve(reachableByInspection(link))); // no runuser/sudo → inspect
-    p.on("exit", (code) => {
-      if (code === 0) return resolve({ ok: true });
-      // A non-zero exit means either "not readable" OR the wrapper itself failed
-      // (e.g. sudo denied). Confirm with inspection rather than trust the exit.
-      resolve(reachableByInspection(link));
-    });
-  });
-}
 
 /** Run a privileged account command. Root runs it directly; otherwise go through
  *  NON-interactive sudo (`-n`) so a MISSING right fails fast with a non-zero exit
@@ -2509,34 +2360,11 @@ function runPrivileged(cmd: string, argv: string[]): Promise<void> {
 }
 
 /** Seed a freshly-provisioned HOME. The directory itself is created+owned by
- *  `useradd --create-home`; the credential symlink (Task 7) is wired inside
- *  `provisionGroupUser` (before this hook) via `sharedCredentialPath`, and the
- *  shared mount (Task 12) hangs off this hook in its own task. Kept
+ *  `useradd --create-home`; the shared mount (Task 12) hangs off this hook in its own task. Kept
  *  async+injectable so provisioning fails honestly if it grows a real step that
  *  can fail. */
 async function seedGroupHome(home: string): Promise<void> {
   console.log(`groups: provisioned HOME ${home} (shared mount seeding lands in Task 12)`);
-}
-
-/** Real `lstat` probe for Important #2: is `<home>/.claude` a safe real directory
- *  to create+own, or a symlink / non-dir an agent may have planted? */
-function claudeDirStatReal(claudeDir: string): { exists: boolean; isSymlink: boolean; isDir: boolean } {
-  try {
-    const st = fs.lstatSync(claudeDir);
-    return { exists: true, isSymlink: st.isSymbolicLink(), isDir: st.isDirectory() };
-  } catch {
-    return { exists: false, isSymlink: false, isDir: false };
-  }
-}
-
-/** Does the shared credential FILE exist? Important #3: absence ⇒ the instance
- *  is not signed in / T15 has not seeded it — provisioning refuses clearly. */
-function sharedCredentialExistsReal(p: string): boolean {
-  try {
-    return fs.existsSync(p);
-  } catch {
-    return false;
-  }
 }
 
 /** Does an OS user already exist? Used to make provisioning idempotent. */
@@ -2583,15 +2411,13 @@ let groupsMigrated = false;
  *    commons agent is still running as the server's own (root) user for now;
  *  - `"failed"` — a capable instance RAN the migration but a core step failed
  *    (the marker was withheld), so it will NOT retry until the next boot and the
- *    commons stays un-isolated. The classic cause is a signed-out instance whose
- *    credential seed throws forever — which, without this, is INVISIBLE (the only
+ *    commons stays un-isolated. Without this it is INVISIBLE (the only
  *    trace is a log line nobody reads). This turns it into an on-screen warning.
  */
 let migrationState: "ok" | "pending" | "failed" = "ok";
 
 /** Serialises the migration: it runs at boot AND is re-tried after a Claude
- *  sign-in (the credential-seed CORE step cannot succeed until the instance is
- *  signed in — see `maybeRunGroupsMigration`). The two must never overlap: both
+ *  sign-in (see `maybeRunGroupsMigration`). The two must never overlap: both
  *  chown the same tree and respawn the same panes. `maybeRunGroupsMigration`
  *  skips while this is set. */
 let migrationInFlight = false;
@@ -2627,18 +2453,14 @@ function alreadyMigratedNow(): boolean {
 }
 
 /** The full provisioning deps a group's OS user needs (shared with POST /groups):
- *  credential + pot wiring, the symlink-safety / sign-in / reachability guards. */
+ *  pot wiring. */
 function provisionOsUserFor(g: Group): Promise<unknown> {
   return provisionGroupUser(g, {
     run: runPrivileged,
     seed: seedGroupHome,
     homeBase: GROUP_HOME_BASE,
     userExists: osUserExists,
-    sharedCredentialPath: SHARED_CREDENTIAL_PATH,
     sharedPotPath: SHARED_POT_PATH,
-    claudeDirStat: claudeDirStatReal,
-    sharedCredentialExists: sharedCredentialExistsReal,
-    reachable: credentialReachableReal,
   });
 }
 
@@ -2740,36 +2562,18 @@ async function migChownTreeToCommons(): Promise<void> {
   }
 }
 
-/** Step 3 — seed the neutral, group-traversable shared Claude credential from the
- *  existing `~/.claude/.credentials.json` and wire the commons HOME to it (symlink
- *  + shared groups + the `~/shared` pot link). Mirrors `credentialWiringPlan` /
- *  `sharedPotPlan` but for the commons `main` user, and SEEDS the file they only
- *  wire (the T7/T12 carry). Throws when there is nothing to seed from (not signed
- *  in) — a CORE failure, so the marker is withheld and the next boot retries. */
-async function migSeedSharedCredential(): Promise<void> {
-  const src = path.join(os.homedir(), ".claude", ".credentials.json");
-  if (!fs.existsSync(src)) {
-    throw new Error(`no ${src} to seed the shared credential from (is the instance signed in to Claude?)`);
-  }
+/** Step 3 — wire the commons HOME to the shared pot: the shared group, the pot
+ *  base, and the `~/shared` link. Mirrors `sharedPotPlan` for the commons `main`
+ *  user. Non-core: there is no credential to seed (the agent token is injected at
+ *  spawn), so nothing here withholds the migration marker. */
+async function migWireCommonsPot(): Promise<void> {
   const mainHome = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
-  const dir = path.dirname(SHARED_CREDENTIAL_PATH);
-  await runPrivileged("groupadd", ["-f", SHARED_CRED_GROUP]);
   await runPrivileged("groupadd", ["-f", SHARED_POT_GROUP]);
-  await runPrivileged("usermod", ["-aG", `${SHARED_CRED_GROUP},${SHARED_POT_GROUP}`, COMMONS_USER]);
-  // Shared credential: traversable dir chain, seed the file, group+mode it 660.
-  await runPrivileged("install", ["-d", "-o", "root", "-g", SHARED_CRED_GROUP, "-m", "0750", dir]);
-  await runPrivileged("cp", ["-f", src, SHARED_CREDENTIAL_PATH]);
-  await runPrivileged("chgrp", [SHARED_CRED_GROUP, SHARED_CREDENTIAL_PATH]);
-  await runPrivileged("chmod", ["660", SHARED_CREDENTIAL_PATH]);
+  await runPrivileged("usermod", ["-aG", SHARED_POT_GROUP, COMMONS_USER]);
   // Shared pot base (setgid, group shadok-shared).
   await runPrivileged("install", ["-d", "-o", "root", "-g", SHARED_POT_GROUP, "-m", "2770", SHARED_POT_PATH]);
   await runPrivileged("chmod", ["2770", SHARED_POT_PATH]);
   // HOME-side AS `main` (TOCTOU: root never writes through an agent-owned path).
-  await runPrivileged("runuser", ["-u", COMMONS_USER, "--", "install", "-d", "-m", "700", `${mainHome}/.claude`]);
-  await runPrivileged(
-    "runuser",
-    ["-u", COMMONS_USER, "--", "ln", "-sfn", SHARED_CREDENTIAL_PATH, `${mainHome}/.claude/.credentials.json`],
-  );
   await runPrivileged("runuser", ["-u", COMMONS_USER, "--", "ln", "-sfn", SHARED_POT_PATH, `${mainHome}/shared`]);
 }
 
@@ -2862,7 +2666,7 @@ async function runGroupsMigration(): Promise<void> {
   await runMigration(plan, {
     createCommonsUser: migCreateCommonsUser,
     chownTreeToCommons: migChownTreeToCommons,
-    seedSharedCredential: migSeedSharedCredential,
+    wireCommonsPot: migWireCommonsPot,
     migrateVaultToMain: migVaultToMain,
     provisionPrivateGroup: migProvisionPrivateGroup,
     reprovisionGroup: migReprovisionGroup,
@@ -2886,12 +2690,9 @@ async function runGroupsMigration(): Promise<void> {
 /**
  * Run the migration if it has something to do — at boot, AND re-tried after a
  * successful Claude sign-in. The second trigger is the fix for the fresh-instance
- * failure: the migration's CORE "seed shared Claude credential" step reads
- * `~/.claude/.credentials.json`, which does NOT exist until someone signs in —
- * and on a brand-new instance the sign-in happens AFTER boot, via the web card.
- * So the first-boot migration ALWAYS failed its credential seed, withheld the
- * marker, and showed the red "isolation did NOT complete" banner until a MANUAL
- * restart. `startFirstAgent` is already re-fired from the same sign-in handler
+ * failure: a brand-new instance signs in AFTER boot, via the web card, and a
+ * core step that failed in between would withhold the marker and show the red
+ * "isolation did NOT complete" banner until a MANUAL restart. `startFirstAgent` is already re-fired from the same sign-in handler
  * for the mirror-image reason (a lead agent a signed-out boot could not start);
  * re-running the migration there makes a fresh instance heal itself the moment it
  * is signed in — no restart, no scary banner.
@@ -2969,19 +2770,7 @@ app.post("/groups", async (req, res) => {
           seed: seedGroupHome,
           homeBase: GROUP_HOME_BASE,
           userExists: osUserExists,
-          // Task 7: share the one Claude credential into the HOME (symlink +
-          // shared unix group). Only in multi-tenant — this route only ever
-          // provisions there, but gate explicitly so the intent is local.
-          sharedCredentialPath:
-            DEPLOYMENT_MODE === "multi-tenant" ? SHARED_CREDENTIAL_PATH : undefined,
-          // Review fixes: refuse to chown/chmod through a planted symlink
-          // (Important #2), refuse clearly when the shared file is absent
-          // (Important #3), and PROVE the wired credential is reachable by the
-          // group user before the agent can spawn (Important #1).
           sharedPotPath: DEPLOYMENT_MODE === "multi-tenant" ? SHARED_POT_PATH : undefined,
-          claudeDirStat: claudeDirStatReal,
-          sharedCredentialExists: sharedCredentialExistsReal,
-          reachable: credentialReachableReal,
         }).then(() => void 0),
       loadGroups,
       saveGroups,
@@ -5118,8 +4907,8 @@ function makePilot(
   const claudePath = claudeCommand();
   // When we drop to an OS user, set its HOME too: setpriv changes the uid but not
   // $HOME, so without this the agent keeps the server's HOME=/root — un-traversable
-  // (mode 700) — and never reaches its per-group ~/.claude (the credential symlink
-  // + skills + settings Tasks 6/7/12 wired there), breaking auth and skills for
+  // (mode 700) — and never reaches its per-group ~/.claude (the skills
+  // + settings Tasks 6/12 wired there), breaking auth and skills for
   // EVERY dropped agent. `homeForUser` is the SAME derivation the provisioning used
   // (`${GROUP_HOME_BASE}/<user>`: commons `main` → GROUP_HOME_BASE/main, a private
   // group → GROUP_HOME_BASE/sk-<id>), so the spawn's HOME is exactly where the
@@ -5385,7 +5174,6 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
   // Task 7 verify-first gate (same as the spawn path): a restart re-adopts the
   // HOME, so it is another moment the symlink could have been overwritten by a
   // rename refresh — warn LOUDLY rather than let auth break in silence.
-  warnIfCredentialDiverged(restartGroupId, restartUser);
   s.pilot = makePilot(
     s.id,
     s.cwd,
@@ -6746,9 +6534,6 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             groups: groupsNow,
             storedGroupId,
           });
-          // Task 7 verify-first gate: before dropping to the group's user, warn
-          // LOUDLY if its HOME credential is no longer the shared symlink (the
-          // rename-refresh signature that would silently break multi-user auth).
           // The group this agent really belongs to: a resume keeps the channel's
           // stored group; a new spawn gets the one the isolation policy derived
           // from the caller's identity. Both null in mono-tenant → secrets = Main.
@@ -6758,7 +6543,6 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // has completed. Before migration (or mono-tenant) this is null and the
           // commons stays the server's own user, byte-for-byte today's.
           const dropUser = isolation.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
-          warnIfCredentialDiverged(agentGroupId, dropUser);
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
@@ -7581,9 +7365,7 @@ Object.assign(process.env, ensureSshIdentity());
 // `maybeRunGroupsMigration` owns the mono-tenant no-op (it sets `groupsMigrated`
 // from the marker), the in-flight guard, and the post-migration reprovision
 // (`ensureGroupsProvisioned`) — so the boot trigger and the post-sign-in retry
-// (in `/auth/code`) share one code path. On a FRESH instance the boot run's
-// credential-seed step fails (not signed in yet); the sign-in retry is what makes
-// it complete without a manual restart.
+// (in `/auth/code`) share one code path.
 void maybeRunGroupsMigration("boot");
 
 server.listen(port, HOST, () => {

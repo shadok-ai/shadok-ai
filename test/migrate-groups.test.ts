@@ -112,7 +112,7 @@ function recordingDeps(overrides: Partial<MigrationDeps> = {}): { deps: Migratio
   const deps: MigrationDeps = {
     createCommonsUser: () => { calls.push("createCommonsUser"); },
     chownTreeToCommons: () => { calls.push("chownTree"); },
-    seedSharedCredential: () => { calls.push("seedCredential"); },
+    wireCommonsPot: () => { calls.push("commonsPot"); },
     migrateVaultToMain: () => { calls.push("vault"); },
     provisionPrivateGroup: (a) => { calls.push(`provision:${a}`); },
     reprovisionGroup: (g) => { calls.push(`reprovision:${g}`); },
@@ -140,7 +140,7 @@ test("runMigration: runs the steps in order and writes the marker last", async (
   assert.deepEqual(calls, [
     "createCommonsUser",
     "chownTree",
-    "seedCredential",
+    "commonsPot",
     "vault",
     "provision:ada",
     "provision:bob",

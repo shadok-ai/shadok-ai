@@ -5,10 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // A FRESH capable instance cannot complete its group migration at boot: the CORE
-// "seed shared Claude credential" step reads `~/.claude/.credentials.json`, which
-// does not exist until someone signs in — and on a brand-new instance the sign-in
-// happens AFTER boot, via the web card. So the first-boot migration ALWAYS fails
-// that step, withholds the marker, and raises the red "isolation did NOT complete"
+// (since removed) credential-seed step read `~/.claude/.credentials.json`, which
+// did not exist until someone signs in — and on a brand-new instance the sign-in
+// happens AFTER boot, via the web card. So the first-boot migration failed
+// that step, withheld the marker, and raises the red "isolation did NOT complete"
 // banner, and it only retries on the NEXT boot — leaving the commons un-isolated
 // behind a scary banner until a MANUAL restart (observed on the mt373 test
 // instance: two failed boot migrations, then a third that succeeded post-restart).

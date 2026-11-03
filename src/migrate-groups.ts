@@ -161,10 +161,10 @@ export interface MigrationDeps {
   /** Step 2 — chown the root-owned tree (workspace, HOMEs, flat vault) to `main`.
    *  Idempotent (chowning already-`main`-owned files is a no-op). */
   chownTreeToCommons: () => Promise<void> | void;
-  /** Step 3 — seed the neutral shared Claude credential from the existing
-   *  `~/.claude/.credentials.json` and wire the commons HOME to it (symlink +
-   *  shared groups + the `~/shared` pot link). Idempotent. */
-  seedSharedCredential: () => Promise<void> | void;
+  /** Step 3 — wire the commons HOME to the shared pot (shared group + the
+   *  `~/shared` link). Idempotent. Non-core: the agent token is injected at spawn,
+   *  so there is no credential to seed and nothing here gates the marker. */
+  wireCommonsPot: () => Promise<void> | void;
   /** Step 4 — lift the flat secret vault into Main's slice. Idempotent (a vault
    *  already in the nested shape has nothing flat to migrate). */
   migrateVaultToMain: () => Promise<void> | void;
@@ -193,7 +193,7 @@ export interface MigrationDeps {
  *    partial failure must never throw into the boot path (a thrown migration
  *    would take the whole instance down, far worse than an un-isolated commons);
  *  - the volume marker is written LAST and ONLY when the CORE steps (create
- *    `main`, chown the tree, seed the shared credential) all succeeded. Those are
+ *    `main`, chown the tree) both succeeded. Those are
  *    what make it safe for commons to drop to `main`; if any failed, the marker
  *    is withheld so `commonsOsUser` stays `null` (commons as today) and the next
  *    boot retries — safe because every step is idempotent. Group-level failures
@@ -235,7 +235,7 @@ export async function runMigration(plan: MigrationPlan, deps: MigrationDeps): Pr
   // ── Core: the commons must end up non-root `main`. ──
   await step("create commons user `main`", plan.createCommonsUser, deps.createCommonsUser, true);
   await step("chown root-owned tree → `main`", plan.chownTree, deps.chownTreeToCommons, true);
-  await step("seed shared Claude credential + wire commons HOME", plan.createCommonsUser, deps.seedSharedCredential, true);
+  await step("wire commons HOME to the shared pot", plan.createCommonsUser, deps.wireCommonsPot, false);
 
   // ── Data + groups: non-core (reconciled elsewhere if they fail). ──
   await step("flat vault → Main slice", plan.vaultToMain, deps.migrateVaultToMain, false);
