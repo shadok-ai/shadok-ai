@@ -684,14 +684,20 @@ injected as `CLAUDE_CODE_OAUTH_TOKEN`; see the isolation section). Minting that
 token is `claude setup-token`, and the cockpit drives it so an instance is
 self-sufficient — obtain it when missing, rotate it later, from the web card or
 Telegram `/mttoken`+`/mtcode`, no shell. It looks like the sign-in's twin and
-is **not**: `setup-token` is `isatty`-gated (measured v2.1.317) — on plain
-pipes it prints nothing, so it must run on a **node-pty** (the one place the
-sign-in's "no PTY" rule is reversed). The URL is read from the OSC-8 target; the
-minted token is printed on success and is the whole security surface — it is
-captured from the stream and written straight to the vault by a server-side
-`store`, and `submitSetupTokenCode` resolves only ok/err, so nothing (HTTP body,
-Telegram reply, log, page) ever carries the value. The PTY is spawned wide so a
-long token never line-wraps. Design:
+is **not**: `setup-token` is `isatty`-gated (measured v2.1.317) — on plain pipes
+it prints nothing, so it needs a real terminal. It runs inside a **detached tmux
+session** (the same engine as every agent, `src/tmux.ts`) and the flow reads the
+pane **already rendered** (`capture-pane -p`), where the URL and the token are
+plain text — a first cut drove node-pty and parsed the raw OSC-8/CSI stream, and
+that silently missed the minted token at the success screen the one time it met a
+real mint. The minted token is printed on success and is the whole security
+surface — it is read off the rendered pane and written straight to the vault by a
+server-side `store`, and `submitSetupTokenCode` resolves only ok/err, so nothing
+(HTTP body, Telegram reply, log, page) ever carries the value; the module makes
+no `console.*` call at all, because the captured buffer can contain the token.
+The pane is rendered wide (`PANE_COLS = 400`) so the ~108-char token never
+line-wraps, and tmux is required (a host without it gets a clear error, not a
+silent hang). Design:
 `docs/superpowers/specs/2026-11-03-mt-token-provisioning-design.md`.
 
 `authStatus` reports **three** states, not two: "I observed it is signed out" and

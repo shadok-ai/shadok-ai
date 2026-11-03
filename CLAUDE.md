@@ -1657,23 +1657,40 @@ Auth section of `docs/architecture.md`).
     deliberately "everything past the time" so a sender whose name contains
     " · " survives, and a greedier rule would eat into it.
 
-53. **`claude setup-token` needs a PTY, and the token it mints never leaves the
-    server.** The sign-in (`auth login`) runs on plain pipes, so the obvious move
-    — make the token card its twin — is wrong: `setup-token` is `isatty`-gated
-    (measured v2.1.317), prints NOTHING on pipes, and only renders its TUI (and
-    its URL) on a **`node-pty`**. So `src/setup-token.ts` drives a pty, not a
-    spawn, and reads the URL from the **OSC-8 hyperlink target**, not prose. The
-    second half is the whole security surface: unlike `auth login` (which writes
-    the keychain, nothing to capture), `setup-token` PRINTS the token on success.
-    It is captured from the stream and handed to a server-side `store`
-    (`setSecret` into the vault) — it is **never** logged, returned in an HTTP
-    body, echoed to Telegram, or placed in the page. `submitSetupTokenCode`
-    resolves only `{ok}`/`{error}`; the endpoints (`/mt-token/*`, admin +
-    browser-origin) and the Telegram `/mtcode` relay only that. Two spelling
-    traps the tests pin: the PTY must be **wide** (`cols: 400`) or a long token
-    line-wraps and a real newline truncates it past any escape-strip; and the
-    parser strips escapes BEFORE matching `sk-ant-oat01-…`, so cursor moves
-    interleaved in the render cannot split it.
+53. **`claude setup-token` runs in a tmux session — read the RENDERED screen, not
+    a raw stream — and the token it mints never leaves the server.** The sign-in
+    (`auth login`) runs on plain pipes, so the obvious move — make the token card
+    its twin — is wrong: `setup-token` is `isatty`-gated (measured v2.1.317) and
+    prints NOTHING on pipes, so it needs a real terminal. The FIRST cut drove it
+    on a node-pty and reverse-engineered the raw OSC-8/CSI stream; that silently
+    missed the minted token at the success screen the one time it met a real mint
+    (the whole success path had never been exercised — a value matched by SHAPE
+    off a reconstructed fixture, never a live keystroke). So `src/setup-token.ts`
+    now drives it inside a **detached tmux session** — the same engine as every
+    agent (`src/tmux.ts`) — and reads the pane **already rendered**
+    (`capture-pane -p`), where the URL and the token are plain text and the whole
+    escape-stripping problem is gone. Measured live (v2.1.317, 2026-11-04) driving
+    it through tmux exactly as the module does: the URL prints as a bare
+    `https://` on its own line; the code box is a **masked** field, so the flow
+    waits for the typed code to land before Enter; a bad code renders
+    `OAuth error: Invalid code…` + `Press Enter to retry` (the retry needs an
+    explicit Enter); and on success the screen reads `✓ Long-lived authentication
+    token created successfully!` / `Your OAuth token (valid for 1 year):` / the
+    `sk-ant-oat01-…` token (108 chars, full, unmasked) / `Use this token by
+    setting: export CLAUDE_CODE_OAUTH_TOKEN=<token>` — that last line's literal
+    `<token>` placeholder must NOT be mistaken for the token (the parser matches
+    the `sk-ant-oat01-` shape, which the placeholder is not). The second half is
+    the whole security surface: unlike `auth login` (which writes the keychain,
+    nothing to capture), `setup-token` PRINTS the token on success. It is read off
+    the rendered pane and handed to a server-side `store` (`setSecret` into the
+    vault) — **never** logged (the module makes no `console.*` call, because the
+    captured buffer can hold the token), returned in an HTTP body, echoed to
+    Telegram, or placed in the page. `submitSetupTokenCode` resolves only
+    `{ok}`/`{error}`; the endpoints (`/mt-token/*`, admin + browser-origin) and
+    the Telegram `/mtcode` relay only that. Two spelling traps the tests pin: the
+    pane must be **wide** (`PANE_COLS = 400`) or the ~108-char token line-wraps and
+    a real newline truncates it; and tmux is **required** — a host without it (the
+    guard `tmuxAvailable()`) returns a clear error rather than a silent hang.
 
 ## Conventions
 
