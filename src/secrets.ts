@@ -143,6 +143,35 @@ export interface VisibleSecret {
  * own > shared > main. In mono-tenant the caller resolves to Main only, so this
  * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
  */
+/**
+ * Server-owned credentials. `MT_CLAUDE_OAUTH_TOKEN` is the instance's long-lived
+ * subscription token: the server injects it into isolated-group agents as
+ * `CLAUDE_CODE_OAUTH_TOKEN`, so it is never a user-managed secret. "Reserved"
+ * hides it from the human-facing listings ONLY — `resolveSecretValues` /
+ * `secretsFor` still resolve it, or the injection would stop working.
+ */
+export const RESERVED_SECRET_NAMES: ReadonlySet<string> = new Set(["MT_CLAUDE_OAUTH_TOKEN"]);
+
+/** Approximate lifetime of a `claude setup-token` token (the token itself is opaque). */
+export const LONG_LIVED_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
+
+/**
+ * Pure: is this instance running agents on the long-lived token, and when does
+ * that token roughly lapse? The token carries no readable expiry, so the date is
+ * `updatedAt + 1 year` — a re-mint overwrites the secret and bumps `updatedAt`,
+ * which restarts the window correctly.
+ */
+export function longLivedTokenInfo(
+  vault: Vault,
+  mode: "multi-tenant" | "mono-tenant",
+): { longLived: boolean; longLivedExpiresAt: number | null } {
+  const entry = mode === "multi-tenant" ? vault[MAIN_GROUP_ID]?.["MT_CLAUDE_OAUTH_TOKEN"] : undefined;
+  if (!entry) return { longLived: false, longLivedExpiresAt: null };
+  const u = entry.updatedAt;
+  const ok = typeof u === "number" && Number.isFinite(u) && u > 0;
+  return { longLived: true, longLivedExpiresAt: ok ? u + LONG_LIVED_TOKEN_TTL_MS : null };
+}
+
 export function visibleSecrets(vault: Vault, memberGroupIds: ReadonlySet<string>): VisibleSecret[] {
   const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2 };
   const chosen = new Map<string, VisibleSecret>();
@@ -154,6 +183,7 @@ export function visibleSecrets(vault: Vault, memberGroupIds: ReadonlySet<string>
     if (!slice || typeof slice !== "object") continue;
     for (const name of Object.keys(slice)) {
       if (!Object.hasOwn(slice, name)) continue;
+      if (RESERVED_SECRET_NAMES.has(name)) continue;
       const e = slice[name];
       const audit = { createdBy: e.createdBy, createdAt: e.createdAt, updatedAt: e.updatedAt };
       if (gid === MAIN_GROUP_ID) consider({ name, source: "main", ...audit });
@@ -275,7 +305,9 @@ export function saveVault(v: Vault): void {
 
 /** Secret names (never the values) in one group's own slice, sorted. */
 export function secretNames(groupId: string = MAIN_GROUP_ID): string[] {
-  return Object.keys(loadVault()[groupId] ?? {}).sort();
+  return Object.keys(loadVault()[groupId] ?? {})
+    .filter((n) => !RESERVED_SECRET_NAMES.has(n))
+    .sort();
 }
 
 /** Create or update a secret in `groupId` (default Main); an update keeps its sharing and provenance. */

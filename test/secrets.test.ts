@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveSecretValues, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, resolveSecretValues, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
@@ -71,4 +71,27 @@ test("resolve: prototype-key names do not disturb normal names in the same group
     resolveSecretValues(v, "g", ["constructor", "A", "toString", "S", "M", "hasOwnProperty"]),
     { A: "a", S: "s", M: "m" },
   );
+});
+
+test("reserved: MT_CLAUDE_OAUTH_TOKEN is hidden from the listing but still resolves", () => {
+  const v: Vault = { main: { MT_CLAUDE_OAUTH_TOKEN: e("tok", "main"), NORMAL: e("n", "main") } };
+  assert.ok(RESERVED_SECRET_NAMES.has("MT_CLAUDE_OAUTH_TOKEN"));
+  assert.deepEqual(visibleSecrets(v, new Set(["main"])).map((s) => s.name), ["NORMAL"]);
+  assert.equal(resolveSecretValues(v, "main", ["MT_CLAUDE_OAUTH_TOKEN"]).MT_CLAUDE_OAUTH_TOKEN, "tok");
+});
+
+test("reserved: hidden in any group/source", () => {
+  const v: Vault = { a: { MT_CLAUDE_OAUTH_TOKEN: e("x", "a", ["b"]) } };
+  assert.deepEqual(visibleSecrets(v, new Set(["a"])), []);
+  assert.deepEqual(visibleSecrets(v, new Set(["b"])), []);
+});
+
+test("longLivedTokenInfo: MT + token → updatedAt + 1 year; mono / absent → false", () => {
+  const ent = { ...e("tok", "main"), updatedAt: 5_000 };
+  const v: Vault = { main: { MT_CLAUDE_OAUTH_TOKEN: ent } };
+  assert.deepEqual(longLivedTokenInfo(v, "multi-tenant"), { longLived: true, longLivedExpiresAt: 5_000 + LONG_LIVED_TOKEN_TTL_MS });
+  assert.deepEqual(longLivedTokenInfo(v, "mono-tenant"), { longLived: false, longLivedExpiresAt: null });
+  assert.deepEqual(longLivedTokenInfo({ main: {} }, "multi-tenant"), { longLived: false, longLivedExpiresAt: null });
+  const bad: Vault = { main: { MT_CLAUDE_OAUTH_TOKEN: { ...ent, updatedAt: NaN } } };
+  assert.deepEqual(longLivedTokenInfo(bad, "multi-tenant"), { longLived: true, longLivedExpiresAt: null });
 });

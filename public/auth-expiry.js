@@ -40,6 +40,9 @@ export function fmtExpiry(ts, now = Date.now()) {
  */
 export function expiryWarning(auth, now = Date.now()) {
   if (!auth) return null;
+  // Agents on a long-lived token never use the interactive sign-in: its refresh
+  // clock is irrelevant to them, so don't nag about it.
+  if (auth.longLived) return null;
   if (auth.state === "unknown" || auth.state === "signed-out" || auth.loggedIn === false) return null;
   const ts = auth.tokenExpiresAt;
   if (typeof ts !== "number" || !Number.isFinite(ts)) return null;
@@ -50,4 +53,29 @@ export function expiryWarning(auth, now = Date.now()) {
     ? "Your Claude sign-in has expired — re-login to keep your agents running."
     : "Your Claude sign-in expires " + fmtExpiry(ts, now) + " — re-login now to avoid interruptions.";
   return { remainingMs, text, expired };
+}
+
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * What the account panel shows as the token's expiry. On a long-lived-token
+ * instance the token is opaque, so the date is an approximation (marked "≈");
+ * otherwise the interactive sign-in's refresh clock, as before.
+ *
+ * @param {{longLived?: boolean, longLivedExpiresAt?: number|null, tokenExpiresAt?: number}|null} auth
+ * @param {number} [now]
+ * @returns {string|null} null when there is nothing to show
+ */
+export function accountExpiryLine(auth, now = Date.now()) {
+  if (!auth) return null;
+  if (auth.longLived) {
+    const ts = auth.longLivedExpiresAt;
+    if (typeof ts === "number" && Number.isFinite(ts)) {
+      const dt = new Date(ts);
+      return "Long-lived token — expires ≈ " + MONTHS[dt.getUTCMonth()] + " " + dt.getUTCFullYear();
+    }
+    return "Long-lived token — no fixed expiry (re-mint via `claude setup-token`)";
+  }
+  if (typeof auth.tokenExpiresAt === "number") return fmtExpiry(auth.tokenExpiresAt, now);
+  return null;
 }

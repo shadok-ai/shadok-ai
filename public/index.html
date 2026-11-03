@@ -3449,9 +3449,10 @@
   window.looksLikeEmoji = looksLikeEmoji;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
-  import { fmtExpiry, expiryWarning } from "/auth-expiry.js?v=__ASSET_V__";
+  import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
+  window.accountExpiryLine = accountExpiryLine;
   import { filterLedger, ledgerFacets, ledgerAge, LEDGER_AGES, LEDGER_SORTS } from "/ledger-view.js?v=__ASSET_V__";
   window.filterLedger = filterLedger;
   window.ledgerFacets = ledgerFacets;
@@ -3584,6 +3585,7 @@
     // after the /auth fetch), and the re-login reminder never nags blind.
     fmtExpiry: () => "—",
     expiryWarning: () => null,
+    accountExpiryLine: () => null,
     // No module → no link button, and a link opened before it lands is read
     // again on `shadok-bridge-ready`.
     buildMessageLink: () => null,
@@ -8020,7 +8022,11 @@
     if (relBtn) relBtn.hidden = false;
     accEl.textContent = (a.email || "signed in") + (a.subscriptionType ? " · " + a.subscriptionType : "");
     accEl.title = a.authMethod ? "via " + a.authMethod : "";
-    if (typeof a.tokenExpiresAt === "number") {
+    if (a.longLived) {
+      tokEl.textContent = window.accountExpiryLine(a) || "—";
+      tokEl.title = "Agents authenticate with a long-lived token (opaque, so the date is approximate: " +
+        "one year from when it was last provisioned).";
+    } else if (typeof a.tokenExpiresAt === "number") {
       const ms = a.tokenExpiresAt - Date.now();
       tokEl.textContent = window.fmtExpiry(a.tokenExpiresAt);
       tokEl.style.color = ms <= 0 ? "var(--err)" : ms < 3 * 86400000 ? "var(--amber)" : "";

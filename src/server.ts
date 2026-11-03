@@ -238,6 +238,7 @@ import {
   secretWriteDecision,
   secretOwnerGroup,
   visibleSecrets,
+  longLivedTokenInfo,
   loadVault,
   recordOrigin,
   originProfile,
@@ -1936,6 +1937,7 @@ app.get("/auth", async (_req, res) =>
   res.json({
     ...(await authStatus()),
     ...readTokenExpiry(),
+    ...longLivedTokenInfo(loadVault(), DEPLOYMENT_MODE),
     ...customBackendFields(),
   }),
 );
