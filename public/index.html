@@ -2540,6 +2540,33 @@
      flash of the dark default. Nonce'd like every inline script (invariant 12). -->
 <script nonce="__CSP_NONCE__">
   try { if (localStorage.getItem("cp.mode") === "light") document.documentElement.setAttribute("data-mode", "light"); } catch (e) {}
+  // When the cockpit's OWN session expires mid-use (the account cookie lapses —
+  // a week by default — or the GUI password changes under us), the server starts
+  // answering every request 401 and refuses the WebSocket upgrade. The page used
+  // to just fail quietly: a paste "not sent", the agent list frozen, the socket
+  // looping "reconnecting", with nothing saying you are logged out (the admin hit
+  // exactly this and read it as a file bug). A 401 here can ONLY mean logged out:
+  // authorization failures (a member hitting an admin route) are 403, and a tab
+  // that loads while already logged out never reaches this page — the gate serves
+  // the login screen for a text/html GET. So the first 401 any fetch sees sends
+  // us back to the login screen, which a plain reload of "/" renders (that same
+  // gate). Installed in the first inline script, before any boot fetch runs, so
+  // even the opening /defaults and /channels are covered. A half-typed prompt is
+  // already saved to localStorage on input, so the reload loses nothing; the
+  // cockpit restores it once you sign back in.
+  (function () {
+    var goneToLogin = false;
+    var nativeFetch = window.fetch.bind(window);
+    window.fetch = function () {
+      return nativeFetch.apply(null, arguments).then(function (res) {
+        if (res && res.status === 401 && !goneToLogin) {
+          goneToLogin = true;
+          location.reload();
+        }
+        return res;
+      });
+    };
+  })();
 </script>
 </head>
 <body>
