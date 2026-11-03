@@ -26,6 +26,21 @@ test("secretNamesForProfile: binds on the SECRET side (entry.profiles), scoped t
   assert.deepEqual(secretNamesForProfile(v, "g", "", ["LEGACY"]), ["LEGACY"]);
 });
 
+test("resolve: a PUBLIC group is a commons — its secret resolves for every group", () => {
+  const v: Vault = {
+    pub: { PK: eb("pv", "pub", ["Dev"]) },   // a public group's secret, bound to Dev
+    main: { MK: e("mv", "main") },
+    priv: { },                                // a private group with nothing of its own
+  };
+  const commons = ["main", "pub"]; // Main + the public group
+  // An agent in the PRIVATE group resolves the public secret (commons), and Main.
+  assert.deepEqual(resolveSecretValues(v, "priv", ["PK", "MK"], commons), { PK: "pv", MK: "mv" });
+  // And its profile binding is honoured cross-group: Dev gets PK from the private group.
+  assert.deepEqual(secretNamesForProfile(v, "priv", "Dev", [], commons), ["PK"]);
+  // Without the public group in the commons list (default = Main only), it does NOT resolve.
+  assert.deepEqual(resolveSecretValues(v, "priv", ["PK"]), {});
+});
+
 test("resolve: own beats shared-in beats Main beats absent", () => {
   const v: Vault = {
     main: { K: e("main", "main"), M: e("m", "main") },

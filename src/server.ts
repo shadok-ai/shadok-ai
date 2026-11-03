@@ -639,7 +639,7 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
     const profile = target.profile ? getProfile(target.profile) : undefined;
     // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
     // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
-    const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID);
+    const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
     const env = { ...process.env, ...secretEnv };
     recordSecretAudit({
       action: "cron-check",
@@ -2356,6 +2356,16 @@ const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_H
  *  content tail and `loadHistory` must use so an isolated agent's reply streams. */
 function agentTranscriptHome(user: string | null | undefined): string {
   return user ? homeForUser(user, GROUP_HOME_BASE) : os.homedir();
+}
+
+/** The COMMONS tier for secret resolution: Main plus every PUBLIC non-Main group.
+ *  A public group is visible-to-all ("public = commun"), so its secrets resolve
+ *  for every agent like Main's — not only for an agent that happens to run in it.
+ *  Mono-tenant (no groups) collapses to Main alone, today's behaviour. */
+function commonsGroupIds(): string[] {
+  const ids: string[] = [MAIN_GROUP_ID];
+  for (const g of loadGroups()) if (g.nature === "public" && g.id !== MAIN_GROUP_ID) ids.push(g.id);
+  return ids;
 }
 
 /** The transcript HOME for a CHANNEL that may not be live (e.g. GET /download of
@@ -4792,7 +4802,7 @@ function ledgerReflex(): string | null {
  *  `makePilot` hands the process, so the verdict cannot disagree with it. */
 function sessionBackend(profileName?: string | null, groupId?: string | null): Backend {
   const profile = profileName ? getProfile(profileName) : undefined;
-  const secretEnv = secretsForProfile(profileName, profile?.secrets, groupId ?? MAIN_GROUP_ID);
+  const secretEnv = secretsForProfile(profileName, profile?.secrets, groupId ?? MAIN_GROUP_ID, commonsGroupIds());
   return backendFor({ ...backendEnv(instanceBackendSource(), secretEnv), ...secretEnv });
 }
 
@@ -4887,7 +4897,7 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null): P
     deny: resolved?.deny,
     allow: resolved?.allow,
     permissionMode,
-    secretNames: secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets),
+    secretNames: secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets, commonsGroupIds()),
     capabilities: installedCapabilities(),
     pilotPrompt: pilotPrompt() ?? undefined,
     ledgerReflex: ledgerEnabled ? ledgerReflex() : null,
@@ -5025,7 +5035,7 @@ function makePilot(
   // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
   // must never print" was noise that buried the real ones. Resolved by the
   // agent's own group (own → shared-in → Main); null/mono-tenant → Main.
-  const secretEnv = secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID);
+  const secretEnv = secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds());
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
   // point off Anthropic, and maps the model aliases. See src/backend.ts.
@@ -5456,7 +5466,7 @@ function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
   const profile = s.profile ? getProfile(s.profile) : undefined;
   recordSecretAudit({
     action: "injected",
-    secrets: Object.keys(secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID)),
+    secrets: Object.keys(secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID, commonsGroupIds())),
     ...by,
     agent: s.id,
     agentName: loadChannels().find((c) => c.sessionId === s.id)?.name,

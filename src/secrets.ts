@@ -66,7 +66,12 @@ const ownOf = <T>(obj: Record<string, T> | undefined, key: string): T | undefine
  * first match wins — or undefined. The single selection rule behind both the
  * value resolution and the profile-binding lookup, so they can never disagree.
  */
-export function resolveSecretEntry(vault: Vault, groupId: string, name: string): SecretEntry | undefined {
+export function resolveSecretEntry(
+  vault: Vault,
+  groupId: string,
+  name: string,
+  commonsIds: readonly string[] = [MAIN_GROUP_ID],
+): SecretEntry | undefined {
   const mine = ownOf(ownOf(vault, groupId), name);
   if (mine) return mine;
   // When two groups share the same name with the caller, the winner is
@@ -75,13 +80,28 @@ export function resolveSecretEntry(vault: Vault, groupId: string, name: string):
     const e = ownOf(gv, name);
     if (gid !== groupId && e && e.sharedWith.includes(groupId)) return e;
   }
-  return ownOf(ownOf(vault, MAIN_GROUP_ID), name);
+  // The COMMONS tier: Main, plus every PUBLIC non-Main group — a public group is
+  // visible-to-all (operator decision 2026-11-03: "public = commun"), so its
+  // secrets resolve for EVERY agent, exactly like Main's. `commonsIds` is passed
+  // by the server (it owns the group natures); it defaults to Main alone, so a
+  // caller that does not know the natures keeps today's own→shared→Main behaviour.
+  for (const cid of commonsIds) {
+    if (cid === groupId) continue; // own already checked above
+    const e = ownOf(ownOf(vault, cid), name);
+    if (e) return e;
+  }
+  return undefined;
 }
 
-export function resolveSecretValues(vault: Vault, groupId: string, names: readonly string[]): Record<string, string> {
+export function resolveSecretValues(
+  vault: Vault,
+  groupId: string,
+  names: readonly string[],
+  commonsIds: readonly string[] = [MAIN_GROUP_ID],
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of names) {
-    const e = resolveSecretEntry(vault, groupId, name);
+    const e = resolveSecretEntry(vault, groupId, name, commonsIds);
     if (e) out[name] = e.value;
   }
   return out;
@@ -102,6 +122,7 @@ export function secretNamesForProfile(
   groupId: string,
   profileName: string,
   profileSecrets: readonly string[] = [],
+  commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): string[] {
   const out = new Set<string>(profileSecrets.filter((n) => typeof n === "string" && n));
   if (profileName) {
@@ -111,7 +132,7 @@ export function secretNamesForProfile(
       for (const n of Object.keys(slice)) if (Object.hasOwn(slice, n)) names.add(n);
     }
     for (const name of names) {
-      const e = resolveSecretEntry(vault, groupId, name);
+      const e = resolveSecretEntry(vault, groupId, name, commonsIds);
       if (e && e.profiles.includes(profileName)) out.add(name);
     }
   }
@@ -478,9 +499,13 @@ export function recordOrigin(name: string, profile: string): void {
  * resolved from `groupId` (own → shared-in → Main). `groupId` defaults to Main,
  * which is every agent in a mono-tenant instance.
  */
-export function secretsFor(names: string[] | undefined, groupId: string = MAIN_GROUP_ID): Record<string, string> {
+export function secretsFor(
+  names: string[] | undefined,
+  groupId: string = MAIN_GROUP_ID,
+  commonsIds: readonly string[] = [MAIN_GROUP_ID],
+): Record<string, string> {
   if (!names?.length) return {};
-  return resolveSecretValues(loadVault(), groupId, names);
+  return resolveSecretValues(loadVault(), groupId, names, commonsIds);
 }
 
 /**
@@ -495,8 +520,9 @@ export function secretsForProfile(
   profileName: string | null | undefined,
   profileSecrets: string[] | undefined,
   groupId: string = MAIN_GROUP_ID,
+  commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): Record<string, string> {
   const vault = loadVault();
-  const names = secretNamesForProfile(vault, groupId, profileName ?? "", profileSecrets ?? []);
-  return names.length ? resolveSecretValues(vault, groupId, names) : {};
+  const names = secretNamesForProfile(vault, groupId, profileName ?? "", profileSecrets ?? [], commonsIds);
+  return names.length ? resolveSecretValues(vault, groupId, names, commonsIds) : {};
 }
