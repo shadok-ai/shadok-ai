@@ -364,6 +364,7 @@ import {
   resolveBin,
   sampleBin,
   type EnsureClaudeResult,
+  mtCredentialMessage,
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
@@ -2402,6 +2403,8 @@ async function killGroupAgents(groupId: string): Promise<void> {
  *  successful `runGroupsMigration`. Fail-safe default is `false` (commons as the
  *  server's own user — today's behaviour). */
 let groupsMigrated = false;
+/** Log the missing group token once, not on every spawn. */
+let mtTokenWarned = false;
 
 /**
  * A LOUD, persistent signal (surfaced on `/version` + the WS `version` message,
@@ -6263,6 +6266,20 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // "unknown", and the spawn itself would throw "posix_spawnp failed".
           const claude = await ensureClaudeOnce();
           if (!claude.ok) return fail(claude.error);
+          // Isolated-group agents (non-root, no keychain) authenticate from the
+          // injected MT_CLAUDE_OAUTH_TOKEN; without it every spawn dies on a
+          // bare auth error. Only once agents actually drop to users.
+          const mtMsg = mtCredentialMessage(
+            DEPLOYMENT_MODE === "multi-tenant" && groupsMigrated,
+            !!secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"],
+          );
+          if (mtMsg) {
+            if (!mtTokenWarned) {
+              mtTokenWarned = true;
+              console.error(`mt: ${mtMsg}`);
+            }
+            return fail(mtMsg);
+          }
           // An agent on a custom backend authenticates with its own token and
           // never touches the subscription, so the instance's sign-in is not
           // its business. The profile is resolved early (and cheaply) for this

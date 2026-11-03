@@ -464,6 +464,13 @@ guarantee does not yet hold for them. On a **brand-new** instance one migration
 step — seeding the shared Claude credential — can only run once you have signed
 in to Claude, which happens after boot; the banner stays up until then and the
 migration **finishes on its own the moment you sign in** (no restart needed).
+**One-time provisioning:** isolated-group agents authenticate with a
+subscription token injected into their environment, not a shared credential
+file. Run `claude setup-token` once and store the result as the vault secret
+`MT_CLAUDE_OAUTH_TOKEN`. Without it, group spawns are refused with a message
+naming this step. The token is valid for about a year; re-mint it by hand
+(`claude setup-token`, then overwrite the secret) before it expires.
+
 Telegram stays single-owner, and there are no
 disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
 
