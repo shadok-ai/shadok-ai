@@ -249,6 +249,9 @@ test("submitGroupCreate reads the selected tiles", () => {
   assert.match(fn![0], /readMemberGrid\(\$\("groupMembersPick"\)\)/);
   assert.doesNotMatch(fn![0], /selectedOptions/);
   assert.match(html, /function readMemberGrid[\s\S]*?\.member-tile\[aria-pressed="true"\]/);
+  // The locked self/owner tile is aria-pressed for a11y but must NOT be returned
+  // as a pick (owner is implicit) — the selector excludes it with :not(.me).
+  assert.match(html, /function readMemberGrid[\s\S]*?\.member-tile\[aria-pressed="true"\]:not\(\.me\)/);
 });
 
 test("restricted panel: avatar grid + 'Save members' that diffs and POSTs /groups/members", () => {

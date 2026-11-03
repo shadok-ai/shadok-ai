@@ -9958,7 +9958,11 @@
   }
   /** Names currently selected (the locked self is NOT included — it is implicit). */
   function readMemberGrid(container) {
-    return [...container.querySelectorAll('.member-tile[aria-pressed="true"]')].map((b) => b.dataset.name);
+    // Exclude the locked self/owner tile: it carries aria-pressed="true" for the
+    // screen reader (it IS a member), but the owner is implicit and must never be
+    // returned as a pick — otherwise creation re-adds the creator and the panel's
+    // save-diff POSTs a redundant add of the owner on every save.
+    return [...container.querySelectorAll('.member-tile[aria-pressed="true"]:not(.me)')].map((b) => b.dataset.name);
   }
   async function currentAccountName() {
     if (!me) { try { me = await (await fetch("/me")).json(); } catch { me = null; } }
