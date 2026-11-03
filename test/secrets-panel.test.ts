@@ -6,6 +6,9 @@ import {
   keyGroups,
   shareTargets,
   auditLine,
+  panelGroupOptions,
+  publicWriteTarget,
+  PUBLIC_BUCKET,
 } from "../public/secrets-panel.js";
 
 const main = { id: "main", name: "main" };
@@ -55,6 +58,54 @@ test("sections: garbage in gives empty sections, never a throw", () => {
   const s = secretSections(undefined, "x");
   assert.deepEqual(s, { own: [], sharedIn: [], inheritedMain: [] });
   assert.deepEqual(secretSections([null, { name: "Z", source: "weird" }], "x"), { own: [], sharedIn: [], inheritedMain: [] });
+});
+
+test("panelGroupOptions: restricted/private listed individually, public groups collapsed into one bucket, Main dropped", () => {
+  const groups = [
+    { id: "main", name: "main", nature: "public" },
+    { id: "pub1", name: "group 1", nature: "public" },
+    { id: "pub2", name: "group 2", nature: "public" },
+    { id: "comex", name: "COMEX", nature: "restricted" },
+    { id: "ada", name: "Ada", nature: "private" },
+  ];
+  assert.deepEqual(panelGroupOptions(groups), [
+    { value: "comex", label: "COMEX" },
+    { value: "ada", label: "Ada" },
+    { value: PUBLIC_BUCKET, label: "Public groups" },
+  ]);
+  // No public non-Main group → no bucket entry.
+  assert.deepEqual(panelGroupOptions([main, comex]), [{ value: "comex", label: "COMEX" }]);
+  assert.deepEqual(panelGroupOptions(null), []);
+});
+
+test("publicWriteTarget: the first public non-Main group, or null", () => {
+  const groups = [
+    { id: "main", name: "main", nature: "public" },
+    { id: "pub1", name: "group 1", nature: "public" },
+    { id: "pub2", name: "group 2", nature: "public" },
+  ];
+  assert.equal(publicWriteTarget(groups), "pub1");
+  assert.equal(publicWriteTarget([main, { id: "comex", name: "C", nature: "restricted" }]), null);
+  assert.equal(publicWriteTarget(null), null);
+});
+
+test("sections: the Public-groups bucket aggregates every public group's own secrets", () => {
+  const groups = [
+    { id: "main", name: "main", nature: "public" },
+    { id: "pub1", name: "group 1", nature: "public" },
+    { id: "pub2", name: "group 2", nature: "public" },
+    { id: "comex", name: "COMEX", nature: "restricted" },
+  ];
+  const secrets = [
+    { name: "A", source: "main" },
+    { name: "P1", source: "own", ownerGroup: "pub1" },
+    { name: "P2", source: "own", ownerGroup: "pub2" },
+    { name: "X", source: "own", ownerGroup: "comex" },
+  ];
+  // The bucket gathers pub1 + pub2, never the restricted group.
+  assert.deepEqual(secretSections(secrets, PUBLIC_BUCKET, groups).own.map((x) => x.name).sort(), ["P1", "P2"]);
+  // A concrete restricted group still scopes to itself.
+  assert.deepEqual(secretSections(secrets, "comex", groups).own.map((x) => x.name), ["X"]);
 });
 
 test("keyGroups: one key per group, Main last-resort only when it is all there is", () => {

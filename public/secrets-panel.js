@@ -9,6 +9,44 @@
 
 const MAIN_ID = "main";
 
+/** The synthetic selector value standing for ALL public non-Main groups at once:
+ *  public = visible to everyone, so the panel shows them as ONE "Public groups"
+ *  entry rather than listing each (operator decision 2026-11-03). */
+export const PUBLIC_BUCKET = "__public__";
+
+/** Public non-Main group ids (Main is the commons, surfaced on its own). */
+function publicGroupIds(groups) {
+  return (Array.isArray(groups) ? groups : [])
+    .filter((g) => g && g.id != null && String(g.id) !== MAIN_ID && g.nature === "public")
+    .map((g) => String(g.id));
+}
+
+/**
+ * The group entries the panel's selector offers: each NON-public group
+ * (restricted/private — a real per-group vault) individually, plus ONE
+ * "Public groups" entry when any public non-Main group exists. Main is not an
+ * entry — its secrets are the "Inherited from Main" section shown under every
+ * view. Returns `{ value, label }[]`.
+ */
+export function panelGroupOptions(groups) {
+  const out = [];
+  for (const g of Array.isArray(groups) ? groups : []) {
+    if (!g || g.id == null) continue;
+    const id = String(g.id);
+    if (id === MAIN_ID || g.nature === "public") continue; // public → the bucket; main → the commons
+    out.push({ value: id, label: g.name });
+  }
+  if (publicGroupIds(groups).length) out.push({ value: PUBLIC_BUCKET, label: "Public groups" });
+  return out;
+}
+
+/** The concrete group a WRITE under "Public groups" lands in: the first public
+ *  non-Main group (deterministic). They are all visible-to-all, so which one
+ *  physically holds the value does not matter to any reader. Null when none. */
+export function publicWriteTarget(groups) {
+  return publicGroupIds(groups)[0] ?? null;
+}
+
 /**
  * "flat" when only Main exists (today's look: one list, no group header, no
  * sections) — the common case, and the degradation rule. "grouped" as soon as
@@ -25,13 +63,20 @@ export function secretsPanelMode(groups) {
  * scopes the OWN section to one group (null = every own secret). Unknown or
  * malformed rows are dropped rather than guessed into a section.
  */
-export function secretSections(secrets, selectedGroupId) {
+export function secretSections(secrets, selectedGroupId, groups) {
   const out = { own: [], sharedIn: [], inheritedMain: [] };
   if (!Array.isArray(secrets)) return out;
+  const pubIds = new Set(publicGroupIds(groups));
   for (const s of secrets) {
     if (!s || typeof s.name !== "string") continue;
     if (s.source === "own") {
-      if (selectedGroupId == null || String(s.ownerGroup) === String(selectedGroupId)) out.own.push(s);
+      const owner = String(s.ownerGroup);
+      // The "Public groups" view aggregates every public group's own secrets;
+      // a concrete group view scopes to that id; null shows all own secrets.
+      const inBucket = selectedGroupId === PUBLIC_BUCKET && pubIds.has(owner);
+      const inGroup =
+        selectedGroupId != null && selectedGroupId !== PUBLIC_BUCKET && owner === String(selectedGroupId);
+      if (selectedGroupId == null || inBucket || inGroup) out.own.push(s);
     } else if (s.source === "shared") out.sharedIn.push(s);
     else if (s.source === "main") out.inheritedMain.push(s);
   }

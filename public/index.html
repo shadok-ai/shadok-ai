@@ -3438,7 +3438,7 @@
     defaultAgentName,
     hasReadonlyPreset,
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
-  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine } from "/secrets-panel.js?v=__ASSET_V__";
+  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
@@ -3500,6 +3500,8 @@
   window.secretUsers = secretUsers;
   window.secretsPanelMode = secretsPanelMode;
   window.secretSections = secretSections;
+  window.panelGroupOptions = panelGroupOptions;
+  window.publicWriteTarget = publicWriteTarget;
   window.keyGroups = keyGroups;
   window.shareTargets = shareTargets;
   window.auditLine = auditLine;
@@ -3556,6 +3558,8 @@
     // Before the module lands: the flat list (today's look) and no groups.
     secretsPanelMode: () => "flat",
     secretSections: () => ({ own: [], sharedIn: [], inheritedMain: [] }),
+    panelGroupOptions: () => [],
+    publicWriteTarget: () => null,
     keyGroups: () => [],
     shareTargets: () => [],
     auditLine: () => "",
@@ -9693,7 +9697,12 @@
     if (!Array.isArray(vaultNames)) vaultNames = [];
     return vaultNames;
   }
+  // The synthetic "all public groups" selector value (mirrors secrets-panel.js's
+  // PUBLIC_BUCKET; a local const so panel code never depends on the bridged
+  // window value being loaded).
+  const PUBLIC_BUCKET = "__public__";
   function groupName(id) {
+    if (String(id) === PUBLIC_BUCKET) return "Public groups";
     const g = vaultGroups.find((x) => String(x.id) === String(id));
     return g ? g.name : String(id);
   }
@@ -9704,7 +9713,12 @@
   // value. Flat / mono-tenant mode omits it — the server keeps today's
   // identity-derived behaviour (back-compat).
   function secretWriteGroup() {
-    return window.secretsPanelMode(vaultGroups) === "grouped" && panelGroup != null ? String(panelGroup) : null;
+    if (window.secretsPanelMode(vaultGroups) !== "grouped" || panelGroup == null) return null;
+    // "Public groups" is a view over several groups; a write needs a concrete
+    // target, so it lands in the canonical (first) public group — all public
+    // groups are visible-to-all, so which one physically holds it is immaterial.
+    if (String(panelGroup) === PUBLIC_BUCKET) return window.publicWriteTarget(vaultGroups);
+    return String(panelGroup);
   }
   // Add `group` to a write body only in grouped mode (omit otherwise).
   function withSecretGroup(body) {
@@ -9814,14 +9828,27 @@
       return;
     }
     const sel = $("secretsGroup");
-    const gs = vaultGroups.filter((g) => g && g.id != null);
-    sel.replaceChildren(...gs.map((g) => { const o = document.createElement("option"); o.value = String(g.id); o.textContent = g.name; return o; }));
-    if (panelGroup == null || !gs.some((g) => String(g.id) === String(panelGroup))) {
-      const own = vaultSecrets.find((x) => x.source === "own");
-      panelGroup = own ? String(own.ownerGroup) : (gs.find((g) => String(g.id) !== "main") || gs[0] || {}).id;
-    }
-    sel.value = String(panelGroup);
-    const sec = window.secretSections(vaultSecrets, panelGroup);
+    // Each restricted/private group individually + ONE "Public groups" entry
+    // (public = visible to all, so not listed one by one). Main is the commons,
+    // shown as the "Inherited from Main" section, never a selector entry.
+    const opts = window.panelGroupOptions(vaultGroups);
+    sel.replaceChildren(...opts.map((o) => { const el = document.createElement("option"); el.value = o.value; el.textContent = o.label; return el; }));
+    const valid = new Set(opts.map((o) => o.value));
+    // Map a selection to a valid option: a concrete public group id collapses
+    // into the bucket; an unknown one falls back to where an own secret lives,
+    // else the first option.
+    const toOption = (id) => {
+      if (id == null) return null;
+      if (valid.has(String(id))) return String(id);
+      const g = vaultGroups.find((x) => String(x.id) === String(id));
+      return g && g.nature === "public" && String(g.id) !== "main" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
+    };
+    panelGroup =
+      toOption(panelGroup) ??
+      toOption((vaultSecrets.find((x) => x.source === "own") || {}).ownerGroup) ??
+      (opts[0] ? opts[0].value : null);
+    if (panelGroup != null) sel.value = String(panelGroup);
+    const sec = window.secretSections(vaultSecrets, panelGroup, vaultGroups);
     const section = (title, rows, ro, empty) => {
       const h = document.createElement("li"); h.className = "sec-sect"; h.textContent = title; ul.appendChild(h);
       if (!rows.length) { const e = document.createElement("li"); e.innerHTML = '<span style="opacity:.6"></span>'; e.firstChild.textContent = empty; ul.appendChild(e); }
