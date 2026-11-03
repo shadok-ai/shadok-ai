@@ -1,9 +1,24 @@
 # In-cockpit subscription-token provisioning (self-service `MT_CLAUDE_OAUTH_TOKEN`)
 
-**Status:** design, pending operator approval before any code.
+**Status:** implemented (#380), then the drive engine reworked (see the
+2026-11-04 addendum at the foot of this file).
 **Date:** 2026-11-03
 **Follows:** `docs/superpowers/specs/2026-11-03-group-credential-injection-design.md`
 (the credential-injection work, merged as part of #373 / 83cf4a8).
+
+> **2026-11-04 — engine changed from node-pty to tmux.** The sections below
+> describe the first cut (a node-pty child whose raw OSC-8/CSI stream was parsed).
+> That shipped in #380 but, the first time it met a **real mint** on a live
+> multi-tenant instance, it timed out at code submission: the success path had
+> never been exercised (the token was matched by shape off a reconstructed
+> fixture, never a live keystroke), and the raw-stream parse missed it. The flow
+> now runs `claude setup-token` inside a **detached tmux session** — the same
+> engine as every agent (`src/tmux.ts`) — and reads the pane **already rendered**
+> (`capture-pane -p`), where the URL and the token are plain text, removing the
+> whole escape-stripping surface. The exported API, endpoints, web card and
+> Telegram commands are unchanged. The real measured screens (success, masked
+> code box, invalid-code + "Press Enter to retry") are recorded in CLAUDE.md
+> invariant 53 and pinned by `test/setup-token.test.ts`.
 
 ## Intent (the why)
 
