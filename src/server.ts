@@ -2652,6 +2652,34 @@ async function migChownTreeToCommons(): Promise<void> {
     if (!t || !fs.existsSync(t)) continue;
     await runPrivileged("chown", ["-R", owner, t]);
   }
+  // RELOCATE the commons agent's Claude state into its OWN HOME. Chowning
+  // ~/.claude alone is useless: the files stay under `/root` (0700), which `main`
+  // cannot even traverse — so `claude --resume <id>` (now running as `main` from
+  // /home/main) never finds a PRE-migration transcript and exits instantly,
+  // stranding every agent that predates the migration on the FIRST restart (the
+  // home agent included). `--resume` reads `~/.claude/projects`; move that and
+  // the state a resumed session reads beside it. Copy (never destructive in a
+  // migration) and non-clobbering (a re-run, or a hand-repair, may already hold
+  // the file). chown each to `main`.
+  const srcClaude = path.join(os.homedir(), ".claude");
+  const dstClaude = path.join(homeForUser(COMMONS_USER, GROUP_HOME_BASE), ".claude");
+  if (fs.existsSync(srcClaude)) {
+    await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, "-m", "700", dstClaude]);
+    for (const sub of ["projects", "todos", "shell-snapshots", "file-history"]) {
+      const s = path.join(srcClaude, sub);
+      if (!fs.existsSync(s)) continue;
+      const d = path.join(dstClaude, sub);
+      await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, d]);
+      await runPrivileged("cp", ["-rn", `${s}/.`, `${d}/`]);
+      await runPrivileged("chown", ["-R", owner, d]);
+    }
+    const hist = path.join(srcClaude, "history.jsonl");
+    const dhist = path.join(dstClaude, "history.jsonl");
+    if (fs.existsSync(hist) && !fs.existsSync(dhist)) {
+      await runPrivileged("cp", ["-n", hist, dhist]);
+      await runPrivileged("chown", [owner, dhist]);
+    }
+  }
 }
 
 /** Step 3 — wire the commons HOME to the shared pot: the shared group, the pot

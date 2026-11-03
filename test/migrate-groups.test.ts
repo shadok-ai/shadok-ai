@@ -245,7 +245,7 @@ test("server: migration state transitions are broadcast, and commons paths go th
   assert.ok(/migrationState = "pending";\s*\n\s*broadcastAll\(versionMessage\(\)\)/.test(SERVER), "pending is broadcast");
   assert.ok(/migrationState = groupsMigrated \? "ok" : "failed";\s*\n\s*broadcastAll\(versionMessage\(\)\)/.test(SERVER), "outcome is broadcast");
   assert.ok(!/\$\{GROUP_HOME_BASE\}\/\$\{COMMONS_USER\}/.test(SERVER), "no inline commons home path");
-  assert.equal((SERVER.match(/homeForUser\(COMMONS_USER, GROUP_HOME_BASE\)/g) ?? []).length, 2);
+  assert.equal((SERVER.match(/homeForUser\(COMMONS_USER, GROUP_HOME_BASE\)/g) ?? []).length, 3);
 });
 
 test("index.html: the migration banner is shown before the #verView early return", () => {
