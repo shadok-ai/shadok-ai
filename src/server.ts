@@ -2370,12 +2370,48 @@ function runPrivileged(cmd: string, argv: string[]): Promise<void> {
   });
 }
 
-/** Seed a freshly-provisioned HOME. The directory itself is created+owned by
- *  `useradd --create-home`; the shared mount (Task 12) hangs off this hook in its own task. Kept
- *  async+injectable so provisioning fails honestly if it grows a real step that
- *  can fail. */
-async function seedGroupHome(home: string): Promise<void> {
-  console.log(`groups: provisioned HOME ${home} (shared mount seeding lands in Task 12)`);
+/** The shadok skills to mirror into every group HOME: [package source dir,
+ *  installed name]. The same set `seedXxxSkill` installs into the SERVER HOME. */
+const GROUP_SEEDED_SKILLS: ReadonlyArray<readonly [string, string]> = [
+  ["scheduler-skill", "shadok-scheduler"],
+  ["secrets-skill", "shadok-secrets"],
+  ["reload-skill", "shadok-reload"],
+  ["ledger-skill", "shadok-ledger"],
+  ["agents-skill", "shadok-ai-agents"],
+];
+
+/**
+ * Seed a group user's HOME at provision time. The directory itself is
+ * created+owned by `useradd --create-home`; here we mirror the shadok SKILLS
+ * into `<home>/.claude/skills`.
+ *
+ * The skills are installed only in the SERVER's `/root/.claude/skills`
+ * (`seedXxxSkill`), which a dropped group agent (HOME `/home/sk-<id>`) cannot
+ * read — so without this an isolated agent has NONE of the shadok skills
+ * (scheduler, secrets, ledger, agents, reload). Copied FROM THE PACKAGE source
+ * (world-readable, never `/root` which is 0700) and written AS THE GROUP USER
+ * (root must not write through a 0700 HOME it does not own). Re-applied on every
+ * boot by `ensureGroupsProvisioned`, so a merged skill update reaches group
+ * HOMEs the same way it reaches the server's. Best-effort: a failure is logged,
+ * not fatal — a missing skill degrades an agent, a thrown provision breaks it.
+ */
+async function seedGroupHome(home: string, user: string): Promise<void> {
+  try {
+    const skillsRoot = `${home}/.claude/skills`;
+    spawnAsUserSync(user, "mkdir", ["-p", skillsRoot]);
+    for (const [srcName, dstName] of GROUP_SEEDED_SKILLS) {
+      const src = path.join(__dirname, "..", "context", srcName);
+      if (!fs.existsSync(path.join(src, "SKILL.md"))) continue;
+      const dst = `${skillsRoot}/${dstName}`;
+      spawnAsUserSync(user, "mkdir", ["-p", dst]);
+      // -T copies the CONTENTS of src into dst (SKILL.md + scripts/), idempotent.
+      spawnAsUserSync(user, "cp", ["-rT", src, dst]);
+    }
+    // Skill entrypoints are invoked by path, so every .mjs must be executable.
+    spawnAsUserSync(user, "find", [skillsRoot, "-name", "*.mjs", "-exec", "chmod", "+x", "{}", "+"]);
+  } catch (e) {
+    console.log(`groups: could not seed skills into ${home} — ${e instanceof Error ? e.message : String(e)}`);
+  }
 }
 
 /** Does an OS user already exist? Used to make provisioning idempotent. */

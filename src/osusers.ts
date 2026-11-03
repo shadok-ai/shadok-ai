@@ -266,7 +266,7 @@ export async function provisionGroupUser(
   g: Group,
   deps: {
     run: (cmd: string, argv: string[]) => Promise<void>;
-    seed: (home: string) => Promise<void>;
+    seed: (home: string, user: string) => Promise<void>;
     homeBase: string;
     userExists?: (u: string) => Promise<boolean>;
     /** Task 12: when set (multi-tenant only), expose the one shared pot as
@@ -319,7 +319,7 @@ export async function provisionGroupUser(
     // Seed HOME regardless of whether the user was new: this is where the
     // per-HOME ~/.claude seeding and the shared
     // mount (Task 12) hang, all of which must be safe to re-apply.
-    await deps.seed(plan.home);
+    await deps.seed(plan.home, plan.user);
   } catch (e) {
     throw new Error(`provisionGroupUser: seeding ${plan.home} failed: ${(e as Error)?.message ?? e}`);
   }
