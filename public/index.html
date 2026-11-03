@@ -385,6 +385,20 @@
   }
   #migrationBanner.pending { background: var(--amber); color: var(--on-accent); }
   #migrationBanner.failed { background: #b91c1c; color: #fff; }
+  /* Blocking: a multi-tenant instance with no subscription token can start no
+     agent. Same strip as the re-login reminder, red because it blocks. */
+  #mtTokenBanner {
+    flex: 0 0 auto; width: 100%; z-index: 1000;
+    background: #b91c1c; color: #fff;
+    font-family: var(--sans); font-size: 12px;
+    padding: 6px 12px;
+    display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
+  }
+  #mtTokenBanner button {
+    font: inherit; cursor: pointer; padding: 2px 10px;
+    border: 1px solid currentColor; border-radius: 4px;
+    background: transparent; color: inherit;
+  }
   .gauge { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .gauge .value {
     font-family: var(--sans);
@@ -2716,6 +2730,9 @@
   <!-- Re-login to Claude without waiting for the token to lapse. Shown only
        when signed in (when signed out the sign-in card opens on its own). -->
   <button class="vm-btn" id="reloginBtn" type="button" hidden>↻ Re-login to Claude</button>
+  <!-- Rotate the long-lived subscription token group agents authenticate with
+       (multi-tenant + admin only). Shown by renderAuthRows when a token is held. -->
+  <button class="vm-btn" id="mtTokenReplaceBtn" type="button" hidden>🔑 Replace subscription token…</button>
   <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
@@ -3262,6 +3279,31 @@
       <p class="bk-msg" id="bkMsg" hidden></p>
       <p class="sec-note bk-foot">Claude Code speaks only the Anthropic API. Hugging Face, Together, Groq and other OpenAI-only services need a proxy such as LiteLLM in front — then choose “Another Anthropic-compatible server”.</p>
     </form>
+  </div>
+</div>
+
+<!-- Subscription-token provisioning card (src/setup-token.ts). Twin of the
+     sign-in card, but for the long-lived token multi-tenant group agents need.
+     Always dismissable (an admin action, not the signed-out funnel). -->
+<div id="mtTokenOverlay" class="overlay" hidden>
+  <div id="mtTokenPanel" class="sec-panel">
+    <div class="sec-head">
+      <strong>Subscription token for group agents</strong>
+      <button id="mtTokenClose" type="button" title="Close" aria-label="Close">✕</button>
+    </div>
+    <p class="sec-note" id="mtTokenNote">On a multi-tenant instance, agents run as isolated OS users with no keychain, so they authenticate with a long-lived subscription token. Provide it once (it lasts about a year).</p>
+    <div class="field">
+      <span class="label">1 — Open this link and authorise on your Claude subscription</span>
+      <a id="mtTokenLink" target="_blank" rel="noopener">starting…</a>
+    </div>
+    <div class="field">
+      <span class="label">2 — Paste the code you get back</span>
+      <form id="mtTokenCodeForm" style="display:flex;gap:8px">
+        <input id="mtTokenCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
+        <button type="submit">Store token</button>
+      </form>
+    </div>
+    <p class="sec-note" id="mtTokenMsg" hidden></p>
   </div>
 </div>
 
@@ -8208,6 +8250,10 @@
     // Only offer a re-login when we KNOW the account is signed in — a failed
     // probe ("unknown") or a signed-out state is the sign-in card's job.
     if (relBtn) relBtn.hidden = true;
+    // The "replace subscription token" button only makes sense once a token is
+    // actually held (longLived) on a multi-tenant instance, for an admin.
+    const mtBtn = document.getElementById("mtTokenReplaceBtn");
+    if (mtBtn) mtBtn.hidden = true;
     if (a && a.backend === "custom" && a.state !== "signed-in") {
       accEl.textContent = a.backendModel ? a.backendModel + " · custom backend" : "custom model backend";
       accEl.title = "";
@@ -8228,6 +8274,7 @@
     accEl.textContent = (a.email || "signed in") + (a.subscriptionType ? " · " + a.subscriptionType : "");
     accEl.title = a.authMethod ? "via " + a.authMethod : "";
     if (a.longLived) {
+      if (mtBtn) mtBtn.hidden = !(a.multiTenant && me && me.role === "admin");
       tokEl.style.color = "";
       tokEl.textContent = window.accountExpiryLine(a) || "—";
       tokEl.title = "Agents authenticate with a long-lived token (opaque, so the date is approximate: " +
@@ -8248,6 +8295,7 @@
     catch { lastAuth = null; }
     if (!verMenu.hidden) renderAuthRows();
     updateExpiryBanner();   // the banner must track the clock even menu-closed
+    updateMtTokenBanner(lastAuth);   // the blocking no-token banner (multi-tenant)
   }
 
   // ── Re-login reminder banner (sign-in within 48h / expired) ───────────────
@@ -12243,6 +12291,86 @@
   });
 
   $("authClose").addEventListener("click", closeAuthCard);
+
+  // ── Subscription-token provisioning card (src/setup-token.ts) ────────────
+  // Twin of the sign-in card: drive `claude setup-token` server-side, the token
+  // captured and vaulted by the server — the browser only ever sees {url}/{ok}.
+  let mtTokenStarted = false;
+  function openMtTokenCard() {
+    if (!$("mtTokenOverlay").hidden) return;
+    mtTokenStarted = false;
+    $("mtTokenMsg").hidden = true;
+    $("mtTokenCode").value = "";
+    $("mtTokenOverlay").hidden = false;
+    startMtToken();
+  }
+  function closeMtTokenCard() {
+    $("mtTokenOverlay").hidden = true;
+    // Cancel the server-side flow so no child is left holding the PTY open.
+    fetch("/mt-token", { method: "DELETE" }).catch(() => {});
+  }
+  async function startMtToken() {
+    if (mtTokenStarted) return;
+    mtTokenStarted = true;
+    const link = $("mtTokenLink");
+    link.textContent = "starting…";
+    link.removeAttribute("href");
+    try {
+      const r = await (await fetch("/mt-token/start", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+      })).json();
+      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      else link.textContent = (r && r.error) || "could not start";
+    } catch {
+      link.textContent = "could not start";
+    }
+  }
+  $("mtTokenClose").addEventListener("click", closeMtTokenCard);
+  $("mtTokenReplaceBtn").addEventListener("click", () => { verMenu.hidden = true; openMtTokenCard(); });
+  $("mtTokenCodeForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = $("mtTokenCode").value.trim();
+    if (!code) return;
+    const msg = $("mtTokenMsg");
+    msg.hidden = true;
+    let r;
+    try {
+      r = await (await fetch("/mt-token/code", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }),
+      })).json();
+    } catch {
+      r = { ok: false, error: "the server did not answer" };
+    }
+    if (r && r.ok) {
+      $("mtTokenCode").value = "";
+      msg.textContent = "✅ Token stored. Agents can start now.";
+      msg.hidden = false;
+      refreshAuthRows();   // clears the missing-token banner + repaints the expiry row
+      setTimeout(() => { $("mtTokenOverlay").hidden = true; }, 1600);
+    } else {
+      msg.textContent = (r && r.error) || "the code was refused";
+      msg.hidden = false;
+    }
+  });
+
+  // The blocking "no subscription token" banner (multi-tenant + admin), mirror
+  // of the re-login reminder; clears the instant a token is stored.
+  function updateMtTokenBanner(a) {
+    let el = document.getElementById("mtTokenBanner");
+    const show = a && a.mtTokenMissing && me && me.role === "admin";
+    if (!show) { if (el) el.remove(); return; }
+    if (el) return;
+    el = document.createElement("div");
+    el.id = "mtTokenBanner";
+    const span = document.createElement("span");
+    span.textContent = "This instance has no subscription token — agents can't start.";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Provide token";
+    btn.addEventListener("click", openMtTokenCard);
+    el.append(span, btn);
+    document.body.insertBefore(el, document.body.firstChild);
+  }
   // Backdrop click closes a dismissable (voluntary) card; the panel itself does not.
   $("authOverlay").addEventListener("click", (e) => { if (e.target === $("authOverlay")) closeAuthCard(); });
 

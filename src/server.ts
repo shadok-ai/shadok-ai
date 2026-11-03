@@ -2022,8 +2022,21 @@ app.get("/auth", async (_req, res) =>
     ...readTokenExpiry(),
     ...longLivedTokenInfo(loadVault(), DEPLOYMENT_MODE),
     ...customBackendFields(),
+    ...mtTokenFields(),
   }),
 );
+
+/**
+ * Whether this is a multi-tenant instance and, if so, whether its group agents'
+ * subscription token is still missing — the signal the cockpit uses to offer the
+ * in-cockpit provisioning card (and the blocking banner). Mono-tenant → both
+ * false; it needs no token.
+ */
+function mtTokenFields(): { multiTenant: boolean; mtTokenMissing: boolean } {
+  const multiTenant = DEPLOYMENT_MODE === "multi-tenant";
+  const present = !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME];
+  return { multiTenant, mtTokenMissing: multiTenant && !present };
+}
 
 function customBackendFields(): { backend?: "custom"; backendModel?: string | null } {
   const b = instanceBackend();
