@@ -9921,7 +9921,7 @@
     for (const c of String(name)) h = (h * 31 + c.charCodeAt(0)) >>> 0;
     return MEMBER_PALETTE[h % MEMBER_PALETTE.length];
   }
-  function memberInitial(name) { return (String(name)[0] || "?").toUpperCase(); }
+  function memberInitial(name) { return ([...String(name)][0] || "?").toUpperCase(); }
   /** Render the grid into `container`. `lockedSelf` (or null) is the current
    *  account: always selected, not clickable. `onChange` fires on each toggle. */
   function renderMemberGrid(container, { accounts, selected, lockedSelf, onChange }) {
@@ -9930,26 +9930,26 @@
     const names = (Array.isArray(accounts) ? accounts : []).filter((n) => n !== lockedSelf);
     const all = lockedSelf ? [lockedSelf, ...names] : names;
     for (const name of all) {
-      const me = name === lockedSelf;
+      const isSelf = name === lockedSelf;
       const b = document.createElement("button");
       b.type = "button";
-      b.className = "member-tile" + (me ? " me" : "");
+      b.className = "member-tile" + (isSelf ? " me" : "");
       b.dataset.name = name;
-      if (me) b.setAttribute("aria-disabled", "true");
+      if (isSelf) { b.setAttribute("aria-disabled", "true"); b.setAttribute("aria-pressed", "true"); }
       else b.setAttribute("aria-pressed", String(sel.has(name)));
       const av = document.createElement("div");
       av.className = "member-av";
       av.style.background = memberColor(name);
       av.textContent = memberInitial(name);
       const badge = document.createElement("span");
-      if (me) { badge.className = "member-lock"; badge.textContent = "🔒"; }
+      if (isSelf) { badge.className = "member-lock"; badge.textContent = "🔒"; }
       else { badge.className = "member-check"; badge.innerHTML = MEMBER_CHECK_SVG; }
       av.append(badge);
       const nm = document.createElement("div");
       nm.className = "member-nm";
-      nm.textContent = me ? name + " (you)" : name;
+      nm.textContent = isSelf ? name + " (you)" : name;
       b.append(av, nm);
-      if (!me) b.addEventListener("click", () => {
+      if (!isSelf) b.addEventListener("click", () => {
         b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"));
         if (onChange) onChange();
       });
@@ -10012,7 +10012,8 @@
         const r = await fetch("/accounts");
         names = r.ok ? await r.json() : [];
       } catch { /* grid shows only the members we know */ }
-      const self = await currentAccountName();
+      // The owner comes from the group itself, so the lock never depends on /me.
+      const self = g.owner || (await currentAccountName());
       const accounts = [...new Set([...(Array.isArray(names) ? names : []), ...members])];
       const grid = document.createElement("div");
       grid.id = "gpGrid";
@@ -10032,8 +10033,17 @@
       save.addEventListener("click", async () => {
         const d = diff();
         save.disabled = true;
-        for (const n of d.add) if (!(await post({ group: g.id, add: n }))) return refresh();
-        for (const n of d.remove) if (!(await post({ group: g.id, remove: n }))) return refresh();
+        // Keep `current` equal to server truth after EACH successful POST, so a
+        // partial failure leaves a diff that retries only what really failed.
+        for (const n of d.add) {
+          if (!(await post({ group: g.id, add: n }))) return refresh();
+          current.push(n);
+        }
+        for (const n of d.remove) {
+          if (!(await post({ group: g.id, remove: n }))) return refresh();
+          const i = current.indexOf(n);
+          if (i >= 0) current.splice(i, 1);
+        }
         return openGroupPanel(groupId);
       });
       body.append(grid, save);

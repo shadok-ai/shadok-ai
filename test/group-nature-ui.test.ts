@@ -234,7 +234,7 @@ test("renderMemberGrid builds aria-pressed button tiles with textContent and a l
   assert.match(fn![0], /createElement\("button"\)/);
   assert.match(fn![0], /type = "button"/);
   assert.match(fn![0], /"aria-pressed"/);
-  assert.match(fn![0], /nm\.textContent = me \? name \+ " \(you\)" : name/);
+  assert.match(fn![0], /nm\.textContent = isSelf \? name \+ " \(you\)" : name/);
   assert.match(fn![0], /member-lock/);
   assert.match(fn![0], /style\.background = memberColor\(name\)/);
   // The only innerHTML is the constant check SVG.
@@ -267,4 +267,17 @@ test("private panel stays sealed: no grid", () => {
   const priv = groupPanelScript().match(/nature === "private"[\s\S]*?(?=nature === "restricted")/);
   assert.ok(priv);
   assert.doesNotMatch(priv![0], /renderMemberGrid|member-grid/);
+});
+
+test("restricted Save keeps `current` equal to server truth after each POST", () => {
+  const restricted = groupPanelScript().slice(groupPanelScript().indexOf('nature === "restricted"'));
+  assert.match(restricted, /current\.push\(/);
+  assert.match(restricted, /current\.splice\(/);
+});
+
+test("panel locks the group's owner (not /me); locked tile is aria-pressed; surrogate-safe initial", () => {
+  const restricted = groupPanelScript().slice(groupPanelScript().indexOf('nature === "restricted"'));
+  assert.match(restricted, /g\.owner/);
+  assert.match(html, /\[\.\.\.String\(name\)\]\[0\]/);
+  assert.match(html, /isSelf\) \{ b\.setAttribute\("aria-disabled", "true"\); b\.setAttribute\("aria-pressed", "true"\)/);
 });
