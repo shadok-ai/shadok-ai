@@ -256,6 +256,26 @@ export function spawnGroupFor(viewer: Viewer | null, groups: readonly Group[]): 
 }
 
 /**
+ * The group a NEW agent is born into when the caller MAY name a target.
+ *
+ * The requested group is honoured only when the caller can see it (`canSeeGroup`:
+ * public, or they are a member) — so a caller can place an agent in a group they
+ * belong to, never plant one in a group they do not. Anything else (no request,
+ * unknown id, foreign restricted/private group) falls back to `spawnGroupFor`.
+ */
+export function spawnGroupForRequest(
+  viewer: Viewer | null,
+  groups: readonly Group[],
+  requestedGroupId: string | null,
+): Group | null {
+  if (requestedGroupId) {
+    const g = groups.find((x) => x.id === requestedGroupId);
+    if (g && canSeeGroup(g, viewer)) return g;
+  }
+  return spawnGroupFor(viewer, groups);
+}
+
+/**
  * May this viewer RESUME an agent that was born into `storedGroupId`?
  *
  * This is the people-boundary check on the resume path, and it is a SECURITY

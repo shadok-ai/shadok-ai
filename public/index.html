@@ -7904,6 +7904,12 @@
       localStorage.setItem("cp.profile", selectedProfile);
       if (cwd) localStorage.setItem("cp.profile:" + cwd, selectedProfile);
     }
+    // A NEW agent names the group on screen; the server honours it only for a
+    // group the caller belongs to. Null (commons) omits it. Never on resume.
+    if (mode === "new") {
+      const tg = viewGroupId();
+      if (tg) msg.group = tg;
+    }
     $("startBtn").disabled = true;
     closeSetup();
     // createTab activates the created tab; launchTab opens the link. A new agent

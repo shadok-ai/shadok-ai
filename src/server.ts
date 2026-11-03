@@ -4553,6 +4553,8 @@ app.post("/models/default", (req, res) => {
 type ClientMessage =
   | {
       type: "start";
+      /** NEW agent only: the target group; honoured iff the caller can see it. */
+      group?: string;
       cwd?: string;
       resume?: string;
       continue?: boolean;
@@ -6389,6 +6391,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               viewer: viewerFor(me),
               groups: loadGroups(),
               storedGroupId: null,
+              requestedGroupId: typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null,
             });
             const earlyUser =
               earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
@@ -6562,18 +6565,23 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               : undefined;
           // Isolation wall: the OS user to drop to, and the group a NEW agent is
           // born into — BOTH derived from the caller's own identity (`me`), never
-          // from the client payload (a start msg cannot name its group: the field
-          // isn't read). A resume keeps the channel's stored group and runs as
+          // from the caller's identity. A start msg MAY name its target group,
+          // honoured only when `canSeeGroup` (public or member), else ignored: it
+          // can place an agent in a group you belong to, never plant one in a
+          // group you don't. A resume keeps the channel's stored group and runs as
           // that group's user. Mono-tenant resolves to no user / no group, so the
           // spawn and the channel record stay byte-for-byte today's.
           // `storedGroupId`/`groupsNow` and the resume people-boundary gate were
           // resolved ABOVE the live-attach branch (see CRIT1 note there).
+          const requestedGroupId =
+            !resumed && typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null;
           const isolation = resolveSpawnIsolation({
             mode: DEPLOYMENT_MODE,
             resumed,
             viewer: viewerFor(me),
             groups: groupsNow,
             storedGroupId,
+            requestedGroupId,
           });
           // The group this agent really belongs to: a resume keeps the channel's
           // stored group; a new spawn gets the one the isolation policy derived

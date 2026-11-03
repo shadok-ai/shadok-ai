@@ -1,5 +1,5 @@
 import { capabilityRefusal, type DeploymentMode } from "./capability.js";
-import { spawnGroupFor, canAdministerGroup, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
+import { spawnGroupFor, spawnGroupForRequest, canAdministerGroup, MAIN_GROUP_ID, type Group, type Nature, type Viewer } from "./groups.js";
 
 /**
  * OS-user isolation: the pure policy behind dropping a spawned agent to the
@@ -117,13 +117,15 @@ export function resolveSpawnIsolation(input: {
   groups: readonly Group[];
   /** The group the RESUMED channel already carries (null = commons / group-less). */
   storedGroupId: string | null;
+  /** NEW spawns only: the group the client asked for; honoured iff the caller may see it. */
+  requestedGroupId?: string | null;
 }): { user: string | null; groupPatch: { group?: string } } {
   if (input.mode !== "multi-tenant") return { user: null, groupPatch: {} };
   if (input.resumed) {
     const g = input.storedGroupId ? input.groups.find((x) => x.id === input.storedGroupId) ?? null : null;
     return { user: g ? osUserFor(g) : null, groupPatch: {} };
   }
-  const g = spawnGroupFor(input.viewer, input.groups);
+  const g = spawnGroupForRequest(input.viewer, input.groups, input.requestedGroupId ?? null);
   return {
     user: g ? osUserFor(g) : null,
     groupPatch: g ? { group: g.id } : {},

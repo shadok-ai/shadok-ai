@@ -303,3 +303,7 @@ test("syncChannels prunes a server-seen group absent from a fulfilled /groups", 
   assert.match(body, /g\.el\.remove\(\)/);
   assert.doesNotMatch(body.slice(prune), /dissolveGroup/);
 });
+
+test("a NEW agent's launch message names the on-screen group (never on resume)", () => {
+  assert.match(html, /if \(mode === "new"\) \{\s*const tg = viewGroupId\(\);\s*if \(tg\) msg\.group = tg;/);
+});

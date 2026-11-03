@@ -256,3 +256,39 @@ test("mergeGroupsPut: an admin may still change a restricted group's members", (
   const r = mergeGroupsPut([g], [{ id: "r", members: ["a", "b"] }], true);
   assert.equal(r.ok, true);
 });
+
+// ── spawnGroupForRequest ──────────────────────────────────────────────────────
+import { spawnGroupFor, spawnGroupForRequest } from "../src/groups.js";
+import { readFileSync } from "node:fs";
+{
+  const mainG: Group = { id: MAIN_GROUP_ID, name: "Main", nature: "public", members: [], createdAt: 0 };
+  const pub: Group = { id: "pub", name: "Pub", nature: "public", members: [], createdAt: 0 };
+  const a: Group = { id: "a", name: "A", nature: "restricted", members: ["ada"], createdAt: 0 };
+  const b: Group = { id: "b", name: "B", nature: "restricted", members: ["ada"], createdAt: 0 };
+  const c: Group = { id: "c", name: "C", nature: "restricted", members: ["bob"], createdAt: 0 };
+  const all = [mainG, pub, a, b, c];
+  const ada = { name: "ada", role: "member" as const };
+  const zoe = { name: "zoe", role: "member" as const };
+
+  test("spawnGroupForRequest: a member of 2 groups requesting one gets THAT group, not commons", () => {
+    assert.equal(spawnGroupFor(ada, all)?.id, MAIN_GROUP_ID);
+    assert.equal(spawnGroupForRequest(ada, all, "b")?.id, "b");
+  });
+  test("spawnGroupForRequest: a requested public group is returned", () => {
+    assert.equal(spawnGroupForRequest(zoe, all, "pub")?.id, "pub");
+  });
+  test("spawnGroupForRequest: a non-member's request for a foreign group falls back", () => {
+    assert.equal(spawnGroupForRequest(ada, all, "c")?.id, spawnGroupFor(ada, all)?.id);
+    assert.equal(spawnGroupForRequest(zoe, all, "a")?.id, MAIN_GROUP_ID);
+    assert.equal(spawnGroupForRequest(zoe, all, "nope")?.id, MAIN_GROUP_ID);
+  });
+  test("spawnGroupForRequest: no request equals spawnGroupFor", () => {
+    assert.equal(spawnGroupForRequest(ada, all, null)?.id, spawnGroupFor(ada, all)?.id);
+  });
+}
+
+test("server start handler passes a !resumed-gated msg.group to resolveSpawnIsolation", () => {
+  const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  assert.match(src, /const requestedGroupId =\s*!resumed && typeof msg\.group === "string" && msg\.group\.trim\(\)/);
+  assert.match(src, /resolveSpawnIsolation\(\{[^}]*storedGroupId,\s*requestedGroupId,/);
+});
