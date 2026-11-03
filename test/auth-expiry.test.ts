@@ -72,7 +72,7 @@ test("longLived: never nags, even with an imminent tokenExpiresAt", () => {
 });
 
 test("accountExpiryLine: longLived with a date → approximate wording", () => {
-  const auth = { state: "signed-in", longLived: true, longLivedExpiresAt: Date.UTC(2027, 10, 3) };
+  const auth = { state: "signed-in", longLived: true, longLivedExpiresAt: new Date(2027, 10, 15).getTime() };
   assert.equal(accountExpiryLine(auth, NOW), "Long-lived token — expires ≈ Nov 2027");
 });
 

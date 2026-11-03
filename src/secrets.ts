@@ -133,24 +133,21 @@ export interface VisibleSecret {
 }
 
 /**
- * Pure: the secret NAMES a caller may see, tagged by why — NEVER the values.
- * `memberGroupIds` is the set of groups the caller belongs to (from
- * `groups.memberGroupIds`). A name is visible when it is:
- *   - `own`    — owned by one of the caller's groups;
- *   - `shared` — owned elsewhere but shared WITH one of the caller's groups;
- *   - `main`   — in the instance-wide commons, visible to everyone.
- * Precedence on a name present several ways mirrors `resolveSecretValues`:
- * own > shared > main. In mono-tenant the caller resolves to Main only, so this
- * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
- */
-/**
  * Server-owned credentials. `MT_CLAUDE_OAUTH_TOKEN` is the instance's long-lived
  * subscription token: the server injects it into isolated-group agents as
  * `CLAUDE_CODE_OAUTH_TOKEN`, so it is never a user-managed secret. "Reserved"
  * hides it from the human-facing listings ONLY — `resolveSecretValues` /
  * `secretsFor` still resolve it, or the injection would stop working.
  */
-export const RESERVED_SECRET_NAMES: ReadonlySet<string> = new Set(["MT_CLAUDE_OAUTH_TOKEN"]);
+/** The one spelling of the reserved long-lived token's vault name. */
+export const MT_CLAUDE_OAUTH_TOKEN_NAME = "MT_CLAUDE_OAUTH_TOKEN";
+
+export const RESERVED_SECRET_NAMES: ReadonlySet<string> = new Set([MT_CLAUDE_OAUTH_TOKEN_NAME]);
+
+/** Pure: drop the server-owned reserved names from a listing. */
+export function filterReserved(names: string[]): string[] {
+  return names.filter((n) => !RESERVED_SECRET_NAMES.has(n));
+}
 
 /** Approximate lifetime of a `claude setup-token` token (the token itself is opaque). */
 export const LONG_LIVED_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
@@ -165,13 +162,24 @@ export function longLivedTokenInfo(
   vault: Vault,
   mode: "multi-tenant" | "mono-tenant",
 ): { longLived: boolean; longLivedExpiresAt: number | null } {
-  const entry = mode === "multi-tenant" ? vault[MAIN_GROUP_ID]?.["MT_CLAUDE_OAUTH_TOKEN"] : undefined;
+  const entry = mode === "multi-tenant" ? vault[MAIN_GROUP_ID]?.[MT_CLAUDE_OAUTH_TOKEN_NAME] : undefined;
   if (!entry) return { longLived: false, longLivedExpiresAt: null };
   const u = entry.updatedAt;
   const ok = typeof u === "number" && Number.isFinite(u) && u > 0;
   return { longLived: true, longLivedExpiresAt: ok ? u + LONG_LIVED_TOKEN_TTL_MS : null };
 }
 
+/**
+ * Pure: the secret NAMES a caller may see, tagged by why — NEVER the values.
+ * `memberGroupIds` is the set of groups the caller belongs to (from
+ * `groups.memberGroupIds`). A name is visible when it is:
+ *   - `own`    — owned by one of the caller's groups;
+ *   - `shared` — owned elsewhere but shared WITH one of the caller's groups;
+ *   - `main`   — in the instance-wide commons, visible to everyone.
+ * Precedence on a name present several ways mirrors `resolveSecretValues`:
+ * own > shared > main. In mono-tenant the caller resolves to Main only, so this
+ * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
+ */
 export function visibleSecrets(vault: Vault, memberGroupIds: ReadonlySet<string>): VisibleSecret[] {
   const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2 };
   const chosen = new Map<string, VisibleSecret>();
@@ -305,9 +313,7 @@ export function saveVault(v: Vault): void {
 
 /** Secret names (never the values) in one group's own slice, sorted. */
 export function secretNames(groupId: string = MAIN_GROUP_ID): string[] {
-  return Object.keys(loadVault()[groupId] ?? {})
-    .filter((n) => !RESERVED_SECRET_NAMES.has(n))
-    .sort();
+  return filterReserved(Object.keys(loadVault()[groupId] ?? {})).sort();
 }
 
 /** Create or update a secret in `groupId` (default Main); an update keeps its sharing and provenance. */

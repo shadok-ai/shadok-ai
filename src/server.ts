@@ -238,6 +238,8 @@ import {
   secretWriteDecision,
   secretOwnerGroup,
   visibleSecrets,
+  RESERVED_SECRET_NAMES,
+  MT_CLAUDE_OAUTH_TOKEN_NAME,
   longLivedTokenInfo,
   loadVault,
   recordOrigin,
@@ -2836,6 +2838,9 @@ app.put("/secrets", (req, res) => {
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
     return res.status(400).json({ error: "name and value required" });
   const key = name.trim();
+  // Reserved server-owned secrets are set only via setSecret() server-side,
+  // never through this endpoint (the filtered listing would make them look new).
+  if (RESERVED_SECRET_NAMES.has(key)) return res.status(403).json({ error: "reserved" });
   // HTTP is the ONLY way an agent can reach the vault — it is a separate
   // process, and Telegram's /secret calls setSecret() directly. So guarding
   // here guards exactly the machine path, and nothing a human does by hand.
@@ -4923,7 +4928,7 @@ function makePilot(
   // Isolated groups share the subscription token, injected in the forced-last
   // env layer. Mono-tenant (no user) reads and passes nothing.
   const oauthToken = user
-    ? secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"]
+    ? secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME]
     : undefined;
   return USE_TMUX
     ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home, oauthToken })
@@ -6367,7 +6372,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           const mtRefusal = (dropUser: string | null | undefined): string | null => {
             const m = mtCredentialMessage(
               mtTokenNeeded(!!dropUser, sessionBackend(gateProfile(msg)).kind === "custom"),
-              !!secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"],
+              !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
             );
             if (m && !mtTokenWarned) {
               mtTokenWarned = true;

@@ -363,3 +363,11 @@ test("ensureGroupsProvisioned: the capable boot gives the bootstrap admin a Pers
   const body = src.slice(start, end);
   assert.ok(body.includes("ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN)"), "provisions the operator's Personal group");
 });
+
+test("PUT /secrets refuses a reserved name before any write", () => {
+  const src = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../src/server.ts"), "utf8");
+  const start = src.indexOf('app.put("/secrets", (req, res)');
+  const guard = src.indexOf("RESERVED_SECRET_NAMES.has(key)", start);
+  const write = src.indexOf("setSecret(key", start);
+  assert.ok(start > 0 && guard > start && write > guard, "reserved guard must precede setSecret in PUT /secrets");
+});

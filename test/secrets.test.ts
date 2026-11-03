@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, resolveSecretValues, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
@@ -94,4 +94,8 @@ test("longLivedTokenInfo: MT + token → updatedAt + 1 year; mono / absent → f
   assert.deepEqual(longLivedTokenInfo({ main: {} }, "multi-tenant"), { longLived: false, longLivedExpiresAt: null });
   const bad: Vault = { main: { MT_CLAUDE_OAUTH_TOKEN: { ...ent, updatedAt: NaN } } };
   assert.deepEqual(longLivedTokenInfo(bad, "multi-tenant"), { longLived: true, longLivedExpiresAt: null });
+});
+
+test("filterReserved drops server-owned names and keeps the rest in order", () => {
+  assert.deepEqual(filterReserved(["A", "MT_CLAUDE_OAUTH_TOKEN", "B"]), ["A", "B"]);
 });

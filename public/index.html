@@ -8023,6 +8023,7 @@
     accEl.textContent = (a.email || "signed in") + (a.subscriptionType ? " · " + a.subscriptionType : "");
     accEl.title = a.authMethod ? "via " + a.authMethod : "";
     if (a.longLived) {
+      tokEl.style.color = "";
       tokEl.textContent = window.accountExpiryLine(a) || "—";
       tokEl.title = "Agents authenticate with a long-lived token (opaque, so the date is approximate: " +
         "one year from when it was last provisioned).";

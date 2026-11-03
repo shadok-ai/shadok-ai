@@ -72,7 +72,7 @@ export function accountExpiryLine(auth, now = Date.now()) {
     const ts = auth.longLivedExpiresAt;
     if (typeof ts === "number" && Number.isFinite(ts)) {
       const dt = new Date(ts);
-      return "Long-lived token — expires ≈ " + MONTHS[dt.getUTCMonth()] + " " + dt.getUTCFullYear();
+      return "Long-lived token — expires ≈ " + MONTHS[dt.getMonth()] + " " + dt.getFullYear();
     }
     return "Long-lived token — no fixed expiry (re-mint via `claude setup-token`)";
   }
