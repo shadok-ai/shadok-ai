@@ -166,6 +166,16 @@ test("author: the Telegram bridge keeps naming its own sender", () => {
   // It is a trusted bridge and it knows the sender; the server does not.
   assert.equal(promptAuthor("telegram", undefined, "Alexandre"), "Alexandre");
   assert.equal(promptAuthor("telegram", "admin", "Alexandre"), "Alexandre");
+  // An AGENT follows the WEB rule: the name is the one the server resolved from
+  // the session key that signed the socket, and a `from` in the frame is
+  // discarded. pilotctl writes its own frames — it is precisely the caller whose
+  // claim cannot be taken, and the label exists to tell it from the human.
+  assert.equal(promptAuthor("agent", "admin", undefined, "Shadok-Boss"), "Shadok-Boss");
+  assert.equal(promptAuthor("agent", "admin", "Alexandre", "Shadok-Boss"), "Shadok-Boss");
+  // No resolvable agent (an unknown or expired key) names NOBODY rather than
+  // falling back to the account — which is the bootstrap admin for every agent,
+  // i.e. the human. The display then says "agent" from the origin alone.
+  assert.equal(promptAuthor("agent", "admin", "Alexandre", undefined), undefined);
 });
 
 test("author: a web client with no session names nobody", () => {

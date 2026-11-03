@@ -113,6 +113,7 @@ import {
   MEDIA_DIR,
   type TelegramHandle,
 } from "./telegram.js";
+import { transcribe, audioClipExtension } from "./whisper.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
 import {
@@ -226,6 +227,8 @@ import {
   setTitleForCwd,
   themeForCwd,
   setThemeForCwd,
+  mutedForCwd,
+  setMutedForCwd,
   twoFactorForCwd,
   setTwoFactorForCwd,
   backendForCwd,
@@ -802,10 +805,12 @@ function driveChannel(sessionId: string, text: string, target: SessionTarget): P
  */
 const parentInbox = new Map<string, string[]>();
 
-/** A child's display name for its parent, falling back to a short id. */
-function childLabel(channels: readonly Channel[], childId: string): string {
-  const ch = channels.find((c) => c.sessionId === childId);
-  return ch?.name?.trim() || childId.slice(0, 8);
+/** A session's display name — the cockpit tab — falling back to a short id.
+ *  What a parent is told its child is called, and what an agent's own prompts
+ *  are signed with (`agentNameForKey`). */
+function channelLabel(channels: readonly Channel[], sessionId: string): string {
+  const ch = channels.find((c) => c.sessionId === sessionId);
+  return ch?.name?.trim() || sessionId.slice(0, 8);
 }
 
 /** Send one message (or a coalesced batch) to a parent, over the cron path. */
@@ -873,7 +878,7 @@ function notifyParent(child: Live, report: Omit<ChildReport, "name" | "sessionId
     notificationText(
       {
         ...report,
-        name: childLabel(channels, child.id),
+        name: channelLabel(channels, child.id),
         sessionId: child.id,
         branch: child.worktree?.branch ?? me?.branch ?? null,
       },
@@ -1399,6 +1404,24 @@ function secretWriteTarget(
   return { ownerGroup: secretOwnerGroup({ ...caller, groups }) };
 }
 
+/**
+ * The AGENT whose session key signs this request, if any — its cockpit name for
+ * the byline, and its id for the reply address.
+ *
+ * Attribution, deliberately NOT reusing `currentAccount`: that maps the very
+ * same key to the bootstrap admin, which is the right answer for AUTHORISATION
+ * (an agent may do what the human may) and the wrong one for a byline — an
+ * agent's message would go out signed with the human's name, which is the bug
+ * this exists to close. Resolved from the key, never from the frame, exactly
+ * like a web prompt's author.
+ */
+function agentCaller(req: Caller): { id: string; name: string } | undefined {
+  const key = req.headers["x-shadok-session-key"];
+  if (typeof key !== "string" || !key) return undefined;
+  const id = localSessionForKey(req, key);
+  return id ? { id, name: channelLabel(loadChannels(), id) } : undefined;
+}
+
 /** Who an HTTP call to the vault/profile routes is, for the secret audit log. */
 function auditActorOf(req: { headers: Record<string, unknown>; body?: unknown }): {
   actor: string;
@@ -1731,6 +1754,46 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
   }
 });
 
+/**
+ * Speech-to-text for the composer's microphone button. The browser records a
+ * short clip (MediaRecorder → webm/opus) and POSTs the raw bytes here; we run
+ * the SAME local whisper.cpp pipeline the Telegram voice path uses
+ * (`transcribe`) and return the text for the client to drop into the composer.
+ *
+ * The text is NEVER auto-sent — it lands in the editable composer so the user
+ * reads it before acting, because a misheard instruction acted on in silence is
+ * worse than a voice note that was ignored (the reason `heardNotice` exists).
+ *
+ * `requestFromBrowser` like `/paste`: this writes a file and records the mic, a
+ * browser-only capability with no business being reachable by a script on
+ * loopback. The clip is TRANSIENT — written to the OS temp dir and removed in
+ * `finally`, never kept in `MEDIA_DIR`: it is spoken input, not a file to hand
+ * the agent.
+ *
+ * The first call on a fresh instance provisions whisper (ffmpeg / model / build
+ * via `ensureWhisper` inside `transcribe`), which can take minutes; the client
+ * shows a working state and we simply wait. The French whisper notices are kept
+ * server-side — the client maps `kind` to its own English UI copy, so the web
+ * stays English while Telegram keeps its spoken-language notices.
+ */
+app.post("/transcribe", express.raw({ type: () => true, limit: PASTE_LIMIT }), async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
+  const body = req.body as Buffer;
+  if (!Buffer.isBuffer(body) || !body.length) return res.status(400).json({ error: "empty body" });
+  const ext = audioClipExtension(String(req.headers["content-type"] ?? ""));
+  const tmp = path.join(os.tmpdir(), `shadok-stt-${randomUUID()}.${ext}`);
+  try {
+    await fs.promises.writeFile(tmp, body);
+    const out = await transcribe(tmp);
+    if (out.ok) return res.json({ ok: true, text: out.text });
+    return res.json({ ok: false, kind: out.kind });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: e instanceof Error ? e.message : String(e) });
+  } finally {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {});
+  }
+});
+
 app.use(express.static(path.join(__dirname, "..", "public")));
 // Markdown parser served locally (history rendering on the client).
 // Resolved through require.resolve, not a hardcoded path: in the npm install
@@ -1918,6 +1981,16 @@ app.get("/theme", (_req, res) => {
 app.put("/theme", (req, res) => {
   setThemeForCwd(loadConfig(), process.cwd(), String(req.body?.theme ?? ""));
   res.json({ theme: themeForCwd(loadConfig(), process.cwd()) });
+});
+// Instance-wide mute, per launch directory. `true` = NO web attention signal for
+// any agent (favicon frozen, no title badge, no blink, no chime). Purely a
+// display preference the client reads — no agent is restarted, unlike /ledger.
+app.get("/mute", (_req, res) => {
+  res.json({ muted: mutedForCwd(loadConfig(), process.cwd()) });
+});
+app.put("/mute", (req, res) => {
+  setMutedForCwd(loadConfig(), process.cwd(), req.body?.muted === true);
+  res.json({ muted: mutedForCwd(loadConfig(), process.cwd()) });
 });
 // Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
 // back the directory to start the agent in. Sits here so it inherits the same
@@ -6438,6 +6511,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // it, and the `start` handler tags what it spawns so a peer only ever touches
   // its own agents.
   const callerPeer = peerName(req);
+  // Which AGENT is driving this socket, when one is — pilotctl connects with its
+  // own `SHADOK_SESSION_KEY` and declares `origin: "agent"`. Resolved ONCE here,
+  // from the key, for the same reason as `me` just above: what a frame says
+  // about who is speaking is never what we believe.
+  const callerAgent = agentCaller(req);
   // A RESTRICTED peer is boxed to its own agents (the ownership checks below);
   // a MEMBER peer acts as a web member (`currentAccount` above already returns
   // it as one) and those checks are skipped. The tag is still written for BOTH,
@@ -6467,7 +6545,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   })();
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
-  const wsBy = (): SpawnBy => spawnActor({ account: me?.name, origin, peer: callerPeer });
+  const wsBy = (): SpawnBy =>
+    spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent?.name });
   let session: Live | null = null;
   // Where does this client come from? Declared at `start` (web, cron, telegram,
   // cli…), it travels with the prompt echo: other clients must be able to SAY
@@ -6877,7 +6956,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           if (mtMsg) return fail(mtMsg);
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
-            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart }),
+            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
             dropUser,
             agentGroupId,
           );
@@ -6985,8 +7064,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           if (!text) return;
           // The Telegram bridge is trusted to name its sender — it knows it. A
           // browser is not: for a web client the SESSION decides, and whatever
-          // `from` the frame carried is discarded.
-          const author = promptAuthor(origin, me?.name, msg.from);
+          // `from` the frame carried is discarded. An agent is not trusted
+          // either: its name comes from the key that signed the socket.
+          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -7028,14 +7108,22 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));
           try {
-            // A HUMAN prompt (web/telegram/cli) gets a context header — platform,
-            // time, and sender when known — so the agent knows who is talking and
-            // when. Only the TUI (and thus the transcript) receives it; the echo
-            // above stays clean, and loadHistory strips the header on replay.
-            // Cron/agent prompts carry their own mark and are not "someone
-            // speaking", so they get no header.
+            // A prompt from SOMEONE (web/telegram/cli, or a sibling agent) gets a
+            // context header — platform, time, and sender when known — so the
+            // agent knows who is talking and when. Only the TUI (and thus the
+            // transcript) receives it; the echo above stays clean, and
+            // loadHistory strips the header on replay.
+            //
+            // `agent` is in that list for the reason the others are: without it
+            // an agent driving another through pilotctl arrived as a bare user
+            // message, indistinguishable from the human's own — so the receiving
+            // agent obeyed a peer believing it was the person who owns the
+            // cockpit. The HIDDEN machine paths are the ones that get no header:
+            // a cron fire and a parent notification carry their own mark, are
+            // not "someone speaking", and reach the TUI through driveChannel
+            // (`origin: "cron"`), so they never match here.
             let submitText = text;
-            if (origin === "web" || origin === "telegram" || origin === "cli") {
+            if (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent") {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header
@@ -7043,7 +7131,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // `parsePromptMeta` reads the platform as the first field and the
               // sender as everything past the time, so this widens neither.
               const platform = msg.voice === true ? `${origin} vocal` : origin;
-              submitText = markPromptMeta(text, promptMetaHeader(platform, new Date(), author, defaultTimeZone()));
+              // An agent header ends with the sender's REPLY ADDRESS — its short
+              // session id — because a name is not an address: nothing makes tab
+              // names unique and every tool takes an id, so naming the sender was
+              // only half of telling the receiver who it is. Short because
+              // `resolveResumeId` resolves a prefix (and refuses an ambiguous one
+              // rather than guessing). It is stripped back out by
+              // `parsePromptMeta`, so it never reaches the chat.
+              const ref = origin === "agent" ? callerAgent?.id.slice(0, 8) : undefined;
+              submitText = markPromptMeta(
+                text,
+                promptMetaHeader(platform, new Date(), author, defaultTimeZone(), ref),
+              );
             }
             // Push the ledger DELTA ahead of the message: rows changed since this
             // agent last saw the ledger, so it learns what siblings resolved /

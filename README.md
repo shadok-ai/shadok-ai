@@ -177,7 +177,10 @@ Enter to skip; you can add it later from the web UI).
   message can force through).
 - **Notifications** — favicon, title badge and an optional sound when an agent
   needs you. It only blinks when the tab is hidden *and* an unmuted channel is
-  actually waiting.
+  actually waiting. Mute a single agent from its menu, or **mute the whole
+  instance** from the version menu (*Mute this instance*): the favicon never
+  changes, no badge, no blink, no sound — for every agent and every tab, saved
+  per instance like the cockpit's name and palette.
 - **Engine room** — the raw TUI screen, live, with clickable keys, for anything
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
@@ -191,6 +194,13 @@ Enter to skip; you can add it later from the web UI).
   `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
+- **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
+  microphone and transcribes it with the **same local whisper.cpp** the voice
+  notes use (nothing leaves the machine). The text drops into the composer
+  **editable**, never auto-sent, so a misheard word is fixed before it goes —
+  click to start, click to stop, a red timer runs while recording. Needs a
+  secure context (localhost or HTTPS) for the browser to grant the mic; the
+  first use pays the same one-time whisper install as the voice notes above.
 - **Videos on Telegram** — share a video (or a GIF, or a round video note) and
   the agent actually sees it: shadok pulls a handful of stills out of the clip
   for it to look at, and transcribes the sound when there is speech. Both run
@@ -493,6 +503,9 @@ know before opening it up:
   else you do. Accounts belong to **one instance** (one launch directory), like
   its channels and its scheduled prompts. With no password there are no
   accounts and no login screen — nothing changes for a machine you use alone.
+  When a signed-in session **expires** (the cookie lasts a week), the open tab
+  returns you to the login screen on its next request instead of failing in
+  place — a paste that would not send, an agent list that would not refresh.
 - **Two-factor sign-in (passkeys).** From the **Users** panel, anyone signed in
   with a named account can register a passkey on their device — the
   fingerprint / face / PIN unlock of the phone or laptop (WebAuthn, user
@@ -963,7 +976,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 | Message | Purpose |
 |---|---|
-| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"cli"`…) travels with `prompt-echo` so other clients can say who spoke. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
+| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
 | `{type:"prompt", text, force?}` | sends a prompt (`force` bypasses the pace guard) |
 | `{type:"choose", n}` | single-select dialog: picks and validates option n |
 | `{type:"toggle", n}` / `{type:"confirm"}` | multi-select: toggles option n / submits |
@@ -986,7 +999,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"stream-tool", id, name, summary}` / `{type:"stream-result", …}` | tool call / tool result |
 | `{type:"tokens", tokens}` / `{type:"context", pct}` | token usage / context fill |
 | `{type:"parent", parent}` | the channel's parent changed (broadcast, so every tab follows) |
-| `{type:"prompt-echo", text}` | prompt sent by another client of the session |
+| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web or agent prompt (the signed-in account / the calling agent's tab name) and never taken from the frame |
 | `{type:"dialog", question, options:[{n,label,hint,checked?}], multi}` | choice pending |
 | `{type:"history", turns:[…]}` | transcript replayed when resuming/attaching |
 | `{type:"screen", text, working}` | rendered TUI screen (whenever it changes) |

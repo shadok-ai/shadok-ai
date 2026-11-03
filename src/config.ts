@@ -73,6 +73,15 @@ export interface Config {
    */
   cockpitTheme?: Record<string, string>;
   /**
+   * Per launch-directory "mute the whole instance", keyed by absolute cwd.
+   * `true` = every agent on this instance raises NO web attention signal: the
+   * favicon never changes, no title badge, no blink, no chime. Absent/false =
+   * the normal per-agent behaviour. It is the instance-wide twin of the
+   * per-channel `Channel.muted`, shared across every tab and device like the
+   * name and palette.
+   */
+  cockpitMuted?: Record<string, boolean>;
+  /**
    * Per launch-directory two-factor sign-in (a passkey after the password),
    * keyed by absolute cwd. Absent = off. Turned on from the Users panel, under
    * the rules of `twoFactorEnableVerdict`; removing the key by hand IS the
@@ -164,6 +173,22 @@ export function setThemeForCwd(cfg: Config, cwd: string, theme: string): void {
   cfg.cockpitTheme ??= {};
   if (t && t !== "amber" && (COCKPIT_THEMES as readonly string[]).includes(t)) cfg.cockpitTheme[cwd] = t;
   else delete cfg.cockpitTheme[cwd];
+  saveConfig(cfg);
+}
+
+/** Is this whole instance muted (no web attention signal for any agent)? */
+export function mutedForCwd(cfg: Config, cwd: string): boolean {
+  return cfg.cockpitMuted?.[cwd] === true;
+}
+
+/**
+ * Set (or clear) this directory's instance-wide mute and persist. `false`
+ * removes the entry — the default is "not muted", stored as absent.
+ */
+export function setMutedForCwd(cfg: Config, cwd: string, on: boolean): void {
+  cfg.cockpitMuted ??= {};
+  if (on) cfg.cockpitMuted[cwd] = true;
+  else delete cfg.cockpitMuted[cwd];
   saveConfig(cfg);
 }
 

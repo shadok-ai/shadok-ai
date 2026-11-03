@@ -1740,6 +1740,48 @@
   .cmp-attach:hover:not(:disabled) { color: var(--amber); border-color: var(--amber); }
   .cmp-attach:disabled { opacity: 0.4; cursor: default; }
 
+  /* The dictate (speech-to-text) button: same square as the paperclip when
+     idle, grows to hold a timer while recording. */
+  .cmp-mic {
+    flex: none;
+    align-self: flex-end;
+    min-width: 42px;
+    height: 42px;
+    padding: 0 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .cmp-mic:hover:not(:disabled) { color: var(--amber); border-color: var(--amber); }
+  .cmp-mic:disabled { opacity: 0.5; cursor: default; }
+  .cmp-mic .mic-rec, .cmp-mic .mic-time { display: none; }
+  .cmp-mic .mic-time { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--err); }
+  /* Recording: the mic becomes a stop square, the timer shows, red + pulsing. */
+  .cmp-mic.recording { color: var(--err); border-color: var(--err); }
+  .cmp-mic.recording .mic-idle { display: none; }
+  .cmp-mic.recording .mic-rec, .cmp-mic.recording .mic-time { display: inline-flex; }
+  .cmp-mic.recording .mic-rec { animation: micpulse 1.1s ease-in-out infinite; }
+  @keyframes micpulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+  /* Transcribing: disabled, a small spinner stands in for the icon. */
+  .cmp-mic.working .mic-idle, .cmp-mic.working .mic-rec, .cmp-mic.working .mic-time { display: none; }
+  .cmp-mic.working::after {
+    content: "";
+    width: 15px; height: 15px;
+    border-radius: 50%;
+    border: 2px solid color-mix(in srgb, var(--amber) 35%, transparent);
+    border-top-color: var(--amber);
+    animation: micspin 0.7s linear infinite;
+  }
+  @keyframes micspin { to { transform: rotate(360deg); } }
+  /* Transient mic status (permission denied, nothing heard, failed). Own row. */
+  .cmp-mic-msg { flex-basis: 100%; order: -1; font-size: 12px; color: var(--err); padding: 0 2px 3px; }
+
   /* ── Engine room (live terminal) ─────────────────────── */
   #machine {
     width: 46%;
@@ -2559,6 +2601,33 @@
      flash of the dark default. Nonce'd like every inline script (invariant 12). -->
 <script nonce="__CSP_NONCE__">
   try { if (localStorage.getItem("cp.mode") === "light") document.documentElement.setAttribute("data-mode", "light"); } catch (e) {}
+  // When the cockpit's OWN session expires mid-use (the account cookie lapses —
+  // a week by default — or the GUI password changes under us), the server starts
+  // answering every request 401 and refuses the WebSocket upgrade. The page used
+  // to just fail quietly: a paste "not sent", the agent list frozen, the socket
+  // looping "reconnecting", with nothing saying you are logged out (the admin hit
+  // exactly this and read it as a file bug). A 401 here can ONLY mean logged out:
+  // authorization failures (a member hitting an admin route) are 403, and a tab
+  // that loads while already logged out never reaches this page — the gate serves
+  // the login screen for a text/html GET. So the first 401 any fetch sees sends
+  // us back to the login screen, which a plain reload of "/" renders (that same
+  // gate). Installed in the first inline script, before any boot fetch runs, so
+  // even the opening /defaults and /channels are covered. A half-typed prompt is
+  // already saved to localStorage on input, so the reload loses nothing; the
+  // cockpit restores it once you sign back in.
+  (function () {
+    var goneToLogin = false;
+    var nativeFetch = window.fetch.bind(window);
+    window.fetch = function () {
+      return nativeFetch.apply(null, arguments).then(function (res) {
+        if (res && res.status === 401 && !goneToLogin) {
+          goneToLogin = true;
+          location.reload();
+        }
+        return res;
+      });
+    };
+  })();
 </script>
 </head>
 <body>
@@ -2661,6 +2730,8 @@
   <div class="vm-hint" id="vmModeHint"></div>
   <label class="vm-check"><input type="checkbox" id="ledgerChk"><span>Shared ledger</span></label>
   <div class="vm-hint" id="vmLedgerHint"></div>
+  <label class="vm-check"><input type="checkbox" id="muteInstanceChk"><span>Mute this instance</span></label>
+  <div class="vm-hint" id="vmMuteHint">No favicon change, title badge, blink or sound — for every agent, on every tab of this instance.</div>
   <div class="vm-row"><span class="vm-label">Default model</span>
     <select id="defModelSel"><option value="">Claude Code's own default</option></select>
   </div>
@@ -3331,6 +3402,8 @@
     <form id="composer" hidden>
       <!-- Thumbnails of the files dropped / pasted into this agent's composer. -->
       <div id="composerAtts" class="cmp-atts" hidden></div>
+      <!-- Transient status for the dictate button (permission, nothing heard…). -->
+      <div id="micMsg" class="cmp-mic-msg" role="status" aria-live="polite" hidden></div>
       <!-- Pick a file to send: the same path as a paste or a drop (attachFile). -->
       <button type="button" id="attachBtn" class="cmp-attach" title="Attach a file" aria-label="Attach a file">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -3338,6 +3411,13 @@
       <input type="file" id="attachInput" multiple hidden>
       <textarea id="promptInput" rows="1"
         placeholder="Write your prompt — Enter to send, Shift+Enter for a new line"></textarea>
+      <!-- Dictate: records the mic, transcribes it locally (whisper.cpp) and
+           drops the text into the composer above — never auto-sent. -->
+      <button type="button" id="micBtn" class="cmp-mic" title="Dictate a prompt (speech-to-text)" aria-label="Dictate a prompt">
+        <svg class="mic-idle" viewBox="0 0 24 24" width="17" height="17" aria-hidden="true"><path d="M12 3a3 3 0 0 1 3 3v6a3 3 0 0 1-6 0V6a3 3 0 0 1 3-3z" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+        <svg class="mic-rec" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
+        <span class="mic-time" aria-hidden="true"></span>
+      </button>
       <button type="submit" class="primary" id="sendBtn">Send</button>
     </form>
 
@@ -5994,6 +6074,33 @@
   }
   renderThemeSwatches(); // paint the swatches now; the load fetch sets the active one
 
+  // ── Instance-wide mute: per instance, persisted server-side (like the name) ──
+  // When on, EVERY agent on this instance raises no web attention signal — the
+  // favicon never changes, no title badge, no blink, no chime — for every tab
+  // and device. It is the instance twin of a per-channel mute: `attentionInput`
+  // folds it into every channel's `muted`, and `ding` honours it too.
+  let cockpitMuted = false;
+  function applyMuted(on) {
+    cockpitMuted = !!on;
+    const chk = $("muteInstanceChk");
+    if (chk) chk.checked = cockpitMuted;
+    if (typeof paint === "function") paint(); // re-stamp favicon/title at once
+  }
+  async function saveMuted(on) {
+    applyMuted(on); // optimistic; the server echo reconciles below
+    try {
+      const res = await fetch("/mute", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ muted: !!on }),
+      });
+      const j = await res.json();
+      applyMuted(!!(j && j.muted));
+    } catch {
+      /* offline: keep the optimistic state, the next reload re-fetches */
+    }
+  }
+
   // ── Light / dark mode: per BROWSER (localStorage), not per instance ─────────
   // A comfort choice that belongs to the person, not the cockpit's identity (the
   // accent palette is the shared one). The <head> script already set the
@@ -6151,11 +6258,14 @@
   }
   /** What each channel is asking for, as the pure module wants it. */
   function attentionInput() {
+    // An instance-wide mute makes EVERY agent silent for notification purposes,
+    // so the favicon never changes, no title badge, no blink — the twin of a
+    // per-channel mute, applied to all at once (cockpitMuted, from /mute).
     return tabs.map((t) => ({
       mood: t.btnEl.classList.contains("needs-answer") ? "needs-answer"
         : t.btnEl.classList.contains("unread") ? "unread"
         : t.btnEl.classList.contains("working") ? "working" : null,
-      muted: !!t.muted,
+      muted: cockpitMuted || !!t.muted,
     }));
   }
 
@@ -6263,7 +6373,7 @@
   document.addEventListener("pointerdown", unlockAudio);
   document.addEventListener("keydown", unlockAudio);
   function ding() {
-    if (muted || !audioCtx || audioCtx.state !== "running") return;
+    if (muted || cockpitMuted || !audioCtx || audioCtx.state !== "running") return;
     const t0 = audioCtx.currentTime;
     for (const [freq, at] of [[880, 0], [1320, 0.12]]) {
       const o = audioCtx.createOscillator(), g = audioCtx.createGain();
@@ -8236,6 +8346,13 @@
     .then((r) => r.json())
     .then((j) => applyTheme(j && j.theme ? j.theme : "amber"))
     .catch(() => {});
+  // Instance-wide mute, likewise server-owned per instance.
+  fetch("/mute")
+    .then((r) => r.json())
+    .then((j) => applyMuted(!!(j && j.muted)))
+    .catch(() => {});
+  const muteInstanceChk = $("muteInstanceChk");
+  if (muteInstanceChk) muteInstanceChk.addEventListener("change", () => saveMuted(muteInstanceChk.checked));
   // Click outside closes it; clicks inside the menu don't.
   document.addEventListener("click", (e) => {
     if (!verMenu.hidden && !verMenu.contains(e.target) && e.target !== verView && e.target !== verChan) toggleVerMenu(false);
@@ -9251,6 +9368,118 @@
     attachInput.value = ""; // picking the same file again must fire `change` again
     for (const f of files) await attachFile(f);
     promptInput.focus();
+  });
+
+  // ── Dictate (speech-to-text) ────────────────────────────
+  // The mic button beside Send records the microphone, uploads the clip to
+  // /transcribe (local whisper.cpp on the server) and drops the text into the
+  // composer — NEVER auto-sent, so a possibly-misheard line is read first. One
+  // click starts, a second stops; recording shows a red stop square + a timer.
+  // getUserMedia needs a secure context (localhost / https); where the API is
+  // absent the button hides itself rather than throwing on first click.
+  const micBtn = $("micBtn");
+  const micSupported = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  if (micBtn && !micSupported) micBtn.hidden = true;
+  let micRec = null, micChunks = [], micStream = null, micTimer = null, micStart = 0, micMsgTimer = null;
+
+  function micMsg(text) {
+    const el = $("micMsg");
+    if (!el) return;
+    el.textContent = text;
+    el.hidden = !text;
+    if (micMsgTimer) clearTimeout(micMsgTimer);
+    if (text) micMsgTimer = setTimeout(() => { el.hidden = true; el.textContent = ""; }, 3500);
+  }
+  function micTimeEl() { return micBtn.querySelector(".mic-time"); }
+  function stopMicTracks() {
+    if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+  }
+  function endRecordingUI() {
+    micBtn.classList.remove("recording");
+    micTimeEl().textContent = "";
+    if (micTimer) { clearInterval(micTimer); micTimer = null; }
+  }
+
+  async function startRecording() {
+    if (!active) return;
+    micMsg("");
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      micMsg(err && err.name === "NotAllowedError" ? "Microphone access denied" : "No microphone available");
+      return;
+    }
+    micStream = stream;
+    micChunks = [];
+    micRec = new MediaRecorder(stream);
+    micRec.ondataavailable = (e) => { if (e.data && e.data.size) micChunks.push(e.data); };
+    micRec.onstop = () => transcribeRecording();
+    micRec.start();
+    micStart = Date.now();
+    micBtn.classList.add("recording");
+    const t = micTimeEl();
+    t.textContent = "0:00";
+    micTimer = setInterval(() => {
+      const s = Math.floor((Date.now() - micStart) / 1000);
+      t.textContent = Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+      if (s >= 300) stopRecording(); // hard cap: 5 min of audio is plenty for a prompt
+    }, 250);
+  }
+
+  function stopRecording() {
+    const r = micRec;
+    micRec = null;
+    if (r && r.state !== "inactive") r.stop(); // fires onstop → transcribeRecording
+  }
+
+  async function transcribeRecording() {
+    stopMicTracks();
+    endRecordingUI();
+    const blob = new Blob(micChunks, { type: (micChunks[0] && micChunks[0].type) || "audio/webm" });
+    micChunks = [];
+    if (!blob.size) return;
+    micBtn.classList.add("working");
+    micBtn.disabled = true;
+    try {
+      const r = await fetch("/transcribe", { method: "POST", headers: { "content-type": blob.type }, body: blob });
+      const j = await r.json().catch(() => ({}));
+      if (j && j.ok && j.text) {
+        insertDictation(j.text);
+      } else if (j && j.kind === "empty") {
+        micMsg("Didn't catch that — try again");
+      } else {
+        micMsg("Transcription failed");
+      }
+    } catch {
+      micMsg("Transcription failed");
+    } finally {
+      micBtn.classList.remove("working");
+      micBtn.disabled = false;
+      updateSendDisabled();
+    }
+  }
+
+  // Drop the transcript into the composer at the cursor (append with a space if
+  // text is already there), leaving it editable — same flow as typing.
+  function insertDictation(text) {
+    if (!active) return;
+    micMsg("");
+    const cur = promptInput.value;
+    const atEnd = (promptInput.selectionStart ?? cur.length) === cur.length;
+    if (atEnd && cur && !/\s$/.test(cur)) promptInput.value = cur + " " + text;
+    else if (atEnd) promptInput.value = cur + text;
+    else insertAtCursor(promptInput, text);
+    active.draft = promptInput.value;
+    autosizePrompt();
+    promptInput.focus();
+    updateSendDisabled();
+  }
+
+  if (micBtn) micBtn.addEventListener("click", () => {
+    if (!active || micBtn.disabled) return;
+    if (micBtn.classList.contains("recording")) stopRecording();
+    else startRecording();
   });
 
   // Drag-and-drop files anywhere on the chat pane → attach them, same path as

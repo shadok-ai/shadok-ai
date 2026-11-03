@@ -8,6 +8,7 @@ import {
   stripPromptMeta,
   parsePromptMeta,
 } from "../src/promptmeta.js";
+import { classifyUserLine } from "../src/prompt-kind.js";
 
 const AT = new Date("2026-08-25T14:30:00Z");
 
@@ -78,4 +79,59 @@ test("a voice note is marked in the PLATFORM, and parsing stays intact", () => {
   assert.equal(parsed?.who, "Alexandre", "the sender must survive the extra word");
   // And the display still strips it: the human sees their words, not the header.
   assert.equal(stripPromptMeta(markPromptMeta("ajoute un test", h)), "ajoute un test");
+});
+
+test("an agent header carries a reply address, and the chat never sees it", () => {
+  // A name is not an address — nothing makes tab names unique — so the sender's
+  // short session id rides at the END of an agent header.
+  const h = promptMetaHeader("agent", AT, "Shadok-Boss", "UTC", "b1c347bc");
+  assert.equal(h, "⟦agent · 2026-08-25 14:30 · Shadok-Boss · b1c347bc⟧");
+  // Split back OUT of the name: `who` is what labels the bubble on reload, so an
+  // address left inside it would be printed in the chat forever after.
+  assert.deepEqual(parsePromptMeta(h + "\nva voir"), {
+    platform: "agent",
+    who: "Shadok-Boss",
+    ref: "b1c347bc",
+  });
+});
+
+test("the reply address never eats into a sender's name", () => {
+  // `who` is "everything past the time" precisely so a name with " · " survives;
+  // the split is narrow on purpose — agent platform, exact 8 hex, last field.
+  assert.deepEqual(parsePromptMeta("⟦agent · 2026-08-25 14:30 · A · B · b1c347bc⟧\nx"), {
+    platform: "agent",
+    who: "A · B",
+    ref: "b1c347bc",
+  });
+  // Not an id-shaped field: all name, no ref.
+  assert.deepEqual(parsePromptMeta("⟦agent · 2026-08-25 14:30 · Ada · Lovelace⟧\nx"), {
+    platform: "agent",
+    who: "Ada · Lovelace",
+  });
+  // Another platform never splits, however id-shaped the last field looks.
+  assert.deepEqual(parsePromptMeta("⟦telegram · 2026-08-25 14:30 · Alex · b1c347bc⟧\nx"), {
+    platform: "telegram",
+    who: "Alex · b1c347bc",
+  });
+});
+
+test("a reply address with no sender is dropped rather than read as the name", () => {
+  // It would land in the name's position and parse back as one.
+  assert.equal(promptMetaHeader("agent", AT, undefined, "UTC", "b1c347bc"), "⟦agent · 2026-08-25 14:30⟧");
+});
+
+test("a replayed agent prompt is labelled with the name alone", () => {
+  // The end of the chain the header exists for: `from` is what the client turns
+  // into the bubble's label (`echoAuthor`), so this is where an address kept
+  // inside the name would surface — in the chat, on every reload, forever.
+  const line = {
+    type: "user",
+    message: { content: "⟦agent · 2026-11-02 15:40 · Shadok-Boss · b1c347bc⟧\nva voir" },
+  };
+  assert.deepEqual(classifyUserLine(line), {
+    kind: "prompt",
+    text: "va voir",
+    from: "Shadok-Boss",
+    origin: "agent",
+  });
 });

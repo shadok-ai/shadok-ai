@@ -35,11 +35,37 @@ export function formatWhen(at: Date, timeZone?: string): string {
   }
 }
 
-/** Build the header line: ⟦platform · time [· who]⟧. */
-export function promptMetaHeader(platform: string, at: Date, who?: string, timeZone?: string): string {
+/**
+ * The REPLY ADDRESS an `agent` header ends with: the short session id of the
+ * agent that spoke, so the one reading it can answer without a lookup.
+ *
+ * A name is not an address — nothing makes cockpit tab names unique, and every
+ * tool takes an id — so naming the sender was only half of telling the receiver
+ * who it is. Eight hex characters is what `resolveResumeId` resolves (it refuses
+ * an ambiguous prefix rather than guessing) and what the rest of the cockpit
+ * already prints for a session.
+ *
+ * The SHAPE is the discriminator, and it is why the rule below is narrow: a
+ * header's `who` is deliberately "everything past the time" so a name
+ * containing " · " survives, and a fourth field would have eaten into it. Only
+ * an `agent` platform, only an exact 8-hex last field. Anything else is name.
+ */
+const AGENT_REF = /^[0-9a-f]{8}$/;
+
+/** Build the header line: ⟦platform · time [· who][· ref]⟧. */
+export function promptMetaHeader(
+  platform: string,
+  at: Date,
+  who?: string,
+  timeZone?: string,
+  ref?: string,
+): string {
   const parts = [platform.trim() || "web", formatWhen(at, timeZone)];
   const w = (who ?? "").trim();
   if (w) parts.push(w);
+  // A ref with no name would sit where the name is read, and parse back as one.
+  const r = (ref ?? "").trim();
+  if (r && w) parts.push(r);
   return `${META_OPEN}${parts.join(" · ")}${META_CLOSE}`;
 }
 
@@ -57,13 +83,29 @@ export function hasPromptMeta(text: string): boolean {
  * " · " survives. Lets a replayed history restore who spoke — otherwise a
  * Telegram message came back as the generic "pilot", its sender lost with the
  * stripped header.
+ *
+ * `ref` is the sender's reply address, present on an `agent` header only (see
+ * AGENT_REF). It is returned SEPARATELY from `who` on purpose: the client labels
+ * a bubble with `who`, so an address kept inside the name would have shown up in
+ * the chat on every reload.
  */
-export function parsePromptMeta(text: string): { platform: string; who: string } | null {
+export function parsePromptMeta(
+  text: string,
+): { platform: string; who: string; ref?: string } | null {
   if (!hasPromptMeta(text)) return null;
   const first = text.split("\n", 1)[0].trim();
   const inner = first.slice(META_OPEN.length, first.length - META_CLOSE.length);
   const parts = inner.split(" · ");
-  return { platform: (parts[0] ?? "").trim(), who: parts.slice(2).join(" · ").trim() };
+  const platform = (parts[0] ?? "").trim();
+  // Split the reply address off the END before reading the name, and ONLY for
+  // an agent header: `who` stays everything past the time, so a sender whose
+  // name contains " · " is still recovered whole. The id never reaches the
+  // chat — the client labels a bubble with `who` (`echoAuthor`), and an address
+  // is plumbing, not a byline.
+  const last = (parts[parts.length - 1] ?? "").trim();
+  const hasRef = platform === "agent" && parts.length >= 4 && AGENT_REF.test(last);
+  const who = (hasRef ? parts.slice(2, -1) : parts.slice(2)).join(" · ").trim();
+  return { platform, who, ...(hasRef ? { ref: last } : {}) };
 }
 
 /** Prepend the header as its own first line. Idempotent. */
