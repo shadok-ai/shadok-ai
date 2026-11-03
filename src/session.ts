@@ -30,6 +30,34 @@ export const FORCED_CLAUDE_ENV: Record<string, string> = {
   CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1",
 };
 
+/**
+ * The forced layer: `FORCED_CLAUDE_ENV` plus, for an isolated group's agent, the
+ * shared subscription token. `CLAUDE_CODE_OAUTH_TOKEN` begins with `CLAUDE`, so
+ * any layer before the strip would lose it, and a profile secret of the same
+ * name must not shadow it — hence the forced layer, applied LAST by both pilots.
+ * Gated on BOTH a drop `user` and a non-empty token: mono-tenant gets no key.
+ */
+export function forcedEnv(opts: { user?: string | null; oauthToken?: string }): Record<string, string> {
+  return {
+    ...FORCED_CLAUDE_ENV,
+    ...(opts.user && opts.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: opts.oauthToken } : {}),
+  };
+}
+
+/** The full spawn env of a PTY pilot, pure so it is testable without a PTY. */
+export function spawnEnv(
+  opts: { user?: string | null; home?: string | null; env?: Record<string, string>; oauthToken?: string },
+  baseEnv: Record<string, string>,
+): Record<string, string> {
+  return {
+    ...baseEnv,
+    TERM: "xterm-256color",
+    ...opts.env,
+    ...dropEnv(opts.user, opts.home),
+    ...forcedEnv(opts),
+  };
+}
+
 export interface PilotOptions {
   /** Path to the claude executable (default: "claude" from PATH). */
   claudePath?: string;
@@ -56,6 +84,11 @@ export interface PilotOptions {
    * today. See `dropEnv` (`src/osusers.ts`).
    */
   home?: string | null;
+  /**
+   * The shared subscription token, injected as CLAUDE_CODE_OAUTH_TOKEN in the
+   * forced-last layer. Honoured only together with `user` (see `forcedEnv`).
+   */
+  oauthToken?: string;
 }
 
 export interface WaitOptions {
@@ -148,13 +181,7 @@ export class PtyPilot {
       // FORCED_CLAUDE_ENV goes LAST, after the profile's secrets: a transcript
       // is what the cockpit is made of, so nothing a profile carries may switch
       // it off, even by accident of naming.
-      env: {
-        ...env,
-        TERM: "xterm-256color",
-        ...this.opts.env,
-        ...dropEnv(this.opts.user, this.opts.home),
-        ...FORCED_CLAUDE_ENV,
-      },
+      env: spawnEnv(this.opts, env),
     });
     this.proc.onData((chunk) => {
       this.lastDataAt = Date.now();

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
-import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
+import { windowMs, forcedEnv } from "./session.js";
 import { dropArgv, dropEnv } from "./osusers.js";
 import { binaryBusyError } from "./claude-bin.js";
 import { SHADOK_DIR } from "./config.js";
@@ -270,6 +270,8 @@ export class TmuxPilot {
     if (decision === "adopt") {
       // Reattach to a session that outlived a previous server: claude is
       // already past the trust dialog and holding its state.
+      // A pane adopted after a restart keeps the token it was spawned with; a
+      // rotated token reaches it only on `restart-all`.
       this.attached = true;
     } else {
       if (decision === "respawn") {
@@ -292,7 +294,7 @@ export class TmuxPilot {
       const { script, skipped } = launcherScript({
         unset,
         env: this.opts.env ?? {},
-        forced: FORCED_CLAUDE_ENV,
+        forced: forcedEnv(this.opts),
         bin,
         args: this.opts.args ?? [],
         // Multi-tenant isolation: drop to the group's OS user. Only ever set in

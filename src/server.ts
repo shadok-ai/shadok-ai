@@ -5125,9 +5125,14 @@ function makePilot(
   // group → GROUP_HOME_BASE/sk-<id>), so the spawn's HOME is exactly where the
   // credential was provisioned. Undefined without a drop user → HOME left as today.
   const home = user ? homeForUser(user, GROUP_HOME_BASE) : undefined;
+  // Isolated groups share the subscription token, injected in the forced-last
+  // env layer. Mono-tenant (no user) reads and passes nothing.
+  const oauthToken = user
+    ? secretsFor(["MT_CLAUDE_OAUTH_TOKEN"], MAIN_GROUP_ID)["MT_CLAUDE_OAUTH_TOKEN"]
+    : undefined;
   return USE_TMUX
-    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home })
-    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home });
+    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home, oauthToken })
+    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home, oauthToken });
 }
 
 interface Live {
