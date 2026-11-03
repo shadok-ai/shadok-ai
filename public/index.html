@@ -878,14 +878,15 @@
     .rail-item.needs-answer { background: color-mix(in srgb, var(--amber) 28%, transparent); color: var(--text); }
     .rail-item.unread { background: rgba(127, 201, 127, 0.14); border-left-color: var(--ok); color: var(--text); }
     @media (prefers-reduced-motion: reduce) { .rail-item.working { animation: none !important; } }
-    .rail-add, .rail-del {
+    .rail-add, .rail-del, .rail-gear {
       flex: none; display: none; border: none; background: none;
       padding: 0 3px; font-size: 13px; line-height: 1; color: var(--text-dim);
     }
-    .rail-item:hover .rail-add, .rail-item:hover .rail-del { display: inline-block; }
+    .rail-item:hover .rail-add, .rail-item:hover .rail-del, .rail-item:hover .rail-gear { display: inline-block; }
     .rail-item:hover .rail-count { display: none; }
     .rail-add:hover { color: var(--amber); }
     .rail-del:hover { color: var(--err); }
+    .rail-gear:hover { color: var(--amber); }
     #groupRail #newGroup {
       margin-top: 6px; border-color: transparent; text-align: left;
       font-size: 13px; color: var(--text-dim); padding: 8px 10px;
@@ -897,7 +898,7 @@
     body.rail-mini .rail-head { justify-content: center; padding: 0 0 8px; }
     body.rail-mini .rail-head .label,
     body.rail-mini .rail-count,
-    body.rail-mini .rail-add, body.rail-mini .rail-del,
+    body.rail-mini .rail-add, body.rail-mini .rail-del, body.rail-mini .rail-gear,
     body.rail-mini .rail-txt { display: none !important; }
     body.rail-mini .rail-item { flex-direction: column; justify-content: center; gap: 3px; padding: 7px 2px; text-align: center; }
     body.rail-mini .rail-icon { width: 34px; height: 34px; font-size: 22px; border-radius: 8px; }
@@ -1075,6 +1076,10 @@
   .sec-ctl label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
   .group-head .gkey { flex: none; font-size: 12px; padding: 0 4px; cursor: pointer; visibility: hidden; }
   .group-head:hover .gkey { visibility: visible; }
+  /* A touch screen has no hover, so the group-head ⚙/🔑 (the single-column /
+     mobile layout's only door to a group's settings, members and secrets) were
+     unreachable. Keep them visible where there is no hover. */
+  @media (hover: none) { .group-head .gkey { visibility: visible; } }
   #groupPanelBody .gp-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
   #groupPanelBody .gp-row span { flex: 1; }
   /* Avatar toggle grid: one tile per person (create-group picker + group panel). */
@@ -5281,6 +5286,17 @@
     }
     item.append(lead, nm, dot, count, add);
     if (group) {
+      // Settings + members. The rail IS the group header on desktop (the
+      // `.group-head` gear is display:none here), so without this the members
+      // panel (POST /groups/members) had no reachable door — membership was
+      // create-time only. Opens the same openGroupPanel, scoped by nature.
+      const gear = document.createElement("button");
+      gear.type = "button";
+      gear.className = "rail-gear";
+      gear.textContent = "⚙";
+      gear.title = "Settings and members of " + name;
+      item.appendChild(gear);
+      gear.addEventListener("click", (e) => { e.stopPropagation(); openGroupPanel(group.id); });
       const del = document.createElement("button");
       del.type = "button";
       del.className = "rail-del";
