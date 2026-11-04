@@ -2970,6 +2970,9 @@
   <!-- Rotate the long-lived subscription token group agents authenticate with
        (multi-tenant + admin only). Shown by renderAuthRows when a token is held. -->
   <button class="vm-btn" id="mtTokenReplaceBtn" type="button" hidden>🔑 Replace subscription token…</button>
+  <!-- Agent auth mode: token vs per-user login (for claude.ai connectors).
+       Multi-tenant + admin only; shown by renderAuthRows. -->
+  <button class="vm-btn" id="agentAuthBtn" type="button" hidden>🔌 Agent auth &amp; connectors…</button>
   <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
@@ -3546,6 +3549,38 @@
       </form>
     </div>
     <p class="sec-note" id="mtTokenMsg" hidden></p>
+  </div>
+</div>
+
+<!-- Agent auth mode + per-user login (src/agent-login.ts). Multi-tenant + admin.
+     Token (1y, no connectors) vs login (1mo, your claude.ai connectors; each OS
+     user signs in once into its own home). -->
+<div id="agentAuthOverlay" class="overlay" hidden>
+  <div id="agentAuthPanel" class="sec-panel">
+    <div class="sec-head">
+      <strong>Agent auth &amp; connectors</strong>
+      <button id="agentAuthClose" type="button" title="Close" aria-label="Close">✕</button>
+    </div>
+    <p class="sec-note">How this instance's agents authenticate to your Claude subscription. The <strong>token</strong> lasts ~1 year but carries NO claude.ai connectors. The <strong>login</strong> gives agents your connectors but lasts ~1 month, and each OS user (the shared commons user, plus each private group) signs in once.</p>
+    <div class="field">
+      <label class="vm-check"><input type="radio" name="agentAuthMode" id="agentAuthModeToken" value="token"><span>Token — ~1 year, no connectors (default)</span></label>
+      <label class="vm-check"><input type="radio" name="agentAuthMode" id="agentAuthModeLogin" value="login"><span>Login — ~1 month, your claude.ai connectors</span></label>
+    </div>
+    <div id="agentLoginUsers"></div>
+    <div id="agentLoginFlow" hidden>
+      <div class="field">
+        <span class="label">1 — Open this link and authorise on your Claude subscription</span>
+        <a id="agentLoginLink" target="_blank" rel="noopener">starting…</a>
+      </div>
+      <div class="field">
+        <span class="label">2 — Paste the code you get back</span>
+        <form id="agentLoginCodeForm" style="display:flex;gap:8px">
+          <input id="agentLoginCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
+          <button type="submit">Sign in</button>
+        </form>
+      </div>
+    </div>
+    <p class="sec-note" id="agentAuthMsg" hidden></p>
   </div>
 </div>
 
@@ -7556,7 +7591,7 @@
   }
   function updateLivePreview(tab, screen) {
     if (!window.extractLiveText) return;
-    const txt = extractLiveText(screen);
+    let txt = extractLiveText(screen);
     // Empty extraction (a running tool, the spinner, or a transient frame while
     // the block scrolls) → KEEP the existing preview as is. Clearing it here made
     // the in-flight block flicker (a fleeting empty → clear → re-show). The block
@@ -7567,6 +7602,10 @@
     // Without this guard the grey preview would stay up the whole turn waiting
     // for a stream-text that never comes.
     if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
+    // Content THEN a trailing sign-off sentinel: strip the marker, keep the text,
+    // so the grey preview matches the finalised block the server strips (twin of
+    // stripTrailingNothingToShow, src/tail.ts). A mid-message sentinel stays.
+    txt = txt.replace(/\n[ \t*_`]*nothing to show[ \t*_`.!]*\s*$/i, "").replace(/\s+$/, "");
     const nT = normPreview(txt);
     // Decide what to do with the block (pure, tested — see livePreviewDecision).
     // The baseline (previous turn's answer) is kept for the WHOLE turn: once new
@@ -8514,6 +8553,11 @@
     // actually held (longLived) on a multi-tenant instance, for an admin.
     const mtBtn = document.getElementById("mtTokenReplaceBtn");
     if (mtBtn) mtBtn.hidden = true;
+    // The agent-auth/connectors card is relevant for any multi-tenant admin, in
+    // either mode — set it BEFORE the early returns below so it stays correct
+    // even when the account row bails (signed-out, custom backend, unknown).
+    const aaBtn = document.getElementById("agentAuthBtn");
+    if (aaBtn) aaBtn.hidden = !(a && a.multiTenant && me && me.role === "admin");
     if (a && a.backend === "custom" && a.state !== "signed-in") {
       accEl.textContent = a.backendModel ? a.backendModel + " · custom backend" : "custom model backend";
       accEl.title = "";
@@ -13577,6 +13621,109 @@
       msg.hidden = false;
       refreshAuthRows();   // clears the missing-token banner + repaints the expiry row
       setTimeout(() => { $("mtTokenOverlay").hidden = true; }, 1600);
+    } else {
+      msg.textContent = (r && r.error) || "the code was refused";
+      msg.hidden = false;
+    }
+  });
+
+  // ── Agent auth mode + per-user login for connectors (src/agent-login.ts) ──
+  // The alternative to the injected token: in "login" mode each OS user signs in
+  // once (into its own home) so its agents get the account's claude.ai
+  // connectors. The browser only ever sees {url}/{ok}; the credential is written
+  // in the user's home server-side and never returned.
+  let agentLoginUser = null; // the user whose OAuth sub-flow is currently open
+  function openAgentAuthCard() {
+    $("agentAuthMsg").hidden = true;
+    $("agentLoginFlow").hidden = true;
+    agentLoginUser = null;
+    $("agentAuthOverlay").hidden = false;
+    refreshAgentAuth();
+  }
+  function closeAgentAuthCard() {
+    $("agentAuthOverlay").hidden = true;
+    if (agentLoginUser) {
+      fetch("/agent-login", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user: agentLoginUser }) }).catch(() => {});
+      agentLoginUser = null;
+    }
+  }
+  async function refreshAgentAuth() {
+    let r;
+    try { r = await (await fetch("/agent-login")).json(); } catch { return; }
+    if (!r || !r.mode) return;
+    $("agentAuthModeToken").checked = r.mode === "token";
+    $("agentAuthModeLogin").checked = r.mode === "login";
+    const box = $("agentLoginUsers");
+    box.textContent = "";
+    if (r.mode !== "login") return; // per-user logins only matter in login mode
+    for (const u of (r.users || [])) {
+      const row = document.createElement("div");
+      row.className = "field";
+      row.style.display = "flex";
+      row.style.justifyContent = "space-between";
+      row.style.alignItems = "center";
+      row.style.gap = "8px";
+      const label = document.createElement("span");
+      label.className = "label";
+      let status = u.loggedIn ? "✅ signed in" : "⚠️ needs login";
+      if (u.loggedIn && typeof u.expiresAt === "number" && window.fmtExpiry) {
+        const line = window.fmtExpiry(u.expiresAt, Date.now());
+        if (line) status += " · " + line;
+      }
+      if (u.pending) status = "… signing in";
+      label.textContent = u.label + " (" + u.user + ") — " + status;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = u.loggedIn ? "Reconnect" : "Sign in";
+      btn.addEventListener("click", () => startAgentLogin(u.user));
+      row.appendChild(label);
+      row.appendChild(btn);
+      box.appendChild(row);
+    }
+  }
+  async function startAgentLogin(user) {
+    agentLoginUser = user;
+    $("agentLoginFlow").hidden = false;
+    $("agentAuthMsg").hidden = true;
+    $("agentLoginCode").value = "";
+    const link = $("agentLoginLink");
+    link.textContent = "starting…"; link.removeAttribute("href");
+    try {
+      const r = await (await fetch("/agent-login/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user }) })).json();
+      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      else link.textContent = (r && r.error) || "could not start";
+    } catch { link.textContent = "could not start"; }
+  }
+  function setAgentAuthMode(mode) {
+    const msg = $("agentAuthMsg");
+    fetch("/agent-login/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) })
+      .then((x) => x.json()).then((r) => {
+        msg.textContent = (r && r.restarted) ? "Mode changed — agents are restarting to apply it." : "Mode set.";
+        msg.hidden = false;
+        refreshAgentAuth();
+      }).catch(() => { msg.textContent = "could not change mode"; msg.hidden = false; });
+  }
+  if ($("agentAuthClose")) $("agentAuthClose").addEventListener("click", closeAgentAuthCard);
+  if ($("agentAuthBtn")) $("agentAuthBtn").addEventListener("click", () => { verMenu.hidden = true; openAgentAuthCard(); });
+  if ($("agentAuthModeToken")) $("agentAuthModeToken").addEventListener("change", () => { if ($("agentAuthModeToken").checked) setAgentAuthMode("token"); });
+  if ($("agentAuthModeLogin")) $("agentAuthModeLogin").addEventListener("change", () => { if ($("agentAuthModeLogin").checked) setAgentAuthMode("login"); });
+  if ($("agentLoginCodeForm")) $("agentLoginCodeForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!agentLoginUser) return;
+    const code = $("agentLoginCode").value.trim();
+    if (!code) return;
+    const msg = $("agentAuthMsg"); msg.hidden = true;
+    let r;
+    try {
+      r = await (await fetch("/agent-login/code", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user: agentLoginUser, code }) })).json();
+    } catch { r = { ok: false, error: "the server did not answer" }; }
+    if (r && r.ok) {
+      $("agentLoginCode").value = "";
+      msg.textContent = "✅ Signed in. This user's agents have your connectors now.";
+      msg.hidden = false;
+      $("agentLoginFlow").hidden = true;
+      agentLoginUser = null;
+      refreshAgentAuth();
     } else {
       msg.textContent = (r && r.error) || "the code was refused";
       msg.hidden = false;

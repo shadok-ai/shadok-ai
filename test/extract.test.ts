@@ -344,6 +344,38 @@ test("loadHistory: a NOTHING TO SHOW block leaves no trace in the replayed histo
   });
 });
 
+test("loadHistory: a trailing sign-off sentinel is stripped, the answer kept", () => {
+  const prevHome = process.env.HOME;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
+  process.env.HOME = tmp;
+  try {
+    const cwd = "/tmp/other/project";
+    const sid = "trail-session";
+    const enc = cwd.replace(/[^a-zA-Z0-9]/g, "-");
+    const dir = path.join(tmp, ".claude", "projects", enc);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, sid + ".jsonl"),
+      [
+        JSON.stringify({ type: "user", timestamp: "2026-11-04T17:00:00.000Z", message: { content: "status?" } }),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-11-04T17:15:00.000Z",
+          message: { content: [{ type: "text", text: "The change is fine, nothing to carry.\n\nNOTHING TO SHOW" }] },
+        }),
+      ].join("\n"),
+    );
+    const turns = loadHistory(cwd, sid);
+    assert.equal(turns.length, 2);
+    assert.equal(turns[1].text, "The change is fine, nothing to carry.");
+    assert.doesNotMatch(turns[1].text, /NOTHING TO SHOW/);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("loadHistory: a cron-fired answer keeps its own label, not merged onto the last", () => {
   withTempHome((cwd, sid) => {
     const turns = loadHistory(cwd, sid);

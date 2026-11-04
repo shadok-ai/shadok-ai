@@ -56,10 +56,10 @@ running instance reads it.
 
 ```bash
 npm run build
-PORT=3899 SHADOK_VERSION_CHECK_MIN=0 node dist/server.js
+PORT=3899 SHADOK_VERSION_CHECK_MIN=0 SHADOK_SEED_SKILLS=0 node dist/server.js
 ```
 
-Three properties make that safe, and all three are load-bearing — change one and
+Four properties make that safe, and all four are load-bearing — change one and
 you're back to the old failure:
 
 - `PORT` sets where the port walk *starts* (`START_PORT`, server.ts:102). It does
@@ -77,6 +77,13 @@ you're back to the old failure:
   bridge. That's what lets the two coexist: only one process can long-poll the bot.
   A `TELEGRAM_BOT_TOKEN` in the env overrides the per-dir lookup and *would* steal
   the bot — so confirm your startup output has no `telegram:` line.
+- `SHADOK_SEED_SKILLS=0` stops the boot from rewriting the **machine-wide** skill
+  scripts (the server HOME's `~/.claude/skills`, plus `/etc/claude-code/.claude/skills`
+  in multi-tenant). Those live OUTSIDE your tree and are refreshed at every boot,
+  so without this your build hands every agent on the host — the production
+  server's included — scripts newer than the server they call. Measured: the
+  ledger skill began posting a route the running build did not serve, so `record`
+  answered 404 host-wide while `check` kept working. See invariant 57.
 
 Verify you're really on your build: `curl -s localhost:3899/version` must report
 the local `current` (0.1.0), not the published one. Check
@@ -120,7 +127,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/pace.ts` | The quota guardrail: ideal-pace computation + block verdict. |
 | `src/retry.ts` | Auto-retry of turns that died on a transient API error (529, 5xx, timeout). |
 | `src/channels.ts` | Server-side persistence of the channel + group lists, and the one answer to "where does this session live" — `resolveSessionTarget` / `resumeTarget` (pure, tested), which EVERY caller acting on a session's behalf goes through; on a resume the registry beats whatever the caller sent (see invariant 1). |
-| `src/telegram.ts` | The Telegram bridge. `replyContext` turns a REPLY into the line telling the agent which message is answered: a highlighted fragment (`quote`) beats the whole message, a bot is named "the agent" rather than by its `first_name`, and a topic's own creation message is NOT a reply — in a forum EVERY message carries `reply_to_message` pointing at it (verified on a live payload), so without that guard every message in every topic gets a useless quote. |
+| `src/telegram.ts` | The Telegram bridge. `replyContext` turns a REPLY into the line telling the agent which message is answered: a highlighted fragment (`quote`) beats the whole message, a bot is named "the agent" rather than by its `first_name`, and a topic's own creation message is NOT a reply — in a forum EVERY message carries `reply_to_message` pointing at it (verified on a live payload), so without that guard every message in every topic gets a useless quote. Attachments land in `mediaDir()` (runtime-resolved, shared with `/paste`): multi-tenant relocates it under the shared pot so a privilege-dropped agent can actually open the file — `~/.shadok-ai/media` is `/root/…`, un-reachable (invariant 54's family). |
 | `src/tg-pairing.ts` | The Telegram pairing code — the only way a Telegram account binds the board group (`/setup <code>`) or becomes the DM owner. |
 | `src/main.ts` | The `npx shadok-ai` entry point: parses flags, first-run token prompt, then runs the supervisor. |
 | `src/supervisor.ts` / `src/updater.ts` / `src/update-flag.ts` | Self-update: the supervisor runs the npm-installed server as a child, restarts it on the update exit code; the updater installs the channel's resolved version into `~/.shadok-ai/app` (an EXACT version, never a tag — the caller already chose). |
@@ -143,9 +150,9 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `context/files-skill/` | The `shadok-files` skill (seeded by `seedFilesSkill`, twin of secrets/reload/ledger): `send.mjs <abs path…> [--caption]` → `POST /files`, authenticated by `SHADOK_SESSION_KEY`. |
 | `src/factory.ts` + `src/factory-scan.ts` + `src/factory-routes.ts` | The Skill Factory: skills written together (one bare git repo per skill, the server is the origin), scanned for secrets on every save/push, saved as a draft or **Save**d (release + accept + move attached agents, all hidden), attached per agent as `--plugin-dir`, shared with only me / some groups / everyone. |
 | `context/factory-skill/` + `context/skillsmith-prompt.md` | The agent side of the factory: the `shadok-factory` skill (`factory.mjs pull/push/scan`) and the managed `Shadok-Skillsmith` role. |
-| `context/ledger-skill/` + `context/ledger-reflex.md` | The `shadok-ledger` skill (seeded by `seedLedgerSkill`, twin of secrets/scheduler) and its gated pilot-prompt reflex, so agents stop re-surfacing what a sibling already resolved. |
+| `context/ledger-skill/` + `context/ledger-reflex.md` | The `shadok-ledger` skill (seeded by `seedLedgerSkill`, twin of secrets/scheduler) and its gated pilot-prompt reflex, so agents stop re-surfacing what a sibling already resolved. `record`/`check` go through the server, and a **404 degrades to the local table** (announced, never silent): a seeded copy can be NEWER than the server that answers it — see invariant 57. A 401 stays loud, it means a human action (invariant 33). |
 | `src/ledger.ts` | The SERVER side of the shared ledger (the skill's `ledger-core.mjs` is the agent side). |
-| `src/claude-home.ts` | Seeds Claude Code's first-run state in `~/.claude.json` — the globals at boot, `projects[<cwd>]` before every spawn (a worktree is a new directory, so a new trust dialog every time) — plus an explicit `tui` in `~/.claude/settings.json`, which kills the fullscreen-renderer upsell. |
+| `src/claude-home.ts` | Seeds Claude Code's first-run state in `~/.claude.json` — the globals at boot, `projects[<cwd>]` before every spawn (a worktree is a new directory, so a new trust dialog every time) — plus an explicit `tui` in `~/.claude/settings.json`, which kills the fullscreen-renderer upsell. `seedPlanForCwds` folds the globals + MANY cwds into one object, so a shared group HOME is seeded in a single atomic write (not one racy write per spawn): the server's `preseedGroupHomes` uses it to fill every drop user's HOME before the boot resume storm, closing the shared-`/home/main/.claude.json` trust-dialog race (invariant 23's group-HOME extension). |
 | `src/groups.ts` | The group model and its ACL — the ONE concept the isolation feature turns on: a group is both the unit of isolation and the unit of visibility, in three `Nature`s (`private` — one person, sealed even from an admin; `restricted` — a member list; `public` — everyone, `Main` (`MAIN_GROUP_ID`) the default). |
 | `src/capability.ts` | Decided ONCE at boot: is this process able to build a real wall? `probeCanProvision` (root, or passwordless `sudo -n`; `SHADOK_FORCE_MULTITENANT=1/0` overrides) AND `accountsEnabled` (a GUI password exists — accounts are what a wall is FOR) → `deploymentMode` `multi-tenant` or `mono-tenant`. |
 | `src/osusers.ts` | The privileged orchestrator's OS-user lifecycle. |
@@ -156,9 +163,10 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/greeting.ts` | What the lead says the first time a cockpit opens, as a BRIEF the model writes from — never finished prose. |
 | `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs no PTY: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. |
 | `src/setup-token.ts` | In-cockpit provisioning of the long-lived subscription token (`MT_CLAUDE_OAUTH_TOKEN`) a multi-tenant instance injects into its privilege-dropped agents — so an instance is autonomous (obtain + rotate from the cockpit, no hand-run shell). |
+| `src/agent-login.ts` | In-cockpit `claude auth login --claudeai` for a SINGLE OS user — the `login` auth mode (`config.agentAuth`), the alternative to `setup-token` that gives agents the account's **claude.ai connectors**. Drives the OAuth in a per-user tmux pane (reusing setup-token's URL/invalid-code parsers; success = the credential FILE appearing, never read for its value), so the login lands in that user's OWN home. Per-user because a refreshable credential is single-owner (invariant 56) — never shared across users, and no token is injected in this mode. Routes `/agent-login/*`; `agentLoginInfo` feeds the per-user status/expiry row. |
 | `src/claude-creds.ts` | WHEN the Claude OAuth session expires, for the version menu's Account/Token rows — read from Claude Code's own credentials store (file first, then the macOS keychain, the same order `usage.ts` reads the token), and never a token value, only two timestamps. |
 | `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). |
-| `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600; deliberately deleted starter roles are remembered in `profiles-declined.json` — the seed installs the shipped roles a vault is MISSING, including ones a later release added, so it must not resurrect what you removed): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow) + secrets + model, applied at spawn via `profileArgs`. |
+| `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600; deliberately deleted starter roles are remembered in `profiles-declined.json` — the seed installs the shipped roles a vault is MISSING, including ones a later release added, so it must not resurrect what you removed): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow) + secrets + model, applied at spawn via `profileArgs`. `resolveSpawnModel` is the model precedence (agent's choice → profile's pinned → instance default) — the instance default is passed EXPLICITLY only for a privilege-DROPPED agent, which reads its own home's `settings.json` (no model seeded there) and would otherwise fall back to the CLI's Sonnet default; a root/mono agent reads the server `settings.json` itself and gets no forced flag. |
 | `src/oauth-relay.ts` | Finish an OAuth sign-in whose redirect lands on an agent's `localhost:PORT` from a browser on another machine: `POST /oauth-relay` (browser-only) GETs the pasted address from the cockpit. |
 | `src/peers.ts` | PEERS — other instances allowed to reach this one's agents, the cross-instance twin of a web account. |
 | `src/accounts.ts` | Web accounts, PER INSTANCE (`~/.shadok-ai/users/<key>.json`, 600): roles (`admin`/`member`), salted scrypt hashes, single-use invitations, and the signed session token. |
@@ -307,6 +315,8 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **53.** `claude setup-token` runs in a tmux session — read the RENDERED screen, not a raw stream — and the token it mints never leaves the server. · [detail](docs/invariants.md#inv-57)
 - **54.** A dropped agent's on-disk STATE must live in its own home, not the server's `/root` — pointing `$HOME` there (invariant 50) is only half of it. · [detail](docs/invariants.md#inv-58)
 - **55.** Exactly ONE `Live` per agent — a resume that can't attach must HAND OVER the old viewers, not orphan them. · [detail](docs/invariants.md#inv-59)
+- **56.** A refreshable login credential is single-owner — share it only within one OS user, never across users. · [detail](docs/invariants.md#inv-60)
+- **57.** A machine-wide seeded script may be NEWER than the server it calls — tolerate the skew, and don't re-seed from a side-by-side build. · [detail](docs/invariants.md#inv-61)
 
 ## Conventions
 

@@ -13,6 +13,22 @@ test("a command on its own line, in a fenced block, is offered", () => {
   assert.deepEqual(bangCommands(msg), ["claude --version"]);
 });
 
+test("a standalone line with NO space after `!` is a command (Claude Code bash mode)", () => {
+  // The exact report: an agent offered a fenced block `!/tmp/.../allow-pr-merge.sh`
+  // and the run button never appeared, because the parser required a space.
+  const msg = "Pour autoriser, lance :\n```\n!/tmp/claude-0/scratchpad/allow-pr-merge.sh\n```";
+  assert.deepEqual(bangCommands(msg), ["/tmp/claude-0/scratchpad/allow-pr-merge.sh"]);
+  assert.deepEqual(bangCommands("!./run.sh"), ["./run.sh"]);
+  assert.deepEqual(bangCommands("!claude --version"), ["claude --version"]);
+});
+
+test("inline code still REQUIRES the space, so prose tokens stay inert", () => {
+  // `!important` (CSS) and `!=` are real in a technical chat; the space is the
+  // only thing that tells an inline command from one of these.
+  assert.deepEqual(bangCommands("Use `!important` to win the cascade."), []);
+  assert.deepEqual(bangCommands("The check is `!=` not `==`."), []);
+});
+
 test("prose with an exclamation mark is NEVER a command", () => {
   // The button runs on the machine. A false positive here is a click away from
   // executing a sentence.
@@ -52,6 +68,14 @@ test("blockCommand: a multi-line block is NOT one runnable command", () => {
   // Shell mode reads one line; a glued two-line command would be wrong.
   assert.equal(blockCommand("! cd /tmp\n! ls"), null);
   assert.equal(blockCommand("! make build\nnpm test"), null);
+});
+
+test("blockCommand: a one-line block with NO space after `!` is runnable", () => {
+  assert.equal(blockCommand("!/tmp/claude-0/scratchpad/allow-pr-merge.sh\n"), "/tmp/claude-0/scratchpad/allow-pr-merge.sh");
+  assert.equal(blockCommand("!./run.sh"), "./run.sh");
+  // Still agrees with the fallback row.
+  const code = "!/opt/deploy.sh\n";
+  assert.equal(blockCommand(code), bangCommands(code)[0]);
 });
 
 test("blockCommand: a block that is not a command yields null", () => {

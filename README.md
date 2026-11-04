@@ -126,7 +126,11 @@ Enter to skip; you can add it later from the web UI).
   is already the last step of the resolution chain (**agent → profile →
   machine**), and applies at each agent's next spawn. Agents that carry no model
   of their own simply follow Claude Code's default, which tracks the newest
-  model — so this is for **pinning** one, not for getting the latest. Eight roles ship with it: a lead that
+  model — so this is for **pinning** one, not for getting the latest. In
+  **multi-tenant**, where each agent runs as its own OS user with its own home,
+  the server passes this pin explicitly to those dropped agents (their home's
+  `settings.json` carries no default of its own), so one *Default model* choice
+  reaches every group — commons and private alike — not only root's own agents. Eight roles ship with it: a lead that
   delegates, a dev, a QA agent that writes the failing test and cannot fix the
   code it covers, a release agent that prepares a deployment and leaves the
   trigger to you, a product agent that writes the spec instead of the change,
@@ -219,8 +223,11 @@ Enter to skip; you can add it later from the web UI).
 - **Run the command an agent asks you to** — when an agent writes `! cmd` for
   you to run (typically because it cannot), a ▶ run button sits right on that
   command's code block, beside its copy button — so it runs where it was
-  written, not in a list below. (An inline `` `! cmd` `` with no block of its
-  own still gets a button under the message.) It runs in the agent's shell after
+  written, not in a list below. On a line of its own the space is optional, so
+  `!/path/to/script.sh` gets the button just like `! /path/to/script.sh`. (An
+  inline `` `! cmd` `` with no block of its own still gets a button under the
+  message — there the space is required, so a stray `` `!important` `` in prose
+  is never mistaken for a command.) It runs in the agent's shell after
   a confirmation showing the exact command, and is refused for anything but your
   browser, since shell mode sits outside the agent's guardrails. The command and
   its output stay in the chat, reload included — as does one you typed yourself
@@ -528,6 +535,30 @@ back; the server mints and stores it. From Telegram, `/mttoken` then
 is never shown. It is valid for about a year; re-run the card (or `/mttoken`)
 before it expires. The shell path still works as a fallback: `claude setup-token`
 and store the result as the vault secret `MT_CLAUDE_OAUTH_TOKEN`.
+
+**Connectors: token vs login.** That token can only make model requests — it
+does **not** carry your claude.ai **Connectors** (Slack, Google Workspace,
+Microsoft 365, Atlassian, …). If you want agents to use your connectors, switch
+the instance's **agent auth mode** to **login**: instead of the token, each OS
+user (the shared *commons* user, plus each private group's user) does a one-time
+`claude auth login` from the cockpit, into its own home, and its agents then see
+the connectors. The trade-off is lifetime: a login lasts about a **month** (vs a
+year for the token) and is **per user**, so the cockpit shows a status row per
+user and reminds you to reconnect before each lapses. The default stays
+**token** — nothing changes until an admin switches. A login is never shared
+across OS users (Claude rewrites the credential single-owner on refresh), which
+is why each user logs in separately. Design:
+`docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
+
+**Persist the group homes (recommended in Docker).** Each dropped agent runs as
+its own OS user with HOME under `SHADOK_HOME_BASE` (default `/home`), which is
+**not** on the `shadok-data` volume by default — so a `docker rm` + recreate
+wipes those homes, taking their Claude first-run/trust state (agents briefly land
+on the "trust this folder" dialog until it is re-seeded) and, in **login** mode,
+the per-user credentials (every user has to log in again). shadok re-seeds the
+trust robustly on boot, but to avoid the churn entirely mount the home base on a
+volume, the same move as the SSH key (below): e.g. add `-v shadok-homes:/home` to
+the `docker run`. A plain restart never needed this; only a recreate does.
 
 Telegram stays single-owner, and there are no
 disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
@@ -873,6 +904,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
 | `SHADOK_GREETING=0` | the lead agent starts silent — no first-message greeting |
 | `SHADOK_LEDGER=0` | turn OFF the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (**ON by default**; `SHADOK_LEDGER=0` or the GUI/config setting turns it off) |
+| `SHADOK_SEED_SKILLS=0` | don't rewrite the machine-wide skill scripts at boot — for a build run side by side with another instance, so it doesn't hand that instance's agents scripts newer than the server they call |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |
 | `SHADOK_SSH_IDENTITY=0` · `SHADOK_FORCE_SSH_IDENTITY=1` | disable / force the Docker SSH identity |
 | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALLOWED_CHATS` | override the stored config |

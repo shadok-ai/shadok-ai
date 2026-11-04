@@ -361,6 +361,27 @@ export function isNothingToShow(text: string): boolean {
 }
 
 /**
+ * A block that is REAL content followed by the sentinel as a sign-off — the
+ * agent answered, then tacked `NOTHING TO SHOW` on its own line at the end
+ * (observed in a monitoring agent). `isNothingToShow` is whole-block only, so
+ * that block is neither dropped nor stripped and the sentinel leaks into the
+ * chat. Remove it, but KEEP the content above it: the block has something to
+ * show, so it is not silent.
+ *
+ * Only at the END. A sentinel in the MIDDLE of a message is text the agent
+ * chose to show (explaining the convention, quoting a sibling) and must stay —
+ * the same over-broad-heuristic caution as `isNothingToShow`'s own strictness
+ * (invariant 2). The marker must be its OWN trailing line (same emphasis / dot
+ * tolerance), so `…nothing to show.` inside a sentence is untouched.
+ *
+ * Twin mirrored in `index.html`'s live preview (no bundler, hence duplicated).
+ */
+const TRAILING_NOTHING_TO_SHOW = /\n[ \t*_`]*nothing to show[ \t*_`.!]*\s*$/i;
+export function stripTrailingNothingToShow(text: string): string {
+  return text.replace(TRAILING_NOTHING_TO_SHOW, "").replace(/\s+$/, "");
+}
+
+/**
  * Pure parser for one transcript line → the events it yields. Exported for
  * tests; `tailSession` streams these live. Returns [] for anything that isn't
  * a streamable assistant/user event.
@@ -403,7 +424,9 @@ export function parseLine(line: string): TailEvent[] {
         }
         out.push({
           kind: "text",
-          text: block.text,
+          // Strip a trailing sign-off sentinel (the block is not whole-sentinel
+          // — that was dropped above — so this cannot empty it).
+          text: stripTrailingNothingToShow(block.text),
           ...(pendingInternal ? { afterInternal: true } : {}),
           ...(typeof e.uuid === "string" ? { uuid: e.uuid } : {}),
           ...when,

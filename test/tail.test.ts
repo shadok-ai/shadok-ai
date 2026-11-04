@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, startOffset, sessionFilePath, newestTranscriptById } from "../src/tail.js";
+import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, stripTrailingNothingToShow, startOffset, sessionFilePath, newestTranscriptById } from "../src/tail.js";
 
 test("parseLine: assistant text block → one text event", () => {
   const ev = parseLine(
@@ -123,6 +123,41 @@ test("parseLine: a dropped NOTHING TO SHOW also flags the text that follows it",
     { kind: "silent" },
     { kind: "text", text: "Actually, here it is.", afterInternal: true },
   ]);
+});
+
+test("parseLine: a trailing sign-off sentinel is stripped, the content above it kept", () => {
+  // The real report that surfaced this: a monitoring agent answered, then tacked
+  // the sentinel on its own last line. isNothingToShow is whole-block, so it used
+  // to leak into the chat.
+  const ev = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "The change is fine, nothing to carry.\n\nNOTHING TO SHOW" }] },
+    }),
+  );
+  assert.deepEqual(ev, [{ kind: "text", text: "The change is fine, nothing to carry." }]);
+});
+
+test("parseLine: a sentinel in the MIDDLE of a message is kept", () => {
+  // Only a trailing sign-off is stripped — a mid-message occurrence is text the
+  // agent chose to show (invariant 2).
+  const ev = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "I replied\n\nNOTHING TO SHOW\n\nbecause the cron was quiet." }] },
+    }),
+  );
+  assert.deepEqual(ev, [{ kind: "text", text: "I replied\n\nNOTHING TO SHOW\n\nbecause the cron was quiet." }]);
+});
+
+test("stripTrailingNothingToShow: trailing sign-off removed, prose and mid-message intact", () => {
+  assert.equal(stripTrailingNothingToShow("Done.\n\nNOTHING TO SHOW"), "Done.");
+  assert.equal(stripTrailingNothingToShow("Done.\nnothing to show."), "Done.");
+  assert.equal(stripTrailingNothingToShow("Done.\n**NOTHING TO SHOW**"), "Done.");
+  // Mid-message and inline prose stay untouched.
+  assert.equal(stripTrailingNothingToShow("A\n\nNOTHING TO SHOW\n\nB"), "A\n\nNOTHING TO SHOW\n\nB");
+  assert.equal(stripTrailingNothingToShow("There was nothing to show today."), "There was nothing to show today.");
+  assert.equal(stripTrailingNothingToShow("Just text, no marker."), "Just text, no marker.");
 });
 
 test("isNothingToShow: the sentinel alone, whatever its casing, emphasis or final dot", () => {

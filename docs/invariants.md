@@ -409,6 +409,27 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     (a 2.1.269 probe found a blank box) and what decides it is unknown. The send
     check (`screenShowsWork || inputText === ""`) is unaffected: verified live, the
     example does not come back after a real send.
+    The same race has a **second home, and a worse one: the group HOME**. A
+    multi-tenant dropped agent runs as `main` (commons) or `sk-<id>`, with HOME
+    `/home/<user>` — which is **NOT on the shadok-data volume**, so a `docker`
+    recreate wipes it, while `/root`'s copy (volume-backed) survives. And every
+    commons agent **shares one `/home/main/.claude.json`**, read-modify-written by
+    each of them. So after a recreate the file is rebuilt from empty exactly when
+    the resume storm brings many agents back at once: the per-spawn seed added one
+    cwd at a time, and a sibling `claude`'s stale write clobbered a trust entry
+    before its owner's process read it — stranding that agent on the dialog
+    (measured on a live instance: `/home/main/.claude.json` missing `/workspace/darts`
+    while `/root/.claude.json` had it). The fix mirrors `ensureClaudeHome`'s for
+    `/root`: **seed the whole set up front, in one atomic write per HOME, before
+    anything spawns.** `seedPlanForCwds` (pure, `src/claude-home.ts`) folds the
+    globals + every cwd into one object; `preseedGroupHomes` (`server.ts`, called
+    from `ensureGroupsProvisioned` on every capable boot) writes each drop user's
+    HOME with its full trusted-directory set, and the per-spawn `seedGroupAgentHome`
+    now writes the complete sibling set too, so no incremental rebuild can race.
+    The durable complement is infra, not code: mount the group-HOME base
+    (`SHADOK_HOME_BASE`, default `/home`) on the volume — the invariant-19 move for
+    the SSH key — so the HOMEs (trust AND the `login`-mode credentials) survive a
+    recreate instead of being rebuilt at all.
 
 <a id="inv-24"></a>
 
@@ -1485,6 +1506,19 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     `test/worktree-home.test.ts`; the real chown + traversal is a container fact
     (same discipline as invariant 50). Design:
     `docs/superpowers/specs/2026-11-04-dropped-agent-state-home-design.md`.
+    **Same family: a file HANDED to a dropped agent must live where it can reach
+    it.** Telegram/paste attachments defaulted to `~/.shadok-ai/media` =
+    `/root/.shadok-ai/media`, so an agent handed `[Attached image:
+    /root/.shadok-ai/media/…]` could not open it — reported as "I can't see the
+    images sent on Telegram". Unlike a worktree (per-agent), media is SHARED
+    across agents, so it cannot go in one drop user's home: in multi-tenant the
+    server relocates it under the **shared pot** (`<pot>/media`, owned
+    `root:shadok-shared` setgid, which every drop user already joins and
+    traverses) and points `mediaDir()` there via `SHADOK_MEDIA_DIR`; existing
+    attachments are carried over so already-sent images keep resolving. `mediaDir`
+    is a FUNCTION resolved at runtime, not a const captured at import, or the
+    boot-time relocation would be missed. Mono-tenant stays `~/.shadok-ai/media`,
+    unchanged.
 
 <a id="inv-59"></a>
 
@@ -1514,3 +1548,70 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     `sessions.get(id)` rather than the stale closure. Pure handover tested in
     `test/live-handover.test.ts`. Design:
     `docs/superpowers/specs/2026-11-04-one-live-per-agent-design.md`.
+
+<a id="inv-60"></a>
+
+56. **A refreshable login credential is single-owner — share it only within one
+    OS user, never across users.** `claude` refreshes its on-disk credential by
+    **write-new-then-rename**, leaving it **owned by the refresher, mode 600**,
+    and **rotates** the refresh token. So a credential shared between DIFFERENT
+    OS users — a per-home symlink, or one file in a shared group — breaks the
+    moment any one refreshes: the rename destroys the symlink (private copy) or
+    re-owns the file (the others lose read), and a holder of the now-rotated
+    refresh token is **wiped** on its next refresh. Measured twice (#373 ledger
+    `[2d5c]`; this session's POC `[45be]`, where a copied credential's sibling
+    logged itself out). **Same-user** agents share one login natively — one uid,
+    one real file — which is exactly why the all-`root` pre-migration setup
+    worked. There are two cross-user-safe answers and each costs something: the
+    static `setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`, `src/setup-token.ts`) never
+    writes to disk and never refreshes, so it is safe across users — but it is
+    **model-requests-only**, i.e. **no claude.ai connectors**; a real
+    `claude auth login` (`src/agent-login.ts`) carries the connectors but is
+    single-owner, so the `login` auth mode logs in **each OS user once into its
+    OWN home** (commons `main` + each private group's `sk-*`; ~1 month, per-user
+    reconnect), never sharing across users. Sharing one login across users would
+    need an **auth broker** — rejected: a credential babysitter races `claude`'s
+    rename, and a model-API (`ANTHROPIC_BASE_URL`) proxy does not carry the
+    connectors (they are direct remote-MCP connections off the model path). The
+    per-instance `config.agentAuth` (`"token"` default | `"login"`) picks which;
+    in `login` mode the server injects NO token (it would outrank and suppress
+    the login). Design:
+    `docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
+
+<a id="inv-61"></a>
+
+57. **A machine-wide seeded script can be NEWER than the server it calls — it
+    must tolerate the skew, and a side-by-side build must not create it.** The
+    skill scripts (`shadok-ledger`, `shadok-ai-agents`, …) are not in the running
+    tree: they are copied into the server HOME's `~/.claude/skills` — and, in
+    multi-tenant, into `/etc/claude-code/.claude/skills` — at **every boot**.
+    That is deliberate and load-bearing: a merged `SKILL.md` reaches agents that
+    already exist, with no reload (invariant 33's note). The cost is that the
+    copy belongs to whichever build booted LAST on that host, not to the server
+    answering the calls. And CLAUDE.md tells every agent to verify a change by
+    running its build **side by side on a free port** — so the sanctioned
+    workflow rewrites the shared scripts under the production server, several
+    times a day.
+    Measured twice on this host: a post-merge build re-seeded `shadok-ledger`,
+    whose new copy posts `POST /ledger/record`; the running release did not serve
+    that route, so `ledger record` answered **404 for every agent on the machine**
+    while `ledger check` (the older `GET /ledger`) kept working. A HALF-broken
+    tool is worse than a broken one — agents believed they were recording
+    resolutions and nothing was written, which is precisely the silo the ledger
+    exists to close. `pilotctl` and two `SKILL.md` drifted the same way.
+    Two halves, and both are needed. **The client degrades:** a 404 on its own
+    route means "this build does not have it", so the CLI falls back to the local
+    table (`SHADOK_LEDGER_FILE`, the same file the server reads) and SAYS so on
+    stderr. Only a 404 — a 401/403 is an auth fact with a human action behind it
+    (invariant 33) and stays loud, and a write that then fails on permissions is
+    named rather than swallowed, because on a multi-tenant instance that table is
+    0600 in the server's HOME. **The seeder abstains:** `SHADOK_SEED_SKILLS=0`
+    turns the whole re-seed off, and it is now the fourth property of a safe
+    side-by-side run next to `PORT`, `SHADOK_VERSION_CHECK_MIN=0` and the per-dir
+    Telegram token. Default ON — an ordinary boot must keep refreshing them —
+    and a boot that skipped it says so, since a side-by-side run and a failed
+    seed otherwise look identical in the log.
+    What was deliberately NOT done: comparing versions and refusing to overwrite
+    a "newer" copy. It needs a version stamped into every seeded file, it never
+    heals a downgrade, and it still leaves the client talking to a server it does
+    not match. Tolerating the skew is the property that holds in both directions.

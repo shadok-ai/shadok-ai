@@ -483,6 +483,37 @@ export const COCKPIT_DENY = ["Artifact"] as const;
  */
 export const CROSS_SESSION_DENY = ["SendMessage", "ListAgents"] as const;
 
+/**
+ * The model to pass as `--model` at spawn, with the right precedence:
+ * the agent's explicit choice, then the profile's pinned model, then — ONLY for
+ * a privilege-DROPPED agent — the instance default.
+ *
+ * Why the instance default is dropped-only: a mono-tenant / root agent reads the
+ * server's `~/.claude/settings.json` itself, so the default already reaches it
+ * with no flag; forcing one would change today's behaviour. A dropped agent has
+ * its OWN HOME whose settings.json carries no model (shadok seeds only `tui`),
+ * so without this it silently falls back to the CLI's built-in default (Sonnet)
+ * instead of the instance default the cockpit's model picker set — which is
+ * exactly what stranded a brand-new private group on Sonnet. Returning null
+ * means "emit no --model" (keep the CLI/own-settings default).
+ */
+export function resolveSpawnModel(input: {
+  requested?: string | null;
+  profileModel?: string | null;
+  instanceDefault?: string | null;
+  dropped: boolean;
+}): string | null {
+  const requested = input.requested?.trim();
+  if (requested) return requested;
+  const pinned = input.profileModel?.trim();
+  if (pinned) return pinned;
+  if (input.dropped) {
+    const def = input.instanceDefault?.trim();
+    if (def) return def;
+  }
+  return null;
+}
+
 export function profileArgs(
   profile?: Profile | null,
   modelOverride?: string | null,

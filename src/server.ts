@@ -43,12 +43,20 @@ import { ensureClaudeHome, ensureProjectTrusted,
   setDefaultModel,
   parseClaudeVersion,
   seedPlan,
+  seedPlanForCwds,
   settingsPlan,
   type ClaudeHome,
   type ClaudeSettings,
 } from "./claude-home.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
+import {
+  startAgentLogin,
+  submitAgentLoginCode,
+  cancelAgentLogin,
+  agentLoginPending,
+  agentLoginInfo,
+} from "./agent-login.js";
 import { readTokenExpiry } from "./claude-creds.js";
 import { starCount } from "./stars.js";
 import {
@@ -114,7 +122,7 @@ import {
   resetLoggedOutNotice,
   attachmentPrompt,
   pasteFileName,
-  MEDIA_DIR,
+  mediaDir,
   type TelegramHandle,
 } from "./telegram.js";
 import { transcribe, audioClipExtension } from "./whisper.js";
@@ -234,6 +242,8 @@ import {
   setThemeForCwd,
   mutedForCwd,
   setMutedForCwd,
+  agentAuthForCwd,
+  setAgentAuthForCwd,
   twoFactorForCwd,
   setTwoFactorForCwd,
   backendForCwd,
@@ -272,6 +282,7 @@ import {
 import {
   getProfile,
   profileArgs,
+  resolveSpawnModel,
   permissionModeArgs,
   isPermissionMode,
   isEffortLevel,
@@ -1752,8 +1763,9 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
   const name = decodeURIComponent(String(req.headers["x-filename"] ?? ""));
   const kind = contentType.trim().toLowerCase().startsWith("image/") ? "image" : "file";
   try {
-    fs.mkdirSync(MEDIA_DIR, { recursive: true });
-    const file = path.join(MEDIA_DIR, pasteFileName(randomUUID(), name, contentType));
+    const dir = mediaDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, pasteFileName(randomUUID(), name, contentType));
     fs.writeFileSync(file, body);
     // The very wording Telegram already uses, so an agent sees one format.
     res.json({ path: file, line: attachmentPrompt([{ path: file, kind }]) });
@@ -2132,6 +2144,30 @@ function mtTokenGate(req: Caller & { headers: Record<string, unknown> }, res: {
   return true;
 }
 
+/**
+ * The READ counterpart of `mtTokenGate`: multi-tenant + admin, but WITHOUT the
+ * `requestFromBrowser` (Origin) check. A browser omits `Origin` on a same-origin
+ * GET, so gating a READ on it 403s the cockpit's own status fetch — which is
+ * exactly what hid the per-user sign-in list (the GET returned 403, so it never
+ * rendered, while the POST writes that DO send Origin worked). The Origin check
+ * is CSRF protection for WRITES (invariant 26); a read of login status (labels +
+ * loggedIn booleans, never a token) has no such surface, so it must not require
+ * one.
+ */
+function mtReadGate(req: Caller & { headers: Record<string, unknown> }, res: {
+  status: (n: number) => { json: (b: unknown) => void };
+}): boolean {
+  if (DEPLOYMENT_MODE !== "multi-tenant") {
+    res.status(400).json({ error: "not applicable: this instance is single-tenant" });
+    return false;
+  }
+  if (currentAccount(req)?.role !== "admin") {
+    res.status(403).json({ error: "admins only" });
+    return false;
+  }
+  return true;
+}
+
 app.post("/mt-token/start", async (req, res) => {
   if (!mtTokenGate(req, res)) return;
   const r = await startSetupToken();
@@ -2160,6 +2196,78 @@ app.delete("/mt-token", (req, res) => {
   // mint mid-rotation.
   if (!mtTokenGate(req, res)) return;
   cancelSetupToken();
+  res.json({ ok: true });
+});
+
+// --- Per-user subscription LOGIN ("login" auth mode, src/agent-login.ts) ----
+// The alternative to the injected token: in "login" mode each OS user (commons
+// `main` + each private/restricted group's own user) does its own interactive
+// `claude auth login`, so its agents get the account's claude.ai connectors. A
+// login is per-user because `claude`'s refresh rewrite is single-owner — it
+// cannot be shared across OS users (see the connectors-via-global-login design).
+// Same admin+browser+multi-tenant gate as /mt-token.
+
+/** The OS users that each need their own login: commons + every group that has
+ *  its own OS user (private/restricted). Deduped; mono-tenant yields none. */
+function loginUsers(): Array<{ user: string; home: string; label: string }> {
+  const out: Array<{ user: string; home: string; label: string }> = [];
+  const commons = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  if (commons) out.push({ user: commons, home: agentStateHome(commons), label: "commons" });
+  for (const g of loadGroups()) {
+    const u = osUserFor(g);
+    if (u && !out.some((x) => x.user === u))
+      out.push({ user: u, home: agentStateHome(u), label: g.name || g.id });
+  }
+  return out;
+}
+
+app.get("/agent-login", (req, res) => {
+  // A READ: use the origin-less gate. A browser sends no `Origin` on a
+  // same-origin GET, so `mtTokenGate` (which requires one) would 403 the
+  // cockpit's own status fetch and the per-user sign-in list would never render.
+  if (!mtReadGate(req, res)) return;
+  const mode = agentAuthForCwd(loadConfig(), process.cwd());
+  const users = loginUsers().map(({ user, home, label }) => {
+    const info = agentLoginInfo(home);
+    return { user, label, loggedIn: info.loggedIn, expiresAt: info.expiresAt, pending: agentLoginPending(user) };
+  });
+  res.json({ mode, users });
+});
+
+app.post("/agent-login/mode", (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const want = req.body?.mode === "login" ? "login" : "token";
+  const cfg = loadConfig();
+  const changed = agentAuthForCwd(cfg, process.cwd()) !== want;
+  setAgentAuthForCwd(cfg, process.cwd(), want);
+  // The auth wiring is a spawn-time decision — restart agents so it lands at once.
+  if (changed) restartAllSessions();
+  res.json({ mode: want, restarted: changed });
+});
+
+app.post("/agent-login/start", async (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const user = typeof req.body?.user === "string" ? req.body.user : "";
+  const target = loginUsers().find((u) => u.user === user);
+  if (!target) return res.status(400).json({ error: "unknown user" });
+  const r = await startAgentLogin(target.user, target.home);
+  if ("error" in r) return res.status(502).json(r);
+  res.json(r); // {url}
+});
+
+app.post("/agent-login/code", async (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const user = typeof req.body?.user === "string" ? req.body.user : "";
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  if (!loginUsers().some((u) => u.user === user)) return res.status(400).json({ error: "unknown user" });
+  const r = await submitAgentLoginCode(user, code);
+  res.status(r.ok ? 200 : 400).json(r); // {ok} — never the credential
+});
+
+app.delete("/agent-login", (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const user = typeof req.body?.user === "string" ? req.body.user : "";
+  if (user) cancelAgentLogin(user);
   res.json({ ok: true });
 });
 
@@ -2565,6 +2673,51 @@ function channelStateHome(chan: Channel): string {
 const SHARED_POT_PATH =
   (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
 
+// Multi-tenant: Telegram/paste attachments must be readable by a privilege-
+// dropped agent, but the default `~/.shadok-ai/media` is `/root/.shadok-ai/media`
+// — and `/root` (mode 700) is un-traversable by the `main`/`sk-*` drop users, so
+// an agent handed `[Attached image: /root/.shadok-ai/media/…]` cannot open it
+// (invariant 54's family). Relocate media under the shared pot (which every drop
+// user is in `shadok-shared` to traverse), carry existing attachments over so
+// already-sent images keep resolving, and point `mediaDir()` there via the env.
+// Best-effort: a failure just leaves media at `~/.shadok-ai/media`, the old
+// (broken-for-agents) behaviour, never a boot failure. Mono-tenant is untouched.
+if (DEPLOYMENT_MODE === "multi-tenant") {
+  try {
+    const shared = path.join(SHARED_POT_PATH, "media");
+    fs.mkdirSync(shared, { recursive: true });
+    // Own it to the pot's group (`shadok-shared`) with setgid, so files the
+    // server writes inherit that group and the drop users can read them.
+    try {
+      const potGid = fs.statSync(SHARED_POT_PATH).gid;
+      fs.chownSync(shared, 0, potGid);
+      fs.chmodSync(shared, 0o2775);
+    } catch {
+      /* pot not provisioned yet (pre-migration) — the next boot fixes it */
+    }
+    const legacy = path.join(os.homedir(), ".shadok-ai", "media");
+    if (legacy !== shared && fs.existsSync(legacy)) {
+      for (const name of fs.readdirSync(legacy)) {
+        const dst = path.join(shared, name);
+        if (!fs.existsSync(dst)) {
+          try {
+            fs.copyFileSync(path.join(legacy, name), dst);
+          } catch {
+            /* skip an unreadable/odd entry */
+          }
+        }
+      }
+    }
+    process.env.SHADOK_MEDIA_DIR = shared;
+    console.log(`media: using ${shared} (reachable by dropped agents)`);
+  } catch (e) {
+    console.warn(
+      "media: could not set up the shared media dir, keeping ~/.shadok-ai/media: " +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+}
+
 /** Run a privileged account command. Root runs it directly; otherwise go through
  *  NON-interactive sudo (`-n`) so a MISSING right fails fast with a non-zero exit
  *  instead of prompting — the T3 false positive (sudoers allows `true` but not
@@ -2856,6 +3009,10 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // invite-redeem hook nor the per-account migration loop ever fires for it.
   // Give it a Personal group here; idempotent (reuses an existing private group).
   await ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN);
+  // Before any agent comes back: fill every drop user's HOME with the full set
+  // of trusted directories in one write each, so none strands on the trust
+  // dialog when the resume storm rebuilds a wiped (ephemeral) group HOME.
+  preseedGroupHomes();
 }
 
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
@@ -4628,8 +4785,9 @@ app.get("/download", (req, res) => {
 // same `nosniff` + `sandbox` CSP as /download neutralises an SVG opened directly.
 app.get("/media/:name", (req, res) => {
   const base = path.basename(String(req.params.name ?? ""));
-  const file = path.join(MEDIA_DIR, base);
-  if (!file.startsWith(path.join(MEDIA_DIR, path.sep)) && path.dirname(file) !== MEDIA_DIR) {
+  const dir = mediaDir();
+  const file = path.join(dir, base);
+  if (!file.startsWith(path.join(dir, path.sep)) && path.dirname(file) !== dir) {
     return res.status(400).type("text").send("bad name");
   }
   let stat: fs.Stats;
@@ -5406,7 +5564,7 @@ function ensureAgentSshKey(user: string, home: string): void {
  * seed the shadok SKILLS into the group HOME (they live only in the server's
  * ~/.claude/skills); that gap is tracked separately.
  */
-function seedGroupAgentHome(user: string, home: string, cwd: string): void {
+function seedHomeTrust(user: string, home: string, cwds: readonly string[]): void {
   const version = currentClaudeVersion() ?? "0.0.0";
   const readObj = (file: string): Record<string, unknown> | null => {
     const r = spawnAsUserSync(user, "cat", [file]);
@@ -5424,7 +5582,9 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
     const homeJson = `${home}/.claude.json`;
     const existing = readObj(homeJson);
     if (existing) {
-      const plan = seedPlan(existing as ClaudeHome, { version, cwd });
+      // ONE write for the globals + every cwd (not one racy write per cwd) —
+      // see `seedPlanForCwds` and `preseedGroupHomes` for why that matters.
+      const plan = seedPlanForCwds(existing as ClaudeHome, { version, cwds });
       if (plan) writeAsUserAtomic(user, homeJson, JSON.stringify(plan, null, 2));
     } else {
       console.log(`claude-home: ${homeJson} unreadable — left alone, first-run screens may appear`);
@@ -5437,6 +5597,73 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
     }
   } catch (e) {
     console.log(`claude-home: could not seed group HOME ${home} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * The drop user each channel's agent runs as, mapped to the directories that
+ * user's agents live in. The input to seeding a group HOME with the right set
+ * of trusted directories. Only DROP users appear (commons `main`, private
+ * `sk-*`); a public/mono channel runs as the server's own user (null), whose
+ * `/root` is handled by `ensureClaudeHome` + `ensureProjectTrusted` and lives
+ * on the shadok-data volume — it never suffers the ephemeral-rebuild race this
+ * map exists to close.
+ */
+function dropUserCwds(): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const groups = new Map(loadGroups().map((g) => [g.id, g]));
+  const commons = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  const add = (user: string | null, cwd: string): void => {
+    if (!user || !cwd) return;
+    let s = out.get(user);
+    if (!s) {
+      s = new Set();
+      out.set(user, s);
+    }
+    s.add(cwd);
+  };
+  for (const ch of loadChannels()) {
+    const g = ch.group ? groups.get(ch.group) : undefined;
+    add((g ? osUserFor(g) : null) ?? commons, ch.cwd);
+  }
+  // The commons also runs the lead agent in the launch dir itself.
+  if (commons) add(commons, process.cwd());
+  return out;
+}
+
+/**
+ * Seed a dropped agent's OWN HOME before it spawns — this agent's cwd AND every
+ * sibling cwd that shares the HOME, in ONE write. The shared `~/.claude.json`
+ * is read-modify-written by every agent in the HOME (commons agents all share
+ * `/home/main`), so rebuilding it one cwd at a time during a respawn storm let
+ * a stale sibling `claude` write clobber a trust entry before its owner read it
+ * — stranding that agent on the "trust this folder" dialog (invariant 23's
+ * family, on the group HOME). A complete write closes the window. See the file
+ * comment on `seedHomeTrust` / `preseedGroupHomes`. Runs AS the group user,
+ * SYNCHRONOUSLY and ADDITIVELY; best-effort.
+ */
+function seedGroupAgentHome(user: string, home: string, cwd: string): void {
+  const cwds = new Set<string>([cwd]);
+  const siblings = dropUserCwds().get(user);
+  if (siblings) for (const c of siblings) cwds.add(c);
+  seedHomeTrust(user, home, [...cwds]);
+}
+
+/**
+ * Boot pre-seed: seed EVERY drop user's HOME with its full set of trusted
+ * directories, in one atomic write each, BEFORE the resume/respawn storm — so a
+ * `claude` that starts in that storm always finds its cwd already trusted. The
+ * group HOMEs are not on the shadok-data volume, so a `docker` recreate wipes
+ * them and they are rebuilt from empty exactly when many agents come back at
+ * once; the per-spawn seed alone then raced (measured: an agent stuck on the
+ * trust dialog with its entry missing from the shared `/home/main/.claude.json`
+ * while `/root`'s — volume-backed — had it). Best-effort; mono-tenant or
+ * un-migrated → no drop users → no-op.
+ */
+function preseedGroupHomes(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  for (const [user, cwds] of dropUserCwds()) {
+    seedHomeTrust(user, homeForUser(user, GROUP_HOME_BASE), [...cwds]);
   }
 }
 
@@ -5515,13 +5742,27 @@ function makePilot(
   const sp = pilotPrompt();
   // Opt-in only: a live agent gains the reflex at its next (re)spawn.
   const lr = ledgerEnabled ? ledgerReflex() : null;
+  // A DROPPED agent reads its OWN home's settings.json, which carries no default
+  // model — so without an explicit flag it falls back to the CLI's built-in
+  // default (Sonnet) instead of the instance default the cockpit picker set (in
+  // the SERVER's settings.json, which only a root agent reads). Backfill it as a
+  // last resort — after the agent's own choice and the profile's pinned model —
+  // and only for a dropped agent, so a mono-tenant/root spawn stays byte-for-byte
+  // as before. See `resolveSpawnModel`.
+  const resolvedProfile = effectiveProfile(profile);
+  const spawnModel = resolveSpawnModel({
+    requested: model,
+    profileModel: resolvedProfile?.model,
+    instanceDefault: user ? getDefaultModel() : null,
+    dropped: !!user,
+  });
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
     // A flag+value pair, before the profile's flags: nothing here can land
     // after `--mcp-config`'s variadic JSON as a bare word.
     ...factory.args,
-    ...profileArgs(effectiveProfile(profile), model, effort),
+    ...profileArgs(resolvedProfile, spawnModel, effort),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
@@ -5558,10 +5799,18 @@ function makePilot(
     ensureAgentSshKey(user, home);
   }
   // Isolated groups share the subscription token, injected in the forced-last
-  // env layer. Mono-tenant (no user) reads and passes nothing.
-  const oauthToken = user
-    ? secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME]
-    : undefined;
+  // env layer — but ONLY in "token" auth mode. In "login" mode the server
+  // injects NO token: `CLAUDE_CODE_OAUTH_TOKEN` outranks (and suppresses) a
+  // subscription login, and that login is exactly what carries the claude.ai
+  // connectors this mode exists for. The agent then authenticates from its own
+  // home's `claude auth login` credential (one per OS user; see src/agent-login.ts
+  // and the connectors-via-global-login design). Mono-tenant (no user) passes
+  // nothing either way.
+  const authMode = agentAuthForCwd(loadConfig(), process.cwd());
+  const oauthToken =
+    user && authMode === "token"
+      ? secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME]
+      : undefined;
   return USE_TMUX
     ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home, oauthToken })
     : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home, oauthToken });
@@ -7939,6 +8188,26 @@ try {
   /* best effort — "Work on it" still starts an agent, just without the role */
 }
 
+/**
+ * Do we rewrite the machine-wide skill scripts at this boot?
+ *
+ * The skills below are seeded OUTSIDE the running tree — the server user's
+ * `~/.claude/skills`, plus `/etc/claude-code/.claude/skills` in multi-tenant —
+ * and they are rewritten at EVERY boot. That is what makes a merged SKILL.md
+ * reach existing agents with no reload, and it is also a trap: a build started
+ * side by side to verify a change (the sanctioned way, see CLAUDE.md "Running
+ * YOUR build") rewrites the shared skills UNDER the running production server,
+ * leaving every agent on the host with scripts newer than the server they call.
+ * Measured: the ledger skill began posting a route the running build did not
+ * serve, so `record` answered 404 host-wide while `check` kept working — a
+ * half-broken tool, which is worse than a broken one (invariant 57).
+ *
+ * `SHADOK_SEED_SKILLS=0` is the fourth property of a safe side-by-side run,
+ * next to `PORT`, `SHADOK_VERSION_CHECK_MIN=0` and the per-dir Telegram token.
+ * Default ON: an ordinary boot must keep refreshing them.
+ */
+const SEED_SKILLS = (process.env.SHADOK_SEED_SKILLS ?? "").trim() !== "0";
+
 // Install/refresh the bundled "shadok-scheduler" skill so agents can set up
 // their own channel's crons in plain language. Server-owned, overwritten each
 // boot to stay current.
@@ -7961,7 +8230,7 @@ function seedSchedulerSkill(): void {
     /* best effort — scheduling still works via the GUI/Telegram/API */
   }
 }
-seedSchedulerSkill();
+if (SEED_SKILLS) seedSchedulerSkill();
 
 // Install/refresh the bundled "shadok-secrets" skill, so an agent that obtains
 // a credential can keep it for the next one. Server-owned, overwritten each
@@ -7982,7 +8251,7 @@ function seedSecretsSkill(): void {
     /* best effort — the vault still works from the GUI and Telegram */
   }
 }
-seedSecretsSkill();
+if (SEED_SKILLS) seedSecretsSkill();
 
 // Install/refresh the bundled "shadok-reload" skill so an agent can respawn
 // itself to pick up a changed pilot prompt or newly-seeded skills. Server-owned,
@@ -8001,7 +8270,7 @@ function seedReloadSkill(): void {
     /* best effort — no self-reload skill just means a manual restart, never a crash */
   }
 }
-seedReloadSkill();
+if (SEED_SKILLS) seedReloadSkill();
 
 // Install/refresh the bundled "shadok-ledger" skill so agents can verify a
 // status before asserting/acting, and record resolutions. Server-owned,
@@ -8022,7 +8291,7 @@ function seedLedgerSkill(): void {
     /* best effort — an absent skill just means no ledger, never a crash */
   }
 }
-seedLedgerSkill();
+if (SEED_SKILLS) seedLedgerSkill();
 
 /**
  * The `shadok-files` skill — handing a file to the person driving the cockpit.
@@ -8045,7 +8314,7 @@ function seedFilesSkill(): void {
     /* best effort — a missing skill means paths get printed, not a broken boot */
   }
 }
-seedFilesSkill();
+if (SEED_SKILLS) seedFilesSkill();
 
 // The Skill Factory's agent side (pull / push / scan of a factory skill's clone).
 function seedFactorySkill(): void {
@@ -8061,7 +8330,7 @@ function seedFactorySkill(): void {
     /* best effort — without it a Skillsmith can still be driven by hand */
   }
 }
-seedFactorySkill();
+if (SEED_SKILLS) seedFactorySkill();
 
 // Install/refresh the bundled "shadok-ai-agents" skill so an agent in ANY repo
 // (not just this one) can spawn/pilot other agents via pilotctl. It used to live
@@ -8082,13 +8351,16 @@ function seedAgentsSkill(): void {
     /* best effort — no agents skill just means no cross-agent piloting, never a crash */
   }
 }
-seedAgentsSkill();
+if (SEED_SKILLS) seedAgentsSkill();
 
 // Multi-tenant: also install every skill machine-wide (Enterprise tier), so the
 // per-tenant `sk-*` agents — which run under their own HOME, not the server's —
 // get them without a per-HOME copy. Mono-tenant/dev keeps the personal install
 // above and never touches /etc.
-if (DEPLOYMENT_MODE === "multi-tenant") seedSystemSkills();
+if (DEPLOYMENT_MODE === "multi-tenant" && SEED_SKILLS) seedSystemSkills();
+// Say it: a boot that did NOT refresh the shared skills must be visible, or a
+// side-by-side run and a broken seed look the same in the log.
+if (!SEED_SKILLS) console.log("skills: SHADOK_SEED_SKILLS=0 — left the machine-wide skills alone");
 
 /** Run a package-manager install. Linux managers need root; if we aren't root,
  *  go through NON-interactive sudo so a password prompt fails fast rather than
