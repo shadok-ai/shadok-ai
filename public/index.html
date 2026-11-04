@@ -1564,7 +1564,10 @@
   /* ── Activity block ──────────────────────────────────────
      A run of tool calls between two pieces of assistant text. Folds at three
      levels — output, same-tool run, whole block — each driven by data-folded.
-     Anything containing an error carries .has-err and never folds. */
+     A whole block always folds to its summary line at turn end (even on an
+     error — the count says "· N errors" and the head is flagged .has-err); the
+     errored output and run INSIDE it stay open, so expanding reveals the
+     failure at once rather than hiding it. */
   .turn.activity { max-width: 82%; gap: 0; }
   .act-body, .run-body, .item-out { display: flex; flex-direction: column; }
   [data-folded="true"] > .act-body,
@@ -1611,7 +1614,8 @@
   /* Inside a run the tool name is already in the header — don't repeat it. */
   .act-run:not([data-count="1"]) .item-head .tool { display: none; }
   .item-head .err-flag { flex: none; color: var(--err); }
-  .has-err > .item-head, .has-err > .run-head { border-left-color: var(--err); }
+  /* A folded block hides its runs, so flag the error on the summary line too. */
+  .has-err > .item-head, .has-err > .run-head, .has-err > .act-head { border-left-color: var(--err); }
 
   /* Tool output. */
   .result-body {
@@ -7476,10 +7480,14 @@
     tab.act = null;
   }
 
-  /** Folds every block of the finished turn that saw no error. */
+  /** Folds every block of the finished turn down to its one-line summary.
+      An errored block folds too — the count line still reads "· N errors" and
+      the head carries .has-err, so the failure is flagged, not hidden. Inside,
+      its errored run and output stay unfolded (addToolLine / addResult), so
+      expanding the block lands straight on what failed. */
   function sealTurn(tab) {
     for (const block of tab.turnBlocks || []) {
-      if (!block.el.classList.contains("has-err")) setFolded(block.el, true);
+      setFolded(block.el, true);
     }
     tab.turnBlocks = [];
     tab.pendingCalls?.clear();
