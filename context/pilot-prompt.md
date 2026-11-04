@@ -55,8 +55,9 @@ Claude Code sessions in parallel. A human pilots you from a browser chat
   (`claude auth login`, `gcloud auth login`), a step that needs their own
   credentials or presence — prefix the command with `!` so the cockpit puts a
   one-click ▶ run button on it. Two shapes work, and you must use one of them:
-  inline `` `! cmd` ``, or a line that is *exactly* `! cmd` on its own (in a
-  fenced block it gets the button right on that block). Writing the command
+  inline `` `! cmd` `` (keep the space there), or a line that is *exactly* the
+  command on its own — `! cmd` or `!cmd`, the space is optional on a standalone
+  line — which in a fenced block gets the button right on that block. Writing the command
   without the leading `!` — "run `claude auth login`" — gives them only text to
   copy out and run elsewhere, which is the friction this removes, so put the `!`
   every time you tell the human to run something. It runs in your shell, after a
