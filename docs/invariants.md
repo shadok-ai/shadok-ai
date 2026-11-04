@@ -1514,3 +1514,32 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     `sessions.get(id)` rather than the stale closure. Pure handover tested in
     `test/live-handover.test.ts`. Design:
     `docs/superpowers/specs/2026-11-04-one-live-per-agent-design.md`.
+
+<a id="inv-60"></a>
+
+56. **A refreshable login credential is single-owner — share it only within one
+    OS user, never across users.** `claude` refreshes its on-disk credential by
+    **write-new-then-rename**, leaving it **owned by the refresher, mode 600**,
+    and **rotates** the refresh token. So a credential shared between DIFFERENT
+    OS users — a per-home symlink, or one file in a shared group — breaks the
+    moment any one refreshes: the rename destroys the symlink (private copy) or
+    re-owns the file (the others lose read), and a holder of the now-rotated
+    refresh token is **wiped** on its next refresh. Measured twice (#373 ledger
+    `[2d5c]`; this session's POC `[45be]`, where a copied credential's sibling
+    logged itself out). **Same-user** agents share one login natively — one uid,
+    one real file — which is exactly why the all-`root` pre-migration setup
+    worked. There are two cross-user-safe answers and each costs something: the
+    static `setup-token` (`CLAUDE_CODE_OAUTH_TOKEN`, `src/setup-token.ts`) never
+    writes to disk and never refreshes, so it is safe across users — but it is
+    **model-requests-only**, i.e. **no claude.ai connectors**; a real
+    `claude auth login` (`src/agent-login.ts`) carries the connectors but is
+    single-owner, so the `login` auth mode logs in **each OS user once into its
+    OWN home** (commons `main` + each private group's `sk-*`; ~1 month, per-user
+    reconnect), never sharing across users. Sharing one login across users would
+    need an **auth broker** — rejected: a credential babysitter races `claude`'s
+    rename, and a model-API (`ANTHROPIC_BASE_URL`) proxy does not carry the
+    connectors (they are direct remote-MCP connections off the model path). The
+    per-instance `config.agentAuth` (`"token"` default | `"login"`) picks which;
+    in `login` mode the server injects NO token (it would outrank and suppress
+    the login). Design:
+    `docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.

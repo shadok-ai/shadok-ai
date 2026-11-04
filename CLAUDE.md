@@ -154,6 +154,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/greeting.ts` | What the lead says the first time a cockpit opens, as a BRIEF the model writes from — never finished prose. |
 | `src/claude-auth.ts` | Auth status and the interactive sign-in. `claude auth login --claudeai` needs no PTY: run with pipes it prints the OAuth URL on stdout and reads the code from stdin — so the sign-in touches NONE of the screen heuristics. |
 | `src/setup-token.ts` | In-cockpit provisioning of the long-lived subscription token (`MT_CLAUDE_OAUTH_TOKEN`) a multi-tenant instance injects into its privilege-dropped agents — so an instance is autonomous (obtain + rotate from the cockpit, no hand-run shell). |
+| `src/agent-login.ts` | In-cockpit `claude auth login --claudeai` for a SINGLE OS user — the `login` auth mode (`config.agentAuth`), the alternative to `setup-token` that gives agents the account's **claude.ai connectors**. Drives the OAuth in a per-user tmux pane (reusing setup-token's URL/invalid-code parsers; success = the credential FILE appearing, never read for its value), so the login lands in that user's OWN home. Per-user because a refreshable credential is single-owner (invariant 56) — never shared across users, and no token is injected in this mode. Routes `/agent-login/*`; `agentLoginInfo` feeds the per-user status/expiry row. |
 | `src/claude-creds.ts` | WHEN the Claude OAuth session expires, for the version menu's Account/Token rows — read from Claude Code's own credentials store (file first, then the macOS keychain, the same order `usage.ts` reads the token), and never a token value, only two timestamps. |
 | `src/ssh.ts` | Persistent per-container SSH identity (`ensureSshIdentity`, called at boot in `server.ts`). |
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600; deliberately deleted starter roles are remembered in `profiles-declined.json` — the seed installs the shipped roles a vault is MISSING, including ones a later release added, so it must not resurrect what you removed): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow) + secrets + model, applied at spawn via `profileArgs`. |
@@ -303,6 +304,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **53.** `claude setup-token` runs in a tmux session — read the RENDERED screen, not a raw stream — and the token it mints never leaves the server. · [detail](docs/invariants.md#inv-57)
 - **54.** A dropped agent's on-disk STATE must live in its own home, not the server's `/root` — pointing `$HOME` there (invariant 50) is only half of it. · [detail](docs/invariants.md#inv-58)
 - **55.** Exactly ONE `Live` per agent — a resume that can't attach must HAND OVER the old viewers, not orphan them. · [detail](docs/invariants.md#inv-59)
+- **56.** A refreshable login credential is single-owner — share it only within one OS user, never across users. · [detail](docs/invariants.md#inv-60)
 
 ## Conventions
 
