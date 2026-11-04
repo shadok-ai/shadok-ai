@@ -46,6 +46,13 @@ import { ensureClaudeHome, ensureProjectTrusted,
 } from "./claude-home.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
+import {
+  startAgentLogin,
+  submitAgentLoginCode,
+  cancelAgentLogin,
+  agentLoginPending,
+  agentLoginInfo,
+} from "./agent-login.js";
 import { readTokenExpiry } from "./claude-creds.js";
 import { starCount } from "./stars.js";
 import {
@@ -230,6 +237,8 @@ import {
   setThemeForCwd,
   mutedForCwd,
   setMutedForCwd,
+  agentAuthForCwd,
+  setAgentAuthForCwd,
   twoFactorForCwd,
   setTwoFactorForCwd,
   backendForCwd,
@@ -2141,6 +2150,75 @@ app.delete("/mt-token", (req, res) => {
   // mint mid-rotation.
   if (!mtTokenGate(req, res)) return;
   cancelSetupToken();
+  res.json({ ok: true });
+});
+
+// --- Per-user subscription LOGIN ("login" auth mode, src/agent-login.ts) ----
+// The alternative to the injected token: in "login" mode each OS user (commons
+// `main` + each private/restricted group's own user) does its own interactive
+// `claude auth login`, so its agents get the account's claude.ai connectors. A
+// login is per-user because `claude`'s refresh rewrite is single-owner — it
+// cannot be shared across OS users (see the connectors-via-global-login design).
+// Same admin+browser+multi-tenant gate as /mt-token.
+
+/** The OS users that each need their own login: commons + every group that has
+ *  its own OS user (private/restricted). Deduped; mono-tenant yields none. */
+function loginUsers(): Array<{ user: string; home: string; label: string }> {
+  const out: Array<{ user: string; home: string; label: string }> = [];
+  const commons = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  if (commons) out.push({ user: commons, home: agentStateHome(commons), label: "commons" });
+  for (const g of loadGroups()) {
+    const u = osUserFor(g);
+    if (u && !out.some((x) => x.user === u))
+      out.push({ user: u, home: agentStateHome(u), label: g.name || g.id });
+  }
+  return out;
+}
+
+app.get("/agent-login", (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const mode = agentAuthForCwd(loadConfig(), process.cwd());
+  const users = loginUsers().map(({ user, home, label }) => {
+    const info = agentLoginInfo(home);
+    return { user, label, loggedIn: info.loggedIn, expiresAt: info.expiresAt, pending: agentLoginPending(user) };
+  });
+  res.json({ mode, users });
+});
+
+app.post("/agent-login/mode", (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const want = req.body?.mode === "login" ? "login" : "token";
+  const cfg = loadConfig();
+  const changed = agentAuthForCwd(cfg, process.cwd()) !== want;
+  setAgentAuthForCwd(cfg, process.cwd(), want);
+  // The auth wiring is a spawn-time decision — restart agents so it lands at once.
+  if (changed) restartAllSessions();
+  res.json({ mode: want, restarted: changed });
+});
+
+app.post("/agent-login/start", async (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const user = typeof req.body?.user === "string" ? req.body.user : "";
+  const target = loginUsers().find((u) => u.user === user);
+  if (!target) return res.status(400).json({ error: "unknown user" });
+  const r = await startAgentLogin(target.user, target.home);
+  if ("error" in r) return res.status(502).json(r);
+  res.json(r); // {url}
+});
+
+app.post("/agent-login/code", async (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const user = typeof req.body?.user === "string" ? req.body.user : "";
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  if (!loginUsers().some((u) => u.user === user)) return res.status(400).json({ error: "unknown user" });
+  const r = await submitAgentLoginCode(user, code);
+  res.status(r.ok ? 200 : 400).json(r); // {ok} — never the credential
+});
+
+app.delete("/agent-login", (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const user = typeof req.body?.user === "string" ? req.body.user : "";
+  if (user) cancelAgentLogin(user);
   res.json({ ok: true });
 });
 
@@ -5391,10 +5469,18 @@ function makePilot(
     ensureAgentSshKey(user, home);
   }
   // Isolated groups share the subscription token, injected in the forced-last
-  // env layer. Mono-tenant (no user) reads and passes nothing.
-  const oauthToken = user
-    ? secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME]
-    : undefined;
+  // env layer — but ONLY in "token" auth mode. In "login" mode the server
+  // injects NO token: `CLAUDE_CODE_OAUTH_TOKEN` outranks (and suppresses) a
+  // subscription login, and that login is exactly what carries the claude.ai
+  // connectors this mode exists for. The agent then authenticates from its own
+  // home's `claude auth login` credential (one per OS user; see src/agent-login.ts
+  // and the connectors-via-global-login design). Mono-tenant (no user) passes
+  // nothing either way.
+  const authMode = agentAuthForCwd(loadConfig(), process.cwd());
+  const oauthToken =
+    user && authMode === "token"
+      ? secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME]
+      : undefined;
   return USE_TMUX
     ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home, oauthToken })
     : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home, oauthToken });

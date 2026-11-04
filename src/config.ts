@@ -82,6 +82,19 @@ export interface Config {
    */
   cockpitMuted?: Record<string, boolean>;
   /**
+   * Per launch-directory agent auth mode (multi-tenant only), keyed by absolute
+   * cwd. `"token"` (default, absent) = the ~1-year `setup-token`
+   * (`MT_CLAUDE_OAUTH_TOKEN`) injected into every dropped agent — no claude.ai
+   * connectors. `"login"` = no token injection; each OS user (commons `main` +
+   * each private group's `sk-*`) does its own interactive `claude auth login`
+   * once into its OWN home, so agents get the account's connectors (~1 month,
+   * per-user reconnect). Cross-user credential sharing is never used (the refresh
+   * rewrite is single-owner, see the design doc); only same-user agents share a
+   * login, which they do natively. Takes effect at an agent's next (re)spawn.
+   * Design: docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md
+   */
+  agentAuth?: Record<string, "token" | "login">;
+  /**
    * Per launch-directory two-factor sign-in (a passkey after the password),
    * keyed by absolute cwd. Absent = off. Turned on from the Users panel, under
    * the rules of `twoFactorEnableVerdict`; removing the key by hand IS the
@@ -189,6 +202,26 @@ export function setMutedForCwd(cfg: Config, cwd: string, on: boolean): void {
   cfg.cockpitMuted ??= {};
   if (on) cfg.cockpitMuted[cwd] = true;
   else delete cfg.cockpitMuted[cwd];
+  saveConfig(cfg);
+}
+
+/**
+ * This instance's agent auth mode: `"login"` only when explicitly set, else
+ * `"token"` (the default and today's behaviour). Any unknown value reads as
+ * `"token"` — a malformed config never silently switches auth.
+ */
+export function agentAuthForCwd(cfg: Config, cwd: string): "token" | "login" {
+  return cfg.agentAuth?.[cwd] === "login" ? "login" : "token";
+}
+
+/**
+ * Set (or clear) this directory's agent auth mode and persist. `"token"` (the
+ * default) removes the entry, so the instance falls back to it.
+ */
+export function setAgentAuthForCwd(cfg: Config, cwd: string, mode: "token" | "login"): void {
+  cfg.agentAuth ??= {};
+  if (mode === "login") cfg.agentAuth[cwd] = "login";
+  else delete cfg.agentAuth[cwd];
   saveConfig(cfg);
 }
 

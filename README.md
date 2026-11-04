@@ -487,6 +487,20 @@ is never shown. It is valid for about a year; re-run the card (or `/mttoken`)
 before it expires. The shell path still works as a fallback: `claude setup-token`
 and store the result as the vault secret `MT_CLAUDE_OAUTH_TOKEN`.
 
+**Connectors: token vs login.** That token can only make model requests — it
+does **not** carry your claude.ai **Connectors** (Slack, Google Workspace,
+Microsoft 365, Atlassian, …). If you want agents to use your connectors, switch
+the instance's **agent auth mode** to **login**: instead of the token, each OS
+user (the shared *commons* user, plus each private group's user) does a one-time
+`claude auth login` from the cockpit, into its own home, and its agents then see
+the connectors. The trade-off is lifetime: a login lasts about a **month** (vs a
+year for the token) and is **per user**, so the cockpit shows a status row per
+user and reminds you to reconnect before each lapses. The default stays
+**token** — nothing changes until an admin switches. A login is never shared
+across OS users (Claude rewrites the credential single-owner on refresh), which
+is why each user logs in separately. Design:
+`docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
+
 Telegram stays single-owner, and there are no
 disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
 
