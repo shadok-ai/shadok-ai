@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { credPathForHome, agentLoginInfo } from "../src/agent-login.js";
+import { parseSetupTokenUrl } from "../src/setup-token.js";
 
 // The login module drives `claude auth login` in tmux (impure, like
 // setup-token's flow — not unit-tested); its OAuth-screen parsers are REUSED
@@ -73,6 +74,10 @@ const SERVER = fs.readFileSync(
   path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src", "server.ts"),
   "utf8",
 );
+const SERVER_AGENT_LOGIN = fs.readFileSync(
+  path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src", "agent-login.ts"),
+  "utf8",
+);
 
 function handlerSlice(method: "get" | "post" | "delete", route: string): string {
   const needle = `app.${method}("${route}"`;
@@ -106,4 +111,31 @@ test("mtReadGate requires multi-tenant + admin but NOT a browser origin", () => 
   assert.ok(/DEPLOYMENT_MODE !== "multi-tenant"/.test(body), "refuses mono-tenant");
   assert.ok(/currentAccount\(req\)\?\.role !== "admin"/.test(body), "refuses non-admins");
   assert.ok(!/requestFromBrowser/.test(body), "does NOT require a browser origin (reads have no CSRF surface)");
+});
+
+// The login OAuth URL (claude.ai scopes incl. user:mcp_servers, plugins,
+// file_upload) is long enough to WRAP in the tmux pane. `capture-pane -p`
+// without `-J` returns wrapped lines as separate lines, so `parseSetupTokenUrl`
+// (/https:\/\/\S+/) stops at the wrap newline and hands back a TRUNCATED URL —
+// missing `state` and `code_challenge_method` — which claude.com rejects as
+// "Invalid OAuth request". `-J` rejoins wrapped lines so the URL stays whole.
+// Measured live: without -J → 365 chars, no state; with -J → 465 chars, with
+// state + code_challenge_method. (setup-token's URL is shorter and never wrapped,
+// which is why the 1-year token worked while login did not.)
+test("the login pane capture joins wrapped lines (-J), or a long OAuth URL truncates", () => {
+  const i = SERVER_AGENT_LOGIN.indexOf("function capture");
+  assert.ok(i >= 0, "capture() must exist");
+  const body = SERVER_AGENT_LOGIN.slice(i, SERVER_AGENT_LOGIN.indexOf("\n}\n", i));
+  assert.ok(/capture-pane/.test(body), "capture() uses capture-pane");
+  assert.ok(/"-J"|'-J'|`-J`/.test(body), "capture-pane must pass -J to rejoin a wrapped URL");
+});
+
+test("parseSetupTokenUrl truncates a URL split across lines (why -J is needed)", () => {
+  // Documents the hazard: a wrapped (un-joined) capture yields a short URL.
+  const wrapped =
+    "visit: https://claude.com/cai/oauth/authorize?client_id=x&code_challenge=AAAA\nBBBB&state=S&code_challenge_method=S256";
+  const joined =
+    "visit: https://claude.com/cai/oauth/authorize?client_id=x&code_challenge=AAAABBBB&state=S&code_challenge_method=S256";
+  assert.ok(!/state=/.test(parseSetupTokenUrl(wrapped) ?? ""), "wrapped input loses state (the bug)");
+  assert.ok(/state=/.test(parseSetupTokenUrl(joined) ?? ""), "a joined line keeps the whole URL");
 });

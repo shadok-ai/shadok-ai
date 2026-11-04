@@ -90,7 +90,14 @@ function tmux(args: string[], input?: string): string {
 
 function capture(session: string): string {
   try {
-    return tmux(["capture-pane", "-t", session, "-p"]);
+    // `-J` rejoins visually WRAPPED lines. The login OAuth URL (the full
+    // claude.ai scope set) is long enough to wrap the pane, and without `-J`
+    // `capture-pane` returns the wrap as two lines — so `parseSetupTokenUrl`'s
+    // `\S+` stops at the newline and hands back a TRUNCATED URL (no `state`, no
+    // `code_challenge_method`), which claude.com rejects as an invalid OAuth
+    // request. Width alone is not a safe fix (a longer URL wraps again); `-J`
+    // reassembles whatever the width.
+    return tmux(["capture-pane", "-t", session, "-p", "-J"]);
   } catch {
     return "";
   }
