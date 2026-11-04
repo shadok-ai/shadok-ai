@@ -1485,6 +1485,19 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     `test/worktree-home.test.ts`; the real chown + traversal is a container fact
     (same discipline as invariant 50). Design:
     `docs/superpowers/specs/2026-11-04-dropped-agent-state-home-design.md`.
+    **Same family: a file HANDED to a dropped agent must live where it can reach
+    it.** Telegram/paste attachments defaulted to `~/.shadok-ai/media` =
+    `/root/.shadok-ai/media`, so an agent handed `[Attached image:
+    /root/.shadok-ai/media/…]` could not open it — reported as "I can't see the
+    images sent on Telegram". Unlike a worktree (per-agent), media is SHARED
+    across agents, so it cannot go in one drop user's home: in multi-tenant the
+    server relocates it under the **shared pot** (`<pot>/media`, owned
+    `root:shadok-shared` setgid, which every drop user already joins and
+    traverses) and points `mediaDir()` there via `SHADOK_MEDIA_DIR`; existing
+    attachments are carried over so already-sent images keep resolving. `mediaDir`
+    is a FUNCTION resolved at runtime, not a const captured at import, or the
+    boot-time relocation would be missed. Mono-tenant stays `~/.shadok-ai/media`,
+    unchanged.
 
 <a id="inv-59"></a>
 
