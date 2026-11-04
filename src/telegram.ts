@@ -66,9 +66,19 @@ const MSG_LIMIT = 4000; // Telegram hard limit is 4096; leave headroom.
 
 // Downloaded Telegram attachments live OUTSIDE any repo/worktree (never in a
 // diff, never committed by accident). Claude reads them by absolute path.
-// Exported: the web cockpit drops pasted images there too, so both surfaces
-// share a single folder (and a single purge).
-export const MEDIA_DIR = path.join(SHADOK_DIR, "media");
+// The web cockpit drops pasted images there too, so both surfaces share a
+// single folder (and a single purge).
+//
+// It is a FUNCTION, not a const, because the directory is RESOLVED at runtime:
+// a multi-tenant server points `SHADOK_MEDIA_DIR` at a group-readable location
+// under the shared pot (`/var/lib/shadok-ai/shared/media`) so a privilege-
+// dropped agent can actually open the file — `~/.shadok-ai/media` is `/root/…`,
+// which `/root` (mode 700) makes un-reachable by the `main`/`sk-*` drop users
+// (invariant 54's family). Mono-tenant leaves the env unset and keeps
+// `~/.shadok-ai/media`, byte-for-byte unchanged.
+export function mediaDir(): string {
+  return process.env.SHADOK_MEDIA_DIR?.trim() || path.join(SHADOK_DIR, "media");
+}
 const TG_FILE_LIMIT = 20 * 1024 * 1024; // Bot API getFile hard limit
 const MEDIA_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // purge after 30 days
 
@@ -1210,9 +1220,10 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
 
   // Purge old attachments at startup — media/ only grows otherwise.
   try {
+    const dir = mediaDir();
     const cutoff = Date.now() - MEDIA_MAX_AGE_MS;
-    for (const name of fs.readdirSync(MEDIA_DIR)) {
-      const p = path.join(MEDIA_DIR, name);
+    for (const name of fs.readdirSync(dir)) {
+      const p = path.join(dir, name);
       if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
     }
   } catch {
@@ -1235,8 +1246,9 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
       signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
     });
     if (!r.ok) throw new Error(`download HTTP ${r.status}`);
-    fs.mkdirSync(MEDIA_DIR, { recursive: true });
-    const dest = path.join(MEDIA_DIR, mediaFileName(att));
+    const dir = mediaDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const dest = path.join(dir, mediaFileName(att));
     fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
     return dest;
   };
@@ -1466,7 +1478,7 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           // renders its marker as a thumbnail; printing the marker here left the
           // person reading the topic with an absolute path and nothing to look
           // at. Upload it instead, so both surfaces show the same thing.
-          const att = attachmentsInPrompt(m.text, MEDIA_DIR);
+          const att = attachmentsInPrompt(m.text, mediaDir());
           if (!att.files.length) {
             send(b, label + "\n" + m.text);
             break;

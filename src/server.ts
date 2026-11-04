@@ -118,7 +118,7 @@ import {
   resetLoggedOutNotice,
   attachmentPrompt,
   pasteFileName,
-  MEDIA_DIR,
+  mediaDir,
   type TelegramHandle,
 } from "./telegram.js";
 import { transcribe, audioClipExtension } from "./whisper.js";
@@ -1755,8 +1755,9 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
   const name = decodeURIComponent(String(req.headers["x-filename"] ?? ""));
   const kind = contentType.trim().toLowerCase().startsWith("image/") ? "image" : "file";
   try {
-    fs.mkdirSync(MEDIA_DIR, { recursive: true });
-    const file = path.join(MEDIA_DIR, pasteFileName(randomUUID(), name, contentType));
+    const dir = mediaDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, pasteFileName(randomUUID(), name, contentType));
     fs.writeFileSync(file, body);
     // The very wording Telegram already uses, so an agent sees one format.
     res.json({ path: file, line: attachmentPrompt([{ path: file, kind }]) });
@@ -2623,6 +2624,51 @@ function channelStateHome(chan: Channel): string {
 /** Task 12: the one shared pot every group HOME links as `~/shared`. */
 const SHARED_POT_PATH =
   (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
+
+// Multi-tenant: Telegram/paste attachments must be readable by a privilege-
+// dropped agent, but the default `~/.shadok-ai/media` is `/root/.shadok-ai/media`
+// — and `/root` (mode 700) is un-traversable by the `main`/`sk-*` drop users, so
+// an agent handed `[Attached image: /root/.shadok-ai/media/…]` cannot open it
+// (invariant 54's family). Relocate media under the shared pot (which every drop
+// user is in `shadok-shared` to traverse), carry existing attachments over so
+// already-sent images keep resolving, and point `mediaDir()` there via the env.
+// Best-effort: a failure just leaves media at `~/.shadok-ai/media`, the old
+// (broken-for-agents) behaviour, never a boot failure. Mono-tenant is untouched.
+if (DEPLOYMENT_MODE === "multi-tenant") {
+  try {
+    const shared = path.join(SHARED_POT_PATH, "media");
+    fs.mkdirSync(shared, { recursive: true });
+    // Own it to the pot's group (`shadok-shared`) with setgid, so files the
+    // server writes inherit that group and the drop users can read them.
+    try {
+      const potGid = fs.statSync(SHARED_POT_PATH).gid;
+      fs.chownSync(shared, 0, potGid);
+      fs.chmodSync(shared, 0o2775);
+    } catch {
+      /* pot not provisioned yet (pre-migration) — the next boot fixes it */
+    }
+    const legacy = path.join(os.homedir(), ".shadok-ai", "media");
+    if (legacy !== shared && fs.existsSync(legacy)) {
+      for (const name of fs.readdirSync(legacy)) {
+        const dst = path.join(shared, name);
+        if (!fs.existsSync(dst)) {
+          try {
+            fs.copyFileSync(path.join(legacy, name), dst);
+          } catch {
+            /* skip an unreadable/odd entry */
+          }
+        }
+      }
+    }
+    process.env.SHADOK_MEDIA_DIR = shared;
+    console.log(`media: using ${shared} (reachable by dropped agents)`);
+  } catch (e) {
+    console.warn(
+      "media: could not set up the shared media dir, keeping ~/.shadok-ai/media: " +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+}
 
 /** Run a privileged account command. Root runs it directly; otherwise go through
  *  NON-interactive sudo (`-n`) so a MISSING right fails fast with a non-zero exit
@@ -4646,8 +4692,9 @@ app.get("/download", (req, res) => {
 // same `nosniff` + `sandbox` CSP as /download neutralises an SVG opened directly.
 app.get("/media/:name", (req, res) => {
   const base = path.basename(String(req.params.name ?? ""));
-  const file = path.join(MEDIA_DIR, base);
-  if (!file.startsWith(path.join(MEDIA_DIR, path.sep)) && path.dirname(file) !== MEDIA_DIR) {
+  const dir = mediaDir();
+  const file = path.join(dir, base);
+  if (!file.startsWith(path.join(dir, path.sep)) && path.dirname(file) !== dir) {
     return res.status(400).type("text").send("bad name");
   }
   let stat: fs.Stats;
