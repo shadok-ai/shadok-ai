@@ -2125,6 +2125,30 @@ function mtTokenGate(req: Caller & { headers: Record<string, unknown> }, res: {
   return true;
 }
 
+/**
+ * The READ counterpart of `mtTokenGate`: multi-tenant + admin, but WITHOUT the
+ * `requestFromBrowser` (Origin) check. A browser omits `Origin` on a same-origin
+ * GET, so gating a READ on it 403s the cockpit's own status fetch — which is
+ * exactly what hid the per-user sign-in list (the GET returned 403, so it never
+ * rendered, while the POST writes that DO send Origin worked). The Origin check
+ * is CSRF protection for WRITES (invariant 26); a read of login status (labels +
+ * loggedIn booleans, never a token) has no such surface, so it must not require
+ * one.
+ */
+function mtReadGate(req: Caller & { headers: Record<string, unknown> }, res: {
+  status: (n: number) => { json: (b: unknown) => void };
+}): boolean {
+  if (DEPLOYMENT_MODE !== "multi-tenant") {
+    res.status(400).json({ error: "not applicable: this instance is single-tenant" });
+    return false;
+  }
+  if (currentAccount(req)?.role !== "admin") {
+    res.status(403).json({ error: "admins only" });
+    return false;
+  }
+  return true;
+}
+
 app.post("/mt-token/start", async (req, res) => {
   if (!mtTokenGate(req, res)) return;
   const r = await startSetupToken();
@@ -2179,7 +2203,10 @@ function loginUsers(): Array<{ user: string; home: string; label: string }> {
 }
 
 app.get("/agent-login", (req, res) => {
-  if (!mtTokenGate(req, res)) return;
+  // A READ: use the origin-less gate. A browser sends no `Origin` on a
+  // same-origin GET, so `mtTokenGate` (which requires one) would 403 the
+  // cockpit's own status fetch and the per-user sign-in list would never render.
+  if (!mtReadGate(req, res)) return;
   const mode = agentAuthForCwd(loadConfig(), process.cwd());
   const users = loginUsers().map(({ user, home, label }) => {
     const info = agentLoginInfo(home);
