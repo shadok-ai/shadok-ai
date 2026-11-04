@@ -159,6 +159,7 @@ import {
   SHARED_POT_GROUP,
   DEFAULT_SHARED_POT_PATH,
 } from "./osusers.js";
+import { runPrivileged, TREE_OP_TIMEOUT_MS } from "./privileged.js";
 import { instanceKey } from "./paths.js";
 import {
   peerFileFor,
@@ -2699,24 +2700,6 @@ if (DEPLOYMENT_MODE === "multi-tenant") {
   }
 }
 
-/** Run a privileged account command. Root runs it directly; otherwise go through
- *  NON-interactive sudo (`-n`) so a MISSING right fails fast with a non-zero exit
- *  instead of prompting — the T3 false positive (sudoers allows `true` but not
- *  `useradd`) surfaces here and `provisionGroupUser` turns it into a refusal. */
-function runPrivileged(cmd: string, argv: string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let c = cmd;
-    let a = argv;
-    if (typeof process.getuid === "function" && process.getuid() !== 0) {
-      a = ["-n", c, ...a];
-      c = "sudo";
-    }
-    const p = spawnChild(c, a, { stdio: ["ignore", "inherit", "inherit"], timeout: 60_000 });
-    p.on("error", reject);
-    p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with code ${code}`))));
-  });
-}
-
 /**
  * Make a freshly-created worktree (or self-repo clone) usable by the DROP USER.
  * The server creates it as ROOT, so the checkout AND git's own worktree admin
@@ -3009,7 +2992,11 @@ async function migChownTreeToCommons(): Promise<void> {
   const owner = `${COMMONS_USER}:${COMMONS_USER}`;
   for (const t of targets) {
     if (!t || !fs.existsSync(t)) continue;
-    await runPrivileged("chown", ["-R", owner, t]);
+    // Unbounded: the whole workspace (every agent's worktree + node_modules),
+    // `~/.shadok-ai` and `~/.claude`. On a busy instance this is the step that
+    // ran past the old fixed 60s and was SIGTERM'd (`chown exited with code
+    // null`), withholding the migration marker — see `src/privileged.ts`.
+    await runPrivileged("chown", ["-R", owner, t], { timeoutMs: TREE_OP_TIMEOUT_MS });
   }
   // RELOCATE the commons agent's Claude state into its OWN HOME. Chowning
   // ~/.claude alone is useless: the files stay under `/root` (0700), which `main`
@@ -3029,8 +3016,9 @@ async function migChownTreeToCommons(): Promise<void> {
       if (!fs.existsSync(s)) continue;
       const d = path.join(dstClaude, sub);
       await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, d]);
-      await runPrivileged("cp", ["-rn", `${s}/.`, `${d}/`]);
-      await runPrivileged("chown", ["-R", owner, d]);
+      // `projects` holds every agent's full transcript history — also unbounded.
+      await runPrivileged("cp", ["-rn", `${s}/.`, `${d}/`], { timeoutMs: TREE_OP_TIMEOUT_MS });
+      await runPrivileged("chown", ["-R", owner, d], { timeoutMs: TREE_OP_TIMEOUT_MS });
     }
     const hist = path.join(srcClaude, "history.jsonl");
     const dhist = path.join(dstClaude, "history.jsonl");
