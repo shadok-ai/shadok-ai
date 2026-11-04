@@ -1934,7 +1934,9 @@ app.get("/diff", (req, res) => {
 // Past worktree sessions of a repo (for reopening unfinished work).
 app.get("/recover", (req, res) => {
   const repo = String(req.query.repo ?? "").trim() || process.cwd();
-  const list = isGitRepo(repo) ? listPastSessions(repo) : [];
+  const list = isGitRepo(repo)
+    ? listPastSessions(repo, agentStateHome(commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE })))
+    : [];
   // `repo` is a caller-supplied path: a caller who knows another group's HOME
   // could enumerate that group's past worktree sessions (branch/commit metadata +
   // first-prompt preview). Filter each past session to the caller's visible
@@ -1996,9 +1998,16 @@ app.put("/mute", (req, res) => {
 // Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
 // back the directory to start the agent in. Sits here so it inherits the same
 // password gate as its neighbours.
-app.post("/tweak/prepare", (_req, res) => {
-  const r = ensureSelfRepo();
+app.post("/tweak/prepare", async (_req, res) => {
+  // The tweak agent runs as the commons drop user; its self-repo clone must live
+  // in THAT user's home (reachable under 0700 /root) and be owned by it — same
+  // reason as the worktree created off it. `commonsOsUser → null` in mono-tenant
+  // makes `agentStateHome(null)` the server home and the chown a no-op, so
+  // nothing changes there.
+  const commonsUser = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  const r = ensureSelfRepo(agentStateHome(commonsUser));
   if (r.error) return res.status(500).json({ error: r.error });
+  if (r.cwd) await chownAgentStateToDropUser(r.cwd, commonsUser);
   res.json({ cwd: r.cwd });
 });
 // Running version + latest seen on npm (null if not yet polled / check disabled).
@@ -2494,11 +2503,16 @@ app.post("/groups/members", (req, res) => {
 /** Where a group's HOME is created (`SHADOK_HOME_BASE` override, else `/home`). */
 const GROUP_HOME_BASE = (process.env.SHADOK_HOME_BASE ?? "").trim() || DEFAULT_HOME_BASE;
 
-/** The HOME whose `.claude/projects` holds a given agent's transcript: the drop
- *  user's own home when the agent is privilege-dropped (multi-tenant isolation),
- *  else the server's own home (commons / mono-tenant). The single answer the
- *  content tail and `loadHistory` must use so an isolated agent's reply streams. */
-function agentTranscriptHome(user: string | null | undefined): string {
+/** The HOME that holds ALL of an agent's on-disk state: its transcript
+ *  (`.claude/projects`, read by the content tail and `loadHistory`) AND its
+ *  worktrees + self-repo clone (`.shadok-ai/worktrees`, `.shadok-ai/self`). The
+ *  drop user's own home when the agent is privilege-dropped (multi-tenant
+ *  isolation), else the server's own home (commons / mono-tenant). The single
+ *  answer every one of those paths must use: the server's `/root` is mode 0700
+ *  and un-traversable by a dropped user, so state created there is silently
+ *  unreachable — a reply that never streams, or a Tweak agent wedged on Claude
+ *  Code's invalid-settings screen (its worktree lived under `/root`). */
+function agentStateHome(user: string | null | undefined): string {
   return user ? homeForUser(user, GROUP_HOME_BASE) : os.homedir();
 }
 
@@ -2512,17 +2526,19 @@ function commonsGroupIds(): string[] {
   return ids;
 }
 
-/** The transcript HOME for a CHANNEL that may not be live (e.g. GET /download of
- *  a past session): a live session's own `transcriptHome` when we have it, else
- *  re-derived from the channel's group the same way a spawn's drop user is —
- *  the group's `sk-*` user, or the commons user when migrated, else the server. */
-function channelTranscriptHome(chan: Channel): string {
+/** The state HOME for a CHANNEL that may not be live (e.g. GET /download of a
+ *  past session, or pruning a worktree as the session ends): a live session's
+ *  own `transcriptHome` when we have it, else re-derived from the channel's
+ *  group the same way a spawn's drop user is — the group's `sk-*` user, or the
+ *  commons user when migrated, else the server. Governs both the transcript and
+ *  the worktree location, so prune finds exactly what the spawn created. */
+function channelStateHome(chan: Channel): string {
   const live = sessions.get(chan.sessionId);
   if (live) return live.transcriptHome;
   if (DEPLOYMENT_MODE !== "multi-tenant") return os.homedir();
   const g = chan.group ? loadGroups().find((x) => x.id === chan.group) : null;
   const user = (g ? osUserFor(g) : null) ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
-  return agentTranscriptHome(user);
+  return agentStateHome(user);
 }
 
 /** Task 12: the one shared pot every group HOME links as `~/shared`. */
@@ -2545,6 +2561,41 @@ function runPrivileged(cmd: string, argv: string[]): Promise<void> {
     p.on("error", reject);
     p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited with code ${code}`))));
   });
+}
+
+/**
+ * Make a freshly-created worktree (or self-repo clone) usable by the DROP USER.
+ * The server creates it as ROOT, so the checkout AND git's own worktree admin
+ * dir (`<repo>/.git/worktrees/<name>`, where the agent's index/HEAD/logs live)
+ * are root-owned — and a dropped agent could neither write them nor, before this
+ * fix, even reach them under the 0700 server HOME. Now the checkout lives in the
+ * drop user's OWN home (`agentStateHome` → `worktreeDir`), so only ownership is
+ * left: chown BOTH the checkout and (for a worktree) its external admin dir to
+ * the user. Best-effort and logged — a chown failure degrades to the old symptom
+ * rather than failing the spawn, and the log names it. No-op with no drop user
+ * (mono-tenant, or commons-as-root before migration): ownership is already right.
+ */
+async function chownAgentStateToDropUser(checkout: string, user: string | null | undefined): Promise<void> {
+  if (!user) return;
+  const owner = `${user}:${user}`;
+  try {
+    await runPrivileged("chown", ["-R", owner, checkout]);
+    // git's admin dir sits under the REPO's gitdir, not the checkout; resolve it
+    // from inside the checkout so a worktree `.git` FILE is followed to it. Only
+    // chown it when OUTSIDE the checkout (a worktree); for a plain clone it is
+    // `<checkout>/.git`, already covered by the recursive chown above.
+    let adminDir = "";
+    try {
+      adminDir = execFileSync("git", ["-C", checkout, "rev-parse", "--absolute-git-dir"], { encoding: "utf8", timeout: 10_000 }).trim();
+    } catch {
+      /* not a git checkout: the recursive chown already covered it */
+    }
+    if (adminDir && !adminDir.startsWith(path.resolve(checkout) + path.sep)) {
+      await runPrivileged("chown", ["-R", owner, adminDir]);
+    }
+  } catch (e) {
+    console.warn(`state chown to ${user} failed for ${checkout} (agent may be unable to write it): ${(e as Error)?.message ?? e}`);
+  }
 }
 
 /** The shadok skills to install: [package source dir, installed name]. Mirrored
@@ -4490,7 +4541,7 @@ app.get("/download", (req, res) => {
   let allowed = offeredPaths(loadOffers(filesFileFor(process.cwd())), session).has(wanted);
   if (!allowed) {
     let raw: string;
-    try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session, channelTranscriptHome(chan)), "utf8"); }
+    try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session, channelStateHome(chan)), "utf8"); }
     catch { return res.status(403).type("text").send("that file was not sent by this agent"); }
     allowed = sentFilePaths(raw).has(wanted);
   }
@@ -5790,6 +5841,12 @@ async function endChannel(sessionId: string): Promise<boolean> {
   const s = sessions.get(sessionId);
   const worktreeBranch = s?.worktree?.branch ?? ch?.branch;
   const repo = s?.worktree?.repo ?? ch?.repo;
+  // Resolve the worktree's home WHILE the session is still live (its own
+  // `transcriptHome` is the exact home the spawn created it in); fall back to the
+  // channel's group-derived home once it is gone. Prune must look in the same
+  // place createWorktree wrote, or a dropped agent's checkout under /home/<user>
+  // would never be cleaned.
+  const worktreeHome = s?.transcriptHome ?? (ch ? channelStateHome(ch) : os.homedir());
   if (s) {
     broadcast(s, { type: "stopped" });
     await s.pilot.stop().catch(() => {});
@@ -5799,7 +5856,7 @@ async function endChannel(sessionId: string): Promise<boolean> {
   // merged), keep it if there's uncommitted or unmerged work. Stops the empty-
   // worktree pile-up while never discarding real work.
   if (repo && worktreeBranch) {
-    const outcome = pruneWorktree(repo, worktreeBranch);
+    const outcome = pruneWorktree(repo, worktreeBranch, worktreeHome);
     if (outcome !== "none") console.log(`worktree ${worktreeBranch}: ${outcome} on session end`);
   }
   return true;
@@ -5901,8 +5958,8 @@ async function createSession(
   const pilot = makePilot(id, cwd, args, profile, model, effort, user, group);
   // A dropped group agent writes its transcript under ITS OWN home, not the
   // server's — so the content tail / history must read from there (invariant:
-  // all content comes from the .jsonl). `agentTranscriptHome` is the one answer.
-  const transcriptHome = agentTranscriptHome(user);
+  // all content comes from the .jsonl). `agentStateHome` is the one answer.
+  const transcriptHome = agentStateHome(user);
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id, transcriptHome));
   const backend = sessionBackend(profile, group);
@@ -6807,9 +6864,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             }
             return m ?? null;
           };
+          // The drop user a NEW spawn will run as — same inputs as the isolation
+          // resolution further down. Hoisted out of the MT-token guard because the
+          // worktree below must land in (and be owned by) this same user's home.
+          let earlyUser: string | null = null;
           if (!resumed) {
-            // A new spawn has no stored group; same inputs as the isolation
-            // resolution further down.
             const earlyIso = resolveSpawnIsolation({
               mode: DEPLOYMENT_MODE,
               resumed,
@@ -6818,15 +6877,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               storedGroupId: null,
               requestedGroupId: typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null,
             });
-            const earlyUser =
-              earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+            earlyUser = earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
             const earlyMsg = mtRefusal(earlyUser);
             if (earlyMsg) return fail(earlyMsg);
           }
           if (msg.worktree && !resumed && isGitRepo(cwd)) {
             try {
-              worktree = createWorktree(cwd, id.slice(0, 8));
+              // Create the checkout under the DROP USER's own home (not the
+              // server's `/root`, which that user cannot traverse) and hand it to
+              // them, so a dropped agent — notably every Tweak agent — can
+              // actually work in it instead of landing on the invalid-settings
+              // screen. `agentStateHome(null)` is the server home, so mono-tenant
+              // is byte-for-byte unchanged.
+              worktree = createWorktree(cwd, id.slice(0, 8), agentStateHome(earlyUser));
               effectiveCwd = worktree.path;
+              await chownAgentStateToDropUser(worktree.path, earlyUser);
             } catch (e) {
               return fail(
                 "worktree creation failed: " + (e instanceof Error ? e.message : String(e)),
