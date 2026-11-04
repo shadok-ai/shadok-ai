@@ -333,6 +333,7 @@ import {
   type Rp,
 } from "./twofactor.js";
 import { ensureSelfRepo } from "./selfrepo.js";
+import { supersedeSession } from "./live-handover.js";
 import {
   createWorktree,
   pruneWorktree,
@@ -6715,7 +6716,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   send(versionMessage());
 
   ws.on("close", () => {
-    if (session) detach(ws, session);
+    // Detach from the CURRENT Live for this id, not the closure's possibly
+    // retired one: a handover ([5d8d]) moved this ws onto the new Live, so
+    // detaching the old object would leak the ws in the live one's client set.
+    if (session) detach(ws, sessions.get(session.id) ?? session);
     session = null;
   });
 
@@ -6728,6 +6732,15 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     }
 
     try {
+      // This connection can outlive the Live it attached to: a resume that
+      // supersedes an exited-but-watched session (see `supersedeSession`,
+      // [5d8d]) moved this ws onto the NEW Live, but this closure still points
+      // at the retired one. Re-point it so every handler below — and the
+      // takeover/retry logic — acts on the single real Live for this id.
+      if (session) {
+        const current = sessions.get(session.id);
+        if (current && current !== session) session = current;
+      }
       // Any user takeover cancels a pending auto-retry and ends the streak.
       // "prompt" is settled inside its own case instead: a prompt refused on
       // pace grounds sends nothing, so it must not count as a takeover — it
@@ -7096,6 +7109,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             dropUser,
             agentGroupId,
           );
+          // One Live per agent (shared-ledger [5d8d]). We only reach here when
+          // there was no live session to attach to — but `existing` may be a
+          // RETIRED Live whose pilot has exited while viewers are still
+          // attached (a web tab, a Telegram bridge). `createSession` has just
+          // replaced it in the registry; without a handover those viewers are
+          // orphaned on the old object — still fed the agent's answers by its
+          // lingering tail, but cut off from every broadcast on the new Live
+          // (the other interfaces' prompt echoes, dialogs, working/turn-done).
+          // Move them onto the new Live and quiet the old one — without killing
+          // the agent, which the new Live may now be driving on the same pane.
+          if (existing && existing !== session) {
+            const moved = supersedeSession(existing, session);
+            if (moved)
+              console.log(`session ${id.slice(0, 8)}: superseded a retired Live, moved ${moved} viewer(s)`);
+          }
           session.clients.add(ws);
           if (resumed) {
             const turns = historyWithOffers(loadHistory(effectiveCwd, id, session.transcriptHome), id);

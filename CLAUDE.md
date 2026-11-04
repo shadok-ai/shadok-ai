@@ -84,6 +84,7 @@ both are silent in the DOM.
 | File | Responsibility |
 |---|---|
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
+| `src/live-handover.ts` | `supersedeSession(old, next)` — the ONE-`Live`-per-agent rule (invariant 55). When a resume can't attach (the old pilot `hasExited`) it makes a NEW `Live` and `sessions.set` replaces the entry; this hands the retired `Live`'s viewers to the new one and quiets the old (tail, timers, raw pipe) WITHOUT killing the pilot or clearing the shared tail position — the new `Live` may drive the same tmux pane. `HandoverLive` omits `pilot`/`cwd`/`id` on purpose, so the handover CANNOT kill the agent or reset the transcript. Pure, tested (`test/live-handover.test.ts`). |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
 | `src/claude-bin.ts` | Makes sure a RUNNABLE `claude` is there before every spawn, and says which binary that is. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Since the split packaging, "a file named claude that is executable" is NOT "a claude that works": `classifyBin` recognises the npm placeholder, `findClaudeBin` falls back to the native binary behind it, and `claudeCommand` is the ONE answer to "which binary do we spawn" — the pilots, the auth probe, the sign-in and the version probe all go through it. See invariant 32. It also never installs over Claude Code's own self-update: `claudeInstallInProgress` spots npm's reify directory and `ensureClaude` waits for it (bounded), then looks again after a failed install before calling the CLI missing. Pure cores (`classifyBin`, `platformPkg`, `nativeBinCandidates`, `findClaudeBin`, `findClaudeBinWithRetry`, `rewriteInProgress`, `globalScopeDirs`) tested; the placeholder is also read off a real file on disk. |
 | `src/node-pty-fix.ts` | The OTHER `posix_spawnp failed`: node-pty's prebuilt `spawn-helper` must be `chmod +x` to run. The package `postinstall` does that, but via a RELATIVE path that only holds for a dev checkout; installed as a dependency (npx / managed `~/.shadok-ai/app`) node-pty is **hoisted** to the parent `node_modules` and the chmod silently misses — so a colleague's very first agent died with `posix_spawnp` even though `claude` was fine. `ensureSpawnHelperExecutable` (called at boot in `server.ts`) chmods it from node-pty's REAL location, resolved at runtime — every install layout. `spawnHelperPaths` is pure, tested; the real chmod is covered end-to-end. |
@@ -1718,6 +1719,33 @@ Auth section of `docs/architecture.md`).
     `test/worktree-home.test.ts`; the real chown + traversal is a container fact
     (same discipline as invariant 50). Design:
     `docs/superpowers/specs/2026-11-04-dropped-agent-state-home-design.md`.
+
+55. **Exactly ONE `Live` per agent — a resume that can't attach must HAND OVER
+    the old viewers, not orphan them.** The attach branch only fires when
+    `existing && !existing.pilot.hasExited`; otherwise the start handler calls
+    `createSession`, whose `sessions.set(id, newLive)` REPLACES the registry
+    entry. If the retired `Live` still had viewers (a web tab, a Telegram
+    bridge), they were left on the old object: its tail keeps running on the
+    same `.jsonl`, so they still saw the agent's ANSWERS and their own prompts,
+    but every `broadcast` now targeted the new `Live` — so they missed the OTHER
+    interfaces' **prompt echoes**, dialogs, and working/turn-done. The reported
+    symptom (correctsms, session 6f3abeff): a message typed in Telegram never
+    appeared in the web chat until a reload — "not deaf to everything", which is
+    exactly the two-`Live` shape and is why "the server code is correct in
+    isolation" (the echo IS broadcast, excluding only the sender). The fix
+    (`supersedeSession`, `src/live-handover.ts`): move the retired `Live`'s
+    `clients` onto the new one and quiet the old — but the teardown is
+    DELIBERATELY not `destroySession`. A `hasExited` can latch on one transient
+    `has-session` probe (invariants 23/25) while the pane is alive, so the new
+    `Live` may have adopted that very pane: killing the old pilot would kill the
+    live agent, and clearing the shared tail position would make the new tail
+    replay from byte 0. Two companions make the handover whole: a connection's
+    per-socket `session` closure is re-pointed to the current `Live` for its id
+    at the top of the message loop (so an orphaned tab's SENDS, and its
+    close/detach, act on the one real `Live`), and `ws.on("close")` detaches from
+    `sessions.get(id)` rather than the stale closure. Pure handover tested in
+    `test/live-handover.test.ts`. Design:
+    `docs/superpowers/specs/2026-11-04-one-live-per-agent-design.md`.
 
 ## Conventions
 
