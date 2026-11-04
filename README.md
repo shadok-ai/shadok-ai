@@ -862,6 +862,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
 | `SHADOK_GREETING=0` | the lead agent starts silent — no first-message greeting |
 | `SHADOK_LEDGER=0` | turn OFF the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (**ON by default**; `SHADOK_LEDGER=0` or the GUI/config setting turns it off) |
+| `SHADOK_SEED_SKILLS=0` | don't rewrite the machine-wide skill scripts at boot — for a build run side by side with another instance, so it doesn't hand that instance's agents scripts newer than the server they call |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |
 | `SHADOK_SSH_IDENTITY=0` · `SHADOK_FORCE_SSH_IDENTITY=1` | disable / force the Docker SSH identity |
 | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALLOWED_CHATS` | override the stored config |
