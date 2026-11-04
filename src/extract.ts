@@ -2,7 +2,7 @@ import { parseBashMessage, userMessageText } from "./bang.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { newestTranscriptById, isNothingToShow, parseTimestamp } from "./tail.js";
+import { newestTranscriptById, isNothingToShow, stripTrailingNothingToShow, parseTimestamp } from "./tail.js";
 import { toolFiles, fileCard } from "./download.js";
 import { userPromptText, classifyUserLine } from "./prompt-kind.js";
 
@@ -426,8 +426,10 @@ export function loadHistory(cwd: string, sessionId: string, home: string = os.ho
         .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)
         // Same block-by-block filter as the tail, otherwise the sentinel
-        // reappears on a page reload though it was never streamed.
+        // reappears on a page reload though it was never streamed — the
+        // whole-block drop, then a trailing sign-off strip (invariant 2).
         .filter((t: any) => typeof t === "string" && !isNothingToShow(t))
+        .map((t: string) => stripTrailingNothingToShow(t))
         .join("\n")
         .trim();
       if (!text) continue;

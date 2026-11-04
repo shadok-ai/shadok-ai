@@ -7342,7 +7342,7 @@
   }
   function updateLivePreview(tab, screen) {
     if (!window.extractLiveText) return;
-    const txt = extractLiveText(screen);
+    let txt = extractLiveText(screen);
     // Empty extraction (a running tool, the spinner, or a transient frame while
     // the block scrolls) → KEEP the existing preview as is. Clearing it here made
     // the in-flight block flicker (a fleeting empty → clear → re-show). The block
@@ -7353,6 +7353,10 @@
     // Without this guard the grey preview would stay up the whole turn waiting
     // for a stream-text that never comes.
     if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
+    // Content THEN a trailing sign-off sentinel: strip the marker, keep the text,
+    // so the grey preview matches the finalised block the server strips (twin of
+    // stripTrailingNothingToShow, src/tail.ts). A mid-message sentinel stays.
+    txt = txt.replace(/\n[ \t*_`]*nothing to show[ \t*_`.!]*\s*$/i, "").replace(/\s+$/, "");
     const nT = normPreview(txt);
     // Decide what to do with the block (pure, tested — see livePreviewDecision).
     // The baseline (previous turn's answer) is kept for the WHOLE turn: once new
