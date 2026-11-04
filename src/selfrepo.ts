@@ -12,9 +12,17 @@ import path from "node:path";
  */
 export const SELF_REPO_URL = "https://github.com/shadok-ai/shadok-ai.git";
 
-/** Our own copy, never the directory the running server was launched from. */
-export function selfRepoDir(): string {
-  return path.join(os.homedir(), ".shadok-ai", "self", "shadok-ai");
+/**
+ * Our own copy, never the directory the running server was launched from.
+ * `stateHome` defaults to the server's own home (mono-tenant / commons before
+ * migration), but is the DROPPED agent's home (`/home/<user>`) once agents run
+ * as a non-root OS user: the server's `/root` is mode 0700 and un-traversable by
+ * that user, so a clone there strands the Tweak agent — same reason as
+ * `worktreeDir` in `worktree.ts`. The caller makes the clone writable by the
+ * drop user; this only fixes WHERE it lands.
+ */
+export function selfRepoDir(stateHome: string = os.homedir()): string {
+  return path.join(stateHome, ".shadok-ai", "self", "shadok-ai");
 }
 
 export type SelfRepoPlan = "clone" | "update" | "reclone";
@@ -59,8 +67,8 @@ function git(args: string[], cwd?: string): void {
  * worktrees a tweak session owns are separate checkouts and are never touched —
  * refreshing under a live agent is how you lose its work.
  */
-export function ensureSelfRepo(): SelfRepoResult {
-  const dir = selfRepoDir();
+export function ensureSelfRepo(stateHome: string = os.homedir()): SelfRepoResult {
+  const dir = selfRepoDir(stateHome);
   const plan = selfRepoPlan(fs.existsSync(dir), fs.existsSync(path.join(dir, ".git")));
   try {
     if (plan === "reclone") fs.rmSync(dir, { recursive: true, force: true });

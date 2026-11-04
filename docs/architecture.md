@@ -220,9 +220,20 @@ wins. A running process knows where it is better than a record does.
 
 ## Worktrees
 
-Created as `~/.shadok-ai/worktrees/<repo>-<tag>` on branch `shadok-ai/<tag>`,
-branched from the repo's current HEAD. **Worktree-per-agent is the default**
-for spawned agents; the main channel runs at the repo root.
+Created as `<state-home>/.shadok-ai/worktrees/<repo>-<tag>` on branch
+`shadok-ai/<tag>`, branched from the repo's current HEAD. **Worktree-per-agent is
+the default** for spawned agents; the main channel runs at the repo root.
+
+`<state-home>` is the **agent state home** (`agentStateHome`, `src/server.ts`):
+the drop user's own home (`/home/<user>`) when the agent is privilege-dropped in
+multi-tenant, else the server's own home (`os.homedir()`, mono-tenant). It must
+be the drop user's: the server runs as root, whose `/root` is mode `0700` and
+un-traversable by a `main`/`sk-*` agent, so a worktree there strands the agent on
+Claude Code's invalid-settings screen (every Tweak agent). `worktreeDir` is the
+one pure definition shared by create/prune/list; `createWorktree` runs as root,
+so the server then chowns the checkout **and** its git admin dir
+(`<repo>/.git/worktrees/<name>`) to the drop user. See the
+2026-11-04 dropped-agent-state-home design spec.
 
 On session end, `pruneWorktree` keeps anything that could be work and reclaims
 what can't be:
@@ -248,9 +259,11 @@ bottom of the agents column, collapses that into one click.
 
 What the click does:
 
-1. `POST /tweak/prepare` → `ensureSelfRepo()` clones
-   `https://github.com/shadok-ai/shadok-ai.git` into `~/.shadok-ai/self/shadok-ai`,
-   or fast-forwards its `main` if it is already there, and returns that path.
+1. `POST /tweak/prepare` → `ensureSelfRepo(agentStateHome(commonsUser))` clones
+   `https://github.com/shadok-ai/shadok-ai.git` into
+   `<state-home>/.shadok-ai/self/shadok-ai` (the commons user's own home in
+   multi-tenant — see Worktrees above for why not `/root`), chowns it to that
+   user, or fast-forwards its `main` if it is already there, and returns the path.
 2. The client starts an **ordinary session** on it with `worktree: true` and
    `profile: "Shadok-Tweak"`. Everything downstream — the `shadok-ai/<tag>`
    branch, the isolated checkout, the Diff panel, `pruneWorktree` on close — is
@@ -1176,7 +1189,9 @@ and are never touched.
   Telegram never did. And resuming is useless if nobody is listening, so
   `reconcileOnBoot` reattaches the bridges whose tmux agent is still alive. Both
   halves are needed; keep them together.
-- **Worktrees**: `~/.shadok-ai/worktrees/<repo>-<tag>` on `shadok-ai/<tag>`.
+- **Worktrees**: `<state-home>/.shadok-ai/worktrees/<repo>-<tag>` on
+  `shadok-ai/<tag>` (`<state-home>` = the drop user's home in multi-tenant; see
+  Worktrees).
 
 Everything the cockpit owns lives under `~/.shadok-ai` — nothing is written
 into the piloted repo.
