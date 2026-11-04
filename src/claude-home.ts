@@ -167,6 +167,39 @@ export function seedPlan(
   return changed ? out : null;
 }
 
+/**
+ * Pure: the object to write after trusting EVERY cwd in `cwds` (plus the
+ * globals), or null when nothing is missing.
+ *
+ * This is `seedPlan` folded over many directories so a shared group HOME is
+ * seeded in ONE atomic write instead of one racy write per spawn. The
+ * motivating bug: N agents share a single `~/.claude.json`, and rebuilding it
+ * one cwd at a time during a boot respawn storm let a sibling `claude`'s stale
+ * write clobber a trust entry before that agent's own process read it —
+ * stranding it on the "trust this folder" dialog. Seeding the complete set up
+ * front (before any such process starts) removes the window entirely. Each
+ * `cwd` keeps `seedPlan`'s additive, never-overwrite discipline.
+ */
+export function seedPlanForCwds(
+  existing: ClaudeHome,
+  opts: { version: string; cwds: readonly string[] },
+): ClaudeHome | null {
+  let current = existing;
+  let changed = false;
+  // Globals first (no cwd), then each directory — threading the running object
+  // so every change lands in one result. seedPlan returns null for "nothing to
+  // add", in which case we keep the object we already have.
+  const steps: Array<string | undefined> = [undefined, ...opts.cwds];
+  for (const cwd of steps) {
+    const next = seedPlan(current, { version: opts.version, cwd });
+    if (next) {
+      current = next;
+      changed = true;
+    }
+  }
+  return changed ? current : null;
+}
+
 export interface ClaudeSettings {
   tui?: string;
   [k: string]: unknown;

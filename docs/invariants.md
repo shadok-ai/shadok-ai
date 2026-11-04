@@ -409,6 +409,27 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     (a 2.1.269 probe found a blank box) and what decides it is unknown. The send
     check (`screenShowsWork || inputText === ""`) is unaffected: verified live, the
     example does not come back after a real send.
+    The same race has a **second home, and a worse one: the group HOME**. A
+    multi-tenant dropped agent runs as `main` (commons) or `sk-<id>`, with HOME
+    `/home/<user>` — which is **NOT on the shadok-data volume**, so a `docker`
+    recreate wipes it, while `/root`'s copy (volume-backed) survives. And every
+    commons agent **shares one `/home/main/.claude.json`**, read-modify-written by
+    each of them. So after a recreate the file is rebuilt from empty exactly when
+    the resume storm brings many agents back at once: the per-spawn seed added one
+    cwd at a time, and a sibling `claude`'s stale write clobbered a trust entry
+    before its owner's process read it — stranding that agent on the dialog
+    (measured on a live instance: `/home/main/.claude.json` missing `/workspace/darts`
+    while `/root/.claude.json` had it). The fix mirrors `ensureClaudeHome`'s for
+    `/root`: **seed the whole set up front, in one atomic write per HOME, before
+    anything spawns.** `seedPlanForCwds` (pure, `src/claude-home.ts`) folds the
+    globals + every cwd into one object; `preseedGroupHomes` (`server.ts`, called
+    from `ensureGroupsProvisioned` on every capable boot) writes each drop user's
+    HOME with its full trusted-directory set, and the per-spawn `seedGroupAgentHome`
+    now writes the complete sibling set too, so no incremental rebuild can race.
+    The durable complement is infra, not code: mount the group-HOME base
+    (`SHADOK_HOME_BASE`, default `/home`) on the volume — the invariant-19 move for
+    the SSH key — so the HOMEs (trust AND the `login`-mode credentials) survive a
+    recreate instead of being rebuilt at all.
 
 <a id="inv-24"></a>
 
