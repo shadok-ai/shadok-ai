@@ -14,6 +14,14 @@
 // with no port/key), it reads and writes the local file directly —
 // SHADOK_LEDGER_FILE if the server handed one, else the legacy global file.
 // Nothing about the single-group / off-server case changes.
+//
+// The SAME fallback catches a server that is reachable but OLDER than this
+// script: skills are seeded machine-wide at every boot, so any build booted on
+// the host (a side-by-side verification run) rewrites them under the running
+// server, and a route this file calls may simply not exist there. A 404 is that
+// fact, and it must degrade to the local table instead of failing the write —
+// see invariant 57. Only a 404: a 401/403 is a real auth problem with a human
+// action behind it (invariant 33) and stays loud.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -61,8 +69,10 @@ function mintId(rows) {
 }
 
 /** Call the server. Exits with a clear message on a transport/HTTP failure —
- *  the same shape as the secrets skill. */
-async function api(method, p, body) {
+ *  the same shape as the secrets skill. With `soft404`, a 404 returns null
+ *  instead of exiting: the caller then has a local-file path to degrade to, and
+ *  a 404 means THIS ROUTE does not exist on the running build (invariant 57). */
+async function api(method, p, body, { soft404 = false } = {}) {
   let res;
   try {
     res = await fetch(BASE + p, {
@@ -82,6 +92,14 @@ async function api(method, p, body) {
     process.exit(1);
   }
   const raw = await res.text();
+  if (res.status === 404 && soft404) {
+    console.error(
+      `ledger: the running cockpit does not serve ${method} ${p} (it predates this skill copy) — ` +
+        `using the local table ${FILE}. Skills are re-seeded at every boot, so a newer build ` +
+        `booted on this host can leave them ahead of the running server.`,
+    );
+    return null;
+  }
   if (!res.ok) {
     let msg = raw.slice(0, 300);
     try {
@@ -131,7 +149,10 @@ function fmt(e, now) {
 /** The rows a read works over: on-server, the server-scoped table (own group ∪
  *  public); off-server, the local file. */
 async function visibleRows() {
-  if (useServer) return (await api("GET", "/ledger")).entries ?? [];
+  if (useServer) {
+    const r = await api("GET", "/ledger", undefined, { soft404: true });
+    if (r) return r.entries ?? [];
+  }
   return loadFile(FILE);
 }
 
@@ -199,13 +220,9 @@ async function doRecord(rest) {
     public: f.public === true ? true : undefined,
   };
 
-  let row;
-  if (useServer) {
-    // The server stamps the authoring group (from the session) and scopes the
-    // upsert to it, so a cross-group clobber is impossible by construction.
-    row = (await api("POST", "/ledger/record", patch)).row;
-  } else {
-    // Off-server fallback: write the local file directly (mono-tenant / hand-run).
+  // Off-server (or older-server) fallback: write the local file directly
+  // (mono-tenant / hand-run / a build that does not serve the route).
+  const recordLocally = () => {
     const rows0 = loadFile(FILE);
     let next;
     try {
@@ -219,8 +236,29 @@ async function doRecord(rest) {
       console.error(String(e?.message ?? e));
       process.exit(2);
     }
-    saveFile(FILE, next);
-    row = byId ? resolveId(next, f.id) : next.find((r) => normEntity(r.entity) === normEntity(f.entity));
+    try {
+      saveFile(FILE, next);
+    } catch (e) {
+      // Worth naming rather than a stack: on a multi-tenant instance the table
+      // is 0600 in the SERVER's home, so a dropped agent cannot write it — the
+      // row is lost and a human has to update/restart the instance.
+      console.error(
+        `ledger: could not write ${FILE} — ${e?.message ?? e}. The record was NOT saved; ` +
+          `tell the operator (the cockpit is older than this skill copy, see invariant 57).`,
+      );
+      process.exit(1);
+    }
+    return byId ? resolveId(next, f.id) : next.find((r) => normEntity(r.entity) === normEntity(f.entity));
+  };
+
+  let row;
+  if (useServer) {
+    // The server stamps the authoring group (from the session) and scopes the
+    // upsert to it, so a cross-group clobber is impossible by construction.
+    const r = await api("POST", "/ledger/record", patch, { soft404: true });
+    row = r ? r.row : recordLocally();
+  } else {
+    row = recordLocally();
   }
 
   const k = rowKind(row);

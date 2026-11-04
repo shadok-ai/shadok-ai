@@ -1577,3 +1577,41 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     in `login` mode the server injects NO token (it would outrank and suppress
     the login). Design:
     `docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
+
+<a id="inv-61"></a>
+
+57. **A machine-wide seeded script can be NEWER than the server it calls — it
+    must tolerate the skew, and a side-by-side build must not create it.** The
+    skill scripts (`shadok-ledger`, `shadok-ai-agents`, …) are not in the running
+    tree: they are copied into the server HOME's `~/.claude/skills` — and, in
+    multi-tenant, into `/etc/claude-code/.claude/skills` — at **every boot**.
+    That is deliberate and load-bearing: a merged `SKILL.md` reaches agents that
+    already exist, with no reload (invariant 33's note). The cost is that the
+    copy belongs to whichever build booted LAST on that host, not to the server
+    answering the calls. And CLAUDE.md tells every agent to verify a change by
+    running its build **side by side on a free port** — so the sanctioned
+    workflow rewrites the shared scripts under the production server, several
+    times a day.
+    Measured twice on this host: a post-merge build re-seeded `shadok-ledger`,
+    whose new copy posts `POST /ledger/record`; the running release did not serve
+    that route, so `ledger record` answered **404 for every agent on the machine**
+    while `ledger check` (the older `GET /ledger`) kept working. A HALF-broken
+    tool is worse than a broken one — agents believed they were recording
+    resolutions and nothing was written, which is precisely the silo the ledger
+    exists to close. `pilotctl` and two `SKILL.md` drifted the same way.
+    Two halves, and both are needed. **The client degrades:** a 404 on its own
+    route means "this build does not have it", so the CLI falls back to the local
+    table (`SHADOK_LEDGER_FILE`, the same file the server reads) and SAYS so on
+    stderr. Only a 404 — a 401/403 is an auth fact with a human action behind it
+    (invariant 33) and stays loud, and a write that then fails on permissions is
+    named rather than swallowed, because on a multi-tenant instance that table is
+    0600 in the server's HOME. **The seeder abstains:** `SHADOK_SEED_SKILLS=0`
+    turns the whole re-seed off, and it is now the fourth property of a safe
+    side-by-side run next to `PORT`, `SHADOK_VERSION_CHECK_MIN=0` and the per-dir
+    Telegram token. Default ON — an ordinary boot must keep refreshing them —
+    and a boot that skipped it says so, since a side-by-side run and a failed
+    seed otherwise look identical in the log.
+    What was deliberately NOT done: comparing versions and refusing to overwrite
+    a "newer" copy. It needs a version stamped into every seeded file, it never
+    heals a downgrade, and it still leaves the client talking to a server it does
+    not match. Tolerating the skew is the property that holds in both directions.
