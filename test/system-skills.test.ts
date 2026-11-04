@@ -43,3 +43,24 @@ test("every shipped context/*-skill is seeded into the machine-wide tier (SKILL_
 test("shadok-files specifically is machine-wide (the regression)", () => {
   assert.ok(skillSourcesInServer().includes("files-skill"), "files-skill must be in SKILL_SOURCES");
 });
+
+test("every skill seeder is gated by SEED_SKILLS, so a side-by-side build cannot clobber them", () => {
+  // The seeders write OUTSIDE the running tree (the server HOME's
+  // ~/.claude/skills, plus /etc in multi-tenant) at every boot, so a build
+  // started side by side to verify a change rewrites the shared scripts under
+  // the RUNNING server — and the agents on that host then call routes their
+  // server may not serve (invariant 57). `SHADOK_SEED_SKILLS=0` is the opt-out,
+  // and it only works if EVERY call site is behind it. Scanned rather than
+  // imported for the same reason as SKILL_SOURCES above.
+  const seeders = [...SERVER.matchAll(/^(.*)\bseed([A-Z]\w*)Skills?\(\);$/gm)]
+    .map((m) => ({ prefix: m[1], name: `seed${m[2]}Skill` }));
+  assert.ok(seeders.length >= 6, `expected the skill seeders to be called, found ${seeders.length}`);
+  const ungated = seeders.filter((c) => !c.prefix.includes("SEED_SKILLS"));
+  assert.deepEqual(
+    ungated.map((c) => c.name),
+    [],
+    `these seeders run unconditionally — SHADOK_SEED_SKILLS=0 would not stop them: ${ungated.map((c) => c.name).join(", ")}`,
+  );
+  // And the gate itself: default ON (an ordinary boot must keep refreshing).
+  assert.match(SERVER, /const SEED_SKILLS = \(process\.env\.SHADOK_SEED_SKILLS \?\? ""\)\.trim\(\) !== "0";/);
+});

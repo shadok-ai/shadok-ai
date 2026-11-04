@@ -7977,6 +7977,26 @@ try {
   /* best effort — the CTA still starts an agent, just without the role */
 }
 
+/**
+ * Do we rewrite the machine-wide skill scripts at this boot?
+ *
+ * The skills below are seeded OUTSIDE the running tree — the server user's
+ * `~/.claude/skills`, plus `/etc/claude-code/.claude/skills` in multi-tenant —
+ * and they are rewritten at EVERY boot. That is what makes a merged SKILL.md
+ * reach existing agents with no reload, and it is also a trap: a build started
+ * side by side to verify a change (the sanctioned way, see CLAUDE.md "Running
+ * YOUR build") rewrites the shared skills UNDER the running production server,
+ * leaving every agent on the host with scripts newer than the server they call.
+ * Measured: the ledger skill began posting a route the running build did not
+ * serve, so `record` answered 404 host-wide while `check` kept working — a
+ * half-broken tool, which is worse than a broken one (invariant 57).
+ *
+ * `SHADOK_SEED_SKILLS=0` is the fourth property of a safe side-by-side run,
+ * next to `PORT`, `SHADOK_VERSION_CHECK_MIN=0` and the per-dir Telegram token.
+ * Default ON: an ordinary boot must keep refreshing them.
+ */
+const SEED_SKILLS = (process.env.SHADOK_SEED_SKILLS ?? "").trim() !== "0";
+
 // Install/refresh the bundled "shadok-scheduler" skill so agents can set up
 // their own channel's crons in plain language. Server-owned, overwritten each
 // boot to stay current.
@@ -7999,7 +8019,7 @@ function seedSchedulerSkill(): void {
     /* best effort — scheduling still works via the GUI/Telegram/API */
   }
 }
-seedSchedulerSkill();
+if (SEED_SKILLS) seedSchedulerSkill();
 
 // Install/refresh the bundled "shadok-secrets" skill, so an agent that obtains
 // a credential can keep it for the next one. Server-owned, overwritten each
@@ -8020,7 +8040,7 @@ function seedSecretsSkill(): void {
     /* best effort — the vault still works from the GUI and Telegram */
   }
 }
-seedSecretsSkill();
+if (SEED_SKILLS) seedSecretsSkill();
 
 // Install/refresh the bundled "shadok-reload" skill so an agent can respawn
 // itself to pick up a changed pilot prompt or newly-seeded skills. Server-owned,
@@ -8039,7 +8059,7 @@ function seedReloadSkill(): void {
     /* best effort — no self-reload skill just means a manual restart, never a crash */
   }
 }
-seedReloadSkill();
+if (SEED_SKILLS) seedReloadSkill();
 
 // Install/refresh the bundled "shadok-ledger" skill so agents can verify a
 // status before asserting/acting, and record resolutions. Server-owned,
@@ -8060,7 +8080,7 @@ function seedLedgerSkill(): void {
     /* best effort — an absent skill just means no ledger, never a crash */
   }
 }
-seedLedgerSkill();
+if (SEED_SKILLS) seedLedgerSkill();
 
 /**
  * The `shadok-files` skill — handing a file to the person driving the cockpit.
@@ -8083,7 +8103,7 @@ function seedFilesSkill(): void {
     /* best effort — a missing skill means paths get printed, not a broken boot */
   }
 }
-seedFilesSkill();
+if (SEED_SKILLS) seedFilesSkill();
 
 // Install/refresh the bundled "shadok-ai-agents" skill so an agent in ANY repo
 // (not just this one) can spawn/pilot other agents via pilotctl. It used to live
@@ -8104,13 +8124,16 @@ function seedAgentsSkill(): void {
     /* best effort — no agents skill just means no cross-agent piloting, never a crash */
   }
 }
-seedAgentsSkill();
+if (SEED_SKILLS) seedAgentsSkill();
 
 // Multi-tenant: also install every skill machine-wide (Enterprise tier), so the
 // per-tenant `sk-*` agents — which run under their own HOME, not the server's —
 // get them without a per-HOME copy. Mono-tenant/dev keeps the personal install
 // above and never touches /etc.
-if (DEPLOYMENT_MODE === "multi-tenant") seedSystemSkills();
+if (DEPLOYMENT_MODE === "multi-tenant" && SEED_SKILLS) seedSystemSkills();
+// Say it: a boot that did NOT refresh the shared skills must be visible, or a
+// side-by-side run and a broken seed look the same in the log.
+if (!SEED_SKILLS) console.log("skills: SHADOK_SEED_SKILLS=0 — left the machine-wide skills alone");
 
 /** Run a package-manager install. Linux managers need root; if we aren't root,
  *  go through NON-interactive sudo so a password prompt fails fast rather than

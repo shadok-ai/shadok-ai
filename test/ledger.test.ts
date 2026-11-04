@@ -259,7 +259,8 @@ test("ageDays is days since the claim was CONFIRMED, not since it was written", 
  * AUTHORING `group`; reads/writes are scoped SERVER-SIDE. `upsertEntry`'s
  * `scope` threading is unchanged and still covered just above; these pin the new
  * one-table cores. */
-import { spawnSync } from "node:child_process";
+import { spawnSync, spawn } from "node:child_process";
+import http from "node:http";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -385,4 +386,84 @@ test("CLI off-server fallback: one file, --public stored as scope (no mirror fil
   assert.match(ls.stdout, /shared thing/);
   assert.match(ls.stdout, /secret thing/);
   assert.match(ls.stdout, /· public/);
+});
+
+/** A stand-in cockpit that answers every request with one status, so the CLI
+ *  meets a server that does NOT know its routes — exactly what a side-by-side
+ *  build leaves behind when it re-seeds the machine-wide skills over a running
+ *  older server (invariant 57). */
+async function runCli(args: string[], env: Record<string, string>): Promise<{ status: number; stdout: string; stderr: string }> {
+  // ASYNC on purpose: `spawnSync` blocks this process's event loop, so the
+  // in-process fake cockpit below would never accept the connection and the
+  // CLI would time out instead of meeting the status under test.
+  return await new Promise((resolve) => {
+    const ch = spawn(process.execPath, ["context/ledger-skill/ledger.mjs", ...args], {
+      env: { ...process.env, ...env },
+    });
+    let stdout = "";
+    let stderr = "";
+    ch.stdout.on("data", (d) => (stdout += d));
+    ch.stderr.on("data", (d) => (stderr += d));
+    ch.on("close", (code) => resolve({ status: code ?? 0, stdout, stderr }));
+  });
+}
+
+async function fakeCockpit(status: number): Promise<{ port: number; close: () => Promise<void> }> {
+  const srv = http.createServer((_req, res) => {
+    res.writeHead(status, { "content-type": "text/html" });
+    res.end("<html><body><pre>Cannot POST /ledger/record</pre></body></html>");
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const port = (srv.address() as { port: number }).port;
+  return { port, close: () => new Promise<void>((r) => srv.close(() => r())) };
+}
+
+test("CLI: a 404 from the cockpit degrades to the local table (skill newer than the server)", async () => {
+  // The measured failure: the seeded skill posted /ledger/record, the RUNNING
+  // build did not serve it, so `record` answered 404 for every agent on the
+  // host while `check` kept working — a half-broken ledger. The write must land
+  // in the local table instead, and SAY that it did.
+  const { port, close } = await fakeCockpit(404);
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "led404-"));
+    const file = path.join(dir, "ledger.json");
+    // A port AND a key → the CLI goes through the server… which 404s.
+    const env = { SHADOK_LEDGER_FILE: file, SHADOK_PORT: String(port), SHADOK_SESSION_KEY: "k" };
+    const rec = await runCli(["record", "--entity", "a thing", "--status", "open", "--note", "n"], env);
+    assert.equal(rec.status, 0, rec.stderr);
+    assert.match(rec.stdout, /recorded: a thing — open/);
+    // The degradation is announced, never silent: the row is not where the
+    // agent's siblings read it from on a NEWER server.
+    assert.match(rec.stderr, /does not serve POST \/ledger\/record/);
+    const rows = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].entity, "a thing");
+    // Reads degrade the same way (GET /ledger 404s here too).
+    const chk = await runCli(["check", "a thing"], env);
+    assert.equal(chk.status, 0, chk.stderr);
+    assert.match(chk.stdout, /a thing — open/);
+  } finally {
+    await close();
+  }
+});
+
+test("CLI: a 401 stays LOUD — it is not a version skew but a human action", async () => {
+  // An expired cookie / unrecognised key (invariant 33) needs a reload by a
+  // human. Degrading to the file there would hide it, and on a multi-tenant
+  // instance the file is not even writable by a dropped agent.
+  const { port, close } = await fakeCockpit(401);
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "led401-"));
+    const file = path.join(dir, "ledger.json");
+    const rec = await runCli(["record", "--entity", "x", "--status", "open"], {
+      SHADOK_LEDGER_FILE: file,
+      SHADOK_PORT: String(port),
+      SHADOK_SESSION_KEY: "k",
+    });
+    assert.equal(rec.status, 1);
+    assert.match(rec.stderr, /ledger API error 401/);
+    assert.ok(!fs.existsSync(file), "a 401 must not quietly write the local table");
+  } finally {
+    await close();
+  }
 });

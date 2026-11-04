@@ -56,10 +56,10 @@ running instance reads it.
 
 ```bash
 npm run build
-PORT=3899 SHADOK_VERSION_CHECK_MIN=0 node dist/server.js
+PORT=3899 SHADOK_VERSION_CHECK_MIN=0 SHADOK_SEED_SKILLS=0 node dist/server.js
 ```
 
-Three properties make that safe, and all three are load-bearing — change one and
+Four properties make that safe, and all four are load-bearing — change one and
 you're back to the old failure:
 
 - `PORT` sets where the port walk *starts* (`START_PORT`, server.ts:102). It does
@@ -77,6 +77,13 @@ you're back to the old failure:
   bridge. That's what lets the two coexist: only one process can long-poll the bot.
   A `TELEGRAM_BOT_TOKEN` in the env overrides the per-dir lookup and *would* steal
   the bot — so confirm your startup output has no `telegram:` line.
+- `SHADOK_SEED_SKILLS=0` stops the boot from rewriting the **machine-wide** skill
+  scripts (the server HOME's `~/.claude/skills`, plus `/etc/claude-code/.claude/skills`
+  in multi-tenant). Those live OUTSIDE your tree and are refreshed at every boot,
+  so without this your build hands every agent on the host — the production
+  server's included — scripts newer than the server they call. Measured: the
+  ledger skill began posting a route the running build did not serve, so `record`
+  answered 404 host-wide while `check` kept working. See invariant 57.
 
 Verify you're really on your build: `curl -s localhost:3899/version` must report
 the local `current` (0.1.0), not the published one. Check
@@ -141,7 +148,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `context/secrets-skill/` | The `shadok-secrets` skill, seeded into `~/.claude/skills/` at boot (`seedSecretsSkill`, twin of `seedSchedulerSkill`): lets an agent store a credential it OBTAINED itself. |
 | `context/reload-skill/` | The `shadok-reload` skill (seeded by `seedReloadSkill`, twin of the above): an agent respawns itself to pick up a changed pilot prompt or newly-seeded skills (the prompt/skills are fixed at spawn). |
 | `context/files-skill/` | The `shadok-files` skill (seeded by `seedFilesSkill`, twin of secrets/reload/ledger): `send.mjs <abs path…> [--caption]` → `POST /files`, authenticated by `SHADOK_SESSION_KEY`. |
-| `context/ledger-skill/` + `context/ledger-reflex.md` | The `shadok-ledger` skill (seeded by `seedLedgerSkill`, twin of secrets/scheduler) and its gated pilot-prompt reflex, so agents stop re-surfacing what a sibling already resolved. |
+| `context/ledger-skill/` + `context/ledger-reflex.md` | The `shadok-ledger` skill (seeded by `seedLedgerSkill`, twin of secrets/scheduler) and its gated pilot-prompt reflex, so agents stop re-surfacing what a sibling already resolved. `record`/`check` go through the server, and a **404 degrades to the local table** (announced, never silent): a seeded copy can be NEWER than the server that answers it — see invariant 57. A 401 stays loud, it means a human action (invariant 33). |
 | `src/ledger.ts` | The SERVER side of the shared ledger (the skill's `ledger-core.mjs` is the agent side). |
 | `src/claude-home.ts` | Seeds Claude Code's first-run state in `~/.claude.json` — the globals at boot, `projects[<cwd>]` before every spawn (a worktree is a new directory, so a new trust dialog every time) — plus an explicit `tui` in `~/.claude/settings.json`, which kills the fullscreen-renderer upsell. `seedPlanForCwds` folds the globals + MANY cwds into one object, so a shared group HOME is seeded in a single atomic write (not one racy write per spawn): the server's `preseedGroupHomes` uses it to fill every drop user's HOME before the boot resume storm, closing the shared-`/home/main/.claude.json` trust-dialog race (invariant 23's group-HOME extension). |
 | `src/groups.ts` | The group model and its ACL — the ONE concept the isolation feature turns on: a group is both the unit of isolation and the unit of visibility, in three `Nature`s (`private` — one person, sealed even from an admin; `restricted` — a member list; `public` — everyone, `Main` (`MAIN_GROUP_ID`) the default). |
@@ -305,6 +312,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **54.** A dropped agent's on-disk STATE must live in its own home, not the server's `/root` — pointing `$HOME` there (invariant 50) is only half of it. · [detail](docs/invariants.md#inv-58)
 - **55.** Exactly ONE `Live` per agent — a resume that can't attach must HAND OVER the old viewers, not orphan them. · [detail](docs/invariants.md#inv-59)
 - **56.** A refreshable login credential is single-owner — share it only within one OS user, never across users. · [detail](docs/invariants.md#inv-60)
+- **57.** A machine-wide seeded script may be NEWER than the server it calls — tolerate the skew, and don't re-seed from a side-by-side build. · [detail](docs/invariants.md#inv-61)
 
 ## Conventions
 
