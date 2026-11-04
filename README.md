@@ -223,8 +223,11 @@ Enter to skip; you can add it later from the web UI).
 - **Run the command an agent asks you to** — when an agent writes `! cmd` for
   you to run (typically because it cannot), a ▶ run button sits right on that
   command's code block, beside its copy button — so it runs where it was
-  written, not in a list below. (An inline `` `! cmd` `` with no block of its
-  own still gets a button under the message.) It runs in the agent's shell after
+  written, not in a list below. On a line of its own the space is optional, so
+  `!/path/to/script.sh` gets the button just like `! /path/to/script.sh`. (An
+  inline `` `! cmd` `` with no block of its own still gets a button under the
+  message — there the space is required, so a stray `` `!important` `` in prose
+  is never mistaken for a command.) It runs in the agent's shell after
   a confirmation showing the exact command, and is refused for anything but your
   browser, since shell mode sits outside the agent's guardrails. The command and
   its output stay in the chat, reload included — as does one you typed yourself
