@@ -278,6 +278,7 @@ import {
 import {
   getProfile,
   profileArgs,
+  resolveSpawnModel,
   permissionModeArgs,
   isPermissionMode,
   isEffortLevel,
@@ -5550,10 +5551,24 @@ function makePilot(
   const sp = pilotPrompt();
   // Opt-in only: a live agent gains the reflex at its next (re)spawn.
   const lr = ledgerEnabled ? ledgerReflex() : null;
+  // A DROPPED agent reads its OWN home's settings.json, which carries no default
+  // model — so without an explicit flag it falls back to the CLI's built-in
+  // default (Sonnet) instead of the instance default the cockpit picker set (in
+  // the SERVER's settings.json, which only a root agent reads). Backfill it as a
+  // last resort — after the agent's own choice and the profile's pinned model —
+  // and only for a dropped agent, so a mono-tenant/root spawn stays byte-for-byte
+  // as before. See `resolveSpawnModel`.
+  const resolvedProfile = effectiveProfile(profile);
+  const spawnModel = resolveSpawnModel({
+    requested: model,
+    profileModel: resolvedProfile?.model,
+    instanceDefault: user ? getDefaultModel() : null,
+    dropped: !!user,
+  });
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
-    ...profileArgs(effectiveProfile(profile), model, effort),
+    ...profileArgs(resolvedProfile, spawnModel, effort),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),

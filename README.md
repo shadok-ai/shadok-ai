@@ -126,7 +126,11 @@ Enter to skip; you can add it later from the web UI).
   is already the last step of the resolution chain (**agent → profile →
   machine**), and applies at each agent's next spawn. Agents that carry no model
   of their own simply follow Claude Code's default, which tracks the newest
-  model — so this is for **pinning** one, not for getting the latest. Eight roles ship with it: a lead that
+  model — so this is for **pinning** one, not for getting the latest. In
+  **multi-tenant**, where each agent runs as its own OS user with its own home,
+  the server passes this pin explicitly to those dropped agents (their home's
+  `settings.json` carries no default of its own), so one *Default model* choice
+  reaches every group — commons and private alike — not only root's own agents. Eight roles ship with it: a lead that
   delegates, a dev, a QA agent that writes the failing test and cannot fix the
   code it covers, a release agent that prepares a deployment and leaves the
   trigger to you, a product agent that writes the spec instead of the change,
