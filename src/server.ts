@@ -2608,6 +2608,12 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   ["reload-skill", "shadok-reload"],
   ["ledger-skill", "shadok-ledger"],
   ["agents-skill", "shadok-ai-agents"],
+  // files-skill is ALSO seeded to the server HOME by seedFilesSkill; it must be
+  // here too, or a privilege-dropped group agent (which reads only the machine-
+  // wide tier, never the server's /root HOME) silently loses it — which is
+  // exactly what bit a migrated instance. test/system-skills.test.ts pins that
+  // every shipped context/*-skill is listed here.
+  ["files-skill", "shadok-files"],
 ];
 
 /** Claude Code's machine-wide ("Enterprise"/managed) skills directory — read by
