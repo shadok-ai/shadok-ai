@@ -40,6 +40,7 @@ import { ensureClaudeHome, ensureProjectTrusted,
   setDefaultModel,
   parseClaudeVersion,
   seedPlan,
+  seedPlanForCwds,
   settingsPlan,
   type ClaudeHome,
   type ClaudeSettings,
@@ -2958,6 +2959,10 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // invite-redeem hook nor the per-account migration loop ever fires for it.
   // Give it a Personal group here; idempotent (reuses an existing private group).
   await ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN);
+  // Before any agent comes back: fill every drop user's HOME with the full set
+  // of trusted directories in one write each, so none strands on the trust
+  // dialog when the resume storm rebuilds a wiped (ephemeral) group HOME.
+  preseedGroupHomes();
 }
 
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
@@ -5379,7 +5384,7 @@ function ensureAgentSshKey(user: string, home: string): void {
  * seed the shadok SKILLS into the group HOME (they live only in the server's
  * ~/.claude/skills); that gap is tracked separately.
  */
-function seedGroupAgentHome(user: string, home: string, cwd: string): void {
+function seedHomeTrust(user: string, home: string, cwds: readonly string[]): void {
   const version = currentClaudeVersion() ?? "0.0.0";
   const readObj = (file: string): Record<string, unknown> | null => {
     const r = spawnAsUserSync(user, "cat", [file]);
@@ -5397,7 +5402,9 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
     const homeJson = `${home}/.claude.json`;
     const existing = readObj(homeJson);
     if (existing) {
-      const plan = seedPlan(existing as ClaudeHome, { version, cwd });
+      // ONE write for the globals + every cwd (not one racy write per cwd) —
+      // see `seedPlanForCwds` and `preseedGroupHomes` for why that matters.
+      const plan = seedPlanForCwds(existing as ClaudeHome, { version, cwds });
       if (plan) writeAsUserAtomic(user, homeJson, JSON.stringify(plan, null, 2));
     } else {
       console.log(`claude-home: ${homeJson} unreadable — left alone, first-run screens may appear`);
@@ -5410,6 +5417,73 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
     }
   } catch (e) {
     console.log(`claude-home: could not seed group HOME ${home} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * The drop user each channel's agent runs as, mapped to the directories that
+ * user's agents live in. The input to seeding a group HOME with the right set
+ * of trusted directories. Only DROP users appear (commons `main`, private
+ * `sk-*`); a public/mono channel runs as the server's own user (null), whose
+ * `/root` is handled by `ensureClaudeHome` + `ensureProjectTrusted` and lives
+ * on the shadok-data volume — it never suffers the ephemeral-rebuild race this
+ * map exists to close.
+ */
+function dropUserCwds(): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  const groups = new Map(loadGroups().map((g) => [g.id, g]));
+  const commons = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  const add = (user: string | null, cwd: string): void => {
+    if (!user || !cwd) return;
+    let s = out.get(user);
+    if (!s) {
+      s = new Set();
+      out.set(user, s);
+    }
+    s.add(cwd);
+  };
+  for (const ch of loadChannels()) {
+    const g = ch.group ? groups.get(ch.group) : undefined;
+    add((g ? osUserFor(g) : null) ?? commons, ch.cwd);
+  }
+  // The commons also runs the lead agent in the launch dir itself.
+  if (commons) add(commons, process.cwd());
+  return out;
+}
+
+/**
+ * Seed a dropped agent's OWN HOME before it spawns — this agent's cwd AND every
+ * sibling cwd that shares the HOME, in ONE write. The shared `~/.claude.json`
+ * is read-modify-written by every agent in the HOME (commons agents all share
+ * `/home/main`), so rebuilding it one cwd at a time during a respawn storm let
+ * a stale sibling `claude` write clobber a trust entry before its owner read it
+ * — stranding that agent on the "trust this folder" dialog (invariant 23's
+ * family, on the group HOME). A complete write closes the window. See the file
+ * comment on `seedHomeTrust` / `preseedGroupHomes`. Runs AS the group user,
+ * SYNCHRONOUSLY and ADDITIVELY; best-effort.
+ */
+function seedGroupAgentHome(user: string, home: string, cwd: string): void {
+  const cwds = new Set<string>([cwd]);
+  const siblings = dropUserCwds().get(user);
+  if (siblings) for (const c of siblings) cwds.add(c);
+  seedHomeTrust(user, home, [...cwds]);
+}
+
+/**
+ * Boot pre-seed: seed EVERY drop user's HOME with its full set of trusted
+ * directories, in one atomic write each, BEFORE the resume/respawn storm — so a
+ * `claude` that starts in that storm always finds its cwd already trusted. The
+ * group HOMEs are not on the shadok-data volume, so a `docker` recreate wipes
+ * them and they are rebuilt from empty exactly when many agents come back at
+ * once; the per-spawn seed alone then raced (measured: an agent stuck on the
+ * trust dialog with its entry missing from the shared `/home/main/.claude.json`
+ * while `/root`'s — volume-backed — had it). Best-effort; mono-tenant or
+ * un-migrated → no drop users → no-op.
+ */
+function preseedGroupHomes(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  for (const [user, cwds] of dropUserCwds()) {
+    seedHomeTrust(user, homeForUser(user, GROUP_HOME_BASE), [...cwds]);
   }
 }
 

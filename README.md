@@ -501,6 +501,16 @@ across OS users (Claude rewrites the credential single-owner on refresh), which
 is why each user logs in separately. Design:
 `docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
 
+**Persist the group homes (recommended in Docker).** Each dropped agent runs as
+its own OS user with HOME under `SHADOK_HOME_BASE` (default `/home`), which is
+**not** on the `shadok-data` volume by default — so a `docker rm` + recreate
+wipes those homes, taking their Claude first-run/trust state (agents briefly land
+on the "trust this folder" dialog until it is re-seeded) and, in **login** mode,
+the per-user credentials (every user has to log in again). shadok re-seeds the
+trust robustly on boot, but to avoid the churn entirely mount the home base on a
+volume, the same move as the SSH key (below): e.g. add `-v shadok-homes:/home` to
+the `docker run`. A plain restart never needed this; only a recreate does.
+
 Telegram stays single-owner, and there are no
 disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
 
