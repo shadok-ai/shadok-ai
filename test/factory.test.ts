@@ -23,6 +23,7 @@ import {
   saveFile,
   scanMain,
   findSkill,
+  prepareWorkspace,
   MAIN_GROUP,
 } from "../src/factory.js";
 
@@ -425,4 +426,30 @@ test("server: a factory skill's secrets resolve from the agent's OWN group, neve
   const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "server.ts"), "utf8");
   assert.doesNotMatch(src, /secretsFor\(\s*factory(SecretsFor\([^)]*\)|\.secrets)\s*\)/);
   assert.match(src, /secretsFor\(factory\.secrets, group \?\? MAIN_GROUP_ID, commonsGroupIds\(\)\)/);
+});
+
+test("prepareWorkspace: multi-tenant clone is made BY the drop user, in their HOME, and refreshes", (t) => {
+  // Needs root to act as another user (runuser), like a multi-tenant server.
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) return t.skip("needs root");
+  const root = scratch(t);
+  const s = createSkill(root, { name: "mt-ws", by: "alice" });
+  // A HOME owned by the drop user, outside /root (which they cannot traverse).
+  const home = fs.mkdtempSync(path.join("/tmp", "factory-home-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  fs.chmodSync(home, 0o755);
+  execFileSync("chown", ["nobody:", home]);
+  const nobody = Number(execFileSync("id", ["-u", "nobody"]).toString().trim());
+
+  const dir = prepareWorkspace(root, s.id, home, "nobody");
+  assert.equal(dir, path.join(home, ".shadok-factory", "mt-ws"));
+  assert.ok(fs.existsSync(path.join(dir, "SKILL.md")));
+  assert.equal(fs.statSync(dir).uid, nobody, "the clone belongs to the drop user, not root");
+  assert.equal(fs.statSync(path.join(dir, ".git")).uid, nobody);
+
+  // Second call takes the fetch path: root would hit git's "dubious ownership".
+  saveFile(root, s.id, { path: "notes.md", content: "v2\n", base: headCommit(root, s.id), by: "alice", secrets: [] });
+  prepareWorkspace(root, s.id, home, "nobody");
+  assert.ok(fs.existsSync(path.join(dir, "notes.md")), "fast-forwarded to the new main");
+  // No bundle left behind in the temp dir.
+  assert.deepEqual(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(`shadok-factory-ws-${process.pid}-`)), []);
 });

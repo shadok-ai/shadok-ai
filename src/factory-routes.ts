@@ -83,6 +83,12 @@ export interface FactoryDeps {
   agentMcp(sessionId: string): string[];
   /** The cockpit's groups (`{id, name, icon}`), for a skill's group scope. */
   groups(): { id: string; name?: string; icon?: string }[];
+  /**
+   * Where a Skillsmith started by this person in `group` will live: the group
+   * it will really be born in (same rule as a spawn), the OS user it will run
+   * as and that user's HOME. Mono-tenant: `{home: server HOME, user: null}`.
+   */
+  workspaceFor(req: Request, group: string | null): { home: string; user: string | null; group: string | null };
   /** An agent's schedules, for "where it runs" (label + prompt). */
   cronsOf(sessionId: string): { label: string; prompt: string }[];
   audit(row: Record<string, unknown>): void;
@@ -348,15 +354,20 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
 
   /**
    * "Work on it with an agent": make (or fast-forward) the clone the Skillsmith
-   * will start in, and hand back its directory. Single-tenant: the agent runs as
-   * the server's user, so the server can prepare it in the agent's HOME.
+   * will start in, and hand back its directory. The clone goes in the HOME of
+   * the OS user the agent will run as — in multi-tenant, its group's drop user,
+   * which cannot traverse the server's `/root` — and is made by that user. The
+   * group it will be born in is handed back so the client starts it THERE, and
+   * the clone and the agent cannot end up under two different users.
    */
   app.post("/factory/skills/:id/workspace", (req, res) => {
     if (!browser(req, res)) return;
     const s = skillOr404(req, res);
     if (!s) return;
     try {
-      res.json({ cwd: prepareWorkspace(root(), s.id), profile: SKILLSMITH_PROFILE_NAME, name: s.name });
+      const asked = typeof req.body?.group === "string" && req.body.group.trim() ? req.body.group.trim() : null;
+      const at = deps.workspaceFor(req, asked);
+      res.json({ cwd: prepareWorkspace(root(), s.id, at.home, at.user), profile: SKILLSMITH_PROFILE_NAME, name: s.name, group: at.group });
     } catch (e) {
       fail(res, e);
     }

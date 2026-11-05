@@ -11895,8 +11895,11 @@
       let t = facSmithTab(s);
       if (t && t.sessionId && t.ws && t.ws.readyState === 1) { listen(t); return submitPrompt(t, text); }
       try {
-        const ws = await facCall("POST", `/factory/skills/${s.id}/workspace`);
-        const gid = (facScopeIds(s.owner) || [])[0] ?? null;
+        // The server prepares the clone as the OS user the agent will run as and
+        // says which group that is: start it there, or the two would disagree.
+        const asked = (facScopeIds(s.owner) || [])[0] ?? null;
+        const ws = await facCall("POST", `/factory/skills/${s.id}/workspace`, asked != null ? { group: String(asked) } : undefined);
+        const gid = ws.group ?? asked;
         t = createTab(gid, { focus: false });
         t.customName = true;
         t.nameEl.textContent = "✎ " + facTitle(s);

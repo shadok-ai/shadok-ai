@@ -552,16 +552,38 @@ export function receivePush(
  * The Skillsmith's clone, in the agent's HOME (`~/.shadok-factory/<name>`):
  * cloned from a bundle the first time, fast-forwarded after. A clone holding
  * unpushed commits is left exactly as it is — they are someone's work.
+ *
+ * `user` is the OS user the Skillsmith will run as (multi-tenant: its group's
+ * drop user, whose HOME `home` is). Every git step then runs AS that user: the
+ * clone must be theirs to write, root must not write inside a group HOME
+ * (the TOCTOU rule of `osusers.ts`), and git refuses to touch a repo owned by
+ * someone else anyway ("dubious ownership"). The bundle is handed to them by
+ * chown, never made world-readable. No user = mono-tenant, as before.
  */
-export function prepareWorkspace(root: string, idOrName: string, home = os.homedir()): string {
+export function prepareWorkspace(root: string, idOrName: string, home = os.homedir(), user?: string | null): string {
   const skill = mustSkill(root, idOrName);
   const dir = path.join(home, ".shadok-factory", skill.name);
   const file = path.join(os.tmpdir(), `shadok-factory-ws-${process.pid}-${randomUUID()}.bundle`);
   fs.writeFileSync(file, bundleOf(root, skill.id), { mode: 0o600 });
-  const run = (cwd: string, args: string[]) => execFileSync("git", args, { cwd, stdio: "pipe" }).toString().trim();
+  const asUser = (cmd: string, args: string[]): [string, string[]] => {
+    if (!user) return [cmd, args];
+    const sudo = typeof process.getuid === "function" && process.getuid() !== 0;
+    return sudo ? ["sudo", ["-n", "-u", user, "--", cmd, ...args]] : ["runuser", ["-u", user, "--", cmd, ...args]];
+  };
+  const run = (cwd: string, args: string[]) => {
+    const [c, a] = asUser("git", ["-C", cwd, ...args]);
+    return execFileSync(c, a, { stdio: "pipe" }).toString().trim();
+  };
   try {
+    if (user) {
+      const [c, a] = typeof process.getuid === "function" && process.getuid() !== 0
+        ? ["sudo", ["-n", "chown", `${user}:`, file]]
+        : ["chown", [`${user}:`, file]];
+      execFileSync(c, a, { stdio: "pipe" });
+    }
     if (!fs.existsSync(path.join(dir, ".git"))) {
-      fs.mkdirSync(path.dirname(dir), { recursive: true });
+      const [mc, ma] = asUser("mkdir", ["-p", path.dirname(dir)]);
+      execFileSync(mc, ma, { stdio: "pipe" });
       run(path.dirname(dir), ["clone", "-q", "-b", "main", file, dir]);
     } else {
       run(dir, ["fetch", "-q", file, "main:refs/remotes/origin/main"]);

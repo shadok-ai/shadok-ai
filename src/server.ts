@@ -3383,6 +3383,20 @@ mountFactory(app, {
     return "reloaded";
   },
   groups: () => loadGroups(),
+  // Same resolution as a NEW spawn's (`resolveSpawnIsolation`), so the clone is
+  // made in, and owned by, the very user the Skillsmith will then run as.
+  workspaceFor: (req, group) => {
+    const iso = resolveSpawnIsolation({
+      mode: DEPLOYMENT_MODE,
+      resumed: false,
+      viewer: viewerFor(currentAccount(req)),
+      groups: loadGroups(),
+      storedGroupId: null,
+      requestedGroupId: group,
+    });
+    const user = iso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+    return { home: agentStateHome(user), user, group: iso.groupPatch.group ?? null };
+  },
   cronsOf: (id) =>
     loadCrons()
       .filter((c) => c.sessionId === id && c.enabled)
