@@ -40,6 +40,8 @@ export interface PrepromptInput {
   ledgerReflex?: string | null;
   /** The skills shadok installs, as read from disk at spawn. */
   capabilities?: { name: string; description: string }[];
+  /** Skill Factory releases this AGENT runs (`--plugin-dir`), as resolved at spawn. */
+  factorySkills?: { name: string; release: number; tree: string }[];
 }
 
 const bullets = (items: string[]): string => items.map((i) => `• ${i}`).join("\n");
@@ -87,6 +89,19 @@ export function prepromptParts(input: PrepromptInput): PrepromptPart[] {
         bullets(input.capabilities.map((c) => `${c.name} — ${c.description}`)) +
         "\n\nOnly these descriptions are in context; each body is read on demand." +
         "\nInstalled for the whole machine, not this agent, and refreshed at every boot.",
+    });
+  }
+
+  // Per agent, unlike the capabilities above. Part of the fingerprint on
+  // purpose: attaching, updating or losing a release must light the reload
+  // indicator, because a running process cannot gain or drop a plugin.
+  if (input.factorySkills?.length) {
+    parts.push({
+      label: "Factory skills",
+      source: "Skills panel",
+      text:
+        bullets(input.factorySkills.map((k) => `${k.name}:${k.name} — v${k.release} (${k.tree.slice(0, 8)})`)) +
+        "\n\nLoaded with --plugin-dir for this agent only.",
     });
   }
 

@@ -239,6 +239,13 @@ Enter to skip; you can add it later from the web UI).
   reload the agent when offered — a value reaches a process at spawn). Only
   names that look like a credential or a connection setting get one (`…_TOKEN`,
   `…_KEY`, `…_URL`, `…_ID`…), never `NODE_ENV` nor shadok's own `SHADOK_*`.
+- **`/` commands** — type `/` in the composer and a menu lists the Skill
+  Factory skills attached to the agent (`/name:name`). ↑/↓ to move, Enter or
+  Tab to complete, Escape to close (`GET /commands?session=`). Any other
+  Claude Code command still works when typed in full. A message that starts
+  with a command goes to the agent bare, without shadok's context line or
+  ledger update ahead of it, since Claude Code reads a command only when `/`
+  comes first.
 - **Files you hand an agent** — paste or drop a file into the composer, or pick
   one with the 📎 button beside it (an image, a PDF, a CSV…), and it becomes a **chip** above the text box: a
   thumbnail for an image, a named tag for anything else, each with a ✕ to
@@ -272,6 +279,41 @@ Enter to skip; you can add it later from the web UI).
   buried the chat, so the cockpit folds it into a collapsible **Context summary**
   box: collapsed by default, one click to read it, capped and scrolling even when
   open. It is still real history — just out of the way.
+- **Skill Factory**: the flask icon in the header switches the cockpit to the
+  **Skills** page, with a slide; click it again to come back. Write a Claude
+  Code skill together, people and agents alike, then run it in the agents and
+  crons that need it.
+  - **The list.** Every skill with its tags, who it is shared with, whether it
+    is saved or carries draft changes, where it is used, and how many times it
+    ran this week. It can be filtered by tag, by "shared with" and by status
+    (draft changes, unused, feedback, archived). Ticked rows can be shared,
+    tagged or archived in one go.
+  - **The detail panel.** Its numbers, where it runs (group by group: each
+    agent, its schedule, its runs), the secrets agents running it get, and its
+    feedback.
+  - **Sharing.** A skill is shared with **only me**, with **one or more
+    groups**, or with **everyone**. Sharing keeps lists short; it is not a
+    lock. "Only me" hides the skill from everyone else. A group skill is offered
+    when you create an agent in that group and listed first when you give it to
+    an agent, and anyone who sees a skill can put it on any agent.
+  - **Editing**, on one screen. The skills are listed by name on the left. In
+    the middle, the skill reads as one document: *When to use it*,
+    *Instructions*, *Needs*, with the scripts folded away for developers. On the
+    right, **change it by prompt**: a `Shadok-Skillsmith` agent edits, tests and
+    pushes, and its changes show up in the document. Two buttons, no versions
+    to manage: **Save draft** keeps your edits while agents keep running the
+    last saved skill, and **Save** makes it what they run (`POST
+    …/publish`). Agents that have it move to it at once, idle ones reload.
+  - **Running.** A saved skill is given to an agent (loaded with
+    `--plugin-dir` at its next reload, as `<name>:<name>`), or scheduled on one
+    with **Run on a schedule…**. An agent can also be born with it, from the
+    new-agent dialog or with `pilotctl spawn --skill`. Agents report problems
+    with `factory.mjs feedback`.
+  - **Secrets travel by name.** A saved skill gives the agents running it the
+    secrets it declares, plus any vault name its code reads; the panel and the
+    Save message name them. A save or push holding a vault value is refused.
+  - **Also:** import from `~/.claude/skills`, make a variant, archive.
+  - Design: `docs/superpowers/specs/2026-10-29-skill-factory-design.md`.
 - **Diff panel** — what an agent actually changed, against its base.
 - **What an agent left running, on its tab** — a turning ⏳ for background
   shells, a still 👁 for monitors, each with its count past one. Claude Code

@@ -606,3 +606,13 @@ test("loadHistory drops a parent notification, like a scheduled prompt", () => {
   assert.equal(isAgentPrompt(markAgentPrompt('Agent "kid" finished its turn.')), true);
   assert.equal(isAgentPrompt("please review the diff"), false);
 });
+
+test("userPromptText: a slash command is replayed as typed, not dropped", () => {
+  const line = (content: string) => ({ type: "user", message: { content } });
+  assert.equal(
+    userPromptText(line("<command-message>shadok-ledger</command-message>\n<command-name>/shadok-ledger</command-name>\n<command-args>list</command-args>")),
+    "/shadok-ledger list",
+  );
+  assert.equal(userPromptText(line("<command-name>/compact</command-name>\n<command-args></command-args>")), "/compact");
+  assert.equal(userPromptText(line("<system-reminder>x</system-reminder>")), null);
+});
