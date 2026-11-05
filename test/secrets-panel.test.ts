@@ -130,6 +130,19 @@ test("shareTargets: every group except the owner and Main (Main already sees its
   assert.deepEqual(shareTargets([main, comex, sales], "comex").map((g) => g.id), ["sales"]);
 });
 
+test("shareTargets: public groups are NOT offered (public = commons, already read by all)", () => {
+  // A public non-Main group is part of the commons: every agent already
+  // resolves its tier, so lending a secret TO it is as meaningless as lending
+  // to Main. Restricted/private groups stay — they are real sealed vaults.
+  const pub = { id: "pub", name: "Public", nature: "public" };
+  const perso = { id: "perso", name: "Perso", nature: "private" };
+  const restr = { id: "restr", name: "Restricted", nature: "restricted" };
+  assert.deepEqual(
+    shareTargets([main, comex, pub, perso, restr], "comex").map((g) => g.id),
+    ["perso", "restr"],
+  );
+});
+
 test("auditLine: who and when, tolerant of missing fields", () => {
   const t = Date.UTC(2026, 9, 1, 12, 0, 0);
   assert.match(auditLine({ createdBy: "ada", createdAt: t, updatedAt: t }), /^created by ada · /);

@@ -97,10 +97,16 @@ export function keyGroups(groups) {
   return others.length ? others : list.filter((g) => String(g.id) === MAIN_ID);
 }
 
-/** Groups a secret can be lent to: not its owner, not Main (Main is already read by all). */
+/** Groups a secret can be lent to: not its owner, and nothing already in the
+ *  commons — not Main, and not a PUBLIC group. A public non-Main group is
+ *  "public = commun" (operator decision 2026-11-03): every agent already
+ *  resolves its tier, so offering to share a secret WITH it is as meaningless as
+ *  offering Main. Only restricted/private groups are real sealed vaults to lend
+ *  to. (Server-side resolution is unchanged; this is the UI's offer only.) */
 export function shareTargets(groups, ownerGroupId) {
   return (Array.isArray(groups) ? groups : []).filter(
-    (g) => g && g.id != null && String(g.id) !== MAIN_ID && String(g.id) !== String(ownerGroupId),
+    (g) =>
+      g && g.id != null && String(g.id) !== MAIN_ID && String(g.id) !== String(ownerGroupId) && g.nature !== "public",
   );
 }
 
