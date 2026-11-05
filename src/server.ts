@@ -10,6 +10,9 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
+import { scopeVisibleTo, recordRun, skillOfCall } from "./factory.js";
+import { attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -201,7 +204,8 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
-import { markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { isSlashCommand, markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { listCommands } from "./slash-commands.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
   ledgerFileFor,
@@ -288,6 +292,8 @@ import {
   seedDefaultProfiles,
   migrateToTracking,
   seedTweakProfile,
+  seedSkillsmithProfile,
+  MANAGED_PROFILE_NAMES,
   loadProfiles,
   upsertProfile,
   removeProfile,
@@ -1870,6 +1876,19 @@ app.get("/sessions", (req, res) => {
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
 // /sessions cannot see them — this is the only way the UI can list them.
+// The `/` commands the composer offers: the factory skills attached to this
+// agent (src/slash-commands.ts). Read on each call, so a skill attached a minute
+// ago shows up without a restart.
+app.get("/commands", (req, res) => {
+  const id = String(req.query.session ?? "");
+  const skills = loadRegistry(factoryRoot()).skills;
+  const factory = factorySkillsFor(id || null).map((f) => ({
+    name: f.name,
+    description: skills.find((s) => s.name === f.name)?.description ?? "",
+  }));
+  res.json(listCommands(factory));
+});
+
 app.get("/live", (req, res) => {
   // Scope to the caller's visible groups: /live leaks `lastPrompt` (content) and
   // `cwd`/`branch` (location), and is the id-discovery vector for the WS resume
@@ -2655,6 +2674,33 @@ function channelStateHome(chan: Channel): string {
 const SHARED_POT_PATH =
   (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
 
+// Multi-tenant: a factory skill reaches an agent as a `--plugin-dir`, and the
+// default `<factoryRoot>/plugins` is under `/root` (mode 700) — un-traversable by
+// the `main`/`sk-*` drop users, so an attached skill would silently never load
+// (invariant 54's family, like media above). Materialise releases in a
+// root-owned, world-READABLE directory next to the pot instead. Deliberately NOT
+// inside the pot: the pot is group-WRITABLE with no sticky bit, so any group
+// could rename a release directory away and plant its own under the same name —
+// code every other group's agents would then load. The registry and the git
+// repos stay under `/root`: only the server reads them.
+if (DEPLOYMENT_MODE === "multi-tenant" && !process.env.SHADOK_FACTORY_PLUGINS_DIR) {
+  const dir = path.join(path.dirname(SHARED_POT_PATH), "factory-plugins", instanceKey(process.cwd()));
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    for (let d = dir; d !== path.dirname(SHARED_POT_PATH) && d !== path.dirname(d); d = path.dirname(d)) {
+      fs.chownSync(d, 0, 0);
+      fs.chmodSync(d, 0o755);
+    }
+    process.env.SHADOK_FACTORY_PLUGINS_DIR = dir;
+    console.log(`factory: release plugins in ${dir} (reachable by dropped agents)`);
+  } catch (e) {
+    console.warn(
+      "factory: could not set up a readable plugins dir, keeping it under the factory root: " +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+}
+
 // Multi-tenant: Telegram/paste attachments must be readable by a privilege-
 // dropped agent, but the default `~/.shadok-ai/media` is `/root/.shadok-ai/media`
 // — and `/root` (mode 700) is un-traversable by the `main`/`sk-*` drop users, so
@@ -2750,6 +2796,9 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // exactly what bit a migrated instance. test/system-skills.test.ts pins that
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
+  // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
+  // group's own OS user reads only this tier.
+  ["factory-skill", "shadok-factory"],
 ];
 
 /** Claude Code's machine-wide ("Enterprise"/managed) skills directory — read by
@@ -3296,6 +3345,58 @@ app.get("/secrets", (req, res) => {
   // `names` stays a string[] for the existing client; `secrets` carries the tags.
   res.json({ names: list.map((s) => s.name), secrets: list });
 });
+// The Skill Factory: co-written skills, frozen releases, attached per agent.
+// Behind the password gate like everything else; see src/factory-routes.ts.
+mountFactory(app, {
+  requestFromBrowser: (req) => requestFromBrowser(req),
+  personName: (req) => currentAccount(req)?.name ?? null,
+  requireAdmin: (req, res, what) => accountAdmin(req, res, true, what),
+  callerOf: (req) => callerOf(req),
+  vault: () => secretsFor(secretNames()),
+  loadChannels: () => loadChannels(),
+  upsertChannel: (patch) => upsertChannel(patch),
+  onAttachmentsChanged: (id) => {
+    const s = sessions.get(id);
+    if (s) broadcastStaleness(s);
+  },
+  prune: () => pruneFactoryPlugins(),
+  reloadIfIdle: (id) => {
+    const s = sessions.get(id);
+    if (!s) return "offline"; // applied at its next start
+    if (s.busy) return "stale";
+    // Prune once the new process holds its new directories, so the old ones go.
+    void restartSession(s)
+      .then(() => pruneFactoryPlugins())
+      .catch((e) => console.log(`factory: reload ${id.slice(0, 8)} failed: ${(e as Error).message}`));
+    return "reloaded";
+  },
+  groups: () => loadGroups(),
+  // Same resolution as a NEW spawn's (`resolveSpawnIsolation`), so the clone is
+  // made in, and owned by, the very user the Skillsmith will then run as.
+  workspaceFor: (req, group) => {
+    const iso = resolveSpawnIsolation({
+      mode: DEPLOYMENT_MODE,
+      resumed: false,
+      viewer: viewerFor(currentAccount(req)),
+      groups: loadGroups(),
+      storedGroupId: null,
+      requestedGroupId: group,
+    });
+    const user = iso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+    return { home: agentStateHome(user), user, group: iso.groupPatch.group ?? null };
+  },
+  cronsOf: (id) =>
+    loadCrons()
+      .filter((c) => c.sessionId === id && c.enabled)
+      .map((c) => ({ label: scheduleLabel(c.schedule, cronTimeZone(c)), prompt: c.prompt.slice(0, 120) })),
+  agentMcp: (id) => {
+    const p = loadChannels().find((c) => c.sessionId === id)?.profile;
+    const prof = p ? effectiveProfile(getProfile(p)) : undefined;
+    return Object.keys(prof?.mcpServers ?? {});
+  },
+  audit: factoryAudit,
+});
+
 app.put("/secrets", (req, res) => {
   const { name, value, overwrite } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
@@ -4194,7 +4295,7 @@ app.put("/profiles/prompt", (req, res) => {
     caller,
     target,
     targetExists: !!existing,
-    managed: target === TWEAK_PROFILE_NAME,
+    managed: MANAGED_PROFILE_NAMES.includes(target),
   });
   if (!verdict.ok) return res.status(403).json({ error: verdict.error });
   const systemPrompt = typeof b.systemPrompt === "string" ? b.systemPrompt : "";
@@ -5054,6 +5155,11 @@ type ClientMessage =
        *  spawn — never on a resume, so it can't clobber a rename made in the UI.
        *  Omitted → the client derives a default from the profile/directory. */
       name?: string;
+      /** Skill Factory skills a NEW agent is born with (the creation popin's
+       *  picker, `pilotctl --skill name[@N]`). A missing release means the
+       *  latest ACCEPTED one. Accepted releases only; refusals are logged and
+       *  dropped, never fatal to the spawn (same spirit as `parent`). */
+      skills?: { skill: string; release?: number }[];
     }
   /** `force`: send despite a pace overrun. Applies to this message only. */
   /** `from`: display name of whoever typed it, when a client knows it (the
@@ -5263,7 +5369,99 @@ function installedCapabilities(): { name: string; description: string }[] {
  * byte-identical: a difference always means the agent's context actually
  * changed, never that two code paths spelled it differently.
  */
-function buildPreprompt(profileName?: string | null, groupId?: string | null): PrepromptPart[] {
+/**
+ * The Skill Factory releases an agent runs, as its next spawn would resolve them
+ * (attached on its channel, existing, accepted for the group). Read-only: the
+ * plugin directories themselves are materialised by `makePilot`, never by the
+ * staleness sweep.
+ */
+/**
+ * Skills asked for at `start` (the creation popin's picker, `pilotctl --skill`),
+ * held until `ready` records them on the channel: the channel row does not
+ * exist yet when `makePilot` runs for a brand-new agent.
+ */
+const pendingSkills = new Map<string, Attachment[]>();
+/** Plugin directories each process was SPAWNED with — a busy agent not yet
+ *  reloaded still runs from these, so they must survive a prune. */
+const runningPlugins = new Map<string, string[]>();
+
+/** One `Skill(<name>:<name>)` call = one run of that factory skill (for the panel's counts). */
+function countFactoryRun(skillArg: string, agentId: string): void {
+  const name = skillOfCall(skillArg, loadRegistry(factoryRoot()).skills.map((x) => x.name));
+  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId });
+}
+
+/** Remove the release directories no attachment and no running process uses. */
+function pruneFactoryPlugins(): void {
+  const skills = loadRegistry(factoryRoot()).skills;
+  const keep = new Set<string>();
+  for (const c of loadChannels()) for (const n of attachmentDirNames(skills, c.skills)) keep.add(n);
+  for (const [, dirs] of runningPlugins) for (const d of dirs) keep.add(path.basename(d));
+  for (const [, att] of pendingSkills) for (const n of attachmentDirNames(skills, att)) keep.add(n);
+  const removed = prunePlugins(factoryRoot(), keep);
+  if (removed.length) console.log(`factory: removed unused release dirs ${removed.join(", ")}`);
+}
+
+/** Group + creator of an agent not yet on disk (a spawn in progress), for scope checks. */
+const pendingCtx = new Map<string, AgentCtx>();
+
+/** Who an agent is, for a factory skill's scope: its group and its creator. */
+function agentCtxFor(sessionId?: string | null): AgentCtx {
+  if (!sessionId) return {};
+  const ch = loadChannels().find((c) => c.sessionId === sessionId);
+  const p = pendingCtx.get(sessionId);
+  return { group: ch?.group ?? p?.group ?? null, createdBy: ch?.createdBy ?? p?.createdBy ?? null };
+}
+
+function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
+  if (!sessionId) return undefined;
+  return loadChannels().find((c) => c.sessionId === sessionId)?.skills ?? pendingSkills.get(sessionId);
+}
+
+/** The secret names an agent's factory skills are granted (accepted releases only). */
+function factorySecretsFor(sessionId?: string | null): string[] {
+  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), MAIN_GROUP, agentCtxFor(sessionId));
+}
+
+/**
+ * The `{NAME: value}` env an agent's factory skills are granted, resolved from
+ * the agent's OWN isolation group (own → shared-in → Main), exactly like
+ * `secretsForProfile`. A bare `secretsFor(names)` resolves from Main: an agent
+ * of an isolated group would receive Main's VALUES for the names its skills
+ * declare (a cross-group leak), and never its own group's.
+ */
+function factorySecretEnv(sessionId: string | null | undefined, group: string | null | undefined): Record<string, string> {
+  return secretsFor(factorySecretsFor(sessionId), group ?? MAIN_GROUP_ID, commonsGroupIds());
+}
+
+/** Pure-ish: turn a `start`'s requested skills into accepted attachments. */
+function resolveBirthSkills(req: { skill: string; release?: number }[], agent: AgentCtx): { ok: Attachment[]; refused: string[] } {
+  const skills = loadRegistry(factoryRoot()).skills;
+  const ok: Attachment[] = [];
+  const refused: string[] = [];
+  for (const r of req.slice(0, 20)) {
+    const s = skills.find((x) => x.id === r?.skill || x.name === r?.skill);
+    if (!s) { refused.push(`${r?.skill}: no such skill`); continue; }
+    const accepted = s.releases.filter((rel) =>
+      s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree));
+    const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
+    if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
+    // A private skill is attached by its owner only: the person starting the agent.
+    if (!scopeVisibleTo(s.owner, agent.createdBy ?? null)) { refused.push(`${s.name}: private to someone else`); continue; }
+    if (s.archived) { refused.push(`${s.name}: archived`); continue; }
+    if (!ok.some((a) => a.skill === s.id)) ok.push({ skill: s.id, release: rel.n });
+  }
+  return { ok, refused };
+}
+
+function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
+  const attached = attachmentsFor(sessionId);
+  if (!attached?.length) return [];
+  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, MAIN_GROUP, agentCtxFor(sessionId));
+  return ok.map(({ skill, release }) => ({ name: skill.name, release: release.n, tree: release.tree }));
+}
+
+function buildPreprompt(profileName?: string | null, groupId?: string | null, sessionId?: string | null): PrepromptPart[] {
   const profile = profileName ? getProfile(profileName) : undefined;
   const resolved = effectiveProfile(profile);
   return prepromptParts({
@@ -5273,10 +5471,16 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null): P
     deny: resolved?.deny,
     allow: resolved?.allow,
     permissionMode,
-    secretNames: secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets, commonsGroupIds()),
+    // The profile's names AND those its factory skills were granted — what the
+    // process really receives, so a newly granted name also lights the reload.
+    secretNames: [...new Set([
+      ...secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets, commonsGroupIds()),
+      ...Object.keys(factorySecretEnv(sessionId, groupId)),
+    ])],
     capabilities: installedCapabilities(),
     pilotPrompt: pilotPrompt() ?? undefined,
     ledgerReflex: ledgerEnabled ? ledgerReflex() : null,
+    factorySkills: factorySkillsFor(sessionId),
   });
 }
 
@@ -5533,7 +5737,19 @@ function makePilot(
   // only these belong in the note. Announcing SHADOK_SESSION_ID as a "secret you
   // must never print" was noise that buried the real ones. Resolved by the
   // agent's own group (own → shared-in → Main); null/mono-tenant → Main.
-  const secretEnv = secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds());
+  // Skill Factory releases attached to THIS agent, one `--plugin-dir` each
+  // (measured 2026-10-31 on 2.1.309: loaded for this process only, gone on a
+  // resume without it). A dropped attachment is said, never silently skipped.
+  // Their declared/detected secrets are GRANTED here: a person of this group
+  // accepted that tree, and the accept screen listed those names.
+  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), MAIN_GROUP, agentCtxFor(id));
+  for (const d of factory.dropped)
+    console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
+  runningPlugins.set(id, factory.args.filter((_a, i) => i % 2 === 1));
+  const secretEnv = {
+    ...secretsFor(factory.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds()),
+    ...secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds()),
+  };
   // A custom model backend (a self-hosted open model, a gateway) first, then
   // the secrets: `backendEnv` carries shadok's own ANTHROPIC_* only when they
   // point off Anthropic, and maps the model aliases. See src/backend.ts.
@@ -5583,6 +5799,9 @@ function makePilot(
   const fullArgs = [
     ...args,
     ...permissionModeArgs(permissionMode),
+    // A flag+value pair, before the profile's flags: nothing here can land
+    // after `--mcp-config`'s variadic JSON as a bare word.
+    ...factory.args,
     ...profileArgs(resolvedProfile, spawnModel, effort),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
@@ -5591,7 +5810,7 @@ function makePilot(
   // NAMES only: the values are in `env`, and never travel to a client. Built
   // through the shared `buildPreprompt`, so this spawn snapshot is comparable
   // byte-for-byte with the one the staleness check recomputes later.
-  prepromptById.set(id, buildPreprompt(profileName, group));
+  prepromptById.set(id, buildPreprompt(profileName, group, id));
   // Spawn the binary `claudeCommand` resolved, not the bare name `claude`. They
   // differ exactly when the npm launcher is the fallback placeholder: spawning
   // by name would then run the 500-byte stub, which exits 1 on stderr and looks
@@ -5990,7 +6209,10 @@ function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
   const profile = s.profile ? getProfile(s.profile) : undefined;
   recordSecretAudit({
     action: "injected",
-    secrets: Object.keys(secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID, commonsGroupIds())),
+    secrets: Object.keys({
+      ...factorySecretEnv(s.id, s.group),
+      ...secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID, commonsGroupIds()),
+    }),
     ...by,
     agent: s.id,
     agentName: loadChannels().find((c) => c.sessionId === s.id)?.name,
@@ -6023,7 +6245,7 @@ function sessionStaleness(s: Live, channels?: Channel[]): StaleReason[] {
   if (!ch || ch.spawnFp === undefined) return []; // no anchor yet (brand-new, pre-first-record)
   return stalenessReasons({
     spawnFp: ch.spawnFp,
-    currentFp: prepromptFingerprint(buildPreprompt(s.profile, s.group)),
+    currentFp: prepromptFingerprint(buildPreprompt(s.profile, s.group, s.id)),
     hasPassword: !!GUI_PASSWORD,
     spawnedAt: ch.spawnAt ?? null,
     now: Date.now(),
@@ -6306,14 +6528,17 @@ function startContentTail(s: Live): void {
     } else if (e.kind === "prompt") {
       // The echoed prompt bubble learns its transcript id (see TailEvent).
       broadcast(s, { type: "prompt-id", msgId: e.uuid, text: e.text });
-    } else if (e.kind === "tool")
+    } else if (e.kind === "tool") {
+      // A `Skill(<name>:<name>)` call is one run of a factory skill: counted
+      // for the Skills page, then streamed like any other tool.
+      if (e.skill) countFactoryRun(e.skill, s.id);
       broadcast(s, {
         type: "stream-tool", id: e.id, name: e.name, summary: e.summary,
         // Files a SendUserFile delivered → the client renders a download / inline
         // card, Telegram uploads them. {path, name, image} so neither re-derives.
         ...(e.files?.length ? { files: e.files.map(fileCard) } : {}),
       });
-    else if (e.kind === "bash")
+    } else if (e.kind === "bash")
       broadcast(s, {
         type: "stream-bash",
         ...(e.command !== undefined ? { command: e.command } : {}),
@@ -7346,6 +7571,30 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // instead of letting the spawn die on a bare auth error.
           const mtMsg = mtRefusal(dropUser);
           if (mtMsg) return fail(mtMsg);
+          // Born with skills: resolved and checked BEFORE the spawn, since
+          // `--plugin-dir` is a spawn arg. Held in `pendingSkills` until the
+          // channel row exists (written at ready, below).
+          // Who this new agent belongs to, for factory skill scopes: the person
+          // spawning it (an agent's spawn inherits its parent's creator, so a
+          // lead's ticket agents stay "yours"), and the cockpit group the client
+          // creates it in. Both asserted once, at birth.
+          let initialCreatedBy: string | undefined;
+          if (!resumed) {
+            const parentCh = parentAtStart ? loadChannels().find((c) => c.sessionId === parentAtStart) : undefined;
+            initialCreatedBy = parentCh?.createdBy ?? me?.name ?? undefined;
+            // The group only steers which shared skills are OFFERED: the one the
+            // isolation policy assigned, else the one the client created it in.
+            pendingCtx.set(id, { group: agentGroupId ?? requestedGroupId, createdBy: initialCreatedBy ?? null });
+          }
+          let initialSkills: Attachment[] | undefined;
+          if (!resumed && Array.isArray(msg.skills) && msg.skills.length) {
+            const { ok, refused } = resolveBirthSkills(msg.skills, pendingCtx.get(id) ?? {});
+            for (const r of refused) console.log(`factory: ${id.slice(0, 8)} not born with ${r}`);
+            if (ok.length) {
+              initialSkills = ok;
+              pendingSkills.set(id, ok);
+            }
+          }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
@@ -7453,7 +7702,11 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // = commons, today's behaviour). A channel is never born with a
             // dangling group id: `spawnGroupFor` returns a real group or null.
             ...isolation.groupPatch,
+            ...(initialSkills ? { skills: initialSkills } : {}),
+            ...(initialCreatedBy ? { createdBy: initialCreatedBy } : {}),
           });
+          pendingSkills.delete(id);
+          pendingCtx.delete(id);
           send({ type: "tokens", tokens: tokenTotals(session) });
           send(profileMessage(session));
             if (session.contextPct !== null) send({ type: "context", pct: session.contextPct });
@@ -7530,7 +7783,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // not "someone speaking", and reach the TUI through driveChannel
             // (`origin: "cron"`), so they never match here.
             let submitText = text;
-            if (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent") {
+            // A slash command goes in bare: anything ahead of the `/` makes the
+            // TUI read it as prose, and the agent never runs the command.
+            const command = isSlashCommand(text);
+            if (!command && (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent")) {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header
@@ -7578,7 +7834,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // the message stays outside it.
             let ledgerSeen: number | null = null;
             let ledgerPrelude: string[] | undefined;
-            if (ledgerEnabled) {
+            if (ledgerEnabled && !command) {
               // The agent's group comes from its CHANNEL (server-side, never the
               // message). One table; `deltaSince`'s visibleScope keeps only this
               // group's own rows + the commons' public ones — another group's
@@ -7964,6 +8220,13 @@ try {
 } catch {
   /* best effort — the CTA still starts an agent, just without the role */
 }
+// Same for the Skill Factory's managed Shadok-Skillsmith role.
+try {
+  const smith = fs.readFileSync(path.join(__dirname, "..", "context", "skillsmith-prompt.md"), "utf8").trim();
+  if (smith) seedSkillsmithProfile(smith);
+} catch {
+  /* best effort — "Work on it" still starts an agent, just without the role */
+}
 
 /**
  * Do we rewrite the machine-wide skill scripts at this boot?
@@ -8092,6 +8355,22 @@ function seedFilesSkill(): void {
   }
 }
 if (SEED_SKILLS) seedFilesSkill();
+
+// The Skill Factory's agent side (pull / push / scan of a factory skill's clone).
+function seedFactorySkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "factory-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-factory");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "factory.mjs"), path.join(dst, "scripts", "factory.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "factory.mjs"), 0o755);
+  } catch {
+    /* best effort — without it a Skillsmith can still be driven by hand */
+  }
+}
+if (SEED_SKILLS) seedFactorySkill();
 
 // Install/refresh the bundled "shadok-ai-agents" skill so an agent in ANY repo
 // (not just this one) can spawn/pilot other agents via pilotctl. It used to live

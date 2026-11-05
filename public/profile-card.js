@@ -176,7 +176,7 @@ export function applyReadonlyPreset(deny, on, preset) {
  * every boot and has its own CTA: offering it as an ordinary role promises a
  * customisation the next restart will erase.
  */
-export const MANAGED_PROFILES = ["Shadok-Tweak"];
+export const MANAGED_PROFILES = ["Shadok-Tweak", "Shadok-Skillsmith"];
 
 export function isManagedProfile(name) {
   return MANAGED_PROFILES.includes(String(name ?? "").trim());

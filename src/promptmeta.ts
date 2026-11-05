@@ -114,6 +114,14 @@ export function markPromptMeta(text: string, header: string): string {
   return `${header}\n${text}`;
 }
 
+/** Is this message a Claude Code command (`/compact`, `/my-skill:my-skill …`)?
+ *  The TUI reads a command only when `/` is the FIRST thing in the box, so such
+ *  a message must reach it bare: no header line, no ledger paste ahead of it.
+ *  The first token must be a command name, so a path (`/Users/x …`) is not one. Pure. */
+export function isSlashCommand(text: string): boolean {
+  return /^\/[A-Za-z][\w:.-]*(\s|$)/.test(text);
+}
+
 /** Remove a leading context header (and only that line); a plain message is
  *  returned untouched. */
 export function stripPromptMeta(text: string): string {

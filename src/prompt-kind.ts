@@ -32,6 +32,15 @@ export function userPromptText(e: any): string | null {
   // or without the echoed id) and keep the inner text; the ledger/meta headers
   // it now exposes are stripped downstream by loadHistory as usual.
   text = text.replace(/<\/?pasted_content(?:\s[^>]*)?>/g, "").trim();
+  // A slash command is recorded as `<command-name>/x</command-name>` plus its
+  // `<command-args>`, which the `<`-guard below would drop: the person's own
+  // `/my-skill:my-skill …` then vanished from the chat on reload while the
+  // answer stayed. Show it as typed.
+  const cmd = /<command-name>([^<]*)<\/command-name>/.exec(text);
+  if (cmd) {
+    const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text)?.[1]?.trim();
+    text = args ? `${cmd[1].trim()} ${args}` : cmd[1].trim();
+  }
   if (!text || text.startsWith("<") || text.startsWith("[Request interrupted")) return null;
   return text;
 }
