@@ -44,6 +44,34 @@ test("shadok-files specifically is machine-wide (the regression)", () => {
   assert.ok(skillSourcesInServer().includes("files-skill"), "files-skill must be in SKILL_SOURCES");
 });
 
+// The shipped skill docs/prompts name the HOME path `~/.claude/skills/...`.
+// Multi-tenant installs the skills in the Enterprise tier and drops agents to
+// HOMEs with no personal copy, so that literal resolves to nothing and the
+// script silently fails to run. `rewriteSkillsBase` retargets the base; these
+// pin that it is actually wired at the three injection points. Scanned, not
+// imported, for the same reason as SKILL_SOURCES above.
+test("SKILLS_BASE is keyed on DEPLOYMENT_MODE (Enterprise tier in MT, HOME tier otherwise)", () => {
+  assert.match(
+    SERVER,
+    /const SKILLS_BASE = DEPLOYMENT_MODE === "multi-tenant" \? SYSTEM_SKILLS_DIR : HOME_SKILLS_BASE;/,
+    "SKILLS_BASE must follow the same flag that decides where skills are installed",
+  );
+});
+
+test("the copied SKILL.md is retargeted to the tier it is installed in (seedSystemSkills)", () => {
+  const start = SERVER.indexOf("function seedSystemSkills");
+  assert.ok(start >= 0, "seedSystemSkills present");
+  const body = SERVER.slice(start, SERVER.indexOf("\n}\n", start));
+  assert.match(body, /rewriteSkillsBase\(fs\.readFileSync\(skillMd, "utf8"\), SKILLS_BASE\)/);
+});
+
+test("the injected pilot prompt and ledger reflex are retargeted too (server-side injection)", () => {
+  // Both are read from context/*.md and appended to --append-system-prompt, so
+  // their `~/.claude/skills/...` commands need the same rewrite as SKILL.md.
+  assert.match(SERVER, /pilotPromptCache =[\s\S]*?rewriteSkillsBase\([\s\S]*?PILOT_PROMPT_PATH[\s\S]*?SKILLS_BASE\)/);
+  assert.match(SERVER, /ledgerReflexCache = rewriteSkillsBase\(fs\.readFileSync\(LEDGER_REFLEX_PATH, "utf8"\)\.trim\(\), SKILLS_BASE\)/);
+});
+
 test("every skill seeder is gated by SEED_SKILLS, so a side-by-side build cannot clobber them", () => {
   // The seeders write OUTSIDE the running tree (the server HOME's
   // ~/.claude/skills, plus /etc in multi-tenant) at every boot, so a build
