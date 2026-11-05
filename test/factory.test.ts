@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { envReads, releaseWarnings, scanFiles, skillNameError, skillPathError } from "../src/factory-scan.js";
 import {
+  pluginsDir,
   accept,
   bundleOf,
   createSkill,
@@ -403,4 +404,25 @@ test("updateMeta: share, tag, archive", (t) => {
   assert.deepEqual(out.tags, ["x", "y"]);
   assert.equal(out.archived, true);
   assert.equal(updateMeta(root, s.id, { archived: false }).archived, undefined);
+});
+
+test("pluginsDir: SHADOK_FACTORY_PLUGINS_DIR moves releases out of the factory root (multi-tenant)", () => {
+  const prev = process.env.SHADOK_FACTORY_PLUGINS_DIR;
+  try {
+    delete process.env.SHADOK_FACTORY_PLUGINS_DIR;
+    assert.equal(pluginsDir("/root/.shadok-ai/factory/x"), "/root/.shadok-ai/factory/x/plugins");
+    process.env.SHADOK_FACTORY_PLUGINS_DIR = "/var/lib/shadok-ai/factory-plugins/x";
+    assert.equal(pluginsDir("/root/.shadok-ai/factory/x"), "/var/lib/shadok-ai/factory-plugins/x");
+  } finally {
+    if (prev === undefined) delete process.env.SHADOK_FACTORY_PLUGINS_DIR;
+    else process.env.SHADOK_FACTORY_PLUGINS_DIR = prev;
+  }
+});
+
+test("server: a factory skill's secrets resolve from the agent's OWN group, never bare (Main)", () => {
+  // A bare `secretsFor(names)` resolves from Main: an isolated group's agent
+  // would receive Main's values for the names its skills declare.
+  const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "server.ts"), "utf8");
+  assert.doesNotMatch(src, /secretsFor\(\s*factory(SecretsFor\([^)]*\)|\.secrets)\s*\)/);
+  assert.match(src, /secretsFor\(factory\.secrets, group \?\? MAIN_GROUP_ID, commonsGroupIds\(\)\)/);
 });

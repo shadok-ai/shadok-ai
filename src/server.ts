@@ -2673,6 +2673,33 @@ function channelStateHome(chan: Channel): string {
 const SHARED_POT_PATH =
   (process.env.SHADOK_SHARED_POT_PATH ?? "").trim() || DEFAULT_SHARED_POT_PATH;
 
+// Multi-tenant: a factory skill reaches an agent as a `--plugin-dir`, and the
+// default `<factoryRoot>/plugins` is under `/root` (mode 700) — un-traversable by
+// the `main`/`sk-*` drop users, so an attached skill would silently never load
+// (invariant 54's family, like media above). Materialise releases in a
+// root-owned, world-READABLE directory next to the pot instead. Deliberately NOT
+// inside the pot: the pot is group-WRITABLE with no sticky bit, so any group
+// could rename a release directory away and plant its own under the same name —
+// code every other group's agents would then load. The registry and the git
+// repos stay under `/root`: only the server reads them.
+if (DEPLOYMENT_MODE === "multi-tenant" && !process.env.SHADOK_FACTORY_PLUGINS_DIR) {
+  const dir = path.join(path.dirname(SHARED_POT_PATH), "factory-plugins", instanceKey(process.cwd()));
+  try {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+    for (let d = dir; d !== path.dirname(SHARED_POT_PATH) && d !== path.dirname(d); d = path.dirname(d)) {
+      fs.chownSync(d, 0, 0);
+      fs.chmodSync(d, 0o755);
+    }
+    process.env.SHADOK_FACTORY_PLUGINS_DIR = dir;
+    console.log(`factory: release plugins in ${dir} (reachable by dropped agents)`);
+  } catch (e) {
+    console.warn(
+      "factory: could not set up a readable plugins dir, keeping it under the factory root: " +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+}
+
 // Multi-tenant: Telegram/paste attachments must be readable by a privilege-
 // dropped agent, but the default `~/.shadok-ai/media` is `/root/.shadok-ai/media`
 // — and `/root` (mode 700) is un-traversable by the `main`/`sk-*` drop users, so
@@ -5394,6 +5421,17 @@ function factorySecretsFor(sessionId?: string | null): string[] {
   return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), MAIN_GROUP, agentCtxFor(sessionId));
 }
 
+/**
+ * The `{NAME: value}` env an agent's factory skills are granted, resolved from
+ * the agent's OWN isolation group (own → shared-in → Main), exactly like
+ * `secretsForProfile`. A bare `secretsFor(names)` resolves from Main: an agent
+ * of an isolated group would receive Main's VALUES for the names its skills
+ * declare (a cross-group leak), and never its own group's.
+ */
+function factorySecretEnv(sessionId: string | null | undefined, group: string | null | undefined): Record<string, string> {
+  return secretsFor(factorySecretsFor(sessionId), group ?? MAIN_GROUP_ID, commonsGroupIds());
+}
+
 /** Pure-ish: turn a `start`'s requested skills into accepted attachments. */
 function resolveBirthSkills(req: { skill: string; release?: number }[], agent: AgentCtx): { ok: Attachment[]; refused: string[] } {
   const skills = loadRegistry(factoryRoot()).skills;
@@ -5435,7 +5473,7 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null, se
     // process really receives, so a newly granted name also lights the reload.
     secretNames: [...new Set([
       ...secretNamesForProfile(loadVault(), groupId ?? MAIN_GROUP_ID, profileName ?? "", profile?.secrets, commonsGroupIds()),
-      ...Object.keys(secretsFor(factorySecretsFor(sessionId))),
+      ...Object.keys(factorySecretEnv(sessionId, groupId)),
     ])],
     capabilities: installedCapabilities(),
     pilotPrompt: pilotPrompt() ?? undefined,
@@ -5707,7 +5745,7 @@ function makePilot(
     console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
   runningPlugins.set(id, factory.args.filter((_a, i) => i % 2 === 1));
   const secretEnv = {
-    ...secretsFor(factory.secrets),
+    ...secretsFor(factory.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds()),
     ...secretsForProfile(profileName, profile?.secrets, group ?? MAIN_GROUP_ID, commonsGroupIds()),
   };
   // A custom model backend (a self-hosted open model, a gateway) first, then
@@ -6170,7 +6208,7 @@ function recordSecretInjection(s: Live, by: SpawnBy, detail: string): void {
   recordSecretAudit({
     action: "injected",
     secrets: Object.keys({
-      ...secretsFor(factorySecretsFor(s.id)),
+      ...factorySecretEnv(s.id, s.group),
       ...secretsForProfile(s.profile, profile?.secrets, s.group ?? MAIN_GROUP_ID, commonsGroupIds()),
     }),
     ...by,

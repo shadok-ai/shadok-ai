@@ -196,7 +196,10 @@ export function factoryRoot(cwd = process.cwd(), home = os.homedir()): string {
 
 const regPath = (root: string) => path.join(root, "registry.json");
 const repoPath = (root: string, id: string) => path.join(root, "repos", `${id}.git`);
-export const pluginsDir = (root: string) => path.join(root, "plugins");
+/** Where releases are materialised. Under the factory root by default; a
+ *  multi-tenant server points `SHADOK_FACTORY_PLUGINS_DIR` at a world-readable
+ *  root-owned directory, since a privilege-dropped agent cannot traverse `/root`. */
+export const pluginsDir = (root: string) => process.env.SHADOK_FACTORY_PLUGINS_DIR?.trim() || path.join(root, "plugins");
 
 function git(gitDir: string, args: string[], opts: { input?: Buffer | string; env?: Record<string, string> } = {}): Buffer {
   return execFileSync("git", ["--git-dir", gitDir, ...args], {
