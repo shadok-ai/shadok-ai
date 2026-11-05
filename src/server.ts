@@ -163,6 +163,7 @@ import {
   DEFAULT_SHARED_POT_PATH,
 } from "./osusers.js";
 import { runPrivileged, TREE_OP_TIMEOUT_MS } from "./privileged.js";
+import { HOME_SKILLS_BASE, rewriteSkillsBase } from "./skill-paths.js";
 import { instanceKey } from "./paths.js";
 import {
   peerFileFor,
@@ -2808,6 +2809,15 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
 const SYSTEM_SKILLS_DIR =
   (process.env.SHADOK_SYSTEM_SKILLS_DIR ?? "").trim() || "/etc/claude-code/.claude/skills";
 
+/** Where the shadok skills' scripts REALLY live for this instance — the base the
+ *  shipped `~/.claude/skills/...` paths must be rewritten to (`rewriteSkillsBase`).
+ *  Multi-tenant installs them machine-wide and drops agents to HOMEs that have no
+ *  personal copy, so the Enterprise tier is the truth; mono-tenant keeps the HOME
+ *  tier, where `seedXxxSkill` put them and the literal is already correct. Keyed
+ *  on the SAME `DEPLOYMENT_MODE` that decides where they are installed, so the
+ *  path named can never diverge from the path on disk. */
+const SKILLS_BASE = DEPLOYMENT_MODE === "multi-tenant" ? SYSTEM_SKILLS_DIR : HOME_SKILLS_BASE;
+
 /**
  * Install the shadok skills GLOBALLY, into the machine-wide Enterprise tier, so
  * every dropped group agent (`sk-<id>`, HOME `/home/sk-<id>`) gets them with NO
@@ -2825,6 +2835,11 @@ function seedSystemSkills(): void {
       const dst = path.join(SYSTEM_SKILLS_DIR, dstName);
       fs.mkdirSync(dst, { recursive: true });
       fs.cpSync(src, dst, { recursive: true });
+      // The copied SKILL.md still names the HOME path (`~/.claude/skills/...`),
+      // but a dropped agent reads THIS tier — retarget it so the commands it
+      // runs resolve. SKILLS_BASE is SYSTEM_SKILLS_DIR here (multi-tenant only).
+      const skillMd = path.join(dst, "SKILL.md");
+      fs.writeFileSync(skillMd, rewriteSkillsBase(fs.readFileSync(skillMd, "utf8"), SKILLS_BASE));
     }
     // World-readable (every sk-* user reads the same install) and .mjs runnable.
     execFileSync("chmod", ["-R", "a+rX", SYSTEM_SKILLS_DIR]);
@@ -5242,7 +5257,7 @@ function pilotPrompt(): string | null {
       pilotPromptCache =
         process.env.SHADOK_PILOT_PROMPT === "0"
           ? null
-          : fs.readFileSync(PILOT_PROMPT_PATH, "utf8").trim() || null;
+          : rewriteSkillsBase(fs.readFileSync(PILOT_PROMPT_PATH, "utf8").trim(), SKILLS_BASE) || null;
     } catch {
       pilotPromptCache = null;
     }
@@ -5260,7 +5275,7 @@ let ledgerReflexCache: string | null | undefined;
 function ledgerReflex(): string | null {
   if (ledgerReflexCache === undefined) {
     try {
-      ledgerReflexCache = fs.readFileSync(LEDGER_REFLEX_PATH, "utf8").trim() || null;
+      ledgerReflexCache = rewriteSkillsBase(fs.readFileSync(LEDGER_REFLEX_PATH, "utf8").trim(), SKILLS_BASE) || null;
     } catch {
       ledgerReflexCache = null;
     }
