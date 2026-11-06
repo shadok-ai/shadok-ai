@@ -6042,7 +6042,7 @@
     // Once the tweak channel is closed its slot becomes the CTA again — otherwise
     // the bottom of the column would stay empty and the feature would vanish with
     // no way back.
-    if (tab.isTweak) document.getElementById("tweakCta").hidden = false;
+    if (tab.isTweak) document.getElementById("tweakCta").hidden = notAdmin();
     tab.btnEl.remove();
     tab.transcriptEl.remove();
     tabs = tabs.filter((t) => t !== tab);
@@ -6388,6 +6388,7 @@
     }
   }
   async function saveTheme(key) {
+    if (notAdmin()) return; // PUT /theme is admin-only
     applyTheme(key); // optimistic; the server echo reconciles below
     try {
       const res = await fetch("/theme", {
@@ -8652,6 +8653,7 @@
     const brandEditEl = $("brandEdit");
     const startRename = () => {
       if (brandNameEl.isContentEditable) return;
+      if (notAdmin()) return; // PUT /title is admin-only; the name is read-only for a member
       if (brandEl) brandEl.classList.add("editing");
       brandNameEl.contentEditable = "plaintext-only";
       brandNameEl.spellcheck = false;
@@ -8717,11 +8719,12 @@
   autoUpdateChk.addEventListener("change", async () => {
     const enabled = autoUpdateChk.checked;
     try {
-      await fetch("/autoupdate", {
+      const r = await fetch("/autoupdate", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ enabled }),
       });
+      if (!r.ok) throw new Error("refused");
       // The server echoes the new state back over WS (version message); the
       // hint updates then. If it's turning on while behind, a reload follows.
     } catch {
@@ -8733,11 +8736,12 @@
     try {
       // The server re-polls the registry immediately and echoes the new state
       // over WS, so `Latest` repaints without waiting for the next check.
-      await fetch("/update-channel", {
+      const r = await fetch("/update-channel", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ channel }),
       });
+      if (!r.ok) throw new Error("refused");
     } catch {
       updChannelSel.value = channel === "alpha" ? "beta" : "alpha"; // revert on failure
     }
@@ -8745,11 +8749,12 @@
   acceptEditsChk.addEventListener("change", async () => {
     const on = acceptEditsChk.checked;
     try {
-      await fetch("/permission-mode", {
+      const r = await fetch("/permission-mode", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ mode: on ? "auto" : "default" }),
       });
+      if (!r.ok) throw new Error("refused");
       // Server echoes the new mode back over WS; the hint updates then. Only
       // affects agents started after this — running ones keep their mode.
     } catch {
@@ -8761,11 +8766,12 @@
     try {
       // The server flips the flag AND respawns every agent so the reflex takes
       // effect at once (the pilot prompt is fixed at spawn); state echoes over WS.
-      await fetch("/ledger", {
+      const r = await fetch("/ledger", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ enabled }),
       });
+      if (!r.ok) throw new Error("refused");
     } catch {
       ledgerChk.checked = !enabled; // revert on failure
     }
@@ -8798,8 +8804,11 @@
     restartAllBtn.disabled = true;
     document.getElementById("vmRestartHint").textContent = "Restarting…";
     try {
-      const r = await (await fetch("/restart-all", { method: "POST" })).json();
-      document.getElementById("vmRestartHint").textContent = "Restarted " + (r.restarted ?? 0) + " agent(s).";
+      const res = await fetch("/restart-all", { method: "POST" });
+      const r = await res.json();
+      document.getElementById("vmRestartHint").textContent = res.ok
+        ? "Restarted " + (r.restarted ?? 0) + " agent(s)."
+        : (r.error || "Restart refused.");
     } catch {
       document.getElementById("vmRestartHint").textContent = "Restart failed.";
     } finally {
@@ -10624,8 +10633,9 @@
         : (p.secrets || []).filter((s) => s !== name);
       const body = { name: p.name, deny: p.deny, allow: p.allow, model: p.model, effort: p.effort, secrets, mcpServers: p.mcpServers };
       if (typeof p.systemPrompt === "string") body.systemPrompt = p.systemPrompt; // keep an edited prompt
-      await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      changed.push(p.name);
+      const r = await fetch("/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      // Refused (a member on a multi-tenant instance): not changed, so not reported as such.
+      if (r.ok) changed.push(p.name);
     }
     if (changed.length) await loadProfilesInto();
     return changed;
@@ -12464,7 +12474,12 @@
       const edit = document.createElement("button"); edit.textContent = "edit";
       edit.addEventListener("click", () => fillProfileForm(p));
       const del = document.createElement("button"); del.textContent = "delete"; del.style.color = "#e26";
-      del.addEventListener("click", async () => { await fetch("/profiles?name=" + encodeURIComponent(p.name), { method: "DELETE" }); await loadProfilesInto(); renderProfilesList(); });
+      del.addEventListener("click", async () => {
+        const r = await fetch("/profiles?name=" + encodeURIComponent(p.name), { method: "DELETE" });
+        // Admin-only on the server: say why instead of a row that just stays put.
+        if (!r.ok) return alert((await r.json().catch(() => ({}))).error || "Delete failed.");
+        await loadProfilesInto(); renderProfilesList();
+      });
       btns.append(edit, del);
       li.append(meta, btns);
       ul.appendChild(li);
@@ -12605,6 +12620,25 @@
   // refuses a member's write regardless, which is where the rule actually lives.
   let me = null;
   let tfaEnabled = false; // read from GET /2fa when the Users panel renders
+  /** True once we KNOW the caller is not an admin (unknown → false: the server decides). */
+  function notAdmin() { return !!me && me.role !== "admin"; }
+  // Instance-wide settings are admin-only on the server (auto-update, release
+  // channel, permission mode, shared ledger, restart all, the Claude sign-in,
+  // the cockpit's name/theme, the tweak agent). A member sees them disabled with
+  // the reason, rather than a control that silently snaps back.
+  function applyAdminOnlyControls(amAdmin) {
+    const why = amAdmin ? "" : "Admin only";
+    for (const id of ["autoUpdateChk", "updChannelSel", "acceptEditsChk", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
+      const el = $(id);
+      if (!el) continue;
+      el.disabled = !amAdmin;
+      const host = el.closest("label") || el;
+      if (why) host.title = why; else host.removeAttribute("title");
+    }
+    const cta = $("tweakCta"); if (cta) cta.hidden = !amAdmin || cta.hidden;
+    const bn = $("brandName"); if (bn) bn.title = amAdmin ? "Rename this cockpit" : "";
+    const be = $("brandEdit"); if (be) be.hidden = !amAdmin;
+  }
   async function loadMe() {
     try { me = await (await fetch("/me")).json(); } catch { me = null; }
     const b = $("usersBtn");
@@ -12618,6 +12652,7 @@
     // mirror item is gated where that menu is built.
     const amAdmin = me?.role === "admin";
     const tgb = $("telegramBtn"); if (tgb) tgb.hidden = !amAdmin;
+    applyAdminOnlyControls(amAdmin);
     const mf = $("mirrorField"); if (mf) mf.hidden = !amAdmin;
     // No password on this instance means no session at all: nothing to name and
     // nothing to leave. Showing "Sign out" there would promise a door that does
