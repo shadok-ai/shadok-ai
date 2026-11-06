@@ -1559,6 +1559,27 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     decisions made elsewhere. Wired into both home-seeding paths —
     `seedGroupAgentHome` (per spawn) and `preseedGroupHomes` (at boot, so an
     existing instance is repaired without waiting for one).
+    **The outbound PEERS registry was missed by this pass, and the miss is
+    invisible.** `peersOutFileFor` was anchored on `os.homedir()`, so the server
+    handed every agent a `SHADOK_PEERS_FILE` under `/root` (700) — and an
+    unreadable registry parses as "no peers configured", so `pilotctl --peer
+    <alias>` did not error, it simply found nothing. Every dropped agent in
+    multi-tenant lost cross-instance collaboration with no message anywhere; what
+    surfaced instead was a production dispatch loop hard-coding the `/root` path
+    and then failing on it once its cron guard was dropped too (invariant 60).
+    The path now takes the agent's own `agentStateHome`, defaulting to the server
+    home so mono-tenant is byte-for-byte unchanged, and `cronCheckEnv` carries it
+    as session plumbing beside `SHADOK_SESSION_ID`/`_PORT`/`_KEY` — assigned AFTER
+    the profile's secrets, so a secret of that name cannot repoint it. The
+    registry therefore becomes **per tier**, which is the right answer and not
+    merely a consequence: a peer credential an agent obtained belongs to its own
+    tier, exactly as the secret vault already scopes one. The migration is where
+    the care goes — `tierPeersOutSeed` carries the pre-tier file into the COMMONS
+    tier only, and never over a registry that tier already manages. Carrying it to
+    every tier would hand a private group a bearer token for another instance that
+    nobody granted it; carrying it nowhere would silently break a working alias at
+    the moment the path moved. The commons is the honest middle, because before
+    the tiers existed every agent ran as root and read precisely that file.
 
 <a id="inv-59"></a>
 

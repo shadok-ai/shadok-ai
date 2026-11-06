@@ -207,6 +207,7 @@ import {
   removePeer,
   ownedByPeer,
   peersOutFileFor,
+  tierPeersOutSeed,
   agentInvitePrompt,
   peerScope,
   type Peer,
@@ -759,7 +760,13 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
     const env = cronCheckEnv({
       base: process.env,
       secrets: secretEnv,
-      session: { id: c.sessionId, port: String(boundPort || START_PORT), key: sessionKeyFor(c.sessionId) },
+      session: {
+        id: c.sessionId,
+        port: String(boundPort || START_PORT),
+        key: sessionKeyFor(c.sessionId),
+        // The TARGET agent's own registry, resolved exactly like its spawn's.
+        peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
+      },
       user,
       home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
     });
@@ -6408,6 +6415,39 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
  * while `/root`'s — volume-backed — had it). Best-effort; mono-tenant or
  * un-migrated → no drop users → no-op.
  */
+/**
+ * Carry the PRE-TIER outbound peers registry (the one in the server's home) into
+ * the COMMONS tier's own, once. See `tierPeersOutSeed` for why the commons and
+ * nowhere else: before the tiers existed every agent ran as root and read exactly
+ * this file, so the commons inheriting it changes nothing about who holds what,
+ * while copying it into a private group would hand it a credential nobody granted.
+ *
+ * Copied AS the commons user (`writeAsUserAtomic`), so the new file is owned by
+ * the tier and root never writes through a home it does not own. Best-effort:
+ * an instance with no peers configured has nothing to carry, and a failure leaves
+ * `--peer` exactly as broken as it already was, with nothing new to diagnose.
+ */
+function seedCommonsPeersOut(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  const user = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  if (!user) return;
+  const serverFile = peersOutFileFor(process.cwd(), os.homedir());
+  const tierFile = peersOutFileFor(process.cwd(), agentStateHome(user));
+  try {
+    const seed = tierPeersOutSeed({
+      tier: "commons",
+      serverHasFile: fs.existsSync(serverFile),
+      tierHasFile: fs.existsSync(tierFile),
+    });
+    if (!seed) return;
+    writeAsUserAtomic(user, tierFile, fs.readFileSync(serverFile, "utf8"));
+    spawnAsUserSync(user, "chmod", ["600", tierFile]);
+    console.log(`peers: carried the outbound registry into ${tierFile}`);
+  } catch (e) {
+    console.log(`peers: could not seed ${tierFile} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function preseedGroupHomes(): void {
   if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
   for (const [user, cwds] of dropUserCwds()) {
@@ -6415,6 +6455,7 @@ function preseedGroupHomes(): void {
     seedHomeTrust(user, home, [...cwds]);
     ensureTierStateDir(user, home);
   }
+  seedCommonsPeersOut();
 }
 
 function makePilot(
@@ -6484,7 +6525,10 @@ function makePilot(
   env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
   // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
   // reads it to reach another instance's agents. See src/peers.ts.
-  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd());
+  // Per TIER, not per server home: the path used to be derived from `os.homedir()`,
+  // so a dropped agent was handed a registry under /root (700) it cannot read and
+  // `--peer` died silently (an unreadable file parses as "no peers"). Invariant 54.
+  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd(), agentStateHome(user));
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
