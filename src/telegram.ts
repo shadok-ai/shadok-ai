@@ -11,6 +11,8 @@ import {
   saveTgGroup,
   loadTgOwner,
   saveTgOwner,
+  loadTgOperators,
+  saveTgOperators,
   isMirrored,
   loadTgTopics,
   saveTgTopics,
@@ -18,7 +20,7 @@ import {
   tgToolsEnabled,
   setTgTools,
 } from "./channels.js";
-import { secretNames, setSecret, deleteSecret, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
+import { secretNames, setSecret, deleteSecret, secretWriteVerdict, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
 import { MAIN_GROUP_ID } from "./groups.js";
 import { startSetupToken, submitSetupTokenCode } from "./setup-token.js";
 import { recordSecretAudit } from "./secret-audit.js";
@@ -46,6 +48,16 @@ import { SHADOK_DIR, loadConfig, telegramConfig } from "./config.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
 import { pairingRefusal, redeemPairingCode } from "./tg-pairing.js";
+import {
+  callbackChatAllowed,
+  commandRequiresOperator,
+  cronsInScope,
+  isOperator,
+  operatorRefusal,
+  parseSecretArg,
+  spawnArgs,
+  withOperator,
+} from "./tg-operators.js";
 
 /**
  * Telegram control bridge. Runs inside the server process (only when
@@ -1793,6 +1805,8 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
             // legitimate owner; DMs follow them unless someone already owns them.
             const from = msg.from?.id;
             if (loadTgOwner() === null && typeof from === "number" && !msg.from?.is_bot) saveTgOwner(from);
+            // …and they are this board's first operator (src/tg-operators.ts).
+            if (typeof from === "number" && !msg.from?.is_bot) saveTgOperators(withOperator(loadTgOperators(), from));
             console.log(`telegram: board group ${chat.id} paired by user ${from ?? "?"}`);
             await reply(chat.id, threadId, "✅ This group is now shadok-ai's board. Use /spawn <name> to create an agent (a forum topic). Enable Topics + make me admin if /spawn fails.");
           } else {
@@ -1812,14 +1826,52 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
 
     const key = bindKey(chat, threadId);
 
+    // A code in an ALREADY-bound board makes the sender an operator. This is
+    // how a group bound before operators existed (or a second person) gets
+    // one: pair again from the cockpit's panel, type the code here.
+    if (isGroup && cmd && (cmd.cmd === "setup" || cmd.cmd === "start")) {
+      const code = pairingCodeOf(msg.text);
+      if (code) {
+        const from = msg.from?.id as number | undefined;
+        // Never leave a live code lying in the group history.
+        await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+        if (typeof from !== "number" || msg.from?.is_bot) {
+          await reply(chat.id, threadId, "⛔ Only a person can become an operator.");
+          return;
+        }
+        const v = redeemPairingCode(code);
+        if (v === "ok") {
+          saveTgOperators(withOperator(loadTgOperators(), from));
+          console.log(`telegram: user ${from} is now an operator of board ${chat.id}`);
+          await reply(chat.id, threadId, `✅ ${senderName(msg.from) ?? "You"} can now run the operator commands (/secret, /login, /update, /spawn <profile>…).`);
+        } else {
+          console.log(`telegram: operator pairing refused for user ${from} in ${chat.id} (${v})`);
+          await reply(chat.id, threadId, pairingRefusal(v));
+        }
+        return;
+      }
+    }
+
+    if (cmd && commandRequiresOperator(cmd.cmd, cmd.arg, (n) => !!getProfile(n))) {
+      if (!isOperator(msg.from?.id, loadTgOperators(), loadTgOwner(), !!msg.from?.is_bot)) {
+        // A refused /secret or /code still carried its value: don't leave it.
+        if (cmd.cmd === "secret" || cmd.cmd === "code" || cmd.cmd === "mtcode") {
+          await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+        }
+        console.log(`telegram: /${cmd.cmd} refused for user ${msg.from?.id ?? "?"} in ${chat.id} (not an operator)`);
+        await reply(chat.id, threadId, operatorRefusal(cmd.cmd));
+        return;
+      }
+    }
+
     if (cmd) {
       switch (cmd.cmd) {
         case "start":
         case "help":
-          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in\n/mttoken — provision the group-agent subscription token · /mtcode <code> — finish it\n/setup <code> — pair the bot (code from the cockpit's Telegram panel)");
+          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value [--overwrite] — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in\n/mttoken — provision the group-agent subscription token · /mtcode <code> — finish it\n/setup <code> — pair the bot, or become an operator (code from the cockpit's Telegram panel)\nOperator-only: /secret /unsecret /login /code /mttoken /mtcode /update, and /spawn <profile>");
           return;
         case "setup":
-          if (isGroup) await reply(chat.id, threadId, "✅ already this instance's board.");
+          if (isGroup) await reply(chat.id, threadId, "✅ already this instance's board. To become an operator, send /setup <code> with a code from the cockpit's Telegram panel.");
           return;
         case "spawn": {
           if (!isGroup) {
@@ -1828,14 +1880,8 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           }
           // `/spawn <profile> <name>`: if the first word is a known profile,
           // apply it; otherwise the whole arg is the agent name (no profile).
-          let profile: string | undefined;
-          let name = cmd.arg || "agent";
-          const sp = name.indexOf(" ");
-          const first = sp === -1 ? name : name.slice(0, sp);
-          if (getProfile(first)) {
-            profile = first;
-            name = sp === -1 ? first : name.slice(sp + 1).trim() || first;
-          }
+          // Choosing a profile is operator-only (checked above, same parser).
+          const { profile, name } = spawnArgs(cmd.arg, (n) => !!getProfile(n));
           const t = await tg("createForumTopic", { chat_id: chat.id, name: name.slice(0, 128) });
           if (!t?.ok) {
             const why = t?.description ? ` (Telegram: ${t.description})` : "";
@@ -1909,12 +1955,15 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           const ch = channelForTelegram(chat.id, threadId);
           const parts = cmd.arg.trim().split(/\s+/);
           const sub = (parts.shift() || "list").toLowerCase();
-          const mineOf = (sid: string) => loadCrons().filter((c) => c.sessionId === sid);
+          const mineOf = (sid: string) => cronsInScope(loadCrons(), sid);
           // Resolution shared with the HTTP API: an empty prefix no longer
           // matches "the first one" (a bare `/cron del` deleted a cron at
           // random), and an ambiguous prefix is refused rather than guessed.
+          // Scoped to THIS topic's channel, like `list`: a prefix used to be
+          // resolved against every cron of the instance, so any topic could
+          // pause or delete another agent's schedule.
           const findById = (pfx: string): Cron | { miss: string } => {
-            const list = loadCrons();
+            const list = cronsInScope(loadCrons(), ch?.sessionId);
             const r = resolveCronId(list, pfx);
             if (r.ok) return list.find((c) => c.id === r.id)!;
             if (r.error === "ambiguous") return { miss: `'${pfx}' matches ${r.matches} crons — use more characters.` };
@@ -1990,9 +2039,8 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           return;
         }
         case "update": {
-          // Powerful (npm install + respawn), but instance-wide and non-
-          // destructive: allowed from a DM (the operator) or the board group.
-          // The allowlist, if set, was already enforced at the top.
+          // Powerful (npm install + respawn) and repeatable: operator-only
+          // (checked above), from a DM or the board group.
           await reply(chat.id, threadId, "🔄 updating… I'll be back in a moment.");
           // Ask the supervisor to fetch @latest and respawn us.
           process.exit(UPDATE_EXIT_CODE);
@@ -2007,10 +2055,8 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           return;
         }
         case "login": {
-          // An OAuth code grants access to the account, so this needs the same
-          // gate as /secret. Reaching here IS the gate: guardDm has already run
-          // for a private chat, and a group that is not the bound board was
-          // turned away above.
+          // An OAuth code grants access to the account: operator-only, like
+          // /secret (checked above, after guardDm and the bound-board check).
           const r = await startLogin();
           if ("error" in r) {
             await reply(chat.id, threadId, `⚠️ Couldn't start the sign-in: ${r.error}`);
@@ -2083,20 +2129,30 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           return;
         }
         case "secret": {
-          // /secret NAME value — store in the vault, then DELETE the message so
-          // the value doesn't linger in the chat history.
-          const sp = cmd.arg.indexOf(" ");
-          const skey = sp === -1 ? cmd.arg : cmd.arg.slice(0, sp);
-          const sval = sp === -1 ? "" : cmd.arg.slice(sp + 1);
-          if (!skey || !sval) {
-            await reply(chat.id, threadId, "Usage: /secret NAME value");
+          // /secret NAME value [--overwrite] — store in the vault, then DELETE
+          // the message so the value doesn't linger in the chat history.
+          const parsed = parseSecretArg(cmd.arg);
+          if (!parsed) {
+            await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(chat.id, threadId, "Usage: /secret NAME value  (add --overwrite to replace an existing one)");
             return;
           }
-          const existed = secretNames().includes(skey.trim());
-          setSecret(skey.trim(), sval);
+          const skey = parsed.name;
+          // No silent overwrite, the rule `PUT /secrets` already follows.
+          const verdict = secretWriteVerdict(secretNames().includes(skey), parsed.overwrite);
+          if (verdict === "refused") {
+            const d = await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(
+              chat.id,
+              threadId,
+              `🔐 ${skey} already exists — nothing changed. To replace it: /secret ${skey} <value> --overwrite${d?.ok ? "" : "\n⚠️ I couldn't delete your message — remove it manually."}`,
+            );
+            return;
+          }
+          setSecret(skey, parsed.value);
           recordSecretAudit({
-            action: existed ? "updated" : "created",
-            secrets: [skey.trim()],
+            action: verdict,
+            secrets: [skey],
             actor: `telegram ${senderName(msg.from) ?? "?"}`,
             via: "telegram",
             instance: process.cwd(),
@@ -2105,7 +2161,7 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           await reply(
             chat.id,
             threadId,
-            `🔐 ${skey.trim()} saved to the vault.${del?.ok ? " (your message was deleted)" : "\n⚠️ I couldn't delete your message — remove it manually; the value is exposed in history."} Add it to a profile to inject it.`,
+            `🔐 ${skey} saved to the vault.${del?.ok ? " (your message was deleted)" : "\n⚠️ I couldn't delete your message — remove it manually; the value is exposed in history."} Add it to a profile to inject it.`,
           );
           return;
         }
@@ -2248,6 +2304,14 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
     // not by clicking.
     if (msg.chat?.type === "private" && dmGate(loadTgOwner(), cq.from?.id) !== "allow") {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ This bot is private." });
+      return;
+    }
+    // Same chat gate as a message: the allowlist, and in a group only the bound
+    // board. Without it a click in any group reached `bridgeFor` and opened a
+    // bridge there. Answering dialogs stays open to every board member — it
+    // is driving the conversation, like sending a message.
+    if (!msg.chat || !callbackChatAllowed(msg.chat, allowed, loadTgGroup())) {
+      await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ this bot is restricted." });
       return;
     }
     await tg("answerCallbackQuery", { callback_query_id: cq.id }); // stop the client spinner
