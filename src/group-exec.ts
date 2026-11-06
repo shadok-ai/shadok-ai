@@ -11,7 +11,7 @@ import type { DeploymentMode } from "./capability.js";
  * named. Pure, so every decision here is tested without a server, a root
  * account or a provisioned OS user (none of which a test machine has).
  *
- * Invariant 58.
+ * Invariant 60.
  */
 
 // ── Who may act on a session ────────────────────────────────────────────────
