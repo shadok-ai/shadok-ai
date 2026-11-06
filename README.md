@@ -168,7 +168,9 @@ Enter to skip; you can add it later from the web UI).
   model*: prints nothing → nothing to report, the agent is never woken and the
   run costs **zero tokens**; prints something → that output is prepended to the
   prompt and the agent runs. A watcher that is quiet most of the day costs
-  nothing most of the day.
+  nothing most of the day. The guard runs with the target agent's profile
+  secrets, so an agent may put one only on itself (a person may guard any agent
+  they can drive).
 - **Agents that report back** — an agent that launches other agents is told when
   each one finishes, blocks on a question, or dies. It hears about **its own**
   children and nothing else, so a busy channel never wakes it. What arrives is

