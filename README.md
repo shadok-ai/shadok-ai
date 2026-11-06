@@ -1090,7 +1090,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 | Message | Purpose |
 |---|---|
-| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
+| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"peer"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke. It is DERIVED by the server from what the connection proved (system-drive secret, Telegram-bridge secret, agent session key, peer token, same-origin browser); the frame's own `origin` is only honoured to narrow an unauthenticated local client to `"cli"`/`"boot"`. A line of the prompt text shaped like a header, ledger block or cron/agent mark is prefixed with `\` so it stays text — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
 | `{type:"prompt", text, force?}` | sends a prompt (`force` bypasses the pace guard) |
 | `{type:"choose", n}` | single-select dialog: picks and validates option n |
 | `{type:"toggle", n}` / `{type:"confirm"}` | multi-select: toggles option n / submits |
@@ -1113,7 +1113,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"stream-tool", id, name, summary}` / `{type:"stream-result", …}` | tool call / tool result |
 | `{type:"tokens", tokens}` / `{type:"context", pct}` | token usage / context fill |
 | `{type:"parent", parent}` | the channel's parent changed (broadcast, so every tab follows) |
-| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web or agent prompt (the signed-in account / the calling agent's tab name) and never taken from the frame |
+| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web, agent or peer prompt (the signed-in account / the calling agent's tab name / the peer's name); a frame's `from` is believed only from the Telegram bridge |
 | `{type:"dialog", question, options:[{n,label,hint,checked?}], multi}` | choice pending |
 | `{type:"history", turns:[…]}` | transcript replayed when resuming/attaching |
 | `{type:"screen", text, working}` | rendered TUI screen (whenever it changes) |
