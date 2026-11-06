@@ -145,3 +145,29 @@ test("detectFork: follows the fork, ignores the sibling, no-ops when quiet", () 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("detectFork: follows a fork that landed in ANOTHER project dir (cwd drift)", () => {
+  // The real failure: a session created in a worktree, later resumed at the repo
+  // root, overflows its context. Claude Code writes the continuation under the
+  // CURRENT cwd's project dir — a DIFFERENT directory from the frozen original.
+  // Scanning only the frozen file's own directory misses it; the chat freezes
+  // while the TUI is fine. The fix: scan every project dir for the lineage.
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "forktrace-A-")); // worktree enc
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "forktrace-B-")); // repo-root enc
+  try {
+    writeTranscript(dirA, ROOT, ROOT, 1_000_000); // frozen original, in dir A
+    const myFile = path.join(dirA, `${ROOT}.jsonl`);
+    writeTranscript(dirB, NEW, ROOT, 9_000_000); // the fork, same lineage, in dir B
+
+    // Default (own dir only) is blind to the cross-dir fork — the bug.
+    assert.equal(detectFork(myFile, ROOT, ROOT), null);
+    // Given both dirs to search, the fork is followed across the boundary.
+    assert.equal(detectFork(myFile, ROOT, ROOT, new Set(), undefined, [dirA, dirB]), NEW);
+    // A sibling in dir B (its own root) is still never adopted.
+    writeTranscript(dirB, SIBLING, SIBLING, 12_000_000);
+    assert.equal(detectFork(myFile, ROOT, ROOT, new Set(), undefined, [dirA, dirB]), NEW);
+  } finally {
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  }
+});
