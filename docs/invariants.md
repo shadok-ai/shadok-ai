@@ -1615,3 +1615,39 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     a "newer" copy. It needs a version stamped into every seeded file, it never
     heals a downgrade, and it still leaves the client talking to a server it does
     not match. Tolerating the skew is the property that holds in both directions.
+
+<a id="inv-62"></a>
+
+58. **An instance-wide or cross-group write is an AUTHORIZATION decision, not
+    just an authentication one — and a filtered READ needs a matching WRITE.**
+    The password gate answers "is this someone we know"; it never answered "may
+    THIS someone change something every group shares". A security audit
+    (2026-11-06) found a family of routes that stopped at the first question:
+    any signed-in member could set `bypassPermissions` for every future spawn
+    (`/permission-mode`), restart every group's agents (`/restart-all`, and
+    `POST /ledger`, which restarts them as a side effect), move the instance's
+    Claude subscription onto their own account (`POST /auth/login {force}`),
+    and `DELETE /profiles` had no check at all — a read-only agent deleted its
+    own role, called `POST /reload`, and came back with no deny list (invariant
+    26 undone in two requests). These are now admin-only and browser-only
+    (`accountAdmin`), decided by pure verdicts in `src/route-guards.ts`.
+    Three neighbours follow the same rule. **A role is a privilege, not a drive
+    action**: WS `set-profile` passed `mayDriveSession` and nothing else, so an
+    agent could move itself onto a profile with more secrets; it now needs a
+    PERSON (never an agent or a peer), and an admin in multi-tenant, where
+    profiles are global and `PUT /profiles` is admin-only too. **A parent link is
+    an injection channel**: a parent receives its child's notifications as
+    prompts over the system drive, which crosses every group wall, so
+    `linkRefusal` takes a `mayReachParent` check and refuses an unreachable
+    parent with the SAME `unknown-parent` as a missing one — no oracle for
+    another group's ids. **A filtered read needs a merge that knows it**:
+    `GET /channels` hides other groups' rows, so a member's tab never held them,
+    and `PUT /channels` (which keeps only what the client sent, plus live and
+    Telegram rows) silently ERASED every dormant one — killing their session
+    keys and their group binding. `mergeChannels` now takes `canSee`: a row the
+    caller cannot see is preserved untouched, a client row naming it is ignored,
+    and the reply is filtered like the GET. Everything is written against the
+    caller's ROLE so it holds both before and after an agent's session key stops
+    resolving to the bootstrap admin: today the browser-only half is what keeps
+    agents out.
+

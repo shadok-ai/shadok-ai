@@ -1111,7 +1111,14 @@ or door that caused it; names only, never a value; filters `secret`, `action`,
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
 `/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
-returns the cwd to start the tweak agent in), `/media/<name>` (GET — serves a
+returns the cwd to start the tweak agent in). The instance-wide writes —
+`/autoupdate`, `/update-channel`, `/permission-mode`, `POST /ledger`, a bare
+`POST /restart-all`, the Claude sign-in (`POST /auth/login`, `/auth/code`,
+`DELETE /auth/login`), `PUT /title`, `PUT /theme`, `/tweak/prepare` and
+`DELETE /profiles` — are **admin only, from the browser**; a member sees those
+controls disabled. `PUT /profiles` is admin only on a multi-tenant instance
+(profiles are global there), and `POST /restart-all {sessions:[…]}` stays open,
+narrowed to the agents the caller may drive. Also `/media/<name>` (GET — serves a
 pasted/dropped or Telegram attachment back for inline display; sandboxed, basename
 only), and the sign-in group: `/auth` (GET
 — `{loggedIn, email?, subscriptionType?, tokenExpiresAt?, accessExpiresAt?, backend?, backendModel?}`;

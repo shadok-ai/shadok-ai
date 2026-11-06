@@ -102,13 +102,17 @@ test("GET /secrets: a null viewer resolves to Main only (mono-tenant shape)", ()
 });
 
 // ── Secret WRITE gate (owner-group membership) ─────────────────────────────────
-test("canWriteSecretGroup: private → owner only; restricted → member OR admin; Main → admin", () => {
+test("canWriteSecretGroup: private → owner only; restricted → member only (admin not special); Main → admin", () => {
   const priv: Group = { id: "p", name: "P", nature: "private", members: [], owner: "ada", createdAt: 0 };
   assert.equal(canWriteSecretGroup(priv, ada), true);
   assert.equal(canWriteSecretGroup(priv, bob), false);
   assert.equal(canWriteSecretGroup(priv, admin), false); // an admin is NOT the owner
   const comex = groups[1]; // restricted, members: ["ada"]
-  assert.equal(canWriteSecretGroup(comex, admin), true); // admin always
+  assert.equal(canWriteSecretGroup(comex, admin), false); // an admin is NOT special in a restricted group
+  assert.equal(canWriteSecretGroup(comex, { name: "ada", role: "admin" }), true); // an admin who IS a member
+  const pub: Group = { id: "pub", name: "Pub", nature: "public", members: [], createdAt: 0 };
+  assert.equal(canWriteSecretGroup(pub, admin), true); // a public group stays admin-written
+  assert.equal(canWriteSecretGroup(pub, ada), false);
   assert.equal(canWriteSecretGroup(comex, ada), true); // a MEMBER co-owns the group's vault (Task 11)
   assert.equal(canWriteSecretGroup(comex, bob), false); // a non-member (member of RH) cannot write COMEX
   const main = groups[0]; // the commons: no members → admin-only, as before
@@ -167,8 +171,9 @@ test("secretWriteDecision: a requested group must pass the SAME write gate (huma
   assert.deepEqual(secretWriteDecision({ requestedGroup: "comex", viewer: ada, groups }), { ok: true, ownerGroup: "comex" });
   // A non-member targeting G → refused (no write).
   assert.equal(secretWriteDecision({ requestedGroup: "comex", viewer: bob, groups }).ok, false);
-  // An admin targeting a restricted G → OK.
-  assert.deepEqual(secretWriteDecision({ requestedGroup: "rh", viewer: admin, groups }), { ok: true, ownerGroup: "rh" });
+  // An admin targeting a restricted G they are not a member of → refused
+  // (operator decision 2026-11-03: an admin is not special there).
+  assert.equal(secretWriteDecision({ requestedGroup: "rh", viewer: admin, groups }).ok, false);
   // An admin targeting a PRIVATE G they do not own → refused (private is sealed).
   assert.equal(secretWriteDecision({ requestedGroup: "p", viewer: admin, groups: g2 }).ok, false);
   // The private owner targeting it → OK.
