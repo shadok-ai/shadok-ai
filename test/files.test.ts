@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  offerVerdict, withOffer, offeredPaths, refusalMessage, MAX_OFFER_BYTES, MAX_OFFERS,
+  offerVerdict, withOffer, offeredPaths, offerFor, refusalMessage, MAX_OFFER_BYTES, MAX_OFFERS,
   type OfferedFile,
 } from "../src/files.js";
 
@@ -109,4 +109,24 @@ test("a refusal names the path and says what is wrong", () => {
     assert.match(msg, /\/tmp\/x\.pdf/);
     assert.ok(msg.length > 20, "a refusal must explain, not just name a code");
   }
+});
+
+test("an offer records the file's identity, so a later swap can be detected", () => {
+  const v = offerVerdict("s1", "/a/r.pdf", { isFile: true, size: 3, dev: 7, ino: 42 }, 1);
+  assert.equal(v.ok, true);
+  if (v.ok) {
+    assert.equal(v.file.dev, 7);
+    assert.equal(v.file.ino, 42);
+  }
+  const bare = offerVerdict("s1", "/a/r.pdf", { isFile: true, size: 3 }, 1);
+  assert.equal(bare.ok && "dev" in bare.file, false, "no identity known → none stored");
+});
+
+test("offerFor: this session's row for this path, never another session's", () => {
+  const rows = [
+    { sessionId: "s2", path: "/x", name: "x", size: 1, at: 1, dev: 1, ino: 1 },
+    { sessionId: "s1", path: "/x", name: "x", size: 1, at: 2, dev: 2, ino: 2 },
+  ];
+  assert.equal(offerFor(rows, "s1", "/x")?.ino, 2);
+  assert.equal(offerFor(rows, "s3", "/x"), undefined);
 });

@@ -43,6 +43,12 @@ export interface OfferedFile {
   /** ms epoch of the offer. */
   at: number;
   caption?: string;
+  /** Identity of the file AT THE OFFER (device + inode). `GET /download`
+   *  compares it, so a path swapped for something else after the offer — a
+   *  symlink repointed, a file replaced — is refused rather than served.
+   *  Absent on an offer recorded before the check existed. */
+  dev?: number;
+  ino?: number;
 }
 
 /** Biggest file we will register. Beyond this the agent is told, not ignored. */
@@ -65,7 +71,7 @@ export type OfferVerdict = { ok: true; file: OfferedFile } | OfferRefusal;
  * path that is really there), and telling it the wrong one costs a round trip.
  * Invariant 27's discipline applied to a much smaller thing.
  */
-export type OfferStat = { isFile: boolean; size: number } | "missing" | "unreadable";
+export type OfferStat = { isFile: boolean; size: number; dev?: number; ino?: number } | "missing" | "unreadable";
 
 export function offerVerdict(
   sessionId: string,
@@ -89,7 +95,11 @@ export function offerVerdict(
   const name = path.basename(raw);
   return {
     ok: true,
-    file: { sessionId, path: raw, name, size: stat.size, at: now, ...(caption?.trim() ? { caption: caption.trim() } : {}) },
+    file: {
+      sessionId, path: raw, name, size: stat.size, at: now,
+      ...(caption?.trim() ? { caption: caption.trim() } : {}),
+      ...(stat.dev !== undefined && stat.ino !== undefined ? { dev: stat.dev, ino: stat.ino } : {}),
+    },
   };
 }
 
@@ -161,11 +171,20 @@ export function saveOffers(file: string, rows: readonly OfferedFile[]): void {
   fs.renameSync(tmp, file);
 }
 
-/** Stat for `offerVerdict`, keeping absent and unreadable apart. */
+/**
+ * The offer to compare a download against: the newest row of THIS session for
+ * this exact path (rows are superseded, so there is at most one).
+ */
+export function offerFor(rows: readonly OfferedFile[], sessionId: string, p: string): OfferedFile | undefined {
+  return rows.find((r) => r.sessionId === sessionId && r.path === p);
+}
+
+/** Stat for `offerVerdict`, keeping absent and unreadable apart. As the SERVER's
+ *  user — multi-tenant goes through `statAsUserArgv` instead (invariant 60). */
 export function statForOffer(p: string): OfferStat {
   try {
     const s = fs.statSync(p);
-    return { isFile: s.isFile(), size: s.size };
+    return { isFile: s.isFile(), size: s.size, dev: s.dev, ino: s.ino };
   } catch (e) {
     return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? "missing" : "unreadable";
   }

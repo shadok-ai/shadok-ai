@@ -37,7 +37,17 @@ omit the check — the prompt runs every time.
 
 A check does **not** run inside this agent's process. The server runs it with
 `sh -c`, in the CHANNEL's directory, with the secrets of the channel's
-**profile** injected as environment variables.
+**profile** injected as environment variables. On a multi-tenant instance it
+runs as this agent's own OS user, exactly like the agent.
+
+Its environment is otherwise SMALL on purpose: `PATH`, the locale and time
+zone, proxy/CA settings, and `SHADOK_SESSION_ID` / `SHADOK_PORT` /
+`SHADOK_SESSION_KEY` (send the key as `x-shadok-session-key` to call the local
+API). Nothing else from the server's environment reaches it — no token, no
+password, no cookie. A credential the check needs goes in the profile.
+
+You can only schedule on an agent you may drive: on a multi-tenant instance,
+yourself, a sibling of your own group, or a shared (public) agent.
 
 So reference a secret by name (`$MY_API_KEY`) and trust it: never hardcode a
 value into a check script, and never try to source a shell profile to get one.

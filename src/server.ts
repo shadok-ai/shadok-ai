@@ -2,6 +2,7 @@ import { randomUUID, randomBytes, timingSafeEqual, createHmac } from "node:crypt
 import { newRequest, askVerdict, approveVerdict, cancelVerdict, dueRequests, expire, upsertRequest, requestsFor, describeRequest, loadRequests, saveRequests, isOpen, REQUEST_TTL_MS, type AdminRequest, type RequestKind } from "./admin-requests.js";
 import { recordEvent, loadEvents, saveEvents, inboxFor, markSeen, notMeEffect, describeEvent, type SecEvent } from "./security-events.js";
 import { execFile, execFileSync, spawnSync, spawn as spawnChild } from "node:child_process";
+import type { Readable } from "node:stream";
 import type { IncomingMessage } from "node:http";
 import fs from "node:fs";
 import os from "node:os";
@@ -30,7 +31,7 @@ import {
 import { fileCard, sentFilePaths, contentTypeFor, isImageFile, isVideoFile, parseByteRange } from "./download.js";
 import {
   OFFER_TOOL, filesFileFor, loadOffers, saveOffers, offerVerdict, withOffer,
-  offeredPaths, refusalMessage, statForOffer, type OfferedFile,
+  offeredPaths, offerFor, refusalMessage, statForOffer, type OfferedFile, type OfferStat,
 } from "./files.js";
 // Same implementation as the web client's preview (plain JS, loaded as is by
 // the browser): one source for reading the in-flight text off the screen.
@@ -164,6 +165,28 @@ import {
   SHARED_POT_GROUP,
   DEFAULT_SHARED_POT_PATH,
 } from "./osusers.js";
+import {
+  mayActOnSession,
+  mayReachGroup,
+  osUserForChannelGroup,
+  cronCheckEnv,
+  cronCheckCommand,
+  statAsUserArgv,
+  parseStatOutput,
+  readAsUserArgv,
+  sameOfferedFile,
+  type FileIdentity,
+} from "./group-exec.js";
+import {
+  mediaDirForGroup,
+  mediaFileMode,
+  parseMediaRequest,
+  groupForMediaKey,
+  passwdGid,
+  mediaDirSpec,
+  mediaDirTrusted,
+  mediaServable,
+} from "./media-scope.js";
 import { runPrivileged, TREE_OP_TIMEOUT_MS } from "./privileged.js";
 import { HOME_SKILLS_BASE, rewriteSkillsBase } from "./skill-paths.js";
 import { instanceKey } from "./paths.js";
@@ -655,7 +678,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant");
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -695,7 +718,32 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
     // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
     // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
     const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
-    const env = { ...process.env, ...secretEnv };
+    // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
+    // multi-tenant — with the server's whole environment: a root shell for
+    // anyone able to write a cron, holding the GUI password and every token the
+    // server has. Now it runs as the TARGET agent's own OS user (the same
+    // `setpriv` drop as its spawn) with an allow-listed environment plus the
+    // profile's secrets. Mono-tenant keeps the server's user — there is only one
+    // — but gets the same clean environment.
+    let user: string | null = null;
+    if (DEPLOYMENT_MODE === "multi-tenant") {
+      if (!target.known) return resolve({ kind: "failed", detail: "no channel for this session — refusing to guess whose rights to run the check with" });
+      const who = osUserForChannelGroup(
+        target.group,
+        loadGroups(),
+        commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
+      );
+      if (!who.ok) return resolve({ kind: "failed", detail: "the agent's group no longer exists — check not run" });
+      user = who.user;
+    }
+    const env = cronCheckEnv({
+      base: process.env,
+      secrets: secretEnv,
+      session: { id: c.sessionId, port: String(boundPort || START_PORT), key: sessionKeyFor(c.sessionId) },
+      user,
+      home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
+    });
+    const run = cronCheckCommand(user, c.check!);
     recordSecretAudit({
       action: "cron-check",
       secrets: Object.keys(secretEnv),
@@ -707,8 +755,8 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
       instance: process.cwd(),
     });
     execFile(
-      "sh",
-      ["-c", c.check!],
+      run.cmd,
+      run.argv,
       { cwd: target.cwd, env, timeout: 2 * 60_000, maxBuffer: 1 << 20 },
       (err, stdout, stderr) => {
         const out = (stdout || "").trim();
@@ -1473,6 +1521,29 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
 }
 
 /**
+ * The calling AGENT (per-session key) with its channel's group, or null for a
+ * browser / account. What `mayActOnSession` needs to keep an agent inside its
+ * own group whatever principal its key maps to (invariant 60).
+ */
+function requestAgent(req: Caller & { body?: unknown }, chans: readonly Channel[]): { id: string; group: string | null } | null {
+  const id = callerOf(req).id;
+  return id ? { id, group: chans.find((c) => c.sessionId === id)?.group ?? null } : null;
+}
+
+/** May this request act on (schedule for, read the files of) `targetId`? */
+function mayActFor(req: Caller & { body?: unknown }, targetId: string): boolean {
+  const chans = loadChannels();
+  return mayActOnSession({
+    mode: DEPLOYMENT_MODE,
+    agent: requestAgent(req, chans),
+    viewer: viewerFor(currentAccount(req)),
+    targetId,
+    channels: chans,
+    groups: loadGroups(),
+  });
+}
+
+/**
  * The identity a secret WRITE is scoped by, resolved SERVER-SIDE (never the
  * body). An AGENT (carrying its per-session key) owns its channel's group —
  * `agentGroupId` present (possibly null = its agent has no group → Main). A
@@ -1883,11 +1954,17 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
   const contentType = String(req.headers["content-type"] ?? "");
   const name = decodeURIComponent(String(req.headers["x-filename"] ?? ""));
   const kind = contentType.trim().toLowerCase().startsWith("image/") ? "image" : "file";
+  // The agent the file is for decides WHERE it lands: its group's own media
+  // directory in multi-tenant (invariant 60), so another group's agent can
+  // neither read nor replace it. A caller who may not drive that agent may not
+  // drop files on it either.
+  const forSession = String(req.headers["x-shadok-session"] ?? "").trim();
+  if (DEPLOYMENT_MODE === "multi-tenant" && (!forSession || !mayActFor(req, forSession)))
+    return res.status(forSession ? 403 : 409).json({ error: forSession ? "not your agent" : "the agent is not ready yet — try again in a moment" });
   try {
-    const dir = mediaDir();
-    fs.mkdirSync(dir, { recursive: true });
+    const dir = mediaDirForSession(forSession || null);
     const file = path.join(dir, pasteFileName(randomUUID(), name, contentType));
-    fs.writeFileSync(file, body);
+    writeMediaFile(file, body);
     // The very wording Telegram already uses, so an agent sees one format.
     res.json({ path: file, line: attachmentPrompt([{ path: file, kind }]) });
   } catch (e) {
@@ -2568,7 +2645,9 @@ app.get("/channels", (req, res) => {
 });
 
 // ── Crons (scheduled channel prompts) ───────────────────────────────────────
-app.get("/crons", (_req, res) => res.json(loadCrons()));
+// Scoped like every other per-session read (invariant 60): a cron carries its
+// prompt and its guard command, i.e. another group's monitoring logic.
+app.get("/crons", (req, res) => res.json(loadCrons().filter((c) => mayActFor(req, c.sessionId))));
 // Create (no id) or update (id present). Body: { id?, sessionId, prompt,
 // schedule:{kind,...}, enabled? }.
 app.post("/crons", (req, res) => {
@@ -2576,6 +2655,12 @@ app.post("/crons", (req, res) => {
   const sessionId = String(b.sessionId ?? "").trim();
   const prompt = String(b.prompt ?? "").trim();
   const existing = b.id ? loadCrons().find((c) => c.id === b.id) : undefined;
+  // A cron's guard runs with the TARGET agent's rights and its prompt is driven
+  // into it, so writing one is driving that agent: the caller must be allowed
+  // to — on the new target AND, for an update, on the one it already aims at
+  // (otherwise another group's cron could be repointed or rewritten by id).
+  if (sessionId && !mayActFor(req, sessionId)) return res.status(403).json({ error: "not your agent" });
+  if (existing && !mayActFor(req, existing.sessionId)) return res.status(403).json({ error: "not your agent" });
   // The zone is resolved BEFORE the schedule: a one-shot dated as a wall clock
   // ("2026-08-25T08:42") means nothing without it.
   //
@@ -2641,7 +2726,10 @@ app.delete("/crons", (req, res) => {
   // Accepts a prefix (that is all the `list` views show) and tells the truth:
   // an unconditional `{ok:true}` made a deletion that deleted nothing look like
   // a success — the cron stayed, and nothing said so.
-  const r = resolveCronId(loadCrons(), String(req.query.id ?? ""));
+  // Resolved among the crons this caller may act on ONLY: resolving over all of
+  // them would delete another group's cron, and an "ambiguous" answer would
+  // still leak that one exists.
+  const r = resolveCronId(loadCrons().filter((c) => mayActFor(req, c.sessionId)), String(req.query.id ?? ""));
   if (!r.ok) {
     const status = r.error === "empty" ? 400 : r.error === "ambiguous" ? 409 : 404;
     return res.status(status).json({
@@ -2863,47 +2951,95 @@ if (DEPLOYMENT_MODE === "multi-tenant" && !process.env.SHADOK_FACTORY_PLUGINS_DI
 
 // Multi-tenant: Telegram/paste attachments must be readable by a privilege-
 // dropped agent, but the default `~/.shadok-ai/media` is `/root/.shadok-ai/media`
-// — and `/root` (mode 700) is un-traversable by the `main`/`sk-*` drop users, so
-// an agent handed `[Attached image: /root/.shadok-ai/media/…]` cannot open it
-// (invariant 54's family). Relocate media under the shared pot (which every drop
-// user is in `shadok-shared` to traverse), carry existing attachments over so
-// already-sent images keep resolving, and point `mediaDir()` there via the env.
-// Best-effort: a failure just leaves media at `~/.shadok-ai/media`, the old
-// (broken-for-agents) behaviour, never a boot failure. Mono-tenant is untouched.
+// — and `/root` (mode 700) is un-traversable by the `main`/`sk-*` drop users
+// (invariant 54's family). So the media tree moves to a root-owned directory
+// beside the shared pot — NOT inside it: the pot is group-writable by every
+// `sk-*` user with no sticky bit, so a media dir there could be renamed away and
+// replaced, and the old one (2775 `shadok-shared`) let any group read, overwrite
+// or symlink-plant every other group's files (invariant 60). The root is 0711
+// (traversable, not listable); each group gets its own 2750 subdirectory on
+// first use (`mediaDirForSession`).
+//
+// Migration: files already sent stay where they are, so every path already in a
+// transcript keeps resolving for its agent; the old shared directory is closed
+// to new writes (0755 root). The server-written ones are also COPIED (0600) into
+// the new root, flat, so `/media/<name>` keeps rendering them in the chat —
+// never a symlink, never a file an agent planted (not owned by the server).
+// Best-effort: a failure leaves the old behaviour, never a boot failure.
+// Mono-tenant is untouched.
 if (DEPLOYMENT_MODE === "multi-tenant") {
   try {
-    const shared = path.join(SHARED_POT_PATH, "media");
-    fs.mkdirSync(shared, { recursive: true });
-    // Own it to the pot's group (`shadok-shared`) with setgid, so files the
-    // server writes inherit that group and the drop users can read them.
+    const base = path.join(path.dirname(SHARED_POT_PATH), "media");
+    const root = path.join(base, instanceKey(process.cwd()));
+    fs.mkdirSync(root, { recursive: true, mode: 0o711 });
+    const uid = process.getuid?.() ?? 0;
+    for (const d of [base, root]) {
+      fs.chownSync(d, uid, process.getgid?.() ?? 0);
+      fs.chmodSync(d, 0o711);
+    }
+    const legacy = [path.join(SHARED_POT_PATH, "media"), path.join(os.homedir(), ".shadok-ai", "media")];
+    const copied = migrateLegacyMedia(legacy, root, uid);
     try {
-      const potGid = fs.statSync(SHARED_POT_PATH).gid;
-      fs.chownSync(shared, 0, potGid);
-      fs.chmodSync(shared, 0o2775);
-    } catch {
-      /* pot not provisioned yet (pre-migration) — the next boot fixes it */
-    }
-    const legacy = path.join(os.homedir(), ".shadok-ai", "media");
-    if (legacy !== shared && fs.existsSync(legacy)) {
-      for (const name of fs.readdirSync(legacy)) {
-        const dst = path.join(shared, name);
-        if (!fs.existsSync(dst)) {
-          try {
-            fs.copyFileSync(path.join(legacy, name), dst);
-          } catch {
-            /* skip an unreadable/odd entry */
-          }
-        }
+      const old = fs.lstatSync(legacy[0]);
+      if (old.isDirectory() && !old.isSymbolicLink() && old.uid === uid) {
+        fs.chownSync(legacy[0], uid, process.getgid?.() ?? 0);
+        fs.chmodSync(legacy[0], 0o755);
       }
+    } catch {
+      /* no old shared media dir */
     }
-    process.env.SHADOK_MEDIA_DIR = shared;
-    console.log(`media: using ${shared} (reachable by dropped agents)`);
+    process.env.SHADOK_MEDIA_DIR = root;
+    console.log(`media: using ${root}, one directory per group${copied ? ` (${copied} earlier attachment(s) carried over)` : ""}`);
   } catch (e) {
     console.warn(
-      "media: could not set up the shared media dir, keeping ~/.shadok-ai/media: " +
+      "media: could not set up the per-group media dir, keeping ~/.shadok-ai/media: " +
         (e instanceof Error ? e.message : String(e)),
     );
   }
+}
+
+/**
+ * Copy the server-written regular files of the old media directories into the
+ * new root, flat and 0600. Each source is opened O_NOFOLLOW and judged on its
+ * fstat, so a symlink or an agent-planted file is skipped and nothing can be
+ * swapped between the check and the copy. Never overwrites. Returns the count.
+ */
+function migrateLegacyMedia(srcDirs: readonly string[], dst: string, serverUid: number): number {
+  let n = 0;
+  for (const src of srcDirs) {
+    if (src === dst) continue;
+    let names: string[];
+    try {
+      const d = fs.lstatSync(src);
+      if (!d.isDirectory() || d.isSymbolicLink()) continue;
+      names = fs.readdirSync(src);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const target = path.join(dst, name);
+      if (fs.existsSync(target)) continue;
+      const opened = openForServe(path.join(src, name), true);
+      if (!opened) continue;
+      try {
+        if (!mediaServable({ isFile: true, isSymbolicLink: false, uid: opened.stat.uid }, true, serverUid)) continue;
+        const data = Buffer.alloc(opened.stat.size);
+        let off = 0;
+        while (off < data.length) {
+          const r = fs.readSync(opened.fd, data, off, data.length - off, off);
+          if (r <= 0) break;
+          off += r;
+        }
+        fs.writeFileSync(target, data.subarray(0, off), { flag: "wx", mode: 0o600 });
+        n++;
+      } catch {
+        /* skip an unreadable/odd entry */
+      } finally {
+        fs.closeSync(opened.fd);
+      }
+    }
+  }
+  return n;
 }
 
 /**
@@ -4923,8 +5059,13 @@ app.post("/files", (req, res) => {
   let rows = loadOffers(file);
   const accepted: OfferedFile[] = [];
   const refused: string[] = [];
+  // The stat runs with the OFFERING agent's rights (invariant 60): as root it
+  // accepted `/root/.shadok-ai/secrets.json` as readily as a report, and
+  // recorded it as servable.
+  const who = sessionOsUser(id);
+  if (!who.ok) return res.status(403).json({ error: "this agent's group no longer exists" });
   for (const p of paths) {
-    const v = offerVerdict(id, p, statForOffer(p), Date.now(), caption);
+    const v = offerVerdict(id, p, statForOfferAs(who.user, p), Date.now(), caption);
     if (v.ok) { accepted.push(v.file); rows = withOffer(rows, v.file); }
     else refused.push(refusalMessage(v));
   }
@@ -4978,6 +5119,75 @@ function historyWithOffers(turns: HistoryTurn[], sessionId: string): HistoryTurn
   return out;
 }
 
+/**
+ * The OS user the server must act as for this session's FILES (invariant 60):
+ * in multi-tenant the agent's own drop user, so a path it named is read with
+ * its rights and never root's; null = the server's own user (mono-tenant, or
+ * the commons before migration — whose agents run as the server too).
+ */
+function sessionOsUser(sessionId: string): { ok: true; user: string | null } | { ok: false } {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return { ok: true, user: null };
+  const ch = loadChannels().find((c) => c.sessionId === sessionId);
+  if (!ch) return { ok: false };
+  return osUserForChannelGroup(ch.group, loadGroups(), commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }));
+}
+
+/** `statForOffer`, but as `user` when there is one — `stat` under `setpriv`. */
+function statForOfferAs(user: string | null, p: string): OfferStat {
+  if (!user || !path.isAbsolute(p)) return statForOffer(p);
+  const { cmd, argv } = statAsUserArgv(user, p);
+  try {
+    const st = parseStatOutput(execFileSync(cmd, argv, { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "pipe"] }));
+    return st ? { isFile: st.isFile, size: st.size, dev: st.dev, ino: st.ino } : "unreadable";
+  } catch (e) {
+    const err = String((e as { stderr?: unknown }).stderr ?? "");
+    return /No such file|Not a directory/.test(err) ? "missing" : "unreadable";
+  }
+}
+
+/** The same stat, async, for the download path; null when it cannot look. */
+function statAsUser(user: string, p: string): Promise<FileIdentity | null> {
+  const { cmd, argv } = statAsUserArgv(user, p);
+  return new Promise((resolve) =>
+    execFile(cmd, argv, { encoding: "utf8", timeout: 10_000 }, (err, out) => resolve(err ? null : parseStatOutput(out))),
+  );
+}
+
+/** Opens the bytes to send, for the whole file or an inclusive range. */
+interface ByteSource {
+  open(range: { start: number; end: number } | null): Readable;
+  /** Called instead of `open` when nothing will be sent (a 416). */
+  release(): void;
+}
+
+/** An already-open fd as a `ByteSource` — the fstat'ed file is the one streamed,
+ *  so nothing can be swapped between the check and the read. */
+function fdSource(fd: number): ByteSource {
+  return {
+    open: (range) => fs.createReadStream("", { fd, autoClose: true, ...(range ? { start: range.start, end: range.end } : {}) }),
+    release: () => fs.closeSync(fd),
+  };
+}
+
+/** Open a path for serving: no FIFO/device can hang us (O_NONBLOCK), and with
+ *  `nofollow` a symlink as the last component is refused outright. */
+function openForServe(p: string, nofollow: boolean): { fd: number; stat: fs.Stats } | null {
+  let fd: number;
+  try {
+    fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (nofollow ? fs.constants.O_NOFOLLOW : 0));
+  } catch {
+    return null;
+  }
+  try {
+    const stat = fs.fstatSync(fd);
+    if (stat.isFile()) return { fd, stat };
+  } catch {
+    /* fall through */
+  }
+  fs.closeSync(fd);
+  return null;
+}
+
 // Stream a vetted file back to the browser, honouring a single `Range` so a
 // <video> can seek and so Safari plays one at all (it demands a 206 before it
 // will start). Images/PDF/etc. get the same path — Range is harmless there and
@@ -4986,7 +5196,7 @@ function historyWithOffers(turns: HistoryTurn[], sessionId: string): HistoryTurn
 // else — including SVG/HTML — downloads, under the same nosniff + sandbox CSP.
 function serveStaticFile(
   req: express.Request, res: express.Response,
-  filePath: string, stat: fs.Stats, name: string,
+  name: string, size: number, open: ByteSource,
 ): void {
   const ct = contentTypeFor(name);
   const inline = (isImageFile(name) && ct !== "image/svg+xml") || isVideoFile(name);
@@ -4995,37 +5205,61 @@ function serveStaticFile(
   res.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
   res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename="${name.replace(/["\\]/g, "_")}"`);
   res.setHeader("Accept-Ranges", "bytes");
-  const range = parseByteRange(req.headers.range, stat.size);
+  const range = parseByteRange(req.headers.range, size);
   if (range === "unsatisfiable") {
-    res.setHeader("Content-Range", `bytes */${stat.size}`);
+    res.setHeader("Content-Range", `bytes */${size}`);
     res.status(416).end();
+    open.release();
     return;
   }
   const onErr = () => { if (!res.headersSent) res.status(500); res.end(); };
   if (range) {
     res.status(206);
-    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${stat.size}`);
+    res.setHeader("Content-Range", `bytes ${range.start}-${range.end}/${size}`);
     res.setHeader("Content-Length", String(range.end - range.start + 1));
-    fs.createReadStream(filePath, { start: range.start, end: range.end }).on("error", onErr).pipe(res);
-    return;
+  } else {
+    res.setHeader("Content-Length", String(size));
   }
-  res.setHeader("Content-Length", String(stat.size));
-  fs.createReadStream(filePath).on("error", onErr).pipe(res);
+  const stream = open.open(range ?? null);
+  res.on("close", () => stream.destroy());
+  stream.on("error", onErr).pipe(res);
 }
 
-app.get("/download", (req, res) => {
+/** `dd` as the drop user, as a `ByteSource`. The child dies with the response. */
+function asUserSource(user: string, p: string): ByteSource {
+  return {
+    open: (range) => {
+      const { cmd, argv } = readAsUserArgv(user, p, range);
+      const child = spawnChild(cmd, argv, { stdio: ["ignore", "pipe", "ignore"] });
+      child.on("error", () => child.stdout?.destroy(new Error("read failed")));
+      child.stdout!.on("close", () => { if (child.exitCode === null) child.kill(); });
+      return child.stdout!;
+    },
+    release: () => {},
+  };
+}
+
+app.get("/download", async (req, res) => {
   const session = String(req.query.session ?? "");
   const wanted = String(req.query.path ?? "");
   if (!session || !wanted) return res.status(400).type("text").send("session and path required");
   const chan = loadChannels().find((c) => c.sessionId === session);
   if (!chan?.cwd) return res.status(404).type("text").send("unknown session");
+  // A session's files are its content: the same group boundary as /diff.
+  if (!mayActFor(req, session)) return res.status(403).type("text").send("not your agent");
   // TWO sources, one rule: a path is servable only if THIS session offered it,
   // through the harness tool (the transcript) or through POST /files (the
   // registry). Checking the registry FIRST costs one small JSON read and spares
   // the transcript read entirely for a skill-delivered file — which on a long
   // session is megabytes. A missing transcript is therefore no longer fatal:
   // an agent can hand over a file before it has written one.
-  let allowed = offeredPaths(loadOffers(filesFileFor(process.cwd())), session).has(wanted);
+  //
+  // In multi-tenant the transcript lives in the agent's own, writable HOME, so
+  // an agent can forge a SendUserFile line into it. That is why the READ below
+  // runs with the agent's rights: a forged line buys it a file it could already
+  // read, nothing more.
+  const offers = loadOffers(filesFileFor(process.cwd()));
+  let allowed = offeredPaths(offers, session).has(wanted);
   if (!allowed) {
     let raw: string;
     try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session, channelStateHome(chan)), "utf8"); }
@@ -5033,30 +5267,167 @@ app.get("/download", (req, res) => {
     allowed = sentFilePaths(raw).has(wanted);
   }
   if (!allowed) return res.status(403).type("text").send("that file was not sent by this agent");
-  let stat: fs.Stats;
-  try { stat = fs.statSync(wanted); if (!stat.isFile()) throw new Error("not a file"); }
-  catch { return res.status(404).type("text").send("file no longer on disk"); }
-  serveStaticFile(req, res, wanted, stat, path.basename(wanted));
+  const who = sessionOsUser(session);
+  if (!who.ok) return res.status(403).type("text").send("this agent's group no longer exists");
+  const offer = offerFor(offers, session, wanted);
+  const swapped = () => res.status(409).type("text").send("the file changed since it was offered — send it again");
+  if (who.user) {
+    const st = await statAsUser(who.user, wanted);
+    if (!st?.isFile) return res.status(404).type("text").send("file no longer on disk");
+    if (!sameOfferedFile(offer, st)) return swapped();
+    return serveStaticFile(req, res, path.basename(wanted), st.size, asUserSource(who.user, wanted));
+  }
+  const opened = openForServe(wanted, false);
+  if (!opened) return res.status(404).type("text").send("file no longer on disk");
+  if (!sameOfferedFile(offer, opened.stat)) {
+    fs.closeSync(opened.fd);
+    return swapped();
+  }
+  serveStaticFile(req, res, path.basename(wanted), opened.stat.size, fdSource(opened.fd));
 });
 
-// Serve a file the USER dropped / pasted (or a Telegram attachment) — they all
-// land in MEDIA_DIR, referenced in the chat as `[Attached image: <path>]`. The
-// web renders that inline instead of the raw path (both surfaces then SHOW the
-// image). Scoped to MEDIA_DIR by BASENAME, so it can never be walked into another
-// file: `path.basename` strips any directory, and the resolved path is checked to
-// stay inside MEDIA_DIR. Behind the same password gate as everything else; the
-// same `nosniff` + `sandbox` CSP as /download neutralises an SVG opened directly.
-app.get("/media/:name", (req, res) => {
-  const base = path.basename(String(req.params.name ?? ""));
-  const dir = mediaDir();
-  const file = path.join(dir, base);
-  if (!file.startsWith(path.join(dir, path.sep)) && path.dirname(file) !== dir) {
-    return res.status(400).type("text").send("bad name");
+/**
+ * The bytes of a file an agent SENT, for the Telegram upload — the same rule as
+ * `/download` (invariant 60): read as the agent's OS user in multi-tenant, from
+ * an fstat'ed fd otherwise, regular files only, bounded by Telegram's own
+ * upload ceiling.
+ */
+async function readSessionFile(sessionId: string | null, p: string): Promise<Buffer<ArrayBuffer>> {
+  const MAX = 50 * 1024 * 1024;
+  if (!path.isAbsolute(p)) throw new Error("not an absolute path");
+  const who = sessionId ? sessionOsUser(sessionId) : { ok: DEPLOYMENT_MODE !== "multi-tenant", user: null };
+  if (!who.ok) throw new Error("unknown agent");
+  if (who.user) {
+    const user = who.user;
+    const st = await statAsUser(user, p);
+    if (!st?.isFile) throw new Error("not a readable file");
+    if (st.size > MAX) throw new Error("file too large for Telegram");
+    const { cmd, argv } = readAsUserArgv(user, p);
+    return new Promise((resolve, reject) =>
+      execFile(cmd, argv, { encoding: "buffer", maxBuffer: MAX + 1, timeout: 60_000 }, (err, out) =>
+        err ? reject(new Error("could not read the file as the agent's user")) : resolve(out),
+      ),
+    );
   }
-  let stat: fs.Stats;
-  try { stat = fs.statSync(file); if (!stat.isFile()) throw new Error("not a file"); }
-  catch { return res.status(404).type("text").send("no such media"); }
-  serveStaticFile(req, res, file, stat, base);
+  const opened = openForServe(p, false);
+  if (!opened) throw new Error("not a readable file");
+  try {
+    if (opened.stat.size > MAX) throw new Error("file too large for Telegram");
+    const buf = Buffer.alloc(opened.stat.size);
+    let off = 0;
+    while (off < buf.length) {
+      const r = fs.readSync(opened.fd, buf, off, buf.length - off, off);
+      if (r <= 0) break;
+      off += r;
+    }
+    return buf.subarray(0, off);
+  } finally {
+    fs.closeSync(opened.fd);
+  }
+}
+
+/**
+ * The directory a new attachment for `sessionId` is written to (invariant 60).
+ * Mono-tenant: the one flat media dir, as ever. Multi-tenant: that agent's
+ * GROUP subdirectory, created on first use and re-asserted every time — root
+ * owned, setgid on the group user's own group, 2750 — so only that group's
+ * user (and root) can read it, and nobody but root can write, plant or swap
+ * anything inside. Throws when the group cannot be resolved: an attachment
+ * with nowhere safe to go is refused, never dropped into a shared directory.
+ */
+function mediaDirForSession(sessionId: string | null): string {
+  const root = mediaDir();
+  const mt = DEPLOYMENT_MODE === "multi-tenant";
+  if (!mt) {
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    return root;
+  }
+  const ch = sessionId ? loadChannels().find((c) => c.sessionId === sessionId) : undefined;
+  if (!ch) throw new Error("no agent for this attachment yet");
+  const who = osUserForChannelGroup(ch.group, loadGroups(), commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }));
+  if (!who.ok) throw new Error("the agent's group no longer exists");
+  let gid: number | null = null;
+  if (who.user) {
+    gid = passwdGid(fs.readFileSync("/etc/passwd", "utf8"), who.user);
+    if (gid == null) throw new Error(`OS user ${who.user} not found`);
+  }
+  return ensureMediaGroupDir(mediaDirForGroup(root, ch.group, true), gid);
+}
+
+function ensureMediaGroupDir(dir: string, gid: number | null): string {
+  const uid = process.getuid?.() ?? 0;
+  const spec = mediaDirSpec(gid);
+  try {
+    const st = fs.lstatSync(dir);
+    if (!mediaDirTrusted({ isDirectory: st.isDirectory(), isSymbolicLink: st.isSymbolicLink(), uid: st.uid }, uid)) {
+      // Something we did not create sits where the group's directory goes —
+      // possibly planted while the old media dir was group-writable. Moved
+      // aside (never deleted: it may be someone's file), never written through.
+      const aside = `${dir}.untrusted-${Date.now()}`;
+      fs.renameSync(dir, aside);
+      console.warn(`media: ${dir} was not a server-owned directory — moved to ${aside}`);
+      fs.mkdirSync(dir, { mode: 0o700 });
+    }
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    fs.mkdirSync(dir, { mode: 0o700 });
+  }
+  fs.chownSync(dir, uid, spec.gid ?? uid);
+  fs.chmodSync(dir, spec.mode);
+  return dir;
+}
+
+/** Write a new media file: never through an existing name or symlink (`wx` is
+ *  O_CREAT|O_EXCL, which refuses a symlink outright), never world-readable. */
+function writeMediaFile(file: string, data: Buffer): void {
+  fs.writeFileSync(file, data, { flag: "wx", mode: mediaFileMode(DEPLOYMENT_MODE === "multi-tenant") });
+}
+
+// Serve a file the USER dropped / pasted (or a Telegram attachment) — they all
+// land in the media tree, referenced in the chat as `[Attached image: <path>]`.
+// The web renders that inline instead of the raw path (both surfaces then SHOW
+// the image). `/media/<name>` is the flat (mono-tenant / legacy) directory,
+// `/media/g-<group>/<name>` a group's own (multi-tenant, invariant 60), served
+// only to a caller who may see that group. Never a symlink (lstat, then an
+// O_NOFOLLOW open whose fstat must be the very file lstat saw), never a
+// directory, and in multi-tenant only a file the SERVER wrote. Behind the same
+// password gate as everything else; the same `nosniff` + `sandbox` CSP as
+// /download neutralises an SVG opened directly.
+app.get(["/media/:name", "/media/:key/:name"], (req, res) => {
+  const params = req.params as { key?: string; name?: string };
+  const ref = parseMediaRequest(params.key ? [params.key, String(params.name ?? "")] : [String(params.name ?? "")]);
+  if (!ref) return res.status(400).type("text").send("bad name");
+  const mt = DEPLOYMENT_MODE === "multi-tenant";
+  const root = mediaDir();
+  let dir = root;
+  if (ref.key) {
+    const groups = loadGroups();
+    const gid = groupForMediaKey(ref.key, groups.map((g) => g.id));
+    if (!gid) return res.status(404).type("text").send("no such media");
+    const chans = loadChannels();
+    if (!mayReachGroup({ mode: DEPLOYMENT_MODE, agent: requestAgent(req, chans), viewer: viewerFor(currentAccount(req)), group: gid, groups }))
+      return res.status(404).type("text").send("no such media");
+    dir = path.join(root, ref.key);
+    try {
+      const d = fs.lstatSync(dir);
+      if (!mediaDirTrusted({ isDirectory: d.isDirectory(), isSymbolicLink: d.isSymbolicLink(), uid: d.uid }, process.getuid?.() ?? 0))
+        throw new Error("untrusted");
+    } catch {
+      return res.status(404).type("text").send("no such media");
+    }
+  }
+  const file = path.join(dir, ref.name);
+  const uid = process.getuid?.() ?? 0;
+  let st: fs.Stats;
+  try { st = fs.lstatSync(file); } catch { return res.status(404).type("text").send("no such media"); }
+  if (!mediaServable({ isFile: st.isFile(), isSymbolicLink: st.isSymbolicLink(), uid: st.uid }, mt, uid))
+    return res.status(404).type("text").send("no such media");
+  const opened = openForServe(file, true);
+  if (!opened || opened.stat.ino !== st.ino || opened.stat.dev !== st.dev) {
+    if (opened) fs.closeSync(opened.fd);
+    return res.status(404).type("text").send("no such media");
+  }
+  serveStaticFile(req, res, ref.name, opened.stat.size, fdSource(opened.fd));
 });
 
 // Install (or repair) the global Claude Code CLI on demand — `npm i -g
@@ -8841,7 +9212,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant");
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).

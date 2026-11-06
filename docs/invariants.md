@@ -747,7 +747,7 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     The fix is the OTHER credential it already carries. `SHADOK_SESSION_KEY`
     proves "I am this agent", which is a fact with no expiry date, and it grants
     exactly what the cookie granted (the bootstrap admin — since narrowed: the
-    key now makes the caller the AGENT itself, invariant 58) — so accepting it via
+    key now makes the caller the AGENT itself, invariant 59) — so accepting it via
     `x-shadok-session-key` removes the cliff without widening anything. Three
     things make it work, and each replaced something that did not.
     **Derive the key, never store it.** It was a `randomUUID` in an in-memory
@@ -1698,3 +1698,48 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     code — rotate it, then reload the agents that predate the change. With no
     password set, nothing here is a boundary: anything on the machine is the
     admin, as before.
+
+<a id="inv-64"></a>
+
+60. **What the server does on a group's behalf, it does with that group's
+    rights — never root's.** Multi-tenant drops every AGENT to its group's OS
+    user, and that wall meant nothing for the three things the SERVER did for
+    an agent, as root. A cron `check` ran `sh -c` as the server with the
+    server's whole environment (GUI password, Telegram and backend tokens,
+    every `SHADOK_*`), and `POST`/`DELETE`/`GET /crons` checked no ownership —
+    a root shell, and a read of every group's monitoring, for anyone who could
+    reach the route. `POST /files` stat'ed and `GET /download` streamed AS ROOT
+    whatever path an agent named, following symlinks, with no group check:
+    offer `/root/.shadok-ai/secrets.json`, or offer a harmless file and swap it
+    for a symlink afterwards. And media was ONE directory under the shared pot,
+    2775 `shadok-shared` — every `sk-*` user's group — so any agent read,
+    overwrote or symlink-planted another group's screenshots, and `/media`
+    (root, following links) served the plant.
+    The rule that fixes all three: **act as the target's OS user, and decide
+    who may ask from the SESSION, not the caller's principal.** A cron guard
+    runs through the same `setpriv` drop as the agent's spawn
+    (`cronCheckCommand`), in the channel's cwd, with an ALLOW-listed env
+    (`cronCheckEnv`: PATH, locale, zone, proxy/CA, the agent's own session
+    plumbing, then the profile's secrets) — an allow-list because the server's
+    env is exactly where unknown secrets live, and a deny-list would rot
+    (invariant 29's subtraction lesson). Mono-tenant keeps the server's user,
+    since there is only one, but gets the same clean env. A file is stat'ed
+    and READ as the agent's user (`statAsUserArgv`, `readAsUserArgv` — `stat`
+    and `dd` under `setpriv`), which also neutralises the transcript forgery a
+    writable HOME allows: a forged `SendUserFile` line buys an agent a file it
+    could already read. The Telegram bridge's upload of a sent file goes
+    through the same read (`readSessionFile`, injected as `readAgentFile`) —
+    it used to `readFile` the agent's path as root and post it to the topic.
+    Mono-tenant reads from an fd it fstat'ed, and an offer
+    records dev+inode so a swap after the offer is refused (409). Media goes to
+    a root-owned root OUTSIDE the pot (the pot is group-writable with no sticky
+    bit, so anything in it can be renamed away), one `g-<group>` subdirectory
+    per group, root:<group user> 2750, files 0640 written `wx` (O_EXCL never
+    follows a link); `/media` lstats, opens O_NOFOLLOW, compares the inode, and
+    in multi-tenant serves only server-written files of a group the caller can
+    see. Authorisation is `mayActOnSession`: an agent (per-session key) acts on
+    itself, its own group or the commons, whatever principal its key maps to —
+    so it holds both while the key IS the bootstrap admin and after it is not.
+    Already-sent attachments stay where they are (their paths are in
+    transcripts); the old shared dir is closed to writes (0755) and its
+    server-written files are copied flat into the new root for `/media`.
