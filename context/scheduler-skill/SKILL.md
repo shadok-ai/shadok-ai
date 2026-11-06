@@ -48,6 +48,9 @@ password, no cookie. A credential the check needs goes in the profile.
 
 You can only schedule on an agent you may drive: on a multi-tenant instance,
 yourself, a sibling of your own group, or a shared (public) agent.
+A cron with a `check`, though, may only target YOURSELF (the check runs with the
+target's secrets, so a guard on a sibling would hand you its credentials): the
+server answers 403. A check-less cron on a sibling is fine.
 
 So reference a secret by name (`$MY_API_KEY`) and trust it: never hardcode a
 value into a check script, and never try to source a shell profile to get one.

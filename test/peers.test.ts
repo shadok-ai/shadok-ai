@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { randomBytes } from "node:crypto";
+import os from "node:os";
 import {
   signPeerToken,
+  peersOutFileFor,
+  tierPeersOutSeed,
   peerTokenName,
   peerFromToken,
   normPeerName,
@@ -216,4 +219,35 @@ test("agentInvitePrompt: member says full member, restricted says own-agents-onl
   const d = agentInvitePrompt({ url: "http://h", ticket: "t" });
   assert.match(d, /only see and drive the agents you spawn/);
   assert.ok(!/full member/.test(d));
+});
+
+test("peersOutFileFor: anchored on the TIER's state home, so a dropped agent can read it", () => {
+  assert.equal(
+    peersOutFileFor("/workspace", "/home/main"),
+    "/home/main/.shadok-ai/peers-out/-workspace.json",
+  );
+  assert.equal(
+    peersOutFileFor("/workspace", "/home/sk-comex"),
+    "/home/sk-comex/.shadok-ai/peers-out/-workspace.json",
+  );
+});
+
+test("peersOutFileFor: no state home → the server's own, so mono-tenant is unchanged", () => {
+  assert.equal(peersOutFileFor("/workspace"), `${os.homedir()}/.shadok-ai/peers-out/-workspace.json`);
+});
+
+test("tierPeersOutSeed: the commons inherits the pre-tier registry, once", () => {
+  assert.equal(tierPeersOutSeed({ tier: "commons", serverHasFile: true, tierHasFile: false }), true);
+});
+
+test("tierPeersOutSeed: never over a registry the tier already manages", () => {
+  assert.equal(tierPeersOutSeed({ tier: "commons", serverHasFile: true, tierHasFile: true }), false);
+});
+
+test("tierPeersOutSeed: a private group is never handed a credential nobody granted it", () => {
+  assert.equal(tierPeersOutSeed({ tier: "group", serverHasFile: true, tierHasFile: false }), false);
+});
+
+test("tierPeersOutSeed: nothing to carry is not an error", () => {
+  assert.equal(tierPeersOutSeed({ tier: "commons", serverHasFile: false, tierHasFile: false }), false);
 });

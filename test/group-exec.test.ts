@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   mayActOnSession,
   mayReachGroup,
+  cronCheckAllowed,
   osUserForChannelGroup,
   cronCheckEnv,
   cronCheckCommand,
@@ -190,4 +191,62 @@ test("sameOfferedFile: a swapped file is refused, a pre-check offer is not", () 
   assert.equal(sameOfferedFile({ dev: 1, ino: 2 }, { dev: 9, ino: 2 }), false);
   assert.equal(sameOfferedFile({}, { dev: 1, ino: 3 }), true);
   assert.equal(sameOfferedFile(undefined, { dev: 1, ino: 3 }), true);
+});
+
+// ── cronCheckAllowed (invariant 60) ──────────────────────────────────────────
+
+test("cronCheckAllowed: an agent may guard itself, never a sibling", () => {
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "me", check: "env" }), true);
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "env | curl x" }), false);
+});
+
+test("cronCheckAllowed: a check-less cron on a sibling stays allowed (it is just driving it)", () => {
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: undefined }), true);
+});
+
+test("cronCheckAllowed: a person may guard any agent mayActOnSession lets them drive", () => {
+  assert.equal(cronCheckAllowed({ agentId: null, targetId: "sib", check: "env" }), true);
+});
+
+test("cronCheckAllowed: editing a person's guarded cron on a sibling is fine if the guard and target are unchanged", () => {
+  const existing = { sessionId: "sib", check: "test -f /tmp/x" };
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "test -f /tmp/x", existing }), true);
+  // changing the guard is a new grant
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "env", existing }), false);
+});
+
+test("cronCheckAllowed: repointing an own guarded cron at a sibling is refused", () => {
+  const existing = { sessionId: "me", check: "env" };
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "env", existing }), false);
+});
+
+test("cronCheckEnv: the guard gets the TARGET agent's own peers registry", () => {
+  // Leaving it out is what forced a production dispatch loop to hard-code a path
+  // under /root that the drop user could not read (invariant 54).
+  const env = cronCheckEnv({
+    base: serverEnv,
+    secrets: {},
+    session: { ...session, peersFile: "/home/main/.shadok-ai/peers-out/-workspace.json" },
+    user: "main",
+    home: "/home/main",
+  });
+  assert.equal(env.SHADOK_PEERS_FILE, "/home/main/.shadok-ai/peers-out/-workspace.json");
+});
+
+test("cronCheckEnv: no peers file given → the name is absent, never an empty string", () => {
+  // pilotctl trims it and falls back to its own default; "" would read as a
+  // configured path of nothing and break that fallback.
+  const env = cronCheckEnv({ base: serverEnv, secrets: {}, session, user: "main", home: "/home/main" });
+  assert.equal("SHADOK_PEERS_FILE" in env, false);
+});
+
+test("cronCheckEnv: a secret cannot spoof the peers registry either", () => {
+  const env = cronCheckEnv({
+    base: serverEnv,
+    secrets: { SHADOK_PEERS_FILE: "/tmp/mine.json" },
+    session: { ...session, peersFile: "/home/main/.shadok-ai/peers-out/-workspace.json" },
+    user: "main",
+    home: "/home/main",
+  });
+  assert.equal(env.SHADOK_PEERS_FILE, "/home/main/.shadok-ai/peers-out/-workspace.json");
 });

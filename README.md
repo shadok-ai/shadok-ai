@@ -161,14 +161,19 @@ Enter to skip; you can add it later from the web UI).
   `http://localhost:PORT/…`, which your browser cannot reach when the agents run
   in a container or on a remote box. Paste that failed address under *Finish a
   sign-in* in the Secrets panel (`POST /oauth-relay`, web UI only): the cockpit
-  opens it on the agents' machine. Loopback http addresses with a port only.
+  opens it on the agents' machine. Loopback http addresses with a port only,
+  and only a callback (`code=`, `state=` or `error=` in the query); the
+  cockpit's own ports and well-known local services (debuggers, Docker's API,
+  databases) are refused, and only the listener's HTTP status comes back.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
   daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
   model*: prints nothing → nothing to report, the agent is never woken and the
   run costs **zero tokens**; prints something → that output is prepended to the
   prompt and the agent runs. A watcher that is quiet most of the day costs
-  nothing most of the day.
+  nothing most of the day. The guard runs with the target agent's profile
+  secrets, so an agent may put one only on itself (a person may guard any agent
+  they can drive).
 - **Agents that report back** — an agent that launches other agents is told when
   each one finishes, blocks on a question, or dies. It hears about **its own**
   children and nothing else, so a busy channel never wakes it. What arrives is
@@ -196,6 +201,12 @@ Enter to skip; you can add it later from the web UI).
   Transcription is installed **on first use** — a static ffmpeg, whisper.cpp and
   a 181 MB model — and the topic says so rather than going quiet for minutes.
   `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
+  Every download is checked against a SHA-256 pinned in `src/whisper.ts`
+  (ffmpeg per platform, the whisper.cpp source, the model at a fixed Hugging
+  Face commit); a mismatch is refused and transcription stays off until the
+  next restart. Only `ggml-small-q5_1.bin` and `ggml-medium-q5_0.bin` have a
+  pinned hash — any other model needs `SHADOK_WHISPER_MODEL_SHA256=<hex>`, or it
+  is refused.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
 - **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
@@ -246,6 +257,9 @@ Enter to skip; you can add it later from the web UI).
   with a command goes to the agent bare, without shadok's context line or
   ledger update ahead of it, since Claude Code reads a command only when `/`
   comes first.
+  The ✦ button beside the paperclip opens the same menu without typing, like
+  an emoji picker: the chosen skill goes in **front** of what you already
+  wrote (which becomes its argument), replacing a command already there.
 - **Files you hand an agent** — paste or drop a file into the composer, or pick
   one with the 📎 button beside it (an image, a PDF, a CSV…), and it becomes a **chip** above the text box: a
   thumbnail for an image, a named tag for anything else, each with a ✕ to
@@ -293,6 +307,14 @@ Enter to skip; you can add it later from the web UI).
   - **The detail panel.** Its numbers, the agents that have it (group by group:
     each agent and its runs), the secrets agents running it get, and its
     feedback.
+  - **Creating.** The new-skill form asks for a **name** (what people see) and
+    a **technical name** (what agents call it, `/name:name`), proposed from the
+    name until you type your own. Choose it then: it is the skill's repository
+    and plugin name, so it cannot be changed afterwards. A name already taken
+    gets a number (`-2`, `-3`…), and the form says so before you create it.
+  - **Renaming.** Click a skill's name at the top of its editor to rename it
+    (Enter saves, Escape cancels). Only the displayed name changes: agents keep
+    calling it by its technical name, so attached agents are not disturbed.
   - **Sharing.** A skill is shared with **only me**, with **one or more
     groups**, or with **everyone**, and that is where it runs: every agent
     of those groups has it (everyone: every agent; only me: only the agents you
@@ -347,8 +369,14 @@ Enter to skip; you can add it later from the web UI).
   a profile edit that bumped no version still does. A `↻` lights up on the agent
   (hover for the reasons) and the **version menu** shows *Reload N agents to
   apply changes*; a reload respawns each one in place, keeping its history.
-  Agents started before a given update stay on the old context until reloaded —
-  this is how you spot the ones still running it.
+  **You don't have to click it**: the cockpit applies it by itself as soon as the
+  agent has nothing to lose — no turn running, no question waiting, nothing in
+  its input box, no background shell or monitor, no child notification queued —
+  and has been quiet for two minutes (the ↻ tooltip then says so).
+  One agent at a time, no nudge afterwards, and at most once per 30 minutes per
+  agent so a change that does not stick cannot loop. A message you send while
+  the respawn runs waits a few seconds for it instead of being refused. Clicking
+  still reloads at once; `SHADOK_AUTO_RELOAD=0` turns the automatic part off.
 - **Phone layout** — the cockpit is a fixed chassis that never pans sideways,
   sized on the *visual* viewport so the composer stays clear of the browser's
   own bar and, when the keyboard opens, sits right above it (the instrument bar
@@ -687,6 +715,38 @@ the same-origin policy, so without that check any page you happen to visit could
 drive your agents. Behind a reverse proxy that rewrites `Host`, list the public
 origin in `SHADOK_ORIGINS`.
 
+**Which host names it answers (DNS rebinding).** A page on `evil.com` can
+re-point its own name at `127.0.0.1`; its requests then carry `Origin` *and*
+`Host` `evil.com:3789` and look same-origin. So the server also checks the
+`Host` header, on every request and on the WebSocket upgrade:
+
+- **No password** (the local default): only `localhost` / `*.localhost`, any IP
+  address, and this machine's own name (`hostname`, `hostname.local`) are
+  answered, on any port. Anything else gets `403 host not allowed` and one log
+  line. If you really reach a password-less cockpit through another name (an
+  `/etc/hosts` alias, a same-host proxy), add it to `SHADOK_ALLOWED_HOSTS`.
+- **With a password**: every `Host` is answered, as before — a rebound page
+  holds no cookie for your cockpit, so it is a stranger at the login page. This
+  is what keeps a container behind nginx/Cloudflare on its own domain working
+  with no change. Setting `SHADOK_ALLOWED_HOSTS` tightens it to that list
+  (loopback names and IPs always stay allowed — agents call `127.0.0.1`).
+
+`SHADOK_ALLOWED_HOSTS` is comma-separated: names, `host:port` or whole origins
+(the port is ignored), `.example.com` for a domain and its subdomains, `*` to
+switch the check off. The hosts in `SHADOK_ORIGINS` are accepted too.
+
+**Sign-in attempts are limited.** A failed `POST /login` is counted against the
+caller's address (10 per 15 minutes) and against the account (20 per 15
+minutes, from all addresses together); past that the answer is `429` with a
+`Retry-After`, before any password is checked. Enrollment codes are counted the
+same way. An unknown user name costs the server exactly what a real one does,
+so the timing says nothing about which accounts exist. The counters live in
+memory: a restart clears them. Behind a proxy the address is the one the proxy
+appended last to `X-Forwarded-For` — trusted only when the proxy connects from
+this machine or a private range (the Docker bridge); a proxy that sends no
+`X-Forwarded-For` puts every visitor in one address bucket, so ten wrong
+passwords from anyone lock the login for everyone for 15 minutes.
+
 ### Behind TLS (nginx, Caddy…)
 
 Serving the cockpit over HTTPS works, with one requirement: **the proxy must
@@ -703,6 +763,7 @@ location / {
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # see below
+    proxy_set_header X-Forwarded-Proto $scheme;                   # Secure cookies
     client_max_body_size 50m;   # match the server's paste limit
 }
 ```
@@ -715,6 +776,14 @@ host connects from `127.0.0.1` too; the `X-Forwarded-For` line is what tells the
 server the request was relayed. Without it, requests through a same-host proxy
 look local. (A proxy on another host, or nginx in front of a Docker container,
 is already seen as the network.)
+
+The same header is what the sign-in limiter keys on (see "Exposing it beyond
+this machine").
+
+**Secure cookies.** With `X-Forwarded-Proto: https` from a proxy on this machine
+or a private range (Docker bridge), the session cookies are set `Secure`, so a
+browser never sends them over plain http. Without that header they are set as
+before.
 
 The client picks `wss://` on its own when the page is HTTPS, so there is nothing
 to configure on that side.
@@ -929,9 +998,12 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `PORT` | HTTP/WS port |
 | `SHADOK_HOST` | interface to bind (default `127.0.0.1`, this machine only) |
 | `SHADOK_GUI_PASSWORD` | require a password for the GUI — overrides a password saved by `--password` |
-| `SHADOK_ORIGINS` | extra browser origins allowed, comma-separated (reverse proxy) |
+| `SHADOK_ORIGINS` | extra browser origins allowed, comma-separated (reverse proxy); their hosts also pass the Host check |
+| `SHADOK_ALLOWED_HOSTS` | host names the cockpit answers besides its own (DNS-rebinding guard); with a password, setting it makes the check strict. `*` disables it |
 | `SHADOK_TMUX=0` | force the node-pty transport instead of tmux |
 | `SHADOK_IDLE_MIN` | minutes with no client before a session is reclaimed (60) |
+| `SHADOK_AUTO_RELOAD=0` | don't apply a pending "reload to apply" by itself — leave it to the ↻ click |
+| `SHADOK_AUTO_RELOAD_IDLE_SEC` | how long an agent must be quiet before that automatic reload (120) |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
@@ -1034,6 +1106,13 @@ The numbers tell you which channel a version came from. An alpha carries the
 commit count (`0.3.78`); a promotion is a round `0.4.0`. The auto-update switch
 and the reload behaviour are identical on both.
 
+An update installs with npm's lifecycle scripts **off** (`--ignore-scripts`):
+only node-pty's native build is run, explicitly, through `npm rebuild node-pty`.
+Each release ships its tested lockfile as `npm-shrinkwrap.json`, so every
+transitive dependency lands at the exact version and integrity hash CI ran.
+The install happens in a staging copy of `~/.shadok-ai/app` and replaces it only
+once complete, so a failed native build leaves the running version in place.
+
 ```bash
 ```
 
@@ -1089,7 +1168,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 | Message | Purpose |
 |---|---|
-| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
+| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"peer"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke. It is DERIVED by the server from what the connection proved (system-drive secret, Telegram-bridge secret, agent session key, peer token, same-origin browser); the frame's own `origin` is only honoured to narrow an unauthenticated local client to `"cli"`/`"boot"`. A line of the prompt text shaped like a header, ledger block or cron/agent mark is prefixed with `\` so it stays text — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
 | `{type:"prompt", text, force?}` | sends a prompt (`force` bypasses the pace guard) |
 | `{type:"choose", n}` | single-select dialog: picks and validates option n |
 | `{type:"toggle", n}` / `{type:"confirm"}` | multi-select: toggles option n / submits |
@@ -1112,7 +1191,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"stream-tool", id, name, summary}` / `{type:"stream-result", …}` | tool call / tool result |
 | `{type:"tokens", tokens}` / `{type:"context", pct}` | token usage / context fill |
 | `{type:"parent", parent}` | the channel's parent changed (broadcast, so every tab follows) |
-| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web or agent prompt (the signed-in account / the calling agent's tab name) and never taken from the frame |
+| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web, agent or peer prompt (the signed-in account / the calling agent's tab name / the peer's name); a frame's `from` is believed only from the Telegram bridge |
 | `{type:"dialog", question, options:[{n,label,hint,checked?}], multi}` | choice pending |
 | `{type:"history", turns:[…]}` | transcript replayed when resuming/attaching |
 | `{type:"screen", text, working}` | rendered TUI screen (whenever it changes) |

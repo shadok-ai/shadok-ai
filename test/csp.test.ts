@@ -133,3 +133,42 @@ test("index.html: chaque module importé porte la version", () => {
   const nus = imports.filter((u) => !u.includes("?v=__ASSET_V__"));
   assert.deepEqual(nus, [], `sans version, ces modules peuvent être servis périmés : ${nus.join(", ")}`);
 });
+
+test("no form may submit natively, anywhere (form-action 'none')", () => {
+  // An agent-rendered `<form action="https://evil/…">` asking for the password
+  // must not be able to post what was typed off the origin.
+  assert.equal(directives(cspHeader("n"))["form-action"], "'none'");
+});
+
+test("every form in the page and the login page is handled in script, never submitted natively", () => {
+  // form-action 'none' blocks a NATIVE submission: a form whose submit handler
+  // forgot preventDefault would silently stop working. Each form must have one.
+  const html = fs.readFileSync(INDEX, "utf8");
+  for (const m of html.matchAll(/<form id="([^"]+)"/g)) {
+    const id = m[1];
+    if (id === "composer") {
+      assert.match(html, /composer\.addEventListener\("submit"/);
+      continue;
+    }
+    assert.match(html, new RegExp(`\\$\\("${id}"\\)\\.addEventListener\\("submit"`), `form #${id} has no submit handler`);
+  }
+  const server = fs.readFileSync(path.join(HERE, "..", "src", "server.ts"), "utf8");
+  assert.doesNotMatch(server, /<form[^>]*\saction=/, "a served form posts natively");
+});
+
+test("agent Markdown is sanitised with the shared config at EVERY call site", () => {
+  const html = fs.readFileSync(INDEX, "utf8");
+  // The only DOMPurify.sanitize call in the page is the shared helper's, and it
+  // passes AGENT_MD_PURIFY. A bare sanitize() elsewhere would use the defaults,
+  // which allow <form>, <input> and style= (the phishing overlay).
+  const calls = [...html.matchAll(/DOMPurify\.sanitize\(([^;\n]*)/g)].map((m) => m[1]);
+  assert.equal(calls.length, 1, `expected one sanitize call, got: ${calls.join(" | ")}`);
+  assert.match(calls[0], /,\s*AGENT_MD_PURIFY\)/);
+  assert.doesNotMatch(html, /innerHTML\s*=\s*marked\.parse/);
+  const cfg = html.match(/const AGENT_MD_PURIFY = Object\.freeze\(\{([\s\S]*?)\}\);/);
+  assert.ok(cfg, "AGENT_MD_PURIFY not found");
+  for (const tag of ["form", "input", "button", "textarea", "select", "option", "style", "iframe", "object", "embed"]) {
+    assert.match(cfg[1], new RegExp(`"${tag}"`), `${tag} not forbidden`);
+  }
+  assert.match(cfg[1], /FORBID_ATTR:\s*\["style"\]/);
+});

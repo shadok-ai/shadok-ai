@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from "node:crypto";
 import { instanceKey } from "./paths.js";
 
 /**
@@ -91,6 +91,49 @@ export function verifyPassword(plain: string, hash: string): boolean {
   } catch {
     return false;
   }
+}
+
+function scryptAsync(plain: string, salt: Buffer, len: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => scrypt(plain, salt, len, (err, key) => (err ? reject(err) : resolve(key))));
+}
+
+/**
+ * The async twins, for the request path. `scryptSync` runs ON the event loop:
+ * every sign-in attempt froze every agent's I/O for the length of a hash, and a
+ * guesser could hold the server down that way. `scrypt` runs on the libuv pool.
+ */
+export async function hashPasswordAsync(plain: string): Promise<string> {
+  const salt = randomBytes(16);
+  const key = await scryptAsync(plain, salt, 64);
+  return `scrypt$${salt.toString("hex")}$${key.toString("hex")}`;
+}
+
+export async function verifyPasswordAsync(plain: string, hash: string): Promise<boolean> {
+  const parts = String(hash ?? "").split("$");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  try {
+    const salt = Buffer.from(parts[1], "hex");
+    const want = Buffer.from(parts[2], "hex");
+    if (!salt.length || !want.length) return false;
+    const got = await scryptAsync(plain, salt, want.length);
+    return got.length === want.length && timingSafeEqual(got, want);
+  } catch {
+    return false;
+  }
+}
+
+/** A hash no password matches (the derived half is all zeros), same shape and
+ *  cost as a real one. */
+const DUMMY_HASH = `scrypt$${"5a".repeat(16)}$${"00".repeat(64)}`;
+
+/**
+ * The check an UNKNOWN account (or an invitation not yet redeemed) gets: the
+ * same scrypt as a real one, always false. Answering such a name at once while
+ * a real one took a hash's time told a guesser which accounts exist.
+ */
+export async function burnPasswordCheck(plain: string): Promise<false> {
+  await verifyPasswordAsync(plain, DUMMY_HASH);
+  return false;
 }
 
 /**
@@ -262,8 +305,10 @@ export function inviteVerdict(
  * The security property of the accounts feature, in one place: for a WEB client
  * the session decides and the frame's claim is discarded, because a browser can
  * put anything in `from`. The Telegram bridge is a trusted bridge that knows its
- * sender, so it keeps naming them; other origins (cli, cron) are the server's
- * own callers and keep whatever they supplied.
+ * sender, so it keeps naming them — and only it: `origin` is derived from
+ * the CONNECTION (`connectionOrigin`, src/promptmeta.ts), so "telegram" means
+ * the bridge proved itself with its per-process secret. Other origins (cli,
+ * cron, boot) name nobody: a `from` they carry is a claim nobody verified.
  *
  * An AGENT prompt (pilotctl, `origin: "agent"`) follows the WEB rule, not the
  * bridge one: the name comes from the session key that signed the socket, and a
@@ -276,10 +321,17 @@ export function promptAuthor(
   sessionName: string | undefined,
   claimed: string | undefined,
   callerAgent?: string | undefined,
+  callerPeer?: string | undefined,
 ): string | undefined {
   if (origin === "web") return sessionName;
   if (origin === "agent") return callerAgent;
-  return claimed;
+  if (origin === "peer") return callerPeer;
+  // The bridge is the ONE caller whose claim is believed — and `origin` is
+  // "telegram" only when the connection proved it is the bridge
+  // (`connectionOrigin`), never because a frame said so. Anything else (cli,
+  // cron, boot) names nobody: it writes its own frames.
+  if (origin === "telegram") return claimed;
+  return undefined;
 }
 
 /**
