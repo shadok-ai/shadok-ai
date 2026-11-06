@@ -309,9 +309,12 @@ Enter to skip; you can add it later from the web UI).
     with **Run on a schedule…**. An agent can also be born with it, from the
     new-agent dialog or with `pilotctl spawn --skill`. Agents report problems
     with `factory.mjs feedback`.
-  - **Secrets travel by name.** A saved skill gives the agents running it the
-    secrets it declares, plus any vault name its code reads; the panel and the
-    Save message name them. A save or push holding a vault value is refused.
+  - **Secrets travel by name, and only once you approve them.** A saved skill
+    asks for the secrets it declares, plus any vault name its code reads. Save
+    (or giving it to an agent of another group) lists those names and asks you
+    to approve them; agents receive only the names you approved. A save or push
+    holding a vault value is refused, and so is a push carrying a symlink or a
+    submodule.
   - **Also:** import from `~/.claude/skills`, make a variant, archive.
   - Design: `docs/superpowers/specs/2026-10-29-skill-factory-design.md`.
 - **Diff panel** — what an agent actually changed, against its base.
@@ -418,12 +421,23 @@ Whoever enters the code becomes the owner of the bot's DMs. A group bound before
 pairing existed stays bound; to move to another group, unbind it in the panel
 and pair again.
 
+**Operators.** Being in the board group lets you talk to its agents, answer their
+dialogs and use the per-topic commands — not act on the host. The commands that
+reach the vault, the Claude account or the process (`/secret`, `/unsecret`,
+`/login`, `/code`, `/mttoken`, `/mtcode`, `/update`, and `/spawn` with an
+explicit profile) are reserved to **operators**: whoever typed a pairing code —
+`/setup <code>` in the board, or the DM pairing (the DM owner is always one).
+To make someone an operator (or yourself, on a board bound before operators
+existed and with no DM owner), click **Pair Telegram** again and have them send
+`/setup <code>` in the already-bound group. Anyone else gets a refusal saying
+exactly that. Unbinding the group in the panel clears its operators.
+
 Add your bot to a group with **Topics** enabled, make it an admin with *Manage
 topics* (and *Delete messages* so `/secret` can scrub values), then in the group:
 
 | Command | |
 |---|---|
-| `/setup <code>` | bind this group as the board (one group per instance), with the code from the panel's **Pair Telegram** |
+| `/setup <code>` | bind this group as the board (one group per instance), with the code from the panel's **Pair Telegram** — in an already-bound board, it makes the sender an operator |
 | `/spawn [profile] <name>` | new isolated agent in its own topic (also a web tab) |
 | `/stop` (alias `/esc`) | interrupt the current turn — does **not** end the session |
 | `/new` · `/end` | reset · kill the session |
@@ -432,7 +446,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
 | `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
-| `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault |
+| `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault; an existing name is never replaced unless you append `--overwrite` |
 | `/update` | fetch `@latest` and respawn |
 
 Creating a topic by hand also spawns an agent. Anything that isn't a command is
@@ -1127,7 +1141,14 @@ or door that caused it; names only, never a value; filters `secret`, `action`,
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
 `/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
-returns the cwd to start the tweak agent in), `/media/<name>` (GET — serves a
+returns the cwd to start the tweak agent in). The instance-wide writes —
+`/autoupdate`, `/update-channel`, `/permission-mode`, `POST /ledger`, a bare
+`POST /restart-all`, the Claude sign-in (`POST /auth/login`, `/auth/code`,
+`DELETE /auth/login`), `PUT /title`, `PUT /theme`, `/tweak/prepare` and
+`DELETE /profiles` — are **admin only, from the browser**; a member sees those
+controls disabled. `PUT /profiles` is admin only on a multi-tenant instance
+(profiles are global there), and `POST /restart-all {sessions:[…]}` stays open,
+narrowed to the agents the caller may drive. Also `/media/<name>` (GET — serves a
 pasted/dropped or Telegram attachment back for inline display; sandboxed, basename
 only), and the sign-in group: `/auth` (GET
 — `{loggedIn, email?, subscriptionType?, tokenExpiresAt?, accessExpiresAt?, backend?, backendModel?}`;

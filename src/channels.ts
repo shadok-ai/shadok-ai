@@ -325,15 +325,30 @@ export function channelForTelegram(chatId: number, threadId?: number): Channel |
  * agent jumped home. An omitted key therefore keeps the stored value — omit,
  * never null-by-omission (invariant 1); an explicit null still ungroups.
  */
-export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds: Set<string>): Channel[] {
+export function mergeChannels(
+  stored: Channel[],
+  clientList: Channel[],
+  liveIds: Set<string>,
+  /**
+   * Can the CALLER see this stored row? `GET /channels` filters by group, so a
+   * member's tab never holds another group's rows — and its routine PUT used to
+   * ERASE every one of them that was dormant (not live, not Telegram-bound):
+   * their keys died with the row and the group binding was lost. A row the
+   * caller cannot see is now preserved untouched, and a client row naming it is
+   * ignored, so a caller can neither drop nor rename what it cannot see.
+   * Omitted → every row is visible (mono-tenant, internal callers).
+   */
+  canSee: (c: Channel) => boolean = () => true,
+): Channel[] {
   const byId = new Map(stored.map((c) => [c.sessionId, c]));
   const result: Channel[] = [];
   const seen = new Set<string>();
   for (const c of Array.isArray(clientList) ? clientList : []) {
     if (!c || typeof c.sessionId !== "string") continue;
     if (seen.has(c.sessionId)) continue; // the client sent the same agent twice → write it once
-    seen.add(c.sessionId);
     const prev = byId.get(c.sessionId);
+    if (prev && !canSee(prev)) continue; // not theirs to write: kept below, untouched
+    seen.add(c.sessionId);
     if (!prev) {
       // A brand-new row the client just created. `group` is SERVER_OWNED and
       // drives a privilege drop to that group's OS user on resume, so a client
@@ -360,7 +375,8 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
   }
   for (const c of stored) {
     if (seen.has(c.sessionId)) continue;
-    if (liveIds.has(c.sessionId) || c.telegram) result.push(c); // never erase live/Telegram
+    // never erase live/Telegram, nor a row the caller cannot even see
+    if (liveIds.has(c.sessionId) || c.telegram || !canSee(c)) result.push(c);
   }
   // The main channel — a GROUP's General topic (no threadId) — is always named
   // "general", server-authoritative so a stale client can't rename it. A DM
@@ -376,8 +392,12 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
   return result;
 }
 
-export function mergeClientChannels(clientList: Channel[], liveIds: Set<string>): Channel[] {
-  const result = mergeChannels(loadChannels(), clientList, liveIds);
+export function mergeClientChannels(
+  clientList: Channel[],
+  liveIds: Set<string>,
+  canSee?: (c: Channel) => boolean,
+): Channel[] {
+  const result = mergeChannels(loadChannels(), clientList, liveIds, canSee);
   saveChannels(result);
   return result;
 }
@@ -476,6 +496,18 @@ export function loadTgOwner(): number | null {
 }
 export function saveTgOwner(userId: number | null): void {
   writeJson("telegram-owner", userId == null ? [] : [userId]);
+}
+
+/**
+ * Telegram OPERATORS: the user ids that redeemed a pairing code in the board
+ * group (`src/tg-operators.ts`). Only they may run the host-wide commands
+ * (`/secret`, `/login`, `/update`…). Beside the owner file, same shape.
+ */
+export function loadTgOperators(): number[] {
+  return readJson("telegram-operators").filter((v): v is number => typeof v === "number");
+}
+export function saveTgOperators(ids: number[]): void {
+  writeJson("telegram-operators", ids);
 }
 
 /**

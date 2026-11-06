@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
 import { scopeVisibleTo, recordRun, skillOfCall } from "./factory.js";
-import { attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
+import { acceptanceFor, attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -103,6 +103,7 @@ import {
   profilePatch,
   loadTgGroup,
   saveTgGroup,
+  saveTgOperators,
   isHomeChannel,
   homeAdoptionTarget,
   resolveSessionTarget,
@@ -135,6 +136,7 @@ import {
   canSeeGroup,
   membershipVerdict,
   canSeeSession,
+  spawnGroupFor,
   listableGroups,
   visibleChannels,
   secretOwnGroupIds,
@@ -225,6 +227,15 @@ import {
 // The skill's pure core is the single source of the ledger's logic (CLAUDE.md):
 // the server imports it rather than keeping a second copy of the kind inference.
 import { rowKind } from "../context/ledger-skill/ledger-core.mjs";
+import {
+  profileWriteRefusal,
+  profileDeleteRefusal,
+  mayReadMcpValues,
+  redactMcpServers,
+  setProfileRefusal,
+  restartAllPlan,
+  monoSecretRefusal,
+} from "./route-guards.js";
 import {
   childrenOf,
   linkRefusal,
@@ -1095,6 +1106,17 @@ function currentAccount(req: Caller): { name: string; role: Role; agent?: AgentP
 /** Who is asking and which groups exist; routes filter with `visibleChannels`. */
 export function callerGroups(req: Caller): { viewer: Viewer | null; groups: Group[] } {
   return { viewer: viewerFor(currentAccount(req)), groups: loadGroups() };
+}
+
+/**
+ * May this HTTP caller drive (end, restart) session `id`? The HTTP twin of the
+ * WS `mayDriveSession`: in multi-tenant, the session's group must be visible to
+ * the caller (own + public; group-less = commons; a dangling group fails
+ * closed). Mono-tenant has no group wall, so it is always true there.
+ */
+function httpMayDrive(req: Caller, id: string): boolean {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return true;
+  return canSeeSession(id, loadChannels(), loadGroups(), viewerFor(currentAccount(req)));
 }
 
 /** Is two-factor sign-in on for this instance? Meaningless with no password. */
@@ -2111,6 +2133,7 @@ app.get("/title", (_req, res) => {
   res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
 });
 app.put("/title", (req, res) => {
+  if (!accountAdmin(req, res, true, "rename the cockpit")) return;
   const raw = String(req.body?.title ?? "").replace(/\s+/g, " ").trim().slice(0, 60);
   setTitleForCwd(loadConfig(), process.cwd(), raw);
   res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
@@ -2121,6 +2144,7 @@ app.get("/theme", (_req, res) => {
   res.json({ theme: themeForCwd(loadConfig(), process.cwd()) });
 });
 app.put("/theme", (req, res) => {
+  if (!accountAdmin(req, res, true, "change the cockpit's theme")) return;
   setThemeForCwd(loadConfig(), process.cwd(), String(req.body?.theme ?? ""));
   res.json({ theme: themeForCwd(loadConfig(), process.cwd()) });
 });
@@ -2137,7 +2161,9 @@ app.put("/mute", (req, res) => {
 // Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
 // back the directory to start the agent in. Sits here so it inherits the same
 // password gate as its neighbours.
-app.post("/tweak/prepare", async (_req, res) => {
+app.post("/tweak/prepare", async (req, res) => {
+  // It starts an agent on shadok's OWN source, run as the commons user: admin only.
+  if (!accountAdmin(req, res, true, "tweak Shadok-AI")) return;
   // The tweak agent runs as the commons drop user; its self-repo clone must live
   // in THAT user's home (reachable under 0700 /root) and be owned by it — same
   // reason as the worktree created off it. `commonsOsUser → null` in mono-tenant
@@ -2192,6 +2218,9 @@ function customBackendFields(): { backend?: "custom"; backendModel?: string | nu
 }
 
 app.post("/auth/login", async (req, res) => {
+  // The instance's Claude subscription is ONE account every agent runs on; a
+  // member re-logging it (`force`) would move every group onto their account.
+  if (!accountAdmin(req, res, true, "sign this instance in to Claude")) return;
   // `force` is a deliberate "re-login now" from a signed-in instance (the
   // version-menu button and the expiry reminder banner): renew the session
   // before its refresh token lapses. Without it, a signed-in instance short-
@@ -2203,6 +2232,7 @@ app.post("/auth/login", async (req, res) => {
 });
 
 app.post("/auth/code", async (req, res) => {
+  if (!accountAdmin(req, res, true, "sign this instance in to Claude")) return;
   const code = typeof req.body?.code === "string" ? req.body.code : "";
   const r = await submitLoginCode(code);
   if (r.ok) resetLoggedOutNotice(); // the next sign-out gets announced again
@@ -2220,7 +2250,8 @@ app.post("/auth/code", async (req, res) => {
   }
 });
 
-app.delete("/auth/login", (_req, res) => {
+app.delete("/auth/login", (req, res) => {
+  if (!accountAdmin(req, res, true, "cancel this instance's Claude sign-in")) return;
   cancelLogin();
   res.json({ ok: true });
 });
@@ -2632,7 +2663,11 @@ app.put("/channels", (req, res) => {
   // mismatch. Return the live list so the confused client can reconcile.
   const clientKey = req.get("x-shadok-instance");
   if (!channelWriteAllowed(instanceKey(), clientKey)) {
-    return res.status(409).json({ error: "instance-mismatch", channels: loadChannels() });
+    // Filtered like `GET /channels`: the reply must not list another group's rows.
+    return res.status(409).json({
+      error: "instance-mismatch",
+      channels: visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))),
+    });
   }
   // Merge, don't overwrite: the browser owns order + name/group, but must never
   // drop a live or Telegram-bound session or strip server-owned fields.
@@ -2655,14 +2690,26 @@ app.put("/channels", (req, res) => {
       else c.mirror = prev;
     }
   }
-  const merged = mergeClientChannels(body, live);
+  // Rows the caller cannot see (another group's) are kept untouched — a
+  // member's routine PUT used to erase every dormant one of them.
+  const viewer = viewerFor(currentAccount(req));
+  const groupsNow = loadGroups();
+  // `visibleChannels`' rule, quietly (it logs each dangling id): group-less is
+  // commons, a dangling group fails closed.
+  const canSee = (c: Channel): boolean => {
+    if (!c.group) return true;
+    const g = groupsNow.find((x) => x.id === c.group);
+    return !!g && canSeeGroup(g, viewer);
+  };
+  const merged = mergeClientChannels(body, live, canSee);
   // A web-side rename of a Telegram-bound channel → rename its topic too.
   for (const c of merged) {
     if (c.telegram?.threadId && c.name && c.name !== before.get(c.sessionId)) {
       renameTelegramTopic(c.telegram.chatId, c.telegram.threadId, c.name);
     }
   }
-  res.json(merged);
+  // The rows the caller cannot see were kept on disk, never sent back.
+  res.json(merged.filter(canSee));
 });
 // Kill a channel by id over HTTP — works with no live WebSocket, so the web ✕
 // can remove a dead/zombie channel (registry entry + Telegram topic + any live
@@ -2670,6 +2717,8 @@ app.put("/channels", (req, res) => {
 app.delete("/channel", async (req, res) => {
   const id = String(req.query.session ?? "").trim();
   if (!id) return res.status(400).json({ error: "session required" });
+  // Same group wall as the WS `stop`: ending an agent is a drive action.
+  if (!httpMayDrive(req, id)) return res.status(403).json({ ok: false, error: "you are not entitled to end this agent" });
   const ok = await endChannel(id);
   // 409, not 200: the caller asked for something the server will not do, and a
   // client that believes it succeeded removes a tab the registry still has.
@@ -3482,7 +3531,16 @@ mountFactory(app, {
   },
   requireAdmin: (req, res, what) => accountAdmin(req, res, true, what),
   callerOf: (req) => callerOf(req),
-  vault: () => secretsFor(secretNames()),
+  vault: (req) => factoryVaultFor(req),
+  mayDrive: (req, id) => factoryMayDrive(req, id),
+  agentGroup: (id) => factoryAgentGroup(id),
+  personGroup: (req) => factoryPersonGroup(req),
+  mayActForGroup: (req, g) => {
+    if (DEPLOYMENT_MODE !== "multi-tenant") return g === MAIN_GROUP;
+    const grp = loadGroups().find((x) => x.id === g);
+    return grp ? canSeeGroup(grp, viewerFor(currentAccount(req))) : g === MAIN_GROUP;
+  },
+  tenantGroup: (g) => factoryTenantGroup(g),
   loadChannels: () => loadChannels(),
   upsertChannel: (patch) => upsertChannel(patch),
   onAttachmentsChanged: (id) => {
@@ -3546,6 +3604,12 @@ app.put("/secrets", (req, res) => {
   const ownerGroup = target.ownerGroup;
   const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
+  // Mono-tenant has one commons and no group gate: anyone may ADD a secret,
+  // but replacing one every agent may depend on is an admin act.
+  if (verdict === "updated" && DEPLOYMENT_MODE !== "multi-tenant") {
+    const r = monoSecretRefusal({ op: "overwrite", role: currentAccount(req)?.role ?? null });
+    if (r) return res.status(403).json({ error: r });
+  }
   // createdBy is STAMPED server-side (the agent's session or the account) — a
   // client-claimed owner/createdBy is ignored by construction.
   setSecret(key, value, ownerGroup, secretCreatedBy(req));
@@ -3610,6 +3674,10 @@ app.delete("/secrets", (req, res) => {
   if ("refused" in target) return res.status(403).json({ error: target.refused });
   const ownerGroup = target.ownerGroup;
   if (name && secretNames(ownerGroup).includes(name)) {
+    if (DEPLOYMENT_MODE !== "multi-tenant") {
+      const r = monoSecretRefusal({ op: "delete", role: currentAccount(req)?.role ?? null });
+      if (r) return res.status(403).json({ error: r });
+    }
     deleteSecret(name, ownerGroup);
     recordSecretAudit({ action: "deleted", secrets: [name], ...auditActorOf(req), instance: process.cwd() });
   }
@@ -4327,15 +4395,19 @@ app.delete("/peers", (req, res) => {
   res.json({ ok: true, dropped });
 });
 
-app.get("/profiles", (_req, res) =>
+app.get("/profiles", (req, res) => {
+  // MCP `env`/`headers` values are shown only to a caller who may WRITE the
+  // profile (`mayReadMcpValues`): in multi-tenant a member sees the keys, masked.
+  const clear = mayReadMcpValues({ mode: DEPLOYMENT_MODE, role: currentAccount(req)?.role ?? null });
   res.json(
     loadProfiles().map((p) => ({
       ...p,
+      ...(p.mcpServers && !clear ? { mcpServers: redactMcpServers(p.mcpServers) } : {}),
       origin: promptOrigin(p, shippedProfile(p.name)),
       effectivePrompt: effectiveProfile(p)?.systemPrompt ?? "",
     })),
-  ),
-);
+  );
+});
 
 // Hand a starter role back to the build. Browser-only, like every guardrail
 // write. It DROPS the stored prompt rather than copying today's text in: the
@@ -4346,6 +4418,12 @@ app.get("/profiles", (_req, res) =>
 app.post("/profiles/restore", (req, res) => {
   if (!requestFromBrowser(req))
     return res.status(403).json({ error: "profiles are restored from the web UI only" });
+  const restoreRefusal = profileWriteRefusal({
+    mode: DEPLOYMENT_MODE,
+    fromBrowser: true,
+    role: currentAccount(req)?.role ?? null,
+  });
+  if (restoreRefusal) return res.status(restoreRefusal.status).json({ error: restoreRefusal.error });
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
   const shipped = name ? shippedProfile(name) : undefined;
   if (!shipped?.systemPrompt)
@@ -4360,10 +4438,14 @@ app.post("/profiles/restore", (req, res) => {
 // this gate any agent could `curl -X PUT /profiles` with `deny: []` and strip
 // its own guardrails. Agents get the narrow, prompt-only route below.
 app.put("/profiles", (req, res) => {
-  if (!requestFromBrowser(req))
-    return res.status(403).json({
-      error: "guardrails are edited from the web UI only; agents use PUT /profiles/prompt",
-    });
+  // Browser-only in both modes; admin-only in multi-tenant, where profiles are
+  // global and one group's member must not rewrite what another group runs.
+  const refusal = profileWriteRefusal({
+    mode: DEPLOYMENT_MODE,
+    fromBrowser: requestFromBrowser(req),
+    role: currentAccount(req)?.role ?? null,
+  });
+  if (refusal) return res.status(refusal.status).json({ error: refusal.error });
   const b = req.body ?? {};
   if (typeof b.name !== "string" || !b.name.trim())
     return res.status(400).json({ error: "name required" });
@@ -4504,6 +4586,13 @@ app.post("/reload", (req, res) => {
 });
 
 app.delete("/profiles", (req, res) => {
+  // It had no check at all: a read-only agent deleted its own profile, then
+  // `POST /reload`, and respawned with no deny list. Admin + browser, both modes.
+  const refusal = profileDeleteRefusal({
+    fromBrowser: requestFromBrowser(req),
+    role: currentAccount(req)?.role ?? null,
+  });
+  if (refusal) return res.status(refusal.status).json({ error: refusal.error });
   const name = String(req.query.name ?? req.body?.name ?? "").trim();
   if (name) {
     const before = getProfile(name)?.secrets;
@@ -4559,7 +4648,12 @@ app.put("/telegram", async (req, res) => {
   // Unbind the board group (e.g. after a stale supergroup migration): clears the
   // binding so /setup can bind a fresh group. Read live by the bridge — no
   // restart needed for this alone.
-  if (b.unbindGroup === true) saveTgGroup(null);
+  // Its operators go with it: they were vouched for in THAT group, and the next
+  // board's are recorded when its /setup <code> is typed.
+  if (b.unbindGroup === true) {
+    saveTgGroup(null);
+    saveTgOperators([]);
+  }
 
   const hasConfigChange =
     patch.token !== undefined || patch.enabled !== undefined || patch.allowedChats !== undefined;
@@ -4737,6 +4831,8 @@ if (VERSION_CHECK_MIN > 0) {
 // turned on while npm is already ahead, apply immediately instead of waiting
 // for the next poll.
 app.post("/autoupdate", (req, res) => {
+  // Instance-wide (it installs a release and restarts every agent): admin only.
+  if (!accountAdmin(req, res, true, "change auto-update")) return;
   autoUpdate = !!req.body?.enabled;
   const cfg = loadConfig();
   cfg.autoUpdate = autoUpdate;
@@ -4778,7 +4874,17 @@ app.post("/restart-all", (req, res) => {
   const ids = Array.isArray(req.body?.sessions)
     ? (req.body.sessions as unknown[]).filter((x): x is string => typeof x === "string" && !!x)
     : undefined;
-  const restarted = restartAllSessions(ids, auditActorOf(req));
+  // A bare call restarts EVERY group's agents: admin only. A `{sessions}` list
+  // (the "Reload N agents to apply update" button) stays open to any person,
+  // narrowed to the agents the caller may drive.
+  const me = twoFactorOn() ? cookieAccount(req) : currentAccount(req);
+  const plan = restartAllPlan({
+    ids,
+    isAdmin: me?.role === "admin" && requestFromBrowser(req),
+    mayDrive: (id) => httpMayDrive(req, id) });
+  if (!plan.ok) return res.status(plan.status).json({ error: plan.error });
+  if (plan.ids && !plan.ids.length) return res.json({ restarted: 0 });
+  const restarted = restartAllSessions(plan.ids, auditActorOf(req));
   console.log(`restart-all: respawning ${restarted} agent(s)${ids ? " (filtered)" : ""}, one at a time`);
   res.json({ restarted });
 });
@@ -5160,6 +5266,8 @@ app.get("/talk/handle", (req, res) => {
 // the background (see restartAllSessions), so the request never hangs. Default
 // OFF, opt-in per instance.
 app.post("/ledger", (req, res) => {
+  // Flipping it restarts EVERY agent, every group's: admin only.
+  if (!accountAdmin(req, res, true, "toggle the shared ledger")) return;
   const next = !!req.body?.enabled;
   const changed = next !== ledgerEnabled;
   ledgerEnabled = next;
@@ -5178,6 +5286,7 @@ app.post("/ledger", (req, res) => {
  * version, which would otherwise be offered as an update on the calm channel.
  */
 app.post("/update-channel", (req, res) => {
+  if (!accountAdmin(req, res, true, "change the release channel")) return;
   const c = String(req.body?.channel ?? "");
   if (c !== "alpha" && c !== "beta") return res.status(400).json({ error: "invalid channel" });
   updateChannel = c;
@@ -5199,6 +5308,9 @@ app.post("/update-channel", (req, res) => {
 // Set the spawn permission mode from the GUI. Persisted; only affects agents
 // started after the change (existing ones keep their launch mode).
 app.post("/permission-mode", (req, res) => {
+  // It decides the permission mode of every agent spawned from now on, every
+  // group's (a member could have set bypassPermissions for all): admin only.
+  if (!accountAdmin(req, res, true, "change the permission mode")) return;
   const m = String(req.body?.mode ?? "").trim();
   if (!isPermissionMode(m)) return res.status(400).json({ error: "invalid mode" });
   permissionMode = m;
@@ -5545,9 +5657,53 @@ function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
   return loadChannels().find((c) => c.sessionId === sessionId)?.skills ?? pendingSkills.get(sessionId);
 }
 
+/**
+ * The group a factory ACCEPTANCE is keyed by. Multi-tenant: the agent's
+ * isolation group (none → Main) — a release accepted by Main's people must not
+ * run in another group's agents. Mono-tenant: always Main, since a channel's
+ * `group` there is a display folder, not a tenant (and every acceptance
+ * recorded before this rule is Main's).
+ */
+function factoryTenantGroup(groupId: string | null | undefined): string {
+  return DEPLOYMENT_MODE === "multi-tenant" ? groupId || MAIN_GROUP : MAIN_GROUP;
+}
+function factoryAgentGroup(sessionId?: string | null): string {
+  return factoryTenantGroup(agentCtxFor(sessionId).group);
+}
+/** The group a PERSON accepts for by default: the one they would spawn in. */
+function factoryPersonGroup(req: Caller): string {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return MAIN_GROUP;
+  return factoryTenantGroup(spawnGroupFor(viewerFor(currentAccount(req)), loadGroups())?.id ?? null);
+}
+/**
+ * May this request act on (attach to, list, move) that agent? The same group
+ * boundary as `/diff` and the WS `mayDriveSession`; a restricted peer only on
+ * its own agents. Mono-tenant: yes.
+ */
+function factoryMayDrive(req: Caller, sessionId: string): boolean {
+  const chans = loadChannels();
+  if (peerScopeFor(req) === "restricted" && !ownedByPeer(chans.find((c) => c.sessionId === sessionId), peerName(req)!)) return false;
+  if (DEPLOYMENT_MODE !== "multi-tenant") return true;
+  return canSeeSession(sessionId, chans, loadGroups(), viewerFor(currentAccount(req)));
+}
+/**
+ * The vault the factory's scan compares against, as the CALLER's group sees it
+ * — an agent: its channel's group; a person: the group they spawn in. A refusal
+ * names the secret it matched, so scanning against Main's vault for everyone
+ * let a Skillsmith of any group test guesses against Main's values.
+ */
+function factoryVaultFor(req: Caller & { body?: unknown }): Record<string, string> {
+  const agent = callerOf(req);
+  const gid = DEPLOYMENT_MODE !== "multi-tenant"
+    ? MAIN_GROUP_ID
+    : agent.id ? factoryAgentGroup(agent.id) : factoryPersonGroup(req);
+  const names = [...new Set(Object.keys(loadVault()).flatMap((g) => secretNames(g)))];
+  return secretsFor(names, gid, commonsGroupIds());
+}
+
 /** The secret names an agent's factory skills are granted (accepted releases only). */
 function factorySecretsFor(sessionId?: string | null): string[] {
-  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), MAIN_GROUP, agentCtxFor(sessionId));
+  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), factoryAgentGroup(sessionId), agentCtxFor(sessionId));
 }
 
 /**
@@ -5569,8 +5725,8 @@ function resolveBirthSkills(req: { skill: string; release?: number }[], agent: A
   for (const r of req.slice(0, 20)) {
     const s = skills.find((x) => x.id === r?.skill || x.name === r?.skill);
     if (!s) { refused.push(`${r?.skill}: no such skill`); continue; }
-    const accepted = s.releases.filter((rel) =>
-      s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree));
+    // Accepted for THIS agent's group (multi-tenant), not merely for Main.
+    const accepted = s.releases.filter((rel) => !!acceptanceFor(s, rel, factoryTenantGroup(agent.group)));
     const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
     if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
     // A private skill is attached by its owner only: the person starting the agent.
@@ -5584,7 +5740,7 @@ function resolveBirthSkills(req: { skill: string; release?: number }[], agent: A
 function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
   const attached = attachmentsFor(sessionId);
   if (!attached?.length) return [];
-  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, MAIN_GROUP, agentCtxFor(sessionId));
+  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, factoryAgentGroup(sessionId), agentCtxFor(sessionId));
   return ok.map(({ skill, release }) => ({ name: skill.name, release: release.n, tree: release.tree }));
 }
 
@@ -5869,7 +6025,7 @@ function makePilot(
   // resume without it). A dropped attachment is said, never silently skipped.
   // Their declared/detected secrets are GRANTED here: a person of this group
   // accepted that tree, and the accept screen listed those names.
-  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), MAIN_GROUP, agentCtxFor(id));
+  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), factoryAgentGroup(id), agentCtxFor(id));
   for (const d of factory.dropped)
     console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
   runningPlugins.set(id, factory.args.filter((_a, i) => i % 2 === 1));
@@ -6725,11 +6881,24 @@ function maybeFollowFork(s: Live): void {
   // when the file has no root record yet (a session that never took a turn).
   const myRoot = (s.rootId ??= rootIdOfFile(myFile) ?? s.id);
   const seen = (s.tailSeen ??= new Set([tailId]));
+  // Search EVERY project dir, not just the frozen file's own: a session whose
+  // cwd drifted (created in a worktree, resumed at the repo root once the
+  // worktree was pruned) writes its context-overflow continuation under a
+  // DIFFERENT project dir, and scanning one directory is blind to it — the chat
+  // freezes while the TUI is fine. The root-match inside detectFork still bars a
+  // sibling's transcript, so widening the search cannot mis-attribute.
+  const projectsRoot = path.join(s.transcriptHome, ".claude", "projects");
+  let searchDirs: string[];
+  try {
+    searchDirs = fs.readdirSync(projectsRoot).map((d) => path.join(projectsRoot, d));
+  } catch {
+    searchDirs = [path.dirname(myFile)];
+  }
   // `s.id` is passed so the hunt can come HOME: every restart respawns with
   // `--resume <s.id>`, so the session's own transcript becomes the live file
   // again, and excluding it as a visited fork left the tail on a dead one for
   // good (see `detectFork`).
-  const target = detectFork(myFile, tailId, myRoot, seen, s.id);
+  const target = detectFork(myFile, tailId, myRoot, seen, s.id, searchDirs);
   if (!target) return;
   const home = target === s.id;
   console.log(
@@ -7653,7 +7822,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // that reports to nobody. Logged so it isn't a silent loss.
           let parentAtStart: string | null | undefined;
           if (msg.parent !== undefined) {
-            const refusal = linkRefusal(loadChannels(), id, msg.parent ?? null);
+            const refusal = linkRefusal(loadChannels(), id, msg.parent ?? null, mayDriveSession);
             if (refusal) console.log(`agent: ${id.slice(0, 8)} parent link refused (${refusal})`);
             else parentAtStart = msg.parent ?? null;
           }
@@ -8232,6 +8401,15 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // can't touch it — this is the only legitimate path.
           if (!session) return fail("no session started");
           if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
+          // A role carries secrets and guardrails: changing it is a privilege
+          // change, not a drive action. A PERSON only (never an agent or a
+          // peer), and an admin in multi-tenant — see `setProfileRefusal`.
+          const profileRefusal = setProfileRefusal({
+            mode: DEPLOYMENT_MODE,
+            person: fromBrowser && !callerAgent && !callerPeer,
+            role: me?.role ?? null,
+          });
+          if (profileRefusal) return fail(profileRefusal, "forbidden");
           const s = session;
           const name = msg.profile ?? null;
           // Refuse an unknown name rather than silently spawning bare: a typo
@@ -8287,7 +8465,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           if (!mayDriveSession(session.id)) return fail("you are not entitled to drive this agent", "forbidden");
           const s = session;
           const wanted = msg.parent ?? null;
-          const refusal = linkRefusal(loadChannels(), s.id, wanted);
+          // The caller must be able to drive the PARENT too: it will receive
+          // this agent's notifications as prompts (refused as "unknown-parent",
+          // so the answer reveals nothing about another group's ids).
+          const refusal = linkRefusal(loadChannels(), s.id, wanted, mayDriveSession);
           // Refuse out loud. Dropping the link silently would leave the parent
           // believing it will be notified, waiting for a child it isn't linked to.
           if (refusal) return fail(`cannot attach: ${refusal}`, "link-refused");

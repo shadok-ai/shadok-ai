@@ -62,12 +62,23 @@ export function linkRefusal(
   channels: readonly Channel[],
   child: string,
   parent: string | null,
+  /**
+   * May the CALLER drive the proposed parent? A parent receives the child's
+   * notifications as prompts, delivered over the server's system drive — which
+   * crosses every group wall. Without this, linking your own agent under a
+   * private agent of another group was a way to inject text into it. A parent
+   * the caller cannot reach is refused with the SAME wording as one that does
+   * not exist, so the refusal is no oracle for another group's session ids.
+   * Omitted → no restriction (callers that already act as the server).
+   */
+  mayReachParent?: (parent: string) => boolean,
 ): LinkRefusal | null {
   if (parent === null) return null;
   if (parent === child) return "self";
 
   const byId = new Map(channels.map((c) => [c.sessionId, c]));
   if (!byId.has(parent)) return "unknown-parent";
+  if (mayReachParent && !mayReachParent(parent)) return "unknown-parent";
 
   // Walk up from the proposed parent: reaching the child closes a loop, and a
   // loop means the two notify each other forever.

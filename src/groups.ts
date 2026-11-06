@@ -426,12 +426,12 @@ export function ledgerGroupsFor(groups: readonly Group[], viewer: Viewer | null)
  * May this viewer WRITE (create/update/delete/share/bind) a secret that belongs
  * to group `g`? A secret is a credential, so writing it is a privileged act:
  * - a PRIVATE group's secret → its OWNER only (a private group is one person's);
- * - a RESTRICTED (or any non-Main public) group's secret → a MEMBER of that
- *   group, OR an admin: a group's members co-own its vault, which is what lets a
- *   COMEX member manage COMEX's section (Task 11 — the group selector is useless
- *   to a member who cannot write their own group);
- * - the Main commons → an ADMIN (Main has no members, so `memberOf` is false for
- *   everyone and this reduces to admin-only, as before).
+ * - a RESTRICTED group's secret → a MEMBER of that group, and nobody else: its
+ *   members co-own its vault (Task 11), and an admin is NOT special inside a
+ *   restricted group they do not belong to (operator decision 2026-11-03 — an
+ *   admin is treated like a non-member there, for secrets as for everything);
+ * - a PUBLIC group's secret (the Main commons included) → an ADMIN, or a member
+ *   of it (a public group normally has none, so this reduces to admin-only).
  *
  * An AGENT writes its own group only (`viewerInGroup`); the vault route never
  * even asks this for an agent — `secretWriteDecision` derives the agent's own
@@ -442,6 +442,7 @@ export function canWriteSecretGroup(g: Group | null | undefined, viewer: Viewer 
   if (!g || !viewer) return false;
   if (isAgentViewer(viewer)) return viewerInGroup(g, viewer);
   if (g.nature === "private") return g.owner === viewer.name;
+  if (g.nature === "restricted") return memberOf(g, viewer.name);
   return viewer.role === "admin" || memberOf(g, viewer.name);
 }
 
