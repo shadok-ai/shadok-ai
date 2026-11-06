@@ -351,7 +351,8 @@ import {
 import {
   BOOTSTRAP_ADMIN,
   loadAccounts,
-  verifyPassword,
+  verifyPasswordAsync,
+  burnPasswordCheck,
   sessionSecret,
   signSession,
   readSessionFull,
@@ -361,7 +362,7 @@ import {
   userWriteVerdict,
   newInvite,
   inviteVerdict,
-  hashPassword,
+  hashPasswordAsync,
   promptAuthor,
   type Role,
   signSessionKey,
@@ -416,8 +417,10 @@ import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
 import { bindRefusal, originAllowed, parseOrigins, resolveHost,
-  browserOrigin, isLocalCaller,
+  browserOrigin, isLocalCaller, hostHeaderAllowed, hostRefusal, parseAllowedHosts,
+  clientAddress, requestIsHttps, type HostPolicy,
 } from "./net.js";
+import { AttemptLimiter, LOGIN_LIMITS, loginKeys } from "./login-limit.js";
 import { pctFromUsage, windowForModel } from "./context.js";
 import {
   BACKEND_PRESETS,
@@ -462,6 +465,14 @@ const HOST = resolveHost(process.env);
 // Browser origins accepted on top of same-origin (typically a reverse proxy
 // that rewrites the Host).
 const EXTRA_ORIGINS = parseOrigins(process.env.SHADOK_ORIGINS);
+// The DNS-rebinding guard's lists (see `hostHeaderAllowed`). `passwordSet` is
+// filled in once GUI_PASSWORD is known, below.
+const HOST_POLICY: HostPolicy = {
+  passwordSet: false,
+  allowedHosts: parseAllowedHosts(process.env.SHADOK_ALLOWED_HOSTS),
+  originHosts: parseAllowedHosts(process.env.SHADOK_ORIGINS),
+  machineNames: [os.hostname().toLowerCase()],
+};
 
 // Single instance per launch directory. A second server sharing this dir's
 // registry + telegram-group config (a port-fallback duplicate, a stray dev
@@ -488,6 +499,7 @@ const PASTE_LIMIT = "50mb";
 // flag), the whole GUI — pages, endpoints AND the WebSocket — requires a login.
 // Unset → no auth (the default).
 const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
+HOST_POLICY.passwordSet = !!GUI_PASSWORD;
 // Read once, then gone from our own environment BEFORE anything is spawned: the
 // password IS the bootstrap admin, and every child this process starts — an
 // agent's PTY, a cron guard, a tmux server started on first use — would
@@ -1247,13 +1259,21 @@ function rpFor(req: { headers: Record<string, unknown> }): Rp | null {
   }
 }
 
-function sessionCookie(name: string, mfa: boolean): string {
-  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+type CookieReq = { headers: Record<string, unknown>; socket?: { remoteAddress?: string; encrypted?: boolean } };
+/** `; Secure` when the browser reached us over HTTPS (directly, or through a
+ *  local/private proxy that says so in `X-Forwarded-Proto`). Never on plain
+ *  http: a Secure cookie there is simply not stored, i.e. no sign-in at all. */
+function secureAttr(req: CookieReq): string {
+  const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
+  return requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers) ? "; Secure" : "";
 }
-function pendingCookie(name: string): string {
-  return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}`;
+function sessionCookie(name: string, mfa: boolean, req: CookieReq): string {
+  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
 }
-const CLEAR_PENDING = "sk_pending=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+function pendingCookie(name: string, req: CookieReq): string {
+  return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}${secureAttr(req)}`;
+}
+const clearPending = (req: CookieReq) => `sk_pending=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureAttr(req)}`;
 function pendingUser(req: { headers: Record<string, unknown> }): string | null {
   const m = /(?:^|;\s*)sk_pending=([^;]+)/.exec((req.headers.cookie as string | undefined) ?? "");
   return m ? readPending(decodeURIComponent(m[1]), signingSecret(), Date.now()) : null;
@@ -1703,6 +1723,26 @@ function requestOriginOk(req: { headers: Record<string, unknown> }): boolean {
   );
 }
 
+// DNS rebinding (see `hostHeaderAllowed`): a Host naming none of our own names
+// is refused before anything else — the Origin check below cannot see it,
+// since a rebound page is same-origin with itself. Logged once per name, so a
+// lockout from a legitimate name is diagnosable from the log.
+const refusedHostsLogged = new Set<string>();
+function requestHostOk(req: { headers: Record<string, unknown> }): boolean {
+  const host = req.headers.host as string | undefined;
+  if (hostHeaderAllowed(host, HOST_POLICY)) return true;
+  const key = String(host);
+  if (!refusedHostsLogged.has(key) && refusedHostsLogged.size < 100) {
+    refusedHostsLogged.add(key);
+    console.warn(`net: refused Host ${JSON.stringify(key)} — not one of this cockpit's names (set SHADOK_ALLOWED_HOSTS if it is)`);
+  }
+  return false;
+}
+app.use((req, res, next) => {
+  if (requestHostOk(req)) return next();
+  res.status(403).json({ error: hostRefusal(String(req.headers.host ?? "")) });
+});
+
 // A browser from another origin has no business here — /login included, or a
 // third-party page could try passwords. Placed BEFORE everything else.
 app.use((req, res, next) => {
@@ -1721,21 +1761,42 @@ const webauthnUmd = path.join(
 );
 app.get("/vendor/simplewebauthn.js", (_req, res) => res.sendFile(webauthnUmd, { dotfiles: "allow" }));
 
+// Failed sign-ins and enrollment codes, per address and per account. In
+// memory: a restart forgets it, deliberately (src/login-limit.ts).
+const loginLimiter = new AttemptLimiter(LOGIN_LIMITS);
+const enrollLimiter = new AttemptLimiter(LOGIN_LIMITS);
+function tooManyAttempts(res: express.Response, retryAfterMs: number) {
+  const s = Math.ceil(retryAfterMs / 1000);
+  res.setHeader("Retry-After", String(s));
+  return res.status(429).json({ error: `too many failed attempts — try again in ${Math.ceil(s / 60)} min` });
+}
+
 // Login endpoint (always reachable) — sets an HttpOnly cookie naming the user.
-app.post("/login", (req, res) => {
+app.post("/login", async (req, res) => {
   if (!GUI_PASSWORD) return res.json({ ok: true });
   const user = String(req.body?.user ?? "").trim();
   const password = String(req.body?.password ?? "");
+  // Charged to the caller's address AND the account (src/login-limit.ts). A
+  // blocked attempt is refused before any hashing, with one wording whether
+  // the name exists or not.
+  const keys = loginKeys(clientAddress(req.socket.remoteAddress, req.headers), user === BOOTSTRAP_ADMIN ? "" : user);
+  const gate = loginLimiter.check(keys);
+  if (!gate.ok) return tooManyAttempts(res, gate.retryAfterMs);
   // No username means the instance password: the habit of typing just the
   // password keeps working, and that IS the bootstrap admin.
-  const ok =
-    !user || user === BOOTSTRAP_ADMIN
-      ? passwordMatches(password)
-      : (() => {
-          const a = loadAccounts().find((x) => x.name === user);
-          return !!a?.passwordHash && verifyPassword(password, a.passwordHash);
-        })();
-  if (!ok) return res.status(401).json({ error: "wrong username or password" });
+  let ok: boolean;
+  if (!user || user === BOOTSTRAP_ADMIN) ok = passwordMatches(password);
+  else {
+    const a = loadAccounts().find((x) => x.name === user);
+    // An unknown name (or an unredeemed invitation) pays the same scrypt as a
+    // real one, so the answer's timing says nothing about who exists.
+    ok = a?.passwordHash ? await verifyPasswordAsync(password, a.passwordHash) : await burnPasswordCheck(password);
+  }
+  if (!ok) {
+    loginLimiter.fail(keys);
+    return res.status(401).json({ error: "wrong username or password" });
+  }
+  loginLimiter.succeed(keys);
   const name = user || BOOTSTRAP_ADMIN;
   if (twoFactorOn()) {
     // Only AFTER the password checked out, so this says nothing to a guesser.
@@ -1744,10 +1805,10 @@ app.post("/login", (req, res) => {
     // The password is half: a short-lived pending cookie carries it to the
     // passkey step, and no session exists until that step succeeds.
     const next = loginNext(loadAccounts().find((a) => a.name === name), true);
-    res.setHeader("Set-Cookie", pendingCookie(name));
+    res.setHeader("Set-Cookie", pendingCookie(name, req));
     return res.json({ ok: true, user: name, next });
   }
-  res.setHeader("Set-Cookie", sessionCookie(name, false));
+  res.setHeader("Set-Cookie", sessionCookie(name, false, req));
   return res.json({ ok: true, user: name });
 });
 
@@ -1771,7 +1832,7 @@ app.post("/login/passkey", async (req, res) => {
   const used = await verifyAuthentication(rp, challenge, req.body?.response, acct, Date.now());
   if (!used) return res.status(401).json({ error: "the passkey was not accepted" });
   updateAccount(name, (a) => ({ ...a, passkeys: (a.passkeys ?? []).map((p) => (p.id === used.id ? used : p)) }));
-  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.setHeader("Set-Cookie", [sessionCookie(name, true, req), clearPending(req)]);
   res.json({ ok: true, user: name });
 });
 
@@ -1783,8 +1844,15 @@ app.post("/login/enroll/options", async (req, res) => {
   const rp = rpFor(req);
   const acct = name ? loadAccounts().find((a) => a.name === name) : undefined;
   if (!name || !rp || !acct) return res.status(401).json({ error: "sign in with your password again" });
+  // An enrollment code is short enough to guess at speed: same limiter shape.
+  const keys = loginKeys(clientAddress(req.socket.remoteAddress, req.headers), name);
+  const gate = enrollLimiter.check(keys);
+  if (!gate.ok) return tooManyAttempts(res, gate.retryAfterMs);
   const v = enrollCodeVerdict(acct, req.body?.code, Date.now());
-  if (!v.ok) return res.status(403).json({ error: v.error });
+  if (!v.ok) {
+    enrollLimiter.fail(keys);
+    return res.status(403).json({ error: v.error });
+  }
   const options = await registrationOptions(rp, acct);
   res.json({ options, challengeId: putChallenge(options.challenge, name, "register") });
 });
@@ -1806,7 +1874,7 @@ app.post("/login/enroll", async (req, res) => {
   });
   console.log(`2fa: ${name} registered a passkey (${pk.label}) with an enrollment code from ${acct.enroll?.by}`);
   recordEvent({ kind: "passkey-added", actor: name, target: name, detail: pk.label, passkeyId: pk.id });
-  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.setHeader("Set-Cookie", [sessionCookie(name, true, req), clearPending(req)]);
   res.json({ ok: true, user: name });
 });
 
@@ -1823,11 +1891,17 @@ app.get("/invite/:token", (req, res) => {
 app.post("/invite/:token", async (req, res) => {
   const token = String(req.params.token ?? "");
   const password = String(req.body?.password ?? "");
+  const pre = inviteVerdict(loadAccounts().find((a) => a.invite?.token === token), token, Date.now());
+  if (!pre.ok) return res.status(400).json({ error: pre.error });
+  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
+  // Hashed off the event loop (src/accounts.ts), THEN the file is read and the
+  // invitation checked again: a second redemption that raced this one during
+  // the hash finds the invite already gone.
+  const passwordHash = await hashPasswordAsync(password);
   const list = loadAccounts();
   const acct = list.find((a) => a.invite?.token === token);
   const v = inviteVerdict(acct, token, Date.now());
   if (!v.ok) return res.status(400).json({ error: v.error });
-  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
   // Redeeming DROPS the invite and sets the hash: the link is single-use by
   // construction, not by a flag someone could forget to check.
   // With two-factor on, the invitation ALSO authorises registering a passkey:
@@ -1846,7 +1920,7 @@ app.post("/invite/:token", async (req, res) => {
             name: a.name,
             role: a.role,
             createdAt: a.createdAt,
-            passwordHash: hashPassword(password),
+            passwordHash,
             ...(a.passkeys?.length ? { passkeys: a.passkeys } : {}),
             // Kept: dropping it would bring a session from before the reset
             // back to life the moment the new password is set.
@@ -1863,7 +1937,7 @@ app.post("/invite/:token", async (req, res) => {
   // which is why it is awaited but cannot throw out of the handler.
   await ensurePrivateGroupProvisioned(acct!.name);
   if (tfa) {
-    res.setHeader("Set-Cookie", pendingCookie(acct!.name));
+    res.setHeader("Set-Cookie", pendingCookie(acct!.name, req));
     if (keptPasskey) return res.json({ ok: true, user: acct!.name, next: "passkey" });
     return res.json({ ok: true, user: acct!.name, next: "enroll", code: enroll!.code });
   }
@@ -1871,18 +1945,15 @@ app.post("/invite/:token", async (req, res) => {
   // authentication, and without this the browser keeps whatever session it
   // already had — an admin who invites someone from their own browser lands
   // back as the admin, with nothing to say the redemption did not take.
-  res.setHeader(
-    "Set-Cookie",
-    `sk_auth=${signSession(acct!.name, Date.now(), signingSecret())}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
-  );
+  res.setHeader("Set-Cookie", sessionCookie(acct!.name, false, req));
   res.json({ ok: true, user: acct!.name });
 });
 
 // Signing out expires the cookie. Before the gate on purpose: throwing away a
 // session must work even when that session is already invalid, otherwise a
 // stale cookie would leave you stuck on a 401 with no way to clear it.
-app.post("/logout", (_req, res) => {
-  res.setHeader("Set-Cookie", ["sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0", CLEAR_PENDING]);
+app.post("/logout", (req, res) => {
+  res.setHeader("Set-Cookie", [`sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(req)}`, clearPending(req)]);
   res.json({ ok: true });
 });
 
@@ -3857,7 +3928,7 @@ app.delete("/secrets", (req, res) => {
 // only: the address carries a one-time sign-in code. See src/oauth-relay.ts.
 app.post("/oauth-relay", async (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "web UI only" });
-  const r = await relayOAuthCallback(req.body?.url);
+  const r = await relayOAuthCallback(req.body?.url, 10_000, { ownPort: boundPort || START_PORT });
   res.status(r.ok ? 200 : 400).json(r);
 });
 
@@ -4196,7 +4267,7 @@ app.post("/2fa/passkey/delete", async (req, res) => {
   if (twoFactorOn() && owner === me.name && !after.find((a) => a.name === owner)?.passkeys?.length)
     return res.status(400).json({ error: "that is your last passkey — with two-factor on you could no longer sign in" });
   saveAccounts(after);
-  if (owner === me.name) res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa));
+  if (owner === me.name) res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa, req));
   console.log(`2fa: ${me.name} removed a passkey of ${owner}`);
   recordEvent({ kind: "passkey-removed", actor: me.name, target: owner });
   res.json({ ok: true });
@@ -4289,7 +4360,7 @@ app.post("/2fa/not-me", (req, res) => {
     ...(v.removePasskey ? { passkeys: (a.passkeys ?? []).filter((p) => p.id !== v.removePasskey) } : {}),
   }));
   if (v.cancelRequest) closeRequest(v.cancelRequest, "cancelled", me.name);
-  res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa));
+  res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa, req));
   saveEvents(events.map((e) => (e.id === ev!.id ? { ...e, disowned: true } : e)));
   recordEvent({ kind: "not-me", actor: me.name, target: me.name, about: ev!.id, detail: describeEvent(ev!) });
   console.log(`2fa: ${me.name} reported "this wasn't me" on ${ev!.kind}`);
@@ -4487,7 +4558,7 @@ app.post("/2fa/enabled", async (req, res) => {
   recordEvent({ kind: "two-factor", actor: me.name, target: "*", detail: on ? "on" : "off" });
   // Re-issue the actor's cookie with the second-factor flag: they just proved
   // it, and the switch would otherwise sign them out of their own tab.
-  res.setHeader("Set-Cookie", sessionCookie(me.name, true));
+  res.setHeader("Set-Cookie", sessionCookie(me.name, true, req));
   res.json({ ok: true, enabled: on });
 });
 
@@ -4870,7 +4941,7 @@ const wss = new WebSocketServer({
   // same-origin policy, so without it any page the user visits could open a
   // session and drive an agent.
   verifyClient: (info, cb) =>
-    cb(requestOriginOk(info.req) && (requestAuthed(info.req) || peerName(info.req) !== null)),
+    cb(requestHostOk(info.req) && requestOriginOk(info.req) && (requestAuthed(info.req) || peerName(info.req) !== null)),
 });
 // The ws server re-emits the http server's listen error; let the http server's
 // own handler drive the port fallback instead of crashing on the re-emit.

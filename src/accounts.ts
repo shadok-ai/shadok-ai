@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from "node:crypto";
 import { instanceKey } from "./paths.js";
 
 /**
@@ -91,6 +91,49 @@ export function verifyPassword(plain: string, hash: string): boolean {
   } catch {
     return false;
   }
+}
+
+function scryptAsync(plain: string, salt: Buffer, len: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => scrypt(plain, salt, len, (err, key) => (err ? reject(err) : resolve(key))));
+}
+
+/**
+ * The async twins, for the request path. `scryptSync` runs ON the event loop:
+ * every sign-in attempt froze every agent's I/O for the length of a hash, and a
+ * guesser could hold the server down that way. `scrypt` runs on the libuv pool.
+ */
+export async function hashPasswordAsync(plain: string): Promise<string> {
+  const salt = randomBytes(16);
+  const key = await scryptAsync(plain, salt, 64);
+  return `scrypt$${salt.toString("hex")}$${key.toString("hex")}`;
+}
+
+export async function verifyPasswordAsync(plain: string, hash: string): Promise<boolean> {
+  const parts = String(hash ?? "").split("$");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  try {
+    const salt = Buffer.from(parts[1], "hex");
+    const want = Buffer.from(parts[2], "hex");
+    if (!salt.length || !want.length) return false;
+    const got = await scryptAsync(plain, salt, want.length);
+    return got.length === want.length && timingSafeEqual(got, want);
+  } catch {
+    return false;
+  }
+}
+
+/** A hash no password matches (the derived half is all zeros), same shape and
+ *  cost as a real one. */
+const DUMMY_HASH = `scrypt$${"5a".repeat(16)}$${"00".repeat(64)}`;
+
+/**
+ * The check an UNKNOWN account (or an invitation not yet redeemed) gets: the
+ * same scrypt as a real one, always false. Answering such a name at once while
+ * a real one took a hash's time told a guesser which accounts exist.
+ */
+export async function burnPasswordCheck(plain: string): Promise<false> {
+  await verifyPasswordAsync(plain, DUMMY_HASH);
+  return false;
 }
 
 /**
