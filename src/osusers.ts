@@ -136,6 +136,49 @@ export function resolveSpawnIsolation(input: {
  *  (`SHADOK_HOME_BASE`) for unusual layouts; `/home` is the Linux standard. */
 export const DEFAULT_HOME_BASE = "/home";
 
+/**
+ * The state directory a dropped agent owns inside its tier HOME — the parent of
+ * everything shadok and its own tooling keep per agent (`pilotctl`'s state, the
+ * peers file a hand-run CLI falls back to, the worktrees and the self-clone
+ * invariant 54 moved here).
+ */
+export function tierStateDir(home: string): string {
+  return `${home}/.shadok-ai`;
+}
+
+/**
+ * Invariant 54's third case, and the one the first two CREATED. Moving a dropped
+ * agent's state into its own home fixed the LOCATION, but the server is root and
+ * every writer there (`selfRepoDir`, `worktreeDir`, `factoryDir`) mkdirs with
+ * `recursive: true` — so whichever ran first made `<home>/.shadok-ai` ITSELF
+ * root-owned, inside a home the agent otherwise owns. The agent can then reach
+ * the directory and not write it: `pilotctl` dies on
+ * `EACCES: mkdir '/home/main/.shadok-ai/pilotctl'`, which is how it was found —
+ * every worker spawn of a production dispatch loop failing while the home, the
+ * skills and the credentials were all correct. MEASURED on correctsms 0.17.33.
+ *
+ * Deliberately a three-way answer rather than "mkdir -p and hope":
+ *  - absent → `create`, performed AS the user so it is born owned by them (the
+ *    same rule as `writeAsUserAtomic`: root must not write through a 0700 home);
+ *  - present and writable by the user → `null`, touch nothing. The common case,
+ *    and it must stay free: this runs before every spawn;
+ *  - present and NOT writable → `chown`, which is the repair half. Without it
+ *    only brand-new homes would be correct and every already-running instance
+ *    would stay broken — the directory exists, so a create is a silent no-op.
+ *
+ * The chown is the DIRECTORY only, never its contents: what is inside has owners
+ * for its own reasons (a root-owned self-clone checkout, a worktree already
+ * chowned by `chownAgentStateToDropUser`), and rewriting those would undo
+ * decisions made elsewhere.
+ */
+export function tierStateDirAction(probe: {
+  exists: boolean;
+  writableByUser: boolean;
+}): "create" | "chown" | null {
+  if (!probe.exists) return "create";
+  return probe.writableByUser ? null : "chown";
+}
+
 // ── Privileged wiring plans ───────────────────────────────────────────────────
 //
 // (The old shared-credential-FILE mechanism lived here. Each group agent now
