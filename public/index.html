@@ -7299,10 +7299,15 @@
   }
 
   /** The URL that serves a dropped / pasted / Telegram media file, by basename
-   *  (the server scopes it to MEDIA_DIR). */
+   *  (the server scopes it to its media tree). A file in a GROUP's own media
+   *  directory (`…/g-<group>/<name>`, multi-tenant) keeps that segment, which
+   *  the server checks against the caller's groups. */
   function mediaUrl(p) {
-    const base = String(p || "").split(/[/\\]/).pop() || "";
-    return "/media/" + encodeURIComponent(base);
+    const parts = String(p || "").split(/[/\\]/);
+    const base = parts.pop() || "";
+    const dir = parts.pop() || "";
+    const group = /^g-[A-Za-z0-9_-]{1,64}$/.test(dir) ? encodeURIComponent(dir) + "/" : "";
+    return "/media/" + group + encodeURIComponent(base);
   }
   // Mirror of download.ts VIDEO_EXT: which files the chat renders inline as a
   // <video>. The server decides the same thing to serve them inline with Range;
@@ -9644,6 +9649,9 @@
         headers: {
           "content-type": file.type || "application/octet-stream",
           "x-filename": encodeURIComponent(file.name || ""),
+          // Which agent the file is for: in multi-tenant it lands in THAT
+          // agent's group media directory, unreadable by any other group.
+          "x-shadok-session": t.sessionId || "",
         },
         body: file,
       });

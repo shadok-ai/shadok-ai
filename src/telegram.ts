@@ -91,6 +91,29 @@ const MSG_LIMIT = 4000; // Telegram hard limit is 4096; leave headroom.
 export function mediaDir(): string {
   return process.env.SHADOK_MEDIA_DIR?.trim() || path.join(SHADOK_DIR, "media");
 }
+/**
+ * Delete attachments older than `cutoff`, in the media root and one level of
+ * group subdirectories (`g-*`, invariant 60). `lstat` throughout: a symlink is
+ * removed as a link, never followed, and a directory is never unlinked.
+ */
+export function purgeMedia(root: string, cutoff: number): void {
+  const sweep = (dir: string, depth: number) => {
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      const p = path.join(dir, name);
+      try {
+        const st = fs.lstatSync(p);
+        if (st.isDirectory()) {
+          if (depth === 0 && /^g-/.test(name)) sweep(p, 1);
+        } else if (st.mtimeMs < cutoff) fs.unlinkSync(p);
+      } catch {
+        /* one odd entry must not stop the purge */
+      }
+    }
+  };
+  sweep(root, 0);
+}
 const TG_FILE_LIMIT = 20 * 1024 * 1024; // Bot API getFile hard limit
 const MEDIA_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // purge after 30 days
 
@@ -1178,7 +1201,23 @@ const NOOP_HANDLE: TelegramHandle = {
 // the web /mt-token/start "not applicable" gate. Set by startTelegram.
 let tgMultiTenant = false;
 
-export function startTelegram(port: number, authCookie?: string, multiTenant = false): TelegramHandle {
+export function startTelegram(
+  port: number,
+  authCookie?: string,
+  multiTenant = false,
+  opts: {
+    /** Where an attachment for this session is written (invariant 60): the
+     *  agent's GROUP media directory in multi-tenant, created and locked down by
+     *  the server. Throws while the agent is not known yet. Default: the one
+     *  flat `mediaDir()`, as before. */
+    mediaDirFor?: (sessionId: string | null) => string;
+    /** Read a file an AGENT sent (SendUserFile / ShadokFile) — with that
+     *  agent's rights in multi-tenant, never root's (invariant 60): the path
+     *  comes from the agent, and its transcript is in a HOME it can write.
+     *  Default: a plain read, as before. */
+    readAgentFile?: (sessionId: string | null, p: string) => Promise<Buffer<ArrayBuffer>>;
+  } = {},
+): TelegramHandle {
   tgMultiTenant = multiTenant;
   // Config is the source of truth (env still overrides, resolved by telegramConfig).
   const cfg = telegramConfig(loadConfig(), process.cwd());
@@ -1231,20 +1270,34 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
     });
 
   // Purge old attachments at startup — media/ only grows otherwise.
-  try {
-    const dir = mediaDir();
-    const cutoff = Date.now() - MEDIA_MAX_AGE_MS;
-    for (const name of fs.readdirSync(dir)) {
-      const p = path.join(dir, name);
-      if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+  purgeMedia(mediaDir(), Date.now() - MEDIA_MAX_AGE_MS);
+
+  const mediaDirFor =
+    opts.mediaDirFor ??
+    (() => {
+      const d = mediaDir();
+      fs.mkdirSync(d, { recursive: true });
+      return d;
+    });
+  /** The bridge's media directory. In multi-tenant it is its agent's GROUP
+   *  directory, so the first message of a new topic — which by construction
+   *  finds no session yet — waits for the agent rather than landing anywhere
+   *  shared. Bounded: past it the attachment is refused, said, never misfiled. */
+  const mediaDirForBridge = async (b: Bridge): Promise<string> => {
+    const deadline = Date.now() + (multiTenant ? 60_000 : 0);
+    for (;;) {
+      try {
+        return mediaDirFor(b.sessionId);
+      } catch (e) {
+        if (Date.now() >= deadline) throw e;
+        await new Promise<void>((r) => setTimeout(r, 300));
+      }
     }
-  } catch {
-    // folder missing: nothing to purge
-  }
+  };
 
   /** Download one attachment to MEDIA_DIR; returns the absolute path.
    *  Throws with a user-facing reason on any failure. */
-  const downloadAttachment = async (att: TgAttachment): Promise<string> => {
+  const downloadAttachment = async (att: TgAttachment, b: Bridge): Promise<string> => {
     if (att.fileSize && att.fileSize > TG_FILE_LIMIT)
       throw new Error("file too large (Telegram bot limit: 20 MB)");
     const f = await tg("getFile", { file_id: att.fileId });
@@ -1258,10 +1311,19 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
       signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
     });
     if (!r.ok) throw new Error(`download HTTP ${r.status}`);
-    const dir = mediaDir();
-    fs.mkdirSync(dir, { recursive: true });
+    const dir = await mediaDirForBridge(b);
     const dest = path.join(dir, mediaFileName(att));
-    fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
+    const data = Buffer.from(await r.arrayBuffer());
+    try {
+      // `wx`: never through an existing name or a symlink; never world-readable.
+      fs.writeFileSync(dest, data, { flag: "wx", mode: multiTenant ? 0o640 : 0o600 });
+    } catch (e) {
+      // The name is Telegram's file_unique_id: the same file sent again. Reuse
+      // it — but only if it is a plain file, never something planted there.
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const st = fs.lstatSync(dest);
+      if (!st.isFile() || st.isSymbolicLink()) throw new Error("an unexpected entry sits where the attachment goes");
+    }
     return dest;
   };
 
@@ -1316,10 +1378,13 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
    *  Telegram previews it inline, a DOCUMENT otherwise. A multipart upload of the
    *  bytes — no public URL needed, so it works for a loopback / proxied instance.
    *  Serialised through b.send like every other post so it keeps ordering. */
-  const sendUserFile = (b: Bridge, f: { path: string; name: string }): Promise<unknown> =>
+  const readAgentFile = opts.readAgentFile ?? ((_sid: string | null, p: string) => fs.promises.readFile(p));
+  const sendUserFile = (b: Bridge, f: { path: string; name: string }, fromAgent = false): Promise<unknown> =>
     b.send(async () => {
       try {
-        const buf = await fs.promises.readFile(f.path);
+        // An echoed attachment is the server's own media file; a file the agent
+        // sent is read with the agent's rights.
+        const buf = fromAgent ? await readAgentFile(b.sessionId, f.path) : await fs.promises.readFile(f.path);
         const photo = telegramPhotoable(f.name);
         const form = new FormData();
         form.append("chat_id", String(b.chatId));
@@ -1490,7 +1555,11 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           // renders its marker as a thumbnail; printing the marker here left the
           // person reading the topic with an absolute path and nothing to look
           // at. Upload it instead, so both surfaces show the same thing.
-          const att = attachmentsInPrompt(m.text, mediaDir());
+          // Only the bridge's OWN media directory counts (invariant 60): a
+          // marker naming another group's file is left as text, never uploaded.
+          let ownDir = mediaDir();
+          try { ownDir = mediaDirFor(b.sessionId); } catch { /* not known yet: the flat dir, which holds no group's file */ }
+          const att = attachmentsInPrompt(m.text, ownDir);
           if (!att.files.length) {
             send(b, label + "\n" + m.text);
             break;
@@ -1506,7 +1575,7 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
           // A SendUserFile is a delivered file, not tool noise: upload it (photo
           // or document) regardless of /tools.
           if ((m.name === "SendUserFile" || m.name === "ShadokFile") && Array.isArray(m.files) && m.files.length) {
-            for (const f of m.files) sendUserFile(b, f);
+            for (const f of m.files) sendUserFile(b, f, true);
             break;
           }
           // Hidden by default: on a slightly long turn the agent's answer
@@ -1702,7 +1771,7 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
         // happen — but the album prompt hands PATHS to an agent that cannot
         // read audio, and a defensive skip is cheaper than finding out.
         if (i.att.kind === "voice") continue;
-        const p = await downloadAttachment(i.att);
+        const p = await downloadAttachment(i.att, b);
         const item: PromptItem = { path: p, kind: i.att.kind };
         if (i.att.kind === "video") {
           // Two stills per clip and no transcription: ten videos in one album
@@ -2219,7 +2288,7 @@ export function startTelegram(port: number, authCookie?: string, multiTenant = f
         return;
       }
       try {
-        const p = await downloadAttachment(att);
+        const p = await downloadAttachment(att, b);
         if (att.kind === "voice") {
           // Transcribe, ECHO WHAT WAS UNDERSTOOD, then act on it. The echo is
           // load-bearing: a transcription can be wrong, and an instruction that
