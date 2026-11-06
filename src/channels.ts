@@ -479,6 +479,18 @@ export function saveTgOwner(userId: number | null): void {
 }
 
 /**
+ * Telegram OPERATORS: the user ids that redeemed a pairing code in the board
+ * group (`src/tg-operators.ts`). Only they may run the host-wide commands
+ * (`/secret`, `/login`, `/update`…). Beside the owner file, same shape.
+ */
+export function loadTgOperators(): number[] {
+  return readJson("telegram-operators").filter((v): v is number => typeof v === "number");
+}
+export function saveTgOperators(ids: number[]): void {
+  writeJson("telegram-operators", ids);
+}
+
+/**
  * Every forum topic the bot has created or seen (the Telegram Bot API can't
  * list topics, so we track them ourselves). Used by the boot reconciliation to
  * find orphan topics — ones that exist but have no channel — and delete them.

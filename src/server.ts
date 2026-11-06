@@ -103,6 +103,7 @@ import {
   profilePatch,
   loadTgGroup,
   saveTgGroup,
+  saveTgOperators,
   isHomeChannel,
   homeAdoptionTarget,
   resolveSessionTarget,
@@ -4446,7 +4447,12 @@ app.put("/telegram", async (req, res) => {
   // Unbind the board group (e.g. after a stale supergroup migration): clears the
   // binding so /setup can bind a fresh group. Read live by the bridge — no
   // restart needed for this alone.
-  if (b.unbindGroup === true) saveTgGroup(null);
+  // Its operators go with it: they were vouched for in THAT group, and the next
+  // board's are recorded when its /setup <code> is typed.
+  if (b.unbindGroup === true) {
+    saveTgGroup(null);
+    saveTgOperators([]);
+  }
 
   const hasConfigChange =
     patch.token !== undefined || patch.enabled !== undefined || patch.allowedChats !== undefined;
