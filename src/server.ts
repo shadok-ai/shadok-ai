@@ -167,6 +167,7 @@ import {
 } from "./osusers.js";
 import {
   mayActOnSession,
+  cronCheckAllowed,
   mayReachGroup,
   osUserForChannelGroup,
   cronCheckEnv,
@@ -230,7 +231,8 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
-import { isSlashCommand, markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { isSlashCommand, promptMetaHeader, connectionOrigin } from "./promptmeta.js";
+import { markHumanPrompt } from "./prompt-kind.js";
 import { listCommands } from "./slash-commands.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
@@ -516,6 +518,22 @@ console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 // it, and — unlike a client-settable field such as `origin` — a browser cannot
 // claim it, which is why the exemption is gated on THIS and nothing else.
 const SYSTEM_DRIVE_SECRET = randomBytes(32).toString("hex");
+// The Telegram bridge's own proof, on the same terms (per-process, in memory,
+// never sent anywhere but our loopback WS as `x-shadok-bridge`). It is what
+// makes a connection's origin "telegram" — and so what lets its `from` (the
+// Telegram sender) and its `voice` flag be believed (`connectionOrigin`). The
+// bridge's cookie cannot serve: `driveChannel` presents the very same one, and
+// with no password there is no cookie at all.
+const TELEGRAM_BRIDGE_SECRET = randomBytes(32).toString("hex");
+/** Does a request present `secret` in header `name`? Constant time, length-guarded. */
+function presentsSecret(req: { headers: Record<string, unknown> }, name: string, secret: string): boolean {
+  const raw = req.headers[name];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof header !== "string") return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(secret);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
@@ -678,7 +696,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -2690,6 +2708,10 @@ app.post("/crons", (req, res) => {
         ? true // re-arm: a spent one-shot being re-edited is enabled:false
         : (existing?.enabled ?? true);
   const check = typeof b.check === "string" && b.check.trim() ? String(b.check).trim() : undefined;
+  // The guard runs with the TARGET's profile secrets: an agent may only guard
+  // itself, or it could read a sibling's secrets through `env` (invariant 60).
+  if (!cronCheckAllowed({ agentId: callerOf(req).id, targetId: sessionId, check, existing }))
+    return res.status(403).json({ error: "an agent may set a cron check only on its own session (the check runs with that agent's secrets)" });
   const cron: Cron = {
     id: existing?.id ?? randomUUID(),
     sessionId,
@@ -7811,14 +7833,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     const b = Buffer.from(SYSTEM_DRIVE_SECRET);
     return a.length === b.length && timingSafeEqual(a, b);
   })();
+  // The Telegram bridge, proved the same way (its own secret, same compare).
+  const isTelegramBridge = presentsSecret(req, "x-shadok-bridge", TELEGRAM_BRIDGE_SECRET);
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
   const wsBy = (): SpawnBy =>
     spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent?.name });
   let session: Live | null = null;
-  // Where does this client come from? Declared at `start` (web, cron, telegram,
-  // cli…), it travels with the prompt echo: other clients must be able to SAY
-  // who spoke. Without it, a cron firing looks like a human message.
+  // Where does this client come from (web, cron, telegram, agent, peer, cli…)?
+  // It travels with the prompt echo — other clients must be able to SAY who
+  // spoke — and it decides the header the agent reads, whether `from` is
+  // believed, and whether the prompt is hidden. So it is DERIVED from what the
+  // connection proved (`connectionOrigin`), never taken from the `start` frame:
+  // a browser that declared `origin: "cron"` spoke to the agent unseen, and one
+  // that declared `"telegram"` signed its prompt with any name it liked. The
+  // frame's claim only ever narrows a bare local client to "cli"/"boot".
   let origin: string | undefined;
 
   const send = (msg: object) => {
@@ -7931,7 +7960,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               );
             }
           }
-          if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
+          origin = connectionOrigin(
+            {
+              systemDrive: isSystemDrive,
+              telegramBridge: isTelegramBridge,
+              agent: !!callerAgent,
+              peer: !!callerPeer && !callerAgent,
+              browser: fromBrowser,
+            },
+            msg.origin,
+          );
           const cwd = msg.cwd?.trim() || process.cwd();
           // Deterministic id: enforced with --session-id for a new session,
           // known for a resume. NEVER derive it from the most recent file
@@ -8271,7 +8309,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
-            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
+            spawnActor({ account: me?.name, origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
             dropUser,
             agentGroupId,
           );
@@ -8400,7 +8438,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // browser is not: for a web client the SESSION decides, and whatever
           // `from` the frame carried is discarded. An agent is not trusted
           // either: its name comes from the key that signed the socket.
-          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name);
+          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name, callerPeer ?? undefined);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -8460,14 +8498,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // A slash command goes in bare: anything ahead of the `/` makes the
             // TUI read it as prose, and the agent never runs the command.
             const command = isSlashCommand(text);
-            if (!command && (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent")) {
+            if (
+              !command &&
+              (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent" || origin === "peer")
+            ) {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header
               // entirely — losing the time and the sender to gain one word.
               // `parsePromptMeta` reads the platform as the first field and the
               // sender as everything past the time, so this widens neither.
-              const platform = msg.voice === true ? `${origin} vocal` : origin;
+              // Only the bridge transcribes voice notes, so only it may say so.
+              const platform = msg.voice === true && origin === "telegram" ? `${origin} vocal` : origin;
               // An agent header ends with the sender's REPLY ADDRESS — its short
               // session id — because a name is not an address: nothing makes tab
               // names unique and every tool takes an id, so naming the sender was
@@ -8476,7 +8518,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // rather than guessing). It is stripped back out by
               // `parsePromptMeta`, so it never reaches the chat.
               const ref = origin === "agent" ? callerAgent?.id.slice(0, 8) : undefined;
-              submitText = markPromptMeta(
+              // ALWAYS the server's header, and the person's text neutralised
+              // beneath it: a header-, ledger- or mark-shaped line they typed
+              // stays text and can never pass for one the server wrote.
+              submitText = markHumanPrompt(
                 text,
                 promptMetaHeader(platform, new Date(), author, defaultTimeZone(), ref),
               );
@@ -9212,7 +9257,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).

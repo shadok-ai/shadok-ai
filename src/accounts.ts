@@ -262,8 +262,10 @@ export function inviteVerdict(
  * The security property of the accounts feature, in one place: for a WEB client
  * the session decides and the frame's claim is discarded, because a browser can
  * put anything in `from`. The Telegram bridge is a trusted bridge that knows its
- * sender, so it keeps naming them; other origins (cli, cron) are the server's
- * own callers and keep whatever they supplied.
+ * sender, so it keeps naming them — and only it: `origin` is derived from
+ * the CONNECTION (`connectionOrigin`, src/promptmeta.ts), so "telegram" means
+ * the bridge proved itself with its per-process secret. Other origins (cli,
+ * cron, boot) name nobody: a `from` they carry is a claim nobody verified.
  *
  * An AGENT prompt (pilotctl, `origin: "agent"`) follows the WEB rule, not the
  * bridge one: the name comes from the session key that signed the socket, and a
@@ -276,10 +278,17 @@ export function promptAuthor(
   sessionName: string | undefined,
   claimed: string | undefined,
   callerAgent?: string | undefined,
+  callerPeer?: string | undefined,
 ): string | undefined {
   if (origin === "web") return sessionName;
   if (origin === "agent") return callerAgent;
-  return claimed;
+  if (origin === "peer") return callerPeer;
+  // The bridge is the ONE caller whose claim is believed — and `origin` is
+  // "telegram" only when the connection proved it is the bridge
+  // (`connectionOrigin`), never because a frame said so. Anything else (cli,
+  // cron, boot) names nobody: it writes its own frames.
+  if (origin === "telegram") return claimed;
+  return undefined;
 }
 
 /**

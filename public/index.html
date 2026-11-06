@@ -3941,6 +3941,20 @@
   // <a href> it sanitises, so all agent content is covered in a single place
   // (set AFTER attribute sanitising, so the allowlist can't strip it back).
   // rel="noopener" stops the opened page reaching back via window.opener.
+  // Agent Markdown is sanitised with ONE config, used at every render site
+  // (test/csp.test.ts refuses any other sanitize call). DOMPurify's
+  // defaults stop script, not phishing: an agent echoing hostile content could
+  // still render a `<form action="https://evil/…">` asking to "re-enter your
+  // password", dressed as a fullscreen overlay with `style=` (style-src keeps
+  // unsafe-inline). So no form controls, no <style>, no style attribute, no
+  // embedding. Nothing legitimate needs them: marked emits table alignment as
+  // `align=`, never `style=`, and there is no syntax highlighter. The CSP's
+  // `form-action 'none'` is the second barrier behind this one.
+  const AGENT_MD_PURIFY = Object.freeze({
+    FORBID_TAGS: ["form", "input", "button", "textarea", "select", "option", "style", "iframe", "object", "embed"],
+    FORBID_ATTR: ["style"],
+  });
+  const sanitizeAgentMarkdown = (md) => DOMPurify.sanitize(marked.parse(md), AGENT_MD_PURIFY);
   if (window.DOMPurify) {
     DOMPurify.addHook("afterSanitizeAttributes", (node) => {
       if (node.tagName === "A" && node.getAttribute("href")) {
@@ -7209,7 +7223,7 @@
     // losing the formatting is less bad than the reverse.
     if (role === "claude" && (extraClass === "hist" || extraClass === "live") && window.marked && window.DOMPurify) {
       bubble.classList.add("md");
-      bubble.innerHTML = DOMPurify.sanitize(marked.parse(text));
+      bubble.innerHTML = sanitizeAgentMarkdown(text);
       // A wide table must be able to scroll sideways WITHOUT `display:block` on
       // the <table> itself — that turns the thead and tbody into separate stacked
       // blocks that size their columns independently, so the header detaches from
@@ -7286,7 +7300,7 @@
     body.className = "compaction-body bubble";
     if (text && window.marked && window.DOMPurify) {
       body.classList.add("md");
-      body.innerHTML = DOMPurify.sanitize(marked.parse(text));
+      body.innerHTML = sanitizeAgentMarkdown(text);
     } else {
       body.textContent = text || "";
     }
@@ -11759,7 +11773,7 @@
     } else if (fac.edTab === "preview") {
       const pv = facEl("div", { class: "fp-preview" });
       const md = `**When to use it:** ${ed.desc}\n\n${ed.body}`;
-      if (window.marked && window.DOMPurify) pv.innerHTML = DOMPurify.sanitize(marked.parse(md));
+      if (window.marked && window.DOMPurify) pv.innerHTML = sanitizeAgentMarkdown(md);
       else pv.textContent = md;
       center.append(pv, facEl("div", { class: "fp-hint", text: "This is what an agent reads when it uses the skill." }));
     } else {

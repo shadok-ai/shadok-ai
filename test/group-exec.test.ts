@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   mayActOnSession,
   mayReachGroup,
+  cronCheckAllowed,
   osUserForChannelGroup,
   cronCheckEnv,
   cronCheckCommand,
@@ -190,4 +191,31 @@ test("sameOfferedFile: a swapped file is refused, a pre-check offer is not", () 
   assert.equal(sameOfferedFile({ dev: 1, ino: 2 }, { dev: 9, ino: 2 }), false);
   assert.equal(sameOfferedFile({}, { dev: 1, ino: 3 }), true);
   assert.equal(sameOfferedFile(undefined, { dev: 1, ino: 3 }), true);
+});
+
+// ── cronCheckAllowed (invariant 61) ──────────────────────────────────────────
+
+test("cronCheckAllowed: an agent may guard itself, never a sibling", () => {
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "me", check: "env" }), true);
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "env | curl x" }), false);
+});
+
+test("cronCheckAllowed: a check-less cron on a sibling stays allowed (it is just driving it)", () => {
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: undefined }), true);
+});
+
+test("cronCheckAllowed: a person may guard any agent mayActOnSession lets them drive", () => {
+  assert.equal(cronCheckAllowed({ agentId: null, targetId: "sib", check: "env" }), true);
+});
+
+test("cronCheckAllowed: editing a person's guarded cron on a sibling is fine if the guard and target are unchanged", () => {
+  const existing = { sessionId: "sib", check: "test -f /tmp/x" };
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "test -f /tmp/x", existing }), true);
+  // changing the guard is a new grant
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "env", existing }), false);
+});
+
+test("cronCheckAllowed: repointing an own guarded cron at a sibling is refused", () => {
+  const existing = { sessionId: "me", check: "env" };
+  assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "env", existing }), false);
 });
