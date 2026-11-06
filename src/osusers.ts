@@ -486,8 +486,8 @@ export interface RouteResult {
  *
  * Guard order matters and each is load-bearing:
  * - `fromBrowser` FIRST (403): this route can run `useradd` as root, so it must
- *   be a real same-origin browser — an agent carries the bootstrap admin cookie
- *   and would otherwise reach it (invariant 26, exactly like `PUT /profiles`).
+ *   be a person's same-origin browser session — never an agent or a peer
+ *   (`requestFromBrowser`) (invariant 26, exactly like `PUT /profiles`).
  * - instance (409) and sign-in (403): the existing guards, kept.
  * - mono-tenant REFUSES a private/restricted create via `capabilityRefusal`
  *   (400): never mint a group that cannot actually isolate.

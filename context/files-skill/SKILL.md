@@ -57,9 +57,8 @@ curl -sS -X POST -H "content-type: application/json" \
   "http://127.0.0.1:$SHADOK_PORT/files"
 ```
 
-`$SHADOK_AUTH` (a cookie) is still accepted elsewhere, but it was frozen into
-this process's environment at spawn and expires after a week, so never rely on
-it alone. A `401` or `403` means that header is missing — or that you were
+That key is your only credential and it does not expire (no cookie, no
+cockpit password is handed to an agent). A `401` or `403` means that header is missing — or that you were
 started before this existed, in which case nothing you hold can authenticate
 any more and only a human can fix it: ask them for *Reload agent* on your ⋯
 menu.

@@ -211,6 +211,7 @@ test("the Telegram bridge's cookie is minted as the server's own (mfa)", () => {
   const internal = src.indexOf("isInternalClient(cookieSession(req))");
   const cookieAcct = src.indexOf("return cookieAccount(req);");
   assert.ok(internal > 0 && cookieAcct > internal, "currentAccount must consult isInternalClient first");
-  // An agent's env token stays password-grade: no flag.
-  assert.match(src, /env\.SHADOK_AUTH = adminCookie\(\)!/);
+  // And no agent is handed an admin cookie at all any more: an agent
+  // authenticates as itself (src/agent-principal.ts).
+  assert.doesNotMatch(src, /env\.SHADOK_AUTH\s*=/);
 });

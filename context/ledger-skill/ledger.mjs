@@ -30,7 +30,6 @@ import { upsertEntry, searchEntries, ageDays, resolveId, normEntity, rowKind, KI
 
 const PORT = (process.env.SHADOK_PORT || "").trim();
 const KEY = (process.env.SHADOK_SESSION_KEY || "").trim();
-const AUTH = (process.env.SHADOK_AUTH || "").trim();
 // On-server: a port AND a session key. The key is what proves WHICH agent calls,
 // and it is what the server scopes the authoring group by — without it there is
 // no identity, so we fall back to the local file.
@@ -79,9 +78,7 @@ async function api(method, p, body, { soft404 = false } = {}) {
       method,
       headers: {
         "content-type": "application/json",
-        ...(AUTH ? { Cookie: AUTH } : {}),
-        // The durable credential: the cookie in the env expires after a week,
-        // the session key does not (invariant 33).
+        // The agent's only credential; it does not expire (invariant 33).
         ...(KEY ? { "x-shadok-session-key": KEY } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),

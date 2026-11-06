@@ -44,12 +44,16 @@ test("they say what a 401 means, and that only a human can clear the old case", 
   }
 });
 
-test("the cookie is documented as the half that expires, never as the way in", () => {
-  // `SHADOK_AUTH` still works and will keep working; the point is that an agent
-  // must not build on it, because it is dated and frozen into an environment
-  // that cannot be refreshed. See invariant 33.
+test("the key is documented as the ONLY credential, and as an agent's — not an admin's", () => {
+  // Agents are no longer handed `SHADOK_AUTH` (the admin's cookie) nor the
+  // cockpit password: the key is all they hold, and it makes them an agent of
+  // their own group. An agent told it may still find a cookie would go looking
+  // for one; an agent not told it is no admin reads every 403 as a bug.
   for (const f of SKILLS) {
-    assert.match(read(f), /expires after a week|does not expire/i, `${f} presents both as equivalent`);
+    const md = read(f);
+    assert.match(md, /does not expire/i, `${f} does not say the key lasts`);
+    assert.match(md, /never an admin/i, `${f} does not say an agent is no admin`);
+    assert.doesNotMatch(md, /SHADOK_AUTH/, `${f} still points an agent at the retired cookie`);
   }
 });
 

@@ -236,15 +236,16 @@ test("MUST-FIX2 wiring: GET /diff carries the session group gate (canSeeSession)
     "/diff must derive the viewer server-side from currentAccount",
   );
   assert.ok(body.includes("DEPLOYMENT_MODE"), "/diff gate must short-circuit in mono-tenant");
-  // The existing remote restricted-peer behaviour must stay intact.
-  assert.ok(body.includes("peerScopeFor(req)") && body.includes("ownedByPeer("), "/diff must keep the peer gate");
+  // The existing remote restricted-peer behaviour must stay intact — through the
+  // box helper, which also boxes an agent a restricted peer spawned.
+  assert.ok(body.includes("restrictedBoxOf(req)") && body.includes("ownedByPeer("), "/diff must keep the peer gate");
 });
 
 test("ADJACENT wiring: GET /recover and GET /sessions filter past sessions by group", () => {
   for (const name of ["/recover", "/sessions"]) {
     const route = SERVER_SRC.indexOf(`app.get("${name}"`);
     assert.ok(route > 0, `the GET ${name} route must exist`);
-    const body = SERVER_SRC.slice(route, route + 900);
+    const body = SERVER_SRC.slice(route, route + 1300);
     assert.ok(body.includes("canSeeSession("), `${name} must filter sessions via canSeeSession`);
     assert.ok(
       body.includes("viewerFor(currentAccount(req))"),

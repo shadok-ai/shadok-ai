@@ -109,6 +109,11 @@ export function userWriteVerdict(o: {
   if (o.action === "create") {
     if (name === BOOTSTRAP_ADMIN)
       return { ok: false, error: `"${BOOTSTRAP_ADMIN}" is reserved for the instance password` };
+    // `agent:<sessionId>` is how an AGENT is named as a principal
+    // (src/agent-principal.ts). Authorization never trusts the name — it reads
+    // the principal's own `agent` field — but a person wearing an agent's name
+    // would be one more thing for a reader of the logs to get wrong.
+    if (name.startsWith("agent:")) return { ok: false, error: `"agent:" names are reserved for agents` };
     return o.exists ? { ok: false, error: `${name} already exists` } : { ok: true };
   }
   return o.exists ? { ok: true } : { ok: false, error: `no such account: ${name}` };
@@ -135,6 +140,35 @@ export function sessionSecret(): Buffer {
   fs.writeFileSync(f, secret.toString("hex"), { mode: 0o600 });
   fs.chmodSync(f, 0o600);
   return secret;
+}
+
+/**
+ * Bootstrap-admin cookies issued BEFORE this instant are dead.
+ *
+ * Until agents stopped being handed one, every agent carried `SHADOK_AUTH` — a
+ * bootstrap-admin cookie valid for a week, from the network too. Those cookies
+ * are indistinguishable from a person's bootstrap login, so the only way to
+ * retire them is by date: the first boot of a server that no longer issues them
+ * records "now", once, and from then on an older bootstrap cookie is refused.
+ * Cost: whoever is signed in with the instance password signs in again, once.
+ * Named accounts are untouched (their cookies were never given to agents).
+ * Best-effort: a write that fails returns 0, i.e. today's behaviour.
+ */
+export function bootstrapSessionsAfter(now: number): number {
+  const f = path.join(os.homedir(), ".shadok-ai", "users", instanceKey() + ".bootstrap-after");
+  try {
+    const n = Number(fs.readFileSync(f, "utf8").trim());
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch {
+    /* first boot of this version: record it below */
+  }
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, String(now), { mode: 0o600 });
+    return now;
+  } catch {
+    return 0;
+  }
 }
 
 /** `<user base64url>.<issuedAt>.<mfa>.<hmac>` — the name is encoded so a dot in

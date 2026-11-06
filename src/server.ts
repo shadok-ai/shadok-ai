@@ -328,6 +328,7 @@ import {
   signSession,
   readSessionFull,
   sessionAlive,
+  bootstrapSessionsAfter,
   saveAccounts,
   userWriteVerdict,
   newInvite,
@@ -341,6 +342,14 @@ import {
   readTalkHandle,
   type Account,
 } from "./accounts.js";
+import {
+  type AgentPrincipal,
+  AGENT_CREDENTIAL_VARS,
+  agentAccount,
+  headerPresent,
+  isBrowserPerson,
+  resolveAgentPrincipal,
+} from "./agent-principal.js";
 import {
   admins2fa,
   authenticationOptions,
@@ -451,6 +460,14 @@ const PASTE_LIMIT = "50mb";
 // flag), the whole GUI — pages, endpoints AND the WebSocket — requires a login.
 // Unset → no auth (the default).
 const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
+// Read once, then gone from our own environment BEFORE anything is spawned: the
+// password IS the bootstrap admin, and every child this process starts — an
+// agent's PTY, a cron guard, a tmux server started on first use — would
+// otherwise inherit it. `SHADOK_AUTH` too, should this server have been
+// launched from inside an older agent's shell. The supervisor keeps its own
+// copy and hands it to the next server it spawns (src/main.ts), so an
+// auto-update respawn still has it. See src/agent-principal.ts.
+for (const k of AGENT_CREDENTIAL_VARS) delete process.env[k];
 // Deployment mode, resolved ONCE at boot: the single source of truth for every
 // privileged / isolation path. Multi-tenant needs BOTH the ability to provision
 // an OS user and accounts; otherwise isolation is refused, never faked.
@@ -503,16 +520,19 @@ const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 // never creates a key file it will not use.
 let sessionKeyCache: Buffer | null = null;
 const signingSecret = (): Buffer => (sessionKeyCache ??= sessionSecret());
+/** Bootstrap cookies older than this are retired agent `SHADOK_AUTH`s — see
+ *  `bootstrapSessionsAfter`. Only meaningful (and only written) with a password. */
+const BOOTSTRAP_SESSIONS_AFTER = GUI_PASSWORD ? bootstrapSessionsAfter(Date.now()) : 0;
 /**
- * The Telegram bridge and the agents authenticate as the bootstrap admin.
+ * The Telegram bridge authenticates as the bootstrap admin, with a cookie only
+ * this process can mint.
  *
- * `mfa` marks the cookie as second-factor verified. The BRIDGE gets it and an
- * agent does not, and that is not a privilege, it is what the flag means:
- * minting it takes the signing secret, which never leaves the server, so a
- * cookie carrying it IS the server (`isInternalClient`). An agent's
- * `SHADOK_AUTH` is a dated token sitting in a process env, which under 2FA must
- * read as what it is — a password-grade credential, not a second factor. Agents
- * lose nothing: they authenticate with `x-shadok-session-key`.
+ * `mfa` marks the cookie as second-factor verified, and that is not a
+ * privilege, it is what the flag means: minting it takes the signing secret,
+ * which never leaves the server, so a cookie carrying it IS the server
+ * (`isInternalClient`). Agents used to be handed an admin cookie too
+ * (`SHADOK_AUTH`); they no longer are — an agent authenticates as ITSELF with
+ * `x-shadok-session-key` (src/agent-principal.ts).
  */
 const adminCookie = (mfa = false): string | undefined =>
   GUI_PASSWORD ? `sk_auth=${signSession(BOOTSTRAP_ADMIN, Date.now(), signingSecret(), mfa)}` : undefined;
@@ -1047,25 +1067,30 @@ function cookieSession(req: { headers: Record<string, unknown> }): { user: strin
  * deleting an account or changing a role takes effect at once — that is what
  * buys us the absence of a session store.
  */
-function currentAccount(req: Caller): { name: string; role: Role } | null {
+function currentAccount(req: Caller): { name: string; role: Role; agent?: AgentPrincipal } | null {
+  // An AGENT authenticates with its own session key — and is THE AGENT, not the
+  // bootstrap admin. It used to resolve to the admin, which made every agent
+  // (an isolated multi-tenant one included, running as an unprivileged OS user
+  // precisely so it could not reach other groups) a full admin of this API:
+  // invitations, backend, restart-all, every group's agents. Now it is a
+  // `member` whose only group is its own channel's (`viewerFor` carries it as
+  // `agentGroup`), so admin-only routes refuse it and the group wall applies to
+  // it exactly as to a person. Checked BEFORE the no-password shortcut, so an
+  // agent is never the admin even on an instance with no password.
+  //
+  // The key never expires (invariant 33): a running agent proving it is that
+  // agent has no reason to. `sessionForKey` requires the channel to exist, so
+  // the key dies with the agent, and it only counts from THIS machine
+  // (`localSessionForKey`): from the network it is ignored. With a password, a
+  // key that does NOT verify buys nothing: `cookieAccount` refuses any request
+  // carrying a machine header, so it cannot ride a cookie either.
+  const agent = agentPrincipal(req);
+  if (agent) return agentAccount(agent);
+  // No password: no accounts, no isolation (multi-tenant requires accounts), and
+  // anything on this machine may call us — unchanged. An agent whose key
+  // verified is still the agent (above); one holding a pre-fix key it cannot
+  // prove keeps working as it always did here.
   if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
-  // An AGENT authenticates with its own session key, not with the cookie.
-  //
-  // `SHADOK_AUTH` is still injected and still works, but it is a dated token in
-  // a process environment, and an environment cannot be refreshed: an agent
-  // alive longer than SESSION_TTL_MS got 401 on every call to its own server —
-  // schedules, sibling agents, the vault, all of it — with nothing to see and
-  // nothing it could do, since the self-reload skill sits behind this same
-  // gate. A running agent proving it is that agent has no reason to expire.
-  //
-  // It grants exactly what the cookie already did, no more: `SHADOK_AUTH` IS
-  // the bootstrap admin's cookie, so this is the same authority reached by a
-  // credential that cannot age out. `sessionForKey` requires the session to be
-  // live, so the key dies with the agent. And it only counts from THIS
-  // machine (`localSessionForKey`): from the network it is ignored.
-  const skey = req.headers["x-shadok-session-key"];
-  if (typeof skey === "string" && skey && localSessionForKey(req, skey))
-    return { name: BOOTSTRAP_ADMIN, role: "admin" };
   // A MEMBER-scope peer (an invited agent from another instance) authenticates
   // as a web MEMBER: everything a person you invite can do — see/drive EVERY
   // agent, read `/usage` and `/live`, spawn — but never admin (no account or
@@ -1111,12 +1136,21 @@ function twoFactorOn(): boolean {
  * other admin can reset it.
  */
 function cookieAccount(req: { headers: Record<string, unknown> }): { name: string; role: Role } | null {
+  // A request carrying an agent's key or a peer token is a MACHINE, whatever
+  // cookie rides along — a pre-fix agent still holds the admin's `SHADOK_AUTH`
+  // cookie and its tools send both. A person's browser never sends either.
+  if (machineHeaders(req)) return null;
   if (!GUI_PASSWORD) return { name: BOOTSTRAP_ADMIN, role: "admin" };
   const sess = cookieSession(req);
   if (!sess) return null;
   const tfa = twoFactorOn();
   if (tfa && !sess.mfa) return null;
-  if (sess.user === BOOTSTRAP_ADMIN) return tfa ? null : { name: BOOTSTRAP_ADMIN, role: "admin" };
+  if (sess.user === BOOTSTRAP_ADMIN) {
+    // A bootstrap cookie from before agents stopped carrying one may be an
+    // agent's old `SHADOK_AUTH`: retired by date (`bootstrapSessionsAfter`).
+    if (!sessionAlive(sess.issuedAt, { sessionsAfter: BOOTSTRAP_SESSIONS_AFTER })) return null;
+    return tfa ? null : { name: BOOTSTRAP_ADMIN, role: "admin" };
+  }
   const acct = loadAccounts().find((a) => a.name === sess.user);
   // No hash means an invitation that was never redeemed: not a login yet.
   if (!acct?.passwordHash) return null;
@@ -1363,6 +1397,52 @@ function localSessionForKey(req: Caller, key: string): string | null {
   return sessionForKey(key);
 }
 
+/** Does this request present machine credentials — an agent's session key or a
+ *  peer token, valid or not? A browser never sends either header. */
+function machineHeaders(req: { headers: Record<string, unknown> }): boolean {
+  return headerPresent(req.headers["x-shadok-session-key"]) || headerPresent(req.headers["x-shadok-peer"]);
+}
+
+/**
+ * The AGENT a request authenticates as — from its `x-shadok-session-key`,
+ * verified and local-only — or null. THE helper for "is this an agent, and
+ * which one": its session id, its channel's group (the registry's, never the
+ * request's), its profile, its creator, and the restricted peer whose box it
+ * lives in. Routes that need to treat agents differently (or scope them to
+ * their own group) should read this, never `currentAccount(...).name`.
+ *
+ * Header only, on purpose: the `{key}` BODY field `/profiles/prompt` and
+ * `/reload` have always accepted identifies the caller for THOSE routes
+ * (`callerOf`), but authentication is decided before any body is trusted.
+ */
+export function agentPrincipal(req: Caller): AgentPrincipal | null {
+  const key = req.headers["x-shadok-session-key"];
+  if (typeof key !== "string" || !key) return null;
+  const id = localSessionForKey(req, key);
+  if (!id) return null;
+  return resolveAgentPrincipal(
+    id,
+    loadChannels(),
+    (name) => {
+      const row = withSalts(loadPeers(peerFileFor())).find((p) => p.name === name);
+      return row ? peerScope(row) : null;
+    },
+    sessions.get(id)?.profile,
+  );
+}
+
+/**
+ * The restricted peer box a caller is in: the restricted peer itself
+ * (`x-shadok-peer`), or an AGENT that such a peer spawned — an agent inherits
+ * its creator's box and never escapes it by authenticating with its own key.
+ * null = no box (a person, a member peer, an ordinary agent).
+ */
+function restrictedBoxOf(req: Caller): string | null {
+  const row = peerRow(req);
+  if (row) return peerScope(row) === "restricted" ? row.name : null;
+  return agentPrincipal(req)?.peer ?? null;
+}
+
 function sessionForKey(key: string): string | null {
   const id = readSessionKey(key, signingSecret());
   if (!id) return null;
@@ -1385,6 +1465,8 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
   const key = typeof h === "string" && h ? h : typeof fromBody === "string" ? fromBody : "";
   const id = localSessionForKey(req, key);
   if (!id) return { id: null, profile: null };
+  // Same resolution as `agentPrincipal`, so the two can never disagree on
+  // which profile an agent carries.
   const profile =
     sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
   return { id, profile };
@@ -1396,7 +1478,7 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
  * `agentGroupId` present (possibly null = its agent has no group → Main). A
  * browser leaves `agentGroupId` undefined and is resolved by `spawnGroupFor`
  * from its account. The `viewer` is the authorization principal either way (an
- * agent authenticates as the bootstrap admin).
+ * agent's viewer is the agent itself, member of its own group only).
  */
 function secretCaller(req: Caller & { body?: unknown }): {
   agentGroupId?: string | null;
@@ -1451,12 +1533,9 @@ function secretWriteTarget(
  * The AGENT whose session key signs this request, if any — its cockpit name for
  * the byline, and its id for the reply address.
  *
- * Attribution, deliberately NOT reusing `currentAccount`: that maps the very
- * same key to the bootstrap admin, which is the right answer for AUTHORISATION
- * (an agent may do what the human may) and the wrong one for a byline — an
- * agent's message would go out signed with the human's name, which is the bug
- * this exists to close. Resolved from the key, never from the frame, exactly
- * like a web prompt's author.
+ * Attribution: the agent's cockpit name for a byline (its principal, from
+ * `agentPrincipal`, carries only ids). Resolved from the key, never from the
+ * frame, exactly like a web prompt's author.
  */
 function agentCaller(req: Caller): { id: string; name: string } | undefined {
   const key = req.headers["x-shadok-session-key"];
@@ -1491,13 +1570,31 @@ function auditProfileSecrets(
   recordSecretAudit({ action: "detached", secrets: diff.removed, ...base });
 }
 
-/** A browser on our own origin — the only caller allowed to change guardrails. */
+/**
+ * A PERSON in a browser on our own origin — the only caller allowed through the
+ * "browser-only" gates (guardrails, accounts, shell mode, uploads…).
+ *
+ * It used to be the `Origin` check alone, which any `curl -H 'Origin: …'`
+ * passes — so every browser-only route was reachable by an agent. Now a
+ * request carrying an agent's key or a peer token is never a browser, with a
+ * password set it must carry a person's cookie, and the same-origin check stays
+ * on top as the CSRF layer (src/agent-principal.ts, `isBrowserPerson`).
+ */
 function requestFromBrowser(req: { headers: Record<string, unknown> }): boolean {
-  return browserOrigin(
-    req.headers.origin as string | undefined,
-    req.headers.host as string | undefined,
-    EXTRA_ORIGINS,
-  );
+  return isBrowserPerson({
+    hasAgentKey: headerPresent(req.headers["x-shadok-session-key"]),
+    hasPeerToken: headerPresent(req.headers["x-shadok-peer"]),
+    passwordSet: !!GUI_PASSWORD,
+    // The bridge's internal cookie is the SERVER, not a person (cookieAccount
+    // already refuses it under 2FA; without 2FA it reads as the bootstrap admin,
+    // so it is excluded here explicitly).
+    personCookie: !!GUI_PASSWORD && !isInternalClient(cookieSession(req)) && cookieAccount(req) !== null,
+    sameOrigin: browserOrigin(
+      req.headers.origin as string | undefined,
+      req.headers.host as string | undefined,
+      EXTRA_ORIGINS,
+    ),
+  });
 }
 
 function requestOriginOk(req: { headers: Record<string, unknown> }): boolean {
@@ -1884,7 +1981,11 @@ app.get("/vendor/addon-fit.js", (_req, res) =>
 // Resumable sessions of a directory (for the "resume by id" picker).
 app.get("/sessions", (req, res) => {
   const cwd = String(req.query.cwd ?? "").trim() || process.cwd();
-  const list = listSessions(cwd);
+  const all = listSessions(cwd);
+  // An agent in a restricted peer's box lists that peer's agents only.
+  const box = restrictedBoxOf(req);
+  const boxChans = box ? loadChannels() : [];
+  const list = box ? all.filter((s) => ownedByPeer(boxChans.find((c) => c.sessionId === s.id), box)) : all;
   // `cwd` is a caller-supplied path, so a caller who knows another group's HOME
   // could enumerate that group's resumable sessions (ids + first-prompt preview).
   // Filter each to the caller's visible groups — the same session-level boundary
@@ -1922,7 +2023,10 @@ app.get("/live", (req, res) => {
   const viewer = viewerFor(currentAccount(req));
   const chans = loadChannels();
   const groups = loadGroups();
+  // An agent in a restricted peer's box sees that peer's agents only.
+  const box = restrictedBoxOf(req);
   const visible = (id: string): boolean => {
+    if (box && !ownedByPeer(chans.find((c) => c.sessionId === id), box)) return false;
     if (DEPLOYMENT_MODE !== "multi-tenant") return true;
     const gid = chans.find((c) => c.sessionId === id)?.group ?? null;
     if (!gid) return true; // commons / group-less
@@ -1972,8 +2076,9 @@ app.get("/diff", (req, res) => {
   const ch = chans.find((c) => c.sessionId === s.id);
   // A RESTRICTED peer sees the diff of ITS OWN agents only. A member peer (and
   // any account) passed the gate as a member and sees any.
-  if (peerScopeFor(req) === "restricted" && !ownedByPeer(ch, peerName(req)!))
-    return res.status(403).json({ error: "not your agent" });
+  // An agent a restricted peer spawned inherits the same box.
+  const box = restrictedBoxOf(req);
+  if (box && !ownedByPeer(ch, box)) return res.status(403).json({ error: "not your agent" });
   // /diff returns a session's git status + working-tree FILE CONTENTS, so it is a
   // cross-group confidentiality decision just like the drive/`/live` paths. Gate
   // it on the SAME group boundary (canSeeSession mirrors `mayDriveSession` /
@@ -2450,7 +2555,10 @@ app.get("/channels", (req, res) => {
   // registry is the authority — the client is never trusted to filter. A null
   // viewer (deleted account / no session) resolves to public-only, never a 500.
   // Mono-tenant leaves every channel group-less, so visibleChannels is a no-op.
-  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req)));
+  const box = restrictedBoxOf(req);
+  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))).filter(
+    (ch) => !box || ownedByPeer(ch, box),
+  );
   res.json(
     visible.map((ch) => {
       const mine = active.filter((c) => c.sessionId === ch.sessionId);
@@ -2571,7 +2679,8 @@ app.put("/channels", (req, res) => {
   // not flip an agent's Telegram mirror through a channel write (the agent-menu
   // toggle persists via this endpoint). Pin each incoming `mirror` to its stored
   // value for a non-admin; a brand-new channel they create is left un-mirrored.
-  // Admins — and agents, who authenticate as the bootstrap admin — pass through.
+  // Admins pass through. An agent is a member principal (src/agent-principal.ts),
+  // so its mirror flags are pinned like any member's.
   if (currentAccount(req)?.role !== "admin") {
     const storedMirror = new Map(loadChannels().map((c) => [c.sessionId, c.mirror]));
     for (const c of body) {
@@ -2627,8 +2736,9 @@ app.get("/groups", (req, res) => {
   res.json(listableGroups(loadGroups(), viewerFor(currentAccount(req))));
 });
 app.put("/groups", (req, res) => {
-  // BROWSER-ONLY (T2/T6 carry): an agent authenticates as the bootstrap admin,
-  // so without this it could edit membership/nature by curl. The flow also
+  // BROWSER-ONLY (T2/T6 carry): writing the group list is a person's act, and
+  // `requestFromBrowser` refuses any request carrying an agent key or a peer
+  // token, forged Origin or not. The flow also
   // keeps the instance guard and refuses a non-member membership/nature change —
   // and MERGES cosmetic fields onto the stored rows, so the cosmetic client PUT
   // can never silently wipe a restricted group down to an empty public one.
@@ -2645,7 +2755,7 @@ app.put("/groups", (req, res) => {
 
 // Add and/or remove members of a Private (`restricted`) group. Any MEMBER may do
 // both (membershipVerdict owns that rule); browser-only for the same reason as
-// PUT /groups: an agent holds the bootstrap admin cookie and sends no Origin.
+// PUT /groups: a person's act, never an agent's (`requestFromBrowser`).
 // A group the caller cannot see is a 404 (fail closed — never confirm it exists).
 app.post("/groups/members", (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ error: "browser only" });
@@ -3327,9 +3437,9 @@ async function maybeRunGroupsMigration(reason: string): Promise<void> {
 // that cannot actually isolate. A public group provisions nothing (commons).
 //
 // BROWSER-ONLY (invariant 26, like `PUT /profiles`): this route provisions an
-// OS user via `useradd` as root — an agent carries the bootstrap admin cookie
-// and sends no `Origin`, so without this gate it could `curl` a privileged
-// `useradd`. The flow (createGroupFlow) owns the guard order and the ordering.
+// OS user via `useradd` as root, so only a person's browser session may reach
+// it — `requestFromBrowser` refuses an agent key or a peer token whatever
+// `Origin` it forges. The flow (createGroupFlow) owns the guard order and the ordering.
 app.post("/groups", async (req, res) => {
   const body = req.body ?? {};
   const nature: Nature =
@@ -3413,7 +3523,12 @@ app.get("/secrets", (req, res) => {
 // Behind the password gate like everything else; see src/factory-routes.ts.
 mountFactory(app, {
   requestFromBrowser: (req) => requestFromBrowser(req),
-  personName: (req) => currentAccount(req)?.name ?? null,
+  // A PERSON's name — never an agent's principal name (`agent:<id>`); the
+  // factory recognises agents through `callerOf`.
+  personName: (req) => {
+    const a = currentAccount(req);
+    return a && !a.agent ? a.name : null;
+  },
   requireAdmin: (req, res, what) => accountAdmin(req, res, true, what),
   callerOf: (req) => callerOf(req),
   vault: (req) => factoryVaultFor(req),
@@ -3594,13 +3709,11 @@ app.post("/oauth-relay", async (req, res) => {
 /**
  * Managing accounts is BROWSER-ONLY, on top of the admin role.
  *
- * Every agent is handed `SHADOK_AUTH` — a signed session for the bootstrap
- * admin — so the role check alone is satisfied by any agent on this machine: it
- * could mint an admin invitation or delete an account without anyone asking it
- * to. The account surface is exactly where that must not be reachable by
- * accident, so it takes the same guard as the guardrail routes (invariant 28,
- * `PUT /profiles`): a real same-origin `Origin`, which loopback callers —
- * agents, pilotctl, the Telegram bridge — do not send.
+ * An agent is a `member` principal (src/agent-principal.ts), so the role check
+ * alone already refuses it; agents used to be the bootstrap admin, and this
+ * route is exactly where that must never come back. Writes also take the
+ * browser-person guard (`requestFromBrowser`: a person's cookie, no agent key
+ * or peer token, same-origin) — like the guardrail routes.
  *
  * It is a boundary against ACCIDENT, not against intent, and the difference is
  * worth stating: agents run as the same OS user, so one that means to escalate
@@ -4986,9 +5099,8 @@ app.post("/claude-update", async (req, res) => {
 // Main-private rows to any authenticated member.
 app.get("/ledger", (req, res) => {
   const rows = loadLedger(ledgerFileFor(process.cwd()));
-  // The agent path FIRST: a session key makes `currentAccount` the bootstrap
-  // admin, so reading the viewer's membership for an agent would hand it the
-  // admin's whole reach instead of its own channel's group.
+  // The agent path FIRST: an agent reads its own channel's group (Main when it
+  // has none) — the same set its viewer would resolve to, stated explicitly.
   const agentId = callerOf(req).id;
   const groupIds = agentId
     ? new Set([loadChannels().find((c) => c.sessionId === agentId)?.group ?? MAIN_GROUP_ID])
@@ -5930,7 +6042,9 @@ function makePilot(
   // plain language just by asking the agent).
   env.SHADOK_SESSION_ID = id;
   env.SHADOK_PORT = String(boundPort || START_PORT);
-  if (GUI_PASSWORD) env.SHADOK_AUTH = adminCookie()!;
+  // NO `SHADOK_AUTH` (an admin cookie) and no `SHADOK_GUI_PASSWORD`: an agent
+  // authenticates as ITSELF with the key below (src/agent-principal.ts). Both
+  // pilots also strip the two names from whatever they inherit.
   // Proves WHO calls /profiles/prompt: without it "my own profile" means
   // nothing, since the session id is public.
   env.SHADOK_SESSION_KEY = sessionKeyFor(id);
@@ -7291,7 +7405,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // ONCE at connect and stamped on the socket: revocation (`DELETE /peers`) drops
   // it, and the `start` handler tags what it spawns so a peer only ever touches
   // its own agents.
-  const callerPeer = peerName(req);
+  // An AGENT spawned by a restricted peer inherits that peer's box: it is
+  // tagged, resumes and stops exactly like the peer would (`restrictedBoxOf`).
+  const callerPeer = peerName(req) ?? agentPrincipal(req)?.peer ?? null;
   // Which AGENT is driving this socket, when one is — pilotctl connects with its
   // own `SHADOK_SESSION_KEY` and declares `origin: "agent"`. Resolved ONCE here,
   // from the key, for the same reason as `me` just above: what a frame says
@@ -7301,7 +7417,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // a MEMBER peer acts as a web member (`currentAccount` above already returns
   // it as one) and those checks are skipped. The tag is still written for BOTH,
   // so the cockpit always shows which peer created what.
-  const callerPeerRestricted = peerScopeFor(req) === "restricted";
+  const callerPeerRestricted = restrictedBoxOf(req) !== null;
   (ws as WebSocket & { __peer?: string | null }).__peer = callerPeer;
   // A same-origin browser, decided ONCE at connect from the upgrade's headers —
   // not from anything a frame says. `run` is gated on it: shell mode bypasses a
@@ -7765,7 +7881,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           let initialCreatedBy: string | undefined;
           if (!resumed) {
             const parentCh = parentAtStart ? loadChannels().find((c) => c.sessionId === parentAtStart) : undefined;
-            initialCreatedBy = parentCh?.createdBy ?? me?.name ?? undefined;
+            // An agent spawning WITHOUT a parent link still works for its own
+            // creator — never for its principal name (`agent:<id>`).
+            const ownCreator = me?.agent ? me.agent.createdBy ?? undefined : me?.name;
+            initialCreatedBy = parentCh?.createdBy ?? ownCreator ?? undefined;
             // The group only steers which shared skills are OFFERED: the one the
             // isolation policy assigned, else the one the client created it in.
             pendingCtx.set(id, { group: agentGroupId ?? requestedGroupId, createdBy: initialCreatedBy ?? null });

@@ -173,6 +173,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/peers.ts` | PEERS — other instances allowed to reach this one's agents, the cross-instance twin of a web account. |
 | `src/route-guards.ts` | Per-route AUTHORIZATION verdicts, pure: who may write profiles (`profileWriteRefusal` — admin-only in multi-tenant), delete one, change an agent's profile (`setProfileRefusal` — a person, never an agent), restart every agent (`restartAllPlan`), overwrite/delete a mono-tenant secret; and the MCP value masking of `GET /profiles`. See invariant 58. |
 | `src/accounts.ts` | Web accounts, PER INSTANCE (`~/.shadok-ai/users/<key>.json`, 600): roles (`admin`/`member`), salted scrypt hashes, single-use invitations, and the signed session token. |
+| `src/agent-principal.ts` | An agent's session key resolves to THE AGENT (a `member`, its own channel's group, the restricted-peer box it inherits), never the bootstrap admin; `isBrowserPerson` is what "browser-only" means (a person's cookie, no agent key / peer token, same-origin); `AGENT_CREDENTIAL_VARS` never reach an agent's env. Server helpers: `agentPrincipal(req)`, `restrictedBoxOf(req)`. See invariant 59. |
 | `src/twofactor.ts` | Two-factor sign-in with a passkey (WebAuthn via `@simplewebauthn/server`), opt-in per instance (`config.twoFactor[<cwd>]`, `twoFactorForCwd`). |
 | `src/security-events.ts` | The Security panel's event log — 2FA v2's notification channel while no mail sender exists. |
 | `src/admin-requests.ts` | 2FA v2's two-admin requests — `passkey-reset` (level 2), `full-reset` (level 3, effective after `FULL_RESET_DELAY_MS` or a second admin), `promote` / `demote`. |
@@ -322,6 +323,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **56.** A refreshable login credential is single-owner — share it only within one OS user, never across users. · [detail](docs/invariants.md#inv-60)
 - **57.** A machine-wide seeded script may be NEWER than the server it calls — tolerate the skew, and don't re-seed from a side-by-side build. · [detail](docs/invariants.md#inv-61)
 - **58.** An instance-wide or cross-group write is an AUTHORIZATION decision, not just an authentication one — and a filtered READ needs a matching WRITE. · [detail](docs/invariants.md#inv-62)
+- **59.** An agent's credential is the AGENT, never the admin — and "browser-only" means a person's cookie, not an `Origin` header anyone can type. · [detail](docs/invariants.md#inv-63)
 
 ## Conventions
 

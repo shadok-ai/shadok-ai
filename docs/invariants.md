@@ -746,7 +746,8 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     *Reload agent*.
     The fix is the OTHER credential it already carries. `SHADOK_SESSION_KEY`
     proves "I am this agent", which is a fact with no expiry date, and it grants
-    exactly what the cookie granted (the bootstrap admin) — so accepting it via
+    exactly what the cookie granted (the bootstrap admin — since narrowed: the
+    key now makes the caller the AGENT itself, invariant 58) — so accepting it via
     `x-shadok-session-key` removes the cliff without widening anything. Three
     things make it work, and each replaced something that did not.
     **Derive the key, never store it.** It was a `randomUUID` in an in-memory
@@ -1651,3 +1652,49 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     resolving to the bootstrap admin: today the browser-only half is what keeps
     agents out.
 
+<a id="inv-63"></a>
+
+59. **An agent's credential is the AGENT, never the admin — and "browser-only"
+    means a person's cookie, not an `Origin` header anyone can type.** Three
+    things together made every agent a full admin of the API, which made the
+    multi-tenant OS-user wall decoration. `currentAccount` resolved a valid
+    `x-shadok-session-key` to `{name: BOOTSTRAP_ADMIN, role: "admin"}`
+    (invariant 33 chose "the same authority as the cookie", which was the
+    admin's); `makePilot` injected `SHADOK_AUTH` — the bootstrap admin's
+    cookie, valid from the network for a week — into every agent; and
+    `SHADOK_GUI_PASSWORD`, handed to the server through its env by the
+    supervisor, was inherited by every child (node-pty copies `process.env`, a
+    tmux pane inherits the tmux SERVER's global environment, `setpriv` keeps the
+    env across the uid drop), so an agent could also `POST /login` as the admin
+    from anywhere. On top of that, "browser-only" (`requestFromBrowser`) was the
+    `Origin == Host` check alone, which `curl -H 'Origin: …'` passes — so the
+    guardrail, account and shell-mode gates were reachable by any agent.
+    Now (`src/agent-principal.ts`): a valid key resolves to an `AgentPrincipal`
+    — its session id, its channel's group from the registry, its profile, its
+    creator, the restricted peer whose box it inherits — exposed as a `member`
+    account `agent:<id>` whose `Viewer.agentGroup` is that group, and every
+    membership question goes through `viewerInGroup`. Admin routes refuse it;
+    the group wall applies to it as to a person; an agent a restricted peer
+    spawned stays in the peer's box (`restrictedBoxOf`), a revoked peer's
+    included. `requestFromBrowser` is `isBrowserPerson`: a request carrying an
+    agent key or a peer token is never a browser, a password-protected instance
+    also wants a person's cookie, and the Origin check stays on top. Neither
+    credential reaches an agent any more: the server deletes both names from its
+    own `process.env` right after reading the password (the supervisor keeps its
+    copy for the next respawn), `spawnEnv` strips them from the result, and the
+    tmux launcher `unset`s them **unconditionally** — the tmux server may have
+    been started by an older shadok that still carried the password.
+    Rules that came with it: check the key BEFORE the no-password shortcut, so
+    an agent is the agent even where nothing is protected; never authorize on
+    the principal's NAME (a person account may not be named `agent:` either,
+    but the `agent` field is what is read); read "which agent" through
+    `agentPrincipal(req)` / `callerOf`, never `currentAccount(...).name`.
+    **Old agents keep what they were given.** A process environment cannot be
+    changed from outside, so an agent spawned before this holds an admin cookie
+    and the instance password. The cookie is retired by date: the first boot of
+    this version records `bootstrapSessionsAfter`, and `cookieAccount` refuses a
+    bootstrap cookie issued before it (cost: whoever is signed in with the
+    instance password signs in again, once). The password cannot be retired by
+    code — rotate it, then reload the agents that predate the change. With no
+    password set, nothing here is a boundary: anything on the machine is the
+    admin, as before.

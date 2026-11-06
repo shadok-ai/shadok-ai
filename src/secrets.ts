@@ -284,8 +284,7 @@ export function secretWriteVerdict(exists: boolean, overwrite: boolean): SecretW
  * that the authorization gate (`secretWriteDecision`) still has to clear.
  *   - an AGENT (`agentGroupId` present, even as null): its OWN channel's group,
  *     or Main when it has none. A `requestedGroup` that differs is IGNORED — an
- *     agent authenticates as the bootstrap admin, so honouring a body `group`
- *     would let it aim another tenant's vault; it writes only its own group
+ *     agent must never aim another tenant's vault by naming it in the body; it writes only its own group
  *     (Task 10's agent-own-group rule, private included).
  *   - a BROWSER (`agentGroupId` undefined): the group it REQUESTED (the panel's
  *     selected group — a request, authorized separately), or, when omitted,
@@ -330,11 +329,9 @@ export function secretWriteDecision(input: {
   // null) writes into its OWN channel group, which `secretOwnerGroup` just
   // derived from its session id — the client cannot name another. That
   // derivation IS the authorization, so the write is legitimate for ANY nature,
-  // INCLUDING a private group: `canWriteSecretGroup` would wrongly refuse it
-  // because an agent authenticates as the bootstrap admin and never as the
-  // private owner (`g.owner === viewer.name` is false), which would leave a
-  // private-group agent unable to store a credential it obtained via the
-  // `shadok-secrets` skill. HUMAN (browser) writes stay governed by the
+  // INCLUDING a private group and the Main commons (whose person rule is
+  // admin-only, while an agent is a member principal) — otherwise an agent could
+  // not store a credential it obtained via the `shadok-secrets` skill. HUMAN (browser) writes stay governed by the
   // membership rules below. Still fail closed on an unresolvable group — we
   // never write into a group we cannot verify.
   if (input.agentGroupId !== undefined) {
