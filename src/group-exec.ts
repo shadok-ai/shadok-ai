@@ -142,14 +142,19 @@ const SELF_IDENTITY = new Set(["HOME", "USER", "LOGNAME"]);
  *  2. the target profile's secrets (what the check was always promised);
  *  3. the session plumbing a script needs to call back the local API
  *     (`SHADOK_SESSION_ID`/`_PORT`/`_KEY` — the agent's own, never the admin
- *     cookie `SHADOK_AUTH`);
+ *     cookie `SHADOK_AUTH`) and to reach another instance's agents
+ *     (`SHADOK_PEERS_FILE`, the agent's OWN tier registry). The peers file is
+ *     plumbing, not a credential of the server's: a guard that may drive the
+ *     local fleet may drive the peers its tier enrolled, and leaving it out is
+ *     what forced a production dispatch loop to hard-code a path under `/root`
+ *     that the drop user could not read;
  *  4. the drop user's HOME/USER/LOGNAME (`dropEnv`), so a dropped guard never
  *     keeps the server's `HOME=/root`.
  */
 export function cronCheckEnv(input: {
   base: Record<string, string | undefined>;
   secrets: Record<string, string>;
-  session: { id: string; port: string; key: string };
+  session: { id: string; port: string; key: string; peersFile?: string };
   user: string | null;
   home: string | null;
 }): Record<string, string> {
@@ -162,6 +167,7 @@ export function cronCheckEnv(input: {
   env.SHADOK_SESSION_ID = input.session.id;
   env.SHADOK_PORT = input.session.port;
   env.SHADOK_SESSION_KEY = input.session.key;
+  if (input.session.peersFile) env.SHADOK_PEERS_FILE = input.session.peersFile;
   Object.assign(env, dropEnv(input.user, input.home));
   return env;
 }

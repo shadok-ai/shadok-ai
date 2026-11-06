@@ -155,6 +155,8 @@ import {
   resolveSpawnIsolation,
   osUserFor,
   homeForUser,
+  tierStateDir,
+  tierStateDirAction,
   runAsUser,
   provisionGroupUser,
   teardownGroupUser,
@@ -205,6 +207,7 @@ import {
   removePeer,
   ownedByPeer,
   peersOutFileFor,
+  tierPeersOutSeed,
   agentInvitePrompt,
   peerScope,
   type Peer,
@@ -231,7 +234,8 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
-import { isSlashCommand, markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { isSlashCommand, promptMetaHeader, connectionOrigin } from "./promptmeta.js";
+import { markHumanPrompt } from "./prompt-kind.js";
 import { listCommands } from "./slash-commands.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
@@ -529,6 +533,22 @@ console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 // it, and — unlike a client-settable field such as `origin` — a browser cannot
 // claim it, which is why the exemption is gated on THIS and nothing else.
 const SYSTEM_DRIVE_SECRET = randomBytes(32).toString("hex");
+// The Telegram bridge's own proof, on the same terms (per-process, in memory,
+// never sent anywhere but our loopback WS as `x-shadok-bridge`). It is what
+// makes a connection's origin "telegram" — and so what lets its `from` (the
+// Telegram sender) and its `voice` flag be believed (`connectionOrigin`). The
+// bridge's cookie cannot serve: `driveChannel` presents the very same one, and
+// with no password there is no cookie at all.
+const TELEGRAM_BRIDGE_SECRET = randomBytes(32).toString("hex");
+/** Does a request present `secret` in header `name`? Constant time, length-guarded. */
+function presentsSecret(req: { headers: Record<string, unknown> }, name: string, secret: string): boolean {
+  const raw = req.headers[name];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof header !== "string") return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(secret);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
@@ -691,7 +711,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -752,7 +772,13 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
     const env = cronCheckEnv({
       base: process.env,
       secrets: secretEnv,
-      session: { id: c.sessionId, port: String(boundPort || START_PORT), key: sessionKeyFor(c.sessionId) },
+      session: {
+        id: c.sessionId,
+        port: String(boundPort || START_PORT),
+        key: sessionKeyFor(c.sessionId),
+        // The TARGET agent's own registry, resolved exactly like its spawn's.
+        peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
+      },
       user,
       home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
     });
@@ -6412,11 +6438,41 @@ function dropUserCwds(): Map<string, Set<string>> {
  * comment on `seedHomeTrust` / `preseedGroupHomes`. Runs AS the group user,
  * SYNCHRONOUSLY and ADDITIVELY; best-effort.
  */
+/**
+ * Make sure the tier's own state directory exists AND belongs to the tier user,
+ * before anything the server does as root can create it with `recursive: true`.
+ * See `tierStateDirAction` for why this is a three-way decision and why the
+ * chown stops at the directory. Best-effort and silent on the happy path: it
+ * runs before every spawn, and a failure here must never block one — the agent
+ * then fails the way it did before, with its own clear EACCES.
+ */
+function ensureTierStateDir(user: string, home: string): void {
+  const dir = tierStateDir(home);
+  try {
+    const exists = fs.existsSync(dir);
+    const writableByUser = exists && spawnAsUserSync(user, "test", ["-w", dir]).ok;
+    const action = tierStateDirAction({ exists, writableByUser });
+    if (!action) return;
+    if (action === "create") {
+      if (!spawnAsUserSync(user, "mkdir", ["-p", dir]).ok) throw new Error(`mkdir ${dir} as ${user} failed`);
+      console.log(`osusers: created ${dir} for ${user}`);
+      return;
+    }
+    // Repair: root owns a directory inside someone else's home. Not recursive.
+    const r = spawnSync("chown", [`${user}:${user}`, dir], { encoding: "utf8", timeout: 15_000 });
+    if (r.status !== 0) throw new Error(`chown ${dir} → ${user} failed`);
+    console.log(`osusers: ${dir} was not writable by ${user} — ownership restored`);
+  } catch (e) {
+    console.log(`osusers: could not secure ${dir} for ${user} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function seedGroupAgentHome(user: string, home: string, cwd: string): void {
   const cwds = new Set<string>([cwd]);
   const siblings = dropUserCwds().get(user);
   if (siblings) for (const c of siblings) cwds.add(c);
   seedHomeTrust(user, home, [...cwds]);
+  ensureTierStateDir(user, home);
 }
 
 /**
@@ -6430,11 +6486,47 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
  * while `/root`'s — volume-backed — had it). Best-effort; mono-tenant or
  * un-migrated → no drop users → no-op.
  */
+/**
+ * Carry the PRE-TIER outbound peers registry (the one in the server's home) into
+ * the COMMONS tier's own, once. See `tierPeersOutSeed` for why the commons and
+ * nowhere else: before the tiers existed every agent ran as root and read exactly
+ * this file, so the commons inheriting it changes nothing about who holds what,
+ * while copying it into a private group would hand it a credential nobody granted.
+ *
+ * Copied AS the commons user (`writeAsUserAtomic`), so the new file is owned by
+ * the tier and root never writes through a home it does not own. Best-effort:
+ * an instance with no peers configured has nothing to carry, and a failure leaves
+ * `--peer` exactly as broken as it already was, with nothing new to diagnose.
+ */
+function seedCommonsPeersOut(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  const user = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  if (!user) return;
+  const serverFile = peersOutFileFor(process.cwd(), os.homedir());
+  const tierFile = peersOutFileFor(process.cwd(), agentStateHome(user));
+  try {
+    const seed = tierPeersOutSeed({
+      tier: "commons",
+      serverHasFile: fs.existsSync(serverFile),
+      tierHasFile: fs.existsSync(tierFile),
+    });
+    if (!seed) return;
+    writeAsUserAtomic(user, tierFile, fs.readFileSync(serverFile, "utf8"));
+    spawnAsUserSync(user, "chmod", ["600", tierFile]);
+    console.log(`peers: carried the outbound registry into ${tierFile}`);
+  } catch (e) {
+    console.log(`peers: could not seed ${tierFile} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function preseedGroupHomes(): void {
   if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
   for (const [user, cwds] of dropUserCwds()) {
-    seedHomeTrust(user, homeForUser(user, GROUP_HOME_BASE), [...cwds]);
+    const home = homeForUser(user, GROUP_HOME_BASE);
+    seedHomeTrust(user, home, [...cwds]);
+    ensureTierStateDir(user, home);
   }
+  seedCommonsPeersOut();
 }
 
 function makePilot(
@@ -6504,7 +6596,10 @@ function makePilot(
   env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
   // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
   // reads it to reach another instance's agents. See src/peers.ts.
-  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd());
+  // Per TIER, not per server home: the path used to be derived from `os.homedir()`,
+  // so a dropped agent was handed a registry under /root (700) it cannot read and
+  // `--peer` died silently (an unreadable file parses as "no peers"). Invariant 54.
+  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd(), agentStateHome(user));
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
@@ -7887,14 +7982,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     const b = Buffer.from(SYSTEM_DRIVE_SECRET);
     return a.length === b.length && timingSafeEqual(a, b);
   })();
+  // The Telegram bridge, proved the same way (its own secret, same compare).
+  const isTelegramBridge = presentsSecret(req, "x-shadok-bridge", TELEGRAM_BRIDGE_SECRET);
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
   const wsBy = (): SpawnBy =>
     spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent?.name });
   let session: Live | null = null;
-  // Where does this client come from? Declared at `start` (web, cron, telegram,
-  // cli…), it travels with the prompt echo: other clients must be able to SAY
-  // who spoke. Without it, a cron firing looks like a human message.
+  // Where does this client come from (web, cron, telegram, agent, peer, cli…)?
+  // It travels with the prompt echo — other clients must be able to SAY who
+  // spoke — and it decides the header the agent reads, whether `from` is
+  // believed, and whether the prompt is hidden. So it is DERIVED from what the
+  // connection proved (`connectionOrigin`), never taken from the `start` frame:
+  // a browser that declared `origin: "cron"` spoke to the agent unseen, and one
+  // that declared `"telegram"` signed its prompt with any name it liked. The
+  // frame's claim only ever narrows a bare local client to "cli"/"boot".
   let origin: string | undefined;
 
   const send = (msg: object) => {
@@ -8007,7 +8109,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               );
             }
           }
-          if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
+          origin = connectionOrigin(
+            {
+              systemDrive: isSystemDrive,
+              telegramBridge: isTelegramBridge,
+              agent: !!callerAgent,
+              peer: !!callerPeer && !callerAgent,
+              browser: fromBrowser,
+            },
+            msg.origin,
+          );
           const cwd = msg.cwd?.trim() || process.cwd();
           // Deterministic id: enforced with --session-id for a new session,
           // known for a resume. NEVER derive it from the most recent file
@@ -8347,7 +8458,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
-            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
+            spawnActor({ account: me?.name, origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
             dropUser,
             agentGroupId,
           );
@@ -8476,7 +8587,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // browser is not: for a web client the SESSION decides, and whatever
           // `from` the frame carried is discarded. An agent is not trusted
           // either: its name comes from the key that signed the socket.
-          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name);
+          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name, callerPeer ?? undefined);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -8536,14 +8647,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // A slash command goes in bare: anything ahead of the `/` makes the
             // TUI read it as prose, and the agent never runs the command.
             const command = isSlashCommand(text);
-            if (!command && (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent")) {
+            if (
+              !command &&
+              (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent" || origin === "peer")
+            ) {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header
               // entirely — losing the time and the sender to gain one word.
               // `parsePromptMeta` reads the platform as the first field and the
               // sender as everything past the time, so this widens neither.
-              const platform = msg.voice === true ? `${origin} vocal` : origin;
+              // Only the bridge transcribes voice notes, so only it may say so.
+              const platform = msg.voice === true && origin === "telegram" ? `${origin} vocal` : origin;
               // An agent header ends with the sender's REPLY ADDRESS — its short
               // session id — because a name is not an address: nothing makes tab
               // names unique and every tool takes an id, so naming the sender was
@@ -8552,7 +8667,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // rather than guessing). It is stripped back out by
               // `parsePromptMeta`, so it never reaches the chat.
               const ref = origin === "agent" ? callerAgent?.id.slice(0, 8) : undefined;
-              submitText = markPromptMeta(
+              // ALWAYS the server's header, and the person's text neutralised
+              // beneath it: a header-, ledger- or mark-shaped line they typed
+              // stays text and can never pass for one the server wrote.
+              submitText = markHumanPrompt(
                 text,
                 promptMetaHeader(platform, new Date(), author, defaultTimeZone(), ref),
               );
@@ -9288,7 +9406,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).

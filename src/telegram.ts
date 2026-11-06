@@ -1216,9 +1216,15 @@ export function startTelegram(
      *  comes from the agent, and its transcript is in a HOME it can write.
      *  Default: a plain read, as before. */
     readAgentFile?: (sessionId: string | null, p: string) => Promise<Buffer<ArrayBuffer>>;
+    /** The server's per-process proof that a connection IS this bridge, sent
+     *  as `x-shadok-bridge`. It is what makes the server read the bridge's
+     *  prompts as `telegram` and believe their `from` / `voice` — the `start`
+     *  frame's own `origin` is no longer trusted (`connectionOrigin`). */
+    bridgeSecret?: string;
   } = {},
 ): TelegramHandle {
   tgMultiTenant = multiTenant;
+  const bridgeSecret = opts.bridgeSecret;
   // Config is the source of truth (env still overrides, resolved by telegramConfig).
   const cfg = telegramConfig(loadConfig(), process.cwd());
   if (!cfg.enabled || !cfg.token) return NOOP_HANDLE; // off or no token → nothing polling
@@ -1461,7 +1467,12 @@ export function startTelegram(
     threadId: number | undefined,
     opts: { resumeId?: string; worktree?: boolean; name?: string; profile?: string; backfill?: boolean } = {},
   ): Bridge => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, authCookie ? { headers: { cookie: authCookie } } : {});
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: {
+        ...(authCookie ? { cookie: authCookie } : {}),
+        ...(bridgeSecret ? { "x-shadok-bridge": bridgeSecret } : {}),
+      },
+    });
     const b: Bridge = {
       key,
       chatId,

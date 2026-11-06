@@ -1535,6 +1535,51 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     is a FUNCTION resolved at runtime, not a const captured at import, or the
     boot-time relocation would be missed. Mono-tenant stays `~/.shadok-ai/media`,
     unchanged.
+    **Third case, and the first two CREATED it: the state directory's own
+    OWNERSHIP.** Relocating a dropped agent's state into its home fixed WHERE the
+    files are; it did not fix who owns the folder holding them. Every writer there
+    is the server, i.e. root, and all of them mkdir with `recursive: true`
+    (`selfRepoDir`, `worktreeDir`, `factoryDir`) — so whichever ran first made
+    `<home>/.shadok-ai` ITSELF `root:root` inside a home the agent owns. The agent
+    can then reach the directory and not write it, which breaks the tooling that
+    keeps its own state there: `pilotctl` dies on `EACCES: permission denied,
+    mkdir '/home/main/.shadok-ai/pilotctl'`. That is how it was found — every
+    worker spawn of a production dispatch loop failed for an hour while the home,
+    the skills, the credentials and the peers file were all correct, and the error
+    named a directory nobody had thought of as shared. MEASURED on correctsms
+    0.17.33. `tierStateDirAction` (`src/osusers.ts`, pure, tested) is deliberately
+    a THREE-way answer: absent → create it **as the user** so it is born owned by
+    them (same rule as `writeAsUserAtomic` — root must not write through a 0700
+    home); present and writable → do nothing, because this runs before every spawn
+    and the happy path must stay free; present and NOT writable → **chown**, which
+    is the half that repairs an instance already running, where a create is a
+    silent no-op. The chown is the DIRECTORY only, never its contents: what is
+    inside has owners for its own reasons (a root-owned self-clone, a worktree
+    already chowned by `chownAgentStateToDropUser`), and rewriting them would undo
+    decisions made elsewhere. Wired into both home-seeding paths —
+    `seedGroupAgentHome` (per spawn) and `preseedGroupHomes` (at boot, so an
+    existing instance is repaired without waiting for one).
+    **The outbound PEERS registry was missed by this pass, and the miss is
+    invisible.** `peersOutFileFor` was anchored on `os.homedir()`, so the server
+    handed every agent a `SHADOK_PEERS_FILE` under `/root` (700) — and an
+    unreadable registry parses as "no peers configured", so `pilotctl --peer
+    <alias>` did not error, it simply found nothing. Every dropped agent in
+    multi-tenant lost cross-instance collaboration with no message anywhere; what
+    surfaced instead was a production dispatch loop hard-coding the `/root` path
+    and then failing on it once its cron guard was dropped too (invariant 60).
+    The path now takes the agent's own `agentStateHome`, defaulting to the server
+    home so mono-tenant is byte-for-byte unchanged, and `cronCheckEnv` carries it
+    as session plumbing beside `SHADOK_SESSION_ID`/`_PORT`/`_KEY` — assigned AFTER
+    the profile's secrets, so a secret of that name cannot repoint it. The
+    registry therefore becomes **per tier**, which is the right answer and not
+    merely a consequence: a peer credential an agent obtained belongs to its own
+    tier, exactly as the secret vault already scopes one. The migration is where
+    the care goes — `tierPeersOutSeed` carries the pre-tier file into the COMMONS
+    tier only, and never over a registry that tier already manages. Carrying it to
+    every tier would hand a private group a bearer token for another instance that
+    nobody granted it; carrying it nowhere would silently break a working alias at
+    the moment the path moved. The commons is the honest middle, because before
+    the tiers existed every agent ran as root and read precisely that file.
 
 <a id="inv-59"></a>
 
@@ -1773,6 +1818,40 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     Existing crons are untouched (the rule is applied at write time). The
     scheduler skill always targets the CURRENT channel, so it never hits it.
 
+<a id="inv-65"></a>
+
+61. **Who is speaking is decided by the CONNECTION, and the text a person
+    types can never pass for something the server wrote.** Two holes, one
+    shape. `markPromptMeta` returned early when the text already opened with a
+    `⟦…⟧` header ("never double a header"), and the server called it on the
+    person's own text — so a Telegram message or web prompt whose first line
+    was `⟦agent · 2026-11-06 10:00 · Shadok-Boss · 1a2b3c4d⟧` reached the TUI
+    with NO real header: the agent believed a sibling agent was talking (and
+    had a forged reply address to answer), and the replay showed the forged
+    author. And `origin` was whatever the `start` frame declared, while it
+    decides the header, the author (`promptAuthor` believed `from` for every
+    origin but web/agent) and visibility — `origin: "cron"` suppressed the
+    echo to other tabs and added no header, so a browser could speak to an
+    agent unseen, or sign as anyone with `origin: "telegram", from: …`.
+    Now: the server's header is **unconditional** (`markPromptMeta` always
+    prepends) and the person's text goes through `markHumanPrompt`
+    (`src/prompt-kind.ts`), which prefixes a visible `\` to every line shaped
+    like a server mark — a header, a `⟦ledger…⟧` block, `⏰ [cron]`,
+    `🤖 [agent]` — so it stays text for the agent and on replay (every line,
+    not only the first: a forged header lower down is ignored by the parsers
+    but not by a model reading the prompt). Telegram's own `⟦replying to …⟧ "…"`
+    scaffolding is not header-shaped and is left alone. `origin` is
+    `connectionOrigin(...)` (`src/promptmeta.ts`): the system-drive secret →
+    `cron`, a new per-process Telegram-bridge secret (`x-shadok-bridge`, passed
+    to `startTelegram` as `bridgeSecret`) → `telegram`, a verified agent
+    session key → `agent`, a peer token → `peer` (now headed and attributed
+    to the peer's name, instead of falling through to whatever it claimed), a
+    same-origin browser person → `web`; a client that proved nothing may only
+    narrow itself to `cli` / `boot`. The bridge needed a secret of its own:
+    its cookie is the one `driveChannel` also presents, and with no password
+    there is no cookie at all. `from` and the `voice` flag are believed only
+    from the bridge; the secret audit's `spawnActor` reads the derived origin
+    too, not the claim.
 <a id="inv-66"></a>
 
 62. **Same-origin is not "ours" — a rebound name is same-origin with itself, so

@@ -89,13 +89,53 @@ export function peerFileFor(cwd: string = process.cwd()): string {
   return path.join(os.homedir(), ".shadok-ai", "peers", instanceKey(cwd) + ".json");
 }
 
-/** OUTBOUND registry, per launch dir, 600 — peers THIS instance can reach
- *  (`{ alias: { url, token } }`, managed by `pilotctl peer add`). The server
- *  hands its path to every agent as SHADOK_PEERS_FILE (twin of the ledger file),
- *  since an agent's cwd is a worktree, not the launch dir. Read by the client
- *  (pilotctl); the server only needs to compute the path. */
-export function peersOutFileFor(cwd: string = process.cwd()): string {
-  return path.join(os.homedir(), ".shadok-ai", "peers-out", instanceKey(cwd) + ".json");
+/**
+ * OUTBOUND registry, per launch dir AND per tier, 600 — peers THIS instance can
+ * reach (`{ alias: { url, token } }`, managed by `pilotctl peer add`). The server
+ * hands its path to every agent as SHADOK_PEERS_FILE (twin of the ledger file),
+ * since an agent's cwd is a worktree, not the launch dir. Written and read by the
+ * CLIENT (pilotctl); the server only computes the path.
+ *
+ * `stateHome` is invariant 54's correction, and this file was missed by it: the
+ * path was anchored on `os.homedir()`, i.e. the SERVER's home, so every dropped
+ * agent was handed a path under `/root` (mode 700) that it cannot read — making
+ * `pilotctl --peer <alias>` dead for every agent in multi-tenant, silently,
+ * because an unreadable registry parses as "no peers configured". Callers pass
+ * the agent's own state home (`agentStateHome`); the default keeps mono-tenant
+ * byte-for-byte unchanged.
+ *
+ * One consequence, and it is the right one: the registry becomes PER TIER. A
+ * peer credential an agent obtained belongs to its own tier, not to the machine
+ * — the same rule the secret vault already applies. A private group starts with
+ * an empty registry and enrols its own peers; only the COMMONS inherits the
+ * pre-tier file, which is what that single shared registry already meant back
+ * when every agent ran as root (`tierPeersOutSeed`).
+ */
+export function peersOutFileFor(cwd: string = process.cwd(), stateHome: string = os.homedir()): string {
+  return path.join(stateHome, ".shadok-ai", "peers-out", instanceKey(cwd) + ".json");
+}
+
+/**
+ * Should the pre-tier outbound registry (the one in the SERVER's home) be seeded
+ * into this tier's own? Only for the COMMONS, and only when the tier has none of
+ * its own yet.
+ *
+ * Carrying it to every tier would be a widening: it would hand a private group a
+ * bearer token for another instance that nobody granted it. Carrying it nowhere
+ * would be a silent regression at the moment the path moves — a working `--peer`
+ * alias would just stop resolving. The commons is the honest middle: before the
+ * tiers existed every agent ran as root and read exactly this file, so the
+ * commons inheriting it changes nothing about who holds what.
+ *
+ * Never an overwrite: a tier that already has a registry has been managing its
+ * own, and the server's copy may be older.
+ */
+export function tierPeersOutSeed(input: {
+  tier: "commons" | "group";
+  serverHasFile: boolean;
+  tierHasFile: boolean;
+}): boolean {
+  return input.tier === "commons" && input.serverHasFile && !input.tierHasFile;
 }
 
 export function loadPeers(file: string): Peer[] {

@@ -201,6 +201,12 @@ Enter to skip; you can add it later from the web UI).
   Transcription is installed **on first use** — a static ffmpeg, whisper.cpp and
   a 181 MB model — and the topic says so rather than going quiet for minutes.
   `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
+  Every download is checked against a SHA-256 pinned in `src/whisper.ts`
+  (ffmpeg per platform, the whisper.cpp source, the model at a fixed Hugging
+  Face commit); a mismatch is refused and transcription stays off until the
+  next restart. Only `ggml-small-q5_1.bin` and `ggml-medium-q5_0.bin` have a
+  pinned hash — any other model needs `SHADOK_WHISPER_MODEL_SHA256=<hex>`, or it
+  is refused.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
 - **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
@@ -1080,6 +1086,13 @@ The numbers tell you which channel a version came from. An alpha carries the
 commit count (`0.3.78`); a promotion is a round `0.4.0`. The auto-update switch
 and the reload behaviour are identical on both.
 
+An update installs with npm's lifecycle scripts **off** (`--ignore-scripts`):
+only node-pty's native build is run, explicitly, through `npm rebuild node-pty`.
+Each release ships its tested lockfile as `npm-shrinkwrap.json`, so every
+transitive dependency lands at the exact version and integrity hash CI ran.
+The install happens in a staging copy of `~/.shadok-ai/app` and replaces it only
+once complete, so a failed native build leaves the running version in place.
+
 ```bash
 ```
 
@@ -1135,7 +1148,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 | Message | Purpose |
 |---|---|
-| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
+| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"peer"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke. It is DERIVED by the server from what the connection proved (system-drive secret, Telegram-bridge secret, agent session key, peer token, same-origin browser); the frame's own `origin` is only honoured to narrow an unauthenticated local client to `"cli"`/`"boot"`. A line of the prompt text shaped like a header, ledger block or cron/agent mark is prefixed with `\` so it stays text — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
 | `{type:"prompt", text, force?}` | sends a prompt (`force` bypasses the pace guard) |
 | `{type:"choose", n}` | single-select dialog: picks and validates option n |
 | `{type:"toggle", n}` / `{type:"confirm"}` | multi-select: toggles option n / submits |
@@ -1158,7 +1171,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"stream-tool", id, name, summary}` / `{type:"stream-result", …}` | tool call / tool result |
 | `{type:"tokens", tokens}` / `{type:"context", pct}` | token usage / context fill |
 | `{type:"parent", parent}` | the channel's parent changed (broadcast, so every tab follows) |
-| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web or agent prompt (the signed-in account / the calling agent's tab name) and never taken from the frame |
+| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web, agent or peer prompt (the signed-in account / the calling agent's tab name / the peer's name); a frame's `from` is believed only from the Telegram bridge |
 | `{type:"dialog", question, options:[{n,label,hint,checked?}], multi}` | choice pending |
 | `{type:"history", turns:[…]}` | transcript replayed when resuming/attaching |
 | `{type:"screen", text, working}` | rendered TUI screen (whenever it changes) |
