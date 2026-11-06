@@ -275,7 +275,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **10.** The ESM bridge in `index.html` isn't ready at parse time. · [detail](docs/invariants.md#inv-10)
 - **11.** The origin guard must let `Origin`-less clients through. · [detail](docs/invariants.md#inv-11)
 - **12.** Every inline `<script>` in `index.html` must carry `__CSP_NONCE__`. · [detail](docs/invariants.md#inv-12)
-- **13.** The agent's Markdown is always sanitised before `innerHTML`. · [detail](docs/invariants.md#inv-13)
+- **13.** The agent's Markdown is always sanitised before `innerHTML` — with the shared `AGENT_MD_PURIFY` config (no forms, no style), behind `form-action 'none'`. · [detail](docs/invariants.md#inv-13)
 - **14.** Pace guard · [detail](docs/invariants.md#inv-14)
 - **15.** A cron fire must say what it did, and a lost one must be replayed. · [detail](docs/invariants.md#inv-15)
 - **16.** A guard's exit code is not a failure signal. · [detail](docs/invariants.md#inv-16)
@@ -326,7 +326,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **57.** A machine-wide seeded script may be NEWER than the server it calls — tolerate the skew, and don't re-seed from a side-by-side build. · [detail](docs/invariants.md#inv-61)
 - **58.** An instance-wide or cross-group write is an AUTHORIZATION decision, not just an authentication one — and a filtered READ needs a matching WRITE. · [detail](docs/invariants.md#inv-62)
 - **59.** An agent's credential is the AGENT, never the admin — and "browser-only" means a person's cookie, not an `Origin` header anyone can type. · [detail](docs/invariants.md#inv-63)
-- **60.** What the server does on a group's behalf (cron checks, offered files, media) it does with that group's rights — never root's. · [detail](docs/invariants.md#inv-64)
+- **60.** What the server does on a group's behalf (cron checks, offered files, media) it does with that group's rights — never root's; and an agent may put a cron `check` only on ITSELF. · [detail](docs/invariants.md#inv-64)
 
 ## Conventions
 

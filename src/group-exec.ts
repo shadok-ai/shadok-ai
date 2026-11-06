@@ -47,6 +47,34 @@ export function mayActOnSession(input: {
 }
 
 /**
+ * May this caller give the cron it is writing this `check`? A guard runs with
+ * the TARGET agent's profile secrets in its env, so an agent that could put a
+ * guard on a SIBLING would read the sibling's secrets (`env | curl …`) — in
+ * mono-tenant every agent is commons, so `mayActOnSession` lets it aim at any
+ * of them. An agent therefore guards only ITSELF; a person (no agent key) may
+ * guard any agent they may drive, which `mayActOnSession` already decided.
+ *
+ * Only a check the agent SETS or MOVES is refused: a cron that already carried
+ * this exact check on this exact target (written by a person) can still have
+ * its prompt or schedule edited by the agent, since that hands it nothing new.
+ * Repointing a guarded cron at a sibling, or changing the guard, is a new grant.
+ * Pure; invariant 60.
+ */
+export function cronCheckAllowed(input: {
+  /** The calling agent's session id (per-session key), null for a person. */
+  agentId: string | null;
+  targetId: string;
+  check: string | undefined;
+  existing?: { sessionId: string; check?: string };
+}): boolean {
+  if (!input.agentId) return true;
+  if (!input.check) return true;
+  if (input.targetId === input.agentId) return true;
+  const e = input.existing;
+  return !!e && e.sessionId === input.targetId && e.check === input.check;
+}
+
+/**
  * The group-level half of `mayActOnSession`, reused where the thing asked for
  * is a GROUP's rather than a session's (a media subdirectory).
  */

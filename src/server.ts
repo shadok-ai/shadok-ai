@@ -167,6 +167,7 @@ import {
 } from "./osusers.js";
 import {
   mayActOnSession,
+  cronCheckAllowed,
   mayReachGroup,
   osUserForChannelGroup,
   cronCheckEnv,
@@ -2690,6 +2691,10 @@ app.post("/crons", (req, res) => {
         ? true // re-arm: a spent one-shot being re-edited is enabled:false
         : (existing?.enabled ?? true);
   const check = typeof b.check === "string" && b.check.trim() ? String(b.check).trim() : undefined;
+  // The guard runs with the TARGET's profile secrets: an agent may only guard
+  // itself, or it could read a sibling's secrets through `env` (invariant 60).
+  if (!cronCheckAllowed({ agentId: callerOf(req).id, targetId: sessionId, check, existing }))
+    return res.status(403).json({ error: "an agent may set a cron check only on its own session (the check runs with that agent's secrets)" });
   const cron: Cron = {
     id: existing?.id ?? randomUUID(),
     sessionId,
