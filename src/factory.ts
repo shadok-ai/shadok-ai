@@ -84,18 +84,6 @@ export function groupsScope(ids: string[]): string {
   return `groups:${[...new Set(ids.map(String))].sort().join(",")}`;
 }
 
-/** Pure: is this skill OFFERED on this agent's pickers? Sharing is there so
- *  people are not flooded with everyone's skills, not as a security boundary:
- *  a skill someone can see, they can put on any agent. Only a private skill
- *  is hidden (`scopeVisibleTo`), and that is the whole gate. */
-export function scopeOffersAgent(owner: Scope, agent: AgentCtx): boolean {
-  if (!owner || owner === MAIN_GROUP) return true;
-  const ids = scopeGroups(owner);
-  if (ids) return agent.group != null && ids.includes(String(agent.group));
-  if (/^user:.+$/.test(owner)) return true;
-  return false;
-}
-
 /** Pure: may this person see (and therefore edit) this skill? */
 export function scopeVisibleTo(owner: Scope, person: string | null): boolean {
   const u = /^user:(.+)$/.exec(owner ?? "");
@@ -839,6 +827,41 @@ export function resolveAttachments(
     ok.push({ skill, release: rel, secrets: approvedSecrets(rel, acc) });
   }
   return { ok, dropped };
+}
+
+/**
+ * Pure: does a skill's sharing cover this agent? A skill is not GIVEN to an
+ * agent — it is available to whoever it is shared with, so the scope IS where
+ * it runs:
+ * - `main` (everyone): every agent;
+ * - `groups:a,b`: the agents of those groups (a group-less agent counts as
+ *   `main`'s);
+ * - `user:<x>` (only me): the agents that person created.
+ */
+export function scopeRunsOn(owner: Scope, agent: AgentCtx): boolean {
+  if (!owner || owner === MAIN_GROUP) return true;
+  const ids = scopeGroups(owner);
+  if (ids) return ids.includes(String(agent.group ?? MAIN_GROUP));
+  const u = /^user:(.+)$/.exec(owner);
+  if (u) return (agent.createdBy || DEFAULT_CREATOR) === u[1];
+  return false;
+}
+
+/**
+ * Pure: the skills an agent runs, derived — never stored. Each skill its
+ * sharing covers (`scopeRunsOn`), not archived, at the LATEST release a person
+ * of its tenant group accepted. What that release may receive is still only
+ * what the acceptance approved (`resolveAttachments` → `approvedSecrets`):
+ * availability grants nothing the existing rights did not already grant.
+ */
+export function availableAttachments(skills: FactorySkill[], agent: AgentCtx, tenantGroup: string): Attachment[] {
+  const out: Attachment[] = [];
+  for (const s of skills) {
+    if (s.archived || !scopeRunsOn(s.owner, agent) || !sharedWith(s, tenantGroup)) continue;
+    const rel = [...s.releases].reverse().find((r) => !!acceptanceFor(s, r, tenantGroup));
+    if (rel) out.push({ skill: s.id, release: rel.n });
+  }
+  return out;
 }
 
 /**

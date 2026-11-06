@@ -7,7 +7,7 @@ import test from "node:test";
 import express from "express";
 import type { Channel } from "../src/channels.js";
 import { mountFactory, type FactoryDeps } from "../src/factory-routes.js";
-import { loadRegistry, saveFile } from "../src/factory.js";
+import { availableAttachments, loadRegistry, saveFile } from "../src/factory.js";
 
 /**
  * The factory's HTTP gates against stub server helpers: who may act as a
@@ -18,7 +18,7 @@ async function harness(t: test.TestContext) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factory-routes-"));
   const prev = process.env.SHADOK_FACTORY_DIR;
   process.env.SHADOK_FACTORY_DIR = dir;
-  let channels: Channel[] = [
+  const channels: Channel[] = [
     { sessionId: "main-agent-0000", name: "mine", group: null } as unknown as Channel,
     { sessionId: "hr-agent-000000", name: "theirs", group: "g-hr" } as unknown as Channel,
     { sessionId: "smith-agent-000", name: "smith", group: "g-hr", profile: "Shadok-Skillsmith" } as unknown as Channel,
@@ -39,16 +39,17 @@ async function harness(t: test.TestContext) {
     mayActForGroup: (_req, g) => g === "main",
     tenantGroup: (g) => g ?? "main",
     loadChannels: () => channels,
-    upsertChannel: (patch) => {
-      channels = channels.map((c) => (c.sessionId === patch.sessionId ? { ...c, ...patch } : c));
+    skillsOf: (id) => {
+      const c = channels.find((x) => x.sessionId === id);
+      return availableAttachments(loadRegistry(dir).skills, { group: c?.group ?? null, createdBy: c?.createdBy ?? null }, c?.group ?? "main");
     },
-    onAttachmentsChanged: () => {},
+    runningSkills: () => ({}),
+    onSkillsChanged: () => {},
     prune: () => {},
     reloadIfIdle: () => "offline",
     agentMcp: () => [],
     groups: () => [{ id: "main" }, { id: "g-hr" }],
     workspaceFor: () => ({ home: dir, user: null, group: null }),
-    cronsOf: () => [{ label: "daily", prompt: "secret plan" }],
     audit: () => {},
   };
   const app = express();
@@ -83,7 +84,6 @@ test("routes: a person's action carrying an agent key or a peer token is refused
     assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, {}, headers)).status, 403);
     assert.equal((await h.call("DELETE", `/factory/skills/${id}`, undefined, headers)).status, 403);
     assert.equal((await h.call("PUT", `/factory/skills/${id}/file`, { path: "a.md", content: "x" }, headers)).status, 403);
-    assert.equal((await h.call("POST", "/factory/attach", { sessionId: "main-agent-0000", skill: id, release: 1 }, headers)).status, 403);
   }
   // The `key` body field is a credential too.
   assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, { key: "key-smith" })).status, 403);
@@ -106,16 +106,23 @@ test("routes: publishing a release that asks for secrets needs them approved BY 
   assert.deepEqual(loadRegistry(h.dir).skills[0].acceptances[0].secrets, ["HR_DB_PASSWORD"]);
 });
 
-test("routes: attach needs the right to drive the target; the listing shows only drivable agents", async (t) => {
+test("routes: a skill is not given to an agent — once saved, the agents it is shared with have it", async (t) => {
   const h = await harness(t);
   const id = (await h.call("POST", "/factory/skills", { title: "Notes" })).body.skill.id;
+  // Not saved yet: nobody has it.
+  assert.deepEqual((await h.call("GET", "/factory/skills")).body.skills[0].attachedTo, []);
   assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, {})).status, 200);
-  const foreign = await h.call("POST", "/factory/attach", { sessionId: "hr-agent-000000", skill: id, release: 1 });
-  assert.equal(foreign.status, 404);
-  assert.equal(h.channels().find((c) => c.sessionId === "hr-agent-000000")!.skills, undefined);
-  assert.equal((await h.call("POST", "/factory/attach", { sessionId: "main-agent-0000", skill: id, release: 1 })).status, 200);
   const list = await h.call("GET", "/factory/skills");
+  // Shared with everyone, accepted for main: the main agent has it. The g-hr
+  // agents are neither drivable by this person nor accepted for g-hr.
+  assert.deepEqual(list.body.skills[0].attachedTo.map((a: { sessionId: string }) => a.sessionId), ["main-agent-0000"]);
   assert.deepEqual(list.body.agents.map((a: { sessionId: string }) => a.sessionId), ["main-agent-0000"]);
+  assert.deepEqual(list.body.agents[0].skills, [{ skill: id, release: 1 }]);
+  // There is no per-agent attach any more.
+  assert.equal((await h.call("POST", "/factory/attach", { sessionId: "main-agent-0000", skill: id, release: 1 })).status, 404);
+  // Archived: nobody has it.
+  assert.equal((await h.call("PUT", `/factory/skills/${id}/meta`, { archived: true })).status, 200);
+  assert.deepEqual((await h.call("GET", "/factory/skills")).body.skills[0].attachedTo, []);
 });
 
 test("routes: a Skillsmith of a group that is not an editor cannot push", async (t) => {

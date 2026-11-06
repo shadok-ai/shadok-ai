@@ -377,13 +377,10 @@ export function buildStartMsg(flags, env = process.env) {
   // later resume never overwrites a rename made in the cockpit. Omitted → the
   // cockpit derives a default from the profile/directory.
   if (flags.name) startMsg.name = flags.name;
-  // Born with factory skills (accepted releases only; the server logs and drops
-  // any it refuses rather than failing the spawn). No @N = the latest accepted.
+  // A factory skill is not given to an agent: every agent its sharing covers
+  // runs it. The flag is still parsed so an old command line does not fail.
   if (flags.skill?.length)
-    startMsg.skills = flags.skill.map((s) => {
-      const m = /^(.+?)(?:@v?(\d+))?$/.exec(String(s));
-      return m[2] ? { skill: m[1], release: Number(m[2]) } : { skill: m[1] };
-    });
+    process.stderr.write("pilotctl: --skill is ignored — a factory skill runs on every agent it is shared with (set that in the Skills panel)\n");
   // "none" is the escape hatch: spawn something deliberately unlinked.
   if (flags.parent === "none") startMsg.parent = null;
   else if (flags.parent) startMsg.parent = flags.parent;
