@@ -257,6 +257,9 @@ Enter to skip; you can add it later from the web UI).
   with a command goes to the agent bare, without shadok's context line or
   ledger update ahead of it, since Claude Code reads a command only when `/`
   comes first.
+  The ✦ button beside the paperclip opens the same menu without typing, like
+  an emoji picker: the chosen skill goes in **front** of what you already
+  wrote (which becomes its argument), replacing a command already there.
 - **Files you hand an agent** — paste or drop a file into the composer, or pick
   one with the 📎 button beside it (an image, a PDF, a CSV…), and it becomes a **chip** above the text box: a
   thumbnail for an image, a named tag for anything else, each with a ✕ to
@@ -304,6 +307,14 @@ Enter to skip; you can add it later from the web UI).
   - **The detail panel.** Its numbers, where it runs (group by group: each
     agent, its schedule, its runs), the secrets agents running it get, and its
     feedback.
+  - **Creating.** The new-skill form asks for a **name** (what people see) and
+    a **technical name** (what agents call it, `/name:name`), proposed from the
+    name until you type your own. Choose it then: it is the skill's repository
+    and plugin name, so it cannot be changed afterwards. A name already taken
+    gets a number (`-2`, `-3`…), and the form says so before you create it.
+  - **Renaming.** Click a skill's name at the top of its editor to rename it
+    (Enter saves, Escape cancels). Only the displayed name changes: agents keep
+    calling it by its technical name, so attached agents are not disturbed.
   - **Sharing.** A skill is shared with **only me**, with **one or more
     groups**, or with **everyone**. Sharing keeps lists short; it is not a
     lock. "Only me" hides the skill from everyone else. A group skill is offered
