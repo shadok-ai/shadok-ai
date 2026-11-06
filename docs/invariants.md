@@ -1535,6 +1535,30 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     is a FUNCTION resolved at runtime, not a const captured at import, or the
     boot-time relocation would be missed. Mono-tenant stays `~/.shadok-ai/media`,
     unchanged.
+    **Third case, and the first two CREATED it: the state directory's own
+    OWNERSHIP.** Relocating a dropped agent's state into its home fixed WHERE the
+    files are; it did not fix who owns the folder holding them. Every writer there
+    is the server, i.e. root, and all of them mkdir with `recursive: true`
+    (`selfRepoDir`, `worktreeDir`, `factoryDir`) — so whichever ran first made
+    `<home>/.shadok-ai` ITSELF `root:root` inside a home the agent owns. The agent
+    can then reach the directory and not write it, which breaks the tooling that
+    keeps its own state there: `pilotctl` dies on `EACCES: permission denied,
+    mkdir '/home/main/.shadok-ai/pilotctl'`. That is how it was found — every
+    worker spawn of a production dispatch loop failed for an hour while the home,
+    the skills, the credentials and the peers file were all correct, and the error
+    named a directory nobody had thought of as shared. MEASURED on correctsms
+    0.17.33. `tierStateDirAction` (`src/osusers.ts`, pure, tested) is deliberately
+    a THREE-way answer: absent → create it **as the user** so it is born owned by
+    them (same rule as `writeAsUserAtomic` — root must not write through a 0700
+    home); present and writable → do nothing, because this runs before every spawn
+    and the happy path must stay free; present and NOT writable → **chown**, which
+    is the half that repairs an instance already running, where a create is a
+    silent no-op. The chown is the DIRECTORY only, never its contents: what is
+    inside has owners for its own reasons (a root-owned self-clone, a worktree
+    already chowned by `chownAgentStateToDropUser`), and rewriting them would undo
+    decisions made elsewhere. Wired into both home-seeding paths —
+    `seedGroupAgentHome` (per spawn) and `preseedGroupHomes` (at boot, so an
+    existing instance is repaired without waiting for one).
 
 <a id="inv-59"></a>
 

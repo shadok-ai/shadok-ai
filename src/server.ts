@@ -155,6 +155,8 @@ import {
   resolveSpawnIsolation,
   osUserFor,
   homeForUser,
+  tierStateDir,
+  tierStateDirAction,
   runAsUser,
   provisionGroupUser,
   teardownGroupUser,
@@ -6358,11 +6360,41 @@ function dropUserCwds(): Map<string, Set<string>> {
  * comment on `seedHomeTrust` / `preseedGroupHomes`. Runs AS the group user,
  * SYNCHRONOUSLY and ADDITIVELY; best-effort.
  */
+/**
+ * Make sure the tier's own state directory exists AND belongs to the tier user,
+ * before anything the server does as root can create it with `recursive: true`.
+ * See `tierStateDirAction` for why this is a three-way decision and why the
+ * chown stops at the directory. Best-effort and silent on the happy path: it
+ * runs before every spawn, and a failure here must never block one — the agent
+ * then fails the way it did before, with its own clear EACCES.
+ */
+function ensureTierStateDir(user: string, home: string): void {
+  const dir = tierStateDir(home);
+  try {
+    const exists = fs.existsSync(dir);
+    const writableByUser = exists && spawnAsUserSync(user, "test", ["-w", dir]).ok;
+    const action = tierStateDirAction({ exists, writableByUser });
+    if (!action) return;
+    if (action === "create") {
+      if (!spawnAsUserSync(user, "mkdir", ["-p", dir]).ok) throw new Error(`mkdir ${dir} as ${user} failed`);
+      console.log(`osusers: created ${dir} for ${user}`);
+      return;
+    }
+    // Repair: root owns a directory inside someone else's home. Not recursive.
+    const r = spawnSync("chown", [`${user}:${user}`, dir], { encoding: "utf8", timeout: 15_000 });
+    if (r.status !== 0) throw new Error(`chown ${dir} → ${user} failed`);
+    console.log(`osusers: ${dir} was not writable by ${user} — ownership restored`);
+  } catch (e) {
+    console.log(`osusers: could not secure ${dir} for ${user} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function seedGroupAgentHome(user: string, home: string, cwd: string): void {
   const cwds = new Set<string>([cwd]);
   const siblings = dropUserCwds().get(user);
   if (siblings) for (const c of siblings) cwds.add(c);
   seedHomeTrust(user, home, [...cwds]);
+  ensureTierStateDir(user, home);
 }
 
 /**
@@ -6379,7 +6411,9 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
 function preseedGroupHomes(): void {
   if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
   for (const [user, cwds] of dropUserCwds()) {
-    seedHomeTrust(user, homeForUser(user, GROUP_HOME_BASE), [...cwds]);
+    const home = homeForUser(user, GROUP_HOME_BASE);
+    seedHomeTrust(user, home, [...cwds]);
+    ensureTierStateDir(user, home);
   }
 }
 
