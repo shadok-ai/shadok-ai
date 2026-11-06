@@ -1,6 +1,6 @@
 /**
  * The `/` commands the composer's autocomplete offers: the Skill Factory skills
- * attached to the agent, and nothing else. They run as a plugin, so each is
+ * the agent has (shared with it), and nothing else. They run as a plugin, so each is
  * called `<name>:<name>`. The machine's own skills, `.claude/commands` and the
  * built-ins still work when typed; they are left out of the menu so it shows
  * the skills shadok manages and does not drown them.

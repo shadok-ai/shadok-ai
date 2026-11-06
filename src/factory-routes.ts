@@ -6,13 +6,18 @@
  * - READ (list, tree, file, log, diff, bundle, scan): anyone past the password
  *   gate, an agent included (by its session key).
  * - WRITE by a person: same-origin browser only (create, save, release, accept,
- *   attach, update, duplicate, adopt). Release is open to every editor — it is
+ *   duplicate, adopt). Release is open to every editor — it is
  *   not the gate, acceptance is; deleting a `Main` skill stays an admin act.
  * - FEEDBACK: any agent (session key) or person — the agents that USE a skill
  *   are the ones that find what is wrong with it.
  * - PUSH by an agent: its session key, and its channel's profile must be the
  *   managed `Shadok-Skillsmith`. Not every agent of the group: on a
  *   single-tenant instance that would be every agent on the machine.
+ * - WHO RUNS IT: nobody gives a skill to an agent. Every agent its sharing
+ *   covers runs its latest release accepted for that agent's group
+ *   (`availableAttachments`), with only the secrets that acceptance approved —
+ *   so there is no attach route, and no schedule is made from here (a schedule
+ *   is the agent's own business).
  * See docs/superpowers/specs/2026-10-29-skill-factory-design.md.
  */
 import fs from "node:fs";
@@ -23,7 +28,6 @@ import os from "node:os";
 import {
   accept,
   acceptanceFor,
-  acceptedAnywhere,
   approvalFrom,
   pushVerdict,
   addFeedback,
@@ -53,7 +57,7 @@ import {
   cleanTags,
   scopeVisibleTo,
   slugify,
-  type AgentCtx,
+  type Attachment,
   receivePush,
   saveFile,
   scanMain,
@@ -81,7 +85,7 @@ export interface FactoryDeps {
    * vault for everyone made the scan an oracle on secrets of other groups.
    */
   vault(req: Request): Record<string, string>;
-  /** May this request drive (and so attach to / list) that agent? Mono-tenant: yes. */
+  /** May this request drive (and so list) that agent? Mono-tenant: yes. */
   mayDrive(req: Request, sessionId: string): boolean;
   /** The group an agent's acceptances are keyed by (mono-tenant: always `main`). */
   agentGroup(sessionId: string): string;
@@ -92,9 +96,12 @@ export interface FactoryDeps {
   /** A cockpit group id (or null) → the group acceptances are keyed by. */
   tenantGroup(groupId: string | null): string;
   loadChannels(): Channel[];
-  upsertChannel(patch: Partial<Channel> & { sessionId: string }): void;
-  /** Re-evaluate an agent's reload indicator after its attachments changed. */
-  onAttachmentsChanged(sessionId: string): void;
+  /** The factory skills an agent runs, derived from sharing + acceptance (`availableAttachments`). */
+  skillsOf(sessionId: string): Attachment[];
+  /** The releases an agent's CURRENT process was spawned with (`name` → release N). */
+  runningSkills(sessionId: string): Record<string, number>;
+  /** Re-evaluate every live agent's reload indicator after what they would run changed. */
+  onSkillsChanged(): void;
   /** Remove release directories nothing references any more (see `prunePlugins`). */
   prune(): void;
   /** Reload an agent now if it is idle; otherwise it is only marked stale. */
@@ -109,8 +116,6 @@ export interface FactoryDeps {
    * as and that user's HOME. Mono-tenant: `{home: server HOME, user: null}`.
    */
   workspaceFor(req: Request, group: string | null): { home: string; user: string | null; group: string | null };
-  /** An agent's schedules, for "where it runs" (label + prompt). */
-  cronsOf(sessionId: string): { label: string; prompt: string }[];
   audit(row: Record<string, unknown>): void;
 }
 
@@ -139,10 +144,12 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       unreleased: unreleased(s, head),
       bindings: required.map((name) => ({ name, bound: vaultNames.has(name) })),
       latestAccepted: latestAccepted(s, group)?.n ?? null,
+      // The agents that HAVE it — derived from its sharing and their group's
+      // acceptance, never a list someone keeps (the field name is historical).
       attachedTo: channels
-        .filter((c) => c.skills?.some((a) => a.skill === s.id))
-        .map((c) => {
-          const release = c.skills!.find((a) => a.skill === s.id)!.release;
+        .map((c) => ({ c, release: deps.skillsOf(c.sessionId).find((a) => a.skill === s.id)?.release }))
+        .filter((x): x is { c: Channel; release: number } => x.release != null)
+        .map(({ c, release }) => {
           const rel = s.releases.find((r) => r.n === release);
           const mcpHave = new Set(deps.agentMcp(c.sessionId));
           return {
@@ -150,12 +157,10 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
             name: c.name ?? c.sessionId.slice(0, 8),
             group: c.group ?? null,
             runs: stats.byAgent[s.name]?.[c.sessionId] ?? 0,
-            crons: deps.cronsOf(c.sessionId),
             release,
             // What THIS agent gets: each granted secret, present in the vault or not.
             secrets: (rel?.secrets ?? []).map((n) => ({ name: n, bound: vaultNames.has(n), detected: !!rel?.detectedSecrets?.includes(n) })),
             mcp: (rel?.mcp ?? []).map((n) => ({ name: n, present: mcpHave.has(n) })),
-            update: (latestAccepted(s, deps.agentGroup(c.sessionId))?.n ?? 0) > release ? latestAccepted(s, deps.agentGroup(c.sessionId))!.n : null,
           };
         }),
       feedback: (s.feedback ?? []).slice().reverse(),
@@ -224,14 +229,13 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
    * its group and creator). A "just me" skill is invisible to everyone else: it
    * answers 404, never 403, so its existence does not leak either.
    */
-  const ctxOf = (c: Channel | undefined): AgentCtx => ({ group: c?.group ?? null, createdBy: c?.createdBy ?? null });
   const canSee = (req: Request, s: FactorySkill): boolean => {
     const agent = deps.callerOf(req);
     if (agent.id) {
       const ch = deps.loadChannels().find((c) => c.sessionId === agent.id);
-      // An agent sees what its creator sees, plus a private skill its owner
-      // put on it (a skill attached to someone else's agent).
-      return scopeVisibleTo(s.owner, ch?.createdBy ?? null) || !!ch?.skills?.some((a) => a.skill === s.id);
+      // An agent sees what its creator sees (a private skill runs only on its
+      // owner's agents, so nothing it runs is hidden from it).
+      return scopeVisibleTo(s.owner, ch?.createdBy ?? null);
     }
     return scopeVisibleTo(s.owner, deps.personName(req));
   };
@@ -278,7 +282,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       agents: channels.map((c) => ({
         sessionId: c.sessionId,
         name: c.name ?? c.sessionId.slice(0, 8),
-        skills: c.skills ?? [],
+        skills: deps.skillsOf(c.sessionId),
         mcp: deps.agentMcp(c.sessionId),
         group: c.group ?? null,
         createdBy: c.createdBy ?? null,
@@ -334,6 +338,8 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       if (b.description !== undefined) patch.description = String(b.description);
       const out = updateMeta(root(), s.id, patch);
       deps.audit({ action: "meta", skill: s.name, ...patch, by: by(req) });
+      // Sharing and archiving decide who runs it: their reload indicators move.
+      if (patch.owner !== undefined || patch.archived !== undefined) deps.onSkillsChanged();
       res.json({ skill: out });
     } catch (e) {
       fail(res, e);
@@ -348,16 +354,8 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     if (!s) return;
     // Yours: you delete it. Shared (a group's, the organisation's): an admin.
     if (!s.owner.startsWith("user:") && !deps.requireAdmin(req, res, "delete a shared factory skill")) return;
-    const attached = deps.loadChannels().filter((c) => c.skills?.some((a) => a.skill === s.id));
-    if (attached.length && req.query.force !== "1")
-      return res.status(409).json({
-        error: `attached to ${attached.map((c) => c.name ?? c.sessionId.slice(0, 8)).join(", ")} — detach first or force`,
-      });
-    for (const c of attached) {
-      deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.filter((a) => a.skill !== s.id) });
-      deps.onAttachmentsChanged(c.sessionId);
-    }
     deleteSkill(root(), s.id);
+    deps.onSkillsChanged();
     deps.audit({ action: "delete", skill: s.name, by: by(req) });
     res.json({ ok: true });
   });
@@ -490,7 +488,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     },
   );
 
-  // ── Release, accept, attach — a person's clicks ───────────────────────────
+  // ── Release, accept — a person's clicks ───────────────────────────────────
   app.post("/factory/skills/:id/release", (req, res) => {
     // Any editor releases (revised 2026-10-31): a release runs nowhere until a
     // person of the running group accepts it, so gating it on admin only blocked
@@ -516,6 +514,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       if (group && approved) {
         accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
         deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group, secrets: approved, by: by(req) });
+        deps.onSkillsChanged();
       }
       res.json({ release: rel });
     } catch (e) {
@@ -536,6 +535,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     try {
       const a = accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
       deps.audit({ action: "accept", skill: s.name, release: a.release, tree: a.tree, group: a.group, secrets: approved, by: by(req) });
+      deps.onSkillsChanged();
       res.json({ acceptance: a });
     } catch (e) {
       fail(res, e);
@@ -543,40 +543,14 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
   });
 
   /**
-   * Move every agent running an older release of this skill to release N (it
-   * must be accepted), and reload the idle ones now — an explicit click, so an
-   * explicit respawn. Busy agents are only marked stale: their own reload applies it.
-   */
-  app.post("/factory/skills/:id/update", (req, res) => {
-    if (!browser(req, res)) return;
-    const s = skillOr404(req, res);
-    if (!s) return;
-    const rel = s.releases.find((r) => r.n === Number(req.body?.release));
-    if (!rel) return res.status(404).json({ error: "no such release" });
-    if (!acceptedAnywhere(s, rel)) return res.status(409).json({ error: `v${rel.n} has not been accepted yet` });
-    const out: { name: string; result: string }[] = [];
-    // Only agents this person may drive, and only where v<N> is accepted for
-    // THEIR group: another group's agent is that group's people's decision.
-    for (const c of deps.loadChannels()) {
-      const cur = c.skills?.find((a) => a.skill === s.id);
-      if (!cur || cur.release >= rel.n) continue;
-      if (!deps.mayDrive(req, c.sessionId) || !acceptanceFor(s, rel, deps.agentGroup(c.sessionId))) continue;
-      deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
-      deps.onAttachmentsChanged(c.sessionId);
-      out.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
-    }
-    deps.prune();
-    deps.audit({ action: "update", skill: s.name, release: rel.n, agents: out.length, by: by(req) });
-    res.json({ updated: out });
-  });
-
-  /**
    * "Save" in the editor: what is saved is what agents run. One click cuts a
    * release of the current content (or reuses the last one when nothing changed
    * since), accepts it — the person saving is a person of the running group —
-   * and moves every agent that has the skill onto it, reloading the idle ones.
-   * Versions and approval stay underneath (the plugin dir is content-addressed,
-   * an attachment pins a release), they are just no longer a step people take.
+   * and every agent that has the skill runs it from its next spawn (it is
+   * derived, `availableAttachments`). The idle ones already RUNNING an older
+   * release are reloaded now; the others only see their reload indicator.
+   * Versions and approval stay underneath (the plugin dir is content-addressed),
+   * they are just no longer a step people take.
    */
   app.post("/factory/skills/:id/publish", (req, res) => {
     if (!browser(req, res)) return;
@@ -601,15 +575,15 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       }
       const updated: { name: string; result: string }[] = [];
       for (const c of deps.loadChannels()) {
-        const cur = c.skills?.find((a) => a.skill === s.id);
-        if (!cur || cur.release === rel.n) continue;
-        // Never move an agent this person may not drive, nor one of a group
-        // that did not accept this release (it would be dropped at its spawn).
-        if (!deps.mayDrive(req, c.sessionId) || deps.agentGroup(c.sessionId) !== group) continue;
-        deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
-        deps.onAttachmentsChanged(c.sessionId);
+        const running = deps.runningSkills(c.sessionId)[s.name];
+        if (running == null || running === rel.n) continue;
+        // Never reload an agent this person may not drive, nor one that would
+        // not get this release (another group's acceptance, or not shared).
+        if (!deps.mayDrive(req, c.sessionId)) continue;
+        if (deps.skillsOf(c.sessionId).find((a) => a.skill === s.id)?.release !== rel.n) continue;
         updated.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
       }
+      deps.onSkillsChanged();
       deps.prune();
       res.json({ release: rel, updated });
     } catch (e) {
@@ -627,7 +601,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     try {
       // The release the reporting agent runs, when it runs this skill at all.
       const running = agent.id
-        ? deps.loadChannels().find((c) => c.sessionId === agent.id)?.skills?.find((a) => a.skill === s.id)?.release
+        ? deps.skillsOf(agent.id).find((a) => a.skill === s.id)?.release
         : undefined;
       const f = addFeedback(root(), s.id, { by: by(req), text: String(req.body?.text ?? ""), release: running });
       deps.audit({ action: "feedback", skill: s.name, id: f.id, by: by(req) });
@@ -690,55 +664,6 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     } catch (e) {
       fail(res, e);
     }
-  });
-
-  /**
-   * Attach (release N) or detach (release null) a skill on an agent. Never
-   * respawns: it marks the agent stale and the person reloads it — killing a
-   * working agent because someone clicked in another panel is what the reload
-   * indicator exists to avoid.
-   */
-  app.post("/factory/attach", (req, res) => {
-    if (!browser(req, res)) return;
-    const sessionId = String(req.body?.sessionId ?? "");
-    const ch = deps.loadChannels().find((c) => c.sessionId === sessionId);
-    // An agent this person may not drive does not exist for them (404, not 403:
-    // its id is no confirmation of anything).
-    if (!ch || !deps.mayDrive(req, sessionId)) return res.status(404).json({ error: "no such agent" });
-    const s = findSkill(root(), String(req.body?.skill ?? ""));
-    if (!s || !canSee(req, s)) return res.status(404).json({ error: "no such skill" });
-    const release = req.body?.release === null ? null : Number(req.body?.release);
-    if (release !== null && s.archived) return res.status(409).json({ error: "this skill is archived: unarchive it first" });
-    const rest = (ch.skills ?? []).filter((a) => a.skill !== s.id);
-    const group = deps.agentGroup(sessionId);
-    if (release !== null) {
-      const rel = s.releases.find((r) => r.n === release);
-      if (!rel) return res.status(404).json({ error: `no release v${release}` });
-      if (!acceptedAnywhere(s, rel))
-        return res.status(409).json({ error: `v${rel.n} has not been accepted yet — review and accept it first` });
-      // Accepted for ANOTHER group: this person may drive the target, so they
-      // are a person of its group, and attaching is their acceptance — with
-      // the secrets approved by name, like any acceptance.
-      if (!acceptanceFor(s, rel, group)) {
-        const approved = approval(rel, req.body?.approveSecrets, res);
-        if (!approved) return;
-        try {
-          accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
-        } catch (e) {
-          return fail(res, e);
-        }
-        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group, secrets: approved, by: by(req) });
-      }
-      rest.push({ skill: s.id, release: rel.n });
-    }
-    deps.upsertChannel({ sessionId, skills: rest });
-    deps.onAttachmentsChanged(sessionId);
-    // `reload: true` — the person asked for it in the same click ("Run on a
-    // schedule…" on an existing agent): reload now if idle, else mark stale.
-    const reload = req.body?.reload === true ? deps.reloadIfIdle(sessionId) : undefined;
-    deps.prune();
-    deps.audit({ action: release === null ? "detach" : "attach", skill: s.name, release, agent: sessionId, by: by(req) });
-    res.json({ ok: true, skills: rest, ...(reload ? { reload } : {}), note: "applies when the agent is reloaded" });
   });
 }
 

@@ -3260,11 +3260,6 @@
         <input type="checkbox" id="mirrorInput">
         <span>Mirror to Telegram <span class="check-hint">— gives this agent its own topic in the board group, so you can follow it and reply from your phone. Off by default; switchable later from the agent menu.</span></span>
       </label>
-      <details class="fold" id="skillsField" hidden>
-        <summary>Factory skills <span class="fold-count" id="skillsCount"></span></summary>
-        <div class="field"><span class="check-hint">Born with these skills (their latest accepted release, and the secrets it was granted).</span>
-        <div id="skillsPick" class="fac-pick"></div></div>
-      </details>
       <details class="fold" id="advancedField">
           <summary>Advanced — working directory, resume an existing session</summary>
           <div class="field">
@@ -8300,7 +8295,6 @@
    */
   function openSetup(groupId = null) {
     setupGroup = groupId;
-    facFillPicker();
     renderModelRow();
     // Close the mobile agents sheet first: the setup overlay sits BELOW it in
     // the stack, so leaving the sheet open would hide the form behind it.
@@ -8469,10 +8463,6 @@
     const model = mode === "new" ? window.composeModel(selectedModel, $("longCtxInput").checked) : null;
     if (model) msg.model = model;
     msg.mirror = $("mirrorInput").checked;
-    if (mode === "new") {
-      const picked = facPickedSkills();
-      if (picked.length) msg.skills = picked;
-    }
     localStorage.setItem("cp.cwd", cwd);
     if (mode === "new") {
       localStorage.setItem("cp.profile", selectedProfile);
@@ -11291,20 +11281,6 @@
     if (owner.startsWith("user:")) return ["Only me"];
     return (facScopeIds(owner) || []).map((id) => { const g = facGroup(id); return g ? `${g.icon ? g.icon + " " : ""}${g.name}` : `group ${id}`; });
   }
-  /** Same rule as the server's scopeOffersAgent: is it offered first on this
-   *  agent? Never a refusal: sharing keeps lists short, it does not lock. */
-  function facAllows(s, a) {
-    if (!s.owner || s.owner === "main") return true;
-    const ids = facScopeIds(s.owner);
-    if (ids) return a.group != null && ids.includes(String(a.group));
-    if (s.owner.startsWith("user:")) return true; // private: you see it, so you put it where you want
-    return false;
-  }
-  /** Every agent, the ones of the groups it is shared with first. */
-  function facAgentsFor(s) {
-    const all = (fac.data && fac.data.agents) || [];
-    return [...all.filter((a) => facAllows(s, a)), ...all.filter((a) => !facAllows(s, a))];
-  }
   /** A coloured tile with the skill's initials — the same palette as the agents' avatars. */
   function facAvatar(s, size) {
     const el = facEl("span", { class: "fp-av" + (size ? " " + size : ""), "aria-hidden": "true" });
@@ -11452,7 +11428,6 @@
     for (const s of list) {
       const last = facLast(s);
       const st = facStatus(s);
-      const crons = s.attachedTo.reduce((n, a) => n + (a.crons || []).length, 0);
       const ck = facEl("input", { type: "checkbox", "aria-label": "Select " + facTitle(s), checked: fac.checked.has(s.id) });
       ck.addEventListener("click", (e) => e.stopPropagation());
       ck.addEventListener("change", () => { ck.checked ? fac.checked.add(s.id) : fac.checked.delete(s.id); facRenderBulk(); });
@@ -11470,7 +11445,7 @@
         facEl("td", {}, [st.includes("draft")
           ? facEl("span", { class: "fp-badge warn", text: last ? "draft changes" : "draft" })
           : facEl("span", { class: "fp-ver", text: "saved" })]),
-        facEl("td", {}, [s.attachedTo.length ? `${s.attachedTo.length} agent${s.attachedTo.length > 1 ? "s" : ""}${crons ? ` · ${crons} cron${crons > 1 ? "s" : ""}` : ""}` : facEl("span", { class: "fp-sub", text: "unused" })]),
+        facEl("td", {}, [s.attachedTo.length ? `${s.attachedTo.length} agent${s.attachedTo.length > 1 ? "s" : ""}` : facEl("span", { class: "fp-sub", text: "unused" })]),
         facEl("td", {}, [facEl("span", { class: "fp-runs", text: String(s.runs7d || 0) }),
           facOpenFeedback(s).length ? facEl("div", {}, [facEl("span", { class: "fp-badge info", text: `💬 ${facOpenFeedback(s).length}` })]) : null]),
       ]));
@@ -11539,7 +11514,7 @@
     box.appendChild(facEl("div", { class: "fp-empty" }, [
       facEl("h1", { text: "Your team's know-how, as skills" }),
       facEl("p", { text: "A skill teaches an agent how to do one job well: prepare the daily marketing summary, take a sprint ticket to a pull request, answer a customer the way your team does." }),
-      facEl("p", { text: "Write it together, by hand or by asking an agent. Save a draft while you work; Save when it is ready, and the agents and schedules that have it use it." }),
+      facEl("p", { text: "Write it together, by hand or by asking an agent. Save a draft while you work; Save when it is ready, and every agent it is shared with uses it." }),
       facEl("div", { class: "fp-actions", style: "justify-content:center" }, [
         facEl("button", { class: "primary", text: "＋ New skill", onclick: () => facGo("new") }),
         facEl("button", { text: "Import one from this machine", onclick: () => facGo("import") }),
@@ -11570,7 +11545,6 @@
     d.textContent = "";
     const last = facLast(s);
     const agents = s.attachedTo.length;
-    const crons = s.attachedTo.reduce((n, a) => n + (a.crons || []).length, 0);
     const reload = async () => { await facLoad(); facRenderTable(); facRenderDrawer(); };
     const meta = (patch) => facCall("PUT", `/factory/skills/${s.id}/meta`, patch).then(reload).catch((e) => facMsg(e.message, true));
     // Head
@@ -11589,19 +11563,19 @@
     d.appendChild(facEl("div", { class: "fp-stats" }, [
       facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(s.runs7d || 0) }), facEl("span", { class: "fp-sub", text: "runs, 7 days" })]),
       facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(agents) }), facEl("span", { class: "fp-sub", text: "agents" })]),
-      facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(crons) }), facEl("span", { class: "fp-sub", text: "schedules" })]),
     ]));
     // Shared with
     d.appendChild(facEl("h2", { text: "Shared with" }));
     const share = facEl("div", { class: "fp-card" }, [
       ...facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x })),
       facEl("button", { class: "fp-link", text: "change", onclick: () => facSharePicker(share, s, (scope) => meta({ scope })) }),
-      facEl("div", { class: "fp-hint", text: s.owner === "main" ? "Any agent can run it." : s.owner.startsWith("user:") ? "Only you see it; you can use it on any agent." : "Only the agents of these groups can run it." }),
+      facEl("div", { class: "fp-hint", text: s.owner === "main" ? "Every agent has it." : s.owner.startsWith("user:") ? "Only you see it, and only the agents you created have it." : "The agents of these groups have it." }),
     ]);
     d.appendChild(share);
-    // Where it runs, by group
-    d.appendChild(facEl("h2", { text: "Where it runs" }));
-    if (!agents) d.appendChild(facEl("div", { class: "fp-sub", text: "No agent uses it yet." }));
+    // Who has it: derived from the sharing above, never given agent by agent.
+    d.appendChild(facEl("h2", { text: "Agents that have it" }));
+    d.appendChild(facEl("div", { class: "fp-hint", text: "A skill is not given to an agent: every agent it is shared with has it once saved, with only the secrets approved for its group. An agent picks up a new save at its next reload. Schedules are set from the agent itself." }));
+    if (!agents) d.appendChild(facEl("div", { class: "fp-sub", text: "No agent has it yet." }));
     const byGroup = {};
     for (const a of s.attachedTo) (byGroup[a.group == null ? "" : a.group] ||= []).push(a);
     for (const [gid, list] of Object.entries(byGroup)) {
@@ -11610,25 +11584,12 @@
         facEl("b", { text: g ? `${g.icon ? g.icon + " " : ""}${g.name}` : "No group" }),
         ...list.map((a) => facEl("div", { style: "margin-top:4px" }, [
           a.name,
-          ...(a.crons || []).map((c) => facEl("span", { class: "fp-sub", text: ` · ${c.label}` })),
           facEl("span", { class: "fp-sub", text: ` · ${a.runs || 0} run${a.runs === 1 ? "" : "s"}` }),
           ...a.secrets.filter((x) => !x.bound).map((x) => facEl("span", { class: "fp-ko", text: ` · ${x.name} missing` })),
           ...a.mcp.filter((x) => !x.present).map((x) => facEl("span", { class: "fp-ko", text: ` · tool ${x.name} missing` })),
-          facEl("button", { class: "fp-link", text: "remove", onclick: () => facAttach(s, a.sessionId, null, false, reload) }),
         ])),
       ]));
     }
-    const use = facEl("div", { class: "fp-actions" });
-    if (s.latestAccepted && !s.archived) {
-      const eligible = facAgentsFor(s).filter((a) => !s.attachedTo.some((x) => x.sessionId === a.sessionId));
-      if (eligible.length) {
-        const sel = facEl("select", { "aria-label": "Agent" });
-        for (const a of eligible) sel.add(new Option(a.name, a.sessionId));
-        use.append(sel, facEl("button", { text: "Give to agent", onclick: () => facAttach(s, sel.value, s.latestAccepted, false, reload) }));
-      }
-      use.appendChild(facEl("button", { text: "Run on a schedule…", onclick: (e) => facScheduleForm(s, d, e.target) }));
-    }
-    if (use.childNodes.length) d.appendChild(use);
     // What agents running it receive: shown, never a step to take.
     if (last && last.secrets.length) d.appendChild(facEl("div", { class: "fp-sub" }, ["Agents running it get: ", ...last.secrets.map((n) => {
       const bound = s.bindings.find((b) => b.name === n);
@@ -11656,62 +11617,6 @@
     ]));
   }
 
-  async function facAttach(s, sessionId, release, reloadAgent, after) {
-    try {
-      const out = await facCallApproving("/factory/attach", { sessionId, skill: s.id, release, ...(reloadAgent ? { reload: true } : {}) });
-      if (after) await after();
-      facMsg(release === null ? "Removed. The agent drops it at its next reload."
-        : out.reload === "reloaded" ? "Given to the agent, which is reloading with it."
-        : "Given to the agent. Reload it to load the skill (its reload indicator is on).");
-      return true;
-    } catch (e) { facMsg(e.message, true); return false; }
-  }
-  function facScheduleForm(s, host, btn) {
-    if (host.querySelector(".fac-sched")) return;
-    btn.disabled = true;
-    const agent = facEl("select", { "aria-label": "Agent that runs it" });
-    agent.add(new Option(`a new agent "${facTitle(s)}"`, ""));
-    for (const a of facAgentsFor(s)) agent.add(new Option(a.name, a.sessionId));
-    const kind = facEl("select", {});
-    kind.add(new Option("every day at", "daily"));
-    kind.add(new Option("every N minutes", "interval"));
-    const time = facEl("input", { type: "time", value: "08:30" });
-    const every = facEl("input", { type: "number", min: "5", value: "60", hidden: true });
-    kind.addEventListener("change", () => { time.hidden = kind.value !== "daily"; every.hidden = kind.value === "daily"; });
-    const text = facEl("textarea", { rows: "2", style: "width:100%;box-sizing:border-box" });
-    text.value = `Use the ${s.name}:${s.name} skill to `;
-    const go = facEl("button", { class: "primary", text: "Schedule", onclick: async () => {
-      const [h, mi] = time.value.split(":").map(Number);
-      const schedule = kind.value === "daily" ? { kind: "daily", hour: h, minute: mi } : { kind: "interval", everyMin: Number(every.value) };
-      const p = text.value.trim();
-      if (!p) return;
-      const makeCron = (sessionId) => facCall("POST", "/crons", { sessionId, prompt: p, schedule });
-      try {
-        if (agent.value) {
-          const already = s.attachedTo.some((a) => a.sessionId === agent.value && a.release === s.latestAccepted);
-          if (!already && !(await facAttach(s, agent.value, s.latestAccepted, true))) return;
-          await makeCron(agent.value);
-          await facLoad(); facRenderTable(); facRenderDrawer();
-          facMsg(`Scheduled on ${agent.selectedOptions[0].textContent}.`);
-        } else {
-          // A new agent, born with the skill — in the skill's first group, if shared with groups.
-          const gid = (facScopeIds(s.owner) || [])[0] ?? null;
-          facSetMode(false);
-          const t = createTab(gid);
-          t.customName = true;
-          t.nameEl.textContent = facTitle(s);
-          t.afterReady = (sessionId) => makeCron(sessionId).catch((e) => alert("Could not schedule: " + e.message));
-          launchTab(t, { skills: [{ skill: s.id, release: s.latestAccepted }], ...(gid != null ? { group: gid } : {}) });
-        }
-      } catch (e) { facMsg(e.message, true); }
-    } });
-    host.appendChild(facEl("div", { class: "fac-sched fp-card" }, [
-      facEl("div", { class: "fp-actions", style: "margin-top:0" }, [facEl("span", { text: "Run with" }), agent, kind, time, every]),
-      text,
-      facEl("div", { class: "fp-actions" }, [go, facEl("span", { class: "fp-sub", text: "The prompt can say what to do it on: one skill, several topics." })]),
-    ]));
-  }
-
   async function facDuplicate(s) {
     const title = prompt(`Name of the variant (it starts from the saved "${facTitle(s)}"):`, facTitle(s) + " (variant)");
     if (!title) return;
@@ -11727,7 +11632,7 @@
   async function facDelete(s) {
     if (!confirm(`Delete "${facTitle(s)}" and its whole history? Archive it instead to keep it.`)) return;
     try {
-      await facCall("DELETE", `/factory/skills/${s.id}${s.attachedTo.length ? "?force=1" : ""}`);
+      await facCall("DELETE", `/factory/skills/${s.id}`);
       fac.sel = null; fac.drawer = false; fac.checked.delete(s.id);
       await facRefresh();
     } catch (e) { facMsg(e.message, true); }
@@ -12156,27 +12061,6 @@
   $("factoryBtn").addEventListener("click", () => facSetMode(!document.body.classList.contains("factory-mode")));
   try { if (localStorage.getItem("cp.factoryMode") === "1") facSetMode(true); } catch {}
 
-  // The new-agent dialog's "Factory skills" fold: born with approved, non-archived skills.
-  async function facFillPicker() {
-    const box = $("skillsPick");
-    if (!box) return;
-    box.textContent = "";
-    let data;
-    try { data = await facCall("GET", "/factory/skills"); } catch { data = { skills: [] }; }
-    // Only what is shared with the group the agent goes to (or with everyone,
-    // or yours): the point of sharing is a short list, not a lock.
-    const usable = data.skills.filter((s) => s.latestAccepted && !s.archived && facAllows(s, { group: setupGroup }));
-    $("skillsField").hidden = !usable.length;
-    $("skillsCount").textContent = usable.length ? String(usable.length) : "";
-    for (const s of usable)
-      box.appendChild(facEl("label", { class: "fac-chk", title: s.description || "" }, [
-        facEl("input", { type: "checkbox", value: s.id, "data-release": String(s.latestAccepted) }),
-        ` ${s.title || s.name}`,
-      ]));
-  }
-  function facPickedSkills() {
-    return [...document.querySelectorAll("#skillsPick input:checked")].map((i) => ({ skill: i.value, release: Number(i.dataset.release) }));
-  }
 
 
 

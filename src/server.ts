@@ -12,8 +12,8 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
-import { scopeVisibleTo, recordRun, skillOfCall } from "./factory.js";
-import { acceptanceFor, attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
+import { recordRun, skillOfCall } from "./factory.js";
+import { attachmentDirNames, availableAttachments, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -2176,9 +2176,9 @@ app.get("/sessions", (req, res) => {
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
 // /sessions cannot see them — this is the only way the UI can list them.
-// The `/` commands the composer offers: the factory skills attached to this
-// agent (src/slash-commands.ts). Read on each call, so a skill attached a minute
-// ago shows up without a restart.
+// The `/` commands the composer offers: the factory skills this agent has
+// (shared with it, src/slash-commands.ts). Read on each call, so a skill shared
+// a minute ago shows up without a restart.
 app.get("/commands", (req, res) => {
   const id = String(req.query.session ?? "");
   const skills = loadRegistry(factoryRoot()).skills;
@@ -3781,10 +3781,19 @@ mountFactory(app, {
   },
   tenantGroup: (g) => factoryTenantGroup(g),
   loadChannels: () => loadChannels(),
-  upsertChannel: (patch) => upsertChannel(patch),
-  onAttachmentsChanged: (id) => {
-    const s = sessions.get(id);
-    if (s) broadcastStaleness(s);
+  skillsOf: (id) => attachmentsFor(id) ?? [],
+  runningSkills: (id) => {
+    // `<name>@<N>-<tree8>` (pluginDirName): the release each spawned dir holds.
+    const out: Record<string, number> = {};
+    for (const d of runningPlugins.get(id) ?? []) {
+      const m = /^(.+)@(\d+)-[0-9a-f]+$/.exec(path.basename(d));
+      if (m) out[m[1]] = Number(m[2]);
+    }
+    return out;
+  },
+  onSkillsChanged: () => {
+    const channels = loadChannels();
+    for (const s of sessions.values()) if (!s.pilot.hasExited) broadcastStaleness(s, channels);
   },
   prune: () => pruneFactoryPlugins(),
   reloadIfIdle: (id) => {
@@ -3812,10 +3821,6 @@ mountFactory(app, {
     const user = iso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
     return { home: agentStateHome(user), user, group: iso.groupPatch.group ?? null };
   },
-  cronsOf: (id) =>
-    loadCrons()
-      .filter((c) => c.sessionId === id && c.enabled)
-      .map((c) => ({ label: scheduleLabel(c.schedule, cronTimeZone(c)), prompt: c.prompt.slice(0, 120) })),
   agentMcp: (id) => {
     const p = loadChannels().find((c) => c.sessionId === id)?.profile;
     const prof = p ? effectiveProfile(getProfile(p)) : undefined;
@@ -6088,12 +6093,6 @@ function installedCapabilities(): { name: string; description: string }[] {
  * plugin directories themselves are materialised by `makePilot`, never by the
  * staleness sweep.
  */
-/**
- * Skills asked for at `start` (the creation popin's picker, `pilotctl --skill`),
- * held until `ready` records them on the channel: the channel row does not
- * exist yet when `makePilot` runs for a brand-new agent.
- */
-const pendingSkills = new Map<string, Attachment[]>();
 /** Plugin directories each process was SPAWNED with — a busy agent not yet
  *  reloaded still runs from these, so they must survive a prune. */
 const runningPlugins = new Map<string, string[]>();
@@ -6108,9 +6107,9 @@ function countFactoryRun(skillArg: string, agentId: string): void {
 function pruneFactoryPlugins(): void {
   const skills = loadRegistry(factoryRoot()).skills;
   const keep = new Set<string>();
-  for (const c of loadChannels()) for (const n of attachmentDirNames(skills, c.skills)) keep.add(n);
+  for (const c of loadChannels()) for (const n of attachmentDirNames(skills, attachmentsFor(c.sessionId))) keep.add(n);
   for (const [, dirs] of runningPlugins) for (const d of dirs) keep.add(path.basename(d));
-  for (const [, att] of pendingSkills) for (const n of attachmentDirNames(skills, att)) keep.add(n);
+  for (const id of pendingCtx.keys()) for (const n of attachmentDirNames(skills, attachmentsFor(id))) keep.add(n);
   const removed = prunePlugins(factoryRoot(), keep);
   if (removed.length) console.log(`factory: removed unused release dirs ${removed.join(", ")}`);
 }
@@ -6126,9 +6125,17 @@ function agentCtxFor(sessionId?: string | null): AgentCtx {
   return { group: ch?.group ?? p?.group ?? null, createdBy: ch?.createdBy ?? p?.createdBy ?? null };
 }
 
+/**
+ * The factory skills an agent runs: DERIVED from each skill's sharing and its
+ * group's acceptance (`availableAttachments`), never a per-agent list — a
+ * skill is not given to an agent, it is available to whoever it is shared
+ * with. Read at every call, so a share change or a Save reaches the agent at
+ * its next reload (the staleness sweep lights the indicator).
+ */
 function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
   if (!sessionId) return undefined;
-  return loadChannels().find((c) => c.sessionId === sessionId)?.skills ?? pendingSkills.get(sessionId);
+  const ctx = agentCtxFor(sessionId);
+  return availableAttachments(loadRegistry(factoryRoot()).skills, ctx, factoryTenantGroup(ctx.group));
 }
 
 /**
@@ -6189,26 +6196,6 @@ function factorySecretsFor(sessionId?: string | null): string[] {
  */
 function factorySecretEnv(sessionId: string | null | undefined, group: string | null | undefined): Record<string, string> {
   return secretsFor(factorySecretsFor(sessionId), group ?? MAIN_GROUP_ID, commonsGroupIds());
-}
-
-/** Pure-ish: turn a `start`'s requested skills into accepted attachments. */
-function resolveBirthSkills(req: { skill: string; release?: number }[], agent: AgentCtx): { ok: Attachment[]; refused: string[] } {
-  const skills = loadRegistry(factoryRoot()).skills;
-  const ok: Attachment[] = [];
-  const refused: string[] = [];
-  for (const r of req.slice(0, 20)) {
-    const s = skills.find((x) => x.id === r?.skill || x.name === r?.skill);
-    if (!s) { refused.push(`${r?.skill}: no such skill`); continue; }
-    // Accepted for THIS agent's group (multi-tenant), not merely for Main.
-    const accepted = s.releases.filter((rel) => !!acceptanceFor(s, rel, factoryTenantGroup(agent.group)));
-    const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
-    if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
-    // A private skill is attached by its owner only: the person starting the agent.
-    if (!scopeVisibleTo(s.owner, agent.createdBy ?? null)) { refused.push(`${s.name}: private to someone else`); continue; }
-    if (s.archived) { refused.push(`${s.name}: archived`); continue; }
-    if (!ok.some((a) => a.skill === s.id)) ok.push({ skill: s.id, release: rel.n });
-  }
-  return { ok, refused };
 }
 
 function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
@@ -8514,9 +8501,6 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // instead of letting the spawn die on a bare auth error.
           const mtMsg = mtRefusal(dropUser);
           if (mtMsg) return fail(mtMsg);
-          // Born with skills: resolved and checked BEFORE the spawn, since
-          // `--plugin-dir` is a spawn arg. Held in `pendingSkills` until the
-          // channel row exists (written at ready, below).
           // Who this new agent belongs to, for factory skill scopes: the person
           // spawning it (an agent's spawn inherits its parent's creator, so a
           // lead's ticket agents stay "yours"), and the cockpit group the client
@@ -8528,18 +8512,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // creator — never for its principal name (`agent:<id>`).
             const ownCreator = me?.agent ? me.agent.createdBy ?? undefined : me?.name;
             initialCreatedBy = parentCh?.createdBy ?? ownCreator ?? undefined;
-            // The group only steers which shared skills are OFFERED: the one the
-            // isolation policy assigned, else the one the client created it in.
+            // The group decides which shared factory skills this agent RUNS (a
+            // skill runs wherever it is shared): the one the isolation policy
+            // assigned, else the one the client created it in.
             pendingCtx.set(id, { group: agentGroupId ?? requestedGroupId, createdBy: initialCreatedBy ?? null });
-          }
-          let initialSkills: Attachment[] | undefined;
-          if (!resumed && Array.isArray(msg.skills) && msg.skills.length) {
-            const { ok, refused } = resolveBirthSkills(msg.skills, pendingCtx.get(id) ?? {});
-            for (const r of refused) console.log(`factory: ${id.slice(0, 8)} not born with ${r}`);
-            if (ok.length) {
-              initialSkills = ok;
-              pendingSkills.set(id, ok);
-            }
           }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
@@ -8649,10 +8625,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // = commons, today's behaviour). A channel is never born with a
             // dangling group id: `spawnGroupFor` returns a real group or null.
             ...isolation.groupPatch,
-            ...(initialSkills ? { skills: initialSkills } : {}),
             ...(initialCreatedBy ? { createdBy: initialCreatedBy } : {}),
           });
-          pendingSkills.delete(id);
           pendingCtx.delete(id);
           send({ type: "tokens", tokens: tokenTotals(session) });
           send(profileMessage(session));
