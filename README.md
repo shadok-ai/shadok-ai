@@ -161,7 +161,10 @@ Enter to skip; you can add it later from the web UI).
   `http://localhost:PORT/…`, which your browser cannot reach when the agents run
   in a container or on a remote box. Paste that failed address under *Finish a
   sign-in* in the Secrets panel (`POST /oauth-relay`, web UI only): the cockpit
-  opens it on the agents' machine. Loopback http addresses with a port only.
+  opens it on the agents' machine. Loopback http addresses with a port only,
+  and only a callback (`code=`, `state=` or `error=` in the query); the
+  cockpit's own ports and well-known local services (debuggers, Docker's API,
+  databases) are refused, and only the listener's HTTP status comes back.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
   daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
@@ -688,6 +691,38 @@ the same-origin policy, so without that check any page you happen to visit could
 drive your agents. Behind a reverse proxy that rewrites `Host`, list the public
 origin in `SHADOK_ORIGINS`.
 
+**Which host names it answers (DNS rebinding).** A page on `evil.com` can
+re-point its own name at `127.0.0.1`; its requests then carry `Origin` *and*
+`Host` `evil.com:3789` and look same-origin. So the server also checks the
+`Host` header, on every request and on the WebSocket upgrade:
+
+- **No password** (the local default): only `localhost` / `*.localhost`, any IP
+  address, and this machine's own name (`hostname`, `hostname.local`) are
+  answered, on any port. Anything else gets `403 host not allowed` and one log
+  line. If you really reach a password-less cockpit through another name (an
+  `/etc/hosts` alias, a same-host proxy), add it to `SHADOK_ALLOWED_HOSTS`.
+- **With a password**: every `Host` is answered, as before — a rebound page
+  holds no cookie for your cockpit, so it is a stranger at the login page. This
+  is what keeps a container behind nginx/Cloudflare on its own domain working
+  with no change. Setting `SHADOK_ALLOWED_HOSTS` tightens it to that list
+  (loopback names and IPs always stay allowed — agents call `127.0.0.1`).
+
+`SHADOK_ALLOWED_HOSTS` is comma-separated: names, `host:port` or whole origins
+(the port is ignored), `.example.com` for a domain and its subdomains, `*` to
+switch the check off. The hosts in `SHADOK_ORIGINS` are accepted too.
+
+**Sign-in attempts are limited.** A failed `POST /login` is counted against the
+caller's address (10 per 15 minutes) and against the account (20 per 15
+minutes, from all addresses together); past that the answer is `429` with a
+`Retry-After`, before any password is checked. Enrollment codes are counted the
+same way. An unknown user name costs the server exactly what a real one does,
+so the timing says nothing about which accounts exist. The counters live in
+memory: a restart clears them. Behind a proxy the address is the one the proxy
+appended last to `X-Forwarded-For` — trusted only when the proxy connects from
+this machine or a private range (the Docker bridge); a proxy that sends no
+`X-Forwarded-For` puts every visitor in one address bucket, so ten wrong
+passwords from anyone lock the login for everyone for 15 minutes.
+
 ### Behind TLS (nginx, Caddy…)
 
 Serving the cockpit over HTTPS works, with one requirement: **the proxy must
@@ -704,6 +739,7 @@ location / {
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # see below
+    proxy_set_header X-Forwarded-Proto $scheme;                   # Secure cookies
     client_max_body_size 50m;   # match the server's paste limit
 }
 ```
@@ -716,6 +752,14 @@ host connects from `127.0.0.1` too; the `X-Forwarded-For` line is what tells the
 server the request was relayed. Without it, requests through a same-host proxy
 look local. (A proxy on another host, or nginx in front of a Docker container,
 is already seen as the network.)
+
+The same header is what the sign-in limiter keys on (see "Exposing it beyond
+this machine").
+
+**Secure cookies.** With `X-Forwarded-Proto: https` from a proxy on this machine
+or a private range (Docker bridge), the session cookies are set `Secure`, so a
+browser never sends them over plain http. Without that header they are set as
+before.
 
 The client picks `wss://` on its own when the page is HTTPS, so there is nothing
 to configure on that side.
@@ -930,7 +974,8 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `PORT` | HTTP/WS port |
 | `SHADOK_HOST` | interface to bind (default `127.0.0.1`, this machine only) |
 | `SHADOK_GUI_PASSWORD` | require a password for the GUI — overrides a password saved by `--password` |
-| `SHADOK_ORIGINS` | extra browser origins allowed, comma-separated (reverse proxy) |
+| `SHADOK_ORIGINS` | extra browser origins allowed, comma-separated (reverse proxy); their hosts also pass the Host check |
+| `SHADOK_ALLOWED_HOSTS` | host names the cockpit answers besides its own (DNS-rebinding guard); with a password, setting it makes the check strict. `*` disables it |
 | `SHADOK_TMUX=0` | force the node-pty transport instead of tmux |
 | `SHADOK_IDLE_MIN` | minutes with no client before a session is reclaimed (60) |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |

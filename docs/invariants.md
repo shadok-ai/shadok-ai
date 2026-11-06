@@ -1772,3 +1772,47 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     cwd with the wrong secrets is a guard that silently tests the wrong thing.
     Existing crons are untouched (the rule is applied at write time). The
     scheduler skill always targets the CURRENT channel, so it never hits it.
+
+<a id="inv-66"></a>
+
+62. **Same-origin is not "ours" — a rebound name is same-origin with itself, so
+    the Host is checked too, and strictly only where the password is not there
+    to do the job.** `originAllowed` compares `Origin` with `Host` (invariant
+    11). A page on `evil.com` that re-points its own DNS name at 127.0.0.1 sends
+    `Origin: http://evil.com:3789` AND `Host: evil.com:3789`: same-origin by
+    that measure, and with no GUI password — the local default, where every
+    caller is the admin — it opened `/ws` and drove the agents, i.e. a shell on
+    the host, from a web page. `hostHeaderAllowed` (`src/net.ts`) now runs
+    before the origin check on every HTTP request and on the WS upgrade
+    (`requestHostOk`). Rebinding only ever yields a NAME the attacker controls,
+    so the strict rule accepts what such a page cannot be: an IP literal (a
+    browser on an IP sends that IP), `localhost` and `*.localhost` (resolved by
+    the browser itself), the machine's own `os.hostname()`, and the lists
+    (`SHADOK_ALLOWED_HOSTS`, the hosts of `SHADOK_ORIGINS`).
+    **Strict only when it is needed, because a Host check that guesses wrong
+    locks the owner out.** The deployments that exist are password-protected
+    containers behind nginx/Cloudflare on their own domain, with `Host`
+    forwarded: none of them listed that domain anywhere, and a strict check
+    would have answered 403 to every one on the next auto-update. With a
+    password a rebound page is a stranger at the login page (its cookie jar is
+    `evil.com`'s), so every Host passes as before, unless `SHADOK_ALLOWED_HOSTS`
+    is set — setting it is how an operator opts in. A missing Host passes (a
+    browser always sends one; Telegram, pilotctl and the agents send
+    `127.0.0.1`), the same reasoning as a missing Origin. `SHADOK_ORIGINS` adds
+    names but never turns strictness on: it never meant that, and reading it as
+    an opt-in would lock out whoever listed one origin out of several names.
+    A refusal names the variable to set and is logged once per name — a lockout
+    must be diagnosable from the log alone.
+    Two neighbours from the same audit (2026-11-06). **Forwarding headers are
+    believed only from our own proxy**: `clientAddress` takes the LAST
+    `X-Forwarded-For` entry (the one `$proxy_add_x_forwarded_for` appended) and
+    `requestIsHttps` the first `X-Forwarded-Proto`, and only when the socket is
+    loopback or a private range (the Docker bridge an nginx on the host comes
+    from). They feed the sign-in limiter (`src/login-limit.ts`: 10 failures per
+    address, 20 per account, per 15 min, refused BEFORE hashing; async scrypt;
+    the same hash for an unknown name) and the cookies' `Secure` flag. And **a
+    relay is not a fetch**: `/oauth-relay` used to GET any path on any loopback
+    port and hand back 300 characters of the page — a read of every local
+    service for whoever reached the cockpit. It now requires a callback-shaped
+    query, refuses the shadok port walk and well-known local services, and
+    returns the status alone.

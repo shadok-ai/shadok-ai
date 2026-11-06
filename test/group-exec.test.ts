@@ -193,7 +193,7 @@ test("sameOfferedFile: a swapped file is refused, a pre-check offer is not", () 
   assert.equal(sameOfferedFile(undefined, { dev: 1, ino: 3 }), true);
 });
 
-// ── cronCheckAllowed (invariant 61) ──────────────────────────────────────────
+// ── cronCheckAllowed (invariant 60) ──────────────────────────────────────────
 
 test("cronCheckAllowed: an agent may guard itself, never a sibling", () => {
   assert.equal(cronCheckAllowed({ agentId: "me", targetId: "me", check: "env" }), true);

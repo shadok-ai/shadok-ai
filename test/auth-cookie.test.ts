@@ -23,14 +23,18 @@ test("no sk_auth cookie is ever set SameSite=Strict", () => {
 });
 
 test("every sk_auth Set-Cookie declares SameSite=Lax", () => {
-  // Each line that SETS the sk_auth cookie (login, invite redeem, logout clear)
-  // must carry SameSite=Lax explicitly — an omitted attribute is a silent drift.
+  // Each line that SETS the sk_auth cookie (`sessionCookie`, which login and
+  // invite redeem both go through, and the logout clear) must carry SameSite=Lax
+  // explicitly — an omitted attribute is a silent drift.
   // Keyed on `Path=/`, which every Set-Cookie carries: it excludes the loopback
   // `adminCookie()` builder, which is a request `Cookie:` header (the Telegram
   // bridge/agents present it) and correctly has no SameSite of its own.
   const lines = SERVER.split("\n").filter((l) => /sk_auth=/.test(l) && /Path=\//.test(l));
-  assert.ok(lines.length >= 3, `expected at least 3 sk_auth Set-Cookie lines, found ${lines.length}`);
+  assert.ok(lines.length >= 2, `expected at least 2 sk_auth Set-Cookie lines, found ${lines.length}`);
   for (const l of lines) {
     assert.match(l, /SameSite=Lax/, `sk_auth cookie missing SameSite=Lax: ${l.trim()}`);
+    // Secure over HTTPS (src/net.ts requestIsHttps): a cookie built by hand
+    // without it would ride a plain-http downgrade.
+    assert.match(l, /secureAttr\(req\)/, `sk_auth cookie missing secureAttr(req): ${l.trim()}`);
   }
 });

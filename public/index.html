@@ -12008,7 +12008,10 @@
     const r = await fetch("/oauth-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("relayUrl").value }) })
       .then((x) => x.json()).catch(() => ({ ok: false, error: "the cockpit did not answer" }));
     out.hidden = false;
-    out.textContent = r.ok ? `Relayed (HTTP ${r.status})${r.text ? " — " + r.text : ""}` : r.error;
+    // Status only (the listener's page is not passed back — see src/oauth-relay.ts).
+    out.textContent = r.ok
+      ? `Relayed (HTTP ${r.status}) — ${r.status < 400 ? "the sign-in listener accepted it; check the agent" : "the listener refused it; the sign-in may have expired, start it again"}`
+      : r.error;
     if (r.ok) $("relayUrl").value = "";   // a one-time code: nothing to keep
   });
   $("secretsAdd").addEventListener("submit", async (e) => {
