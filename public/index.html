@@ -1086,8 +1086,28 @@
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   #secretAttach[data-grouped="1"] { display: none; }
   .sec-from { margin-left: 8px; font-size: 11px; color: var(--text-dim); font-family: var(--sans, inherit); }
-  .sec-ctl { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; margin-top: 4px; }
-  .sec-ctl label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  /* Grouped mode: each own secret is a card — name + actions, one meta line, then
+     the "Shared with" / "Injected into" chip rows and ONE Save. */
+  #secretsList li.sec-row { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: none; }
+  #secretsList li.sec-row:nth-child(odd) { background: none; }
+  .sec-ctl { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; font-size: 12px; margin-top: 10px; }
+  .sec-field { display: grid; grid-template-columns: 96px 1fr; gap: 8px; align-items: start; }
+  .sec-field-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; padding-top: 5px; }
+  .sec-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sec-chip { position: relative; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 14px; cursor: pointer; user-select: none; }
+  .sec-chip:hover { border-color: var(--amber); }
+  .sec-chip input { position: absolute; opacity: 0; pointer-events: none; }
+  .sec-chip:has(input:checked) { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--text); }
+  .sec-chip:has(input:checked)::before { content: "✓"; font-size: 11px; color: var(--amber); }
+  .sec-chip:has(input:focus-visible) { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .sec-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+  .sec-status { flex: 1; font-size: 12px; color: var(--text-dim); }
+  .sec-status.err { color: #e2564a; }
+  #secretsList button.sec-save { font-size: 12px; padding: 4px 14px; border-radius: 6px; border: 1px solid var(--amber); color: var(--amber); }
+  #secretsList button.sec-save:hover:not(:disabled) { background: color-mix(in srgb, var(--amber) 15%, transparent); }
+  #secretsList button.sec-save:disabled { opacity: .35; cursor: default; border-color: var(--line); color: var(--text-dim); }
+  .sec-err { margin: 0 0 10px; padding: 8px 11px; border: 1px solid #e2564a; border-radius: 8px; color: #e2564a; background: color-mix(in srgb, #e2564a 8%, transparent); font-size: 12.5px; }
+  @media (max-width: 520px) { .sec-field { grid-template-columns: 1fr; gap: 4px; } .sec-field-label { padding-top: 0; } }
   .group-head .gkey { flex: none; font-size: 12px; padding: 0 4px; cursor: pointer; visibility: hidden; }
   .group-head:hover .gkey { visibility: visible; }
   /* A touch screen has no hover, so the group-head ⚙/🔑 (the single-column /
@@ -3017,6 +3037,7 @@
     </div>
     <div class="pin-body">
       <div id="secretsScope" class="sec-scope" hidden><span>Group</span><select id="secretsGroup" aria-label="Group whose secrets are shown"></select></div>
+      <p id="secretsErr" class="sec-err" role="alert" hidden></p>
       <ul id="secretsList"></ul>
       <form id="secretsAdd">
         <div class="sec-add-row">
@@ -10504,8 +10525,11 @@
       actions.append(
         actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
-          const g = secretWriteGroup();
-          await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
+          // The row's OWNER group, not the panel's write target (see secretControls).
+          const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
+          const r = await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
+          const e = await vaultError(r);
+          if (e) { showVaultError("Could not remove " + k + ": " + e); return; }
           if (editingSecret === k) resetSecretForm();
           await loadVault(); renderSecrets();
         }),
@@ -10519,35 +10543,88 @@
     }
     return li;
   }
+  /** Read a refused vault write's message: the server answers `{error}` JSON;
+   *  a proxy may answer HTML, so fall back to the status line. */
+  async function vaultError(r) {
+    if (r.ok) return null;
+    try { const j = await r.json(); if (j && j.error) return String(j.error); } catch {}
+    return "refused (HTTP " + r.status + ")";
+  }
   /** Own secret, grouped mode: who it is lent to (PUT /secrets/share) and which
-   *  profiles inject it (PUT /secrets/profiles). Each saves on its own button so
-   *  a half-ticked state never reaches the server. */
+   *  profiles inject it (PUT /secrets/profiles), edited as chips and saved by ONE
+   *  button that only lights up once something changed. Both calls target the
+   *  secret's OWNER group, never the panel's selection: in the "Public groups"
+   *  view the panel's write target is the first public group, which sent every
+   *  row there (a 403 or a 404 for a secret living in another public group). A
+   *  refusal is shown in the card, not swallowed. */
   function secretControls(sec) {
     const box = document.createElement("div"); box.className = "sec-ctl";
     const targets = window.shareTargets ? window.shareTargets(vaultGroups, sec.ownerGroup) : [];
     const profs = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n))).sort();
-    const picker = (label, options, current, onSave) => {
-      if (!options.length) return;
-      const wrap = document.createElement("span");
-      wrap.append(label + ": ");
+    const same = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+    const fields = [];
+    const field = (label, hint, options, current) => {
+      if (!options.length) return null;
+      const row = document.createElement("div"); row.className = "sec-field";
+      const l = document.createElement("span"); l.className = "sec-field-label"; l.textContent = label; l.title = hint;
+      const chips = document.createElement("div"); chips.className = "sec-chips";
+      const initial = (current || []).map(String);
       const cbs = options.map((o) => {
-        const l = document.createElement("label");
-        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = (current || []).includes(o.value);
+        const lab = document.createElement("label"); lab.className = "sec-chip";
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = initial.includes(o.value);
         const t = document.createElement("span"); t.textContent = o.label;
-        l.append(cb, t); wrap.appendChild(l); return cb;
+        lab.append(cb, t); chips.appendChild(lab); return cb;
       });
-      wrap.appendChild(actionBtn("linkish", "save", "Save", async () => {
-        await onSave(cbs.filter((c) => c.checked).map((c) => c.value));
-        await loadVault(); renderSecrets();
-      }));
-      box.appendChild(wrap);
+      row.append(l, chips); box.appendChild(row);
+      const f = { cbs, initial: initial.filter((v) => options.some((o) => o.value === v)), value: () => cbs.filter((c) => c.checked).map((c) => c.value) };
+      fields.push(f);
+      return f;
     };
-    // A secret's own controls target its OWNER group (the section it lives in).
-    picker("shared read with", targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith, (sharedWith) =>
-      fetch("/secrets/share", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, sharedWith })) }));
-    picker("attach to profiles", profs.map((n) => ({ value: n, label: n })), sec.profiles, (profiles) =>
-      fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, profiles })) }));
+    const share = field("Shared with", "Groups that may READ this secret (it stays owned by its group)",
+      targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith);
+    const inject = field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
+      profs.map((n) => ({ value: n, label: n })), sec.profiles);
+    if (!fields.length) return box;
+    const foot = document.createElement("div"); foot.className = "sec-foot";
+    const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
+    const save = document.createElement("button"); save.type = "button"; save.className = "sec-save"; save.textContent = "Save"; save.disabled = true;
+    const dirty = () => fields.some((f) => !same(f.value(), f.initial));
+    box.addEventListener("change", () => {
+      save.disabled = !dirty();
+      if (status.classList.contains("ok")) { status.textContent = ""; status.className = "sec-status"; }
+    });
+    save.addEventListener("click", async () => {
+      save.disabled = true; status.className = "sec-status"; status.textContent = "Saving…";
+      const put = (url, body) => fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: sec.name, group: String(sec.ownerGroup), ...body }) });
+      const errors = [];
+      try {
+        if (share && !same(share.value(), share.initial)) {
+          const e = await vaultError(await put("/secrets/share", { sharedWith: share.value() }));
+          if (e) errors.push("Sharing not saved: " + e);
+        }
+        if (inject && !same(inject.value(), inject.initial)) {
+          const e = await vaultError(await put("/secrets/profiles", { profiles: inject.value() }));
+          if (e) errors.push("Profiles not saved: " + e);
+        }
+      } catch (err) { errors.push("Network error: " + (err && err.message || err)); }
+      if (errors.length) {
+        // Keep the user's ticks on screen so they can retry or undo — a reload
+        // here would silently reset them to the server's state.
+        status.className = "sec-status err"; status.textContent = errors.join(" · ");
+        save.disabled = false;
+        return;
+      }
+      await loadVault(); renderSecrets();
+    });
+    foot.append(status, save); box.appendChild(foot);
     return box;
+  }
+  /** Panel-level refusal (add / update / delete): shown above the list until the
+   *  next successful write or the panel is reopened. */
+  function showVaultError(msg) {
+    const el = $("secretsErr");
+    el.textContent = msg || ""; el.hidden = !msg;
   }
   function renderSecrets() {
     const ul = $("secretsList");
@@ -10689,6 +10766,7 @@
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
     resetSecretForm();
+    showVaultError("");
     $("secretsReload").hidden = true;
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
@@ -12024,8 +12102,12 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     if (!keepValue) {
-      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
+      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
+      const err = await vaultError(r);
+      // Refused: say so and keep the form filled, rather than clearing it as if saved.
+      if (err) { showVaultError("Could not save " + name + ": " + err); return; }
     }
+    showVaultError("");
     // Grouped mode binds profiles per row (PUT /secrets/profiles) and hides the
     // ticks: syncing here would read an empty selection and detach everything.
     if (window.secretsPanelMode(vaultGroups) === "flat") await syncSecretToProfiles(name, wanted); // refreshes profileCache
