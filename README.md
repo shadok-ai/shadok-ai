@@ -418,12 +418,23 @@ Whoever enters the code becomes the owner of the bot's DMs. A group bound before
 pairing existed stays bound; to move to another group, unbind it in the panel
 and pair again.
 
+**Operators.** Being in the board group lets you talk to its agents, answer their
+dialogs and use the per-topic commands — not act on the host. The commands that
+reach the vault, the Claude account or the process (`/secret`, `/unsecret`,
+`/login`, `/code`, `/mttoken`, `/mtcode`, `/update`, and `/spawn` with an
+explicit profile) are reserved to **operators**: whoever typed a pairing code —
+`/setup <code>` in the board, or the DM pairing (the DM owner is always one).
+To make someone an operator (or yourself, on a board bound before operators
+existed and with no DM owner), click **Pair Telegram** again and have them send
+`/setup <code>` in the already-bound group. Anyone else gets a refusal saying
+exactly that. Unbinding the group in the panel clears its operators.
+
 Add your bot to a group with **Topics** enabled, make it an admin with *Manage
 topics* (and *Delete messages* so `/secret` can scrub values), then in the group:
 
 | Command | |
 |---|---|
-| `/setup <code>` | bind this group as the board (one group per instance), with the code from the panel's **Pair Telegram** |
+| `/setup <code>` | bind this group as the board (one group per instance), with the code from the panel's **Pair Telegram** — in an already-bound board, it makes the sender an operator |
 | `/spawn [profile] <name>` | new isolated agent in its own topic (also a web tab) |
 | `/stop` (alias `/esc`) | interrupt the current turn — does **not** end the session |
 | `/new` · `/end` | reset · kill the session |
@@ -432,7 +443,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
 | `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
-| `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault |
+| `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault; an existing name is never replaced unless you append `--overwrite` |
 | `/update` | fetch `@latest` and respawn |
 
 Creating a topic by hand also spawns an agent. Anything that isn't a command is

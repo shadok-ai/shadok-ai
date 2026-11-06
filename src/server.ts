@@ -103,6 +103,7 @@ import {
   profilePatch,
   loadTgGroup,
   saveTgGroup,
+  saveTgOperators,
   isHomeChannel,
   homeAdoptionTarget,
   resolveSessionTarget,
@@ -4524,7 +4525,12 @@ app.put("/telegram", async (req, res) => {
   // Unbind the board group (e.g. after a stale supergroup migration): clears the
   // binding so /setup can bind a fresh group. Read live by the bridge — no
   // restart needed for this alone.
-  if (b.unbindGroup === true) saveTgGroup(null);
+  // Its operators go with it: they were vouched for in THAT group, and the next
+  // board's are recorded when its /setup <code> is typed.
+  if (b.unbindGroup === true) {
+    saveTgGroup(null);
+    saveTgOperators([]);
+  }
 
   const hasConfigChange =
     patch.token !== undefined || patch.enabled !== undefined || patch.allowedChats !== undefined;
@@ -6707,11 +6713,24 @@ function maybeFollowFork(s: Live): void {
   // when the file has no root record yet (a session that never took a turn).
   const myRoot = (s.rootId ??= rootIdOfFile(myFile) ?? s.id);
   const seen = (s.tailSeen ??= new Set([tailId]));
+  // Search EVERY project dir, not just the frozen file's own: a session whose
+  // cwd drifted (created in a worktree, resumed at the repo root once the
+  // worktree was pruned) writes its context-overflow continuation under a
+  // DIFFERENT project dir, and scanning one directory is blind to it — the chat
+  // freezes while the TUI is fine. The root-match inside detectFork still bars a
+  // sibling's transcript, so widening the search cannot mis-attribute.
+  const projectsRoot = path.join(s.transcriptHome, ".claude", "projects");
+  let searchDirs: string[];
+  try {
+    searchDirs = fs.readdirSync(projectsRoot).map((d) => path.join(projectsRoot, d));
+  } catch {
+    searchDirs = [path.dirname(myFile)];
+  }
   // `s.id` is passed so the hunt can come HOME: every restart respawns with
   // `--resume <s.id>`, so the session's own transcript becomes the live file
   // again, and excluding it as a visited fork left the tail on a dead one for
   // good (see `detectFork`).
-  const target = detectFork(myFile, tailId, myRoot, seen, s.id);
+  const target = detectFork(myFile, tailId, myRoot, seen, s.id, searchDirs);
   if (!target) return;
   const home = target === s.id;
   console.log(
