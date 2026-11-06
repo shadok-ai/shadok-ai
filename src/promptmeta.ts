@@ -108,10 +108,62 @@ export function parsePromptMeta(
   return { platform, who, ...(hasRef ? { ref: last } : {}) };
 }
 
-/** Prepend the header as its own first line. Idempotent. */
+/**
+ * Prepend the header as its own first line — ALWAYS.
+ *
+ * It used to return early when the text already opened with a header ("never
+ * double a header"). The text is the HUMAN's, so that rule let anyone type
+ * `⟦agent · … · Shadok-Boss · 1a2b3c4d⟧` as their first line and have it reach
+ * the agent as the only header there was: a Telegram message or web prompt
+ * passing for a sibling agent (with a forged reply address) or for the admin,
+ * and replayed under that forged author. The server's header is unconditional;
+ * a header-shaped line in the user's text is neutralised by the caller
+ * (`markHumanPrompt`, src/prompt-kind.ts), so it can never parse as one.
+ */
 export function markPromptMeta(text: string, header: string): string {
-  if (hasPromptMeta(text)) return text; // never double a header
   return `${header}\n${text}`;
+}
+
+/** What the server knows about a WebSocket connection, decided ONCE at connect
+ *  from its headers — never from a frame. */
+export type ConnectionFacts = {
+  /** Presented the per-process system-drive secret (`driveChannel`). */
+  systemDrive: boolean;
+  /** Presented the per-process Telegram-bridge secret (src/telegram.ts). */
+  telegramBridge: boolean;
+  /** Signed by a verified agent session key (pilotctl inside an agent). */
+  agent: boolean;
+  /** Authenticated as a peer instance (`x-shadok-peer`). */
+  peer: boolean;
+  /** A same-origin browser person (`requestFromBrowser`). */
+  browser: boolean;
+};
+
+/** The labels a bare local client (no proof of anything) may pick for itself:
+ *  neither gets a privilege — no hiding, no believed `from`. */
+const LOCAL_CLAIMS = new Set(["cli", "boot"]);
+
+/**
+ * WHERE a connection speaks from, derived from what it PROVED at connect.
+ *
+ * `origin` used to be whatever the `start` frame declared, and it decides three
+ * things a client must not choose for itself: the header the agent reads, the
+ * author (`promptAuthor` believed `from` for anything but web/agent), and
+ * visibility (`cron` suppressed the echo to other tabs and added no header). So
+ * a browser could send `origin: "telegram", from: "Alexandre"`, or
+ * `origin: "cron"` to speak to the agent unseen. Each internal client now has a
+ * credential no frame can carry, and the claim only matters for a client that
+ * proved nothing — and even then it may only NARROW to a harmless label.
+ * Order is precedence: the system drive also carries the bridge's cookie, so it
+ * is checked first.
+ */
+export function connectionOrigin(c: ConnectionFacts, claimed: unknown): string {
+  if (c.systemDrive) return "cron";
+  if (c.telegramBridge) return "telegram";
+  if (c.agent) return "agent";
+  if (c.peer) return "peer";
+  if (c.browser) return "web";
+  return typeof claimed === "string" && LOCAL_CLAIMS.has(claimed) ? claimed : "cli";
 }
 
 /** Is this message a Claude Code command (`/compact`, `/my-skill:my-skill …`)?

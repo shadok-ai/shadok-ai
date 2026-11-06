@@ -143,7 +143,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/crons.ts` | Per-channel scheduled prompts (`~/.shadok-ai/crons/<enc>.json`) + the deterministic `check` that avoids waking the LLM for nothing. |
 | `src/lock.ts` | Single-instance lock, keyed by launch dir: two servers from the same directory share a registry and a Telegram bridge, so the second refuses to start. |
 | `src/kinship.ts` | Who launched whom, and what a parent is told about it. |
-| `src/promptmeta.ts` | The context header prepended to a HUMAN prompt (web/telegram/cli) before it reaches the TUI: `⟦platform · time · who⟧` on its own first line. |
+| `src/promptmeta.ts` | The context header prepended to a HUMAN prompt (web/telegram/cli/agent/peer) before it reaches the TUI: `⟦platform · time · who⟧` on its own first line — ALWAYS the server's, the person's text neutralised beneath it (`markHumanPrompt` in `src/prompt-kind.ts`). Also `connectionOrigin`: a connection's origin is derived from what it proved at connect, never from the `start` frame. See invariant 61. |
 | `src/secrets.ts` | Central secret vault (`~/.shadok-ai/secrets.json`, 600). |
 | `src/secret-audit.ts` | The secret AUDIT log — who wrote, attached and RECEIVED which vault secret (`~/.shadok-ai/secret-audit.jsonl`, 600, global like the vault, launch dir on each row). |
 | `context/secrets-skill/` | The `shadok-secrets` skill, seeded into `~/.claude/skills/` at boot (`seedSecretsSkill`, twin of `seedSchedulerSkill`): lets an agent store a credential it OBTAINED itself. |
@@ -327,6 +327,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **58.** An instance-wide or cross-group write is an AUTHORIZATION decision, not just an authentication one — and a filtered READ needs a matching WRITE. · [detail](docs/invariants.md#inv-62)
 - **59.** An agent's credential is the AGENT, never the admin — and "browser-only" means a person's cookie, not an `Origin` header anyone can type. · [detail](docs/invariants.md#inv-63)
 - **60.** What the server does on a group's behalf (cron checks, offered files, media) it does with that group's rights — never root's; and an agent may put a cron `check` only on ITSELF. · [detail](docs/invariants.md#inv-64)
+- **61.** Who is speaking is decided by the CONNECTION (`connectionOrigin`), and text a person types can never pass for a header, ledger block or hiding mark the server wrote (`markHumanPrompt`). · [detail](docs/invariants.md#inv-65)
 
 ## Conventions
 
