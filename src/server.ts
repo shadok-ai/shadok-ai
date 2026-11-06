@@ -156,6 +156,8 @@ import {
   resolveSpawnIsolation,
   osUserFor,
   homeForUser,
+  tierStateDir,
+  tierStateDirAction,
   runAsUser,
   provisionGroupUser,
   teardownGroupUser,
@@ -168,6 +170,7 @@ import {
 } from "./osusers.js";
 import {
   mayActOnSession,
+  cronCheckAllowed,
   mayReachGroup,
   osUserForChannelGroup,
   cronCheckEnv,
@@ -205,6 +208,7 @@ import {
   removePeer,
   ownedByPeer,
   peersOutFileFor,
+  tierPeersOutSeed,
   agentInvitePrompt,
   peerScope,
   type Peer,
@@ -231,7 +235,8 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
-import { isSlashCommand, markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { isSlashCommand, promptMetaHeader, connectionOrigin } from "./promptmeta.js";
+import { markHumanPrompt } from "./prompt-kind.js";
 import { listCommands } from "./slash-commands.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
@@ -347,7 +352,8 @@ import {
 import {
   BOOTSTRAP_ADMIN,
   loadAccounts,
-  verifyPassword,
+  verifyPasswordAsync,
+  burnPasswordCheck,
   sessionSecret,
   signSession,
   readSessionFull,
@@ -357,7 +363,7 @@ import {
   userWriteVerdict,
   newInvite,
   inviteVerdict,
-  hashPassword,
+  hashPasswordAsync,
   promptAuthor,
   type Role,
   signSessionKey,
@@ -412,8 +418,10 @@ import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
 import { bindRefusal, originAllowed, parseOrigins, resolveHost,
-  browserOrigin, isLocalCaller,
+  browserOrigin, isLocalCaller, hostHeaderAllowed, hostRefusal, parseAllowedHosts,
+  clientAddress, requestIsHttps, type HostPolicy,
 } from "./net.js";
+import { AttemptLimiter, LOGIN_LIMITS, loginKeys } from "./login-limit.js";
 import { pctFromUsage, windowForModel } from "./context.js";
 import {
   BACKEND_PRESETS,
@@ -458,6 +466,14 @@ const HOST = resolveHost(process.env);
 // Browser origins accepted on top of same-origin (typically a reverse proxy
 // that rewrites the Host).
 const EXTRA_ORIGINS = parseOrigins(process.env.SHADOK_ORIGINS);
+// The DNS-rebinding guard's lists (see `hostHeaderAllowed`). `passwordSet` is
+// filled in once GUI_PASSWORD is known, below.
+const HOST_POLICY: HostPolicy = {
+  passwordSet: false,
+  allowedHosts: parseAllowedHosts(process.env.SHADOK_ALLOWED_HOSTS),
+  originHosts: parseAllowedHosts(process.env.SHADOK_ORIGINS),
+  machineNames: [os.hostname().toLowerCase()],
+};
 
 // Single instance per launch directory. A second server sharing this dir's
 // registry + telegram-group config (a port-fallback duplicate, a stray dev
@@ -484,6 +500,7 @@ const PASTE_LIMIT = "50mb";
 // flag), the whole GUI — pages, endpoints AND the WebSocket — requires a login.
 // Unset → no auth (the default).
 const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
+HOST_POLICY.passwordSet = !!GUI_PASSWORD;
 // Read once, then gone from our own environment BEFORE anything is spawned: the
 // password IS the bootstrap admin, and every child this process starts — an
 // agent's PTY, a cron guard, a tmux server started on first use — would
@@ -517,6 +534,22 @@ console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 // it, and — unlike a client-settable field such as `origin` — a browser cannot
 // claim it, which is why the exemption is gated on THIS and nothing else.
 const SYSTEM_DRIVE_SECRET = randomBytes(32).toString("hex");
+// The Telegram bridge's own proof, on the same terms (per-process, in memory,
+// never sent anywhere but our loopback WS as `x-shadok-bridge`). It is what
+// makes a connection's origin "telegram" — and so what lets its `from` (the
+// Telegram sender) and its `voice` flag be believed (`connectionOrigin`). The
+// bridge's cookie cannot serve: `driveChannel` presents the very same one, and
+// with no password there is no cookie at all.
+const TELEGRAM_BRIDGE_SECRET = randomBytes(32).toString("hex");
+/** Does a request present `secret` in header `name`? Constant time, length-guarded. */
+function presentsSecret(req: { headers: Record<string, unknown> }, name: string, secret: string): boolean {
+  const raw = req.headers[name];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof header !== "string") return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(secret);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
@@ -679,7 +712,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -740,7 +773,13 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
     const env = cronCheckEnv({
       base: process.env,
       secrets: secretEnv,
-      session: { id: c.sessionId, port: String(boundPort || START_PORT), key: sessionKeyFor(c.sessionId) },
+      session: {
+        id: c.sessionId,
+        port: String(boundPort || START_PORT),
+        key: sessionKeyFor(c.sessionId),
+        // The TARGET agent's own registry, resolved exactly like its spawn's.
+        peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
+      },
       user,
       home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
     });
@@ -1221,13 +1260,21 @@ function rpFor(req: { headers: Record<string, unknown> }): Rp | null {
   }
 }
 
-function sessionCookie(name: string, mfa: boolean): string {
-  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+type CookieReq = { headers: Record<string, unknown>; socket?: { remoteAddress?: string; encrypted?: boolean } };
+/** `; Secure` when the browser reached us over HTTPS (directly, or through a
+ *  local/private proxy that says so in `X-Forwarded-Proto`). Never on plain
+ *  http: a Secure cookie there is simply not stored, i.e. no sign-in at all. */
+function secureAttr(req: CookieReq): string {
+  const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
+  return requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers) ? "; Secure" : "";
 }
-function pendingCookie(name: string): string {
-  return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}`;
+function sessionCookie(name: string, mfa: boolean, req: CookieReq): string {
+  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
 }
-const CLEAR_PENDING = "sk_pending=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+function pendingCookie(name: string, req: CookieReq): string {
+  return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}${secureAttr(req)}`;
+}
+const clearPending = (req: CookieReq) => `sk_pending=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureAttr(req)}`;
 function pendingUser(req: { headers: Record<string, unknown> }): string | null {
   const m = /(?:^|;\s*)sk_pending=([^;]+)/.exec((req.headers.cookie as string | undefined) ?? "");
   return m ? readPending(decodeURIComponent(m[1]), signingSecret(), Date.now()) : null;
@@ -1677,6 +1724,26 @@ function requestOriginOk(req: { headers: Record<string, unknown> }): boolean {
   );
 }
 
+// DNS rebinding (see `hostHeaderAllowed`): a Host naming none of our own names
+// is refused before anything else — the Origin check below cannot see it,
+// since a rebound page is same-origin with itself. Logged once per name, so a
+// lockout from a legitimate name is diagnosable from the log.
+const refusedHostsLogged = new Set<string>();
+function requestHostOk(req: { headers: Record<string, unknown> }): boolean {
+  const host = req.headers.host as string | undefined;
+  if (hostHeaderAllowed(host, HOST_POLICY)) return true;
+  const key = String(host);
+  if (!refusedHostsLogged.has(key) && refusedHostsLogged.size < 100) {
+    refusedHostsLogged.add(key);
+    console.warn(`net: refused Host ${JSON.stringify(key)} — not one of this cockpit's names (set SHADOK_ALLOWED_HOSTS if it is)`);
+  }
+  return false;
+}
+app.use((req, res, next) => {
+  if (requestHostOk(req)) return next();
+  res.status(403).json({ error: hostRefusal(String(req.headers.host ?? "")) });
+});
+
 // A browser from another origin has no business here — /login included, or a
 // third-party page could try passwords. Placed BEFORE everything else.
 app.use((req, res, next) => {
@@ -1695,21 +1762,42 @@ const webauthnUmd = path.join(
 );
 app.get("/vendor/simplewebauthn.js", (_req, res) => res.sendFile(webauthnUmd, { dotfiles: "allow" }));
 
+// Failed sign-ins and enrollment codes, per address and per account. In
+// memory: a restart forgets it, deliberately (src/login-limit.ts).
+const loginLimiter = new AttemptLimiter(LOGIN_LIMITS);
+const enrollLimiter = new AttemptLimiter(LOGIN_LIMITS);
+function tooManyAttempts(res: express.Response, retryAfterMs: number) {
+  const s = Math.ceil(retryAfterMs / 1000);
+  res.setHeader("Retry-After", String(s));
+  return res.status(429).json({ error: `too many failed attempts — try again in ${Math.ceil(s / 60)} min` });
+}
+
 // Login endpoint (always reachable) — sets an HttpOnly cookie naming the user.
-app.post("/login", (req, res) => {
+app.post("/login", async (req, res) => {
   if (!GUI_PASSWORD) return res.json({ ok: true });
   const user = String(req.body?.user ?? "").trim();
   const password = String(req.body?.password ?? "");
+  // Charged to the caller's address AND the account (src/login-limit.ts). A
+  // blocked attempt is refused before any hashing, with one wording whether
+  // the name exists or not.
+  const keys = loginKeys(clientAddress(req.socket.remoteAddress, req.headers), user === BOOTSTRAP_ADMIN ? "" : user);
+  const gate = loginLimiter.check(keys);
+  if (!gate.ok) return tooManyAttempts(res, gate.retryAfterMs);
   // No username means the instance password: the habit of typing just the
   // password keeps working, and that IS the bootstrap admin.
-  const ok =
-    !user || user === BOOTSTRAP_ADMIN
-      ? passwordMatches(password)
-      : (() => {
-          const a = loadAccounts().find((x) => x.name === user);
-          return !!a?.passwordHash && verifyPassword(password, a.passwordHash);
-        })();
-  if (!ok) return res.status(401).json({ error: "wrong username or password" });
+  let ok: boolean;
+  if (!user || user === BOOTSTRAP_ADMIN) ok = passwordMatches(password);
+  else {
+    const a = loadAccounts().find((x) => x.name === user);
+    // An unknown name (or an unredeemed invitation) pays the same scrypt as a
+    // real one, so the answer's timing says nothing about who exists.
+    ok = a?.passwordHash ? await verifyPasswordAsync(password, a.passwordHash) : await burnPasswordCheck(password);
+  }
+  if (!ok) {
+    loginLimiter.fail(keys);
+    return res.status(401).json({ error: "wrong username or password" });
+  }
+  loginLimiter.succeed(keys);
   const name = user || BOOTSTRAP_ADMIN;
   if (twoFactorOn()) {
     // Only AFTER the password checked out, so this says nothing to a guesser.
@@ -1718,10 +1806,10 @@ app.post("/login", (req, res) => {
     // The password is half: a short-lived pending cookie carries it to the
     // passkey step, and no session exists until that step succeeds.
     const next = loginNext(loadAccounts().find((a) => a.name === name), true);
-    res.setHeader("Set-Cookie", pendingCookie(name));
+    res.setHeader("Set-Cookie", pendingCookie(name, req));
     return res.json({ ok: true, user: name, next });
   }
-  res.setHeader("Set-Cookie", sessionCookie(name, false));
+  res.setHeader("Set-Cookie", sessionCookie(name, false, req));
   return res.json({ ok: true, user: name });
 });
 
@@ -1745,7 +1833,7 @@ app.post("/login/passkey", async (req, res) => {
   const used = await verifyAuthentication(rp, challenge, req.body?.response, acct, Date.now());
   if (!used) return res.status(401).json({ error: "the passkey was not accepted" });
   updateAccount(name, (a) => ({ ...a, passkeys: (a.passkeys ?? []).map((p) => (p.id === used.id ? used : p)) }));
-  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.setHeader("Set-Cookie", [sessionCookie(name, true, req), clearPending(req)]);
   res.json({ ok: true, user: name });
 });
 
@@ -1757,8 +1845,15 @@ app.post("/login/enroll/options", async (req, res) => {
   const rp = rpFor(req);
   const acct = name ? loadAccounts().find((a) => a.name === name) : undefined;
   if (!name || !rp || !acct) return res.status(401).json({ error: "sign in with your password again" });
+  // An enrollment code is short enough to guess at speed: same limiter shape.
+  const keys = loginKeys(clientAddress(req.socket.remoteAddress, req.headers), name);
+  const gate = enrollLimiter.check(keys);
+  if (!gate.ok) return tooManyAttempts(res, gate.retryAfterMs);
   const v = enrollCodeVerdict(acct, req.body?.code, Date.now());
-  if (!v.ok) return res.status(403).json({ error: v.error });
+  if (!v.ok) {
+    enrollLimiter.fail(keys);
+    return res.status(403).json({ error: v.error });
+  }
   const options = await registrationOptions(rp, acct);
   res.json({ options, challengeId: putChallenge(options.challenge, name, "register") });
 });
@@ -1780,7 +1875,7 @@ app.post("/login/enroll", async (req, res) => {
   });
   console.log(`2fa: ${name} registered a passkey (${pk.label}) with an enrollment code from ${acct.enroll?.by}`);
   recordEvent({ kind: "passkey-added", actor: name, target: name, detail: pk.label, passkeyId: pk.id });
-  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.setHeader("Set-Cookie", [sessionCookie(name, true, req), clearPending(req)]);
   res.json({ ok: true, user: name });
 });
 
@@ -1797,11 +1892,17 @@ app.get("/invite/:token", (req, res) => {
 app.post("/invite/:token", async (req, res) => {
   const token = String(req.params.token ?? "");
   const password = String(req.body?.password ?? "");
+  const pre = inviteVerdict(loadAccounts().find((a) => a.invite?.token === token), token, Date.now());
+  if (!pre.ok) return res.status(400).json({ error: pre.error });
+  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
+  // Hashed off the event loop (src/accounts.ts), THEN the file is read and the
+  // invitation checked again: a second redemption that raced this one during
+  // the hash finds the invite already gone.
+  const passwordHash = await hashPasswordAsync(password);
   const list = loadAccounts();
   const acct = list.find((a) => a.invite?.token === token);
   const v = inviteVerdict(acct, token, Date.now());
   if (!v.ok) return res.status(400).json({ error: v.error });
-  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
   // Redeeming DROPS the invite and sets the hash: the link is single-use by
   // construction, not by a flag someone could forget to check.
   // With two-factor on, the invitation ALSO authorises registering a passkey:
@@ -1820,7 +1921,7 @@ app.post("/invite/:token", async (req, res) => {
             name: a.name,
             role: a.role,
             createdAt: a.createdAt,
-            passwordHash: hashPassword(password),
+            passwordHash,
             ...(a.passkeys?.length ? { passkeys: a.passkeys } : {}),
             // Kept: dropping it would bring a session from before the reset
             // back to life the moment the new password is set.
@@ -1837,7 +1938,7 @@ app.post("/invite/:token", async (req, res) => {
   // which is why it is awaited but cannot throw out of the handler.
   await ensurePrivateGroupProvisioned(acct!.name);
   if (tfa) {
-    res.setHeader("Set-Cookie", pendingCookie(acct!.name));
+    res.setHeader("Set-Cookie", pendingCookie(acct!.name, req));
     if (keptPasskey) return res.json({ ok: true, user: acct!.name, next: "passkey" });
     return res.json({ ok: true, user: acct!.name, next: "enroll", code: enroll!.code });
   }
@@ -1845,18 +1946,15 @@ app.post("/invite/:token", async (req, res) => {
   // authentication, and without this the browser keeps whatever session it
   // already had — an admin who invites someone from their own browser lands
   // back as the admin, with nothing to say the redemption did not take.
-  res.setHeader(
-    "Set-Cookie",
-    `sk_auth=${signSession(acct!.name, Date.now(), signingSecret())}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
-  );
+  res.setHeader("Set-Cookie", sessionCookie(acct!.name, false, req));
   res.json({ ok: true, user: acct!.name });
 });
 
 // Signing out expires the cookie. Before the gate on purpose: throwing away a
 // session must work even when that session is already invalid, otherwise a
 // stale cookie would leave you stuck on a 401 with no way to clear it.
-app.post("/logout", (_req, res) => {
-  res.setHeader("Set-Cookie", ["sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0", CLEAR_PENDING]);
+app.post("/logout", (req, res) => {
+  res.setHeader("Set-Cookie", [`sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(req)}`, clearPending(req)]);
   res.json({ ok: true });
 });
 
@@ -2691,6 +2789,10 @@ app.post("/crons", (req, res) => {
         ? true // re-arm: a spent one-shot being re-edited is enabled:false
         : (existing?.enabled ?? true);
   const check = typeof b.check === "string" && b.check.trim() ? String(b.check).trim() : undefined;
+  // The guard runs with the TARGET's profile secrets: an agent may only guard
+  // itself, or it could read a sibling's secrets through `env` (invariant 60).
+  if (!cronCheckAllowed({ agentId: callerOf(req).id, targetId: sessionId, check, existing }))
+    return res.status(403).json({ error: "an agent may set a cron check only on its own session (the check runs with that agent's secrets)" });
   const cron: Cron = {
     id: existing?.id ?? randomUUID(),
     sessionId,
@@ -3827,7 +3929,7 @@ app.delete("/secrets", (req, res) => {
 // only: the address carries a one-time sign-in code. See src/oauth-relay.ts.
 app.post("/oauth-relay", async (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "web UI only" });
-  const r = await relayOAuthCallback(req.body?.url);
+  const r = await relayOAuthCallback(req.body?.url, 10_000, { ownPort: boundPort || START_PORT });
   res.status(r.ok ? 200 : 400).json(r);
 });
 
@@ -4166,7 +4268,7 @@ app.post("/2fa/passkey/delete", async (req, res) => {
   if (twoFactorOn() && owner === me.name && !after.find((a) => a.name === owner)?.passkeys?.length)
     return res.status(400).json({ error: "that is your last passkey — with two-factor on you could no longer sign in" });
   saveAccounts(after);
-  if (owner === me.name) res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa));
+  if (owner === me.name) res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa, req));
   console.log(`2fa: ${me.name} removed a passkey of ${owner}`);
   recordEvent({ kind: "passkey-removed", actor: me.name, target: owner });
   res.json({ ok: true });
@@ -4259,7 +4361,7 @@ app.post("/2fa/not-me", (req, res) => {
     ...(v.removePasskey ? { passkeys: (a.passkeys ?? []).filter((p) => p.id !== v.removePasskey) } : {}),
   }));
   if (v.cancelRequest) closeRequest(v.cancelRequest, "cancelled", me.name);
-  res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa));
+  res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa, req));
   saveEvents(events.map((e) => (e.id === ev!.id ? { ...e, disowned: true } : e)));
   recordEvent({ kind: "not-me", actor: me.name, target: me.name, about: ev!.id, detail: describeEvent(ev!) });
   console.log(`2fa: ${me.name} reported "this wasn't me" on ${ev!.kind}`);
@@ -4457,7 +4559,7 @@ app.post("/2fa/enabled", async (req, res) => {
   recordEvent({ kind: "two-factor", actor: me.name, target: "*", detail: on ? "on" : "off" });
   // Re-issue the actor's cookie with the second-factor flag: they just proved
   // it, and the switch would otherwise sign them out of their own tab.
-  res.setHeader("Set-Cookie", sessionCookie(me.name, true));
+  res.setHeader("Set-Cookie", sessionCookie(me.name, true, req));
   res.json({ ok: true, enabled: on });
 });
 
@@ -4840,7 +4942,7 @@ const wss = new WebSocketServer({
   // same-origin policy, so without it any page the user visits could open a
   // session and drive an agent.
   verifyClient: (info, cb) =>
-    cb(requestOriginOk(info.req) && (requestAuthed(info.req) || peerName(info.req) !== null)),
+    cb(requestHostOk(info.req) && requestOriginOk(info.req) && (requestAuthed(info.req) || peerName(info.req) !== null)),
 });
 // The ws server re-emits the http server's listen error; let the http server's
 // own handler drive the port fallback instead of crashing on the re-emit.
@@ -6337,11 +6439,41 @@ function dropUserCwds(): Map<string, Set<string>> {
  * comment on `seedHomeTrust` / `preseedGroupHomes`. Runs AS the group user,
  * SYNCHRONOUSLY and ADDITIVELY; best-effort.
  */
+/**
+ * Make sure the tier's own state directory exists AND belongs to the tier user,
+ * before anything the server does as root can create it with `recursive: true`.
+ * See `tierStateDirAction` for why this is a three-way decision and why the
+ * chown stops at the directory. Best-effort and silent on the happy path: it
+ * runs before every spawn, and a failure here must never block one — the agent
+ * then fails the way it did before, with its own clear EACCES.
+ */
+function ensureTierStateDir(user: string, home: string): void {
+  const dir = tierStateDir(home);
+  try {
+    const exists = fs.existsSync(dir);
+    const writableByUser = exists && spawnAsUserSync(user, "test", ["-w", dir]).ok;
+    const action = tierStateDirAction({ exists, writableByUser });
+    if (!action) return;
+    if (action === "create") {
+      if (!spawnAsUserSync(user, "mkdir", ["-p", dir]).ok) throw new Error(`mkdir ${dir} as ${user} failed`);
+      console.log(`osusers: created ${dir} for ${user}`);
+      return;
+    }
+    // Repair: root owns a directory inside someone else's home. Not recursive.
+    const r = spawnSync("chown", [`${user}:${user}`, dir], { encoding: "utf8", timeout: 15_000 });
+    if (r.status !== 0) throw new Error(`chown ${dir} → ${user} failed`);
+    console.log(`osusers: ${dir} was not writable by ${user} — ownership restored`);
+  } catch (e) {
+    console.log(`osusers: could not secure ${dir} for ${user} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function seedGroupAgentHome(user: string, home: string, cwd: string): void {
   const cwds = new Set<string>([cwd]);
   const siblings = dropUserCwds().get(user);
   if (siblings) for (const c of siblings) cwds.add(c);
   seedHomeTrust(user, home, [...cwds]);
+  ensureTierStateDir(user, home);
 }
 
 /**
@@ -6355,11 +6487,47 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
  * while `/root`'s — volume-backed — had it). Best-effort; mono-tenant or
  * un-migrated → no drop users → no-op.
  */
+/**
+ * Carry the PRE-TIER outbound peers registry (the one in the server's home) into
+ * the COMMONS tier's own, once. See `tierPeersOutSeed` for why the commons and
+ * nowhere else: before the tiers existed every agent ran as root and read exactly
+ * this file, so the commons inheriting it changes nothing about who holds what,
+ * while copying it into a private group would hand it a credential nobody granted.
+ *
+ * Copied AS the commons user (`writeAsUserAtomic`), so the new file is owned by
+ * the tier and root never writes through a home it does not own. Best-effort:
+ * an instance with no peers configured has nothing to carry, and a failure leaves
+ * `--peer` exactly as broken as it already was, with nothing new to diagnose.
+ */
+function seedCommonsPeersOut(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  const user = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  if (!user) return;
+  const serverFile = peersOutFileFor(process.cwd(), os.homedir());
+  const tierFile = peersOutFileFor(process.cwd(), agentStateHome(user));
+  try {
+    const seed = tierPeersOutSeed({
+      tier: "commons",
+      serverHasFile: fs.existsSync(serverFile),
+      tierHasFile: fs.existsSync(tierFile),
+    });
+    if (!seed) return;
+    writeAsUserAtomic(user, tierFile, fs.readFileSync(serverFile, "utf8"));
+    spawnAsUserSync(user, "chmod", ["600", tierFile]);
+    console.log(`peers: carried the outbound registry into ${tierFile}`);
+  } catch (e) {
+    console.log(`peers: could not seed ${tierFile} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function preseedGroupHomes(): void {
   if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
   for (const [user, cwds] of dropUserCwds()) {
-    seedHomeTrust(user, homeForUser(user, GROUP_HOME_BASE), [...cwds]);
+    const home = homeForUser(user, GROUP_HOME_BASE);
+    seedHomeTrust(user, home, [...cwds]);
+    ensureTierStateDir(user, home);
   }
+  seedCommonsPeersOut();
 }
 
 function makePilot(
@@ -6429,7 +6597,10 @@ function makePilot(
   env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
   // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
   // reads it to reach another instance's agents. See src/peers.ts.
-  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd());
+  // Per TIER, not per server home: the path used to be derived from `os.homedir()`,
+  // so a dropped agent was handed a registry under /root (700) it cannot read and
+  // `--peer` died silently (an unreadable file parses as "no peers"). Invariant 54.
+  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd(), agentStateHome(user));
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
@@ -7893,14 +8064,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     const b = Buffer.from(SYSTEM_DRIVE_SECRET);
     return a.length === b.length && timingSafeEqual(a, b);
   })();
+  // The Telegram bridge, proved the same way (its own secret, same compare).
+  const isTelegramBridge = presentsSecret(req, "x-shadok-bridge", TELEGRAM_BRIDGE_SECRET);
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
   const wsBy = (): SpawnBy =>
     spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent?.name });
   let session: Live | null = null;
-  // Where does this client come from? Declared at `start` (web, cron, telegram,
-  // cli…), it travels with the prompt echo: other clients must be able to SAY
-  // who spoke. Without it, a cron firing looks like a human message.
+  // Where does this client come from (web, cron, telegram, agent, peer, cli…)?
+  // It travels with the prompt echo — other clients must be able to SAY who
+  // spoke — and it decides the header the agent reads, whether `from` is
+  // believed, and whether the prompt is hidden. So it is DERIVED from what the
+  // connection proved (`connectionOrigin`), never taken from the `start` frame:
+  // a browser that declared `origin: "cron"` spoke to the agent unseen, and one
+  // that declared `"telegram"` signed its prompt with any name it liked. The
+  // frame's claim only ever narrows a bare local client to "cli"/"boot".
   let origin: string | undefined;
 
   const send = (msg: object) => {
@@ -8015,7 +8193,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               );
             }
           }
-          if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
+          origin = connectionOrigin(
+            {
+              systemDrive: isSystemDrive,
+              telegramBridge: isTelegramBridge,
+              agent: !!callerAgent,
+              peer: !!callerPeer && !callerAgent,
+              browser: fromBrowser,
+            },
+            msg.origin,
+          );
           const cwd = msg.cwd?.trim() || process.cwd();
           // Deterministic id: enforced with --session-id for a new session,
           // known for a resume. NEVER derive it from the most recent file
@@ -8356,7 +8543,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
-            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
+            spawnActor({ account: me?.name, origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
             dropUser,
             agentGroupId,
           );
@@ -8486,7 +8673,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // browser is not: for a web client the SESSION decides, and whatever
           // `from` the frame carried is discarded. An agent is not trusted
           // either: its name comes from the key that signed the socket.
-          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name);
+          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name, callerPeer ?? undefined);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -8553,14 +8740,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // A slash command goes in bare: anything ahead of the `/` makes the
             // TUI read it as prose, and the agent never runs the command.
             const command = isSlashCommand(text);
-            if (!command && (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent")) {
+            if (
+              !command &&
+              (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent" || origin === "peer")
+            ) {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header
               // entirely — losing the time and the sender to gain one word.
               // `parsePromptMeta` reads the platform as the first field and the
               // sender as everything past the time, so this widens neither.
-              const platform = msg.voice === true ? `${origin} vocal` : origin;
+              // Only the bridge transcribes voice notes, so only it may say so.
+              const platform = msg.voice === true && origin === "telegram" ? `${origin} vocal` : origin;
               // An agent header ends with the sender's REPLY ADDRESS — its short
               // session id — because a name is not an address: nothing makes tab
               // names unique and every tool takes an id, so naming the sender was
@@ -8569,7 +8760,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // rather than guessing). It is stripped back out by
               // `parsePromptMeta`, so it never reaches the chat.
               const ref = origin === "agent" ? callerAgent?.id.slice(0, 8) : undefined;
-              submitText = markPromptMeta(
+              // ALWAYS the server's header, and the person's text neutralised
+              // beneath it: a header-, ledger- or mark-shaped line they typed
+              // stays text and can never pass for one the server wrote.
+              submitText = markHumanPrompt(
                 text,
                 promptMetaHeader(platform, new Date(), author, defaultTimeZone(), ref),
               );
@@ -9305,7 +9499,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).

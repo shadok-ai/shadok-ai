@@ -1,7 +1,43 @@
 import { isCronPrompt } from "./crons.js";
 import { isAgentPrompt } from "./kinship.js";
-import { stripPromptMeta, parsePromptMeta } from "./promptmeta.js";
-import { stripLedgerBlock } from "./ledger.js";
+import { stripPromptMeta, parsePromptMeta, hasPromptMeta, markPromptMeta } from "./promptmeta.js";
+import { stripLedgerBlock, hasLedgerBlock } from "./ledger.js";
+
+/** What a neutralised line is prefixed with. A visible backslash rather than an
+ *  invisible character: the agent and the person replaying it both see that
+ *  the line was typed, not stamped by the server. */
+export const FORGED_ESCAPE = "\\";
+
+/** Would this line be read as something only the SERVER writes — a context
+ *  header, a ledger block, a cron fire, a parent notification? */
+function looksServerWritten(line: string): boolean {
+  const l = line.trimStart();
+  return hasPromptMeta(l) || hasLedgerBlock(l) || isCronPrompt(l) || isAgentPrompt(l);
+}
+
+/**
+ * Escape every line of HUMAN text that is shaped like a server-written mark, so
+ * it reaches the agent (and the replay) as plain text and never as a header, a
+ * ledger delta or a hiding mark. Every line, not only the first: the server's
+ * header now always comes first, so a forged one can only sit lower — where the
+ * parsers ignore it but an agent reading the prompt would not.
+ *
+ * Narrow on purpose: Telegram's own scaffolding (`⟦replying to …⟧ "…"`,
+ * `⟦heard in the video⟧ …`) opens with ⟦ too, but is not header-shaped (it does
+ * not END with ⟧ / carry " · "), so it is left alone. Pure.
+ */
+export function neutralizeForgedLines(text: string): string {
+  return text
+    .split("\n")
+    .map((l) => (looksServerWritten(l) ? FORGED_ESCAPE + l : l))
+    .join("\n");
+}
+
+/** A human prompt as the TUI receives it: the server's own header first, the
+ *  person's text neutralised beneath it. The one way a header is put on. */
+export function markHumanPrompt(text: string, header: string): string {
+  return markPromptMeta(neutralizeForgedLines(text), header);
+}
 
 /**
  * The text of a transcript line IF it is a real human prompt, else null.
