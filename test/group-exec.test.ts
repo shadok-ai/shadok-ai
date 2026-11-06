@@ -219,3 +219,34 @@ test("cronCheckAllowed: repointing an own guarded cron at a sibling is refused",
   const existing = { sessionId: "me", check: "env" };
   assert.equal(cronCheckAllowed({ agentId: "me", targetId: "sib", check: "env", existing }), false);
 });
+
+test("cronCheckEnv: the guard gets the TARGET agent's own peers registry", () => {
+  // Leaving it out is what forced a production dispatch loop to hard-code a path
+  // under /root that the drop user could not read (invariant 54).
+  const env = cronCheckEnv({
+    base: serverEnv,
+    secrets: {},
+    session: { ...session, peersFile: "/home/main/.shadok-ai/peers-out/-workspace.json" },
+    user: "main",
+    home: "/home/main",
+  });
+  assert.equal(env.SHADOK_PEERS_FILE, "/home/main/.shadok-ai/peers-out/-workspace.json");
+});
+
+test("cronCheckEnv: no peers file given → the name is absent, never an empty string", () => {
+  // pilotctl trims it and falls back to its own default; "" would read as a
+  // configured path of nothing and break that fallback.
+  const env = cronCheckEnv({ base: serverEnv, secrets: {}, session, user: "main", home: "/home/main" });
+  assert.equal("SHADOK_PEERS_FILE" in env, false);
+});
+
+test("cronCheckEnv: a secret cannot spoof the peers registry either", () => {
+  const env = cronCheckEnv({
+    base: serverEnv,
+    secrets: { SHADOK_PEERS_FILE: "/tmp/mine.json" },
+    session: { ...session, peersFile: "/home/main/.shadok-ai/peers-out/-workspace.json" },
+    user: "main",
+    home: "/home/main",
+  });
+  assert.equal(env.SHADOK_PEERS_FILE, "/home/main/.shadok-ai/peers-out/-workspace.json");
+});
