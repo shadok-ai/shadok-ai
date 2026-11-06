@@ -44,7 +44,7 @@ Its environment is otherwise SMALL on purpose: `PATH`, the locale and time
 zone, proxy/CA settings, and `SHADOK_SESSION_ID` / `SHADOK_PORT` /
 `SHADOK_SESSION_KEY` (send the key as `x-shadok-session-key` to call the local
 API). Nothing else from the server's environment reaches it — no token, no
-password, no `SHADOK_AUTH`. A credential the check needs goes in the profile.
+password, no cookie. A credential the check needs goes in the profile.
 
 You can only schedule on an agent you may drive: on a multi-tenant instance,
 yourself, a sibling of your own group, or a shared (public) agent.
