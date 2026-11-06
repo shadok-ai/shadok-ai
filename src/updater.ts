@@ -173,7 +173,7 @@ export async function installInto(appDir: string, version: string, deps: Install
  * picked `latest` over `alpha`); re-resolving a tag here could install a
  * different build than the one we decided to move to, and on alpha it could
  * silently undo that choice. Transitive versions are pinned by the
- * npm-shrinkwrap.json the package is published with (publish.yml).
+ * npm-shrinkwrap.json the package is published with (`prepublishOnly`).
  */
 async function npmInstallVersion(version: string): Promise<void> {
   fs.mkdirSync(path.dirname(APP_DIR), { recursive: true });

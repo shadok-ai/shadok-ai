@@ -116,13 +116,16 @@ test("a failed native build leaves the running install untouched", async () => {
 test("the published package carries its lockfile as npm-shrinkwrap.json", () => {
   // npm honours a dependency's npm-shrinkwrap.json (never its package-lock),
   // so this is what pins every transitive version + integrity hash on the
-  // instances that install us. Two halves, both needed: CI creates it, and
+  // instances that install us. Two halves, both needed: `prepublishOnly`
+  // creates it from the lockfile CI just tested (it runs inside `npm publish`,
+  // after publish.yml's `npm version`, before the tarball is packed), and
   // `files` lets it into the tarball (npm does not add it on its own).
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   assert.ok(pkg.files.includes("npm-shrinkwrap.json"));
+  const pre: string = pkg.scripts.prepublishOnly;
+  assert.match(pre, /npm shrinkwrap/);
+  assert.match(pre, /accessSync\('npm-shrinkwrap\.json'\)/, "publishing without it must fail, not ship unpinned");
+  // And the publish must not skip that script.
   const wf = fs.readFileSync(path.join(ROOT, ".github", "workflows", "publish.yml"), "utf8");
-  const shrink = wf.indexOf("npm shrinkwrap");
-  assert.ok(shrink > 0, "publish.yml must run npm shrinkwrap");
-  assert.ok(shrink > wf.indexOf("npm version \"$V\""), "after the version bump, so the lock carries it");
-  assert.ok(shrink < wf.lastIndexOf("npm publish"), "before publishing");
+  assert.doesNotMatch(wf, /npm publish[^\n]*--ignore-scripts/);
 });
