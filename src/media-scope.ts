@@ -18,7 +18,7 @@ import { MAIN_GROUP_ID } from "./groups.js";
  * group's OS user's group>, mode 2750. Only root writes there; only that
  * group's user (and root) reads. Mono-tenant keeps its single flat directory.
  *
- * Invariant 58.
+ * Invariant 60.
  */
 
 /** Prefix of a group media subdirectory; a flat (legacy / mono) file never
