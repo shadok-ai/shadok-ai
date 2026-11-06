@@ -7,7 +7,7 @@
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run build && npm shrinkwrap && node -e \"require('fs').accessSync('npm-shrinkwrap.json')\"",
     "web": "node dist/server.js"
   },
   "keywords": [
@@ -36,7 +36,8 @@
   "files": [
     "dist",
     "public",
-    "context"
+    "context",
+    "npm-shrinkwrap.json"
   ],
   "dependencies": {
     "@simplewebauthn/browser": "^14.0.0",
