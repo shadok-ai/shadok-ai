@@ -171,6 +171,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/profiles.ts` | Agent profiles (GLOBAL, `~/.shadok-ai/profiles.json` 600; deliberately deleted starter roles are remembered in `profiles-declined.json` — the seed installs the shipped roles a vault is MISSING, including ones a later release added, so it must not resurrect what you removed): role (`--append-system-prompt`) + permission guardrails (`--settings` deny/allow) + secrets + model, applied at spawn via `profileArgs`. `resolveSpawnModel` is the model precedence (agent's choice → profile's pinned → instance default) — the instance default is passed EXPLICITLY only for a privilege-DROPPED agent, which reads its own home's `settings.json` (no model seeded there) and would otherwise fall back to the CLI's Sonnet default; a root/mono agent reads the server `settings.json` itself and gets no forced flag. |
 | `src/oauth-relay.ts` | Finish an OAuth sign-in whose redirect lands on an agent's `localhost:PORT` from a browser on another machine: `POST /oauth-relay` (browser-only) GETs the pasted address from the cockpit. |
 | `src/peers.ts` | PEERS — other instances allowed to reach this one's agents, the cross-instance twin of a web account. |
+| `src/route-guards.ts` | Per-route AUTHORIZATION verdicts, pure: who may write profiles (`profileWriteRefusal` — admin-only in multi-tenant), delete one, change an agent's profile (`setProfileRefusal` — a person, never an agent), restart every agent (`restartAllPlan`), overwrite/delete a mono-tenant secret; and the MCP value masking of `GET /profiles`. See invariant 58. |
 | `src/accounts.ts` | Web accounts, PER INSTANCE (`~/.shadok-ai/users/<key>.json`, 600): roles (`admin`/`member`), salted scrypt hashes, single-use invitations, and the signed session token. |
 | `src/twofactor.ts` | Two-factor sign-in with a passkey (WebAuthn via `@simplewebauthn/server`), opt-in per instance (`config.twoFactor[<cwd>]`, `twoFactorForCwd`). |
 | `src/security-events.ts` | The Security panel's event log — 2FA v2's notification channel while no mail sender exists. |
@@ -320,6 +321,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **55.** Exactly ONE `Live` per agent — a resume that can't attach must HAND OVER the old viewers, not orphan them. · [detail](docs/invariants.md#inv-59)
 - **56.** A refreshable login credential is single-owner — share it only within one OS user, never across users. · [detail](docs/invariants.md#inv-60)
 - **57.** A machine-wide seeded script may be NEWER than the server it calls — tolerate the skew, and don't re-seed from a side-by-side build. · [detail](docs/invariants.md#inv-61)
+- **58.** An instance-wide or cross-group write is an AUTHORIZATION decision, not just an authentication one — and a filtered READ needs a matching WRITE. · [detail](docs/invariants.md#inv-62)
 
 ## Conventions
 

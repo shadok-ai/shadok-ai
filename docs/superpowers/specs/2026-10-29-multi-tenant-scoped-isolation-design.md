@@ -565,11 +565,15 @@ server-owned file, since the OS wall + env-injection already isolate.
 - **[DECIDED] Write permission** follows group membership: a group's own secrets
   are writable by its **members**; a **private** group's, by its single owner
   only; **`Main`**'s, by an **`admin`** only (a house key is an admin act).
-  An **`admin`** may manage any **restricted** group's secrets (consistent with
-  admin reach over restricted member lists), but **never a private group's** (no
-  break-glass, per the visibility section). **Only the owner group's members (or
-  an admin, for a restricted/`Main` group) may change a secret's share list** — a
-  shared-in group cannot re-share onward.
+  ~~An **`admin`** may manage any **restricted** group's secrets (consistent with
+  admin reach over restricted member lists)~~ — **[REVERSED 2026-11-06]**, the
+  secret half of the 2026-11-03 reversal: an admin who is not a member of a
+  restricted group may not write its secrets either (`canWriteSecretGroup`).
+  An admin never manages a private group's (no break-glass, per the visibility
+  section). **Only the owner group's members (or an admin, for `Main` / another
+  public group) may change a secret's share list** — a shared-in group cannot
+  re-share onward. An AGENT writes its own channel's group by derivation
+  (`secretWriteDecision`), whatever its principal.
 - **[DECIDED] Audit, per secret: `createdBy` / `createdAt` / `updatedAt`.** The
   panel shows who added a secret and when, and when it was last changed. Values
   are **never re-displayed** after entry (write-only field, as today).
