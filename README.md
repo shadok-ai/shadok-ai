@@ -349,7 +349,7 @@ Enter to skip; you can add it later from the web UI).
   **You don't have to click it**: the cockpit applies it by itself as soon as the
   agent has nothing to lose — no turn running, no question waiting, nothing in
   its input box, no background shell or monitor, no child notification queued —
-  and has been quiet for two minutes (the badge then reads *applies when idle*).
+  and has been quiet for two minutes (the ↻ tooltip then says so).
   One agent at a time, no nudge afterwards, and at most once per 30 minutes per
   agent so a change that does not stick cannot loop. A message you send while
   the respawn runs waits a few seconds for it instead of being refused. Clicking

@@ -4633,9 +4633,16 @@
     btn.disabled = false;
     btn.hidden = !info.needs;
     if (!info.needs) return;
-    btn.textContent = info.install ? "⤓ install update" : info.auto ? "↻ applies when idle" : "↻ reload to apply";
-    btn.title = (info.reasons.join(" · ") || "Reload this agent to apply changes") +
-      (info.auto ? " — the agent reloads by itself once it has nothing running; click to reload now" : "");
+    // Just the glyph: the WHY lives in the tooltip (what changed, and whether
+    // it applies by itself once the agent is idle).
+    btn.textContent = info.install ? "⤓ install update" : "↻";
+    const why = (info.reasons.length ? info.reasons.join("\n") : "This agent's settings changed since it started");
+    btn.title = info.install
+      ? why
+      : why + "\n\n" + (info.auto
+        ? "It reloads by itself (history kept) once it has nothing running and has been idle a moment. Click to reload now."
+        : "Click to reload it (history kept).");
+    btn.setAttribute("aria-label", info.install ? "Install update then reload" : "Reload to apply changes");
     btn.classList.toggle("failed", info.install);
   }
   /** The badge/button click: reload the agent, or install then reload. */
