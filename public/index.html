@@ -2696,7 +2696,7 @@
     color: #fff; font-size: 12px; font-weight: 600; letter-spacing: 0;
   }
   .tav .led { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; margin: 0; border: 2px solid var(--bg); }
-  .ab-txt, .ct-txt { display: none; }
+  .ab-txt { display: none; }
   @media (max-width: 640px) {
     /* A phone's single header row has no room for the mark beside the name,
        the version and the dials; the favicon carries it there. */
@@ -2762,11 +2762,10 @@
     content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--amber);
   }
   #chanBar .chan-actions { align-self: stretch; }
-  #chanBar .chan-actions .ct-txt { display: inline; }
-  #chanBar .chan-actions #chanStop, #chanBar .chan-actions #chanMenu { align-self: center; }
+  #chanBar .chan-actions #chanMenu { align-self: center; }
   @media (max-width: 640px) {
     #chanBar { min-height: 0; padding: 8px 12px; }
-    #chanBar .tav, #chanBar .chan-actions .ct-txt { display: none; }
+    #chanBar .tav { display: none; }
   }
 
   /* Messages: Teams bubbles. */
@@ -3678,9 +3677,9 @@
       <span class="chan-actions">
         <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
         <button id="chanGallery" class="icon" title="Media gallery — every photo and video in this conversation" aria-label="Media gallery"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8.5" cy="9.5" r="1.4" fill="currentColor"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ct-txt">Schedule</span></button>
-        <button id="chanStop" class="icon stop" title="End session" aria-label="End session"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 4v7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8.5 6.8a6 6 0 1 0 7 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
-        <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ct-txt">Terminal</span></button>
+        <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <!-- No end-session icon here: "✕ Close agent" lives in the ⋯ menu below. -->
+        <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <!-- The per-agent menu (rename, profile, mirror, report to, close). It's
              the same menu a right-click / long-press on a tab opens — but with the
              sidebar hidden on a phone there was no way to reach it, so it lives
@@ -6810,10 +6809,9 @@
       $("chanBar").hidden = true;
       thinking.classList.remove("visible");
       screenEl.textContent = "";
-      // Scheduling or stopping has no target: better dimmed buttons than a popin
-      // talking about an agent that does not exist.
+      // Scheduling has no target: better a dimmed button than a popin talking
+      // about an agent that does not exist.
       $("chanCron").disabled = true;
-      $("chanStop").disabled = true;
       $("chanGallery").disabled = true;
       closeGallery(); // no agent → its media grid is stale; don't leave it up
       paintChanUpdate();
@@ -6827,7 +6825,6 @@
     $("emptyState").classList.remove("visible");
     $("startingState").classList.remove("visible");
     $("chanCron").disabled = !t.sessionId;
-    $("chanStop").disabled = false;
     $("chanGallery").disabled = !t.sessionId;
     paintChanUpdate();
     $("led").className = "led " +
@@ -10110,10 +10107,7 @@
   });
   $("chanUpdate").addEventListener("click", () => { if (active) handleClaudeUpdate(active); });
   $("chanCron").addEventListener("click", () => { $("cronOverlay").hidden = false; renderCrons(); });
-  $("chanStop").addEventListener("click", () => {
-    if (!active || !confirmEndAgent(active)) return;
-    sendTo(active, { type: "stop" });
-  });
+  // Ending an agent lives only in the ⋯ menu ("✕ Close agent") — no bar icon.
   // The per-agent menu, opened from the channel header — the same one a
   // right-click / long-press on a tab shows. stopPropagation so the document
   // click closer (which runs openTabMenu's own guard) doesn't fire for this
