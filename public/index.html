@@ -4578,10 +4578,15 @@
     if (act === "reload") reasons.push("Claude Code updated — reload to apply");
     if (act === "install") reasons.push("Claude Code auto-update failed — install then reload");
     for (const r of stale) reasons.push(r.label);
-    return { needs: !!act || stale.length > 0, install: act === "install", reasons };
+    // `auto`: the server applies it by itself once the agent is idle (nothing
+    // running, no question, empty input box) — only a failed install still
+    // needs a human.
+    const auto = !!tab.staleAuto && act !== "install";
+    return { needs: !!act || stale.length > 0, install: act === "install", auto, reasons };
   }
   /** The server reported this agent's staleness → store and repaint. */
-  function setStaleReasons(tab, reasons) {
+  function setStaleReasons(tab, reasons, auto) {
+    tab.staleAuto = !!auto;
     const list = Array.isArray(reasons) ? reasons : [];
     const sig = JSON.stringify(list);
     if ((tab.staleSig || "[]") === sig) return;
@@ -4614,7 +4619,8 @@
     // anything that just needs a reload reads as the green update glyph.
     el.textContent = info.install ? "⚠" : "↻";
     el.classList.toggle("failed", info.install);
-    el.title = (info.reasons.join(" · ") || "Reload this agent to apply changes") + " — click to reload";
+    el.title = (info.reasons.join(" · ") || "Reload this agent to apply changes") +
+      (info.auto ? " — applies by itself once this agent is idle; click to reload now" : " — click to reload");
   }
   function paintChanUpdate() {
     const btn = $("chanUpdate");
@@ -4627,8 +4633,9 @@
     btn.disabled = false;
     btn.hidden = !info.needs;
     if (!info.needs) return;
-    btn.textContent = info.install ? "⤓ install update" : "↻ reload to apply";
-    btn.title = info.reasons.join(" · ") || "Reload this agent to apply changes";
+    btn.textContent = info.install ? "⤓ install update" : info.auto ? "↻ applies when idle" : "↻ reload to apply";
+    btn.title = (info.reasons.join(" · ") || "Reload this agent to apply changes") +
+      (info.auto ? " — the agent reloads by itself once it has nothing running; click to reload now" : "");
     btn.classList.toggle("failed", info.install);
   }
   /** The badge/button click: reload the agent, or install then reload. */
@@ -8926,7 +8933,7 @@
         // the honest UX so the user isn't silently driving the wrong instance.)
         if (window.serverSwapped(instanceKey, msg.instanceKey)) { handleSwap(); break; }
         if (Array.isArray(msg.preprompt)) renderPreprompt(t, msg.preprompt);
-        if (Array.isArray(msg.stale)) setStaleReasons(t, msg.stale);
+        if (Array.isArray(msg.stale)) setStaleReasons(t, msg.stale, msg.staleAuto);
         t.cwd = msg.cwd;
         t.sessionId = msg.sessionId;
         t.branch = msg.branch || null;
@@ -9189,7 +9196,7 @@
         // spawn would give it (prompt/guardrails/skills/secrets, auth age,
         // claude binary) — drives the same per-agent reload badge + the
         // version-menu "reload N agents" count.
-        setStaleReasons(t, msg.reasons);
+        setStaleReasons(t, msg.reasons, msg.auto);
         break;
       case "term-data":
         // Experimental raw terminal: bytes from the pane (base64) → xterm.

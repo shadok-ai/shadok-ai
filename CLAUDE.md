@@ -136,6 +136,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `Dockerfile` | The official image (README "Running in Docker"): Claude Code + shadok-ai + a bundled headless browser (Playwright Chromium at `/opt/playwright-browsers`, `--with-deps` so the OS libs are present), plus `git`/`gh`/`tmux`/toolchain. |
 | `src/open-browser.ts` | Opens the cockpit on launch. Done by the SERVER, not the supervisor, because only it knows the port the walk landed on (`START_PORT` is where the walk BEGINS). |
 | `src/preprompt.ts` | Pure `prepromptParts` — what shadok adds to an agent's context, as labelled sections with their source. |
+| `src/auto-reload.ts` | Pure `autoReloadVerdict` — applies a pending "reload to apply" by itself, only when the respawn would cut nothing (idle, no dialog, empty input box, no background task/queued notification, quiet 2 min, 30-min backoff). |
 | `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). |
 | `src/net.ts` | Where we listen and who may speak: `resolveHost` (`SHADOK_HOST`, loopback by default), `bindRefusal` (fail-closed: no network bind without a password), `originAllowed` (same-origin, see invariant 11). |
 | `src/heartbeat.ts` | Keeps idle `/ws` connections alive behind a reverse proxy: an idle agent sends no traffic, so a proxy (nginx `proxy_read_timeout` 60s, Cloudflare ~100s) cuts the socket and the client loops on "reconnecting" — with nothing actually broken. |

@@ -346,8 +346,14 @@ Enter to skip; you can add it later from the web UI).
   a profile edit that bumped no version still does. A `↻` lights up on the agent
   (hover for the reasons) and the **version menu** shows *Reload N agents to
   apply changes*; a reload respawns each one in place, keeping its history.
-  Agents started before a given update stay on the old context until reloaded —
-  this is how you spot the ones still running it.
+  **You don't have to click it**: the cockpit applies it by itself as soon as the
+  agent has nothing to lose — no turn running, no question waiting, nothing in
+  its input box, no background shell or monitor, no child notification queued —
+  and has been quiet for two minutes (the badge then reads *applies when idle*).
+  One agent at a time, no nudge afterwards, and at most once per 30 minutes per
+  agent so a change that does not stick cannot loop. A message you send while
+  the respawn runs waits a few seconds for it instead of being refused. Clicking
+  still reloads at once; `SHADOK_AUTO_RELOAD=0` turns the automatic part off.
 - **Phone layout** — the cockpit is a fixed chassis that never pans sideways,
   sized on the *visual* viewport so the composer stays clear of the browser's
   own bar and, when the keyboard opens, sits right above it (the instrument bar
@@ -931,6 +937,8 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_ORIGINS` | extra browser origins allowed, comma-separated (reverse proxy) |
 | `SHADOK_TMUX=0` | force the node-pty transport instead of tmux |
 | `SHADOK_IDLE_MIN` | minutes with no client before a session is reclaimed (60) |
+| `SHADOK_AUTO_RELOAD=0` | don't apply a pending "reload to apply" by itself — leave it to the ↻ click |
+| `SHADOK_AUTO_RELOAD_IDLE_SEC` | how long an agent must be quiet before that automatic reload (120) |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
