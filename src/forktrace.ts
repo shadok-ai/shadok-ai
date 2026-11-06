@@ -119,6 +119,16 @@ export function detectFork(
    *  the tail to a dead one for good — nothing streamed, the chat was silent
    *  live and perfect on every reload, and no restart could recover it. */
   ownId?: string,
+  /** Directories to search for the fork. Defaults to the frozen file's OWN
+   *  directory — but a fork does NOT always land there. Claude Code derives the
+   *  project dir from the cwd it is LAUNCHED with, so a session created in a
+   *  worktree and later resumed at the repo root (the worktree pruned) writes
+   *  its context-overflow continuation under a DIFFERENT project dir. Scanning
+   *  one directory is then blind to it — the exact freeze this followed. The
+   *  caller passes every project dir so the lineage is found wherever it landed;
+   *  the root-match still keeps a sibling's transcript from being adopted, so
+   *  widening the search cannot mis-attribute across the boundary. */
+  searchDirs?: readonly string[],
 ): string | null {
   let myMtime: number;
   try {
@@ -126,26 +136,28 @@ export function detectFork(
   } catch {
     return null; // our own file vanished — nothing to reason about
   }
-  const dir = path.dirname(myFile);
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return null;
-  }
+  const dirs = searchDirs ?? [path.dirname(myFile)];
   const candidates: { id: string; mtime: number; root: string | null }[] = [];
-  for (const name of names) {
-    const id = idFromTranscriptName(name);
-    if (!id || id === tailId || (seen.has(id) && id !== ownId)) continue;
-    const f = path.join(dir, name);
-    let mtime: number;
+  for (const dir of dirs) {
+    let names: string[];
     try {
-      mtime = fs.statSync(f).mtimeMs;
+      names = fs.readdirSync(dir);
     } catch {
-      continue; // vanished mid-scan
+      continue; // a listed dir that vanished/denied — skip, don't abort the scan
     }
-    if (mtime <= myMtime) continue; // the fork is newer than the frozen file
-    candidates.push({ id, mtime, root: rootIdOfFile(f) });
+    for (const name of names) {
+      const id = idFromTranscriptName(name);
+      if (!id || id === tailId || (seen.has(id) && id !== ownId)) continue;
+      const f = path.join(dir, name);
+      let mtime: number;
+      try {
+        mtime = fs.statSync(f).mtimeMs;
+      } catch {
+        continue; // vanished mid-scan
+      }
+      if (mtime <= myMtime) continue; // the fork is newer than the frozen file
+      candidates.push({ id, mtime, root: rootIdOfFile(f) });
+    }
   }
   return forkTarget(candidates, tailId, myRoot);
 }
