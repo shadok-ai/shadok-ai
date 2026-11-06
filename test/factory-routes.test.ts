@@ -1,0 +1,127 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import type { AddressInfo } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import express from "express";
+import type { Channel } from "../src/channels.js";
+import { mountFactory, type FactoryDeps } from "../src/factory-routes.js";
+import { loadRegistry, saveFile } from "../src/factory.js";
+
+/**
+ * The factory's HTTP gates against stub server helpers: who may act as a
+ * person, on which agents, and what an acceptance grants. Two "tenants": the
+ * browser (alice) may drive agents of `main` only; `hr-agent` is in `g-hr`.
+ */
+async function harness(t: test.TestContext) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factory-routes-"));
+  const prev = process.env.SHADOK_FACTORY_DIR;
+  process.env.SHADOK_FACTORY_DIR = dir;
+  let channels: Channel[] = [
+    { sessionId: "main-agent-0000", name: "mine", group: null } as unknown as Channel,
+    { sessionId: "hr-agent-000000", name: "theirs", group: "g-hr" } as unknown as Channel,
+    { sessionId: "smith-agent-000", name: "smith", group: "g-hr", profile: "Shadok-Skillsmith" } as unknown as Channel,
+  ];
+  const keys: Record<string, string> = { "key-smith": "smith-agent-000" };
+  const deps: FactoryDeps = {
+    requestFromBrowser: (req) => req.headers.origin === "http://cockpit",
+    personName: () => "alice",
+    requireAdmin: () => ({}),
+    callerOf: (req) => {
+      const id = keys[String(req.headers["x-shadok-session-key"] ?? "")] ?? null;
+      return { id, profile: id ? channels.find((c) => c.sessionId === id)?.profile ?? null : null };
+    },
+    vault: () => ({ HR_DB_PASSWORD: "hr-very-secret-value" }),
+    mayDrive: (_req, id) => (channels.find((c) => c.sessionId === id)?.group ?? null) === null,
+    agentGroup: (id) => channels.find((c) => c.sessionId === id)?.group ?? "main",
+    personGroup: () => "main",
+    mayActForGroup: (_req, g) => g === "main",
+    tenantGroup: (g) => g ?? "main",
+    loadChannels: () => channels,
+    upsertChannel: (patch) => {
+      channels = channels.map((c) => (c.sessionId === patch.sessionId ? { ...c, ...patch } : c));
+    },
+    onAttachmentsChanged: () => {},
+    prune: () => {},
+    reloadIfIdle: () => "offline",
+    agentMcp: () => [],
+    groups: () => [{ id: "main" }, { id: "g-hr" }],
+    workspaceFor: () => ({ home: dir, user: null, group: null }),
+    cronsOf: () => [{ label: "daily", prompt: "secret plan" }],
+    audit: () => {},
+  };
+  const app = express();
+  app.use(express.json());
+  mountFactory(app, deps);
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((r) => server.once("listening", r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  t.after(() => {
+    server.close();
+    if (prev === undefined) delete process.env.SHADOK_FACTORY_DIR;
+    else process.env.SHADOK_FACTORY_DIR = prev;
+    try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch {}
+  });
+  const call = async (method: string, url: string, body?: unknown, headers: Record<string, string> = {}) => {
+    const r = await fetch(base + url, {
+      method,
+      headers: { origin: "http://cockpit", ...(body ? { "content-type": "application/json" } : {}), ...headers },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: r.status, body: (await r.json().catch(() => null)) as any };
+  };
+  return { dir, call, channels: () => channels };
+}
+
+test("routes: a person's action carrying an agent key or a peer token is refused, Origin or not", async (t) => {
+  const h = await harness(t);
+  const made = await h.call("POST", "/factory/skills", { title: "Payroll export" });
+  assert.equal(made.status, 200);
+  const id = made.body.skill.id;
+  for (const headers of [{ "x-shadok-session-key": "key-smith" }, { "x-shadok-session-key": "garbage" }, { "x-shadok-peer": "tok" }]) {
+    assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, {}, headers)).status, 403);
+    assert.equal((await h.call("DELETE", `/factory/skills/${id}`, undefined, headers)).status, 403);
+    assert.equal((await h.call("PUT", `/factory/skills/${id}/file`, { path: "a.md", content: "x" }, headers)).status, 403);
+    assert.equal((await h.call("POST", "/factory/attach", { sessionId: "main-agent-0000", skill: id, release: 1 }, headers)).status, 403);
+  }
+  // The `key` body field is a credential too.
+  assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, { key: "key-smith" })).status, 403);
+});
+
+test("routes: publishing a release that asks for secrets needs them approved BY NAME", async (t) => {
+  const h = await harness(t);
+  const id = (await h.call("POST", "/factory/skills", { title: "HR report" })).body.skill.id;
+  saveFile(h.dir, id, {
+    path: "shadok-skill.json",
+    content: JSON.stringify({ name: "hr-report", requires: { secrets: ["HR_DB_PASSWORD"] } }),
+    base: null, by: "x", secrets: [],
+  });
+  const first = await h.call("POST", `/factory/skills/${id}/publish`, {});
+  assert.equal(first.status, 409);
+  assert.deepEqual(first.body.needsApproval, ["HR_DB_PASSWORD"]);
+  assert.equal(loadRegistry(h.dir).skills[0].acceptances.length, 0);
+  const ok = await h.call("POST", `/factory/skills/${id}/publish`, { approveSecrets: ["HR_DB_PASSWORD", "EXTRA"] });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(loadRegistry(h.dir).skills[0].acceptances[0].secrets, ["HR_DB_PASSWORD"]);
+});
+
+test("routes: attach needs the right to drive the target; the listing shows only drivable agents", async (t) => {
+  const h = await harness(t);
+  const id = (await h.call("POST", "/factory/skills", { title: "Notes" })).body.skill.id;
+  assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, {})).status, 200);
+  const foreign = await h.call("POST", "/factory/attach", { sessionId: "hr-agent-000000", skill: id, release: 1 });
+  assert.equal(foreign.status, 404);
+  assert.equal(h.channels().find((c) => c.sessionId === "hr-agent-000000")!.skills, undefined);
+  assert.equal((await h.call("POST", "/factory/attach", { sessionId: "main-agent-0000", skill: id, release: 1 })).status, 200);
+  const list = await h.call("GET", "/factory/skills");
+  assert.deepEqual(list.body.agents.map((a: { sessionId: string }) => a.sessionId), ["main-agent-0000"]);
+});
+
+test("routes: a Skillsmith of a group that is not an editor cannot push", async (t) => {
+  const h = await harness(t);
+  const id = (await h.call("POST", "/factory/skills", { title: "Main only" })).body.skill.id;
+  const push = await h.call("POST", `/factory/skills/${id}/push`, undefined, { "x-shadok-session-key": "key-smith", "content-type": "application/octet-stream" });
+  assert.equal(push.status, 403);
+  assert.match(push.body.error, /not editable by agents of g-hr/);
+});

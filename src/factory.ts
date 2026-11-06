@@ -140,6 +140,15 @@ export interface Acceptance {
   tree: string;
   by: string;
   at: number;
+  /**
+   * The secret NAMES the accepting person explicitly approved for this group
+   * (a subset of the release's `secrets`). What an attached agent receives is
+   * this list, never the manifest's: a manifest is written by whoever pushed,
+   * and it can name any vault entry. Absent on an acceptance recorded before
+   * the field existed — those were made on a screen listing every name, so they
+   * keep granting the release's whole list (`approvedSecrets`).
+   */
+  secrets?: string[];
 }
 
 export interface FactorySkill {
@@ -188,6 +197,65 @@ export class FactoryError extends Error {
     super(message);
   }
 }
+
+/** The acceptance of release `rel` for `group`, if a person of that group gave one. Pure. */
+export function acceptanceFor(skill: FactorySkill, rel: Release, group: string): Acceptance | undefined {
+  return skill.acceptances.find((a) => a.group === group && a.release === rel.n && a.tree === rel.tree);
+}
+
+/** Has release `rel` been accepted (for any group)? Pure. */
+export function acceptedAnywhere(skill: FactorySkill, rel: Release): boolean {
+  return skill.acceptances.some((a) => a.release === rel.n && a.tree === rel.tree);
+}
+
+/** Is this skill shared with `group`? `main` in users/editors means everyone. Pure. */
+export function sharedWith(skill: FactorySkill, group: string): boolean {
+  return [...skill.users, ...skill.editors].some((g) => g === group || g === MAIN_GROUP);
+}
+
+/**
+ * The secret names an acceptance really grants: the release's list narrowed to
+ * what the person approved. Never more than the release asks for. Pure.
+ */
+export function approvedSecrets(rel: Release, acc: Acceptance | undefined): string[] {
+  if (!acc) return [];
+  const asked = rel.secrets ?? [];
+  if (!Array.isArray(acc.secrets)) return [...asked]; // legacy acceptance, see `Acceptance.secrets`
+  return asked.filter((n) => acc.secrets!.includes(n));
+}
+
+/**
+ * Validate a person's approval list against the release: the names they ticked,
+ * kept only if the release really asks for them. `undefined` = they were not
+ * asked yet, which a caller turns into a 409 listing the names. Pure.
+ */
+export function approvalFrom(rel: Release, raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return (rel.secrets ?? []).length ? undefined : [];
+  if (!Array.isArray(raw)) return undefined;
+  return (rel.secrets ?? []).filter((n) => raw.includes(n));
+}
+
+/** Git tree modes a skill may hold: plain files, executables, directories. */
+const SAFE_MODES = new Set(["100644", "100755", "040000"]);
+
+/**
+ * Every entry of a commit whose mode is not a plain file or directory — a
+ * symlink (120000), a gitlink (160000). A symlink in a skill is how a push
+ * would reach outside it: materialised, `SKILL.md -> /etc/shadow` is readable
+ * by every attached agent, and the read-only chmod that follows would land on
+ * the TARGET. Refused at push and re-checked before a release is materialised.
+ */
+export function unsafeEntries(gitDir: string, rev: string): { path: string; mode: string }[] {
+  const out: { path: string; mode: string }[] = [];
+  for (const line of gitText(gitDir, ["ls-tree", "-r", "-t", "-z", rev]).split("\0")) {
+    if (!line) continue;
+    const tab = line.indexOf("\t");
+    const mode = line.slice(0, line.indexOf(" "));
+    if (!SAFE_MODES.has(mode)) out.push({ path: line.slice(tab + 1), mode });
+  }
+  return out;
+}
+const modeName = (m: string) => (m === "120000" ? "a symlink" : m === "160000" ? "a submodule" : `mode ${m}`);
 
 /** Where everything lives. Overridable so tests run in a scratch dir. */
 export function factoryRoot(cwd = process.cwd(), home = os.homedir()): string {
@@ -405,7 +473,7 @@ finds its own files from \`$(dirname "$0")\`.)
 
 export function createSkill(
   root: string,
-  input: { name: string; title?: string; description?: string; by: string; owner?: Scope },
+  input: { name: string; title?: string; description?: string; by: string; owner?: Scope; editors?: string[] },
 ): FactorySkill {
   const err = skillNameError(input.name);
   if (err) throw new FactoryError(err);
@@ -423,7 +491,7 @@ export function createSkill(
     ...(input.title?.trim() ? { title: input.title.trim().slice(0, 80) } : {}),
     description,
     owner: input.owner || MAIN_GROUP,
-    editors: [MAIN_GROUP],
+    editors: input.editors?.length ? [...new Set(input.editors)] : [MAIN_GROUP],
     users: [MAIN_GROUP],
     createdBy: input.by,
     createdAt: Date.now(),
@@ -432,6 +500,20 @@ export function createSkill(
   };
   mutate(root, (reg) => reg.skills.push(skill));
   return skill;
+}
+
+/**
+ * Pure: may an agent of `group`, created by `createdBy`, PUSH to this skill?
+ * Its group must be one of the skill's editors (or share it by scope), and a
+ * private skill takes pushes only from its owner's agents. Without this, any
+ * Skillsmith on the machine could rewrite any skill it could see.
+ */
+export function pushVerdict(skill: FactorySkill, agent: { group: string; createdBy?: string | null }): string | null {
+  const u = /^user:(.+)$/.exec(skill.owner ?? "");
+  if (u && (agent.createdBy || DEFAULT_CREATOR) !== u[1]) return `${skill.name} is private to ${u[1]}`;
+  if (skill.editors.includes(agent.group)) return null;
+  if (scopeGroups(skill.owner)?.includes(agent.group)) return null;
+  return `${skill.name} is not editable by agents of ${agent.group}`;
 }
 
 /**
@@ -530,6 +612,14 @@ export function receivePush(
     const pathErrors = files.map((f) => ({ f, e: skillPathError(f.path) })).filter((x) => x.e);
     const scan = scanFiles(files, input.secrets);
     for (const { f, e } of pathErrors) scan.refusals.push({ path: f.path, message: e! });
+    // Paths alone are not enough: a symlink or a gitlink passes every path rule.
+    // Checked on EVERY new commit, like the secrets: the final tree is not the
+    // whole history a later duplicate or tag could expose.
+    const newCommits = gitText(d, ["rev-list", ...range]).split("\n").filter(Boolean);
+    const badModes = new Map<string, string>();
+    for (const c of newCommits) for (const b of unsafeEntries(d, c)) badModes.set(b.path, b.mode);
+    for (const [p, m] of badModes)
+      scan.refusals.push({ path: p, message: `${modeName(m)} is not allowed in a skill — only plain files and directories` });
     // Whole-tree limits (count, total size) apply to the RESULT, not the sum of history.
     const finalScan = scanFiles(readFiles(root, skill.id, incoming), []);
     for (const r of finalScan.refusals) if (r.path === "") scan.refusals.push(r);
@@ -668,13 +758,19 @@ export function cutRelease(
  * A person of `group` accepts release N — its exact tree. Code written by
  * someone else runs in a group only once a person of that group said yes to it.
  */
-export function accept(root: string, idOrName: string, input: { group: string; release: number; by: string }): Acceptance {
+export function accept(
+  root: string,
+  idOrName: string,
+  input: { group: string; release: number; by: string; secrets?: string[] },
+): Acceptance {
   const skill = mustSkill(root, idOrName);
   const rel = skill.releases.find((r) => r.n === input.release);
   if (!rel) throw new FactoryError(`no release v${input.release}`, 404);
-  if (!skill.users.includes(input.group) && !skill.editors.includes(input.group))
-    throw new FactoryError(`${skill.name} is not shared with ${input.group}`, 403);
-  const a: Acceptance = { group: input.group, release: rel.n, tree: rel.tree, by: input.by, at: Date.now() };
+  if (!sharedWith(skill, input.group)) throw new FactoryError(`${skill.name} is not shared with ${input.group}`, 403);
+  // Only names the release asks for, and only those the person approved: an
+  // omitted list approves NONE (fail closed), never "whatever the manifest says".
+  const secrets = (rel.secrets ?? []).filter((n) => (input.secrets ?? []).includes(n));
+  const a: Acceptance = { group: input.group, release: rel.n, tree: rel.tree, by: input.by, at: Date.now(), secrets };
   mutate(root, (reg) => {
     const s = reg.skills.find((x) => x.id === skill.id)!;
     s.acceptances = s.acceptances.filter((x) => !(x.group === a.group && x.release === a.release));
@@ -711,8 +807,11 @@ export function resolveAttachments(
   group: string,
   /** When given, the skill's scope must allow this agent too. */
   agent?: AgentCtx,
-): { ok: { skill: FactorySkill; release: Release }[]; dropped: { skill: string; release: number; reason: string }[] } {
-  const ok: { skill: FactorySkill; release: Release }[] = [];
+): {
+  ok: { skill: FactorySkill; release: Release; secrets: string[] }[];
+  dropped: { skill: string; release: number; reason: string }[];
+} {
+  const ok: { skill: FactorySkill; release: Release; secrets: string[] }[] = [];
   const dropped: { skill: string; release: number; reason: string }[] = [];
   const seen = new Set<string>();
   for (const a of attachments) {
@@ -727,16 +826,17 @@ export function resolveAttachments(
       dropped.push({ ...a, reason: `v${a.release} does not exist` });
       continue;
     }
-    if (!skill.users.includes(group) && !skill.editors.includes(group)) {
+    if (!sharedWith(skill, group)) {
       dropped.push({ ...a, reason: `not shared with ${group}` });
       continue;
     }
-    if (!skill.acceptances.some((x) => x.group === group && x.release === rel.n && x.tree === rel.tree)) {
+    const acc = acceptanceFor(skill, rel, group);
+    if (!acc) {
       dropped.push({ ...a, reason: `v${rel.n} has not been accepted for ${group}` });
       continue;
     }
     seen.add(skill.id);
-    ok.push({ skill, release: rel });
+    ok.push({ skill, release: rel, secrets: approvedSecrets(rel, acc) });
   }
   return { ok, dropped };
 }
@@ -750,25 +850,47 @@ export function resolveAttachments(
 export const pluginDirName = (name: string, rel: { n: number; tree: string }) => `${name}@${rel.n}-${rel.tree.slice(0, 8)}`;
 
 export function materialise(root: string, skill: FactorySkill, rel: Release): string {
+  const d = repoPath(root, skill.id);
+  const tag = `refs/tags/v${rel.n}`;
+  // Defence in depth, BEFORE the "already there" shortcut: a release cut before
+  // pushes were mode-checked may hold a symlink, and its directory may exist.
+  const bad = unsafeEntries(d, tag);
+  if (bad.length) throw new FactoryError(`v${rel.n} holds ${modeName(bad[0].mode)} (${bad[0].path}) — not materialised`, 422);
   const dir = path.join(pluginsDir(root), pluginDirName(skill.name, rel));
   if (fs.existsSync(path.join(dir, ".claude-plugin", "plugin.json"))) return dir;
   const tmp = `${dir}.tmp-${process.pid}-${randomUUID().slice(0, 8)}`;
   const skillDir = path.join(tmp, "skills", skill.name);
   fs.mkdirSync(skillDir, { recursive: true });
   fs.mkdirSync(path.join(tmp, ".claude-plugin"), { recursive: true });
-  const tar = git(repoPath(root, skill.id), ["archive", "--format=tar", `refs/tags/v${rel.n}`]);
-  execFileSync("tar", ["-x", "-f", "-", "-C", skillDir], { input: tar });
+  // Written blob by blob from git, never through `tar -x`: tar recreates
+  // symlinks and hardlinks, and the checks above are the only reason none can
+  // be in there. `wx` (O_EXCL) refuses to write through anything already at
+  // the path, symlink included.
+  for (const line of gitText(d, ["ls-tree", "-r", "-z", tag]).split("\0")) {
+    if (!line) continue;
+    const tab = line.indexOf("\t");
+    const [mode, type, sha] = line.slice(0, tab).split(" ");
+    const p = line.slice(tab + 1);
+    if (type !== "blob" || !SAFE_MODES.has(mode) || skillPathError(p))
+      throw new FactoryError(`v${rel.n}: refusing to materialise ${p}`, 422);
+    const dest = path.join(skillDir, ...p.split("/"));
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, git(d, ["cat-file", "blob", sha]), { flag: "wx", mode: 0o644 });
+  }
   fs.writeFileSync(
     path.join(tmp, ".claude-plugin", "plugin.json"),
     JSON.stringify({ name: skill.name, version: `${rel.n}.0.0`, description: skill.description }, null, 2),
   );
   // Scripts keep running: git archive preserves only 644/755, and we wrote 644 —
   // make every file under scripts/ executable, everything read-only.
+  // `chmodSync` FOLLOWS a symlink, so only a regular file (by lstat) is touched.
   const walk = (p: string) => {
     for (const e of fs.readdirSync(p, { withFileTypes: true })) {
       const f = path.join(p, e.name);
-      if (e.isDirectory()) walk(f);
-      else fs.chmodSync(f, /\.(sh|mjs|js|py|rb)$/.test(e.name) ? 0o555 : 0o444);
+      const st = fs.lstatSync(f);
+      if (st.isSymbolicLink()) continue;
+      if (st.isDirectory()) walk(f);
+      else if (st.isFile()) fs.chmodSync(f, /\.(sh|mjs|js|py|rb)$/.test(e.name) ? 0o555 : 0o444);
     }
   };
   walk(tmp);
@@ -790,7 +912,7 @@ export function pluginArgs(
 ): {
   args: string[];
   running: { name: string; release: number; tree: string }[];
-  /** Union of the running releases' requires.secrets: what the agent receives. */
+  /** Union of the running releases' APPROVED secrets: what the agent receives. */
   secrets: string[];
   dropped: { skill: string; release: number; reason: string }[];
 } {
@@ -799,11 +921,11 @@ export function pluginArgs(
   const args: string[] = [];
   const running: { name: string; release: number; tree: string }[] = [];
   const secrets = new Set<string>();
-  for (const { skill, release } of ok) {
+  for (const { skill, release, secrets: granted } of ok) {
     try {
       args.push("--plugin-dir", materialise(root, skill, release));
       running.push({ name: skill.name, release: release.n, tree: release.tree });
-      for (const n of release.secrets ?? []) secrets.add(n);
+      for (const n of granted) secrets.add(n);
     } catch (e) {
       dropped.push({ skill: skill.name, release: release.n, reason: `could not materialise: ${(e as Error).message}` });
     }
@@ -815,7 +937,7 @@ export function pluginArgs(
 export function grantedSecrets(skills: FactorySkill[], attachments: Attachment[] | undefined, group = MAIN_GROUP, agent?: AgentCtx): string[] {
   if (!attachments?.length) return [];
   const out = new Set<string>();
-  for (const { release } of resolveAttachments(skills, attachments, group, agent).ok) for (const n of release.secrets ?? []) out.add(n);
+  for (const { secrets } of resolveAttachments(skills, attachments, group, agent).ok) for (const n of secrets) out.add(n);
   return [...out];
 }
 
@@ -888,7 +1010,7 @@ function renameChanges(files: ScanFile[], from: string, to: string, description?
 export function duplicateSkill(
   root: string,
   idOrName: string,
-  input: { name: string; release: number; description?: string; by: string; owner?: Scope },
+  input: { name: string; release: number; description?: string; by: string; owner?: Scope; editors?: string[] },
 ): FactorySkill {
   const src = mustSkill(root, idOrName);
   const rel = src.releases.find((r) => r.n === input.release);
@@ -908,7 +1030,7 @@ export function duplicateSkill(
     name: input.name,
     description,
     owner: input.owner || src.owner || MAIN_GROUP,
-    editors: [MAIN_GROUP],
+    editors: input.editors?.length ? [...new Set(input.editors)] : [MAIN_GROUP],
     users: [MAIN_GROUP],
     createdBy: input.by,
     createdAt: Date.now(),
@@ -946,7 +1068,7 @@ export function adoptable(skillsDir: string, root: string): { dir: string; name:
  */
 export function adoptSkill(
   root: string,
-  input: { skillsDir: string; dir: string; name?: string; by: string; secrets: ScanSecret[]; owner?: Scope },
+  input: { skillsDir: string; dir: string; name?: string; by: string; secrets: ScanSecret[]; owner?: Scope; editors?: string[] },
 ): FactorySkill {
   const name = input.name || input.dir;
   const err = skillNameError(name);
@@ -972,7 +1094,7 @@ export function adoptSkill(
     if (e) scan.refusals.push({ path: f.path, message: e });
   }
   if (scan.refusals.length) throw new FactoryError("refused by the scan", 422, scan);
-  const skill = createSkill(root, { name, description: "", by: input.by, owner: input.owner });
+  const skill = createSkill(root, { name, description: "", by: input.by, owner: input.owner, editors: input.editors });
   const d = repoPath(root, skill.id);
   const hasManifest = files.some((f) => f.path === "shadok-skill.json");
   const changes = files.map((f) => ({ path: f.path, content: f.content as Buffer | null }));
@@ -1014,9 +1136,15 @@ export function prunePlugins(root: string, keep: Set<string>): string[] {
     const p = path.join(dir, n);
     try {
       // Materialised read-only: give write back to the tree before removing it.
+      // By LSTAT, and a symlink is never chmod-ed nor descended into: both
+      // `chmodSync` and `statSync` follow it, so a link to `/etc` would have
+      // made the walk chmod 700 the whole of `/etc`. `rmSync` unlinks a link
+      // without following it.
       const walk = (q: string) => {
+        const st = fs.lstatSync(q);
+        if (st.isSymbolicLink()) return;
         fs.chmodSync(q, 0o700);
-        if (fs.statSync(q).isDirectory()) for (const e of fs.readdirSync(q)) walk(path.join(q, e));
+        if (st.isDirectory()) for (const e of fs.readdirSync(q)) walk(path.join(q, e));
       };
       walk(p);
       fs.rmSync(p, { recursive: true, force: true });

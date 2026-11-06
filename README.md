@@ -309,9 +309,12 @@ Enter to skip; you can add it later from the web UI).
     with **Run on a schedule…**. An agent can also be born with it, from the
     new-agent dialog or with `pilotctl spawn --skill`. Agents report problems
     with `factory.mjs feedback`.
-  - **Secrets travel by name.** A saved skill gives the agents running it the
-    secrets it declares, plus any vault name its code reads; the panel and the
-    Save message name them. A save or push holding a vault value is refused.
+  - **Secrets travel by name, and only once you approve them.** A saved skill
+    asks for the secrets it declares, plus any vault name its code reads. Save
+    (or giving it to an agent of another group) lists those names and asks you
+    to approve them; agents receive only the names you approved. A save or push
+    holding a vault value is refused, and so is a push carrying a symlink or a
+    submodule.
   - **Also:** import from `~/.claude/skills`, make a variant, archive.
   - Design: `docs/superpowers/specs/2026-10-29-skill-factory-design.md`.
 - **Diff panel** — what an agent actually changed, against its base.
