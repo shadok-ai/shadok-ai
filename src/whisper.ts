@@ -38,12 +38,63 @@ export const MODELS: Record<string, number> = {
 };
 
 export const MODEL_FILE = process.env.SHADOK_WHISPER_MODEL?.trim() || "ggml-small-q5_1.bin";
-export const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${MODEL_FILE}`;
+
+/**
+ * SHA-256 of every artifact this module downloads. The tags and file names
+ * above say WHICH artifact; only a hash says the bytes are the ones we checked.
+ * Everything here is run as root on untrusted Telegram media (ffmpeg, the
+ * whisper.cpp build) or parsed by C++ (the model), so "it came from the right
+ * URL" is not enough: a release asset can be replaced, a CDN can be poisoned,
+ * and `SHADOK_WHISPER_DIR` can be a directory another container writes to.
+ *
+ * Obtained 2026-11-06 by downloading each artifact and hashing it, then
+ * cross-checked against an independent source for each: GitHub's own
+ * release-asset `digest` (ffmpeg), and the Hugging Face LFS object id, which IS
+ * the SHA-256 (models). The whisper.cpp tarball is a GitHub-generated tag
+ * archive; it has no published digest, so its hash rests on that one download.
+ *
+ * To bump: change the tag / revision, download the new artifact, `sha256sum`
+ * it, cross-check it the same way, and replace the hash here in the same
+ * commit. A tag bump without a hash bump fails closed (mismatch → refused).
+ */
+export const FFMPEG_SHA256: Record<string, string> = {
+  "ffmpeg-linux-x64": "e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99",
+  "ffmpeg-linux-arm64": "6bb182d0d75d23028db82e9e4f723ca69b853d055698486e6984ddb2c06fb8ce",
+};
+/** `archive/refs/tags/${WHISPER_TAG}.tar.gz`. */
+export const WHISPER_SRC_SHA256 = "57e280cee375ab02425b806ad5146b99f6eb9357e3c2b31357c8a6af2e2e44ae";
+export const MODEL_SHA256: Record<string, string> = {
+  "ggml-small-q5_1.bin": "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+  "ggml-medium-q5_0.bin": "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+};
+/**
+ * The model repository's commit, not `main`: `/resolve/main/` is a moving ref,
+ * which is exactly what "pinned to an exact version" rules out. This is the
+ * head of ggerganov/whisper.cpp on the Hub as of 2026-11-06 (last modified
+ * 2024-10-29), read from `https://huggingface.co/api/models/ggerganov/whisper.cpp`.
+ */
+export const MODEL_REV = "5359861c739e955e79d9a303bcbc70fb988958b1";
+export const MODEL_URL = `https://huggingface.co/ggerganov/whisper.cpp/resolve/${MODEL_REV}/${MODEL_FILE}`;
+
+/**
+ * Pure: the hash a model must have, or null = refuse it.
+ *
+ * A model we never hashed (`SHADOK_WHISPER_MODEL` pointed at another file) is
+ * REFUSED unless the operator supplies its hash in `SHADOK_WHISPER_MODEL_SHA256`.
+ * Allowing it with a warning would make the env var a way around every pin
+ * above, and a warning in a server log is read by nobody. An operator hash wins
+ * even for a known name: they chose that file and said what it must be.
+ */
+export function modelSha256(file: string, envSha: string | undefined): string | null {
+  const given = envSha?.trim().toLowerCase();
+  if (given) return /^[0-9a-f]{64}$/.test(given) ? given : null;
+  return MODEL_SHA256[file] ?? null;
+}
 /** What it should weigh, to catch a truncated download or an HTML error page.
  *  An unknown model name has no expected size, so any non-trivial file passes. */
 export const MODEL_BYTES = MODELS[MODEL_FILE] ?? 0;
-/** The file is content-addressed by NAME, not by hash, so an exact match is too
- *  strict while "roughly right" still catches a 4 kB error page. */
+/** A cheap pre-check before hashing: "roughly right" catches a 4 kB error page
+ *  with a clearer message than a hash mismatch. The hash is the real gate. */
 export const MODEL_BYTES_SLACK = 32 * 1024 * 1024;
 
 export interface WhisperPaths {
@@ -289,6 +340,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 
 const run = promisify(execFile);
 /** Is this tool on PATH? `require` would throw in an ESM module — tsc says
@@ -302,16 +354,114 @@ const HAS = (b: string): boolean => {
   }
 };
 
-/** Download to a TEMP name then rename: a killed download must never leave a
- *  half file that the next run mistakes for an install. */
-async function fetchTo(url: string, dest: string, mode = 0o644): Promise<void> {
+export async function sha256File(file: string): Promise<string> {
+  const h = createHash("sha256");
+  await pipeline(fs.createReadStream(file), h);
+  return h.digest("hex");
+}
+
+/** Our own record that a file was hashed and matched, beside the file. */
+const markerPath = (file: string): string => `${file}.sha256-ok`;
+
+/**
+ * Pure: may we skip hashing this file again?
+ *
+ * Hashing a 190 MB model on every voice note would cost a second each time, so
+ * a verified file gets a marker. The marker is only a CACHE of our verdict and
+ * is void the moment the file's size or mtime moves — a file replaced in a
+ * shared directory is hashed again before it is trusted. (Someone who can write
+ * both the file and a matching marker can also replace the binary we built; the
+ * marker does not claim to defend against a writer of the directory itself.)
+ */
+export function markerValid(
+  marker: unknown,
+  st: { size: number; mtimeMs: number },
+  expected: string,
+): boolean {
+  if (!marker || typeof marker !== "object") return false;
+  const m = marker as Record<string, unknown>;
+  return m.sha256 === expected && m.size === st.size && m.mtimeMs === st.mtimeMs;
+}
+
+async function writeMarker(file: string, sha256: string): Promise<void> {
+  const st = await fs.promises.stat(file);
+  await fs.promises.writeFile(markerPath(file), JSON.stringify({ sha256, size: st.size, mtimeMs: st.mtimeMs }));
+}
+
+/**
+ * Is the file already here, and is it the pinned one?
+ *
+ * `mismatch` is not a crash: the caller removes it and downloads the pinned
+ * artifact again, which is what heals a directory left by an older build or a
+ * neighbour container — and refuses, through the download's own check, if the
+ * network keeps serving the wrong bytes.
+ */
+export async function verifyCached(file: string, expected: string): Promise<"ok" | "missing" | "mismatch"> {
+  let st: fs.Stats;
+  try {
+    st = await fs.promises.stat(file);
+  } catch {
+    return "missing";
+  }
+  try {
+    const m = JSON.parse(await fs.promises.readFile(markerPath(file), "utf8"));
+    if (markerValid(m, st, expected)) return "ok";
+  } catch {
+    /* no marker, or unreadable: hash it */
+  }
+  const actual = await sha256File(file);
+  if (actual !== expected) {
+    console.log(`whisper: ${path.basename(file)} does not match its pinned SHA-256 (got ${actual}) — replacing it`);
+    return "mismatch";
+  }
+  await writeMarker(file, expected).catch(() => {});
+  return "ok";
+}
+
+/** A cached file that is not the pinned one is removed, so it is re-fetched. */
+async function presentAndPinned(file: string, expected: string): Promise<boolean> {
+  const v = await verifyCached(file, expected);
+  if (v === "mismatch") {
+    await fs.promises.rm(file, { force: true });
+    await fs.promises.rm(markerPath(file), { force: true });
+  }
+  return v === "ok";
+}
+
+/**
+ * Download to a TEMP name, verify, THEN rename.
+ *
+ * The temp name already meant a killed download never leaves a half file the
+ * next run mistakes for an install. The hash is checked on the temp file, so a
+ * file that is not the pinned artifact never reaches its real name — not even
+ * for the instant between the rename and a check made afterwards, which is the
+ * instant another container sharing the directory could pick it up.
+ */
+export async function downloadVerified(
+  url: string,
+  dest: string,
+  opts: { sha256: string; mode?: number; fetchImpl?: typeof fetch },
+): Promise<void> {
   const tmp = `${dest}.part-${process.pid}`;
-  const r = await fetch(url, { redirect: "follow" });
+  const r = await (opts.fetchImpl ?? fetch)(url, { redirect: "follow" });
   if (!r.ok || !r.body) throw new Error(`${url} → HTTP ${r.status}`);
   await fs.promises.mkdir(path.dirname(dest), { recursive: true });
-  await pipeline(Readable.fromWeb(r.body as never), fs.createWriteStream(tmp));
-  await fs.promises.chmod(tmp, mode);
-  await fs.promises.rename(tmp, dest);
+  try {
+    const h = createHash("sha256");
+    const src = Readable.fromWeb(r.body as never);
+    src.on("data", (c: Buffer) => h.update(c));
+    await pipeline(src, fs.createWriteStream(tmp));
+    const actual = h.digest("hex");
+    if (actual !== opts.sha256) {
+      throw new Error(`SHA-256 mismatch for ${path.basename(dest)}: expected ${opts.sha256}, got ${actual} — refusing it`);
+    }
+    await fs.promises.chmod(tmp, opts.mode ?? 0o644);
+    await fs.promises.rename(tmp, dest);
+  } catch (e) {
+    await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    throw e;
+  }
+  await writeMarker(dest, opts.sha256).catch(() => {});
 }
 
 async function installPkg(pkg: string): Promise<void> {
@@ -351,12 +501,14 @@ export async function ensureFfmpeg(notify?: (line: string) => void): Promise<Ffm
   ffInFlight = (async (): Promise<FfmpegState> => {
     const p = whisperPaths(whisperDir());
     try {
-      if (!fs.existsSync(p.ffmpeg)) {
-        const url = ffmpegAsset(process.platform, process.arch);
-        if (!url) throw new Error(`no static ffmpeg for ${process.platform}/${process.arch}`);
+      const url = ffmpegAsset(process.platform, process.arch);
+      if (!url) throw new Error(`no static ffmpeg for ${process.platform}/${process.arch}`);
+      const pin = FFMPEG_SHA256[path.basename(url)];
+      if (!pin) throw new Error(`no pinned SHA-256 for ${path.basename(url)}`);
+      if (!(await presentAndPinned(p.ffmpeg, pin))) {
         notify?.(FFMPEG_NOTICE);
         await fs.promises.mkdir(p.dir, { recursive: true });
-        await fetchTo(url, p.ffmpeg, 0o755);
+        await downloadVerified(url, p.ffmpeg, { sha256: pin, mode: 0o755 });
       }
       ffSettled = { kind: "ready", ffmpeg: p.ffmpeg };
       console.log(`ffmpeg: ready (${p.ffmpeg})`);
@@ -384,29 +536,38 @@ export async function ensureWhisper(notify?: (line: string) => void): Promise<Wh
     const p = whisperPaths(dir);
     try {
       await fs.promises.mkdir(dir, { recursive: true });
+      const modelPin = modelSha256(MODEL_FILE, process.env.SHADOK_WHISPER_MODEL_SHA256);
+      if (!modelPin) {
+        throw new Error(`no pinned SHA-256 for the model ${MODEL_FILE} — set SHADOK_WHISPER_MODEL_SHA256 to its hash`);
+      }
       const present = {
         cmake: HAS("cmake"),
         ffmpeg: fs.existsSync(p.ffmpeg),
         whisper: !!existingBin(p),
-        model: fs.existsSync(p.model) && modelLooksComplete(fs.statSync(p.model).size),
+        model: fs.existsSync(p.model) && modelLooksComplete(fs.statSync(p.model).size)
+          && (await presentAndPinned(p.model, modelPin)),
       };
       const missing = missingParts(present);
       const notice = installNotice(missing);
       if (notice) notify?.(notice);
 
       if (!present.cmake) await installPkg("cmake");
-      if (!present.ffmpeg) {
-        // Through the SAME single-flight as the video path: two provisioners
-        // writing `${dest}.part-${pid}` from one pid is the ENOTEMPTY-shaped
-        // race this file already pays for once.
+      {
+        // ALWAYS through the same single-flight as the video path, even when a
+        // file is already there: that is where a cached ffmpeg is checked
+        // against its pin. And two provisioners writing `${dest}.part-${pid}`
+        // from one pid is the ENOTEMPTY-shaped race this file already paid for.
         const ff = await ensureFfmpeg();
         if (ff.kind !== "ready") throw new Error(ff.reason);
       }
       if (!present.whisper) {
         const tgz = path.join(dir, `whisper-${WHISPER_TAG}.tar.gz`);
-        await fetchTo(`https://github.com/ggml-org/whisper.cpp/archive/refs/tags/${WHISPER_TAG}.tar.gz`, tgz);
+        // Verified BEFORE extraction: what is built from it runs as root.
+        await downloadVerified(`https://github.com/ggml-org/whisper.cpp/archive/refs/tags/${WHISPER_TAG}.tar.gz`, tgz,
+          { sha256: WHISPER_SRC_SHA256 });
         await run("tar", ["xzf", tgz, "-C", dir], { timeout: 300_000 });
         await fs.promises.rm(tgz, { force: true });
+        await fs.promises.rm(markerPath(tgz), { force: true });
         // -DWHISPER_BUILD_TESTS=OFF: we need one CLI, not their test suite, and
         // on a box already running dozens of agents every avoided object file
         // is a second of somebody else's CPU.
@@ -415,14 +576,9 @@ export async function ensureWhisper(notify?: (line: string) => void): Promise<Wh
         await run("cmake", ["--build", "build", "--config", "Release", "-j", "2"], { cwd: p.src, timeout: 1_800_000 });
       }
       if (!present.model) {
-        await fetchTo(MODEL_URL, p.model);
-        const size = fs.statSync(p.model).size;
-        // A redirect to an HTML error page weighs kilobytes and would otherwise
-        // sit there forever as "the model", failing at every transcription.
-        if (!modelLooksComplete(size)) {
-          await fs.promises.rm(p.model, { force: true });
-          throw new Error(`the model downloaded to ${size} bytes, not ~${MODEL_BYTES}`);
-        }
+        // The hash is the gate; a truncated file or an HTML error page fails it
+        // too, before it ever takes the model's name.
+        await downloadVerified(MODEL_URL, p.model, { sha256: modelPin });
       }
       const bin = existingBin(p);
       if (!bin) throw new Error("whisper built but no CLI was produced");

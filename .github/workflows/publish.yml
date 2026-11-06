@@ -108,6 +108,17 @@ jobs:
             exit 0
           fi
           npm version "$V" --no-git-tag-version --allow-same-version
+          # Ship the lockfile CI just tested as npm-shrinkwrap.json. npm honours
+          # a DEPENDENCY's shrinkwrap (never its package-lock), so this is what
+          # pins every transitive version and integrity hash on the instances
+          # that auto-update to this release — otherwise each install resolves
+          # the caret ranges afresh, and a compromised transitive release would
+          # reach the fleet within minutes. `files` in package.json lets it in.
+          npm shrinkwrap
+          if ! npm pack --dry-run --json --ignore-scripts | grep -q '"path": "npm-shrinkwrap.json"'; then
+            echo "npm-shrinkwrap.json is missing from the tarball — refusing to publish"
+            exit 1
+          fi
           if [ "${{ steps.ver.outputs.promote }}" = "1" ]; then
             # No --tag: that is what moves `latest`, i.e. the beta channel.
             echo "promoting $V to latest (beta channel)"

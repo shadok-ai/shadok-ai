@@ -36,7 +36,8 @@
   "files": [
     "dist",
     "public",
-    "context"
+    "context",
+    "npm-shrinkwrap.json"
   ],
   "dependencies": {
     "@simplewebauthn/browser": "^14.0.0",

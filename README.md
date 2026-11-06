@@ -196,6 +196,12 @@ Enter to skip; you can add it later from the web UI).
   Transcription is installed **on first use** — a static ffmpeg, whisper.cpp and
   a 181 MB model — and the topic says so rather than going quiet for minutes.
   `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
+  Every download is checked against a SHA-256 pinned in `src/whisper.ts`
+  (ffmpeg per platform, the whisper.cpp source, the model at a fixed Hugging
+  Face commit); a mismatch is refused and transcription stays off until the
+  next restart. Only `ggml-small-q5_1.bin` and `ggml-medium-q5_0.bin` have a
+  pinned hash — any other model needs `SHADOK_WHISPER_MODEL_SHA256=<hex>`, or it
+  is refused.
   Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
   serves them all.
 - **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
@@ -1032,6 +1038,13 @@ and that merge becomes the new beta for everyone.
 The numbers tell you which channel a version came from. An alpha carries the
 commit count (`0.3.78`); a promotion is a round `0.4.0`. The auto-update switch
 and the reload behaviour are identical on both.
+
+An update installs with npm's lifecycle scripts **off** (`--ignore-scripts`):
+only node-pty's native build is run, explicitly, through `npm rebuild node-pty`.
+Each release ships its tested lockfile as `npm-shrinkwrap.json`, so every
+transitive dependency lands at the exact version and integrity hash CI ran.
+The install happens in a staging copy of `~/.shadok-ai/app` and replaces it only
+once complete, so a failed native build leaves the running version in place.
 
 ```bash
 ```
