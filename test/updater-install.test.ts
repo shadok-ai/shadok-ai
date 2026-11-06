@@ -123,7 +123,16 @@ test("the published package carries its lockfile as npm-shrinkwrap.json", () => 
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   assert.ok(pkg.files.includes("npm-shrinkwrap.json"));
   const pre: string = pkg.scripts.prepublishOnly;
-  assert.match(pre, /npm shrinkwrap/);
+  // Assert the OUTCOME, never the command that produces it. This test used to
+  // require `npm shrinkwrap` — a command npm REMOVED in 11. `prepublishOnly`
+  // runs only inside `npm publish`, i.e. only in the publish job (Node 22, npm
+  // 11), so nothing else exercises it: the suite was green, a developer machine
+  // on npm 10 ran it fine, and the publish of 0.17.32 died on
+  // `Unknown command: "shrinkwrap"` with the merge already on main. The copy
+  // below is exactly what `npm shrinkwrap` did (rename the lockfile), minus the
+  // dependency on a command that can disappear.
+  assert.match(pre, /npm-shrinkwrap\.json/, "prepublishOnly must produce the shrinkwrap");
+  assert.doesNotMatch(pre, /\bnpm\s+shrinkwrap\b/, "removed in npm 11 — copy package-lock.json instead");
   assert.match(pre, /accessSync\('npm-shrinkwrap\.json'\)/, "publishing without it must fail, not ship unpinned");
   // And the publish must not skip that script.
   const wf = fs.readFileSync(path.join(ROOT, ".github", "workflows", "publish.yml"), "utf8");
