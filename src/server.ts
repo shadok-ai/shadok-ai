@@ -37,7 +37,8 @@ import {
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { backgroundTasks, screenShowsWork, moveToOption } from "./detect.js";
+import { backgroundTasks, screenShowsWork, moveToOption, boxText } from "./detect.js";
+import { autoReloadVerdict, autoReloadEnabled } from "./auto-reload.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted,
   getDefaultModel,
@@ -6814,6 +6815,14 @@ interface Live {
   /** Last staleness reasons broadcast for this session (serialised), so the
    *  periodic sweep only re-broadcasts when they actually change. */
   lastStaleSig?: string;
+  /** When anything last happened on this agent (a client message, a turn
+   *  ending, a respawn) — the auto-reload's quiet window counts from here. */
+  lastActivityAt?: number;
+  /** When the auto-reload last respawned this agent (its loop backoff). */
+  lastAutoReloadAt?: number;
+  /** Settles when the restart in progress has finished — a prompt arriving
+   *  mid-respawn waits on it instead of typing into a process being replaced. */
+  restartDone?: Promise<void>;
   /** Experimental raw terminal: pilot detach fn + the clients streaming it.
    *  The pipe stays open while ≥1 client is attached, closed when the last
    *  leaves. */
@@ -6857,6 +6866,14 @@ function broadcast(s: Live, msg: object, except?: WebSocket) {
  * Shared by the `restart` message and by `set-profile` with `restart: true`.
  */
 async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void> {
+  const done = restartSessionNow(s, by).finally(() => {
+    s.lastActivityAt = Date.now();
+  });
+  s.restartDone = done.catch(() => {});
+  return done;
+}
+
+async function restartSessionNow(s: Live, by: SpawnBy): Promise<void> {
   // Fail-closed group check BEFORE any teardown. A restart re-derives the OS
   // user from the channel's stored group; if that group no longer resolves,
   // `resolveSpawnIsolation` would derive a null user and respawn a private agent
@@ -6971,6 +6988,7 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
     sessionId: s.id,
     preprompt: prepromptById.get(s.id) ?? [],
     stale: sessionStaleness(s),
+    staleAuto: AUTO_RELOAD,
     cwd: s.cwd,
     branch: s.worktree?.branch ?? null,
     lastTurnMs: s.lastTurnMs,
@@ -7083,7 +7101,67 @@ function sessionStaleness(s: Live, channels?: Channel[]): StaleReason[] {
 }
 
 function staleMessage(s: Live, channels?: Channel[]) {
-  return { type: "stale" as const, sessionId: s.id, reasons: sessionStaleness(s, channels) };
+  // `auto`: the cockpit will apply it by itself once the agent is idle, so the
+  // badge reads "applies when idle" rather than asking for a click.
+  return { type: "stale" as const, sessionId: s.id, reasons: sessionStaleness(s, channels), auto: AUTO_RELOAD };
+}
+
+// ── Auto-reload: apply a pending reload at a moment that cuts nothing ────────
+// See src/auto-reload.ts for why each condition exists. One agent at a time —
+// the same no-herd rule as /restart-all (concurrent `--resume` race the OAuth
+// refresh) — and never a nudge afterwards: the agent was idle, so it stays idle.
+const AUTO_RELOAD = autoReloadEnabled(process.env.SHADOK_AUTO_RELOAD);
+const AUTO_RELOAD_QUIET_MS = Number(process.env.SHADOK_AUTO_RELOAD_IDLE_SEC ?? 120) * 1000;
+const AUTO_RELOAD_BACKOFF_MS = 30 * 60_000;
+let autoReloadRunning = false;
+
+/** Why `s` is behind, counting a profile stored "at next reload" too. */
+function pendingReloadReasons(s: Live, channels: Channel[]): string[] {
+  const out = sessionStaleness(s, channels).map((r) => r.kind as string);
+  if ((s.appliedProfile ?? null) !== (s.profile ?? null)) out.push("profile");
+  return out;
+}
+
+async function autoReloadSweep(): Promise<void> {
+  if (!AUTO_RELOAD || autoReloadRunning) return;
+  const channels = loadChannels();
+  const now = Date.now();
+  for (const s of sessions.values()) {
+    const reasons = pendingReloadReasons(s, channels);
+    if (!reasons.length) continue;
+    const screen = s.pilot.hasExited ? "" : s.pilot.screen();
+    const verdict = autoReloadVerdict({
+      enabled: AUTO_RELOAD,
+      pendingReasons: reasons.length,
+      busy: s.busy,
+      working: !s.pilot.hasExited && s.pilot.isWorking(),
+      submitting: !!s.submitting,
+      restarting: !!s.restarting,
+      exited: s.pilot.hasExited,
+      dialogOpen: s.lastDialogKey !== null || !!detectDialog(screen),
+      inputBox: boxText(screen),
+      shells: s.shells,
+      monitors: s.monitors,
+      inboxPending: parentInbox.get(s.id)?.length ?? 0,
+      retryPending: s.retryTimer !== null,
+      idleMs: now - Math.max(s.lastActivityAt ?? 0, s.lastContentAt ?? 0),
+      quietMs: AUTO_RELOAD_QUIET_MS,
+      sinceLastAutoMs: s.lastAutoReloadAt ? now - s.lastAutoReloadAt : Infinity,
+      backoffMs: AUTO_RELOAD_BACKOFF_MS,
+    });
+    if (!verdict.reload) continue;
+    autoReloadRunning = true;
+    s.lastAutoReloadAt = now;
+    console.log(`auto-reload: ${s.id.slice(0, 8)} idle — respawning to apply ${reasons.join(", ")}`);
+    try {
+      await restartSession(s, { actor: "auto-reload", via: "system" });
+    } catch {
+      /* logged by restartSession; the backoff keeps it from looping */
+    } finally {
+      autoReloadRunning = false;
+    }
+    return; // one per sweep: the next one waits for the next tick
+  }
 }
 
 /** Broadcast the staleness reasons, but only when they changed. */
@@ -7287,6 +7365,9 @@ async function createSession(
     monitors: 0,
     stopTail: null,
     recentTexts: [],
+    // A new Live (a spawn, an adoption after a server restart) counts as
+    // activity: the auto-reload waits a quiet window before touching it.
+    lastActivityAt: Date.now(),
     lastTurnSilent: false,
     worktree,
     idleTimer: null,
@@ -7719,6 +7800,7 @@ async function finishTurn(s: Live) {
   } finally {
     s.busy = false;
     s.interruptedAt = null;
+    s.lastActivityAt = Date.now();
     // Remember how long it took: a dialog suspends the turn and a completion
     // ends it, but both freeze the client's timer, so both are worth keeping.
     if (s.turnStartedAt) s.lastTurnMs = Date.now() - s.turnStartedAt;
@@ -8057,6 +8139,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       if (session) {
         const current = sessions.get(session.id);
         if (current && current !== session) session = current;
+        // Someone is interacting: hold the auto-reload's quiet window open.
+        session.lastActivityAt = Date.now();
       }
       // Any user takeover cancels a pending auto-retry and ends the streak.
       // "prompt" is settled inside its own case instead: a prompt refused on
@@ -8309,6 +8393,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               sessionId: id,
               preprompt: prepromptById.get(id) ?? [],
               stale: sessionStaleness(session),
+              staleAuto: AUTO_RELOAD,
               cwd: session.cwd,
               lastTurnMs: session.lastTurnMs,
             });
@@ -8488,6 +8573,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             sessionId: id,
             preprompt: prepromptById.get(id) ?? [],
             stale: sessionStaleness(session),
+            staleAuto: AUTO_RELOAD,
             cwd: effectiveCwd,
             branch: worktree?.branch ?? null,
           });
@@ -8599,6 +8685,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // client's prompt) can have claimed the session while we awaited
             // getUsage(). Submitting now would interleave two texts into one
             // TUI. Mirrors the re-check fire() does after its own await.
+            if (session.busy) return fail("a response is already in progress", "busy");
+          }
+          // A respawn (an auto-reload, a reload click elsewhere) is swapping the
+          // process: typing now would land in the one being torn down. Wait for
+          // the new one — a few seconds — rather than refuse or lose the prompt.
+          if (session.restarting) {
+            await session.restartDone;
             if (session.busy) return fail("a response is already in progress", "busy");
           }
           // Getting here means the prompt is really being sent — that is the
@@ -9422,6 +9515,10 @@ server.listen(port, HOST, () => {
     for (const s of sessions.values()) if (!s.pilot.hasExited) broadcastStaleness(s, channels);
   }, 60_000);
   staleTimer.unref();
+  // Auto-reload: twice a minute, respawn (at most) one idle agent that is
+  // behind — the "reload to apply" badge applying itself. See autoReloadSweep.
+  const autoReloadTimer = setInterval(() => void autoReloadSweep().catch(() => {}), 30_000);
+  autoReloadTimer.unref();
   // The lead agent, if this instance has none. Deferred a beat so it dials a
   // server that is already accepting, and never awaited: a cockpit that starts
   // without its lead agent is a far smaller problem than a boot that hangs.
