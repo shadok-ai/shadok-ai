@@ -22,6 +22,10 @@ import type { Channel } from "./channels.js";
 import os from "node:os";
 import {
   accept,
+  acceptanceFor,
+  acceptedAnywhere,
+  approvalFrom,
+  pushVerdict,
   addFeedback,
   adoptable,
   adoptSkill,
@@ -55,6 +59,7 @@ import {
   scanMain,
   unreleased,
   type FactorySkill,
+  type Release,
 } from "./factory.js";
 import { parseManifest, type ScanSecret } from "./factory-scan.js";
 import { SKILLSMITH_PROFILE_NAME } from "./profiles.js";
@@ -70,7 +75,22 @@ export interface FactoryDeps {
   /** Admin gate: sends the 403 itself and returns null when refused. */
   requireAdmin(req: Request, res: Response, what: string): unknown | null;
   callerOf(req: Request): { id: string | null; profile: string | null };
-  vault(): Record<string, string>;
+  /**
+   * The vault the scan compares against, as the CALLER's group sees it (an
+   * agent: its channel's group; a person: the group they spawn in). Main's
+   * vault for everyone made the scan an oracle on secrets of other groups.
+   */
+  vault(req: Request): Record<string, string>;
+  /** May this request drive (and so attach to / list) that agent? Mono-tenant: yes. */
+  mayDrive(req: Request, sessionId: string): boolean;
+  /** The group an agent's acceptances are keyed by (mono-tenant: always `main`). */
+  agentGroup(sessionId: string): string;
+  /** The group a PERSON accepts for by default (mono-tenant: `main`). */
+  personGroup(req: Request): string;
+  /** May this request accept on behalf of `group`? (it is one of theirs, or public) */
+  mayActForGroup(req: Request, group: string): boolean;
+  /** A cockpit group id (or null) → the group acceptances are keyed by. */
+  tenantGroup(groupId: string | null): string;
   loadChannels(): Channel[];
   upsertChannel(patch: Partial<Channel> & { sessionId: string }): void;
   /** Re-evaluate an agent's reload indicator after its attachments changed. */
@@ -109,7 +129,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
   const root = () => factoryRoot();
 
   /** The card as the panel shows it: registry + live facts (head, bindings, where attached). */
-  const view = (s: FactorySkill, channels: Channel[], vaultNames: Set<string>, stats: ReturnType<typeof runStats>) => {
+  const view = (s: FactorySkill, channels: Channel[], vaultNames: Set<string>, stats: ReturnType<typeof runStats>, group: string) => {
     const head = headCommit(root(), s.id);
     const manifest = parseManifest(readFile(root(), s.id, "shadok-skill.json")).manifest;
     const required = manifest.requires?.secrets ?? [];
@@ -118,7 +138,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       head,
       unreleased: unreleased(s, head),
       bindings: required.map((name) => ({ name, bound: vaultNames.has(name) })),
-      latestAccepted: latestAccepted(s)?.n ?? null,
+      latestAccepted: latestAccepted(s, group)?.n ?? null,
       attachedTo: channels
         .filter((c) => c.skills?.some((a) => a.skill === s.id))
         .map((c) => {
@@ -135,7 +155,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
             // What THIS agent gets: each granted secret, present in the vault or not.
             secrets: (rel?.secrets ?? []).map((n) => ({ name: n, bound: vaultNames.has(n), detected: !!rel?.detectedSecrets?.includes(n) })),
             mcp: (rel?.mcp ?? []).map((n) => ({ name: n, present: mcpHave.has(n) })),
-            update: (latestAccepted(s)?.n ?? 0) > release ? latestAccepted(s)!.n : null,
+            update: (latestAccepted(s, deps.agentGroup(c.sessionId))?.n ?? 0) > release ? latestAccepted(s, deps.agentGroup(c.sessionId))!.n : null,
           };
         }),
       feedback: (s.feedback ?? []).slice().reverse(),
@@ -144,19 +164,59 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       lastRun: stats.last[s.name] ?? null,
     };
   };
-  const latestAccepted = (s: FactorySkill) =>
-    [...s.releases].reverse().find((r) => s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === r.n && a.tree === r.tree));
+  const latestAccepted = (s: FactorySkill, group: string) =>
+    [...s.releases].reverse().find((r) => !!acceptanceFor(s, r, group));
 
   const by = (req: Request): string => {
     const agent = deps.callerOf(req);
-    if (agent.id) return `agent:${agent.profile ?? "no profile"}/${agent.id.slice(0, 8)} (${MAIN_GROUP})`;
+    if (agent.id) return `agent:${agent.profile ?? "no profile"}/${agent.id.slice(0, 8)} (${deps.agentGroup(agent.id)})`;
     return deps.personName(req) ?? "cockpit";
   };
 
+  /**
+   * Does this request carry a MACHINE credential — an agent's session key (as a
+   * header or the `key` body field `callerOf` also reads) or a peer token? A
+   * browser never sends one, and an agent can forge an `Origin` header with
+   * curl, so the same-origin check alone does not prove a person is clicking.
+   * Checked on presence, not validity: a person has no reason to send either.
+   */
+  const machine = (req: Request): boolean =>
+    !!req.headers["x-shadok-session-key"] ||
+    !!req.headers["x-shadok-peer"] ||
+    (!Buffer.isBuffer(req.body) && typeof (req.body as { key?: unknown } | undefined)?.key === "string") ||
+    !!deps.callerOf(req).id;
+
+  /** A PERSON's click: same-origin browser AND no agent/peer credential. */
   const browser = (req: Request, res: Response): boolean => {
-    if (deps.requestFromBrowser(req)) return true;
+    if (deps.requestFromBrowser(req) && !machine(req)) return true;
     res.status(403).json({ error: "same-origin browser only — a person does this, not an agent" });
     return false;
+  };
+
+  /**
+   * The secrets a release asks for must be approved by the person, by name,
+   * before an acceptance grants them. Returns the approved list, or answers 409
+   * with `needsApproval` (the names to show) and returns null.
+   */
+  const approval = (rel: Release, raw: unknown, res: Response): string[] | null => {
+    const ok = approvalFrom(rel, raw);
+    if (ok !== undefined) return ok;
+    res.status(409).json({
+      error: `v${rel.n} asks for vault secrets (${rel.secrets.join(", ")}) — approve them by name to grant them`,
+      needsApproval: rel.secrets,
+    });
+    return null;
+  };
+
+  /** The group a person accepts for: the one asked (if theirs), else their default. */
+  const acceptGroup = (req: Request, res: Response): string | null => {
+    const asked = typeof req.body?.group === "string" && req.body.group.trim() ? req.body.group.trim() : null;
+    const g = asked ?? deps.personGroup(req);
+    if (!deps.mayActForGroup(req, g)) {
+      res.status(403).json({ error: `you cannot accept for ${g}` });
+      return null;
+    }
+    return g;
   };
 
   /**
@@ -201,15 +261,19 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
   };
 
   app.get("/factory/skills", (req, res) => {
-    const channels = deps.loadChannels();
-    const names = new Set(Object.keys(deps.vault()));
+    // Only the agents this caller may drive: the list carries names, groups,
+    // creators and schedule prompts of every agent it names.
+    const channels = deps.loadChannels().filter((c) => deps.mayDrive(req, c.sessionId));
+    const names = new Set(Object.keys(deps.vault(req)));
+    const agent = deps.callerOf(req);
+    const group = agent.id ? deps.agentGroup(agent.id) : deps.personGroup(req);
     res.json({
-      group: MAIN_GROUP,
+      group,
       me: deps.personName(req),
       groups: deps.groups().map((g) => ({ id: g.id, name: g.name ?? `group ${g.id}`, icon: g.icon ?? "" })),
       skills: (() => {
         const stats = runStats(root(), Date.now() - 7 * 86_400_000);
-        return loadRegistry(root()).skills.filter((s) => canSee(req, s)).map((s) => view(s, channels, names, stats));
+        return loadRegistry(root()).skills.filter((s) => canSee(req, s)).map((s) => view(s, channels, names, stats, group));
       })(),
       agents: channels.map((c) => ({
         sessionId: c.sessionId,
@@ -235,7 +299,10 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
         while (findSkill(root(), `${name}-${i}`)) i++;
         name = `${name}-${i}`;
       }
-      const s = createSkill(root(), { name, title, description: req.body?.description, by: by(req), owner: ownerFrom(req, req.body?.scope) });
+      const s = createSkill(root(), {
+        name, title, description: req.body?.description, by: by(req), owner: ownerFrom(req, req.body?.scope),
+        editors: [deps.personGroup(req)],
+      });
       if (req.body?.tags) updateMeta(root(), s.id, { tags: cleanTags(req.body.tags) });
       deps.audit({ action: "create", skill: s.name, by: by(req) });
       res.json({ skill: s });
@@ -258,7 +325,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       const patch: Parameters<typeof updateMeta>[2] = {};
       if (b.scope !== undefined) {
         const me = deps.personName(req) ?? "admin";
-        if (s.createdBy !== me && !s.owner.startsWith(`user:${me}`) && !deps.requireAdmin(req, res, "change who a shared skill is shared with")) return;
+        if (s.createdBy !== me && s.owner !== `user:${me}` && !deps.requireAdmin(req, res, "change who a shared skill is shared with")) return;
         patch.owner = ownerFrom(req, b.scope);
       }
       if (b.tags !== undefined) patch.tags = cleanTags(b.tags);
@@ -274,12 +341,13 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
   });
 
   app.delete("/factory/skills/:id", (req, res) => {
+    // A person's act either way: an agent's key IS the bootstrap admin, so the
+    // admin check alone would let any agent delete a shared skill.
+    if (!browser(req, res)) return;
     const s = skillOr404(req, res);
     if (!s) return;
     // Yours: you delete it. Shared (a group's, the organisation's): an admin.
-    if (s.owner.startsWith("user:")) {
-      if (!browser(req, res)) return;
-    } else if (!deps.requireAdmin(req, res, "delete a shared factory skill")) return;
+    if (!s.owner.startsWith("user:") && !deps.requireAdmin(req, res, "delete a shared factory skill")) return;
     const attached = deps.loadChannels().filter((c) => c.skills?.some((a) => a.skill === s.id));
     if (attached.length && req.query.force !== "1")
       return res.status(409).json({
@@ -343,7 +411,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
         content: b.delete === true ? null : typeof b.content === "string" ? b.content : "",
         base: typeof b.base === "string" ? b.base : null,
         by: by(req),
-        secrets: secretsOf(deps.vault()),
+        secrets: secretsOf(deps.vault(req)),
       });
       deps.audit({ action: "save", skill: s.name, path: b.path, by: by(req) });
       res.json({ ok: true, ...out });
@@ -367,6 +435,8 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     try {
       const asked = typeof req.body?.group === "string" && req.body.group.trim() ? req.body.group.trim() : null;
       const at = deps.workspaceFor(req, asked);
+      const why = pushVerdict(s, { group: deps.tenantGroup(at.group), createdBy: deps.personName(req) });
+      if (why) throw new FactoryError(`${why} — a Skillsmith started there could not push`, 403);
       res.json({ cwd: prepareWorkspace(root(), s.id, at.home, at.user), profile: SKILLSMITH_PROFILE_NAME, name: s.name, group: at.group });
     } catch (e) {
       fail(res, e);
@@ -377,7 +447,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     const s = skillOr404(req, res);
     if (!s) return;
     try {
-      res.json(scanMain(root(), s.id, secretsOf(deps.vault())));
+      res.json(scanMain(root(), s.id, secretsOf(deps.vault(req))));
     } catch (e) {
       fail(res, e);
     }
@@ -406,9 +476,12 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
         });
       const s = skillOr404(req, res);
       if (!s) return;
+      const ch = deps.loadChannels().find((c) => c.sessionId === caller.id);
+      const why = pushVerdict(s, { group: deps.agentGroup(caller.id), createdBy: ch?.createdBy ?? null });
+      if (why) return res.status(403).json({ error: why });
       if (!Buffer.isBuffer(req.body) || !req.body.length) return res.status(400).json({ error: "empty bundle" });
       try {
-        const out = receivePush(root(), s.id, req.body, { by: by(req), secrets: secretsOf(deps.vault()) });
+        const out = receivePush(root(), s.id, req.body, { by: by(req), secrets: secretsOf(deps.vault(req)) });
         deps.audit({ action: "push", skill: s.name, commits: out.commits, by: by(req) });
         res.json({ ok: true, ...out });
       } catch (e) {
@@ -425,13 +498,24 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     if (!browser(req, res)) return;
     const s = skillOr404(req, res);
     if (!s) return;
+    const group = req.body?.accept === true ? acceptGroup(req, res) : null;
+    if (req.body?.accept === true && !group) return;
     try {
-      const rel = cutRelease(root(), s.id, { by: by(req), note: req.body?.note, secrets: secretsOf(deps.vault()) });
+      // The approval is asked BEFORE the release is cut, from what it would
+      // ask for: a 409 after cutting would leave a retry facing "already this
+      // exact content".
+      let approved: string[] | null = null;
+      if (group) {
+        const would = scanMain(root(), s.id, secretsOf(deps.vault(req))).secrets;
+        approved = approval({ n: (s.releases[s.releases.length - 1]?.n ?? 0) + 1, secrets: would } as Release, req.body?.approveSecrets, res);
+        if (!approved) return;
+      }
+      const rel = cutRelease(root(), s.id, { by: by(req), note: req.body?.note, secrets: secretsOf(deps.vault(req)) });
       deps.audit({ action: "release", skill: s.name, release: rel.n, tree: rel.tree, by: by(req) });
       // "Release and accept" in one click: the releaser is a person of the group.
-      if (req.body?.accept === true) {
-        accept(root(), s.id, { group: MAIN_GROUP, release: rel.n, by: by(req) });
-        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group: MAIN_GROUP, by: by(req) });
+      if (group && approved) {
+        accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
+        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group, secrets: approved, by: by(req) });
       }
       res.json({ release: rel });
     } catch (e) {
@@ -443,9 +527,15 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     if (!browser(req, res)) return;
     const s = skillOr404(req, res);
     if (!s) return;
+    const group = acceptGroup(req, res);
+    if (!group) return;
+    const rel = s.releases.find((r) => r.n === Number(req.body?.release));
+    if (!rel) return res.status(404).json({ error: `no release v${req.body?.release}` });
+    const approved = approval(rel, req.body?.approveSecrets, res);
+    if (!approved) return;
     try {
-      const a = accept(root(), s.id, { group: MAIN_GROUP, release: Number(req.body?.release), by: by(req) });
-      deps.audit({ action: "accept", skill: s.name, release: a.release, tree: a.tree, group: a.group, by: by(req) });
+      const a = accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
+      deps.audit({ action: "accept", skill: s.name, release: a.release, tree: a.tree, group: a.group, secrets: approved, by: by(req) });
       res.json({ acceptance: a });
     } catch (e) {
       fail(res, e);
@@ -463,12 +553,14 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     if (!s) return;
     const rel = s.releases.find((r) => r.n === Number(req.body?.release));
     if (!rel) return res.status(404).json({ error: "no such release" });
-    if (!s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree))
-      return res.status(409).json({ error: `v${rel.n} has not been accepted yet` });
+    if (!acceptedAnywhere(s, rel)) return res.status(409).json({ error: `v${rel.n} has not been accepted yet` });
     const out: { name: string; result: string }[] = [];
+    // Only agents this person may drive, and only where v<N> is accepted for
+    // THEIR group: another group's agent is that group's people's decision.
     for (const c of deps.loadChannels()) {
       const cur = c.skills?.find((a) => a.skill === s.id);
       if (!cur || cur.release >= rel.n) continue;
+      if (!deps.mayDrive(req, c.sessionId) || !acceptanceFor(s, rel, deps.agentGroup(c.sessionId))) continue;
       deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
       deps.onAttachmentsChanged(c.sessionId);
       out.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
@@ -490,21 +582,30 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     if (!browser(req, res)) return;
     const s = skillOr404(req, res);
     if (!s) return;
+    const group = acceptGroup(req, res);
+    if (!group) return;
     try {
       const last = s.releases[s.releases.length - 1];
       const head = headCommit(root(), s.id);
       const rel = last && head && last.commit === head
         ? last
-        : cutRelease(root(), s.id, { by: by(req), secrets: secretsOf(deps.vault()) });
+        : cutRelease(root(), s.id, { by: by(req), secrets: secretsOf(deps.vault(req)) });
       if (rel !== last) deps.audit({ action: "release", skill: s.name, release: rel.n, tree: rel.tree, by: by(req) });
-      if (!s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree)) {
-        accept(root(), s.id, { group: MAIN_GROUP, release: rel.n, by: by(req) });
-        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group: MAIN_GROUP, by: by(req) });
+      if (!acceptanceFor(findSkill(root(), s.id)!, rel, group)) {
+        // The release is cut (a retry reuses it); what it may RECEIVE waits for
+        // the person to approve each secret name it asks for.
+        const approved = approval(rel, req.body?.approveSecrets, res);
+        if (!approved) return;
+        accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
+        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group, secrets: approved, by: by(req) });
       }
       const updated: { name: string; result: string }[] = [];
       for (const c of deps.loadChannels()) {
         const cur = c.skills?.find((a) => a.skill === s.id);
         if (!cur || cur.release === rel.n) continue;
+        // Never move an agent this person may not drive, nor one of a group
+        // that did not accept this release (it would be dropped at its spawn).
+        if (!deps.mayDrive(req, c.sessionId) || deps.agentGroup(c.sessionId) !== group) continue;
         deps.upsertChannel({ sessionId: c.sessionId, skills: c.skills!.map((a) => (a.skill === s.id ? { ...a, release: rel.n } : a)) });
         deps.onAttachmentsChanged(c.sessionId);
         updated.push({ name: c.name ?? c.sessionId.slice(0, 8), result: deps.reloadIfIdle(c.sessionId) });
@@ -556,7 +657,7 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
       const release = req.body?.release != null ? Number(req.body.release) : s.releases[s.releases.length - 1]?.n;
       const name = typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : slugify(String(req.body?.title ?? ""));
       const d = duplicateSkill(root(), s.id, {
-        name, release, description: req.body?.description, by: by(req),
+        name, release, description: req.body?.description, by: by(req), editors: [deps.personGroup(req)],
         ...(req.body?.scope ? { owner: ownerFrom(req, req.body.scope) } : {}),
       });
       deps.audit({ action: "duplicate", skill: d.name, origin: d.origin, by: by(req) });
@@ -580,8 +681,9 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
         dir: String(req.body?.dir ?? ""),
         name: typeof req.body?.name === "string" && req.body.name.trim() ? req.body.name.trim() : undefined,
         by: by(req),
-        secrets: secretsOf(deps.vault()),
+        secrets: secretsOf(deps.vault(req)),
         owner: ownerFrom(req, req.body?.scope ?? "me"),
+        editors: [deps.personGroup(req)],
       });
       deps.audit({ action: "adopt", skill: s.name, origin: s.origin, by: by(req) });
       res.json({ skill: s });
@@ -600,17 +702,33 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
     if (!browser(req, res)) return;
     const sessionId = String(req.body?.sessionId ?? "");
     const ch = deps.loadChannels().find((c) => c.sessionId === sessionId);
-    if (!ch) return res.status(404).json({ error: "no such agent" });
+    // An agent this person may not drive does not exist for them (404, not 403:
+    // its id is no confirmation of anything).
+    if (!ch || !deps.mayDrive(req, sessionId)) return res.status(404).json({ error: "no such agent" });
     const s = findSkill(root(), String(req.body?.skill ?? ""));
     if (!s || !canSee(req, s)) return res.status(404).json({ error: "no such skill" });
     const release = req.body?.release === null ? null : Number(req.body?.release);
     if (release !== null && s.archived) return res.status(409).json({ error: "this skill is archived: unarchive it first" });
     const rest = (ch.skills ?? []).filter((a) => a.skill !== s.id);
+    const group = deps.agentGroup(sessionId);
     if (release !== null) {
       const rel = s.releases.find((r) => r.n === release);
       if (!rel) return res.status(404).json({ error: `no release v${release}` });
-      if (!s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree))
+      if (!acceptedAnywhere(s, rel))
         return res.status(409).json({ error: `v${rel.n} has not been accepted yet — review and accept it first` });
+      // Accepted for ANOTHER group: this person may drive the target, so they
+      // are a person of its group, and attaching is their acceptance — with
+      // the secrets approved by name, like any acceptance.
+      if (!acceptanceFor(s, rel, group)) {
+        const approved = approval(rel, req.body?.approveSecrets, res);
+        if (!approved) return;
+        try {
+          accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
+        } catch (e) {
+          return fail(res, e);
+        }
+        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group, secrets: approved, by: by(req) });
+      }
       rest.push({ skill: s.id, release: rel.n });
     }
     deps.upsertChannel({ sessionId, skills: rest });

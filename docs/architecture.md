@@ -1458,6 +1458,45 @@ used inside a script.
   `buildPreprompt` lists them, so a newly granted name lights the reload
   indicator too.
 - Profiles are not touched: the link is skill → agent.
+- **Granted only by name, by a person.** An `Acceptance` carries the `secrets`
+  the accepting person approved (`approvalFrom`/`approvedSecrets`); an agent
+  receives the release's names INTERSECTED with that list, never the manifest's
+  list alone — a manifest is whatever the pusher wrote, and it can name any
+  vault entry. A person action that would accept (`/accept`, release+accept,
+  `/publish`, an attach that accepts for another group) answers `409
+  {needsApproval}` until the names are approved (`approveSecrets`); the page
+  asks with a confirm. An acceptance recorded before the field existed keeps
+  granting the release's whole list (it was made on a screen listing them).
+
+**Security rules (audit, 2026-11-06).**
+- *Only plain files.* `receivePush` refuses any tree entry whose mode is not
+  `100644`/`100755`/`040000`, in every new commit (`unsafeEntries`): a symlink
+  passes every path rule, and materialised it let an attached agent read, and
+  the read-only chmod touch, any file on the host. `materialise` re-checks the
+  tag BEFORE its "already there" shortcut (releases cut before the check), and
+  writes blob by blob with `wx` instead of `tar -x`, which recreates links. Its
+  chmod walk and `prunePlugins` use `lstat` and never chmod or descend through a
+  link (`chmodSync`/`statSync` follow one; `rmSync` does not).
+- *Acceptance is per group.* Multi-tenant, an agent's releases must be accepted
+  for its isolation group (`factoryAgentGroup` in `server.ts`); mono-tenant it is
+  always `main`, since a channel's `group` there is a folder. A person accepts
+  for their own spawn group (or one they can see); attaching an agent whose
+  group has not accepted, by someone allowed to drive it, IS that group's
+  acceptance. `sharedWith` treats `main` in users/editors as everyone.
+- *Tenancy.* `/factory/attach`, the `GET /factory/skills` agent list, and the
+  update/publish moves only act on agents the caller may drive (`mayDrive`, the
+  `/diff` boundary), and publish/update only move agents whose group accepted.
+- *Persons only.* Every person action refuses a request carrying an agent's
+  session key (header or `key` body field) or a peer token, whatever its
+  `Origin` — an agent can forge that header, and its key is the bootstrap admin,
+  so `requireAdmin` alone did not stop it deleting a shared skill.
+- *Editors are enforced on push* (`pushVerdict`): the pushing agent's group must
+  be an editor (or in the skill's `groups:` scope), and a private skill takes
+  pushes only from its owner's agents. A new skill's editors are its creator's
+  group. `POST …/workspace` refuses up front when the Skillsmith would land in a
+  group that cannot push.
+- *The scan's vault is the caller's group's* (`factoryVaultFor`): a refusal
+  names the secret matched, so Main's vault for everyone was an oracle.
 
 **Release directories are pruned, and that is correctness, not housekeeping.**
 Measured: an agent resumed onto v2 re-ran v1's absolute script path straight

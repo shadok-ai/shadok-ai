@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
 import { scopeVisibleTo, recordRun, skillOfCall } from "./factory.js";
-import { attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
+import { acceptanceFor, attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -136,6 +136,7 @@ import {
   canSeeGroup,
   membershipVerdict,
   canSeeSession,
+  spawnGroupFor,
   listableGroups,
   visibleChannels,
   secretOwnGroupIds,
@@ -3415,7 +3416,16 @@ mountFactory(app, {
   personName: (req) => currentAccount(req)?.name ?? null,
   requireAdmin: (req, res, what) => accountAdmin(req, res, true, what),
   callerOf: (req) => callerOf(req),
-  vault: () => secretsFor(secretNames()),
+  vault: (req) => factoryVaultFor(req),
+  mayDrive: (req, id) => factoryMayDrive(req, id),
+  agentGroup: (id) => factoryAgentGroup(id),
+  personGroup: (req) => factoryPersonGroup(req),
+  mayActForGroup: (req, g) => {
+    if (DEPLOYMENT_MODE !== "multi-tenant") return g === MAIN_GROUP;
+    const grp = loadGroups().find((x) => x.id === g);
+    return grp ? canSeeGroup(grp, viewerFor(currentAccount(req))) : g === MAIN_GROUP;
+  },
+  tenantGroup: (g) => factoryTenantGroup(g),
   loadChannels: () => loadChannels(),
   upsertChannel: (patch) => upsertChannel(patch),
   onAttachmentsChanged: (id) => {
@@ -5535,9 +5545,53 @@ function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
   return loadChannels().find((c) => c.sessionId === sessionId)?.skills ?? pendingSkills.get(sessionId);
 }
 
+/**
+ * The group a factory ACCEPTANCE is keyed by. Multi-tenant: the agent's
+ * isolation group (none → Main) — a release accepted by Main's people must not
+ * run in another group's agents. Mono-tenant: always Main, since a channel's
+ * `group` there is a display folder, not a tenant (and every acceptance
+ * recorded before this rule is Main's).
+ */
+function factoryTenantGroup(groupId: string | null | undefined): string {
+  return DEPLOYMENT_MODE === "multi-tenant" ? groupId || MAIN_GROUP : MAIN_GROUP;
+}
+function factoryAgentGroup(sessionId?: string | null): string {
+  return factoryTenantGroup(agentCtxFor(sessionId).group);
+}
+/** The group a PERSON accepts for by default: the one they would spawn in. */
+function factoryPersonGroup(req: Caller): string {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return MAIN_GROUP;
+  return factoryTenantGroup(spawnGroupFor(viewerFor(currentAccount(req)), loadGroups())?.id ?? null);
+}
+/**
+ * May this request act on (attach to, list, move) that agent? The same group
+ * boundary as `/diff` and the WS `mayDriveSession`; a restricted peer only on
+ * its own agents. Mono-tenant: yes.
+ */
+function factoryMayDrive(req: Caller, sessionId: string): boolean {
+  const chans = loadChannels();
+  if (peerScopeFor(req) === "restricted" && !ownedByPeer(chans.find((c) => c.sessionId === sessionId), peerName(req)!)) return false;
+  if (DEPLOYMENT_MODE !== "multi-tenant") return true;
+  return canSeeSession(sessionId, chans, loadGroups(), viewerFor(currentAccount(req)));
+}
+/**
+ * The vault the factory's scan compares against, as the CALLER's group sees it
+ * — an agent: its channel's group; a person: the group they spawn in. A refusal
+ * names the secret it matched, so scanning against Main's vault for everyone
+ * let a Skillsmith of any group test guesses against Main's values.
+ */
+function factoryVaultFor(req: Caller & { body?: unknown }): Record<string, string> {
+  const agent = callerOf(req);
+  const gid = DEPLOYMENT_MODE !== "multi-tenant"
+    ? MAIN_GROUP_ID
+    : agent.id ? factoryAgentGroup(agent.id) : factoryPersonGroup(req);
+  const names = [...new Set(Object.keys(loadVault()).flatMap((g) => secretNames(g)))];
+  return secretsFor(names, gid, commonsGroupIds());
+}
+
 /** The secret names an agent's factory skills are granted (accepted releases only). */
 function factorySecretsFor(sessionId?: string | null): string[] {
-  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), MAIN_GROUP, agentCtxFor(sessionId));
+  return grantedSecrets(loadRegistry(factoryRoot()).skills, attachmentsFor(sessionId), factoryAgentGroup(sessionId), agentCtxFor(sessionId));
 }
 
 /**
@@ -5559,8 +5613,8 @@ function resolveBirthSkills(req: { skill: string; release?: number }[], agent: A
   for (const r of req.slice(0, 20)) {
     const s = skills.find((x) => x.id === r?.skill || x.name === r?.skill);
     if (!s) { refused.push(`${r?.skill}: no such skill`); continue; }
-    const accepted = s.releases.filter((rel) =>
-      s.acceptances.some((a) => a.group === MAIN_GROUP && a.release === rel.n && a.tree === rel.tree));
+    // Accepted for THIS agent's group (multi-tenant), not merely for Main.
+    const accepted = s.releases.filter((rel) => !!acceptanceFor(s, rel, factoryTenantGroup(agent.group)));
     const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
     if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
     // A private skill is attached by its owner only: the person starting the agent.
@@ -5574,7 +5628,7 @@ function resolveBirthSkills(req: { skill: string; release?: number }[], agent: A
 function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
   const attached = attachmentsFor(sessionId);
   if (!attached?.length) return [];
-  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, MAIN_GROUP, agentCtxFor(sessionId));
+  const { ok } = resolveAttachments(loadRegistry(factoryRoot()).skills, attached, factoryAgentGroup(sessionId), agentCtxFor(sessionId));
   return ok.map(({ skill, release }) => ({ name: skill.name, release: release.n, tree: release.tree }));
 }
 
@@ -5859,7 +5913,7 @@ function makePilot(
   // resume without it). A dropped attachment is said, never silently skipped.
   // Their declared/detected secrets are GRANTED here: a person of this group
   // accepted that tree, and the accept screen listed those names.
-  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), MAIN_GROUP, agentCtxFor(id));
+  const factory = pluginArgs(factoryRoot(), attachmentsFor(id), factoryAgentGroup(id), agentCtxFor(id));
   for (const d of factory.dropped)
     console.log(`factory: ${id.slice(0, 8)} not loading ${d.skill}@${d.release} — ${d.reason}`);
   runningPlugins.set(id, factory.args.filter((_a, i) => i % 2 === 1));

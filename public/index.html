@@ -11102,8 +11102,23 @@
     const text = await r.text();
     let out = null;
     try { out = JSON.parse(text); } catch { out = text; }
-    if (!r.ok) throw new Error(facError(out, r.status));
+    if (!r.ok) { const e = new Error(facError(out, r.status)); e.body = out; throw e; }
     return out;
+  }
+  /**
+   * POST that may come back 409 `needsApproval`: the release asks for vault
+   * secrets, which agents receive only once a person approved them BY NAME.
+   * Ask, then retry with the approved list; declining sends nothing.
+   */
+  async function facCallApproving(url, body) {
+    try { return await facCall("POST", url, body); }
+    catch (e) {
+      const names = e.body && e.body.needsApproval;
+      if (!Array.isArray(names) || !names.length) throw e;
+      if (!confirm(`This skill asks for these vault secrets:\n\n  ${names.join("\n  ")}\n\nAgents running it will receive their values. Grant them?`))
+        throw new Error("Not applied: the secrets it asks for were not approved.");
+      return facCall("POST", url, { ...body, approveSecrets: names });
+    }
   }
   const facAgo = (t) => {
     const m = Math.round((Date.now() - t) / 60000);
@@ -11490,7 +11505,7 @@
 
   async function facAttach(s, sessionId, release, reloadAgent, after) {
     try {
-      const out = await facCall("POST", "/factory/attach", { sessionId, skill: s.id, release, ...(reloadAgent ? { reload: true } : {}) });
+      const out = await facCallApproving("/factory/attach", { sessionId, skill: s.id, release, ...(reloadAgent ? { reload: true } : {}) });
       if (after) await after();
       facMsg(release === null ? "Removed. The agent drops it at its next reload."
         : out.reload === "reloaded" ? "Given to the agent, which is reloading with it."
@@ -11845,7 +11860,7 @@
     const s = fac.sel, ed = fac.ed;
     if (ed && (ed.desc !== ed.saved.desc || ed.body !== ed.saved.body) && !(await facSaveDoc(true))) return;
     try {
-      const out = await facCall("POST", `/factory/skills/${s.id}/publish`, {});
+      const out = await facCallApproving(`/factory/skills/${s.id}/publish`, {});
       const warn = (out.release.warnings || []).map((w) => "! " + facFinding(w)).join("\n");
       const secrets = [...new Set([...(out.release.secrets || []), ...(out.release.detectedSecrets || [])])];
       const n = out.updated.length;

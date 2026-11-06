@@ -274,7 +274,10 @@ test("a release grants declared ∪ detected secrets, and says which were only d
   // Granted only once accepted for the group.
   const skills = () => loadRegistry(root).skills;
   assert.deepEqual(grantedSecrets(skills(), [{ skill: s.id, release: 1 }]), []);
+  // An acceptance that approved no name grants none — the manifest alone never does.
   accept(root, s.id, { group: MAIN_GROUP, release: 1, by: "m" });
+  assert.deepEqual(grantedSecrets(skills(), [{ skill: s.id, release: 1 }]), []);
+  accept(root, s.id, { group: MAIN_GROUP, release: 1, by: "m", secrets: ["SLACK_BOT_TOKEN", "SLACK_WEBHOOK", "NOT_ASKED"] });
   assert.deepEqual(grantedSecrets(skills(), [{ skill: s.id, release: 1 }]).sort(), ["SLACK_BOT_TOKEN", "SLACK_WEBHOOK"]);
   assert.deepEqual(pluginArgs(root, [{ skill: s.id, release: 1 }]).secrets.sort(), ["SLACK_BOT_TOKEN", "SLACK_WEBHOOK"]);
 });
@@ -452,4 +455,118 @@ test("prepareWorkspace: multi-tenant clone is made BY the drop user, in their HO
   assert.ok(fs.existsSync(path.join(dir, "notes.md")), "fast-forwarded to the new main");
   // No bundle left behind in the temp dir.
   assert.deepEqual(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith(`shadok-factory-ws-${process.pid}-`)), []);
+});
+
+// ── Security: modes, symlinks, approvals, editors (2026-11-06 audit) ─────────
+
+import { approvalFrom, approvedSecrets, pushVerdict, unsafeEntries } from "../src/factory.js";
+
+/** An agent's push that adds a SYMLINK (or anything `git add` can stage). */
+function agentPushLink(root: string, name: string, work: string, link: string, target: string): Buffer {
+  const b = path.join(work, "in.bundle");
+  fs.writeFileSync(b, bundleOf(root, name));
+  const clone = path.join(work, "clone");
+  sh(work, "git", ["clone", "-q", "-b", "main", b, clone]);
+  fs.mkdirSync(path.dirname(path.join(clone, link)), { recursive: true });
+  fs.symlinkSync(target, path.join(clone, link));
+  sh(clone, "git", ["add", "-A"]);
+  sh(clone, "git", ["commit", "-q", "-m", "add link"]);
+  const out = path.join(work, "out.bundle");
+  sh(clone, "git", ["bundle", "create", "-q", out, "origin/main..main"]);
+  return fs.readFileSync(out);
+}
+
+test("push: a symlink is refused (paths alone passed it), main does not move", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "linky", by: "a" });
+  const before = headCommit(root, s.id);
+  const outside = path.join(scratch(t), "secret.txt");
+  fs.writeFileSync(outside, "s3cr3t", { mode: 0o600 });
+  const bundle = agentPushLink(root, "linky", scratch(t), "scripts/x.sh", outside);
+  assert.throws(
+    () => receivePush(root, s.id, bundle, { by: "agent", secrets: [] }),
+    (e: unknown) => e instanceof FactoryError && e.status === 422 && !!e.scan?.refusals.some((r) => r.path === "scripts/x.sh" && /symlink/.test(r.message)),
+  );
+  assert.equal(headCommit(root, s.id), before);
+  assert.equal(fs.statSync(outside).mode & 0o777, 0o600);
+});
+
+test("materialise: a release holding a symlink (cut before the push check) is refused and chmods nothing", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "oldlink", by: "a" });
+  const outside = path.join(scratch(t), "victim.sh");
+  fs.writeFileSync(outside, "x", { mode: 0o600 });
+  // Plant the link straight in the bare repo, the way a pre-fix push landed it.
+  const d = path.join(root, "repos", `${s.id}.git`);
+  const head = headCommit(root, s.id)!;
+  const blob = execFileSync("git", ["--git-dir", d, "hash-object", "-w", "--stdin"], { input: outside }).toString().trim();
+  const idx = path.join(scratch(t), "idx");
+  const env = { ...process.env, GIT_INDEX_FILE: idx, GIT_AUTHOR_NAME: "a", GIT_AUTHOR_EMAIL: "a@a", GIT_COMMITTER_NAME: "a", GIT_COMMITTER_EMAIL: "a@a" };
+  execFileSync("git", ["--git-dir", d, "read-tree", head], { env });
+  execFileSync("git", ["--git-dir", d, "update-index", "--add", "--cacheinfo", `120000,${blob},scripts/run.sh`], { env });
+  const tree = execFileSync("git", ["--git-dir", d, "write-tree"], { env }).toString().trim();
+  const c = execFileSync("git", ["--git-dir", d, "commit-tree", tree, "-p", head, "-m", "link"], { env }).toString().trim();
+  execFileSync("git", ["--git-dir", d, "update-ref", "refs/heads/main", c]);
+  assert.deepEqual(unsafeEntries(d, "refs/heads/main"), [{ path: "scripts/run.sh", mode: "120000" }]);
+  cutRelease(root, s.id, { by: "a", secrets: [] });
+  accept(root, s.id, { group: MAIN_GROUP, release: 1, by: "a" });
+  const r = pluginArgs(root, [{ skill: s.id, release: 1 }]);
+  assert.deepEqual(r.args, []);
+  assert.match(r.dropped[0].reason, /symlink/);
+  assert.equal(fs.statSync(outside).mode & 0o777, 0o600);
+});
+
+test("prune never follows a symlink: the target's mode is untouched, the link is gone", (t) => {
+  const root = scratch(t);
+  const dir = pluginsDir(root);
+  const outsideDir = scratch(t);
+  const outside = path.join(outsideDir, "keep.txt");
+  fs.writeFileSync(outside, "x", { mode: 0o444 });
+  fs.chmodSync(outsideDir, 0o755);
+  // A stale release dir with a link inside, and a top-level link.
+  fs.mkdirSync(path.join(dir, "old@1-aaaaaaaa", "skills"), { recursive: true });
+  fs.symlinkSync(outsideDir, path.join(dir, "old@1-aaaaaaaa", "skills", "evil"));
+  fs.symlinkSync(outside, path.join(dir, "old@1-aaaaaaaa", "f"));
+  fs.symlinkSync(outsideDir, path.join(dir, "top@1-bbbbbbbb"));
+  const removed = prunePlugins(root, new Set()).sort();
+  assert.deepEqual(removed, ["old@1-aaaaaaaa", "top@1-bbbbbbbb"]);
+  assert.equal(fs.statSync(outside).mode & 0o777, 0o444);
+  assert.equal(fs.statSync(outsideDir).mode & 0o777, 0o755);
+  assert.ok(fs.existsSync(outside));
+});
+
+test("approvals: a release receives only the names a person approved, never more than it asks", () => {
+  const rel = { n: 1, tree: "t", commit: "c", by: "a", at: 0, secrets: ["A_TOKEN", "B_KEY"], warnings: [] };
+  assert.equal(approvalFrom(rel, undefined), undefined); // must be asked
+  assert.deepEqual(approvalFrom({ ...rel, secrets: [] }, undefined), []); // nothing to ask
+  assert.deepEqual(approvalFrom(rel, ["B_KEY", "ROOT_PASSWORD"]), ["B_KEY"]);
+  assert.equal(approvalFrom(rel, "A_TOKEN"), undefined);
+  const acc = { group: "main", release: 1, tree: "t", by: "p", at: 0 };
+  assert.deepEqual(approvedSecrets(rel, { ...acc, secrets: ["A_TOKEN"] }), ["A_TOKEN"]);
+  assert.deepEqual(approvedSecrets(rel, { ...acc, secrets: [] }), []);
+  assert.deepEqual(approvedSecrets(rel, acc), ["A_TOKEN", "B_KEY"]); // legacy: approved on a screen listing all
+  assert.deepEqual(approvedSecrets(rel, undefined), []);
+});
+
+test("acceptance is per group: Main's yes does not run a release in another group", (t) => {
+  const root = scratch(t);
+  const s = createSkill(root, { name: "pergroup", by: "a" });
+  cutRelease(root, s.id, { by: "a", secrets: [] });
+  accept(root, s.id, { group: MAIN_GROUP, release: 1, by: "a" });
+  assert.equal(pluginArgs(root, [{ skill: s.id, release: 1 }], MAIN_GROUP).args.length, 2);
+  const other = pluginArgs(root, [{ skill: s.id, release: 1 }], "g-hr");
+  assert.deepEqual(other.args, []);
+  assert.match(other.dropped[0].reason, /not been accepted for g-hr/);
+  accept(root, s.id, { group: "g-hr", release: 1, by: "hr-person" });
+  assert.equal(pluginArgs(root, [{ skill: s.id, release: 1 }], "g-hr").args.length, 2);
+});
+
+test("push: the skill's editors are enforced, and a private skill takes only its owner's agents", () => {
+  const base = { id: "i", name: "k", description: "", owner: MAIN_GROUP, editors: [MAIN_GROUP], users: [MAIN_GROUP], createdBy: "a", createdAt: 0, releases: [], acceptances: [] };
+  assert.equal(pushVerdict(base, { group: MAIN_GROUP }), null);
+  assert.match(pushVerdict(base, { group: "g-hr" })!, /not editable by agents of g-hr/);
+  assert.equal(pushVerdict({ ...base, owner: "groups:g-hr" }, { group: "g-hr" }), null);
+  assert.equal(pushVerdict({ ...base, editors: ["g-hr"] }, { group: "g-hr" }), null);
+  assert.match(pushVerdict({ ...base, owner: "user:alice" }, { group: MAIN_GROUP, createdBy: "bob" })!, /private to alice/);
+  assert.equal(pushVerdict({ ...base, owner: "user:alice" }, { group: MAIN_GROUP, createdBy: "alice" }), null);
 });

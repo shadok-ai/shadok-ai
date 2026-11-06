@@ -588,6 +588,21 @@ edits; profile-level attachments; skill scripts as cron checks; auto-update.
 - Browser text editor in v1 — confirm the [CALL] (the challenge proposed
   read-only).
 
+## Security audit (2026-11-06)
+
+Fixed after an audit; details in `docs/architecture.md` ("Security rules"):
+- A push may carry only plain files and directories (no symlink, no gitlink);
+  a release is re-checked before it is materialised, written without `tar`,
+  and nothing ever chmods through a link (materialise, prune).
+- Acceptance is keyed by the agent's isolation group in multi-tenant (always
+  `main` single-tenant). Attach, the agent list and the publish/update moves
+  only reach agents the caller may drive.
+- A release's secrets are granted only once a person approved each NAME at
+  accept / publish / attach time; never the manifest's list alone.
+- Person actions refuse an agent session key or peer token even with a forged
+  `Origin`; `editors` is enforced on push; the scan uses the caller's group's
+  vault.
+
 ## Challenge log (2026-10-31)
 
 An adversarial review (separate model, read the spec cold against the
