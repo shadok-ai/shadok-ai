@@ -1,3 +1,4 @@
+import { isAgentCredentialVar, withoutAgentCredentials } from "./agent-principal.js";
 import pty from "node-pty";
 import xterm from "@xterm/headless";
 import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, typeIntoBox } from "./detect.js";
@@ -49,13 +50,16 @@ export function spawnEnv(
   opts: { user?: string | null; home?: string | null; env?: Record<string, string>; oauthToken?: string },
   baseEnv: Record<string, string>,
 ): Record<string, string> {
-  return {
+  // The credential strip goes on the RESULT, so neither the inherited env nor
+  // anything a caller passes can hand an agent the admin's cookie or the
+  // instance password (src/agent-principal.ts).
+  return withoutAgentCredentials({
     ...baseEnv,
     TERM: "xterm-256color",
     ...opts.env,
     ...dropEnv(opts.user, opts.home),
     ...forcedEnv(opts),
-  };
+  });
 }
 
 export interface PilotOptions {
@@ -158,6 +162,7 @@ export class PtyPilot {
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined) continue;
       if (/^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k)) continue;
+      if (isAgentCredentialVar(k)) continue;
       env[k] = v;
     }
     // Drop to the target group's OS user when one is set (node-pty has no uid

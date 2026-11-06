@@ -86,7 +86,9 @@ test("add posts the channel's own sessionId, the guard and the timezone", async 
     check: "sh guard.sh",
     tz: "Europe/Paris",
   });
-  assert.equal(srv.seen[0].cookie, "sk_auth=tok");
+  // No cookie any more, even if one sits in the env: the session key is an
+  // agent's only credential.
+  assert.equal(srv.seen[0].cookie, undefined);
   assert.match(res.out, /scheduled \[abcdef01\] daily 09:00 \(Europe\/Paris\) \+guard/);
 });
 

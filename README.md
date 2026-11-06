@@ -625,8 +625,8 @@ know before opening it up:
     add, and flags it to every admin. There is no mail yet: this panel is the
     channel, so keep an eye on its badge.
   - While it is on, the instance password (`admin`) **cannot sign in to the
-    browser** — it lives in every agent's environment and no one could reset it;
-    use a named account. Agents, Telegram and peers keep working (they never use
+    browser** — no one could reset it (and agents started before it was removed
+    from their environment still hold it); use a named account. Agents, Telegram and peers keep working (they never use
     the login), but account and two-factor management is reserved to a signed-in
     person: an agent's key can no longer create or reset accounts.
   - Passkeys need a **secure context**: `https://` (see "Behind TLS") or
@@ -639,6 +639,22 @@ know before opening it up:
     session issued before it was switched on (they stop working). What it does
     not: anything already running as the machine's user — same soft isolation as
     profiles.
+- **An agent is not the admin.** An agent authenticates to its own cockpit with
+  `SHADOK_SESSION_KEY`, and that key makes it **that agent**: a member of its own
+  channel's group, never an admin. It can drive its siblings (in multi-tenant:
+  the agents of its own group plus public ones), schedule prompts on its
+  channel, store a secret it obtained, record in the ledger, send you files,
+  reload itself — and is refused (`403`) on account, peer, Telegram, backend and
+  the other admin routes, and on every **browser-only** route (guardrails, shell
+  mode, uploads…), which now require a signed-in person's session rather than
+  an `Origin` header. Agents are no longer handed the admin's cookie
+  (`SHADOK_AUTH`) nor the instance password (`SHADOK_GUI_PASSWORD`). An agent
+  that a restricted peer spawned stays in that peer's box.
+  **Upgrading:** the first start of this version signs out whoever is signed in
+  with the instance password (once). Agents spawned before it still hold the
+  password in their environment — **change the password** (`--password` /
+  `SHADOK_GUI_PASSWORD`) and **reload those agents** (version menu → *Restart all
+  agents*) to take it away from them.
 - Once people are named, **a prompt carries its sender**: the agent sees who
   asked, and the other browsers show the name above the message instead of
   "pilot (elsewhere)". The server takes that name from the session, never from

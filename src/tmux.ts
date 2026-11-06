@@ -1,3 +1,4 @@
+import { AGENT_CREDENTIAL_VARS, isAgentCredentialVar } from "./agent-principal.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -122,7 +123,7 @@ export function launcherScript(o: {
     exports.push(`export ${k}=${shellQuote(v)}`);
   };
   add("TERM", "xterm-256color");
-  for (const [k, v] of Object.entries(o.env)) add(k, v);
+  for (const [k, v] of Object.entries(o.env)) if (!isAgentCredentialVar(k)) add(k, v);
   // HOME/USER/LOGNAME of the drop user, AFTER the profile env (so the server's
   // inherited HOME, which the tmux pane also inherits, is overridden) and before
   // the forced vars. `{}` when no user is dropped → byte-for-byte today's script.
@@ -133,7 +134,11 @@ export function launcherScript(o: {
   const script = [
     "#!/bin/sh",
     'rm -f -- "$0"',
-    ...o.unset.filter(isEnvName).map((k) => `unset ${k}`),
+    // The credential vars are unset UNCONDITIONALLY, not only when this
+    // process has them: a pane inherits the tmux SERVER's global environment,
+    // captured when that server first started — possibly by an older shadok
+    // that still carried the instance password (src/agent-principal.ts).
+    ...[...new Set([...o.unset, ...AGENT_CREDENTIAL_VARS])].filter(isEnvName).map((k) => `unset ${k}`),
     ...exports,
     `exec ${execArgv.map(shellQuote).join(" ")}`,
     "",

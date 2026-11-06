@@ -7,7 +7,7 @@
 // leaks. There is deliberately no way to read a value back out — `list` prints
 // names only, and there is no `get`.
 //
-// Reads SHADOK_PORT / SHADOK_AUTH from the env (injected into every agent).
+// Reads SHADOK_PORT / SHADOK_SESSION_KEY from the env (injected into every agent).
 //
 // Node, not Python: shadok-ai IS a Node program, so the runtime is guaranteed
 // present wherever a skill runs — the image's python3 exists to build native
@@ -29,7 +29,7 @@ class UsageError extends Error {}
 function env() {
   const port = process.env.SHADOK_PORT;
   if (!port) die("Not inside a shadok-ai agent (SHADOK_PORT unset).");
-  return { base: `http://127.0.0.1:${port}`, auth: process.env.SHADOK_AUTH ?? "" , key: process.env.SHADOK_SESSION_KEY ?? "" };
+  return { base: `http://127.0.0.1:${port}`, key: process.env.SHADOK_SESSION_KEY ?? "" };
 }
 
 async function api(ctx, method, path, body) {
@@ -39,9 +39,7 @@ async function api(ctx, method, path, body) {
       method,
       headers: {
         "content-type": "application/json",
-        ...(ctx.auth ? { Cookie: ctx.auth } : {}),
-        // Durable half — see the note in pilotctl.mjs: the cookie is frozen
-        // into this process's env at spawn and expires after a week.
+        // The agent's ONLY credential (no cookie is handed to agents any more).
         ...(ctx.key ? { "x-shadok-session-key": ctx.key } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -102,7 +100,6 @@ async function apiSoft(ctx, method, path, body) {
       method,
       headers: {
         "content-type": "application/json",
-        ...(ctx.auth ? { Cookie: ctx.auth } : {}),
         ...(ctx.key ? { "x-shadok-session-key": ctx.key } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),

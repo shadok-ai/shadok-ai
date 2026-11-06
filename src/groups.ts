@@ -29,6 +29,13 @@ export const MAIN_GROUP_ID = "main";
 export interface Viewer {
   name: string;
   role: Role;
+  /**
+   * Set ONLY for an AGENT principal (src/agent-principal.ts): the group its
+   * channel was born into, null for the commons. An agent is a member of
+   * exactly that group — never by name, and never of a group a person it works
+   * for happens to belong to. `undefined` = a person, judged by `name`.
+   */
+  agentGroup?: string | null;
 }
 
 /** A private group's owner counts as a member even if the list omits them. */
@@ -36,10 +43,27 @@ export function memberOf(g: Group, name: string): boolean {
   return g.members.includes(name) || (g.nature === "private" && g.owner === name);
 }
 
+/** Is this an agent principal rather than a person? */
+export function isAgentViewer(viewer: Viewer | null | undefined): boolean {
+  return !!viewer && viewer.agentGroup !== undefined;
+}
+
+/**
+ * Does `viewer` belong to `g`? A person by name (`memberOf`); an agent iff `g`
+ * is the group its own channel lives in. Every membership question about a
+ * viewer goes through here, so an agent can never be "a member" of a group by
+ * sharing a name with someone in it.
+ */
+export function viewerInGroup(g: Group, viewer: Viewer | null): boolean {
+  if (!viewer) return false;
+  if (viewer.agentGroup !== undefined) return viewer.agentGroup !== null && viewer.agentGroup === g.id;
+  return memberOf(g, viewer.name);
+}
+
 /** Operational visibility, and also the see/drive rule. An admin is NOT exempt. */
 export function canSeeGroup(g: Group, viewer: Viewer | null): boolean {
   if (g.nature === "public") return true;
-  return viewer !== null && memberOf(g, viewer.name);
+  return viewer !== null && viewerInGroup(g, viewer);
 }
 
 /**
@@ -48,7 +72,9 @@ export function canSeeGroup(g: Group, viewer: Viewer | null): boolean {
  * admin sees only the groups they belong to, plus public ones).
  */
 export function canAdministerGroup(g: Group, viewer: Viewer | null): boolean {
-  return viewer !== null && g.nature !== "private" && memberOf(g, viewer.name);
+  // Administering a group is a PERSON's act: an agent never lists, deletes or
+  // manages the membership of a group, its own included.
+  return viewer !== null && !isAgentViewer(viewer) && g.nature !== "private" && memberOf(g, viewer.name);
 }
 
 export function visibleGroupIds(groups: readonly Group[], viewer: Viewer | null): Set<string> {
@@ -120,6 +146,7 @@ export function membershipVerdict(
   target: string,
 ): { ok: true } | { ok: false; error: string } {
   if (actor === null) return { ok: false, error: "not signed in" };
+  if (isAgentViewer(actor)) return { ok: false, error: "an agent cannot change group membership" };
   if (g.nature !== "restricted") {
     return { ok: false, error: `membership of a ${g.nature} group cannot be changed` };
   }
@@ -253,7 +280,7 @@ export function visibleChannels(
 export function spawnGroupFor(viewer: Viewer | null, groups: readonly Group[]): Group | null {
   const commons = groups.find((g) => g.id === MAIN_GROUP_ID) ?? groups.find((g) => g.nature === "public") ?? null;
   if (!viewer) return commons;
-  const own = groups.filter((g) => g.nature !== "public" && memberOf(g, viewer.name));
+  const own = groups.filter((g) => g.nature !== "public" && viewerInGroup(g, viewer));
   return own.length === 1 ? own[0] : commons;
 }
 
@@ -334,8 +361,13 @@ export function canRestartInto(storedGroupId: string | null | undefined, groups:
 }
 
 /** An account as a Viewer (null passes through). */
-export function viewerFor(account: { name: string; role: Role } | null): Viewer | null {
-  return account ? { name: account.name, role: account.role } : null;
+export function viewerFor(
+  account: { name: string; role: Role; agent?: { group: string | null } } | null,
+): Viewer | null {
+  if (!account) return null;
+  return account.agent
+    ? { name: account.name, role: account.role, agentGroup: account.agent.group }
+    : { name: account.name, role: account.role };
 }
 
 /**
@@ -348,7 +380,7 @@ export function viewerFor(account: { name: string; role: Role } | null): Viewer 
 export function memberGroupIds(groups: readonly Group[], viewer: Viewer | null): Set<string> {
   const out = new Set<string>();
   if (!viewer) return out;
-  for (const g of groups) if (memberOf(g, viewer.name)) out.add(g.id);
+  for (const g of groups) if (viewerInGroup(g, viewer)) out.add(g.id);
   return out;
 }
 
@@ -401,13 +433,14 @@ export function ledgerGroupsFor(groups: readonly Group[], viewer: Viewer | null)
  * - the Main commons → an ADMIN (Main has no members, so `memberOf` is false for
  *   everyone and this reduces to admin-only, as before).
  *
- * An agent authenticates as the bootstrap admin, so it clears the admin bar for
- * its own commons/restricted group — which is how an agent stores a credential
- * it obtained (the `shadok-secrets` skill). A null group (unresolvable) or a
+ * An AGENT writes its own group only (`viewerInGroup`); the vault route never
+ * even asks this for an agent — `secretWriteDecision` derives the agent's own
+ * group from its session key and authorizes on that. A null group (unresolvable) or a
  * null viewer fails closed: never write a secret into a group we cannot verify.
  */
 export function canWriteSecretGroup(g: Group | null | undefined, viewer: Viewer | null): boolean {
   if (!g || !viewer) return false;
+  if (isAgentViewer(viewer)) return viewerInGroup(g, viewer);
   if (g.nature === "private") return g.owner === viewer.name;
   return viewer.role === "admin" || memberOf(g, viewer.name);
 }
@@ -553,8 +586,8 @@ export function mergeGroupsPut(
  *
  * Guard order, each load-bearing:
  * - `fromBrowser` FIRST (403): writing the group list is a cockpit act — an
- *   agent authenticates as the bootstrap admin and would otherwise edit
- *   membership/nature by `curl` (T2/T6 carry, same spirit as `POST /groups`).
+ *   agent (or any non-browser caller) would otherwise edit membership/nature by
+ *   `curl` (T2/T6 carry, same spirit as `POST /groups`).
  * - instance (409): the stale-tab guard, kept.
  * - the ACL merge (`mergeGroupsPut`): a non-member membership/nature change → 403.
  */

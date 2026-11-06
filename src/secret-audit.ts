@@ -111,7 +111,7 @@ export function spawnActor(c: {
 }
 
 /** Who made an HTTP call: an agent by its session key beats the account it
- *  authenticates as (which is the bootstrap admin for every agent). */
+ *  would read as (an agent's principal name names no person). */
 export function httpActor(c: {
   agentId?: string | null;
   account?: string | null;

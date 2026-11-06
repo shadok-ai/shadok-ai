@@ -69,17 +69,12 @@ export function resolvePeer(peersOut, alias) {
   if (!p || typeof p.url !== "string" || typeof p.token !== "string" || !p.url || !p.token) return null;
   return { url: p.url.replace(/\/+$/, ""), token: p.token };
 }
-// When a GUI password is set, the server injects SHADOK_AUTH=sk_auth=<token>
-// into every agent's env; loopback HTTP + WS calls must present it as the cookie
-// or the password gate 401s them — exactly what secret.py / schedule.py and the
-// Telegram bridge already do. Empty when no password is set → no change.
-// The session key is the DURABLE half and is sent whenever it is set.
-// SHADOK_AUTH is a dated cookie frozen into this process's environment at
-// spawn, so it expires after a week and nothing can refresh it — an agent
-// older than that got 401 on every call here. The key is derived from the
-// session id, verifies for as long as the agent runs, and grants exactly what
-// the cookie did. Both are sent: the cookie still works, and an older server
-// that does not know the header simply ignores it.
+// An agent authenticates with its own session key (SHADOK_SESSION_KEY) — its
+// ONLY credential: the server no longer hands agents a cookie or the cockpit
+// password. The key is derived from the session id, verifies for as long as the
+// agent runs, and makes the caller THIS AGENT (its own group's agents, never an
+// admin). A human running pilotctl by hand has no key; on a password-protected
+// cockpit they can export SHADOK_AUTH (their own `sk_auth=…` cookie) instead.
 export const authHeaders = () =>
   PEER
     ? // Targeting a remote peer: the ONLY credential it accepts is the peer token.
@@ -100,7 +95,7 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `ws` already has them, so it is returned untouched.
 //
 // Both accept the non-standard `{ headers }` option, which is what carries the
-// SHADOK_AUTH cookie past the password gate — verified against a real upgrade
+// auth headers past the password gate — verified against a real upgrade
 // handler on the built-in, not assumed.
 function makeWS(url, opts) {
   if (!WS)

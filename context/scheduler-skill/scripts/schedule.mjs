@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // schedule — manage the CURRENT shadok-ai channel's scheduled prompts (crons)
 // through the local server API. Reads SHADOK_SESSION_ID / SHADOK_PORT /
-// SHADOK_AUTH from the env (injected by shadok-ai into every agent).
+// SHADOK_SESSION_KEY from the env (injected by shadok-ai into every agent).
 //
 // Node, not Python: shadok-ai IS a Node program, so the runtime is guaranteed
 // present wherever a skill runs. The Dockerfile's python3 is there to build
@@ -25,7 +25,7 @@ function env() {
   const port = process.env.SHADOK_PORT;
   const sid = process.env.SHADOK_SESSION_ID;
   if (!port || !sid) die("Not inside a shadok-ai channel (SHADOK_PORT / SHADOK_SESSION_ID unset).");
-  return { base: `http://127.0.0.1:${port}`, sid, auth: process.env.SHADOK_AUTH ?? "" , key: process.env.SHADOK_SESSION_KEY ?? "" };
+  return { base: `http://127.0.0.1:${port}`, sid, key: process.env.SHADOK_SESSION_KEY ?? "" };
 }
 
 async function api(ctx, method, path, body) {
@@ -35,9 +35,7 @@ async function api(ctx, method, path, body) {
       method,
       headers: {
         "content-type": "application/json",
-        ...(ctx.auth ? { Cookie: ctx.auth } : {}),
-        // Durable half — see the note in pilotctl.mjs: the cookie is frozen
-        // into this process's env at spawn and expires after a week.
+        // The agent's ONLY credential (no cookie is handed to agents any more).
         ...(ctx.key ? { "x-shadok-session-key": ctx.key } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
