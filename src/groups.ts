@@ -260,19 +260,32 @@ export function spawnGroupFor(viewer: Viewer | null, groups: readonly Group[]): 
 /**
  * The group a NEW agent is born into when the caller MAY name a target.
  *
- * The requested group is honoured only when the caller can see it (`canSeeGroup`:
- * public, or they are a member) — so a caller can place an agent in a group they
- * belong to, never plant one in a group they do not. Anything else (no request,
- * unknown id, foreign restricted/private group) falls back to `spawnGroupFor`.
+ * Three sources, in order:
+ * - An explicit `requestedGroupId`, honoured only when the caller can see it
+ *   (`canSeeGroup`: public, or they are a member) — so a caller can place an
+ *   agent in a group they belong to, never plant one in a group they do not.
+ * - The LAUNCHER's group (`parentGroupId`), when the spawn came from another
+ *   agent: a child joins the group of the agent that launched it rather than the
+ *   admin viewer's own. This takes NO `canSeeGroup` check because it is proven
+ *   from server state (the parent channel's `group`, set at its spawn and keyed
+ *   to the unforgeable session key), not from client input — and the launcher
+ *   already runs in that isolation domain, so a child joining it is no
+ *   escalation. A dangling id (no such group) is ignored, not honoured.
+ * - Otherwise `spawnGroupFor` — the caller's own single group, else the commons.
  */
 export function spawnGroupForRequest(
   viewer: Viewer | null,
   groups: readonly Group[],
   requestedGroupId: string | null,
+  parentGroupId?: string | null,
 ): Group | null {
   if (requestedGroupId) {
     const g = groups.find((x) => x.id === requestedGroupId);
     if (g && canSeeGroup(g, viewer)) return g;
+  }
+  if (parentGroupId) {
+    const g = groups.find((x) => x.id === parentGroupId);
+    if (g) return g;
   }
   return spawnGroupFor(viewer, groups);
 }

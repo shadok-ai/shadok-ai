@@ -181,6 +181,34 @@ test("resolveSpawnIsolation: a resume of a commons (group-less) agent stays on t
   assert.deepEqual(r, { user: null, groupPatch: {} });
 });
 
+test("resolveSpawnIsolation: a NEW agent launched by a parent is born into the PARENT's group, not the viewer's", () => {
+  // The viewer here resolves to the commons (null), as an agent-driven spawn does
+  // when the admin cookie's own group is ambiguous/absent. The launcher runs in
+  // comex, so the child joins comex and drops to its user — this is the fix for
+  // "a spawned agent lands in the admin's Personal group instead of its launcher's".
+  const r = resolveSpawnIsolation({
+    mode: "multi-tenant",
+    resumed: false,
+    viewer: null,
+    groups: [main, comex],
+    storedGroupId: null,
+    parentGroupId: "comex",
+  });
+  assert.deepEqual(r, { user: "sk-comex", groupPatch: { group: "comex" } });
+});
+
+test("resolveSpawnIsolation: a RESUME ignores the parent group — the stored group is SERVER_OWNED", () => {
+  const r = resolveSpawnIsolation({
+    mode: "multi-tenant",
+    resumed: true,
+    viewer: { name: "ada", role: "member" },
+    groups: [main, comex],
+    storedGroupId: null,
+    parentGroupId: "comex",
+  });
+  assert.deepEqual(r, { user: null, groupPatch: {} });
+});
+
 // ── provisionPlan (pure) ──────────────────────────────────────────────────────
 
 test("provisionPlan: a public group provisions NOTHING (commons = the server's own user)", () => {
