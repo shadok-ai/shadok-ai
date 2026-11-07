@@ -10,8 +10,9 @@ import {
   commonsOsUser,
   COMMONS_USER,
   rewriteCronCheckHome,
-  shadokScriptDirs,
+  strandedCheckDirs,
   SHADOK_INTERNAL_DIRS,
+  CLAUDE_INTERNAL_DIRS,
   type MigrationPlan,
   type MigrationDeps,
 } from "../src/migrate-groups.js";
@@ -309,11 +310,10 @@ test("rewriteCronCheckHome: empty/missing old or new base is a no-op (never blan
   assert.equal(rewriteCronCheckHome("", "/root", "/home/main"), "");
 });
 
-// ── rewriteCronCheckHome: extra relocated prefixes (the ~/.shadok-ai script dirs) ──
-// #419 moved only the `.claude` base. A cron guard just as often names an
-// operator/agent script dropped straight under the data dir
-// (`/root/.shadok-ai/checks/x.sh`), which the dropped `main` user cannot reach
-// either. The rewrite takes extra RELATIVE prefixes so those bases follow too.
+// ── rewriteCronCheckHome: extra relocated prefixes (the .shadok-ai script dirs) ──
+// #419 moved only the `.claude` base (which covers any `.claude/*` path). A guard
+// also names scripts under `.shadok-ai/<dir>`, which has no base rewrite of its
+// own, so the rewrite takes extra RELATIVE prefixes for those.
 
 test("rewriteCronCheckHome: an extra .shadok-ai script-dir prefix is repointed alongside .claude", () => {
   assert.equal(
@@ -357,14 +357,16 @@ test("rewriteCronCheckHome: no extra prefixes behaves exactly like the 3-arg for
   assert.equal(rewriteCronCheckHome(c, "/root", "/home/main", []), rewriteCronCheckHome(c, "/root", "/home/main"));
 });
 
-// ── shadokScriptDirs ──────────────────────────────────────────────────────────
-// Which ~/.shadok-ai/<dir> script directories a cron check names under the old
-// /root HOME — the dirs the heal must carry across, EXCLUDING shadok's own state
-// and credential stores (never copy a private key / session key into /home/main).
+// ── strandedCheckDirs ─────────────────────────────────────────────────────────
+// Which home-rooted <top>/<sub> script dirs a cron check names under the old /root
+// HOME — the dirs the heal must carry across. The trap is not one directory, it is
+// "any /root path a check names": .claude/scripts (biosense), any .shadok-ai/<dir>
+// (dogfood). EXCLUDES shadok's own state/credential stores and the big
+// already-migrated .claude trees.
 
-test("shadokScriptDirs: extracts the referenced script dirs as relative prefixes, deduped", () => {
+test("strandedCheckDirs: extracts .shadok-ai script dirs as relative prefixes, deduped", () => {
   assert.deepEqual(
-    shadokScriptDirs(
+    strandedCheckDirs(
       "sh /root/.shadok-ai/checks/a.sh; sh /root/.shadok-ai/checks/b.sh; node /root/.shadok-ai/scripts/c.mjs",
       "/root",
     ).sort(),
@@ -372,31 +374,56 @@ test("shadokScriptDirs: extracts the referenced script dirs as relative prefixes
   );
 });
 
-test("shadokScriptDirs: a credential/state dir is REFUSED even when named (never relocate secrets)", () => {
-  assert.deepEqual(shadokScriptDirs("cat /root/.shadok-ai/ssh/id_ed25519", "/root"), []);
-  assert.deepEqual(shadokScriptDirs("cat /root/.shadok-ai/users/x.key", "/root"), []);
-  assert.deepEqual(shadokScriptDirs("node /root/.shadok-ai/ledger/x.json", "/root"), []);
+test("strandedCheckDirs: .claude/scripts is discovered too — the gap biosense revealed (#419 did skills only)", () => {
+  assert.deepEqual(strandedCheckDirs("/root/.claude/scripts/repo-sync.sh", "/root"), [".claude/scripts"]);
 });
 
-test("shadokScriptDirs: a top-level .shadok-ai FILE (no subdir) is never matched", () => {
-  // The `<dir>/<something>` shape is required, so secrets.json / config.json —
+test("strandedCheckDirs: a $HOME- or ~-relative reference still yields its dir (it must exist in the new HOME)", () => {
+  // The check is portable (no rewrite needed), but the dir must be COPIED, so the
+  // $HOME/~ forms are discovered as well as the absolute oldHome one.
+  assert.deepEqual(strandedCheckDirs("python3 $HOME/.claude/scripts/pr-automerge-check.py", "/root"), [".claude/scripts"]);
+  assert.deepEqual(strandedCheckDirs("sh ${HOME}/.shadok-ai/checks/x.sh", "/root"), [".shadok-ai/checks"]);
+  assert.deepEqual(strandedCheckDirs("sh ~/.shadok-ai/marketing/m.sh", "/root"), [".shadok-ai/marketing"]);
+});
+
+test("strandedCheckDirs: a credential/state dir is REFUSED even when named (never relocate secrets)", () => {
+  assert.deepEqual(strandedCheckDirs("cat /root/.shadok-ai/ssh/id_ed25519", "/root"), []);
+  assert.deepEqual(strandedCheckDirs("cat /root/.shadok-ai/users/x.key", "/root"), []);
+  assert.deepEqual(strandedCheckDirs("node /root/.shadok-ai/ledger/x.json", "/root"), []);
+});
+
+test("strandedCheckDirs: a big already-migrated .claude tree is REFUSED (not re-copied)", () => {
+  assert.deepEqual(strandedCheckDirs("cat /root/.claude/projects/x/y.jsonl", "/root"), []);
+  assert.deepEqual(strandedCheckDirs("cat /root/.claude/todos/t.json", "/root"), []);
+});
+
+test("strandedCheckDirs: a top-level FILE (no subdir) is never matched", () => {
+  // The `<top>/<sub>/<something>` shape is required, so secrets.json / .claude.json —
   // files, not dirs — can never be caught.
-  assert.deepEqual(shadokScriptDirs("node /root/.shadok-ai/secrets.json", "/root"), []);
+  assert.deepEqual(strandedCheckDirs("node /root/.shadok-ai/secrets.json", "/root"), []);
 });
 
-test("shadokScriptDirs: a .claude path is not a .shadok-ai script dir (that base is #419's job)", () => {
-  assert.deepEqual(shadokScriptDirs("node /root/.claude/skills/x/s.mjs", "/root"), []);
+test("strandedCheckDirs: a /root path OUTSIDE the two script homes is not relocated", () => {
+  // Only .claude and .shadok-ai host scripts; an arbitrary /root/<dir> is left for
+  // the check-failed signal, never blindly copied.
+  assert.deepEqual(strandedCheckDirs("sh /root/randomdir/x.sh", "/root"), []);
 });
 
-test("shadokScriptDirs: blank check or blank home yields nothing", () => {
-  assert.deepEqual(shadokScriptDirs("", "/root"), []);
-  assert.deepEqual(shadokScriptDirs("sh /root/.shadok-ai/checks/a.sh", ""), []);
+test("strandedCheckDirs: blank check or blank home yields nothing", () => {
+  assert.deepEqual(strandedCheckDirs("", "/root"), []);
+  assert.deepEqual(strandedCheckDirs("sh /root/.shadok-ai/checks/a.sh", ""), []);
 });
 
-test("SHADOK_INTERNAL_DIRS: the load-bearing credential stores are on the denylist", () => {
-  for (const d of ["ssh", "users", "secrets", "ledger", "channels", "crons"]) {
-    assert.ok(SHADOK_INTERNAL_DIRS.includes(d), `${d} must be denylisted`);
+test("denylists: the load-bearing stores/trees are refused", () => {
+  for (const d of ["ssh", "users", "secrets", "ledger", "channels", "crons", "media"]) {
+    assert.ok(SHADOK_INTERNAL_DIRS.includes(d), `.shadok-ai/${d} must be denylisted`);
   }
+  for (const d of ["projects", "todos", "shell-snapshots", "file-history"]) {
+    assert.ok(CLAUDE_INTERNAL_DIRS.includes(d), `.claude/${d} must be denylisted`);
+  }
+  // skills + scripts are the script homes — they must NOT be denylisted.
+  assert.ok(!CLAUDE_INTERNAL_DIRS.includes("skills"));
+  assert.ok(!CLAUDE_INTERNAL_DIRS.includes("scripts"));
 });
 
 test("server: the commons stranded-script heal is wired into the boot reconciler and covers all halves", () => {
@@ -408,10 +435,10 @@ test("server: the commons stranded-script heal is wired into the boot reconciler
   assert.match(src, /preseedGroupHomes\(\);\s*\n[\s\S]{0,200}await healCommonsStrandedScripts\(\);/);
   // No-op unless the HOME actually moved off /root.
   assert.match(src, /if \(!newHome \|\| newHome === oldHome\) return;/);
-  // Half 1: relocate the .claude/skills subtree the migration skipped.
+  // Half 1: relocate the .claude/skills subtree the migration skipped (always).
   assert.match(src, /"\.claude", "skills"/);
-  // Half 2: discover and relocate the ~/.shadok-ai script dirs the guards name.
-  assert.match(src, /shadokScriptDirs\(c\.check, oldHome\)/);
-  // Half 3: rewrite the guards for BOTH bases (the .claude base + the script dirs).
+  // Half 2: discover and relocate every home-rooted script dir the guards name.
+  assert.match(src, /strandedCheckDirs\(c\.check, oldHome\)/);
+  // Half 3: rewrite the guards (the .claude base + the relocated script dirs).
   assert.match(src, /rewriteCronCheckHome\(c\.check, oldHome, newHome, scriptDirs\)/);
 });

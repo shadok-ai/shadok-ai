@@ -80,7 +80,7 @@ import {
   COMMONS_USER,
   MIGRATION_MARKER_FILE,
   rewriteCronCheckHome,
-  shadokScriptDirs,
+  strandedCheckDirs,
 } from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
@@ -3452,13 +3452,16 @@ async function ensureGroupsProvisioned(): Promise<void> {
  * crons stuck, "son script est sous /root"). New agents are fine (their HOME is
  * already `/home/main`); this is the one-way carry for what predates the move.
  *
- * Two kinds of stranded location, both relocated here and then repointed:
- *  1. `~/.claude/skills` — the subtree `migChownTreeToCommons` skipped, where an
- *     agent keeps the custom monitoring scripts it authored (#419).
- *  2. `~/.shadok-ai/<dir>` — operator/agent script dirs dropped straight under the
- *     data dir (`checks`, `scripts`, `marketing`, …), discovered from the cron
- *     checks that name them. `shadokScriptDirs` denylists shadok's own state and
- *     credential stores, so a key/secret dir is NEVER copied into `/home/main`.
+ * What is relocated here and then repointed:
+ *  1. `~/.claude/skills` — ALWAYS, the subtree `migChownTreeToCommons` skipped,
+ *     where an agent keeps the custom skills it authored even when no guard names
+ *     them (#419).
+ *  2. Every home-rooted `<top>/<sub>` script dir a cron check NAMES — `.claude/scripts`
+ *     (seen on the biosense cockpit), any `.shadok-ai/<dir>` (the dogfood instance),
+ *     and any future one — discovered by `strandedCheckDirs`. The trap is not one
+ *     directory, it is "any `/root` path a check names". Its denylist refuses shadok's
+ *     own state/credential stores and the big already-migrated `.claude` trees, so a
+ *     key/secret dir is NEVER copied into `/home/main`.
  *
  * Runs on EVERY capable boot, independent of the migration marker (the twin of
  * the reprovision reconciler above), so an ALREADY-migrated instance self-heals on
@@ -3492,22 +3495,26 @@ async function healCommonsStrandedScripts(): Promise<void> {
   } catch (e) {
     console.error(`heal: reading crons failed (best-effort): ${(e as Error)?.message ?? e}`);
   }
-  // The ~/.shadok-ai/<dir> script dirs the guards name, deduped (never a
-  // credential/state dir — shadokScriptDirs denylists those).
+  // The home-rooted <top>/<sub> script dirs the guards name (.claude/scripts,
+  // .shadok-ai/<dir>, …), deduped — never a credential/state dir, strandedCheckDirs
+  // denylists those.
   const scriptDirs = [
-    ...new Set(crons.flatMap((c) => (c.check ? shadokScriptDirs(c.check, oldHome) : []))),
+    ...new Set(crons.flatMap((c) => (c.check ? strandedCheckDirs(c.check, oldHome) : []))),
   ];
-  // 1) Relocate the skills subtree the migration skipped, plus every discovered
-  //    ~/.shadok-ai script dir. Each copy is independent and best-effort.
-  for (const rel of [path.join(".claude", "skills"), ...scriptDirs]) {
+  // 1) Relocate ~/.claude/skills unconditionally (the subtree the migration skipped,
+  //    where an agent's custom skills live even when no guard names them), plus every
+  //    discovered script dir. Deduped; each copy is independent and best-effort.
+  for (const rel of [...new Set([path.join(".claude", "skills"), ...scriptDirs])]) {
     try {
       await copyTree(rel);
     } catch (e) {
       console.error(`heal: relocating commons ~/${rel} failed (best-effort): ${(e as Error)?.message ?? e}`);
     }
   }
-  // 2) Repoint this instance's cron guards: the .claude base AND the relocated
-  //    ~/.shadok-ai script dirs. A /root path that was NOT relocated stays intact.
+  // 2) Repoint this instance's cron guards: the .claude base (covers any .claude/*
+  //    path) AND every relocated .shadok-ai/<dir>. A /root path NOT relocated (a
+  //    denylisted or unknown dir) stays intact — surfaced as a check-failed, not
+  //    silently repointed to a place nothing was copied.
   try {
     let changed = false;
     for (const c of crons) {
