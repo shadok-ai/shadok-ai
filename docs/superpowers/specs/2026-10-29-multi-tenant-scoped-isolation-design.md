@@ -237,6 +237,17 @@ scopes.
   agent's OS user / HOME / secrets mid-life — incoherent. An agent **is born into
   its group and stays there**. "The same thing elsewhere" = spawn a fresh agent in
   the other group.
+- **[DECIDED] An agent launched BY another agent is born into its launcher's
+  group**, not the admin viewer's own. An agent-driven spawn authenticates as the
+  bootstrap admin (the cookie/session-key it carries), so resolving the group from
+  the *viewer* dropped every child into the admin's Personal group — surprising,
+  and it crosses the parent's isolation domain. The spawn therefore inherits the
+  **launcher's** group (`parentGroupId` in `resolveSpawnIsolation`), taken from the
+  launching session's stored `channel.group` and keyed to the **unforgeable
+  session key** (`callerAgent`), never the client-declared `parent` link — so it is
+  server-proven and needs no `canSeeGroup` check (the launcher already runs in that
+  domain). An explicit, visible `requestedGroupId` still overrides it; a human /
+  browser / peer spawn has no launcher and keeps the viewer's own group.
 
 ### Terminology: we enrich the existing group, we do not add a "team"
 
