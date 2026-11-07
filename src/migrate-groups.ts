@@ -202,28 +202,61 @@ export const SHADOK_INTERNAL_DIRS: readonly string[] = [
 ];
 
 /**
- * The `~/.shadok-ai/<dir>` script directories a cron `check` references under the
- * OLD commons HOME (`oldHome`, i.e. `/root`). These are operator/agent-authored
- * monitoring scripts dropped straight under the data dir — a DIFFERENT location
- * from `~/.claude/skills` (#419) that the HOME move also stranded: a dropped `main`
- * guard cannot traverse `/root` (0700), so `/root/.shadok-ai/checks/x.sh` is
- * unreadable exactly like a `/root/.claude` one, and the guard dies `check-failed`
- * in silence.
- *
- * Returns the distinct RELATIVE prefixes (`".shadok-ai/checks"`, …), deduped and
- * ready to feed `rewriteCronCheckHome`'s extra prefixes and `path.join`. Only the
- * `<dir>/<something>` shape is matched (a segment that is a DIRECTORY, with a path
- * component after it), so a top-level FILE (`/root/.shadok-ai/secrets.json`) is
- * never caught; a dir on `SHADOK_INTERNAL_DIRS` is refused outright. Pure.
+ * The `~/.claude/<dir>` subtrees NEVER carried by the heal. `.credentials` is a
+ * FILE, not a dir, so it can't match anyway — the real entries are the big
+ * already-migrated trees (`migChownTreeToCommons` copies `projects`/`todos`/
+ * `shell-snapshots`/`file-history`) and the caches (`statsig`/`plugins`/`ide`):
+ * re-copying them would be wasteful, and they are not scripts a guard runs.
+ * `skills` and `scripts` (and any custom dir) are deliberately NOT here — those
+ * are where an agent keeps the monitoring scripts it authored.
  */
-export function shadokScriptDirs(check: string, oldHome: string): string[] {
+export const CLAUDE_INTERNAL_DIRS: readonly string[] = [
+  "projects",
+  "todos",
+  "shell-snapshots",
+  "file-history",
+  "statsig",
+  "plugins",
+  "ide",
+];
+
+/** The two home subtrees under which an agent/operator legitimately drops a
+ *  script a cron guard runs. An ALLOWLIST of TOPS (safe — scripts never live
+ *  anywhere else under the HOME) combined with a per-top DENYLIST of SUBS (so a
+ *  custom-named script dir still heals). */
+const RELOCATABLE_TOPS: Record<string, readonly string[]> = {
+  ".claude": CLAUDE_INTERNAL_DIRS,
+  ".shadok-ai": SHADOK_INTERNAL_DIRS,
+};
+
+/**
+ * The home-rooted `<top>/<sub>` script directories a cron `check` names, that the
+ * HOME move off `/root` stranded. A dropped `main` guard cannot traverse `/root`
+ * (0700), so ANY `/root/<top>/<sub>/…` path it names — a script or its sibling
+ * state file — is unreachable and the guard dies `check-failed` in silence. #419
+ * relocated only `.claude/skills`; this generalises the discovery so `.claude/scripts`
+ * (seen on the biosense cockpit), every `.shadok-ai/<dir>` (the dogfood instance),
+ * and any future script dir are all carried across — the trap is not one directory,
+ * it is "any `/root` path a check names".
+ *
+ * Matches an absolute `oldHome` reference AND a `$HOME`/`${HOME}`/`~`-relative one
+ * (a portable check still needs its dir to EXIST in the new HOME). Only the 2-level
+ * `<top>/<sub>` unit is relocated, with `<top>` restricted to the two script homes
+ * and `<sub>` refused when it is shadok's own state/credentials or a big
+ * already-migrated `.claude` tree (`RELOCATABLE_TOPS`). Returns distinct RELATIVE
+ * prefixes (`".claude/scripts"`, `".shadok-ai/checks"`, …), ready to feed
+ * `rewriteCronCheckHome` and `path.join`. Pure.
+ */
+export function strandedCheckDirs(check: string, oldHome: string): string[] {
   if (!check || !oldHome) return [];
-  const re = new RegExp(escapeRegExp(oldHome + "/.shadok-ai/") + "([^/\\s'\"]+)/", "g");
+  const homeAlt = [escapeRegExp(oldHome), "\\$HOME", "\\$\\{HOME\\}", "~"].join("|");
+  const tops = Object.keys(RELOCATABLE_TOPS).map((t) => escapeRegExp(t)).join("|");
+  const re = new RegExp("(?:" + homeAlt + ")/(" + tops + ")/([^/\\s'\"]+)/", "g");
   const out = new Set<string>();
   for (let m = re.exec(check); m; m = re.exec(check)) {
-    const seg = m[1];
-    if (SHADOK_INTERNAL_DIRS.includes(seg)) continue;
-    out.add(".shadok-ai/" + seg);
+    const [, top, sub] = m;
+    if (RELOCATABLE_TOPS[top]?.includes(sub)) continue;
+    out.add(top + "/" + sub);
   }
   return [...out];
 }
