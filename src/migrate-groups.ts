@@ -134,17 +134,98 @@ export function commonsOsUser(input: { migrated: boolean; mode: DeploymentMode }
  * path is unreadable and the guard dies `check-failed` in silence. The migration
  * relocates the `.claude` tree into the new HOME, so the reference must follow.
  *
- * Only the `<oldHome>/.claude` base is rewritten — the one tree that moved — not
- * every `<oldHome>` mention, so an unrelated `/root/...` reference is left intact.
- * Identity when the home did not move (mono-tenant, or old === new) or when either
- * base is blank (never blank out a path). A `$HOME`-relative check is already
- * portable and contains no absolute base to match, so it passes through untouched.
- * Pure, so the boot self-heal that walks the cron file stays a thin caller — and
- * the exact substitution is locked by test, the twin of `rewriteSkillsBase`.
+ * The `<oldHome>/.claude` base is ALWAYS rewritten — the tree the migration moved —
+ * plus any extra RELATIVE prefix the caller passes (the `~/.shadok-ai/<dir>` script
+ * dirs a guard also names; see `shadokScriptDirs`). Every OTHER `/root/...` mention
+ * is left intact, so a reference to a dir that was NOT relocated keeps pointing at
+ * the original. Identity when the home did not move (mono-tenant, or old === new) or
+ * when either base is blank (never blank out a path). A `$HOME`-relative check is
+ * already portable and contains no absolute base to match, so it passes through
+ * untouched. Pure, so the boot self-heal that walks the cron file stays a thin
+ * caller — and the exact substitution is locked by test, the twin of
+ * `rewriteSkillsBase`.
  */
-export function rewriteCronCheckHome(check: string, oldHome: string, newHome: string): string {
+export function rewriteCronCheckHome(
+  check: string,
+  oldHome: string,
+  newHome: string,
+  extraRelPrefixes: readonly string[] = [],
+): string {
   if (!check || !oldHome || !newHome || oldHome === newHome) return check;
-  return check.split(oldHome + "/.claude").join(newHome + "/.claude");
+  let out = check;
+  for (const rel of [".claude", ...extraRelPrefixes]) {
+    out = out.split(oldHome + "/" + rel).join(newHome + "/" + rel);
+  }
+  return out;
+}
+
+/** Escape a string for literal use inside a `RegExp`. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Shadok's OWN directories under `~/.shadok-ai` — NEVER carried into the commons
+ * HOME by the stranded-script heal, even if a cron check names one. The credential
+ * stores (`ssh`, `users`, `secrets`) are the load-bearing entries: copying them
+ * into `/home/main` would hand every commons agent the SSH private key, the
+ * per-session signing keys and the account password hashes. The rest are internal
+ * per-instance state a guard has no business reading. A denylist (not an allowlist)
+ * on purpose: an operator/agent names its script dir whatever it likes (`scripts`,
+ * `checks`, `marketing`, …), and an allowlist would silently fail to heal a
+ * custom-named one — reintroducing the exact silent breakage this closes.
+ */
+export const SHADOK_INTERNAL_DIRS: readonly string[] = [
+  "app",
+  "browsers",
+  "channels",
+  "config",
+  "crons",
+  "files",
+  "keys",
+  "ledger",
+  "locks",
+  "media",
+  "peers",
+  "pilotctl",
+  "profiles",
+  "run",
+  "secrets",
+  "self",
+  "ssh",
+  "tail",
+  "tokens",
+  "users",
+  "whisper",
+  "worktrees",
+  "wt",
+];
+
+/**
+ * The `~/.shadok-ai/<dir>` script directories a cron `check` references under the
+ * OLD commons HOME (`oldHome`, i.e. `/root`). These are operator/agent-authored
+ * monitoring scripts dropped straight under the data dir — a DIFFERENT location
+ * from `~/.claude/skills` (#419) that the HOME move also stranded: a dropped `main`
+ * guard cannot traverse `/root` (0700), so `/root/.shadok-ai/checks/x.sh` is
+ * unreadable exactly like a `/root/.claude` one, and the guard dies `check-failed`
+ * in silence.
+ *
+ * Returns the distinct RELATIVE prefixes (`".shadok-ai/checks"`, …), deduped and
+ * ready to feed `rewriteCronCheckHome`'s extra prefixes and `path.join`. Only the
+ * `<dir>/<something>` shape is matched (a segment that is a DIRECTORY, with a path
+ * component after it), so a top-level FILE (`/root/.shadok-ai/secrets.json`) is
+ * never caught; a dir on `SHADOK_INTERNAL_DIRS` is refused outright. Pure.
+ */
+export function shadokScriptDirs(check: string, oldHome: string): string[] {
+  if (!check || !oldHome) return [];
+  const re = new RegExp(escapeRegExp(oldHome + "/.shadok-ai/") + "([^/\\s'\"]+)/", "g");
+  const out = new Set<string>();
+  for (let m = re.exec(check); m; m = re.exec(check)) {
+    const seg = m[1];
+    if (SHADOK_INTERNAL_DIRS.includes(seg)) continue;
+    out.add(".shadok-ai/" + seg);
+  }
+  return [...out];
 }
 
 /**

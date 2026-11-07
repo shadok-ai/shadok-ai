@@ -80,6 +80,7 @@ import {
   COMMONS_USER,
   MIGRATION_MARKER_FILE,
   rewriteCronCheckHome,
+  shadokScriptDirs,
 } from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
@@ -3439,21 +3440,25 @@ async function ensureGroupsProvisioned(): Promise<void> {
   preseedGroupHomes();
   // And heal the commons agent's own helper scripts + cron guards, which the HOME
   // move off /root left stranded (see below).
-  await healCommonsClaudeScripts();
+  await healCommonsStrandedScripts();
 }
 
 /**
- * Boot self-heal for the commons agent's OWN `.claude` content and cron guards
- * after its HOME moved off `/root` to `/home/main`.
+ * Boot self-heal for the commons agent's OWN helper scripts and cron guards after
+ * its HOME moved off `/root` to `/home/main`. A cron guard runs DROPPED as the
+ * commons `main` user, which cannot traverse `/root` (0700) — so ANY absolute
+ * `/root/...` path it names (script or sibling state file) is unreadable and the
+ * guard dies `check-failed` in silence (measured on a live instance: monitoring
+ * crons stuck, "son script est sous /root"). New agents are fine (their HOME is
+ * already `/home/main`); this is the one-way carry for what predates the move.
  *
- * The one-shot migration (`migChownTreeToCommons`) relocates the transcript tree
- * but NOT `~/.claude/skills`, where an agent keeps the custom monitoring scripts
- * it authored. Those scripts (and any cron `check` that hard-codes their old
- * `/root/.claude/...` path) are then unreachable: a cron guard runs DROPPED as the
- * commons `main` user, which cannot traverse `/root` (0700) — so the guard dies
- * `check-failed` in silence (measured on a live instance: three monitoring crons
- * stuck, "son script est sous /root"). New agents are fine (their HOME is already
- * `/home/main`); this is the one-way carry for what predates the move.
+ * Two kinds of stranded location, both relocated here and then repointed:
+ *  1. `~/.claude/skills` — the subtree `migChownTreeToCommons` skipped, where an
+ *     agent keeps the custom monitoring scripts it authored (#419).
+ *  2. `~/.shadok-ai/<dir>` — operator/agent script dirs dropped straight under the
+ *     data dir (`checks`, `scripts`, `marketing`, …), discovered from the cron
+ *     checks that name them. `shadokScriptDirs` denylists shadok's own state and
+ *     credential stores, so a key/secret dir is NEVER copied into `/home/main`.
  *
  * Runs on EVERY capable boot, independent of the migration marker (the twin of
  * the reprovision reconciler above), so an ALREADY-migrated instance self-heals on
@@ -3462,34 +3467,52 @@ async function ensureGroupsProvisioned(): Promise<void> {
  * (`cp -rn`, non-clobber) and the checks already rewritten (identity). No-op unless
  * the HOME actually moved (mono-tenant / pre-migration: old === new).
  */
-async function healCommonsClaudeScripts(): Promise<void> {
+async function healCommonsStrandedScripts(): Promise<void> {
   if (DEPLOYMENT_MODE !== "multi-tenant") return;
   const oldHome = os.homedir();
   const newHome = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
   if (!newHome || newHome === oldHome) return; // not migrated off /root → nothing moved
-  // 1) Carry the agent-authored scripts across: <oldHome>/.claude/skills →
-  //    <newHome>/.claude/skills, non-clobber, owned by `main`. This is the one
-  //    `.claude` subtree the migration skipped (skills are seeded machine-wide in
-  //    MT, but an agent's CUSTOM files live only in this per-HOME copy).
+  const owner = `${COMMONS_USER}:${COMMONS_USER}`;
+  // Carry one relative tree <oldHome>/<rel> → <newHome>/<rel>, non-clobber, owned
+  // by `main`. The parent is `install -d`'d too so `~/.shadok-ai` exists in the new
+  // HOME. No-op when the source is absent.
+  const copyTree = async (rel: string): Promise<void> => {
+    const src = path.join(oldHome, rel);
+    if (!fs.existsSync(src)) return;
+    const dst = path.join(newHome, rel);
+    await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, path.dirname(dst)]);
+    await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, dst]);
+    await runPrivileged("cp", ["-rn", `${src}/.`, `${dst}/`], { timeoutMs: TREE_OP_TIMEOUT_MS });
+    await runPrivileged("chown", ["-R", owner, dst], { timeoutMs: TREE_OP_TIMEOUT_MS });
+  };
+  // Load once; the same list feeds the dir discovery AND the rewrite below.
+  let crons: ReturnType<typeof loadCrons> = [];
   try {
-    const srcSkills = path.join(oldHome, ".claude", "skills");
-    if (fs.existsSync(srcSkills)) {
-      const owner = `${COMMONS_USER}:${COMMONS_USER}`;
-      const dstSkills = path.join(newHome, ".claude", "skills");
-      await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, dstSkills]);
-      await runPrivileged("cp", ["-rn", `${srcSkills}/.`, `${dstSkills}/`], { timeoutMs: TREE_OP_TIMEOUT_MS });
-      await runPrivileged("chown", ["-R", owner, dstSkills], { timeoutMs: TREE_OP_TIMEOUT_MS });
-    }
+    crons = loadCrons();
   } catch (e) {
-    console.error(`heal: relocating commons ~/.claude/skills failed (best-effort): ${(e as Error)?.message ?? e}`);
+    console.error(`heal: reading crons failed (best-effort): ${(e as Error)?.message ?? e}`);
   }
-  // 2) Repoint this instance's cron guards that still name the old /root HOME.
+  // The ~/.shadok-ai/<dir> script dirs the guards name, deduped (never a
+  // credential/state dir — shadokScriptDirs denylists those).
+  const scriptDirs = [
+    ...new Set(crons.flatMap((c) => (c.check ? shadokScriptDirs(c.check, oldHome) : []))),
+  ];
+  // 1) Relocate the skills subtree the migration skipped, plus every discovered
+  //    ~/.shadok-ai script dir. Each copy is independent and best-effort.
+  for (const rel of [path.join(".claude", "skills"), ...scriptDirs]) {
+    try {
+      await copyTree(rel);
+    } catch (e) {
+      console.error(`heal: relocating commons ~/${rel} failed (best-effort): ${(e as Error)?.message ?? e}`);
+    }
+  }
+  // 2) Repoint this instance's cron guards: the .claude base AND the relocated
+  //    ~/.shadok-ai script dirs. A /root path that was NOT relocated stays intact.
   try {
-    const crons = loadCrons();
     let changed = false;
     for (const c of crons) {
       if (!c.check) continue;
-      const next = rewriteCronCheckHome(c.check, oldHome, newHome);
+      const next = rewriteCronCheckHome(c.check, oldHome, newHome, scriptDirs);
       if (next !== c.check) {
         c.check = next;
         changed = true;
@@ -3497,7 +3520,10 @@ async function healCommonsClaudeScripts(): Promise<void> {
     }
     if (changed) {
       saveCrons(crons);
-      console.log(`heal: repointed cron guard path(s) from ${oldHome}/.claude → ${newHome}/.claude`);
+      console.log(
+        `heal: repointed cron guard path(s) from ${oldHome} → ${newHome} ` +
+          `(.claude${scriptDirs.length ? ", " + scriptDirs.join(", ") : ""})`,
+      );
     }
   } catch (e) {
     console.error(`heal: rewriting cron guard paths failed (best-effort): ${(e as Error)?.message ?? e}`);
