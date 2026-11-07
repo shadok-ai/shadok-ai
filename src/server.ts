@@ -79,6 +79,7 @@ import {
   commonsOsUser,
   COMMONS_USER,
   MIGRATION_MARKER_FILE,
+  rewriteCronCheckHome,
 } from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
@@ -3436,6 +3437,71 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // of trusted directories in one write each, so none strands on the trust
   // dialog when the resume storm rebuilds a wiped (ephemeral) group HOME.
   preseedGroupHomes();
+  // And heal the commons agent's own helper scripts + cron guards, which the HOME
+  // move off /root left stranded (see below).
+  await healCommonsClaudeScripts();
+}
+
+/**
+ * Boot self-heal for the commons agent's OWN `.claude` content and cron guards
+ * after its HOME moved off `/root` to `/home/main`.
+ *
+ * The one-shot migration (`migChownTreeToCommons`) relocates the transcript tree
+ * but NOT `~/.claude/skills`, where an agent keeps the custom monitoring scripts
+ * it authored. Those scripts (and any cron `check` that hard-codes their old
+ * `/root/.claude/...` path) are then unreachable: a cron guard runs DROPPED as the
+ * commons `main` user, which cannot traverse `/root` (0700) — so the guard dies
+ * `check-failed` in silence (measured on a live instance: three monitoring crons
+ * stuck, "son script est sous /root"). New agents are fine (their HOME is already
+ * `/home/main`); this is the one-way carry for what predates the move.
+ *
+ * Runs on EVERY capable boot, independent of the migration marker (the twin of
+ * the reprovision reconciler above), so an ALREADY-migrated instance self-heals on
+ * the next update rather than needing a hand fix. Idempotent and best-effort: a
+ * failure here must never take down boot, and a re-run finds the copy already done
+ * (`cp -rn`, non-clobber) and the checks already rewritten (identity). No-op unless
+ * the HOME actually moved (mono-tenant / pre-migration: old === new).
+ */
+async function healCommonsClaudeScripts(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const oldHome = os.homedir();
+  const newHome = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
+  if (!newHome || newHome === oldHome) return; // not migrated off /root → nothing moved
+  // 1) Carry the agent-authored scripts across: <oldHome>/.claude/skills →
+  //    <newHome>/.claude/skills, non-clobber, owned by `main`. This is the one
+  //    `.claude` subtree the migration skipped (skills are seeded machine-wide in
+  //    MT, but an agent's CUSTOM files live only in this per-HOME copy).
+  try {
+    const srcSkills = path.join(oldHome, ".claude", "skills");
+    if (fs.existsSync(srcSkills)) {
+      const owner = `${COMMONS_USER}:${COMMONS_USER}`;
+      const dstSkills = path.join(newHome, ".claude", "skills");
+      await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, dstSkills]);
+      await runPrivileged("cp", ["-rn", `${srcSkills}/.`, `${dstSkills}/`], { timeoutMs: TREE_OP_TIMEOUT_MS });
+      await runPrivileged("chown", ["-R", owner, dstSkills], { timeoutMs: TREE_OP_TIMEOUT_MS });
+    }
+  } catch (e) {
+    console.error(`heal: relocating commons ~/.claude/skills failed (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+  // 2) Repoint this instance's cron guards that still name the old /root HOME.
+  try {
+    const crons = loadCrons();
+    let changed = false;
+    for (const c of crons) {
+      if (!c.check) continue;
+      const next = rewriteCronCheckHome(c.check, oldHome, newHome);
+      if (next !== c.check) {
+        c.check = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      saveCrons(crons);
+      console.log(`heal: repointed cron guard path(s) from ${oldHome}/.claude → ${newHome}/.claude`);
+    }
+  } catch (e) {
+    console.error(`heal: rewriting cron guard paths failed (best-effort): ${(e as Error)?.message ?? e}`);
+  }
 }
 
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
