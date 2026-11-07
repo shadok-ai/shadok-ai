@@ -124,6 +124,30 @@ export function commonsOsUser(input: { migrated: boolean; mode: DeploymentMode }
 }
 
 /**
+ * Repoint a cron `check` command from the OLD commons HOME's `.claude` tree to the
+ * NEW one, after migration moved the commons agent off `/root` to `/home/main`.
+ *
+ * Why this is needed at all: an agent that authored a monitoring script stored it
+ * (and hard-coded the guard path) under `$HOME/.claude/skills/.../scripts/` when
+ * its HOME was still `/root`. Since cron guards now run DROPPED as the commons
+ * `main` user (which cannot traverse `/root`, 0700), that absolute `/root/.claude`
+ * path is unreadable and the guard dies `check-failed` in silence. The migration
+ * relocates the `.claude` tree into the new HOME, so the reference must follow.
+ *
+ * Only the `<oldHome>/.claude` base is rewritten — the one tree that moved — not
+ * every `<oldHome>` mention, so an unrelated `/root/...` reference is left intact.
+ * Identity when the home did not move (mono-tenant, or old === new) or when either
+ * base is blank (never blank out a path). A `$HOME`-relative check is already
+ * portable and contains no absolute base to match, so it passes through untouched.
+ * Pure, so the boot self-heal that walks the cron file stays a thin caller — and
+ * the exact substitution is locked by test, the twin of `rewriteSkillsBase`.
+ */
+export function rewriteCronCheckHome(check: string, oldHome: string, newHome: string): string {
+  if (!check || !oldHome || !newHome || oldHome === newHome) return check;
+  return check.split(oldHome + "/.claude").join(newHome + "/.claude");
+}
+
+/**
  * The running agents to respawn, as session ids — deduped, order preserved so
  * the caller cycles them ONE AT A TIME (the OAuth refresh-token race,
  * `restartAllSessions` discipline). The kill runs EARLY in `runMigration` (before

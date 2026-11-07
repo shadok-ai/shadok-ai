@@ -9,6 +9,7 @@ import {
   respawnPlan,
   commonsOsUser,
   COMMONS_USER,
+  rewriteCronCheckHome,
   type MigrationPlan,
   type MigrationDeps,
 } from "../src/migrate-groups.js";
@@ -245,11 +246,78 @@ test("server: migration state transitions are broadcast, and commons paths go th
   assert.ok(/migrationState = "pending";\s*\n\s*broadcastAll\(versionMessage\(\)\)/.test(SERVER), "pending is broadcast");
   assert.ok(/migrationState = groupsMigrated \? "ok" : "failed";\s*\n\s*broadcastAll\(versionMessage\(\)\)/.test(SERVER), "outcome is broadcast");
   assert.ok(!/\$\{GROUP_HOME_BASE\}\/\$\{COMMONS_USER\}/.test(SERVER), "no inline commons home path");
-  assert.equal((SERVER.match(/homeForUser\(COMMONS_USER, GROUP_HOME_BASE\)/g) ?? []).length, 3);
+  // 3 pre-existing call sites + the commons `.claude/scripts` boot self-heal.
+  assert.equal((SERVER.match(/homeForUser\(COMMONS_USER, GROUP_HOME_BASE\)/g) ?? []).length, 4);
 });
 
 test("index.html: the migration banner is shown before the #verView early return", () => {
   const html = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "public", "index.html"), "utf8");
   const i = html.indexOf("showMigrationBanner(msg.migrationState)");
   assert.ok(i > 0 && i < html.indexOf("if (!verView) return;"));
+});
+
+// ── rewriteCronCheckHome ──────────────────────────────────────────────────────
+// When the commons agent's HOME moves off /root (migration to the non-root `main`
+// user), a cron `check` command that hard-codes the OLD commons HOME under /root
+// (`node /root/.claude/skills/.../x.mjs`) is run by the dropped `main` user, which
+// cannot even traverse /root (0700) → the guard dies, `check-failed`, in silence.
+// This rewrites that one base. Pure, so the boot self-heal stays a thin caller.
+
+test("rewriteCronCheckHome: repoints the old commons HOME /.claude base to the new one", () => {
+  assert.equal(
+    rewriteCronCheckHome(
+      "node /root/.claude/skills/shadok-scheduler/scripts/garder.mjs --bavard",
+      "/root",
+      "/home/main",
+    ),
+    "node /home/main/.claude/skills/shadok-scheduler/scripts/garder.mjs --bavard",
+  );
+});
+
+test("rewriteCronCheckHome: only the `/.claude` subtree is moved, not unrelated /root refs", () => {
+  // A legit reference to /root outside .claude is left alone (nothing else was
+  // relocated); only the Claude state tree moved.
+  assert.equal(
+    rewriteCronCheckHome("sh /root/other.sh && node /root/.claude/x.mjs", "/root", "/home/main"),
+    "sh /root/other.sh && node /home/main/.claude/x.mjs",
+  );
+});
+
+test("rewriteCronCheckHome: every occurrence of the old base is moved", () => {
+  assert.equal(
+    rewriteCronCheckHome("node /root/.claude/a.mjs; node /root/.claude/b.mjs", "/root", "/home/main"),
+    "node /home/main/.claude/a.mjs; node /home/main/.claude/b.mjs",
+  );
+});
+
+test("rewriteCronCheckHome: identity when the home did not move (mono-tenant / same base)", () => {
+  const c = "node /root/.claude/x.mjs";
+  assert.equal(rewriteCronCheckHome(c, "/root", "/root"), c);
+});
+
+test("rewriteCronCheckHome: a $HOME-relative check is already portable and untouched", () => {
+  const c = "sh $HOME/.claude/pr-watch/check-prs.sh";
+  assert.equal(rewriteCronCheckHome(c, "/root", "/home/main"), c);
+});
+
+test("rewriteCronCheckHome: empty/missing old or new base is a no-op (never blank a path)", () => {
+  const c = "node /root/.claude/x.mjs";
+  assert.equal(rewriteCronCheckHome(c, "", "/home/main"), c);
+  assert.equal(rewriteCronCheckHome(c, "/root", ""), c);
+  assert.equal(rewriteCronCheckHome("", "/root", "/home/main"), "");
+});
+
+test("server: the commons .claude/scripts heal is wired into the boot reconciler and does both halves", () => {
+  const src = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "server.ts"),
+    "utf8",
+  );
+  // Called from the every-boot reconciler (not gated on the migration marker).
+  assert.match(src, /preseedGroupHomes\(\);\s*\n[\s\S]{0,200}await healCommonsClaudeScripts\(\);/);
+  // No-op unless the HOME actually moved off /root.
+  assert.match(src, /if \(!newHome \|\| newHome === oldHome\) return;/);
+  // Half 1: relocate the skills subtree the migration skipped.
+  assert.match(src, /path\.join\(oldHome, "\.claude", "skills"\)/);
+  // Half 2: rewrite this instance's cron guards via the pure helper.
+  assert.match(src, /rewriteCronCheckHome\(c\.check, oldHome, newHome\)/);
 });
