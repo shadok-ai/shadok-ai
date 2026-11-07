@@ -8377,6 +8377,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // resolution further down. Hoisted out of the MT-token guard because the
           // worktree below must land in (and be owned by) this same user's home.
           let earlyUser: string | null = null;
+          // The group of the AGENT that launched this spawn, so a child joins its
+          // launcher's isolation domain instead of the admin viewer's Personal
+          // group. Read from `callerAgent` ONLY — the launcher identified by the
+          // unforgeable `x-shadok-session-key`, never the client-declared
+          // `msg.parent` (which a browser could set to any session id to plant a
+          // child in a group it does not belong to). A human/browser/peer spawn
+          // has no `callerAgent`, so this stays null and the viewer default
+          // applies. Computed once; reused by the early token pre-check and the
+          // real isolation resolution below.
+          const parentGroupId = callerAgent
+            ? loadChannels().find((c) => c.sessionId === callerAgent.id)?.group ?? null
+            : null;
           if (!resumed) {
             const earlyIso = resolveSpawnIsolation({
               mode: DEPLOYMENT_MODE,
@@ -8385,6 +8397,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               groups: loadGroups(),
               storedGroupId: null,
               requestedGroupId: typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null,
+              parentGroupId,
             });
             earlyUser = earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
             const earlyMsg = mtRefusal(earlyUser);
@@ -8564,13 +8577,15 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               ? msg.name.trim().slice(0, 80)
               : undefined;
           // Isolation wall: the OS user to drop to, and the group a NEW agent is
-          // born into — BOTH derived from the caller's own identity (`me`), never
-          // from the caller's identity. A start msg MAY name its target group,
-          // honoured only when `canSeeGroup` (public or member), else ignored: it
-          // can place an agent in a group you belong to, never plant one in a
-          // group you don't. A resume keeps the channel's stored group and runs as
-          // that group's user. Mono-tenant resolves to no user / no group, so the
-          // spawn and the channel record stay byte-for-byte today's.
+          // born into — derived server-side, never from client claims. A start
+          // msg MAY name its target group, honoured only when `canSeeGroup`
+          // (public or member); else, a spawn launched BY another agent inherits
+          // that launcher's group (`parentGroupId`, from the unforgeable session
+          // key — so an agent-spawned child joins its parent's domain, not the
+          // admin viewer's Personal group); else the caller's own group. A resume
+          // keeps the channel's stored group and runs as that group's user.
+          // Mono-tenant resolves to no user / no group, so the spawn and the
+          // channel record stay byte-for-byte today's.
           // `storedGroupId`/`groupsNow` and the resume people-boundary gate were
           // resolved ABOVE the live-attach branch (see CRIT1 note there).
           const requestedGroupId =
@@ -8582,6 +8597,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             groups: groupsNow,
             storedGroupId,
             requestedGroupId,
+            parentGroupId,
           });
           // The group this agent really belongs to: a resume keeps the channel's
           // stored group; a new spawn gets the one the isolation policy derived

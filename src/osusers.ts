@@ -102,13 +102,16 @@ export function dropEnv(
  *
  * - Mono-tenant is byte-for-byte today: no user (never wrap the spawn), no group
  *   written (a group-less channel is the commons, visible to everyone).
- * - A NEW multi-tenant agent is born into the CALLER's own group
+ * - A NEW multi-tenant agent is born into the LAUNCHER's group when it was
+ *   spawned by another agent (`parentGroupId`), else the CALLER's own group
  *   (`spawnGroupFor`, derived from the viewer and the server's group list — no
- *   client input) and drops to that group's user. The `groupPatch` is what the
- *   start-path upsert writes server-side; the commons resolves to no user.
+ *   client input), and drops to that group's user. Inheriting the launcher's
+ *   group is what keeps an agent-spawned child in the SAME isolation domain as
+ *   its parent instead of the admin viewer's Personal group. The `groupPatch` is
+ *   what the start-path upsert writes server-side; the commons resolves to no user.
  * - A RESUME never reassigns the group (it is SERVER_OWNED and already set), but
  *   still drops to the stored group's user — a private agent must come back
- *   under its own user, not as root.
+ *   under its own user, not as root. The parent group is ignored on resume.
  */
 export function resolveSpawnIsolation(input: {
   mode: DeploymentMode;
@@ -119,13 +122,22 @@ export function resolveSpawnIsolation(input: {
   storedGroupId: string | null;
   /** NEW spawns only: the group the client asked for; honoured iff the caller may see it. */
   requestedGroupId?: string | null;
+  /** NEW spawns only: the group of the AGENT that launched this one, if any —
+   *  inherited (no canSeeGroup gate; it is server-proven) unless a visible
+   *  request overrides it. */
+  parentGroupId?: string | null;
 }): { user: string | null; groupPatch: { group?: string } } {
   if (input.mode !== "multi-tenant") return { user: null, groupPatch: {} };
   if (input.resumed) {
     const g = input.storedGroupId ? input.groups.find((x) => x.id === input.storedGroupId) ?? null : null;
     return { user: g ? osUserFor(g) : null, groupPatch: {} };
   }
-  const g = spawnGroupForRequest(input.viewer, input.groups, input.requestedGroupId ?? null);
+  const g = spawnGroupForRequest(
+    input.viewer,
+    input.groups,
+    input.requestedGroupId ?? null,
+    input.parentGroupId ?? null,
+  );
   return {
     user: g ? osUserFor(g) : null,
     groupPatch: g ? { group: g.id } : {},

@@ -338,10 +338,49 @@ import { readFileSync } from "node:fs";
   test("spawnGroupForRequest: no request equals spawnGroupFor", () => {
     assert.equal(spawnGroupForRequest(ada, all, null)?.id, spawnGroupFor(ada, all)?.id);
   });
+
+  // ── parent-group inheritance ────────────────────────────────────────────────
+  // A new agent launched BY another agent is born into its launcher's group, not
+  // the admin viewer's own. The launcher's group is a server-stored fact (the
+  // parent channel's `group`, derived from the unforgeable session key), so it is
+  // honoured without a `canSeeGroup` check — the launcher already runs in that
+  // isolation domain, so a child joining it is no escalation.
+  test("spawnGroupForRequest: with no explicit request, the launcher's group is inherited over the viewer default", () => {
+    // ada is a member of both a and b, so her own spawnGroupFor is ambiguous →
+    // commons. A child she launches from group b must land in b, not commons.
+    assert.equal(spawnGroupFor(ada, all)?.id, MAIN_GROUP_ID);
+    assert.equal(spawnGroupForRequest(ada, all, null, "b")?.id, "b");
+  });
+  test("spawnGroupForRequest: an explicit visible request still beats the parent group", () => {
+    assert.equal(spawnGroupForRequest(ada, all, "a", "b")?.id, "a");
+  });
+  test("spawnGroupForRequest: the parent group is proven from the launcher, not the viewer — no canSeeGroup gate", () => {
+    // zoe is in no group and could not SEE group a, but the launcher runs in a:
+    // the child inherits a. (In practice the agent viewer is the admin, who can
+    // see everything; this pins that the authority is the launcher's membership.)
+    assert.equal(spawnGroupForRequest(zoe, all, null, "a")?.id, "a");
+  });
+  test("spawnGroupForRequest: a dangling parent group falls back to the viewer default", () => {
+    assert.equal(spawnGroupForRequest(ada, all, null, "nope")?.id, spawnGroupFor(ada, all)?.id);
+  });
 }
 
 test("server start handler passes a !resumed-gated msg.group to resolveSpawnIsolation", () => {
   const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
   assert.match(src, /const requestedGroupId =\s*!resumed && typeof msg\.group === "string" && msg\.group\.trim\(\)/);
   assert.match(src, /resolveSpawnIsolation\(\{[^}]*storedGroupId,\s*requestedGroupId,/);
+});
+
+test("server start handler derives parentGroupId from callerAgent (not msg.parent) and threads it to the isolation", () => {
+  // The launcher's group must come from the unforgeable session key, never the
+  // client-declared parent link — else a browser could plant a child in a group
+  // it does not belong to. Both isolation call sites (early token pre-check and
+  // the real resolution) receive it.
+  const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  assert.match(
+    src,
+    /const parentGroupId = callerAgent\s*\?\s*loadChannels\(\)\.find\(\(c\) => c\.sessionId === callerAgent\.id\)\?\.group \?\? null\s*:\s*null;/,
+  );
+  // Threaded into resolveSpawnIsolation (both call sites end their input with it).
+  assert.equal((src.match(/parentGroupId,\n\s*\}\);/g) ?? []).length, 2);
 });
