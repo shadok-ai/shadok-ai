@@ -4395,13 +4395,17 @@ function notifyOperator(accountOwner: string, text: string): void {
  * The hourly watch: warn about accounts close to expiry, mark lapsed ones
  * expired, expire old drafts, fail publishes orphaned by a restart. Never throws.
  */
+// Draft ids this process is publishing right now: the watcher must not fail a
+// slow but alive LinkedIn call.
+const publishesInFlight = new Set<string>();
+
 function watchConnectedAccounts(): void {
   try {
     const now = Date.now();
     const accounts = loadAccountsStore(accountsFile());
     const warnedFile = warnedFileFor(process.cwd());
     const warned = loadWarned(warnedFile);
-    const stale = stalePublishing(loadDrafts(draftsFile()), now);
+    const stale = stalePublishing(loadDrafts(draftsFile()), now, publishesInFlight);
     const { warn, expire, expiredDrafts } = expiryActions(accounts, stale.list, now, warned);
 
     for (const a of warn) {
@@ -4555,13 +4559,14 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   // click (another tab, a double tap) sees it and gets 409 instead of a second
   // post. A process that dies mid-call leaves the draft `publishing` — never
   // published twice, at worst stuck; the log line below is how to tell.
-  const publishing: Draft = { ...hit, status: "publishing", decidedBy: caller.person };
+  const publishing: Draft = { ...hit, status: "publishing", decidedBy: caller.person, publishingAt: Date.now() };
   storeDraft(publishing);
   broadcastDraft(publishing);
   console.log(`social: draft ${hit.id} publishing (approved by ${caller.person})`);
   const acct = account as ConnectedAccount; // publishVerdict passed: the account exists
   let done: Draft;
   let failure: { status: number; reason: string } | null = null;
+  publishesInFlight.add(hit.id);
   try {
     const { url } = await publishToLinkedIn(acct, hit.sessionId, hit.text, hit.imagePath);
     done = { ...publishing, status: "published", postUrl: url };
@@ -4572,6 +4577,8 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
     done = { ...publishing, status: "failed", error: failure.reason };
     logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "failed", error: failure.reason }));
     console.log(`social: draft ${hit.id} failed (${e instanceof LinkedInError ? e.status : "error"})`);
+  } finally {
+    publishesInFlight.delete(hit.id);
   }
   storeDraft(done);
   broadcastDraft(done);

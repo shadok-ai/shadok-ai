@@ -61,6 +61,17 @@ test("stalePublishing fails drafts stuck over 10 minutes, leaves the rest", () =
   assert.equal(r.list[2].status, "pending");
 });
 
+test("stalePublishing measures from publishingAt, falls back to createdAt, skips in-flight ids", () => {
+  const old = NOW - 3 * DAY;
+  const fresh = draft({ id: "a", status: "publishing", createdAt: old, publishingAt: NOW - 1000 });
+  const stale = draft({ id: "b", status: "publishing", createdAt: old, publishingAt: NOW - 11 * 60_000 });
+  const legacy = draft({ id: "c", status: "publishing", createdAt: old });
+  const live = draft({ id: "d", status: "publishing", createdAt: old, publishingAt: NOW - 11 * 60_000 });
+  const r = stalePublishing([fresh, stale, legacy, live], NOW, new Set(["d"]));
+  assert.deepEqual(r.failed.map((d) => d.id), ["b", "c"]);
+  assert.equal(r.list[3].status, "publishing");
+});
+
 test("texts", () => {
   assert.equal(
     expiryWarningText({ label: "Ada", expiresAt: Date.UTC(2026, 10, 15, 23) }),

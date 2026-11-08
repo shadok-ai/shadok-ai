@@ -28,6 +28,9 @@ export interface Draft {
   imagePath?: string;
   status: DraftStatus;
   createdAt: number;
+  /** When the draft entered `publishing` (approval time). Staleness of a
+   *  stuck publish is measured from here; absent on older drafts → createdAt. */
+  publishingAt?: number;
   /** Who started the turn that drafted it — recorded at drafting time, since
    *  the turn running when a person later clicks Publish is a different one.
    *  Absent on drafts written before the field existed → "agent". */

@@ -49,11 +49,17 @@ export function expiryActions(
   return { warn, expire, expiredDrafts: expireDrafts(drafts, now).expired };
 }
 
-/** Drafts stuck `publishing` past the window (the process died mid-publish) → failed. */
-export function stalePublishing(list: readonly Draft[], now: number): { list: Draft[]; failed: Draft[] } {
+/** Drafts stuck `publishing` past the window (the process died mid-publish) → failed.
+ *  Measured from `publishingAt` (legacy: createdAt); ids in `inFlight` are being
+ *  published by this process right now, slow but alive, and are never failed. */
+export function stalePublishing(
+  list: readonly Draft[],
+  now: number,
+  inFlight: ReadonlySet<string> = new Set(),
+): { list: Draft[]; failed: Draft[] } {
   const failed: Draft[] = [];
   const out = list.map((d) => {
-    if (d.status !== "publishing" || now - d.createdAt < STALE_PUBLISHING_MS) return d;
+    if (d.status !== "publishing" || inFlight.has(d.id) || now - (d.publishingAt ?? d.createdAt) < STALE_PUBLISHING_MS) return d;
     const f: Draft = { ...d, status: "failed", error: STALE_PUBLISHING_SENTENCE };
     failed.push(f);
     return f;
