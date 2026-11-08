@@ -448,7 +448,40 @@ async function cmdDialog(id, flags) {
   return r;
 }
 
+/**
+ * `list` against a REMOTE peer. The local half of a plain `list` — pilotctl's
+ * own state files, a `holderPid` and a local `pidAlive` — describes THIS
+ * machine, so over a peer link it is not "less precise", it is another
+ * machine's answer to the question (issue #423: a full, plausible list of the
+ * caller's own sessions came back with nothing to say so). Ask the peer for
+ * the agents running on IT (`GET /live`, which it scopes to what we may see),
+ * and say WHICH machine answered. `resumable` is keyed by a directory: the
+ * caller's cwd generally does not exist over there, and an empty answer would
+ * read as "nothing resumable" — so it is queried only for a `--cwd` the caller
+ * named, and otherwise left out rather than filled with a meaningless `[]`.
+ */
+async function cmdListPeer(flags) {
+  const live = await fetch(`${httpBase()}/live`, { headers: authHeaders() });
+  if (live.status === 401 || live.status === 403)
+    throw Object.assign(
+      new Error(
+        `peer-scope: ${httpBase()} refused to list its agents (HTTP ${live.status}) — ` +
+          "a restricted peer may only drive the agents it spawned; track their ids from `spawn`",
+      ),
+      { code: "peer-scope" },
+    );
+  if (!live.ok) throw new Error(`peer ${httpBase()} answered HTTP ${live.status} to /live`);
+  const agents = (await live.json()).map((a) => ({ sessionId: a.id, ...a }));
+  const out = { peer: httpBase(), agents };
+  if (flags.cwd) {
+    const r = await fetch(`${httpBase()}/sessions?cwd=${encodeURIComponent(flags.cwd)}`, { headers: authHeaders() });
+    if (r.ok) out.resumable = await r.json();
+  }
+  return out;
+}
+
 async function cmdList(flags) {
+  if (PEER) return cmdListPeer(flags);
   await ensureServer();
   const cwd = flags.cwd ?? process.cwd();
   const r = await fetch(`${httpBase()}/sessions?cwd=${encodeURIComponent(cwd)}`, { headers: authHeaders() });
@@ -702,6 +735,11 @@ export async function run(argv) {
           : `unknown peer "${flags.peer}" — add it with: pilotctl peer add <alias> <url> <token>`,
       );
     setPeer(target);
+  } else {
+    // No peer asked for THIS call: target the local server. `PEER` is module
+    // state, so without this a peer chosen by an earlier `run()` in the same
+    // process (an importer, the tests) would silently retarget this one.
+    setPeer(null);
   }
   switch (cmd) {
     case "spawn":
