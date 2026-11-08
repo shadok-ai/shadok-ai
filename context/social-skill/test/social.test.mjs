@@ -115,3 +115,23 @@ test("accounts with none says how to connect one", async () => {
   await s.close();
   assert.equal(r.out.trim(), "No LinkedIn account is shared with this agent. Ask the person to connect one in Secrets → Connected accounts.");
 });
+
+test("SKILL.md code fences are copy-pasteable: heredoc terminators and commands start at column 0", async () => {
+  const { readFileSync } = await import("node:fs");
+  const md = readFileSync(new URL("../SKILL.md", import.meta.url), "utf8").split("\n");
+  let inFence = false;
+  for (const line of md) {
+    if (line.trim().startsWith("```")) { inFence = !inFence; continue; }
+    if (line.trim() === "EOF") assert.equal(line, "EOF", "indented heredoc terminator");
+    if (inFence && line.trim().startsWith("node ")) assert.ok(line.startsWith("node "), `indented command: ${line}`);
+  }
+});
+
+test("the local post limit equals the server's MAX_COMMENTARY", async () => {
+  const { readFileSync } = await import("node:fs");
+  const here = (p) => readFileSync(new URL(p, import.meta.url), "utf8");
+  const local = here("../scripts/social.mjs").match(/const MAX_CHARS = (\d+)/);
+  const server = here("../../../src/linkedin.ts").match(/export const MAX_COMMENTARY = (\d+)/);
+  assert.ok(local && server);
+  assert.equal(local[1], server[1]);
+});

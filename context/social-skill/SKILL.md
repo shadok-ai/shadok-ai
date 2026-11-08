@@ -11,28 +11,32 @@ look for it. The server publishes on your behalf.
 
 ## Steps
 
-1. **Pick the account.**
+### 1. Pick the account
 
-   ```bash
-   node ~/.claude/skills/shadok-social/scripts/social.mjs accounts
-   ```
+```bash
+node ~/.claude/skills/shadok-social/scripts/social.mjs accounts
+```
 
-   One line per account: `<id>  <label>  <provider>  policy=<policy>  expires=<date>`.
-   If none is listed, tell the person to connect one in Secrets → Connected
-   accounts. If an account is marked `EXPIRED`, say so; they must reconnect it.
+One line per account: `<id>  <label>  <provider>  policy=<policy>  expires=<date>`.
+If none is listed, tell the person to connect one in Secrets → Connected
+accounts. If an account is marked `EXPIRED`, say so; they must reconnect it.
 
-2. **Show the final text in the chat FIRST**, exactly as it will be posted, and
-   wait for their go-ahead if they have not already approved it.
+### 2. Show the final text first
 
-3. **Post it.** The text goes through stdin, never argv:
+Show the final text in the chat FIRST, exactly as it will be posted, and
+wait for their go-ahead if they have not already approved it.
 
-   ```bash
-   node ~/.claude/skills/shadok-social/scripts/social.mjs post --account <id> [--image /abs/path.png] --stdin <<'EOF'
-   the exact text
-   EOF
-   ```
+### 3. Post it
 
-   `--image` must be an absolute path. The limit is 3000 characters.
+The text goes through stdin, never argv:
+
+```bash
+node ~/.claude/skills/shadok-social/scripts/social.mjs post --account <id> [--image /abs/path.png] --stdin <<'EOF'
+the exact text
+EOF
+```
+
+`--image` must be an absolute path. The limit is 3000 characters.
 
 ## Never claim it is published until you are told
 
