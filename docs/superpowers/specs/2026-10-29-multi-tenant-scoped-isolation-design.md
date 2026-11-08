@@ -339,6 +339,14 @@ install must degrade **honestly**, not half-way.
   actually provision an OS user (root, or the needed sudo rights) rather than
   guessing from "am I root", so it is wrong in neither direction. One source of
   truth for the mode.
+- **[DECIDED] The probe is also Linux-gated.** The isolation is implemented with
+  `useradd` / `setpriv` / `runuser`, which exist only on Linux, so
+  `probeCanProvision` returns false on macOS/Windows however privileged the host.
+  Without it a root (or cached/passwordless-sudo) macOS cockpit with a GUI
+  password auto-flipped to multi-tenant and failed the boot migration on the
+  first `useradd`, stranding the red "isolation did NOT complete" banner. The
+  `SHADOK_FORCE_MULTITENANT` override is still checked first, for tests and
+  deliberate setups.
 - **[DECIDED] Capable requires identities too — the probe also gates on the
   accounts system being active.** The entire ACL (visibility, membership, admin
   reach, and one private group *per account*) keys on `src/accounts.ts`
