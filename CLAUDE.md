@@ -84,7 +84,6 @@ you're back to the old failure:
   server's included — scripts newer than the server they call. Measured: the
   ledger skill began posting a route the running build did not serve, so `record`
   answered 404 host-wide while `check` kept working. See invariant 57.
-
 - When your shell exports `SHADOK_GUI_PASSWORD` / `SHADOK_HOST` (an agent's does),
   launch with `env -i HOME=$HOME PATH=$PATH PORT=3899 SHADOK_VERSION_CHECK_MIN=0 node dist/server.js`
   — otherwise the side-by-side build silently becomes a password-gated (and, on a
@@ -132,8 +131,8 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/connect-routes.ts` | Pure helpers for `/connect/*`: broker URL (`brokerBase`, `brokerStartUrl`), the fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
 | `src/connected-accounts.ts` | The connected-account store, `publicView` (the ONLY projection that leaves it — never a token), `accountVisible` (the `instance` scope deliberately does NOT reach other people's private groups), `accountEditVerdict`. Mono-tenant = soft layer. |
 | `src/linkedin.ts` | LinkedIn API calls; `LINKEDIN_VERSION` must be bumped about yearly (LinkedIn sunsets versions). |
-| `src/social-drafts.ts` | Drafts + publication log. `publishing` is saved BEFORE LinkedIn is called; `stalePublishing` sweeps a dead process's leftovers to `failed`, never retries. |
-| `src/account-expiry.ts` | Daily no-LLM expiry watch: 7-day warning to the owner, expired drafts. |
+| `src/social-drafts.ts` | Drafts + publication log. `publishing` is saved BEFORE LinkedIn is called. |
+| `src/account-expiry.ts` | Hourly no-LLM expiry watch (`setInterval` in `server.ts`): warns the owner 7 days before expiry and re-warns at most once a day (`REWARN_AFTER_MS`, 24h), expired drafts. `stalePublishing` sweeps a dead process's leftover `publishing` drafts to `failed`, never retries. |
 | `public/social-card.js` | Pure helpers for the approval card and the Connected accounts panel. ESM, browser + tests. |
 | `context/social-skill/` | The `shadok-social` skill (`social.mjs accounts` / `post --stdin`), seeded like the others; authenticates with `x-shadok-session-key`. |
 | `context/connect-done.html` | The page the broker returns the browser to; outside `public/` on purpose (it carries the nonce marker). |

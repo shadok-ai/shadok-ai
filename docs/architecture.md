@@ -1686,14 +1686,15 @@ and every account mutation require **a browser person** (`requestFromBrowser`),
 who must be able to use the account; an agent has no way to approve its own
 draft. Publishing is **claimed before LinkedIn is called**: the draft is saved
 as `publishing` with `publishingAt`, so a double click or a retry cannot post
-twice. A process-local in-flight set keeps the daily watcher from failing a
+twice. A process-local in-flight set keeps the hourly watcher from failing a
 publish that is genuinely under way; a draft left in `publishing` by a process
 that died is swept to `failed` once stale (`stalePublishing`), never
 re-attempted — a duplicate public post is worse than a failed one. Unapproved
 drafts expire after 7 days and the agent is told, so a cron does not assume the
-post went out. `account-expiry.ts` runs the daily no-LLM check: a warning seven
-days before `expiresAt` (banner, plus a Telegram DM to the owner when they are
-the DM owner), then refusals worded as sentences the agent can relay.
+post went out. `account-expiry.ts` runs an hourly no-LLM check: a warning seven
+days before `expiresAt`, re-sent at most once a day (`REWARN_AFTER_MS`) (banner,
+plus a Telegram DM to the owner when they are the DM owner), then refusals worded
+as sentences the agent can relay.
 
 ### Visibility
 
@@ -1931,7 +1932,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/connected-accounts.ts` | The account store (`~/.shadok-ai/connected-accounts/<key>.json`), `publicView` (the only projection that leaves it), `accountVisible` (the `instance` scope does not reach other people's private groups), `accountEditVerdict`. |
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
 | `src/social-drafts.ts` | Drafts (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), the publication log, `stalePublishing`, `draftCard`. |
-| `src/account-expiry.ts` | The daily no-LLM check: `expiryActions` (7-day warning, expired accounts, expired and stale drafts). |
+| `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning, expired accounts, expired and stale drafts). |
 | `broker/` | The stateless Cloudflare Worker holding the LinkedIn client secret. See `broker/README.md`. |
 | `src/live-handover.ts` | `supersedeSession(old, next)` — the ONE-`Live`-per-agent rule (invariant 55). When a resume can't attach (the old pilot `hasExited`) it makes a NEW `Live` and `sessions.set` replaces the entry; this hands the retired `Live`'s viewers to the new one and quiets the old (tail, timers, raw pipe) WITHOUT killing the pilot or clearing the shared tail position — the new `Live` may drive the same tmux pane. `HandoverLive` omits `pilot`/`cwd`/`id` on purpose, so the handover CANNOT kill the agent or reset the transcript. Pure, tested (`test/live-handover.test.ts`). |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
