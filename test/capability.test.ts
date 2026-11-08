@@ -21,13 +21,38 @@ test("probeCanProvision honours the force override both ways", () => {
 });
 
 test("probeCanProvision is true as root without probing sudo", () => {
-  assert.equal(probeCanProvision({ env: {}, getuid: () => 0, canSudo: () => { throw new Error("no"); } }), true);
+  assert.equal(probeCanProvision({ platform: "linux", env: {}, getuid: () => 0, canSudo: () => { throw new Error("no"); } }), true);
 });
 
 test("probeCanProvision falls to canSudo for non-root or unknown uid", () => {
-  assert.equal(probeCanProvision({ env: {}, getuid: () => 1000, canSudo: () => true }), true);
-  assert.equal(probeCanProvision({ env: {}, getuid: () => 1000, canSudo: () => false }), false);
-  assert.equal(probeCanProvision({ env: {}, getuid: () => undefined, canSudo: () => false }), false);
+  assert.equal(probeCanProvision({ platform: "linux", env: {}, getuid: () => 1000, canSudo: () => true }), true);
+  assert.equal(probeCanProvision({ platform: "linux", env: {}, getuid: () => 1000, canSudo: () => false }), false);
+  assert.equal(probeCanProvision({ platform: "linux", env: {}, getuid: () => undefined, canSudo: () => false }), false);
+});
+
+test("probeCanProvision never auto-enables multi-tenant off Linux, even as root", () => {
+  // Group isolation uses Linux-only tooling (useradd/setpriv/runuser): a macOS
+  // or Windows host with root + a password must stay mono-tenant, or the boot
+  // migration fails on the first `useradd` and shows the red "isolation did NOT
+  // complete" banner. The probe (not deploymentMode) is where this is decided.
+  const canSudo = () => { throw new Error("must not probe off Linux"); };
+  assert.equal(probeCanProvision({ platform: "darwin", env: {}, getuid: () => 0, canSudo }), false);
+  assert.equal(probeCanProvision({ platform: "win32", env: {}, getuid: () => 0, canSudo }), false);
+  // Even a passwordless-sudo macOS user never auto-enables it.
+  assert.equal(probeCanProvision({ platform: "darwin", env: {}, getuid: () => 1000, canSudo: () => true }), false);
+});
+
+test("probeCanProvision: the explicit force override still wins off Linux", () => {
+  // The escape hatch for tests / unusual setups is deliberate and checked before
+  // the platform gate, so an operator who sets it keeps control.
+  assert.equal(
+    probeCanProvision({ platform: "darwin", env: { SHADOK_FORCE_MULTITENANT: "1" }, getuid: () => 1000, canSudo: () => false }),
+    true,
+  );
+  assert.equal(
+    probeCanProvision({ platform: "linux", env: { SHADOK_FORCE_MULTITENANT: "0" }, getuid: () => 0, canSudo: () => true }),
+    false,
+  );
 });
 
 test("accountsEnabled needs a non-blank password", () => {

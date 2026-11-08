@@ -1357,6 +1357,14 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     single-tenant. A "private" group that is only a tab colour reads as protection
     and gives none, which is worse than not offering it. Public groups are no
     wall by design (one commons user), so they stay available everywhere.
+    Provisioning is also **Linux-only**: the isolation is built on `useradd` /
+    `setpriv` / `runuser`, so `probeCanProvision` returns false off Linux however
+    privileged the host. Without that gate a macOS cockpit running as root (or
+    with cached/passwordless sudo) plus a GUI password flipped to multi-tenant and
+    failed the boot migration on the first `useradd` — leaving the red "isolation
+    did NOT complete" banner on an instance that was only ever a password-gated
+    single-user cockpit. The explicit `SHADOK_FORCE_MULTITENANT` override is still
+    honoured BEFORE the platform gate, so an operator and the tests keep control.
 
 <a id="inv-52"></a>
 

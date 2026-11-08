@@ -26,22 +26,33 @@ function defaultCanSudo(): boolean {
 }
 
 /**
- * Can this process create OS users? Root, or passwordless sudo.
+ * Can this process create OS users FOR GROUP ISOLATION? Root, or passwordless
+ * sudo — and only on Linux. The isolation is implemented with Linux-only tooling
+ * (`useradd`, `setpriv`, `runuser`); on macOS or Windows it cannot work, so a
+ * host there must never auto-enable multi-tenant. Without this gate, a Mac
+ * running as root (or with cached/passwordless sudo) plus a GUI password flipped
+ * to multi-tenant and failed the boot migration on the very first `useradd`,
+ * leaving the red "isolation did NOT complete" banner on an instance that was
+ * only ever meant to be a password-gated single-user cockpit.
  * `SHADOK_FORCE_MULTITENANT=1` forces true and `=0` forces false (tests,
- * unusual setups) — same style as `inContainer` in `ssh.ts`.
+ * unusual setups) — same style as `inContainer` in `ssh.ts`; the explicit
+ * override is checked BEFORE the platform gate so an operator keeps control.
  */
 export function probeCanProvision(
   deps: {
     getuid?: () => number | undefined;
     canSudo?: () => boolean;
     env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
   } = {},
 ): boolean {
   const env = deps.env ?? process.env;
   const getuid = deps.getuid ?? (() => process.getuid?.());
   const canSudo = deps.canSudo ?? defaultCanSudo;
+  const platform = deps.platform ?? process.platform;
   if (env.SHADOK_FORCE_MULTITENANT === "1") return true;
   if (env.SHADOK_FORCE_MULTITENANT === "0") return false;
+  if (platform !== "linux") return false;
   if (getuid() === 0) return true;
   return canSudo();
 }
