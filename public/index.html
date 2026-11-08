@@ -8956,6 +8956,10 @@
             // A file the agent delivered (SendUserFile) — its card survives the
             // reload so the download / image stays reachable.
             addFileCard(t, h.files || [], h.at);
+          } else if (h.role === "social-draft") {
+            // A LinkedIn draft card (src/social-drafts.ts). Its renderer ships
+            // with the web UI task; until then it must not fall through to an
+            // empty assistant bubble.
           } else if (h.role === "user" && h.compaction) {
             // A compaction summary: a huge "This session is being continued…"
             // block. Fold it into a collapsible box so it doesn't bury the chat.
