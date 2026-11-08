@@ -3898,7 +3898,7 @@
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
   window.samePrompt = samePrompt;
-  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty } from "/group-nav.js?v=__ASSET_V__";
+  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget } from "/group-nav.js?v=__ASSET_V__";
   window.GROUP_ICONS = GROUP_ICONS;
   window.UNGROUPED = UNGROUPED;
   window.randomGroupIcon = randomGroupIcon;
@@ -3907,6 +3907,7 @@
   window.cleanGroupIcon = cleanGroupIcon;
   window.reconcileTabGroup = reconcileTabGroup;
   window.groupIsDirty = groupIsDirty;
+  window.focusTarget = focusTarget;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
@@ -4087,6 +4088,11 @@
       return { move: true, synced: srv };
     },
     groupIsDirty: (local, synced) => synced === undefined || (local ?? null) !== synced,
+    // A group switch is a user click, long after the module lands; the stub
+    // mirrors the real "remembered-or-first" so even a race keeps today's
+    // top-agent fallback.
+    focusTarget: (ids, remembered) =>
+      (remembered != null && (ids || []).includes(remembered)) ? remembered : ((ids || []).length ? ids[0] : null),
     // The emoji keyword search feeds the icon picker, which opens well after
     // load; before the module lands, no suggestions (and typed text is treated
     // as a word, not an emoji) — both harmless, repainted on bridge-ready.
@@ -5589,6 +5595,10 @@
   const railEl = $("groupRail"), railList = $("railList");
   const VIEW_KEY = () => dirKey("cp.groupView", instanceKey);
   let groupView = localStorage.getItem(VIEW_KEY()) || "ungrouped";
+  // The agent last focused in each group view (view id → sessionId), so
+  // switching groups returns to where you were instead of the top agent.
+  // In-memory: a reload restores one active agent via `cp.activeSession`.
+  const lastAgentByView = {};
 
   /** Is the two-column layout on screen? (Hidden on a phone.) */
   const railShown = () => getComputedStyle(railEl).display !== "none";
@@ -5637,10 +5647,14 @@
     applyView();
     animateViewSwitch(from, currentView());
     // Picking a group shows one of ITS agents: staying on an agent that is no
-    // longer in the list would leave the chat and the list disagreeing.
+    // longer in the list would leave the chat and the list disagreeing. Return
+    // to the agent you last had focused in this group rather than snapping to
+    // the top one every time (focusTarget falls back to the first).
     if (follow && active && !active.btnEl.closest("#tweakSlot") && viewOfTab(active) !== currentView()) {
-      const first = tabsInView(currentView())[0];
-      if (first) activate(first);
+      const inView = tabsInView(currentView());
+      const wantId = window.focusTarget(inView.map((t) => t.sessionId), lastAgentByView[currentView()]);
+      const pick = inView.find((t) => t.sessionId === wantId) || inView[0];
+      if (pick) activate(pick);
     }
   }
   /** Whatever opens an agent (a click, a link, a notification) brings its group. */
@@ -6320,6 +6334,9 @@
       persistDraft(active);
     }
     active = tab;
+    // Remember this as the group's last-focused agent, so returning to the
+    // group comes back to it rather than the top one (consumed by setView).
+    if (tab.sessionId) lastAgentByView[viewOfTab(tab)] = tab.sessionId;
     showTabGroup(tab);
     // A reload must come back to the channel you were watching: remember its
     // sessionId (outside the initial restore, which replays the activates itself).
