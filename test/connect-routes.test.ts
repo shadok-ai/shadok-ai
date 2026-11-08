@@ -7,6 +7,7 @@ import {
   brokerBase,
   brokerStartUrl,
   connectedMember,
+  connectReadAllowed,
   errorOutcome,
   healthOffersLinkedIn,
   outcomeResponse,
@@ -15,7 +16,7 @@ import {
 } from "../src/connect-routes.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const DONE = path.join(HERE, "..", "public", "connect-done.html");
+const DONE = path.join(HERE, "..", "context", "connect-done.html");
 
 test("hash: success carries nonce and blob", () => {
   assert.deepEqual(parseConnectHash("#n=abc_-1&c=AAA.BBB.CCC"), { kind: "payload", nonce: "abc_-1", blob: "AAA.BBB.CCC" });
@@ -109,4 +110,26 @@ test("connect-done.html: every inline script carries the nonce, no inline handle
   assert.doesNotMatch(html, /\son[a-z]+\s*=/i);
   assert.doesNotMatch(html, /(ws|http)s?:\/\//);
   assert.match(html, /fetch\("connect\/linkedin\/complete"|fetch\("\/connect\/linkedin\/complete"/);
+});
+
+test("read gate: a person's GET passes with no Origin at all", () => {
+  const person = { hasAgentKey: false, hasPeerToken: false, internalClient: false };
+  assert.equal(connectReadAllowed({ ...person, account: { name: "admin" } }), true);
+  assert.equal(connectReadAllowed({ ...person, account: null }), false, "nobody signed in");
+});
+
+test("read gate: an agent key, a peer token, the bridge cookie or an agent account is refused", () => {
+  const acct = { name: "admin" };
+  assert.equal(connectReadAllowed({ hasAgentKey: true, hasPeerToken: false, internalClient: false, account: acct }), false);
+  assert.equal(connectReadAllowed({ hasAgentKey: false, hasPeerToken: true, internalClient: false, account: acct }), false);
+  assert.equal(connectReadAllowed({ hasAgentKey: false, hasPeerToken: false, internalClient: true, account: acct }), false);
+  assert.equal(
+    connectReadAllowed({ hasAgentKey: false, hasPeerToken: false, internalClient: false, account: { agent: { session: "x" } } }),
+    false,
+  );
+});
+
+test("connect-done.html lives outside public/, so express.static cannot serve it raw", () => {
+  assert.equal(fs.existsSync(path.join(HERE, "..", "public", "connect-done.html")), false);
+  assert.ok(fs.existsSync(DONE));
 });

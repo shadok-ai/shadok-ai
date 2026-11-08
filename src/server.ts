@@ -475,6 +475,7 @@ import {
   brokerBase,
   brokerStartUrl,
   connectedMember,
+  connectReadAllowed,
   errorOutcome,
   healthOffersLinkedIn,
   outcomeLabel,
@@ -4084,8 +4085,18 @@ function connectPerson(req: Caller): string | null {
   return a && !a.agent ? a.name : null;
 }
 
+/** The READ gate for the two GETs: a person, no `Origin` required (`connectReadAllowed`). */
+function connectReader(req: Caller & { headers: Record<string, unknown> }): boolean {
+  return connectReadAllowed({
+    hasAgentKey: headerPresent(req.headers["x-shadok-session-key"]),
+    hasPeerToken: headerPresent(req.headers["x-shadok-peer"]),
+    internalClient: !!GUI_PASSWORD && isInternalClient(cookieSession(req)),
+    account: currentAccount(req),
+  });
+}
+
 app.get("/connect/status", async (req, res) => {
-  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
   res.json({ available: await brokerAvailable(Date.now()) });
 });
 
@@ -4105,7 +4116,9 @@ app.post("/connect/linkedin/start", (req, res) => {
 
 // The broker sends the browser back here with the encrypted token in the HASH
 // (never sent to a server, never logged by a proxy). Behind the gate like any page.
-const CONNECT_DONE_PATH = path.join(__dirname, "..", "public", "connect-done.html");
+// Kept OUT of public/: express.static would serve it raw at /connect-done.html
+// with the literal nonce marker. Only this route serves it, nonce injected.
+const CONNECT_DONE_PATH = path.join(__dirname, "..", "context", "connect-done.html");
 app.get("/connect/linkedin/done", (_req, res) => {
   let html: string;
   try {
@@ -4133,7 +4146,7 @@ app.post("/connect/linkedin/complete", async (req, res) => {
   if (h.kind === "malformed") return refuse("damaged");
   if (h.kind === "error") {
     // Consume the attempt (its owner only) so a cancelled nonce cannot be reused.
-    if (h.nonce) connectPending.take(h.nonce, person, now);
+    if (h.nonce && connectPending.take(h.nonce, person, now) === "wrong-person") return refuse("wrong-person");
     return refuse(errorOutcome(h.error));
   }
   const attempt = connectPending.take(h.nonce, person, now);
@@ -4157,7 +4170,7 @@ app.post("/connect/linkedin/complete", async (req, res) => {
 });
 
 app.get("/connected-accounts", (req, res) => {
-  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
   const viewer = viewerFor(currentAccount(req));
   const groups = loadGroups();
   const accounts = loadAccountsStore(accountsFile())

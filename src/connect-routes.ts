@@ -142,3 +142,23 @@ export function healthOffersLinkedIn(body: unknown): boolean {
   const providers = (body as { providers?: unknown } | null)?.providers;
   return Array.isArray(providers) && providers.includes("linkedin");
 }
+
+/**
+ * May this caller READ the connect state (`GET /connect/status`,
+ * `GET /connected-accounts`)? Not `requestFromBrowser`: that requires an
+ * `Origin`, and a browser sends none on a same-origin GET — both routes 403'd
+ * in every real browser (the `/agent-login` trap). A read changes nothing, so
+ * the CSRF layer has nothing to protect; what stays is "a person, not a
+ * machine": an agent's key or a peer token refuses outright, the server's own
+ * bridge cookie is not a person, and the resolved account must not be an agent.
+ * The writes (POST/PUT/DELETE) keep the full `requestFromBrowser` gate.
+ */
+export function connectReadAllowed(o: {
+  hasAgentKey: boolean;
+  hasPeerToken: boolean;
+  internalClient: boolean;
+  account: { agent?: unknown } | null;
+}): boolean {
+  if (o.hasAgentKey || o.hasPeerToken || o.internalClient) return false;
+  return o.account !== null && !o.account.agent;
+}

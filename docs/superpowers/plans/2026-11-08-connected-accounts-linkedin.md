@@ -145,13 +145,13 @@
 - Produces (all browser-person only unless noted):
   - `GET /connect/status` → `{ available: boolean }` — broker `/health` fetched at most every 5 min, `available` = it answered with `linkedin`.
   - `POST /connect/linkedin/start` `{ origin: string }` → `{ url }` = `${BROKER}/linkedin/start?return=${origin}/connect/linkedin/done&pub&nonce`. `origin` must equal the request's `Origin` header.
-  - `GET /connect/linkedin/done` — reachable behind the gate like any page; served from `public/connect-done.html` with `__CSP_NONCE__` (invariant 12); its script POSTs `{ hash: location.hash }` to `/connect/linkedin/complete`, `history.replaceState` to drop the hash, shows the outcome sentence, links back to `/`.
+  - `GET /connect/linkedin/done` — reachable behind the gate like any page; served from `context/connect-done.html` (outside `public/`, so express.static cannot serve it raw) with `__CSP_NONCE__` (invariant 12); its script POSTs `{ hash: location.hash }` to `/connect/linkedin/complete`, `history.replaceState` to drop the hash, shows the outcome sentence, links back to `/`.
   - `POST /connect/linkedin/complete` `{ hash }` → parses `#n=…&c=…` / `#n=…&error=…`; `take(nonce…)`; `decryptPayload`; `fetchMember`; `upsertAccount` with `owner = connectedVia = person`, `kind:"member"`, `externalId = urn:li:person:<sub>`, `expiresAt = now + expires_in*1000`; → `{ account: publicView }`. Outcomes as sentences: `"unknown"/"expired"` → *"This connection attempt expired — click Connect LinkedIn again."*; `error=user_cancelled_authorize`/`cancelled` → *"Connection cancelled."*.
   - `GET /connected-accounts` → `publicView[]` visible to the person + `{ softLayer: DEPLOYMENT_MODE !== "multi-tenant" }`.
   - `PUT /connected-accounts/:id` `{ share?, policy? }`, `DELETE /connected-accounts/:id` — through `accountEditVerdict`; 403 with the reason.
 
 - [ ] **Step 1: Failing tests** for the pure parts: hash parsing (`#n=..&c=..`, `#error=..`, garbage → error); origin check; the outcome-sentence mapping (Review Focus 5: unknown nonce → the "expired, click again" sentence, status 410 not 500).
-- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** routes + `public/connect-done.html`. **Step 4: Run** tests — PASS; `npm run build` clean; `test/csp.test.ts` still green (the new page carries the nonce).
+- [ ] **Step 2: Run** — FAIL. **Step 3: Implement** routes + `context/connect-done.html`. **Step 4: Run** tests — PASS; `npm run build` clean; `test/csp.test.ts` still green (the new page carries the nonce).
 - [ ] **Step 5: Commit** `"Connect LinkedIn: start/done/complete routes and account management"`
 
 ### Task 7: Drafts, publishing, the log
