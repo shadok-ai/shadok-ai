@@ -38,6 +38,10 @@ test("validateReturnUrl refuses everything else", () => {
     "ftp://x.com/connect/linkedin/done",
     "not a url",
     "",
+    // A query or a hash would ride along in front of the broker's own #n=… fragment.
+    "https://x.com/connect/linkedin/done?next=evil",
+    "https://x.com/connect/linkedin/done?",
+    "https://x.com/connect/linkedin/done#n=forged",
   ]) assert.equal(validateReturnUrl(u).ok, false, u);
 });
 

@@ -65,6 +65,11 @@ export function validateReturnUrl(raw: string): { ok: true; url: URL } | { ok: f
   if (url.protocol !== "https:" && url.protocol !== "http:") return { ok: false, reason: "scheme must be https or http" };
   if (url.username || url.password) return { ok: false, reason: "credentials are not allowed in the URL" };
   if (url.pathname !== RETURN_PATH) return { ok: false, reason: `path must be ${RETURN_PATH}` };
+  // The broker appends `#n=<nonce>&…` itself: a query would ride along to the
+  // instance's server, and a hash of the caller's would collide with ours. The
+  // href (not `search`/`hash`) is tested, because a bare trailing `?` or `#`
+  // parses to an empty string yet stays in the URL.
+  if (/[?#]/.test(url.href)) return { ok: false, reason: "a query or fragment is not allowed in the URL" };
   if (url.protocol === "http:" && !isPrivateHost(url.hostname)) {
     return { ok: false, reason: "http is only accepted for localhost and private addresses" };
   }

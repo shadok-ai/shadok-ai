@@ -132,3 +132,47 @@ test("a tampered or bad state is a 400 with no link and no token call", async ()
 test("unknown routes are 404", async () => {
   assert.equal((await get("/nope")).status, 404);
 });
+
+test("/linkedin/start refuses a nonce or pub of the wrong shape", async () => {
+  const { pub } = await keypair();
+  const ret = encodeURIComponent(RETURN);
+  let called = 0;
+  for (const [p, n] of [
+    [pub, nonce.slice(0, 21)],
+    [pub, nonce + "A"],
+    [pub, nonce.slice(0, 21) + "="],
+    [pub.slice(0, 86), nonce],
+    [pub + "A", nonce],
+    [pub.slice(0, 86) + "%2B", nonce],
+    ["AAAA", nonce],
+  ]) {
+    const r = await get(`/linkedin/start?return=${ret}&pub=${p}&nonce=${n}`);
+    assert.equal(r.status, 400, `${p} / ${n}`);
+    called++;
+  }
+  assert.equal(called, 7);
+  assert.equal((await get(`/linkedin/start?return=${ret}&pub=${pub}&nonce=${nonce}`)).status, 302);
+});
+
+test("a token exchange that throws links back with token_exchange_failed", async () => {
+  const { pub } = await keypair();
+  const state = await signState(mkState(pub), env.STATE_KEY);
+  globalThis.fetch = (async () => { throw new TypeError("network down"); }) as typeof fetch;
+  const r = await get(`/linkedin/callback?code=c&state=${encodeURIComponent(state)}`);
+  assert.equal(r.status, 200);
+  const html = await r.text();
+  assert.match(html, /could not reach LinkedIn/i);
+  assert.ok(html.includes(`#n=${nonce}&amp;error=token_exchange_failed"`));
+  assert.ok(!html.includes("network down"));
+});
+
+test("a 200 with a malformed body says LinkedIn answered unexpectedly, not 'refused'", async () => {
+  const { pub } = await keypair();
+  const state = await signState(mkState(pub), env.STATE_KEY);
+  globalThis.fetch = (async () => new Response("not json", { status: 200 })) as typeof fetch;
+  const r = await get(`/linkedin/callback?code=c&state=${encodeURIComponent(state)}`);
+  const html = await r.text();
+  assert.match(html, /LinkedIn returned an unexpected answer\./);
+  assert.ok(!html.includes("refused"));
+  assert.ok(html.includes(`#n=${nonce}&amp;error=token_exchange_failed"`));
+});

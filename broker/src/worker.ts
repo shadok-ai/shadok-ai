@@ -52,6 +52,12 @@ function page(status: number, title: string, body: string): Response {
   });
 }
 
+// The shapes the instance makes (src/connect-crypto.ts `newAttempt`): a 16-byte
+// nonce and a raw P-256 public key (65 bytes), both base64url without padding.
+// Anything else did not come from a cockpit and must not reach a signed state.
+const NONCE_RE = /^[A-Za-z0-9_-]{22}$/;
+const PUB_RE = /^[A-Za-z0-9_-]{87}$/;
+
 const bad = (msg: string) => page(400, "Cannot connect", `<p>${esc(msg)}</p>`);
 const link = (returnUrl: string, nonce: string, tail: string) => `${returnUrl}#n=${nonce}&${tail}`;
 
@@ -62,6 +68,7 @@ async function start(url: URL, env: Env, p: Provider): Promise<Response> {
   const v = validateReturnUrl(ret);
   if (!v.ok) return bad(`Invalid return URL: ${v.reason}.`);
   if (!pub || !nonce) return bad("Missing pub or nonce.");
+  if (!NONCE_RE.test(nonce) || !PUB_RE.test(pub)) return bad("Malformed pub or nonce.");
   const state = await signState({ v: 1, provider: "linkedin", returnUrl: v.url.toString(), pub, nonce, iat: Date.now() }, env.STATE_KEY);
   const q = new URLSearchParams({
     response_type: "code",
@@ -94,20 +101,30 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
   const code = url.searchParams.get("code");
   if (!code) return bad("Missing authorization code.");
 
-  const res = await fetch(p.tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "authorization_code",
-      code,
-      redirect_uri: `${url.origin}/linkedin/callback`,
-      client_id: p.clientId(env),
-      client_secret: p.clientSecret(env),
-    }),
-  });
+  const failed = (sentence: string) =>
+    page(200, "Connection failed", `<p>${esc(sentence)}</p><a class="b" href="${esc(link(returnUrl, st.nonce, "error=token_exchange_failed"))}">Back to ${esc(host)}</a>`);
+  let res: Response;
+  try {
+    res = await fetch(p.tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: `${url.origin}/linkedin/callback`,
+        client_id: p.clientId(env),
+        client_secret: p.clientSecret(env),
+      }),
+    });
+  } catch {
+    // A network failure: without this the Worker throws, the person gets a bare
+    // 1101 page and no way back, and the instance's attempt is never consumed.
+    // The error's text is not shown — it is not ours to vouch for.
+    return failed("The connector could not reach LinkedIn. Try again in a moment.");
+  }
   if (!res.ok) {
     // Status only: the body could echo the code or the client secret.
-    return page(200, "Connection failed", `<p>LinkedIn refused the connection (HTTP ${res.status}).</p><a class="b" href="${esc(link(returnUrl, st.nonce, "error=token_exchange_failed"))}">Back to ${esc(host)}</a>`);
+    return failed(`LinkedIn refused the connection (HTTP ${res.status}).`);
   }
   let token: TokenPayload;
   try {
@@ -120,7 +137,8 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
       ...(j.refresh_token ? { refresh_token: j.refresh_token, refresh_token_expires_in: j.refresh_token_expires_in } : {}),
     };
   } catch {
-    return page(200, "Connection failed", `<p>LinkedIn refused the connection (HTTP ${res.status}).</p><a class="b" href="${esc(link(returnUrl, st.nonce, "error=token_exchange_failed"))}">Back to ${esc(host)}</a>`);
+    // HTTP 200 but no usable token: LinkedIn did not refuse anything.
+    return failed("LinkedIn returned an unexpected answer.");
   }
   let c: string;
   try {
