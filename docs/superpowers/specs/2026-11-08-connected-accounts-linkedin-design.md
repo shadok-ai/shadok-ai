@@ -276,7 +276,13 @@ as <label> without asking anyone."*
 
 ### 8. Company Pages (v1.1, after LinkedIn's approval)
 
-Connect requests the organization scopes as well; after the callback the
+Pages go through **their own LinkedIn app** (operator task 3): the broker holds
+a second client id/secret and exposes the same flow under `/linkedin-pages/*`;
+the instance treats it as a second provider key (`linkedin-pages`) with the same
+store, crypto and publish path. Connect *Page* is a separate button, so a person
+who only posts as themselves never sees the Page consent screen. Which member
+identity call app B may make (it has no OIDC) is a Verify-first item.
+Connect requests the organization scopes; after the callback the
 instance lists the Pages the person administers and offers each as an account
 (`kind: organization`, `connectedVia` = that person). Reconnect by another Page
 admin replaces `connectedVia` — this is the departure case.
@@ -288,7 +294,14 @@ admin replaces `connectedVia` — this is the departure case.
    OpenID Connect* and *Share on LinkedIn*; redirect URL
    `https://connect.shadok.ai/linkedin/callback`; logo/name as shown on the
    consent screen.
-3. **File the Community Management API request now** (Pages).
+3. **File the Community Management API request now** (Pages) — on a **second,
+   separate app**. Measured 2026-11-08 in the LinkedIn console: *"This API
+   product requires that it be the only product on the application for legal
+   and security reasons"*; it cannot be requested on an app that has other
+   products or pending requests. So: app **A** = OIDC + Share on LinkedIn
+   (members, v1), app **B** = Community Management API alone (Pages, v1.1),
+   each with its own redirect URL on the broker
+   (`/linkedin/callback`, `/linkedin-pages/callback`).
 4. DNS `connect.shadok.ai` → the Worker; Worker secrets: client id, client
    secret, state HMAC key. Who holds the Cloudflare account and the LinkedIn
    app admin role is the operator's decision.
