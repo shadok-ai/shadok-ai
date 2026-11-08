@@ -498,6 +498,17 @@ import {
   type LogEntry,
 } from "./social-drafts.js";
 import {
+  draftExpiredNotice,
+  expiryActions,
+  expiryWarningText,
+  loadWarned,
+  ownerIsOperator,
+  pendingDraftText,
+  saveWarned,
+  stalePublishing,
+  warnedFileFor,
+} from "./account-expiry.js";
+import {
   brokerBase,
   brokerStartUrl,
   connectedMember,
@@ -655,6 +666,7 @@ let tgBridge: TelegramHandle = {
   stop() {},
   running: () => false,
   status: () => ({ username: null, tokenError: null }),
+  notifyOwner: async () => false,
 };
 let boundPort = 0;
 // The bridge is in-process and reaches us over the loopback WS: it is the
@@ -4356,13 +4368,76 @@ function publishFailure(e: unknown, account: ConnectedAccount, now: number): { s
  *  while it is busy (a notice lost to a busy turn would be invariant 15 again). */
 function notifyDraftAgent(d: Draft): void {
   const text = draftNotice(d);
-  if (!text) return;
+  if (text) notifyDraftAgentText(d, text);
+}
+
+function notifyDraftAgentText(d: Draft, text: string): void {
   const tag = `social: notice ${d.id} → ${d.sessionId.slice(0, 8)}`;
   void deliverWithRetry(
     () => driveChannel(d.sessionId, markAgentPrompt(text), resolveSessionTarget(loadChannels(), d.sessionId, process.cwd())),
     () => loadChannels().some((c) => c.sessionId === d.sessionId),
     { attempts: 20, delayMs: 15_000 },
   ).then((res) => console.log(res.ok ? `${tag} delivered` : `${tag} failed (${res.reason})`));
+}
+
+/** DM the operator (the Telegram DM owner) — only for accounts the operator owns. */
+function notifyOperator(accountOwner: string, text: string): void {
+  if (!ownerIsOperator(accountOwner, BOOTSTRAP_ADMIN)) return;
+  void tgBridge.notifyOwner(text).then(
+    (ok) => {
+      if (!ok) console.log("social: owner DM not sent (no bot, no paired owner, or the send failed)");
+    },
+    () => {},
+  );
+}
+
+/**
+ * The hourly watch: warn about accounts close to expiry, mark lapsed ones
+ * expired, expire old drafts, fail publishes orphaned by a restart. Never throws.
+ */
+function watchConnectedAccounts(): void {
+  try {
+    const now = Date.now();
+    const accounts = loadAccountsStore(accountsFile());
+    const warnedFile = warnedFileFor(process.cwd());
+    const warned = loadWarned(warnedFile);
+    const stale = stalePublishing(loadDrafts(draftsFile()), now);
+    const { warn, expire, expiredDrafts } = expiryActions(accounts, stale.list, now, warned);
+
+    for (const a of warn) {
+      notifyOperator(a.owner, expiryWarningText(a));
+      warned[a.id] = now;
+    }
+    saveWarned(warnedFile, warned, accounts.map((a) => a.id));
+
+    if (expire.length) {
+      const ids = new Set(expire.map((a) => a.id));
+      saveAccountsStore(accountsFile(), accounts.map((a) => (ids.has(a.id) ? { ...a, status: "expired" as const, updatedAt: now } : a)));
+      for (const a of expire) console.log(`social: linkedin account ${a.id} expired`);
+    }
+
+    if (expiredDrafts.length || stale.failed.length) {
+      const current = loadDrafts(draftsFile());
+      saveDrafts(
+        draftsFile(),
+        current.map((d) => {
+          const f = stale.failed.find((x) => x.id === d.id);
+          if (f && d.status === "publishing") return f;
+          const e = expiredDrafts.find((x) => x.id === d.id);
+          return e && d.status === "pending" ? e : d;
+        }),
+      );
+      const channels = loadChannels();
+      for (const d of [...stale.failed, ...expiredDrafts]) {
+        logSocial(draftLogEntry(d, { at: now, channel: channelLabel(channels, d.sessionId), approvedBy: "system", outcome: d.status === "expired" ? "expired" : "failed", ...(d.error ? { error: d.error } : {}) }));
+        broadcastDraft(d);
+        if (d.status === "expired") notifyDraftAgentText(d, draftExpiredNotice(d));
+        else notifyDraftAgent(d);
+      }
+    }
+  } catch (e) {
+    console.log(`social: expiry watch failed (${(e as Error).message})`);
+  }
 }
 
 app.get("/social/accounts", (req, res) => {
@@ -4423,6 +4498,7 @@ app.post("/social/posts", async (req, res) => {
     storeDraft(d);
     broadcastDraft(d);
     console.log(`social: draft ${d.id} for account ${account.id} from ${agent.sessionId.slice(0, 8)} (${origin}) — waiting for approval`);
+    notifyOperator(account.owner, pendingDraftText(channel));
     return res.json({ status: "pending", draftId: d.id });
   }
 
@@ -10104,6 +10180,10 @@ server.listen(port, HOST, () => {
   primeCrons();
   const cronTimer = setInterval(cronTick, 30_000);
   cronTimer.unref();
+  // Connected accounts: expiry warnings, lapsed drafts — hourly, plus once soon after boot.
+  const expiryTimer = setInterval(watchConnectedAccounts, 3_600_000);
+  expiryTimer.unref();
+  setTimeout(watchConnectedAccounts, 30_000).unref();
   // Reload indicator: re-evaluate every live agent's staleness once a minute and
   // push it when it changed — this is how a profile edit, a newly-seeded skill or
   // a freshly-installed `claude` reaches an idle agent's tab without any traffic

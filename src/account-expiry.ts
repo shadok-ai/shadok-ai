@@ -1,0 +1,113 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomBytes } from "node:crypto";
+import { instanceKey } from "./paths.js";
+import type { ConnectedAccount } from "./connected-accounts.js";
+import { expireDrafts, type Draft } from "./social-drafts.js";
+
+/**
+ * The hourly watch over connected accounts and drafts: which accounts are close
+ * to (or past) their expiry, which drafts timed out, which publishes were
+ * orphaned by a restart. Pure decisions up top, the warning memory below. The
+ * server applies them; nothing here touches a token.
+ */
+
+export const WARN_BEFORE_MS = 7 * 24 * 3600_000;
+export const REWARN_AFTER_MS = 24 * 3600_000;
+export const STALE_PUBLISHING_MS = 10 * 60_000;
+export const STALE_PUBLISHING_SENTENCE = "The cockpit restarted while publishing; check LinkedIn before retrying.";
+
+export interface ExpiryActions {
+  warn: ConnectedAccount[];
+  expire: ConnectedAccount[];
+  expiredDrafts: Draft[];
+}
+
+/**
+ * Warn once a day from 7 days before `expiresAt`; expire at `expiresAt`. An
+ * account already marked expired is neither warned nor expired again. The draft
+ * TTL is `expireDrafts`' — one definition.
+ */
+export function expiryActions(
+  accounts: readonly ConnectedAccount[],
+  drafts: readonly Draft[],
+  now: number,
+  lastWarned: Readonly<Record<string, number>>,
+): ExpiryActions {
+  const warn: ConnectedAccount[] = [];
+  const expire: ConnectedAccount[] = [];
+  for (const a of accounts) {
+    if (a.status === "expired") continue;
+    if (now >= a.expiresAt) {
+      expire.push(a);
+      continue;
+    }
+    const last = lastWarned[a.id];
+    if (a.expiresAt - now <= WARN_BEFORE_MS && (last === undefined || now - last >= REWARN_AFTER_MS)) warn.push(a);
+  }
+  return { warn, expire, expiredDrafts: expireDrafts(drafts, now).expired };
+}
+
+/** Drafts stuck `publishing` past the window (the process died mid-publish) → failed. */
+export function stalePublishing(list: readonly Draft[], now: number): { list: Draft[]; failed: Draft[] } {
+  const failed: Draft[] = [];
+  const out = list.map((d) => {
+    if (d.status !== "publishing" || now - d.createdAt < STALE_PUBLISHING_MS) return d;
+    const f: Draft = { ...d, status: "failed", error: STALE_PUBLISHING_SENTENCE };
+    failed.push(f);
+    return f;
+  });
+  return { list: out, failed };
+}
+
+function isoDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+export function expiryWarningText(a: Pick<ConnectedAccount, "label" | "expiresAt">): string {
+  return `Your LinkedIn connection '${a.label}' expires on ${isoDay(a.expiresAt)}. Reconnect it in Secrets → Connected accounts so posts keep going out.`;
+}
+
+export function draftExpiredNotice(d: Pick<Draft, "id">): string {
+  return `Your LinkedIn draft ${d.id.slice(0, 8)} expired after 7 days without approval — it was not published.`;
+}
+
+export function pendingDraftText(channel: string): string {
+  return `${channel} has a LinkedIn post waiting for your approval in the cockpit.`;
+}
+
+/** Only the instance operator (the bootstrap admin) is the Telegram DM owner. */
+export function ownerIsOperator(owner: string, bootstrapAdmin: string): boolean {
+  return owner === bootstrapAdmin;
+}
+
+// ---- the warning memory (sidecar: the account store's shape is fixed) -----
+
+export function warnedFileFor(cwd: string): string {
+  return path.join(os.homedir(), ".shadok-ai", "connected-accounts", `${instanceKey(cwd)}.warned.json`);
+}
+
+/** Missing or unparseable → {}. Never throws. */
+export function loadWarned(file: string): Record<string, number> {
+  try {
+    const p = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!p || typeof p !== "object" || Array.isArray(p)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(p)) if (typeof v === "number") out[k] = v;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Drops ids no longer in the store; atomic, mode 600. */
+export function saveWarned(file: string, warned: Record<string, number>, liveIds: readonly string[]): void {
+  const keep: Record<string, number> = {};
+  for (const id of liveIds) if (warned[id] !== undefined) keep[id] = warned[id];
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(keep, null, 2), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, file);
+}
