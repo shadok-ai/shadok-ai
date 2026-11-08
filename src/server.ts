@@ -457,6 +457,32 @@ import {
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
+import { newAttempt, decryptPayload, PendingAttempts, type TokenPayload } from "./connect-crypto.js";
+import {
+  accountsFileFor,
+  loadAccountsStore,
+  saveAccountsStore,
+  upsertAccount,
+  resolveAccountId,
+  commonsGroupIds as commonsGroupIdsOf,
+  accountVisible,
+  accountEditVerdict,
+  publicView,
+  type ShareScope,
+} from "./connected-accounts.js";
+import { fetchMember } from "./linkedin.js";
+import {
+  brokerBase,
+  brokerStartUrl,
+  connectedMember,
+  errorOutcome,
+  healthOffersLinkedIn,
+  outcomeLabel,
+  outcomeResponse,
+  parseConnectHash,
+  startOriginOk,
+  type ConnectOutcome,
+} from "./connect-routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const START_PORT = Number(process.env.PORT ?? 3789);
@@ -3003,9 +3029,8 @@ function agentStateHome(user: string | null | undefined): string {
  *  for every agent like Main's — not only for an agent that happens to run in it.
  *  Mono-tenant (no groups) collapses to Main alone, today's behaviour. */
 function commonsGroupIds(): string[] {
-  const ids: string[] = [MAIN_GROUP_ID];
-  for (const g of loadGroups()) if (g.nature === "public" && g.id !== MAIN_GROUP_ID) ids.push(g.id);
-  return ids;
+  // ONE definition (src/connected-accounts.ts); a Set keeps insertion order, so Main stays first.
+  return [...commonsGroupIdsOf(loadGroups())];
 }
 
 /** The state HOME for a CHANNEL that may not be live (e.g. GET /download of a
@@ -4025,6 +4050,181 @@ app.delete("/secrets", (req, res) => {
     recordSecretAudit({ action: "deleted", secrets: [name], ...auditActorOf(req), instance: process.cwd() });
   }
   res.json({ names: secretNames(ownerGroup) });
+});
+
+// Connected accounts (LinkedIn). The token comes back from the broker
+// encrypted for a key pair made here (src/connect-crypto.ts), is stored
+// server-side, and never leaves through any route: every answer is a
+// `publicView`. Every route is browser-person only — an agent neither connects
+// nor manages an account. Design:
+// docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §2–3.
+const CONNECT_BROKER = brokerBase(process.env.SHADOK_CONNECT_BROKER);
+const connectPending = new PendingAttempts();
+const accountsFile = () => accountsFileFor(process.cwd());
+
+// The broker's health, probed at most every 5 minutes (a failure only 1 minute,
+// so a broker that comes back shows up soon). Never throws.
+let brokerHealth: { available: boolean; at: number } | null = null;
+async function brokerAvailable(now: number): Promise<boolean> {
+  if (brokerHealth && now - brokerHealth.at < (brokerHealth.available ? 5 * 60_000 : 60_000)) return brokerHealth.available;
+  let available = false;
+  try {
+    const r = await fetch(`${CONNECT_BROKER}/health`, { signal: AbortSignal.timeout(5_000) });
+    available = r.ok && healthOffersLinkedIn(await r.json().catch(() => null));
+  } catch {
+    available = false;
+  }
+  brokerHealth = { available, at: Date.now() };
+  return available;
+}
+
+/** The person behind a browser request (`requestFromBrowser` already passed). */
+function connectPerson(req: Caller): string | null {
+  const a = currentAccount(req);
+  return a && !a.agent ? a.name : null;
+}
+
+app.get("/connect/status", async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  res.json({ available: await brokerAvailable(Date.now()) });
+});
+
+app.post("/connect/linkedin/start", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  const person = connectPerson(req);
+  if (!person) return res.status(401).json({ error: "Sign in to connect an account." });
+  const origin = req.body?.origin;
+  if (!startOriginOk(origin, req.headers.origin)) return res.status(400).json({ error: "origin must be this page's own origin" });
+  const now = Date.now();
+  connectPending.sweep(now);
+  const { attempt, pub, nonce } = newAttempt(person, now);
+  connectPending.add(attempt);
+  console.log(`connect: linkedin started for ${person}`);
+  res.json({ url: brokerStartUrl(CONNECT_BROKER, origin as string, pub, nonce) });
+});
+
+// The broker sends the browser back here with the encrypted token in the HASH
+// (never sent to a server, never logged by a proxy). Behind the gate like any page.
+const CONNECT_DONE_PATH = path.join(__dirname, "..", "public", "connect-done.html");
+app.get("/connect/linkedin/done", (_req, res) => {
+  let html: string;
+  try {
+    html = fs.readFileSync(CONNECT_DONE_PATH, "utf8");
+  } catch {
+    return res.status(500).type("text").send("connect-done.html not found");
+  }
+  const nonce = randomUUID();
+  res.setHeader("Content-Security-Policy", cspHeader(nonce));
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(injectNonce(html, nonce));
+});
+
+app.post("/connect/linkedin/complete", async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  const person = connectPerson(req);
+  if (!person) return res.status(401).json({ error: "Sign in to connect an account." });
+  const refuse = (o: ConnectOutcome) => {
+    console.log(`connect: linkedin ${outcomeLabel(o)} for ${person}`);
+    const r = outcomeResponse(o);
+    return res.status(r.status).json(r.body);
+  };
+  const now = Date.now();
+  const h = parseConnectHash(req.body?.hash);
+  if (h.kind === "malformed") return refuse("damaged");
+  if (h.kind === "error") {
+    // Consume the attempt (its owner only) so a cancelled nonce cannot be reused.
+    if (h.nonce) connectPending.take(h.nonce, person, now);
+    return refuse(errorOutcome(h.error));
+  }
+  const attempt = connectPending.take(h.nonce, person, now);
+  if (typeof attempt === "string") return refuse(attempt);
+  let payload: TokenPayload;
+  try {
+    payload = decryptPayload(attempt, h.blob);
+  } catch {
+    return refuse("damaged");
+  }
+  let member: { sub: string; name: string };
+  try {
+    member = await fetchMember(payload.access_token, fetch);
+  } catch {
+    return refuse("profile-failed");
+  }
+  const { list, account } = upsertAccount(loadAccountsStore(accountsFile()), connectedMember(person, member, payload, now), now);
+  saveAccountsStore(accountsFile(), list);
+  console.log(`connect: linkedin connected ${account.id} for ${person}`);
+  res.json({ account: publicView(account) });
+});
+
+app.get("/connected-accounts", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  const viewer = viewerFor(currentAccount(req));
+  const groups = loadGroups();
+  const accounts = loadAccountsStore(accountsFile())
+    .filter((a) => accountVisible(a, viewer, groups, { peerBox: null }))
+    .map(publicView);
+  res.json({ accounts, softLayer: DEPLOYMENT_MODE !== "multi-tenant" });
+});
+
+/** The account `:id` names (unique prefix, invariant 17), or the refusal already sent. */
+function connectedAccountFor(req: express.Request, res: express.Response) {
+  if (!requestFromBrowser(req)) {
+    res.status(403).json({ error: "web UI only" });
+    return null;
+  }
+  const list = loadAccountsStore(accountsFile());
+  const hit = resolveAccountId(list, String(req.params.id ?? ""));
+  if (hit === "none") {
+    res.status(404).json({ error: "No such connected account." });
+    return null;
+  }
+  if (hit === "ambiguous") {
+    res.status(409).json({ error: "Several connected accounts match that id — give more characters." });
+    return null;
+  }
+  return { list, account: hit };
+}
+
+function isShareScope(v: unknown): v is ShareScope {
+  const s = v as { scope?: unknown; groups?: unknown } | null;
+  if (!s || typeof s !== "object") return false;
+  if (s.scope === "private" || s.scope === "instance") return true;
+  return s.scope === "groups" && Array.isArray(s.groups) && s.groups.every((g) => typeof g === "string");
+}
+
+app.put("/connected-accounts/:id", (req, res) => {
+  const found = connectedAccountFor(req, res);
+  if (!found) return;
+  const { share, policy } = req.body ?? {};
+  if (share === undefined && policy === undefined) return res.status(400).json({ error: "share or policy required" });
+  if (share !== undefined && !isShareScope(share)) return res.status(400).json({ error: "invalid share" });
+  if (policy !== undefined && policy !== "approve" && policy !== "autonomous") return res.status(400).json({ error: "invalid policy" });
+  const viewer = viewerFor(currentAccount(req));
+  const groups = loadGroups();
+  let next = found.account;
+  if (share !== undefined) {
+    const v = accountEditVerdict(found.account, viewer, "share", { share }, groups);
+    if (!v.ok) return res.status(403).json({ error: v.reason });
+    next = { ...next, share: share.scope === "groups" ? { scope: "groups", groups: [...new Set<string>(share.groups)] } : { scope: share.scope } };
+  }
+  if (policy !== undefined) {
+    const v = accountEditVerdict(found.account, viewer, "policy", { policy }, groups);
+    if (!v.ok) return res.status(403).json({ error: v.reason });
+    next = { ...next, policy };
+  }
+  next = { ...next, updatedAt: Date.now() };
+  saveAccountsStore(accountsFile(), found.list.map((a) => (a === found.account ? next : a)));
+  res.json({ account: publicView(next) });
+});
+
+app.delete("/connected-accounts/:id", (req, res) => {
+  const found = connectedAccountFor(req, res);
+  if (!found) return;
+  const v = accountEditVerdict(found.account, viewerFor(currentAccount(req)), "disconnect", undefined, loadGroups());
+  if (!v.ok) return res.status(403).json({ error: v.reason });
+  saveAccountsStore(accountsFile(), found.list.filter((a) => a !== found.account));
+  console.log(`connect: linkedin disconnected ${found.account.id} by ${currentAccount(req)?.name ?? "?"}`);
+  res.json({ ok: true });
 });
 
 // Finish an OAuth sign-in whose redirect points at an agent's localhost port,
