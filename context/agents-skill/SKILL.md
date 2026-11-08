@@ -26,7 +26,7 @@ and automatically starts the shadok-ai server when it is not running (port
 | `choose <id> <n>` | single-select dialog: picks and commits option n |
 | `toggle <id> <n>` then `confirm <id>` | multi-select dialog: check/uncheck then submit |
 | `freetext <id> <n> "text"` | the "Type something" option: a free answer |
-| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions |
+| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions. With `--peer X`: the agents running ON X (from X itself, tagged `peer`), plus X's resumable sessions only for a `--cwd` you name — a path on X |
 | `diff <id>` | the agent's changes (git status + diff against the worktree's base) |
 | `stop <id>` | ends the session (for ALL its clients) |
 | `screen <id>` | raw TUI screen (debug) |
@@ -192,7 +192,9 @@ pilotctl stop <id> --peer brasdroit1
   - **member** — you act like an invited user: `list`, `diff`, resume/drive/stop
     **any** agent on X, spawn more, read its usage. You are not an admin (no
     account or peer management).
-  Track the ids you `spawn` either way and drive them by id.
+  Track the ids you `spawn` either way and drive them by id. `list --peer X`
+  answers with X's agents and says so (`peer: <url>`); a refusal comes back as
+  an explicit `peer-scope` error, never as your own machine's list.
 
 ## Guardrails
 
