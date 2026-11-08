@@ -489,7 +489,11 @@ import {
   saveDrafts,
   sessionDrafts,
   socialLogFileFor,
-  expirySentence,
+  draftLogEntry,
+  failureOutcome,
+  makeDraft,
+  PublishInputError,
+  refusalLogOutcome,
   type Draft,
   type LogEntry,
 } from "./social-drafts.js";
@@ -4303,21 +4307,20 @@ function logSocial(e: LogEntry): void {
   }
 }
 
-/** "cron" when the agent's current (or last) turn was a cron fire, else "agent". */
+/** "cron" when the agent's current (or last) turn was a cron fire, else "agent".
+ *  Read when the agent ASKS to post — a draft keeps it (`Draft.origin`). */
 function socialOrigin(sessionId: string): "cron" | "agent" {
   return sessions.get(sessionId)?.turnOrigin === "cron" ? "cron" : "agent";
 }
 
-/** LinkedIn said 401: the token is dead. Mark the account so every later publish
- *  refuses with the reconnect sentence instead of calling LinkedIn again. */
-function markAccountExpired(id: string, now: number): ConnectedAccount | undefined {
+/** LinkedIn said 401: the token is dead. Save `failureOutcome`'s patch so every
+ *  later publish refuses with the reconnect sentence instead of calling LinkedIn again. */
+function patchAccount(id: string, patch: Partial<ConnectedAccount>): void {
   const list = loadAccountsStore(accountsFile());
   const hit = list.find((a) => a.id === id);
-  if (!hit) return undefined;
-  const next: ConnectedAccount = { ...hit, status: "expired", updatedAt: now };
-  saveAccountsStore(accountsFile(), list.map((a) => (a === hit ? next : a)));
+  if (!hit) return;
+  saveAccountsStore(accountsFile(), list.map((a) => (a === hit ? { ...hit, ...patch } : a)));
   console.log(`social: linkedin account ${id} refused its token (401) — marked expired`);
-  return next;
 }
 
 /**
@@ -4329,25 +4332,23 @@ async function publishToLinkedIn(account: ConnectedAccount, sessionId: string, t
   let imageUrn: string | undefined;
   if (imagePath) {
     const iv = imagePathVerdict(imagePath);
-    if (!iv.ok) throw new Error(iv.reason);
+    if (!iv.ok) throw new PublishInputError(iv.reason);
     let bytes: Buffer;
     try {
       bytes = await readSessionFile(sessionId, imagePath);
     } catch (e) {
-      throw new Error(`Could not read the image '${path.basename(imagePath)}': ${(e as Error).message}.`);
+      throw new PublishInputError(`Could not read the image '${path.basename(imagePath)}': ${(e as Error).message}.`);
     }
     imageUrn = await uploadImage(account.token, account.externalId, bytes, iv.mime, fetch);
   }
   return createPost(account.token, { authorUrn: account.externalId, text, imageUrn }, fetch);
 }
 
-/** The sentence for a failed publish; on a 401 the account is marked expired first. */
+/** The sentence for a failed publish (`failureOutcome`); on a 401 the account is marked expired first. */
 function publishFailure(e: unknown, account: ConnectedAccount, now: number): { status: number; reason: string } {
-  if (e instanceof LinkedInError && e.expired) {
-    const marked = markAccountExpired(account.id, now) ?? { ...account, status: "expired" as const, updatedAt: now };
-    return { status: 409, reason: expirySentence(marked, now) };
-  }
-  return { status: 502, reason: (e as Error)?.message || "LinkedIn did not accept the post." };
+  const f = failureOutcome(e, account, now);
+  if (f.accountPatch) patchAccount(account.id, f.accountPatch);
+  return { status: f.httpStatus, reason: f.reason };
 }
 
 /** Tell the drafting agent what a person decided — the hidden loopback, retried
@@ -4417,15 +4418,7 @@ app.post("/social/posts", async (req, res) => {
   const origin = socialOrigin(agent.sessionId);
 
   if (account.policy === "approve") {
-    const d: Draft = {
-      id: newDraftId(loadDrafts(draftsFile())),
-      sessionId: agent.sessionId,
-      accountId: account.id,
-      text,
-      ...(imagePath ? { imagePath } : {}),
-      status: "pending",
-      createdAt: now,
-    };
+    const d = makeDraft({ id: newDraftId(loadDrafts(draftsFile())), sessionId: agent.sessionId, accountId: account.id, text, imagePath, origin, now });
     storeDraft(d);
     broadcastDraft(d);
     console.log(`social: draft ${d.id} for account ${account.id} from ${agent.sessionId.slice(0, 8)} (${origin}) — waiting for approval`);
@@ -4458,16 +4451,17 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   const groups = loadGroups();
   const now = Date.now();
   const channel = channelLabel(loadChannels(), hit.sessionId);
-  const origin = socialOrigin(hit.sessionId);
+  // A draft is its agent's content: the same session boundary as /download.
+  const sessionVisible = mayActFor(req, hit.sessionId);
 
-  const v = (action === "publish" ? publishVerdict : discardVerdict)(hit, account, viewer, groups, now);
+  const v = (action === "publish" ? publishVerdict : discardVerdict)(hit, account, viewer, groups, now, sessionVisible);
   if (!v.ok) {
     // A pending draft the account no longer allows (unshared, disconnected,
-    // expired) is a refused publication; a second click on a decided draft is
-    // not one, and is not logged.
-    if (action === "publish" && hit.status === "pending") {
-      logSocial({ at: now, accountId: hit.accountId, sessionId: hit.sessionId, channel, origin, approvedBy: caller.person, text: hit.text, outcome: "refused", error: v.reason });
-    }
+    // expired) is a refused publication, and one past its TTL an expired one;
+    // a second click on a decided draft, or a person who may not see the
+    // agent, is neither, and is not logged.
+    const outcome = action === "publish" ? refusalLogOutcome(hit, v.reason, now) : null;
+    if (outcome) logSocial(draftLogEntry(hit, { at: now, channel, approvedBy: caller.person, outcome, error: v.reason }));
     return res.status(v.status).json({ error: v.reason });
   }
 
@@ -4494,12 +4488,12 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   try {
     const { url } = await publishToLinkedIn(acct, hit.sessionId, hit.text, hit.imagePath);
     done = { ...publishing, status: "published", postUrl: url };
-    logSocial({ at: Date.now(), accountId: acct.id, sessionId: hit.sessionId, channel, origin, approvedBy: caller.person, text: hit.text, outcome: "published", postUrl: url });
+    logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "published", postUrl: url }));
     console.log(`social: draft ${hit.id} published`);
   } catch (e) {
     failure = publishFailure(e, acct, Date.now());
     done = { ...publishing, status: "failed", error: failure.reason };
-    logSocial({ at: Date.now(), accountId: acct.id, sessionId: hit.sessionId, channel, origin, approvedBy: caller.person, text: hit.text, outcome: "failed", error: failure.reason });
+    logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "failed", error: failure.reason }));
     console.log(`social: draft ${hit.id} failed (${e instanceof LinkedInError ? e.status : "error"})`);
   }
   storeDraft(done);

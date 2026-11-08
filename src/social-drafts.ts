@@ -6,7 +6,7 @@ import { instanceKey } from "./paths.js";
 import { isBrowserPerson } from "./agent-principal.js";
 import { isAgentViewer, type Group, type Viewer } from "./groups.js";
 import { accountVisible, resolveAccountId, type ConnectedAccount } from "./connected-accounts.js";
-import { postTextVerdict } from "./linkedin.js";
+import { LinkedInError, postTextVerdict } from "./linkedin.js";
 
 /**
  * LinkedIn drafts, the approval gate, and the publication log. An agent asks to
@@ -28,10 +28,16 @@ export interface Draft {
   imagePath?: string;
   status: DraftStatus;
   createdAt: number;
+  /** Who started the turn that drafted it — recorded at drafting time, since
+   *  the turn running when a person later clicks Publish is a different one.
+   *  Absent on drafts written before the field existed → "agent". */
+  origin?: DraftOrigin;
   decidedBy?: string;
   postUrl?: string;
   error?: string;
 }
+
+export type DraftOrigin = "agent" | "cron";
 
 export type Verdict = { ok: true } | { ok: false; status: number; reason: string };
 
@@ -45,6 +51,8 @@ export const DRAFT_EXPIRED_SENTENCE = "This draft expired after 7 days without a
 export const NOT_SHARED_WITH_APPROVER = "That LinkedIn account is not shared with you.";
 export const NOT_SHARED_WITH_AGENT = "That account is not shared with this agent.";
 export const AGENT_CANNOT_APPROVE = "Only a person can approve a LinkedIn post, from the cockpit.";
+export const SESSION_NOT_VISIBLE = "This draft belongs to an agent you cannot see.";
+export const PUBLISH_FAILED_SENTENCE = "The post could not be published — LinkedIn was not reached or did not answer. Try again later.";
 
 function shortDate(ms: number): string {
   return new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
@@ -161,7 +169,9 @@ function notPending(d: Draft, now: number): Verdict | null {
 /**
  * May `viewer` publish this draft NOW? Re-checked at click time against the
  * account as it is today, not as it was when the agent drafted: an account
- * unshared, disconnected or expired since then refuses.
+ * unshared, disconnected or expired since then refuses. `sessionVisible` is
+ * the route's `mayActFor(req, draft.sessionId)`: a draft is its agent's
+ * content, behind the same group boundary as /download.
  */
 export function publishVerdict(
   draft: Draft,
@@ -169,8 +179,10 @@ export function publishVerdict(
   viewer: Viewer | null,
   groups: readonly Group[],
   now: number,
+  sessionVisible: boolean,
 ): Verdict {
   if (!viewer || isAgentViewer(viewer)) return refuse(403, AGENT_CANNOT_APPROVE);
+  if (!sessionVisible) return refuse(403, SESSION_NOT_VISIBLE);
   const np = notPending(draft, now);
   if (np) return np;
   if (!account) return refuse(410, DISCONNECTED_SENTENCE);
@@ -190,12 +202,26 @@ export function discardVerdict(
   viewer: Viewer | null,
   groups: readonly Group[],
   now: number,
+  sessionVisible: boolean,
 ): Verdict {
   if (!viewer || isAgentViewer(viewer)) return refuse(403, AGENT_CANNOT_APPROVE);
+  // The session is the boundary that still holds when the account is gone.
+  if (!sessionVisible) return refuse(403, SESSION_NOT_VISIBLE);
   const np = notPending(draft, now);
   if (np) return np;
   if (account && !accountVisible(account, viewer, groups, { peerBox: null })) return refuse(403, NOT_SHARED_WITH_APPROVER);
   return { ok: true };
+}
+
+/**
+ * What a refused click on a still-pending draft is logged as: past its TTL it
+ * EXPIRED (nobody refused anything), otherwise the account refused it. Null for
+ * a click that is not a refused publication at all — a decided draft, or a
+ * person who may not see the agent — which is not logged.
+ */
+export function refusalLogOutcome(draft: Draft, reason: string, now: number): "expired" | "refused" | null {
+  if (draft.status !== "pending" || reason === SESSION_NOT_VISIBLE || reason === AGENT_CANNOT_APPROVE) return null;
+  return now - draft.createdAt >= DRAFT_TTL_MS ? "expired" : "refused";
 }
 
 /** Pending drafts past the TTL become `expired`; the rest are untouched. */
@@ -208,6 +234,87 @@ export function expireDrafts(list: readonly Draft[], now: number): { list: Draft
     return e;
   });
   return { list: out, expired };
+}
+
+// ---- a failed publish ----------------------------------------------------
+
+/** A publish refused before LinkedIn was called (the image), in our own words. */
+export class PublishInputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PublishInputError";
+  }
+}
+
+/**
+ * What a failed publish means. LinkedIn's 401 (Review Focus 4) — even before
+ * `expiresAt` — means the token is dead: the caller saves `accountPatch` so
+ * every later publish refuses with the reconnect sentence instead of calling
+ * LinkedIn again. Any other LinkedIn refusal relays LinkedIn's message (the
+ * client builds it token-free); our own input refusal relays ours; anything
+ * else (a network error, a bug) gets a generic sentence — its message is not
+ * ours to vouch for.
+ */
+export function failureOutcome(
+  err: unknown,
+  account: ConnectedAccount,
+  now: number,
+): { accountPatch?: { status: "expired"; updatedAt: number }; reason: string; httpStatus: number } {
+  if (err instanceof LinkedInError && err.expired) {
+    const accountPatch = { status: "expired" as const, updatedAt: now };
+    return { accountPatch, reason: expirySentence({ ...account, ...accountPatch }, now), httpStatus: 409 };
+  }
+  if (err instanceof LinkedInError) return { reason: err.message || "LinkedIn did not accept the post.", httpStatus: 502 };
+  if (err instanceof PublishInputError) return { reason: err.message, httpStatus: 400 };
+  return { reason: PUBLISH_FAILED_SENTENCE, httpStatus: 502 };
+}
+
+// ---- building drafts and log entries ------------------------------------
+
+/** A new pending draft; `origin` is the drafting turn's, fixed now. */
+export function makeDraft(o: {
+  id: string;
+  sessionId: string;
+  accountId: string;
+  text: string;
+  imagePath?: string;
+  origin: DraftOrigin;
+  now: number;
+}): Draft {
+  return {
+    id: o.id,
+    sessionId: o.sessionId,
+    accountId: o.accountId,
+    text: o.text,
+    ...(o.imagePath ? { imagePath: o.imagePath } : {}),
+    status: "pending",
+    createdAt: o.now,
+    origin: o.origin,
+  };
+}
+
+/** The drafting turn's origin; a draft from before the field → "agent". */
+export function draftOrigin(d: Draft): DraftOrigin {
+  return d.origin === "cron" ? "cron" : "agent";
+}
+
+/** The log entry for a person's decision on a draft — origin from the DRAFT. */
+export function draftLogEntry(
+  d: Draft,
+  o: { at: number; channel?: string; approvedBy: string; outcome: LogEntry["outcome"]; postUrl?: string; error?: string },
+): LogEntry {
+  return {
+    at: o.at,
+    accountId: d.accountId,
+    sessionId: d.sessionId,
+    ...(o.channel ? { channel: o.channel } : {}),
+    origin: draftOrigin(d),
+    approvedBy: o.approvedBy,
+    text: d.text,
+    outcome: o.outcome,
+    ...(o.postUrl ? { postUrl: o.postUrl } : {}),
+    ...(o.error ? { error: o.error } : {}),
+  };
 }
 
 // ---- what clients and the agent see -------------------------------------

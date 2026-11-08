@@ -9,7 +9,14 @@ import {
   BEING_PUBLISHED_SENTENCE,
   NOT_SHARED_WITH_APPROVER,
   NOT_SHARED_WITH_AGENT,
+  PUBLISH_FAILED_SENTENCE,
+  SESSION_NOT_VISIBLE,
+  PublishInputError,
   appendLog,
+  draftLogEntry,
+  failureOutcome,
+  makeDraft,
+  refusalLogOutcome,
   approvalCaller,
   discardVerdict,
   draftNotice,
@@ -25,6 +32,7 @@ import {
   sessionDrafts,
   type Draft,
 } from "../src/social-drafts.js";
+import { LinkedInError } from "../src/linkedin.js";
 import type { ConnectedAccount, ShareScope } from "../src/connected-accounts.js";
 import type { Group, Viewer } from "../src/groups.js";
 
@@ -47,49 +55,49 @@ const bob: Viewer = { name: "bob", role: "member" };
 const agentViewer: Viewer = { name: "agent:x", role: "member", agentGroup: null };
 
 test("publishVerdict: a pending draft on the owner's live account passes", () => {
-  assert.deepEqual(publishVerdict(draft(), acct(), paul, groups, NOW), { ok: true });
+  assert.deepEqual(publishVerdict(draft(), acct(), paul, groups, NOW, true), { ok: true });
 });
 
 test("publishVerdict: an agent viewer never passes, whatever the account allows", () => {
   const open = acct({}, { scope: "instance" });
-  const v = publishVerdict(draft(), open, agentViewer, groups, NOW);
+  const v = publishVerdict(draft(), open, agentViewer, groups, NOW, true);
   assert.equal(v.ok, false);
   assert.equal(!v.ok && v.status, 403);
-  assert.equal(publishVerdict(draft(), open, null, groups, NOW).ok, false);
+  assert.equal(publishVerdict(draft(), open, null, groups, NOW, true).ok, false);
 });
 
 test("publishVerdict: published → 409 naming the URL; publishing → 409 (Review Focus 2)", () => {
-  const p = publishVerdict(draft({ status: "published", postUrl: "https://x/1" }), acct(), paul, groups, NOW);
+  const p = publishVerdict(draft({ status: "published", postUrl: "https://x/1" }), acct(), paul, groups, NOW, true);
   assert.deepEqual(p, { ok: false, status: 409, reason: "Already published: https://x/1" });
-  const q = publishVerdict(draft({ status: "publishing" }), acct(), paul, groups, NOW);
+  const q = publishVerdict(draft({ status: "publishing" }), acct(), paul, groups, NOW, true);
   assert.deepEqual(q, { ok: false, status: 409, reason: BEING_PUBLISHED_SENTENCE });
   for (const status of ["discarded", "expired", "failed"] as const) {
-    const r = publishVerdict(draft({ status }), acct(), paul, groups, NOW);
+    const r = publishVerdict(draft({ status }), acct(), paul, groups, NOW, true);
     assert.equal(!r.ok && r.status, 409, status);
   }
 });
 
 test("publishVerdict: a pending draft older than 7 days refuses", () => {
-  const r = publishVerdict(draft({ createdAt: NOW - DRAFT_TTL_MS }), acct(), paul, groups, NOW);
+  const r = publishVerdict(draft({ createdAt: NOW - DRAFT_TTL_MS }), acct(), paul, groups, NOW, true);
   assert.equal(!r.ok && r.status, 409);
 });
 
 test("publishVerdict: account disconnected since the draft → the disconnected sentence (Review Focus 3)", () => {
-  const r = publishVerdict(draft(), undefined, paul, groups, NOW);
+  const r = publishVerdict(draft(), undefined, paul, groups, NOW, true);
   assert.equal(r.ok, false);
   assert.equal(!r.ok && r.reason, DISCONNECTED_SENTENCE);
 });
 
 test("publishVerdict: account unshared since the draft → 403 sentence (Review Focus 3)", () => {
   const wasShared = acct({}, { scope: "groups", groups: ["g1"] });
-  assert.deepEqual(publishVerdict(draft(), wasShared, bob, groups, NOW), { ok: true });
+  assert.deepEqual(publishVerdict(draft(), wasShared, bob, groups, NOW, true), { ok: true });
   const unshared = acct({}, { scope: "private" });
-  assert.deepEqual(publishVerdict(draft(), unshared, bob, groups, NOW), { ok: false, status: 403, reason: NOT_SHARED_WITH_APPROVER });
+  assert.deepEqual(publishVerdict(draft(), unshared, bob, groups, NOW, true), { ok: false, status: 403, reason: NOT_SHARED_WITH_APPROVER });
 });
 
 test("publishVerdict: an expired account → the sentence naming label, date and owner", () => {
   const byDate = acct({ expiresAt: Date.UTC(2026, 11, 12) });
-  const r = publishVerdict(draft(), byDate, paul, groups, NOW);
+  const r = publishVerdict(draft(), byDate, paul, groups, NOW, true);
   assert.deepEqual(r, {
     ok: false,
     status: 409,
@@ -98,15 +106,15 @@ test("publishVerdict: an expired account → the sentence naming label, date and
   // Refused by LinkedIn (401) before its date: the date is when we learnt it, not a future one.
   const revoked = acct({ status: "expired", updatedAt: Date.UTC(2026, 11, 20) });
   assert.match(expirySentence(revoked, NOW), /expired on 20 Dec 2026 — Paul must reconnect/);
-  assert.equal(publishVerdict(draft(), revoked, paul, groups, NOW).ok, false);
+  assert.equal(publishVerdict(draft(), revoked, paul, groups, NOW, true).ok, false);
 });
 
 test("discardVerdict: allowed on a disconnected or expired account, never for an agent", () => {
-  assert.deepEqual(discardVerdict(draft(), undefined, paul, groups, NOW), { ok: true });
-  assert.deepEqual(discardVerdict(draft(), acct({ status: "expired" }), paul, groups, NOW), { ok: true });
-  assert.equal(discardVerdict(draft(), acct(), agentViewer, groups, NOW).ok, false);
-  assert.equal(discardVerdict(draft({ status: "published", postUrl: "u" }), acct(), paul, groups, NOW).ok, false);
-  assert.equal(discardVerdict(draft(), acct(), bob, groups, NOW).ok, false);
+  assert.deepEqual(discardVerdict(draft(), undefined, paul, groups, NOW, true), { ok: true });
+  assert.deepEqual(discardVerdict(draft(), acct({ status: "expired" }), paul, groups, NOW, true), { ok: true });
+  assert.equal(discardVerdict(draft(), acct(), agentViewer, groups, NOW, true).ok, false);
+  assert.equal(discardVerdict(draft({ status: "published", postUrl: "u" }), acct(), paul, groups, NOW, true).ok, false);
+  assert.equal(discardVerdict(draft(), acct(), bob, groups, NOW, true).ok, false);
 });
 
 test("approvalCaller: an agent key, a peer token, no cookie or a foreign origin never approve", () => {
@@ -217,4 +225,61 @@ test("saveDrafts / loadDrafts: round-trip, 600, unparseable → []", () => {
   fs.writeFileSync(file, "{nope");
   assert.deepEqual(loadDrafts(file), []);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("failureOutcome: LinkedIn 401 before expiresAt → account patched expired, reconnect sentence naming the owner (Review Focus 4)", () => {
+  const live = acct({ expiresAt: NOW + 30 * DAY });
+  const f = failureOutcome(new LinkedInError("LinkedIn refused the token (401).", 401), live, NOW);
+  assert.deepEqual(f.accountPatch, { status: "expired", updatedAt: NOW });
+  assert.equal(f.httpStatus, 409);
+  assert.equal(f.reason, "LinkedIn account 'Acme (Page)' expired on 1 Jan 2027 — Paul must reconnect it in Secrets → Connected accounts.");
+  // Once patched, the next publish refuses with the same sentence, without calling LinkedIn.
+  const after = { ...live, ...f.accountPatch };
+  assert.deepEqual(publishVerdict(draft(), after, paul, groups, NOW, true), { ok: false, status: 409, reason: f.reason });
+});
+
+test("failureOutcome: another LinkedIn error relays its message, no patch, 502", () => {
+  const f = failureOutcome(new LinkedInError("LinkedIn refused the post (422): duplicate.", 422), acct(), NOW);
+  assert.deepEqual(f, { reason: "LinkedIn refused the post (422): duplicate.", httpStatus: 502 });
+});
+
+test("failureOutcome: a non-LinkedIn error gets the generic sentence, no patch, 502; our own input error is relayed", () => {
+  const f = failureOutcome(new Error("connect ECONNREFUSED https://api.linkedin.com?t=SECRET-TOKEN"), acct(), NOW);
+  assert.deepEqual(f, { reason: PUBLISH_FAILED_SENTENCE, httpStatus: 502 });
+  assert.deepEqual(failureOutcome("weird", acct(), NOW), { reason: PUBLISH_FAILED_SENTENCE, httpStatus: 502 });
+  const i = failureOutcome(new PublishInputError("Could not read the image 'x.png': gone."), acct(), NOW);
+  assert.deepEqual(i, { reason: "Could not read the image 'x.png': gone.", httpStatus: 400 });
+});
+
+test("a draft carries its drafting turn's origin, and the approval log entry uses it", () => {
+  const d = makeDraft({ id: "d1", sessionId: "sess-1", accountId: "abcd1234", text: "Hi", origin: "cron", now: NOW });
+  assert.equal(d.origin, "cron");
+  assert.equal(d.status, "pending");
+  assert.equal("imagePath" in d, false);
+  const e = draftLogEntry(d, { at: NOW + 1, channel: "news", approvedBy: "Paul", outcome: "published", postUrl: "https://x/1" });
+  assert.deepEqual(e, {
+    at: NOW + 1, accountId: "abcd1234", sessionId: "sess-1", channel: "news", origin: "cron",
+    approvedBy: "Paul", text: "Hi", outcome: "published", postUrl: "https://x/1",
+  });
+  // A draft written before the field existed logs as "agent".
+  assert.equal(draftLogEntry(draft(), { at: NOW, approvedBy: "Paul", outcome: "failed", error: "x" }).origin, "agent");
+});
+
+test("refusalLogOutcome: past the TTL → expired; account refusal → refused; decided or invisible → not logged", () => {
+  const old = draft({ createdAt: NOW - DRAFT_TTL_MS });
+  const v = publishVerdict(old, acct(), paul, groups, NOW, true);
+  assert.equal(!v.ok && refusalLogOutcome(old, v.reason, NOW), "expired");
+  const u = publishVerdict(draft(), undefined, paul, groups, NOW, true);
+  assert.equal(!u.ok && refusalLogOutcome(draft(), u.reason, NOW), "refused");
+  assert.equal(refusalLogOutcome(draft({ status: "published" }), "Already published: u", NOW), null);
+  assert.equal(refusalLogOutcome(draft(), SESSION_NOT_VISIBLE, NOW), null);
+});
+
+test("publish and discard both require the person may see the draft's agent — even with the account gone", () => {
+  const hidden = { ok: false, status: 403, reason: SESSION_NOT_VISIBLE };
+  assert.deepEqual(publishVerdict(draft(), acct(), paul, groups, NOW, false), hidden);
+  assert.deepEqual(discardVerdict(draft(), acct(), paul, groups, NOW, false), hidden);
+  assert.deepEqual(discardVerdict(draft(), undefined, paul, groups, NOW, false), hidden);
+  // It does not reveal a decided draft's state either.
+  assert.deepEqual(publishVerdict(draft({ status: "published", postUrl: "u" }), acct(), paul, groups, NOW, false), hidden);
 });
