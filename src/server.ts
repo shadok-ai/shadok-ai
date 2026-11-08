@@ -3255,6 +3255,7 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // exactly what bit a migrated instance. test/system-skills.test.ts pins that
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
+  ["social-skill", "shadok-social"],
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
   // group's own OS user reads only this tier.
   ["factory-skill", "shadok-factory"],
@@ -9909,6 +9910,22 @@ function seedFilesSkill(): void {
   }
 }
 if (SEED_SKILLS) seedFilesSkill();
+
+/** The `shadok-social` skill — posting on a connected LinkedIn account. */
+function seedSocialSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "social-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-social");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "social.mjs"), path.join(dst, "scripts", "social.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "social.mjs"), 0o755);
+  } catch {
+    /* best effort — a missing skill means no social posting, not a broken boot */
+  }
+}
+if (SEED_SKILLS) seedSocialSkill();
 
 // The Skill Factory's agent side (pull / push / scan of a factory skill's clone).
 function seedFactorySkill(): void {
