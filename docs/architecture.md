@@ -1642,7 +1642,11 @@ the npm package can be secret. So a small **stateless Cloudflare Worker**
 a `state` carrying `{returnUrl, instance public key, nonce}` signed with an
 HMAC (`STATE_KEY`), so the callback cannot be fed a state the broker did not
 make. The return URL is validated (https, or http only on loopback/private
-addresses; the path is fixed to `/connect/linkedin/done`; no credentials).
+addresses; the path is fixed to `/connect/linkedin/done`; no credentials, no
+query, no fragment — the broker appends its own `#n=…`), and `pub` / `nonce`
+must have the exact shapes the instance makes (87 and 22 base64url
+characters). A token exchange that throws or answers garbage still ends on a
+page with a way back (`error=token_exchange_failed`), never a bare Worker error.
 After the code exchange the token goes **back through the browser, in the URL
 fragment** (never sent to a server log), encrypted for the instance: ECDH P-256
 with the instance's ephemeral key, HKDF-SHA256, AES-256-GCM with the nonce as
