@@ -83,3 +83,18 @@ export function reconcileTabGroup(local, synced, server) {
 export function groupIsDirty(local, synced) {
   return synced === undefined || (local ?? null) !== synced;
 }
+
+/**
+ * Which agent to focus when a group view becomes current. Switching groups used
+ * to snap to the TOP agent every time; instead we return to the one you last had
+ * focused in that group (`rememberedId`), so flipping between groups no longer
+ * loses your place. Falls back to the first agent when nothing is remembered yet
+ * or the remembered one has since gone (closed, or moved to another group), and
+ * to `null` for an empty group. `idsInView` is the group's agent session ids, in
+ * display order.
+ */
+export function focusTarget(idsInView, rememberedId) {
+  const ids = idsInView || [];
+  if (rememberedId != null && ids.includes(rememberedId)) return rememberedId;
+  return ids.length ? ids[0] : null;
+}
