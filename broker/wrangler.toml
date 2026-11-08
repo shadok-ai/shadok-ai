@@ -1,0 +1,6 @@
+name = "shadok-connect"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+routes = [{ pattern = "connect.shadok.ai/*", zone_name = "shadok.ai" }]
+
+# Secrets (never in this file): LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, STATE_KEY
