@@ -13,6 +13,12 @@ const IMAGE_MIMES = ["image/png", "image/jpeg", "image/gif"];
 
 export type FetchFn = typeof fetch;
 
+// A LinkedIn call that hangs would hold a person's Publish click (and the
+// draft's `publishing` state) for as long as the socket lives. 30 s is far
+// beyond a healthy answer and short enough for a person still watching.
+const TIMEOUT_MS = 30_000;
+const deadline = () => AbortSignal.timeout(TIMEOUT_MS);
+
 export class LinkedInError extends Error {
   status: number;
   /** A 401 means the token is no longer accepted: the account must be reconnected. */
@@ -22,6 +28,28 @@ export class LinkedInError extends Error {
     this.name = "LinkedInError";
     this.status = status;
     this.expired = status === 401;
+  }
+}
+
+/**
+ * `createPost` sent the request and got no answer (a timeout, a dropped
+ * socket). Unlike any earlier call, the post may well have been created: the
+ * caller must say "check before retrying", never "it failed".
+ */
+export class PostOutcomeUnknownError extends Error {
+  constructor() {
+    super("LinkedIn did not answer the post request.");
+    this.name = "PostOutcomeUnknownError";
+  }
+}
+
+/** The image PUT carries the Bearer token, so it may only go to LinkedIn over TLS. */
+function uploadUrlOk(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" && /(^|\.)linkedin\.com$/.test(u.hostname);
+  } catch {
+    return false;
   }
 }
 
@@ -55,7 +83,7 @@ async function failure(what: string, res: Response): Promise<LinkedInError> {
 }
 
 export async function fetchMember(token: string, fetchFn: FetchFn): Promise<{ sub: string; name: string }> {
-  const res = await fetchFn(`${API}/v2/userinfo`, { headers: { Authorization: `Bearer ${token}` } });
+  const res = await fetchFn(`${API}/v2/userinfo`, { headers: { Authorization: `Bearer ${token}` }, signal: deadline() });
   if (!res.ok) throw await failure("profile lookup", res);
   const j = (await res.json()) as { sub?: string; name?: string };
   if (!j.sub) throw new LinkedInError("LinkedIn profile lookup returned no member id.", res.status);
@@ -68,14 +96,19 @@ export async function uploadImage(token: string, authorUrn: string, bytes: Buffe
     method: "POST",
     headers: restHeaders(token),
     body: JSON.stringify({ initializeUploadRequest: { owner: authorUrn } }),
+    signal: deadline(),
   });
   if (!init.ok) throw await failure("image upload start", init);
   const { value } = (await init.json()) as { value?: { uploadUrl?: string; image?: string } };
   if (!value?.uploadUrl || !value.image) throw new LinkedInError("LinkedIn image upload start returned no upload address.", init.status);
+  // The address comes from LinkedIn's answer; were it anything else, the PUT
+  // below would hand our Bearer token to whoever it names.
+  if (!uploadUrlOk(value.uploadUrl)) throw new LinkedInError("LinkedIn image upload start returned an upload address outside linkedin.com.", init.status);
   const put = await fetchFn(value.uploadUrl, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": mime },
     body: new Uint8Array(bytes),
+    signal: deadline(),
   });
   if (!put.ok) throw await failure("image upload", put);
   return value.image;
@@ -95,7 +128,13 @@ export async function createPost(
     isReshareDisabledByAuthor: false,
   };
   if (post.imageUrn) body.content = { media: { id: post.imageUrn } };
-  const res = await fetchFn(`${API}/rest/posts`, { method: "POST", headers: restHeaders(token), body: JSON.stringify(body) });
+  let res: Response;
+  try {
+    res = await fetchFn(`${API}/rest/posts`, { method: "POST", headers: restHeaders(token), body: JSON.stringify(body), signal: deadline() });
+  } catch {
+    // The request may have reached LinkedIn before the answer was lost.
+    throw new PostOutcomeUnknownError();
+  }
   if (!res.ok) throw await failure("post", res);
   const urn = res.headers.get("x-restli-id");
   if (!urn) throw new LinkedInError("LinkedIn accepted the post but returned no post id.", res.status);

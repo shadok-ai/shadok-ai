@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  LINKEDIN_VERSION, LinkedInError, MAX_COMMENTARY, createPost, escapeCommentary, fetchMember, postTextVerdict, uploadImage,
+  LINKEDIN_VERSION, LinkedInError, MAX_COMMENTARY, PostOutcomeUnknownError, createPost, escapeCommentary, fetchMember, postTextVerdict, uploadImage,
 } from "../src/linkedin.js";
 
 type Call = { url: string; init: RequestInit };
@@ -87,14 +87,14 @@ test("fetchMember reads sub and name from userinfo", async () => {
 
 test("uploadImage initializes then PUTs the bytes and returns the image urn", async () => {
   const { fn, calls } = stub([
-    new Response(JSON.stringify({ value: { uploadUrl: "https://up.example/x", image: "urn:li:image:77" } }), { status: 200 }),
+    new Response(JSON.stringify({ value: { uploadUrl: "https://www.linkedin.com/dms-uploads/x", image: "urn:li:image:77" } }), { status: 200 }),
     new Response(null, { status: 201 }),
   ]);
   const urn = await uploadImage("tok", "urn:li:person:a", Buffer.from([1, 2, 3]), "image/png", fn);
   assert.equal(urn, "urn:li:image:77");
   assert.equal(calls[0].url, "https://api.linkedin.com/rest/images?action=initializeUpload");
   assert.deepEqual(JSON.parse(String(calls[0].init.body)), { initializeUploadRequest: { owner: "urn:li:person:a" } });
-  assert.equal(calls[1].url, "https://up.example/x");
+  assert.equal(calls[1].url, "https://www.linkedin.com/dms-uploads/x");
   assert.equal(calls[1].init.method, "PUT");
 });
 
@@ -102,4 +102,52 @@ test("uploadImage refuses other mime types before any request", async () => {
   const { fn, calls } = stub([]);
   await assert.rejects(uploadImage("t", "u", Buffer.alloc(1), "image/webp", fn), /PNG, JPEG or GIF/);
   assert.equal(calls.length, 0);
+});
+
+test("uploadImage refuses an upload address that is not https on linkedin.com, without the token", async () => {
+  for (const bad of [
+    "http://www.linkedin.com/dms-uploads/x",
+    "https://evil.example/x",
+    "https://linkedin.com.evil.example/x",
+    "https://notlinkedin.com/x",
+    "not a url",
+  ]) {
+    const { fn, calls } = stub([new Response(JSON.stringify({ value: { uploadUrl: bad, image: "urn:li:image:1" } }), { status: 200 })]);
+    await assert.rejects(
+      uploadImage("SECRET-TOK", "u", Buffer.alloc(1), "image/png", fn),
+      (e: unknown) => e instanceof LinkedInError && !e.message.includes("SECRET-TOK"),
+      bad,
+    );
+    assert.equal(calls.length, 1, `no PUT to ${bad}`);
+  }
+  for (const ok of ["https://linkedin.com/u", "https://media-exp1.licdn.linkedin.com/u"]) {
+    const { fn, calls } = stub([
+      new Response(JSON.stringify({ value: { uploadUrl: ok, image: "urn:li:image:1" } }), { status: 200 }),
+      new Response(null, { status: 201 }),
+    ]);
+    await uploadImage("t", "u", Buffer.alloc(1), "image/png", fn);
+    assert.equal(calls[1].url, ok);
+  }
+});
+
+test("every LinkedIn call carries a deadline", async () => {
+  const { fn, calls } = stub([
+    new Response(JSON.stringify({ sub: "a" }), { status: 200 }),
+    new Response(JSON.stringify({ value: { uploadUrl: "https://www.linkedin.com/u", image: "urn:li:image:1" } }), { status: 200 }),
+    new Response(null, { status: 201 }),
+    new Response(null, { status: 201, headers: { "x-restli-id": "urn:li:share:1" } }),
+  ]);
+  await fetchMember("t", fn);
+  await uploadImage("t", "u", Buffer.alloc(1), "image/png", fn);
+  await createPost("t", { authorUrn: "u", text: "x" }, fn);
+  assert.equal(calls.length, 4);
+  for (const c of calls) assert.ok(c.init.signal instanceof AbortSignal, c.url);
+});
+
+test("createPost: a call that never answered is PostOutcomeUnknownError; earlier calls are not", async () => {
+  const throwing = (async () => { throw new DOMException("The operation timed out.", "TimeoutError"); }) as unknown as typeof fetch;
+  await assert.rejects(createPost("t", { authorUrn: "u", text: "x" }, throwing), PostOutcomeUnknownError);
+  await assert.rejects(uploadImage("t", "u", Buffer.alloc(1), "image/png", throwing), (e: unknown) => !(e instanceof PostOutcomeUnknownError));
+  // A LinkedIn refusal is a known outcome, never "unknown".
+  await assert.rejects(createPost("t", { authorUrn: "u", text: "x" }, stub([new Response("", { status: 422 })]).fn), (e: unknown) => e instanceof LinkedInError);
 });

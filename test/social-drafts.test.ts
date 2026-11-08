@@ -10,6 +10,7 @@ import {
   NOT_SHARED_WITH_APPROVER,
   NOT_SHARED_WITH_AGENT,
   PUBLISH_FAILED_SENTENCE,
+  POST_OUTCOME_UNKNOWN_SENTENCE,
   SESSION_NOT_VISIBLE,
   PublishInputError,
   appendLog,
@@ -32,7 +33,7 @@ import {
   sessionDrafts,
   type Draft,
 } from "../src/social-drafts.js";
-import { LinkedInError } from "../src/linkedin.js";
+import { LinkedInError, PostOutcomeUnknownError } from "../src/linkedin.js";
 import type { ConnectedAccount, ShareScope } from "../src/connected-accounts.js";
 import type { Group, Viewer } from "../src/groups.js";
 
@@ -241,6 +242,12 @@ test("failureOutcome: LinkedIn 401 before expiresAt → account patched expired,
 test("failureOutcome: another LinkedIn error relays its message, no patch, 502", () => {
   const f = failureOutcome(new LinkedInError("LinkedIn refused the post (422): duplicate.", 422), acct(), NOW);
   assert.deepEqual(f, { reason: "LinkedIn refused the post (422): duplicate.", httpStatus: 502 });
+});
+
+test("failureOutcome: createPost that never answered says the post may have gone out", () => {
+  const f = failureOutcome(new PostOutcomeUnknownError(), acct(), NOW);
+  assert.deepEqual(f, { reason: POST_OUTCOME_UNKNOWN_SENTENCE, httpStatus: 502 });
+  assert.equal(POST_OUTCOME_UNKNOWN_SENTENCE, "LinkedIn did not answer in time — check LinkedIn before retrying, the post may have gone out.");
 });
 
 test("failureOutcome: a non-LinkedIn error gets the generic sentence, no patch, 502; our own input error is relayed", () => {

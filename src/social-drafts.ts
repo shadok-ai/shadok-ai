@@ -6,7 +6,7 @@ import { instanceKey } from "./paths.js";
 import { isBrowserPerson } from "./agent-principal.js";
 import { isAgentViewer, type Group, type Viewer } from "./groups.js";
 import { accountVisible, resolveAccountId, type ConnectedAccount } from "./connected-accounts.js";
-import { LinkedInError, postTextVerdict } from "./linkedin.js";
+import { LinkedInError, PostOutcomeUnknownError, postTextVerdict } from "./linkedin.js";
 
 /**
  * LinkedIn drafts, the approval gate, and the publication log. An agent asks to
@@ -55,6 +55,7 @@ export const NOT_SHARED_WITH_APPROVER = "That LinkedIn account is not shared wit
 export const NOT_SHARED_WITH_AGENT = "That account is not shared with this agent.";
 export const AGENT_CANNOT_APPROVE = "Only a person can approve a LinkedIn post, from the cockpit.";
 export const SESSION_NOT_VISIBLE = "This draft belongs to an agent you cannot see.";
+export const POST_OUTCOME_UNKNOWN_SENTENCE = "LinkedIn did not answer in time — check LinkedIn before retrying, the post may have gone out.";
 export const PUBLISH_FAILED_SENTENCE = "The post could not be published — LinkedIn was not reached or did not answer. Try again later.";
 
 function shortDate(ms: number): string {
@@ -269,6 +270,9 @@ export function failureOutcome(
   }
   if (err instanceof LinkedInError) return { reason: err.message || "LinkedIn did not accept the post.", httpStatus: 502 };
   if (err instanceof PublishInputError) return { reason: err.message, httpStatus: 400 };
+  // Only the createPost call raises this: the post may exist, so "try again
+  // later" would invite a duplicate.
+  if (err instanceof PostOutcomeUnknownError) return { reason: POST_OUTCOME_UNKNOWN_SENTENCE, httpStatus: 502 };
   return { reason: PUBLISH_FAILED_SENTENCE, httpStatus: 502 };
 }
 
