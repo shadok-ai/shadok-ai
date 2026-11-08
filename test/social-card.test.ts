@@ -9,6 +9,8 @@ import {
   shareOptions,
   shareValue,
   shareFromValue,
+  accountBanners,
+  logEntryLine,
 } from "../public/social-card.js";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -122,4 +124,36 @@ test("share picker: Private, the groups (not Main), Everyone — and values roun
   }
   const multi = shareOptions(groups, { scope: "groups", groups: ["g1", "g2"] });
   assert.ok(multi.some((o: { value: string }) => o.value === shareValue({ scope: "groups", groups: ["g1", "g2"] })));
+});
+
+test("accountBanners: own accounts that expire soon or expired, keyed by id + expiresAt", () => {
+  const exp = Date.UTC(2026, 10, 12, 9);
+  const list = [
+    { id: "a1", label: "Ada", expiresAt: exp, expiringSoon: true, expired: false },
+    { id: "a2", label: "Acme", expiresAt: exp, expiringSoon: false, expired: true },
+    { id: "a3", label: "Fine", expiresAt: exp, expiringSoon: false, expired: false },
+    // Someone else's account: the server sent no flags.
+    { id: "a4", label: "Bob", expiresAt: exp, status: "expired" },
+  ];
+  assert.deepEqual(accountBanners(list), [
+    { key: "a1:" + exp, text: "Your LinkedIn connection 'Ada' expires on 2026-11-12 — reconnect it in Secrets → Connected accounts." },
+    { key: "a2:" + exp, text: "Your LinkedIn connection 'Acme' has expired — reconnect it in Secrets → Connected accounts." },
+  ]);
+  assert.deepEqual(accountBanners(null), []);
+  assert.deepEqual(accountBanners([null, 3]), []);
+});
+
+test("logEntryLine: date, outcome, who, and the text or the error — plain text", () => {
+  const at = Date.UTC(2026, 10, 8, 14, 5);
+  assert.equal(
+    logEntryLine({ at, outcome: "published", origin: "agent", channel: "writer", approvedBy: "Paul", text: "Hello <b>world</b>", postUrl: "https://www.linkedin.com/feed/update/x/" }),
+    "2026-11-08 14:05 UTC · published · writer (agent) · approved by Paul · https://www.linkedin.com/feed/update/x/ · Hello <b>world</b>",
+  );
+  assert.equal(
+    logEntryLine({ at, outcome: "refused", origin: "cron", approvedBy: "none", text: "x", error: "The post is empty." }),
+    "2026-11-08 14:05 UTC · refused · cron · The post is empty. · x",
+  );
+  const long = logEntryLine({ at, outcome: "published", origin: "agent", approvedBy: "autonomous", text: "y".repeat(300) });
+  assert.ok(long.includes("without approval"));
+  assert.ok(long.length < 200);
 });

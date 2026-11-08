@@ -83,6 +83,22 @@ export function pendingDraftText(channel: string): string {
   return `${channel} has a LinkedIn post waiting for your approval in the cockpit.`;
 }
 
+/**
+ * What the cockpit's banner needs about an account, for its OWNER only: the
+ * DM reaches the operator alone, so every other owner learns of an expiry from
+ * the page (`GET /connected-accounts`). Someone else's account gets nothing —
+ * reconnecting it is not theirs to do.
+ */
+export function ownerExpiryFlags(
+  a: Pick<ConnectedAccount, "owner" | "expiresAt" | "status">,
+  viewerName: string | null,
+  now: number,
+): { expiringSoon?: boolean; expired?: boolean } {
+  if (!viewerName || viewerName !== a.owner) return {};
+  const expired = a.status === "expired" || now >= a.expiresAt;
+  return { expiringSoon: !expired && a.expiresAt - now <= WARN_BEFORE_MS, expired };
+}
+
 /** Only the instance operator (the bootstrap admin) is the Telegram DM owner. */
 export function ownerIsOperator(owner: string, bootstrapAdmin: string): boolean {
   return owner === bootstrapAdmin;
@@ -107,10 +123,13 @@ export function loadWarned(file: string): Record<string, number> {
   }
 }
 
-/** Drops ids no longer in the store; atomic, mode 600. */
+/** Drops ids no longer in the store; atomic, mode 600. Written only when its
+ *  content changes — the watch runs hourly and almost always has nothing new. */
 export function saveWarned(file: string, warned: Record<string, number>, liveIds: readonly string[]): void {
   const keep: Record<string, number> = {};
   for (const id of liveIds) if (warned[id] !== undefined) keep[id] = warned[id];
+  const before = fs.existsSync(file) ? loadWarned(file) : null;
+  if (before ? JSON.stringify(before) === JSON.stringify(keep) : Object.keys(keep).length === 0) return;
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(keep, null, 2), { mode: 0o600 });

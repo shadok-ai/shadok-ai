@@ -113,7 +113,7 @@ test("accounts with none says how to connect one", async () => {
   const s = await stub(200, { accounts: [] });
   const r = await run(["accounts"], s.port);
   await s.close();
-  assert.equal(r.out.trim(), "No LinkedIn account is shared with this agent. Ask the person to connect one in Secrets → Connected accounts.");
+  assert.equal(r.out.trim(), "No LinkedIn account is available to this agent. Ask the person to connect one in Secrets → Connected accounts, or to share theirs with this agent's group.");
 });
 
 test("SKILL.md code fences are copy-pasteable: heredoc terminators and commands start at column 0", async () => {

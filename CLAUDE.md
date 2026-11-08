@@ -129,10 +129,10 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `context/tweak-pr-check.sh` | The cron guard behind that watch, seeded to `~/.shadok-ai/` at boot (`seedTweakPrCheck`) — outside the agent's worktree, which is pruned once its tree is clean. |
 | `src/connect-crypto.ts` | Instance half of the connected-accounts hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF-SHA256 + AES-256-GCM, nonce as AAD), `PendingAttempts` (10 min, single-use). Pure, tested. |
 | `src/connect-routes.ts` | Pure helpers for `/connect/*`: broker URL (`brokerBase`, `brokerStartUrl`), the fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
-| `src/connected-accounts.ts` | The connected-account store, `publicView` (the ONLY projection that leaves it — never a token), `accountVisible` (the `instance` scope deliberately does NOT reach other people's private groups), `accountEditVerdict`. Mono-tenant = soft layer. |
+| `src/connected-accounts.ts` | The connected-account store, `publicView` (the ONLY projection that leaves it — never a token), `accountVisible` (the `instance` scope deliberately does NOT reach other people's private groups), `accountEditVerdict`. Mono-tenant = soft layer, and `agentsUnwalled` (passed at EVERY call site as `DEPLOYMENT_MODE !== "multi-tenant"`) lets every agent use every account there — without it a fresh `private` account was invisible to all agents. |
 | `src/linkedin.ts` | LinkedIn API calls; `LINKEDIN_VERSION` must be bumped about yearly (LinkedIn sunsets versions). |
-| `src/social-drafts.ts` | Drafts + publication log. `publishing` is saved BEFORE LinkedIn is called. |
-| `src/account-expiry.ts` | Hourly no-LLM expiry watch (`setInterval` in `server.ts`): warns the owner 7 days before expiry and re-warns at most once a day (`REWARN_AFTER_MS`, 24h), expired drafts. `stalePublishing` sweeps a dead process's leftover `publishing` drafts to `failed`, never retries. |
+| `src/social-drafts.ts` | Drafts + publication log (`accountLog` reads it back for `GET /connected-accounts/:id/log`). `publishing` is saved BEFORE LinkedIn is called. A draft's image is SNAPSHOTTED at draft time (`<key>.media/<draftId>.<ext>` + sha256) and both the card and the publish read the snapshot — re-reading the agent's path would let it swap the file after approval. |
+| `src/account-expiry.ts` | Hourly no-LLM expiry watch (`setInterval` in `server.ts`): warns the owner 7 days before expiry and re-warns at most once a day (`REWARN_AFTER_MS`, 24h), expired drafts. `stalePublishing` sweeps a dead process's leftover `publishing` drafts to `failed`, never retries. The DM goes to the operator only and is stamped `warned` only once sent; every owner gets the page banner via `ownerExpiryFlags`. |
 | `public/social-card.js` | Pure helpers for the approval card and the Connected accounts panel. ESM, browser + tests. |
 | `context/social-skill/` | The `shadok-social` skill (`social.mjs accounts` / `post --stdin`), seeded like the others; authenticates with `x-shadok-session-key`. |
 | `context/connect-done.html` | The page the broker returns the browser to; outside `public/` on purpose (it carries the nonce marker). |
@@ -271,7 +271,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 - accounts & 2FA: `/users`, `/users/role`, `/peers`, `/invite/:token`, `/me`, `/login*`, `/2fa*`
 - media & voice: `/paste`, `/media/:name`, `/files`, `/download`, `/transcribe`
 - ops: `/version`, `/autoupdate`, `/permission-mode`, `/ledger`, `/claude-update`, `/telegram`
-- connected accounts: `/connect/status`, `/connect/linkedin/{start,complete,done}`, `/connected-accounts` (+ `/:id`) — browser person only; `/social/accounts`, `/social/posts` — the agent side (`x-shadok-session-key`); `/social/drafts/:id/{publish,discard}` — browser person only. WS: `social-draft`
+- connected accounts: `/connect/status`, `/connect/linkedin/{start,complete,done}`, `/connected-accounts` (+ `/:id`, `/:id/log`) — browser person only; `/social/accounts`, `/social/posts` — the agent side (`x-shadok-session-key`); `/social/drafts/:id/{publish,discard}` — browser person only. WS: `social-draft`
 - skills: `/factory/*` (the Skill Factory, `src/factory-routes.ts`), `/commands`
 
 Browser-only writes, `SERVER_OWNED` fields, the `x-shadok-instance` / `x-shadok-session-key` / `x-shadok-peer` gates, and which routes an agent may call are all spelled out in architecture.md — read it before adding or moving an endpoint.

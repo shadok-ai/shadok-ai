@@ -1669,8 +1669,13 @@ Connect again.
 
 Per instance (keyed like channels and crons, mode 600) under
 `~/.shadok-ai/connected-accounts/`: `<key>.json` (accounts: owner, share,
-policy, token, expiry), `<key>.drafts.json` (posts awaiting a decision) and
-`<key>.log.jsonl` (the append-only publication log). No endpoint, skill output,
+policy, token, expiry), `<key>.drafts.json` (posts awaiting a decision),
+`<key>.media/` (directory 700: one snapshot per undecided draft's image,
+`<draftId>.<ext>`, deleted once the draft is decided or expires),
+`<key>.warned.json` (when each expiry DM last went out, rewritten only when it
+changes) and `<key>.log.jsonl` (the append-only publication log, read back
+through `GET /connected-accounts/:id/log` — `accountLog`, newest first, 50
+entries, each rebuilt field by field). No endpoint, skill output,
 log line or transcript carries the token; `publicView` is the only projection
 that leaves the store.
 
@@ -1684,7 +1689,18 @@ broadcast as `social-draft` and merged into `history` on reload, and the
 channel counts as waiting for an answer. `POST /social/drafts/:id/publish|discard`
 and every account mutation require **a browser person** (`requestFromBrowser`),
 who must be able to use the account; an agent has no way to approve its own
-draft. Publishing is **claimed before LinkedIn is called**: the draft is saved
+draft. **What the person approves is what goes out**: `POST /social/posts`
+reads the image ONCE, with the agent's rights (`readSessionFile`, invariant
+60), and for a draft writes a server-owned snapshot with its sha256 on the
+draft. The card's image (`/download`'s draft branch) and the publish both read
+that snapshot; re-reading the agent's path at publish would let it swap the
+file after the person looked. A missing or altered snapshot fails the publish
+("The draft's image is gone — ask the agent to draft again."). A request
+refused on an account the agent may use (expired, the text, the image) is
+logged as `refused`. Every LinkedIn call carries a 30 s deadline; a `createPost`
+that got no answer is `PostOutcomeUnknownError` and says *check LinkedIn
+before retrying, the post may have gone out* — unlike any earlier call, it may
+have succeeded. Publishing is **claimed before LinkedIn is called**: the draft is saved
 as `publishing` with `publishingAt`, so a double click or a retry cannot post
 twice. A process-local in-flight set keeps the hourly watcher from failing a
 publish that is genuinely under way; a draft left in `publishing` by a process
@@ -1692,9 +1708,14 @@ that died is swept to `failed` once stale (`stalePublishing`), never
 re-attempted — a duplicate public post is worse than a failed one. Unapproved
 drafts expire after 7 days and the agent is told, so a cron does not assume the
 post went out. `account-expiry.ts` runs an hourly no-LLM check: a warning seven
-days before `expiresAt`, re-sent at most once a day (`REWARN_AFTER_MS`) (banner,
-plus a Telegram DM to the owner when they are the DM owner), then refusals worded
-as sentences the agent can relay.
+days before `expiresAt`, re-sent at most once a day (`REWARN_AFTER_MS`) — a
+Telegram DM to the owner when they are the DM owner, stamped in the warned
+sidecar only once the DM actually went out — then refusals worded as sentences
+the agent can relay. Every OTHER owner is reached by the page: `GET
+/connected-accounts` flags the viewer's own accounts (`ownerExpiryFlags`), and a
+header banner (`accountBanners`, `public/social-card.js`; checked at load and
+every 30 min, dismissal kept in `sessionStorage` per id + `expiresAt`) says it
+expires or has expired.
 
 ### Visibility
 
@@ -1707,6 +1728,16 @@ private groups**, which the vault's commons rule would let through. A secret
 can be read by anything that can see it; an account is a standing ability to
 speak publicly as someone, so the default errs towards "no". A peer-driven
 agent never sees accounts in v1.
+
+On a **mono-tenant** instance none of that applies to agents: there are no
+private groups and every agent's group is null, so the walled rule made a
+freshly connected (`private`) account invisible to every agent, the one it was
+connected for included. The server passes `agentsUnwalled` (`DEPLOYMENT_MODE
+!== "multi-tenant"`) at every call site and an agent viewer then sees every
+account the instance holds — they already share the server's OS user, which is
+the soft layer below. Person visibility is unchanged, and a peer box still
+never sees. The share scope there governs people; on a multi-tenant instance,
+people and agents alike.
 
 ### Trade-offs
 
@@ -1931,8 +1962,8 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
 | `src/connected-accounts.ts` | The account store (`~/.shadok-ai/connected-accounts/<key>.json`), `publicView` (the only projection that leaves it), `accountVisible` (the `instance` scope does not reach other people's private groups), `accountEditVerdict`. |
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
-| `src/social-drafts.ts` | Drafts (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), the publication log, `stalePublishing`, `draftCard`. |
-| `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning, expired accounts, expired and stale drafts). |
+| `src/social-drafts.ts` | Drafts (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
+| `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |
 | `broker/` | The stateless Cloudflare Worker holding the LinkedIn client secret. See `broker/README.md`. |
 | `src/live-handover.ts` | `supersedeSession(old, next)` — the ONE-`Live`-per-agent rule (invariant 55). When a resume can't attach (the old pilot `hasExited`) it makes a NEW `Live` and `sessions.set` replaces the entry; this hands the retired `Live`'s viewers to the new one and quiets the old (tail, timers, raw pipe) WITHOUT killing the pilot or clearing the shared tail position — the new `Live` may drive the same tmux pane. `HandoverLive` omits `pilot`/`cwd`/`id` on purpose, so the handover CANNOT kill the agent or reset the transcript. Pure, tested (`test/live-handover.test.ts`). |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |

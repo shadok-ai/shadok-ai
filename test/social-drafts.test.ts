@@ -31,6 +31,18 @@ import {
   resolveDraftId,
   saveDrafts,
   sessionDrafts,
+  ACCOUNT_LOG_LIMIT,
+  IMAGE_GONE_SENTENCE,
+  accountLog,
+  draftsFileFor,
+  mediaDirFor,
+  readSnapshot,
+  removeSnapshot,
+  sha256Hex,
+  snapshotBytes,
+  snapshotDone,
+  snapshotPathFor,
+  writeSnapshot,
   type Draft,
 } from "../src/social-drafts.js";
 import { LinkedInError, PostOutcomeUnknownError } from "../src/linkedin.js";
@@ -160,11 +172,16 @@ test("postRequestVerdict: unknown, ambiguous, unshared, expired, bad text, peer 
   assert.equal(!exp.ok && exp.status, 409);
   assert.match(!exp.ok ? exp.reason : "", /must reconnect it/);
   const empty = postRequestVerdict(list, "abcd", "   ", agent, groups, null, NOW);
-  assert.deepEqual(empty, { ok: false, status: 400, reason: "The post is empty." });
+  assert.deepEqual(empty, { ok: false, status: 400, reason: "The post is empty.", account: mine });
   const long = postRequestVerdict(list, "abcd", "x".repeat(3001), agent, groups, null, NOW);
   assert.equal(!long.ok && long.status, 400);
   const peer = postRequestVerdict(list, "abcd", "Hi", agent, groups, "acme-peer", NOW);
   assert.equal(!peer.ok && peer.status, 403);
+  // C1: mono-tenant (agents unwalled) — a private account of someone else is usable.
+  const priv = [acct({}, { scope: "private" })];
+  assert.equal(postRequestVerdict(priv, "abcd", "Hi", agent, groups, null, NOW).ok, false);
+  assert.equal(postRequestVerdict(priv, "abcd", "Hi", agent, groups, null, NOW, true).ok, true);
+  assert.equal(postRequestVerdict(priv, "abcd", "Hi", agent, groups, "acme-peer", NOW, true).ok, false);
 });
 
 test("imagePathVerdict: absolute and PNG/JPEG/GIF only", () => {
@@ -289,4 +306,96 @@ test("publish and discard both require the person may see the draft's agent — 
   assert.deepEqual(discardVerdict(draft(), undefined, paul, groups, NOW, false), hidden);
   // It does not reveal a decided draft's state either.
   assert.deepEqual(publishVerdict(draft({ status: "published", postUrl: "u" }), acct(), paul, groups, NOW, false), hidden);
+});
+
+// ---- I1: the approved image is the published image ------------------------
+
+test("snapshotPathFor: <draftId><ext> in the media dir, extension lower-cased", () => {
+  assert.equal(snapshotPathFor("/m", "ab12cd34", "/work/Shot.PNG"), path.join("/m", "ab12cd34.png"));
+  assert.equal(snapshotPathFor("/m", "ab12cd34", "/work/a.jpeg"), path.join("/m", "ab12cd34.jpeg"));
+  // A draft id is server-made hex: anything else must never become a path.
+  assert.throws(() => snapshotPathFor("/m", "../x", "/a.png"));
+  assert.throws(() => snapshotPathFor("/m", "", "/a.png"));
+});
+
+test("mediaDirFor sits beside the store, per instance", () => {
+  const d = mediaDirFor("/some/launch");
+  assert.equal(path.dirname(d), path.dirname(draftsFileFor("/some/launch")));
+  assert.match(path.basename(d), /\.media$/);
+});
+
+test("snapshotBytes: missing, tampered, intact; no image → none", () => {
+  const bytes = Buffer.from([1, 2, 3]);
+  const d = draft({ imagePath: "/w/x.png", imageSnapshot: "/m/d0.png", imageSha256: sha256Hex(bytes) });
+  assert.deepEqual(snapshotBytes(d, () => null), { ok: false, reason: IMAGE_GONE_SENTENCE });
+  assert.deepEqual(snapshotBytes(d, () => Buffer.from([9])), { ok: false, reason: IMAGE_GONE_SENTENCE });
+  const ok = snapshotBytes(d, (p) => (p === "/m/d0.png" ? bytes : null));
+  assert.ok(ok.ok && ok.image && ok.image.mime === "image/png" && ok.image.bytes.equals(bytes));
+  assert.deepEqual(snapshotBytes(draft(), () => bytes), { ok: true, image: null });
+  // A draft with an image but no snapshot (written before snapshots) cannot publish its image.
+  assert.deepEqual(snapshotBytes(draft({ imagePath: "/w/x.png" }), () => bytes), { ok: false, reason: IMAGE_GONE_SENTENCE });
+  assert.equal(IMAGE_GONE_SENTENCE, "The draft's image is gone — ask the agent to draft again.");
+});
+
+test("snapshot write/read/remove round-trips with mode 600 in a 700 dir", () => {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "snap-")), "inst.media");
+  const f = path.join(dir, "ab12cd34.png");
+  writeSnapshot(f, Buffer.from("img"));
+  assert.equal(fs.statSync(dir).mode & 0o777, 0o700);
+  assert.equal(fs.statSync(f).mode & 0o777, 0o600);
+  assert.equal(readSnapshot(f)?.toString(), "img");
+  removeSnapshot(f);
+  assert.equal(readSnapshot(f), null);
+  removeSnapshot(f); // twice: never throws
+  removeSnapshot(undefined);
+});
+
+test("snapshotDone: a decided draft no longer needs its snapshot", () => {
+  for (const s of ["discarded", "expired", "published", "failed"] as const) assert.equal(snapshotDone(draft({ status: s })), true, s);
+  for (const s of ["pending", "publishing"] as const) assert.equal(snapshotDone(draft({ status: s })), false, s);
+});
+
+test("draftView: the image card is offered only while the snapshot exists (pending/publishing)", () => {
+  const card = { path: "/m/d0.png", name: "x.png" };
+  assert.deepEqual(draftView(draft({ imagePath: "/w/x.png", imageSnapshot: "/m/d0.png" }), acct(), card).image, card);
+  assert.equal(draftView(draft({ status: "published", postUrl: "u", imagePath: "/w/x.png", imageSnapshot: "/m/d0.png" }), acct(), card).image, "x.png");
+  // The server-side snapshot path never reaches a client in the draft itself.
+  assert.ok(!JSON.stringify(draftView(draft({ imagePath: "/w/x.png", imageSnapshot: "/m/d0.png", imageSha256: "ff" }), acct())).includes("sha"));
+});
+
+// ---- I2: the publication log can be read ----------------------------------
+
+test("accountLog: that account only, newest first, capped, token-free shape", () => {
+  const e = (at: number, accountId: string, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ at, accountId, origin: "agent", approvedBy: "Paul", text: "t" + at, outcome: "published", ...extra });
+  const raw = [
+    e(1, "abcd1234"),
+    "not json",
+    "",
+    e(2, "other"),
+    e(3, "abcd1234", { token: "SECRET", refreshToken: "SECRET2" }),
+    JSON.stringify({ at: "x", accountId: "abcd1234" }),
+    e(4, "abcd1234"),
+  ].join("\n");
+  const out = accountLog(raw, "abcd1234");
+  assert.deepEqual(out.map((x) => x.at), [4, 3, 1]);
+  assert.ok(!JSON.stringify(out).includes("SECRET"));
+  assert.deepEqual(accountLog(raw, "abcd1234", 2).map((x) => x.at), [4, 3]);
+  assert.deepEqual(accountLog("", "abcd1234"), []);
+  const many = Array.from({ length: 80 }, (_, i) => e(i, "abcd1234")).join("\n");
+  assert.equal(accountLog(many, "abcd1234").length, ACCOUNT_LOG_LIMIT);
+  assert.equal(ACCOUNT_LOG_LIMIT, 50);
+});
+
+test("postRequestVerdict: a refusal after the account resolved carries it (for the log); before, it does not", () => {
+  const mine = acct({}, { scope: "instance" });
+  const agent: Viewer = { name: "agent:x", role: "member", agentGroup: null };
+  const empty = postRequestVerdict([mine], "abcd", " ", agent, groups, null, NOW);
+  assert.equal(!empty.ok && empty.account?.id, "abcd1234");
+  const exp = postRequestVerdict([acct({ status: "expired" }, { scope: "instance" })], "abcd", "Hi", agent, groups, null, NOW);
+  assert.equal(!exp.ok && exp.account?.id, "abcd1234");
+  const none = postRequestVerdict([mine], "zz", "Hi", agent, groups, null, NOW);
+  assert.equal(!none.ok && none.account, undefined);
+  const hidden = postRequestVerdict([acct({ owner: "cat" }, { scope: "private" })], "abcd", "Hi", agent, groups, null, NOW);
+  assert.equal(!hidden.ok && hidden.account, undefined);
 });

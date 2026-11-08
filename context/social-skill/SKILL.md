@@ -19,7 +19,7 @@ node ~/.claude/skills/shadok-social/scripts/social.mjs accounts
 
 One line per account: `<id>  <label>  <provider>  policy=<policy>  expires=<date>`.
 If none is listed, tell the person to connect one in Secrets → Connected
-accounts. If an account is marked `EXPIRED`, say so; they must reconnect it.
+accounts, or to share theirs with this agent's group. If an account is marked `EXPIRED`, say so; they must reconnect it.
 
 ### 2. Show the final text first
 

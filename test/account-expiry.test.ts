@@ -10,6 +10,7 @@ import {
   draftExpiredNotice,
   pendingDraftText,
   ownerIsOperator,
+  ownerExpiryFlags,
   loadWarned,
   saveWarned,
   STALE_PUBLISHING_MS,
@@ -92,4 +93,31 @@ test("warned sidecar: round-trips, prunes dead ids, mode 600, bad file → {}", 
   assert.equal(fs.statSync(f).mode & 0o777, 0o600);
   fs.writeFileSync(f, "nope");
   assert.deepEqual(loadWarned(f), {});
+});
+
+test("saveWarned does not rewrite the file when nothing changed (M3)", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "warned-"));
+  const f = path.join(dir, "k.warned.json");
+  saveWarned(f, { a: 1 }, ["a"]);
+  const old = new Date(Date.now() - 3600_000);
+  fs.utimesSync(f, old, old);
+  const stamped = fs.statSync(f).mtimeMs; // as the fs stores it (sub-ms rounding)
+  saveWarned(f, { a: 1, gone: 2 }, ["a"]); // same content once pruned
+  assert.equal(fs.statSync(f).mtimeMs, stamped);
+  saveWarned(f, { a: 5 }, ["a"]);
+  assert.notEqual(fs.statSync(f).mtimeMs, stamped);
+  assert.deepEqual(loadWarned(f), { a: 5 });
+  // No file and nothing to remember: nothing is written.
+  const g = path.join(dir, "none.warned.json");
+  saveWarned(g, {}, ["a"]);
+  assert.equal(fs.existsSync(g), false);
+});
+
+test("ownerExpiryFlags: only the owner gets them; soon at ≤7 days, expired by status or date", () => {
+  assert.deepEqual(ownerExpiryFlags(acct({ expiresAt: NOW + 30 * DAY }), "admin", NOW), { expiringSoon: false, expired: false });
+  assert.deepEqual(ownerExpiryFlags(acct({ expiresAt: NOW + 7 * DAY }), "admin", NOW), { expiringSoon: true, expired: false });
+  assert.deepEqual(ownerExpiryFlags(acct({ expiresAt: NOW }), "admin", NOW), { expiringSoon: false, expired: true });
+  assert.deepEqual(ownerExpiryFlags(acct({ status: "expired" }), "admin", NOW), { expiringSoon: false, expired: true });
+  assert.deepEqual(ownerExpiryFlags(acct({ expiresAt: NOW + DAY }), "bob", NOW), {});
+  assert.deepEqual(ownerExpiryFlags(acct({ expiresAt: NOW + DAY }), null, NOW), {});
 });

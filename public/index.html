@@ -1093,6 +1093,24 @@
   .ca-list .ca-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
   .ca-list .ca-ctl select { font-size: 16px; }
   .ca-list .ca-ctl label { display: inline-flex; align-items: center; gap: 4px; }
+  .ca-list .ca-log { list-style: none; margin: 4px 0 0; padding: 6px 8px; font-size: 12px; color: var(--text-dim);
+    background: var(--bg); border-radius: 6px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+  /* Beats `.ca-list li` (the account row's card), which would box every entry. */
+  .ca-list .ca-log li { border: 0; padding: 0; border-radius: 0; display: block; }
+  /* The connected-account expiry reminder: same top strip as the re-login one. */
+  #caExpiryBanner {
+    flex: 0 0 auto; width: 100%; z-index: 1000;
+    background: var(--amber); color: var(--on-accent);
+    font-family: var(--sans); font-size: 12px;
+    padding: 6px 12px;
+    display: flex; flex-direction: column; gap: 4px; align-items: center;
+  }
+  #caExpiryBanner .ca-bn { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  #caExpiryBanner button {
+    font: inherit; cursor: pointer; padding: 2px 10px;
+    border: 1px solid currentColor; border-radius: 4px;
+    background: transparent; color: inherit;
+  }
   /* The LinkedIn draft card in the chat: the dialog skin, the text kept as written. */
   .turn.social-draft .sd-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; padding: 8px 10px; border-left: 2px solid var(--amber); background: var(--bg); }
   .turn.social-draft .sd-actions { display: flex; gap: 8px; justify-content: flex-end; }
@@ -3944,7 +3962,7 @@
   window.looksLikeEmoji = looksLikeEmoji;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
-  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareOptions, shareValue, shareFromValue } from "/social-card.js?v=__ASSET_V__";
+  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareOptions, shareValue, shareFromValue, accountBanners, logEntryLine } from "/social-card.js?v=__ASSET_V__";
   window.draftCardModel = draftCardModel;
   window.accountRowModel = accountRowModel;
   window.hasPendingDraft = hasPendingDraft;
@@ -3952,6 +3970,8 @@
   window.shareOptions = shareOptions;
   window.shareValue = shareValue;
   window.shareFromValue = shareFromValue;
+  window.accountBanners = accountBanners;
+  window.logEntryLine = logEntryLine;
   import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
@@ -4168,6 +4188,9 @@
       if (v.startsWith("groups:")) return { scope: "groups", groups: v.slice(7).split(",").filter(Boolean) };
       return { scope: "private" };
     },
+    // No banner until the module lands: the check re-runs on bridge-ready.
+    accountBanners: () => [],
+    logEntryLine: (e) => String((e && e.outcome) || ""),
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -4195,6 +4218,7 @@
       if (typeof renderProfilesList === "function" && !$("profilesOverlay").hidden) renderProfilesList();
       if (typeof renderSecrets === "function" && !$("secretsOverlay").hidden) renderSecrets();
       if (typeof renderConnectedAccounts === "function" && !$("secretsOverlay").hidden) renderConnectedAccounts();
+      if (typeof paintAccountBanner === "function") paintAccountBanner();
       if (typeof repaintDraftCards === "function") repaintDraftCards();
       // The re-login banner's first pass may have run on the neutral stub
       // (expiryWarning → null); re-evaluate now the real clock has landed.
@@ -11051,6 +11075,8 @@
       loaded: true,
     };
     renderConnectedAccounts();
+    // A reconnect from the panel clears its banner at once, not 30 min later.
+    if (ac && Array.isArray(ac.accounts)) { caBannerAccounts = ac.accounts; paintAccountBanner(); }
   }
   function showCaError(text) {
     $("caErr").textContent = text || "";
@@ -11123,9 +11149,91 @@
       loadConnectedAccounts();
     });
     ctl.appendChild(dis);
-    li.append(label, meta, ctl);
+    // The publication log (GET /connected-accounts/:id/log), toggled under the
+    // row. Each entry carries agent-written text: textContent only.
+    const logBtn = document.createElement("button");
+    logBtn.type = "button";
+    logBtn.textContent = "Log";
+    const logList = document.createElement("ul");
+    logList.className = "ca-log";
+    logList.hidden = true;
+    logBtn.addEventListener("click", async () => {
+      if (!logList.hidden) { logList.hidden = true; return; }
+      logBtn.disabled = true;
+      const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id) + "/log").catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      logBtn.disabled = false;
+      if (!r || !r.ok) { showCaError(j.error || "The cockpit did not answer."); return; }
+      logList.textContent = "";
+      const entries = Array.isArray(j.entries) ? j.entries : [];
+      for (const e of entries) {
+        const item = document.createElement("li");
+        item.textContent = window.logEntryLine(e);
+        logList.appendChild(item);
+      }
+      if (!entries.length) {
+        const item = document.createElement("li");
+        item.textContent = "Nothing published or attempted on this account yet.";
+        logList.appendChild(item);
+      }
+      logList.hidden = false;
+    });
+    ctl.appendChild(logBtn);
+    li.append(label, meta, ctl, logList);
     return li;
   }
+
+  // ── Connected-account expiry banner ───────────────────────────────────
+  // The Telegram DM reaches the instance operator only, so every other owner
+  // learns of an expiring LinkedIn connection here. GET /connected-accounts
+  // flags the viewer's OWN accounts (`expiringSoon` / `expired`); the pure
+  // decision is window.accountBanners (public/social-card.js). A dismissal is
+  // remembered for the browser session, keyed by id + expiresAt, so a
+  // reconnect (new expiry) can warn again.
+  let caBannerAccounts = [];
+  const CA_DISMISSED = "cp.caBannerDismissed";
+  function caDismissed() {
+    try { return JSON.parse(sessionStorage.getItem(CA_DISMISSED) || "[]"); } catch { return []; }
+  }
+  function paintAccountBanner() {
+    const dismissed = caDismissed();
+    const items = window.accountBanners(caBannerAccounts).filter((b) => !dismissed.includes(b.key));
+    let el = document.getElementById("caExpiryBanner");
+    if (!items.length) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "caExpiryBanner";
+      el.setAttribute("role", "status");
+      // First child → above the header in the flex chassis, not floating over it.
+      document.body.insertBefore(el, document.body.firstChild);
+    }
+    el.textContent = "";
+    for (const b of items) {
+      const row = document.createElement("div");
+      row.className = "ca-bn";
+      const span = document.createElement("span");
+      span.textContent = b.text;
+      const x = document.createElement("button");
+      x.type = "button";
+      x.textContent = "Dismiss";
+      x.addEventListener("click", () => {
+        try { sessionStorage.setItem(CA_DISMISSED, JSON.stringify([...caDismissed(), b.key])); } catch { /* private mode: dismiss for this page only */ }
+        caBannerAccounts = caBannerAccounts.filter((a) => String(a.id) + ":" + String(a.expiresAt) !== b.key);
+        paintAccountBanner();
+      });
+      row.append(span, x);
+      el.appendChild(row);
+    }
+  }
+  async function refreshAccountBanner() {
+    const r = await fetch("/connected-accounts").catch(() => null);
+    const j = r && r.ok ? await r.json().catch(() => null) : null;
+    // A failed fetch keeps what is shown: an unreachable server is not a reconnect.
+    if (j && Array.isArray(j.accounts)) caBannerAccounts = j.accounts;
+    paintAccountBanner();
+  }
+  document.addEventListener("DOMContentLoaded", refreshAccountBanner);
+  setInterval(refreshAccountBanner, 30 * 60_000);
   /** PUT a share or policy change; true when the server took it. */
   async function updateConnectedAccount(a, body) {
     const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), {

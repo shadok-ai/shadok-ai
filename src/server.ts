@@ -494,6 +494,15 @@ import {
   makeDraft,
   PublishInputError,
   refusalLogOutcome,
+  accountLog,
+  mediaDirFor,
+  readLogFile,
+  readSnapshot,
+  removeSnapshot,
+  sha256Hex,
+  snapshotBytes,
+  snapshotPathFor,
+  writeSnapshot,
   type Draft,
   type LogEntry,
 } from "./social-drafts.js";
@@ -503,6 +512,7 @@ import {
   expiryWarningText,
   loadWarned,
   ownerIsOperator,
+  ownerExpiryFlags,
   pendingDraftText,
   saveWarned,
   stalePublishing,
@@ -4218,10 +4228,32 @@ app.get("/connected-accounts", (req, res) => {
   if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
   const viewer = viewerFor(currentAccount(req));
   const groups = loadGroups();
+  const now = Date.now();
+  // The owner's own rows carry the banner flags (`ownerExpiryFlags`): the DM
+  // reaches the operator alone, the page reaches every owner.
   const accounts = loadAccountsStore(accountsFile())
-    .filter((a) => accountVisible(a, viewer, groups, { peerBox: null }))
-    .map(publicView);
+    .filter((a) => accountVisible(a, viewer, groups, { peerBox: null, agentsUnwalled: AGENTS_UNWALLED }))
+    .map((a) => ({ ...publicView(a), ...ownerExpiryFlags(a, viewer?.name ?? null, now) }));
   res.json({ accounts, softLayer: DEPLOYMENT_MODE !== "multi-tenant" });
+});
+
+/**
+ * The publication log of one account, newest first, at most 50 entries —
+ * readable by anyone who can use the account (spec §5), behind the same read
+ * gate as the list above. An account the reader cannot see answers like one
+ * that does not exist. `accountLog` rebuilds every entry field by field.
+ */
+app.get("/connected-accounts/:id/log", (req, res) => {
+  if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
+  const viewer = viewerFor(currentAccount(req));
+  const groups = loadGroups();
+  const visible = loadAccountsStore(accountsFile()).filter((a) =>
+    accountVisible(a, viewer, groups, { peerBox: null, agentsUnwalled: AGENTS_UNWALLED }),
+  );
+  const hit = resolveAccountId(visible, String(req.params.id ?? ""));
+  if (hit === "none") return res.status(404).json({ error: "No such connected account." });
+  if (hit === "ambiguous") return res.status(409).json({ error: "Several connected accounts match that id — give more characters." });
+  res.json({ entries: accountLog(readLogFile(socialLogFile()), hit.id) });
 });
 
 /** The account `:id` names (unique prefix, invariant 17), or the refusal already sent. */
@@ -4293,11 +4325,17 @@ app.delete("/connected-accounts/:id", (req, res) => {
 // docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §4–5.
 const draftsFile = () => draftsFileFor(process.cwd());
 const socialLogFile = () => socialLogFileFor(process.cwd());
+const socialMediaDir = () => mediaDirFor(process.cwd());
+// Mono-tenant: no wall between agents (they all run as this process's OS user),
+// so every agent may use every connected account — `VisibilityOpts.agentsUnwalled`.
+const AGENTS_UNWALLED = DEPLOYMENT_MODE !== "multi-tenant";
 
-/** The client view of a draft, its image as a file card (served by /download). */
+/** The client view of a draft, its image as a file card of the SNAPSHOT (served
+ *  by /download's draft branch), named after the agent's file. */
 function draftCard(d: Draft, accounts: readonly ConnectedAccount[] = loadAccountsStore(accountsFile())) {
   const account = accounts.find((a) => a.id === d.accountId);
-  return draftView(d, account, d.imagePath ? fileCard(d.imagePath) : undefined);
+  const image = d.imageSnapshot && d.imagePath ? { ...fileCard(d.imageSnapshot), name: path.basename(d.imagePath) } : undefined;
+  return draftView(d, account, image);
 }
 
 function broadcastDraft(d: Draft): void {
@@ -4337,24 +4375,21 @@ function patchAccount(id: string, patch: Partial<ConnectedAccount>): void {
 }
 
 /**
- * Publish on the account's behalf. The image is read with the AGENT's rights
- * (invariant 60) at publish time, so what goes out is the file as it is now.
- * Throws; `publishFailure` turns the error into the sentence to relay.
+ * Publish on the account's behalf, with bytes the caller already holds: the
+ * ones read when the agent asked (autonomous) or the draft's snapshot (a
+ * person's approval) — never a re-read of the agent's file, which could have
+ * changed since. Throws; `publishFailure` turns the error into the sentence to relay.
  */
-async function publishToLinkedIn(account: ConnectedAccount, sessionId: string, text: string, imagePath?: string): Promise<{ urn: string; url: string }> {
-  let imageUrn: string | undefined;
-  if (imagePath) {
-    const iv = imagePathVerdict(imagePath);
-    if (!iv.ok) throw new PublishInputError(iv.reason);
-    let bytes: Buffer;
-    try {
-      bytes = await readSessionFile(sessionId, imagePath);
-    } catch (e) {
-      throw new PublishInputError(`Could not read the image '${path.basename(imagePath)}': ${(e as Error).message}.`);
-    }
-    imageUrn = await uploadImage(account.token, account.externalId, bytes, iv.mime, fetch);
-  }
+async function publishToLinkedIn(account: ConnectedAccount, text: string, image: { bytes: Buffer; mime: string } | null): Promise<{ urn: string; url: string }> {
+  const imageUrn = image ? await uploadImage(account.token, account.externalId, image.bytes, image.mime, fetch) : undefined;
   return createPost(account.token, { authorUrn: account.externalId, text, imageUrn }, fetch);
+}
+
+/** The draft's image for a publish: its snapshot, checked (`snapshotBytes`). */
+function draftImage(d: Draft): { bytes: Buffer; mime: string } | null {
+  const v = snapshotBytes(d, readSnapshot);
+  if (!v.ok) throw new PublishInputError(v.reason);
+  return v.image;
 }
 
 /** The sentence for a failed publish (`failureOutcome`); on a 401 the account is marked expired first. */
@@ -4408,9 +4443,20 @@ function watchConnectedAccounts(): void {
     const stale = stalePublishing(loadDrafts(draftsFile()), now, publishesInFlight);
     const { warn, expire, expiredDrafts } = expiryActions(accounts, stale.list, now, warned);
 
+    // Stamped only once the DM really went out: an owner who is not the
+    // operator, or a bot that is not there, has not been warned (the page's
+    // banner covers them), so tomorrow's watch tries again.
     for (const a of warn) {
-      notifyOperator(a.owner, expiryWarningText(a));
-      warned[a.id] = now;
+      if (!ownerIsOperator(a.owner, BOOTSTRAP_ADMIN)) continue;
+      void tgBridge.notifyOwner(expiryWarningText(a)).then(
+        (ok) => {
+          if (!ok) return console.log("social: owner DM not sent (no bot, no paired owner, or the send failed)");
+          const w = loadWarned(warnedFile);
+          w[a.id] = Date.now();
+          saveWarned(warnedFile, w, loadAccountsStore(accountsFile()).map((x) => x.id));
+        },
+        () => {},
+      );
     }
     saveWarned(warnedFile, warned, accounts.map((a) => a.id));
 
@@ -4433,6 +4479,7 @@ function watchConnectedAccounts(): void {
       );
       const channels = loadChannels();
       for (const d of [...stale.failed, ...expiredDrafts]) {
+        removeSnapshot(d.imageSnapshot);
         logSocial(draftLogEntry(d, { at: now, channel: channelLabel(channels, d.sessionId), approvedBy: "system", outcome: d.status === "expired" ? "expired" : "failed", ...(d.error ? { error: d.error } : {}) }));
         broadcastDraft(d);
         if (d.status === "expired") notifyDraftAgentText(d, draftExpiredNotice(d));
@@ -4452,7 +4499,7 @@ app.get("/social/accounts", (req, res) => {
   const peerBox = restrictedBoxOf(req);
   const now = Date.now();
   const accounts = loadAccountsStore(accountsFile())
-    .filter((a) => accountVisible(a, viewer, groups, { peerBox }))
+    .filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled: AGENTS_UNWALLED }))
     .map((a) => ({
       id: a.id,
       label: a.label,
@@ -4478,27 +4525,51 @@ app.post("/social/posts", async (req, res) => {
     loadGroups(),
     restrictedBoxOf(req),
     now,
+    AGENTS_UNWALLED,
   );
-  if (!v.ok) return res.status(v.status).json({ error: v.reason });
-  const text = body.text as string;
-  let imagePath: string | undefined;
-  if (body.image !== undefined && body.image !== null && body.image !== "") {
-    const iv = imagePathVerdict(body.image);
-    if (!iv.ok) return res.status(400).json({ error: iv.reason });
-    // Stat with the agent's rights (invariant 60): an image it cannot read
-    // itself must not go out through the server's.
-    const who = sessionOsUser(agent.sessionId);
-    if (!who.ok) return res.status(403).json({ error: "this agent's group no longer exists" });
-    const st = statForOfferAs(who.user, iv.path);
-    if (typeof st === "string" || !st.isFile) return res.status(400).json({ error: `The image '${iv.path}' is not a file this agent can read.` });
-    imagePath = iv.path;
-  }
-  const account = v.account;
   const channel = channelLabel(loadChannels(), agent.sessionId);
   const origin = socialOrigin(agent.sessionId);
+  // A request on an account the agent may use, refused (expired, the text, the
+  // image), is a refused publication: it goes in that account's log (spec §6).
+  const refused = (accountId: string, status: number, reason: string) => {
+    logSocial({ at: Date.now(), accountId, sessionId: agent.sessionId, channel, origin, approvedBy: "none", text: typeof body.text === "string" ? body.text : "", outcome: "refused", error: reason });
+    return res.status(status).json({ error: reason });
+  };
+  if (!v.ok) return v.account ? refused(v.account.id, v.status, v.reason) : res.status(v.status).json({ error: v.reason });
+  const text = body.text as string;
+  const account = v.account;
+  let imagePath: string | undefined;
+  let image: { bytes: Buffer; mime: string } | null = null;
+  if (body.image !== undefined && body.image !== null && body.image !== "") {
+    const iv = imagePathVerdict(body.image);
+    if (!iv.ok) return refused(account.id, 400, iv.reason);
+    // Read with the agent's rights (invariant 60): an image it cannot read
+    // itself must not go out through the server's. Read ONCE, here: these
+    // bytes are what is published or what the person approves.
+    try {
+      image = { bytes: await readSessionFile(agent.sessionId, iv.path), mime: iv.mime };
+    } catch {
+      return refused(account.id, 400, `The image '${iv.path}' is not a file this agent can read.`);
+    }
+    imagePath = iv.path;
+  }
 
   if (account.policy === "approve") {
-    const d = makeDraft({ id: newDraftId(loadDrafts(draftsFile())), sessionId: agent.sessionId, accountId: account.id, text, imagePath, origin, now });
+    const id = newDraftId(loadDrafts(draftsFile()));
+    let imageSnapshot: string | undefined;
+    if (image && imagePath) {
+      imageSnapshot = snapshotPathFor(socialMediaDir(), id, imagePath);
+      try {
+        writeSnapshot(imageSnapshot, image.bytes);
+      } catch (e) {
+        console.log(`social: draft image snapshot failed (${(e as Error).message})`);
+        return res.status(500).json({ error: "The cockpit could not keep a copy of the image. Try again." });
+      }
+    }
+    const d = makeDraft({
+      id, sessionId: agent.sessionId, accountId: account.id, text, imagePath, origin, now,
+      ...(imageSnapshot && image ? { imageSnapshot, imageSha256: sha256Hex(image.bytes) } : {}),
+    });
     storeDraft(d);
     broadcastDraft(d);
     console.log(`social: draft ${d.id} for account ${account.id} from ${agent.sessionId.slice(0, 8)} (${origin}) — waiting for approval`);
@@ -4507,7 +4578,7 @@ app.post("/social/posts", async (req, res) => {
   }
 
   try {
-    const { url } = await publishToLinkedIn(account, agent.sessionId, text, imagePath);
+    const { url } = await publishToLinkedIn(account, text, image);
     logSocial({ at: Date.now(), accountId: account.id, sessionId: agent.sessionId, channel, origin, approvedBy: "autonomous", text, outcome: "published", postUrl: url });
     console.log(`social: account ${account.id} published autonomously from ${agent.sessionId.slice(0, 8)}`);
     res.json({ status: "published", url });
@@ -4535,7 +4606,7 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   // A draft is its agent's content: the same session boundary as /download.
   const sessionVisible = mayActFor(req, hit.sessionId);
 
-  const v = (action === "publish" ? publishVerdict : discardVerdict)(hit, account, viewer, groups, now, sessionVisible);
+  const v = (action === "publish" ? publishVerdict : discardVerdict)(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED);
   if (!v.ok) {
     // A pending draft the account no longer allows (unshared, disconnected,
     // expired) is a refused publication, and one past its TTL an expired one;
@@ -4549,6 +4620,7 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   if (action === "discard") {
     const d: Draft = { ...hit, status: "discarded", decidedBy: caller.person };
     storeDraft(d);
+    removeSnapshot(d.imageSnapshot);
     broadcastDraft(d);
     notifyDraftAgent(d);
     console.log(`social: draft ${d.id} discarded by ${caller.person}`);
@@ -4568,7 +4640,7 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   let failure: { status: number; reason: string } | null = null;
   publishesInFlight.add(hit.id);
   try {
-    const { url } = await publishToLinkedIn(acct, hit.sessionId, hit.text, hit.imagePath);
+    const { url } = await publishToLinkedIn(acct, hit.text, draftImage(hit));
     done = { ...publishing, status: "published", postUrl: url };
     logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "published", postUrl: url }));
     console.log(`social: draft ${hit.id} published`);
@@ -4581,6 +4653,8 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
     publishesInFlight.delete(hit.id);
   }
   storeDraft(done);
+  // Published or failed, the draft is decided: nobody can click Publish on it again.
+  removeSnapshot(done.imageSnapshot);
   broadcastDraft(done);
   notifyDraftAgent(done);
   const view = draftCard(done);
@@ -6034,10 +6108,19 @@ app.get("/download", async (req, res) => {
   // an agent can forge a SendUserFile line into it. That is why the READ below
   // runs with the agent's rights: a forged line buys it a file it could already
   // read, nothing more.
+  // The image of one of this session's undecided LinkedIn drafts, for the
+  // approval card: the server-owned SNAPSHOT (what Publish will send), read
+  // with the server's rights — it is our file, not the agent's.
+  const snap = loadDrafts(draftsFile()).find(
+    (d) => d.sessionId === session && d.imageSnapshot === wanted && (d.status === "pending" || d.status === "publishing"),
+  );
+  if (snap) {
+    const opened = openForServe(wanted, true);
+    if (!opened) return res.status(404).type("text").send("file no longer on disk");
+    return serveStaticFile(req, res, path.basename(snap.imagePath ?? wanted), opened.stat.size, fdSource(opened.fd));
+  }
   const offers = loadOffers(filesFileFor(process.cwd()));
   let allowed = offeredPaths(offers, session).has(wanted);
-  // The image of one of this session's LinkedIn drafts, for the approval card.
-  if (!allowed) allowed = loadDrafts(draftsFile()).some((d) => d.sessionId === session && d.imagePath === wanted);
   if (!allowed) {
     let raw: string;
     try { raw = fs.readFileSync(transcriptFilePath(chan.cwd, session, channelStateHome(chan)), "utf8"); }

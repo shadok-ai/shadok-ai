@@ -444,23 +444,31 @@ Enter to skip; you can add it later from the web UI).
   --stdin`) and **never sees the token**: it names an account, the server holds
   the credential. By default the post is a **draft**: an approval card shows
   the account, the exact text and the image in the agent's chat, and nothing
-  goes out until a person clicks *Publish* (or *Discard*). Each account has an
+  goes out until a person clicks *Publish* (or *Discard*). The image published
+  is the one on the card: the server keeps its own copy from the moment the
+  agent drafts, so changing the file afterwards changes nothing. Each account has an
   **owner**, a **share** scope (`private` by default, chosen groups, or the
   whole instance) and a **policy** (`approve`, the default, or `autonomous`,
-  which publishes at once). Every attempt — published, refused, expired,
+  which publishes at once — only the account's **owner** can switch it to
+  `autonomous`). Every attempt — published, refused, expired,
   failed — is written to a **publication log** (who triggered it, who approved
   it, the text, the post URL or LinkedIn's error), readable by anyone who can
-  use the account. A pending draft counts as "waiting for an answer" like a
+  use the account through the row's **Log** button (the last 50 entries). A pending draft counts as "waiting for an answer" like a
   dialog (favicon badge, tab blink), and an unapproved draft expires after 7
   days. LinkedIn tokens last about 60 days: seven days before expiry the owner
-  gets a banner and, when they are the Telegram DM owner, a DM; an expired
+  gets a dismissible banner at the top of the cockpit (and again once it has
+  expired) and, when they are the Telegram DM owner, a DM; an expired
   account refuses to publish with a sentence the agent can relay. Posts to
   Company Pages need a second LinkedIn app and are planned for v1.1.
   On a mono-tenant instance (a laptop, any macOS cockpit) agents run as your own
   OS user, so this is a **soft layer**: it stops accidents and prompt injection
   (an agent posting because a web page told it to), not an agent determined to
-  read `~/.shadok-ai/connected-accounts/`. Multi-tenant instances, where agents
-  run as other OS users, make it a real boundary.
+  read `~/.shadok-ai/connected-accounts/`. It also means **every agent on a
+  mono-tenant instance can use every connected account**: there is no wall
+  between agents to scope by, so the share setting decides which *people* see
+  an account (and, on a multi-tenant instance, which groups' agents may use it).
+  Multi-tenant instances, where agents run as other OS users, make it a real
+  boundary.
   **Operator setup** (once, for whoever runs the broker): a small stateless
   Cloudflare Worker (`broker/`) holds the LinkedIn client secret so instances
   never do; see [`broker/README.md`](broker/README.md). It needs two LinkedIn
@@ -1262,7 +1270,9 @@ right now), `/version`, `/autoupdate`,
 `/connect/linkedin/start` · `/connect/linkedin/complete` (POST, browser person
 only — the OAuth hand-back; `/connect/linkedin/done` (GET) is the page the
 broker returns the browser to), `/connected-accounts` (GET — the accounts
-you may use, never a token, plus `softLayer`; `PUT /:id` changes share/policy,
+you may use, never a token, plus `softLayer`; your own accounts also carry
+`expiringSoon` / `expired`, for the banner; `GET /:id/log` — that account's
+last 50 publication-log entries, newest first; `PUT /:id` changes share/policy,
 `DELETE /:id` disconnects — owner or admin, browser only),
 `/social/accounts` (GET) and `/social/posts` (POST) — the **agent** side,
 authenticated by `x-shadok-session-key` —, and `/social/drafts/:id/publish` ·

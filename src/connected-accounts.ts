@@ -148,14 +148,29 @@ export function commonsGroupIds(groups: readonly Group[]): Set<string> {
   return ids;
 }
 
+export interface VisibilityOpts {
+  /** The restricted peer box driving the request, if any: such an agent never sees an account (v1). */
+  peerBox: string | null;
+  /**
+   * No wall between agents (`DEPLOYMENT_MODE !== "multi-tenant"`): every agent
+   * runs as the server's own OS user and reads the same files, so there is no
+   * private group to scope by — every `agentGroup` is null. Without this a
+   * freshly connected account (`private` by default) is invisible to EVERY
+   * agent, the one the person connected it for included. The share scope still
+   * governs which PEOPLE see it; for agents it is the soft layer the spec names.
+   */
+  agentsUnwalled?: boolean;
+}
+
 /** May `viewer` use this account? A peer-driven agent never can (v1). */
 export function accountVisible(
   a: ConnectedAccount,
   viewer: Viewer | null,
   groups: readonly Group[],
-  opts: { peerBox: string | null },
+  opts: VisibilityOpts,
 ): boolean {
   if (!viewer || opts.peerBox) return false;
+  if (opts.agentsUnwalled && isAgentViewer(viewer)) return true;
   const commons = commonsGroupIds(groups);
   const ownerPrivate = privateGroupFor(a.owner, groups);
 

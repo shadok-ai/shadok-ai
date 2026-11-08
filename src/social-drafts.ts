@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { instanceKey } from "./paths.js";
 import { isBrowserPerson } from "./agent-principal.js";
 import { isAgentViewer, type Group, type Viewer } from "./groups.js";
@@ -25,7 +25,13 @@ export interface Draft {
   sessionId: string;
   accountId: string;
   text: string;
+  /** Where the agent's image was — kept for its NAME only. The bytes that go
+   *  out are the snapshot's, never this file's (it can change after approval). */
   imagePath?: string;
+  /** The server-owned copy taken when the agent drafted (`snapshotPathFor`). */
+  imageSnapshot?: string;
+  /** sha256 of the snapshot's bytes, checked again at publish. */
+  imageSha256?: string;
   status: DraftStatus;
   createdAt: number;
   /** When the draft entered `publishing` (approval time). Staleness of a
@@ -56,6 +62,7 @@ export const NOT_SHARED_WITH_AGENT = "That account is not shared with this agent
 export const AGENT_CANNOT_APPROVE = "Only a person can approve a LinkedIn post, from the cockpit.";
 export const SESSION_NOT_VISIBLE = "This draft belongs to an agent you cannot see.";
 export const POST_OUTCOME_UNKNOWN_SENTENCE = "LinkedIn did not answer in time — check LinkedIn before retrying, the post may have gone out.";
+export const IMAGE_GONE_SENTENCE = "The draft's image is gone — ask the agent to draft again.";
 export const PUBLISH_FAILED_SENTENCE = "The post could not be published — LinkedIn was not reached or did not answer. Try again later.";
 
 function shortDate(ms: number): string {
@@ -92,9 +99,10 @@ export function postRequestVerdict(
   groups: readonly Group[],
   peerBox: string | null,
   now: number,
-): { ok: true; account: ConnectedAccount } | { ok: false; status: number; reason: string } {
+  agentsUnwalled = false,
+): { ok: true; account: ConnectedAccount } | { ok: false; status: number; reason: string; account?: ConnectedAccount } {
   const arg = typeof accountArg === "string" ? accountArg.trim() : "";
-  const visible = accounts.filter((a) => accountVisible(a, viewer, groups, { peerBox }));
+  const visible = accounts.filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled }));
   const hit = resolveAccountId(accounts, arg);
   // An account the agent cannot see answers like one that does not exist — but
   // only when it would not have matched otherwise; a hit it may not use says so.
@@ -103,13 +111,15 @@ export function postRequestVerdict(
     const vis = resolveAccountId(visible, arg);
     if (vis === "none") return { ok: false, status: 404, reason: `No LinkedIn account matches '${arg}'. Run \`social.mjs accounts\` to list yours.` };
     if (vis === "ambiguous") return { ok: false, status: 409, reason: `Several LinkedIn accounts match '${arg}' — give more characters.` };
-    return postRequestVerdict(visible, vis.id, text, viewer, groups, peerBox, now);
+    return postRequestVerdict(visible, vis.id, text, viewer, groups, peerBox, now, agentsUnwalled);
   }
   if (!visible.includes(hit)) return { ok: false, status: 403, reason: NOT_SHARED_WITH_AGENT };
-  if (accountExpired(hit, now)) return { ok: false, status: 409, reason: expirySentence(hit, now) };
-  if (typeof text !== "string") return { ok: false, status: 400, reason: "The post is empty." };
+  // From here on the agent may use the account, so a refusal is a refused
+  // publication on it and is logged: the account rides along for the route.
+  if (accountExpired(hit, now)) return { ok: false, status: 409, reason: expirySentence(hit, now), account: hit };
+  if (typeof text !== "string") return { ok: false, status: 400, reason: "The post is empty.", account: hit };
   const tv = postTextVerdict(text);
-  if (!tv.ok) return { ok: false, status: 400, reason: tv.reason };
+  if (!tv.ok) return { ok: false, status: 400, reason: tv.reason, account: hit };
   return { ok: true, account: hit };
 }
 
@@ -184,13 +194,15 @@ export function publishVerdict(
   groups: readonly Group[],
   now: number,
   sessionVisible: boolean,
+  agentsUnwalled = false,
 ): Verdict {
   if (!viewer || isAgentViewer(viewer)) return refuse(403, AGENT_CANNOT_APPROVE);
   if (!sessionVisible) return refuse(403, SESSION_NOT_VISIBLE);
   const np = notPending(draft, now);
   if (np) return np;
   if (!account) return refuse(410, DISCONNECTED_SENTENCE);
-  if (!accountVisible(account, viewer, groups, { peerBox: null })) return refuse(403, NOT_SHARED_WITH_APPROVER);
+  // The approver is a person: `agentsUnwalled` never widens what they see.
+  if (!accountVisible(account, viewer, groups, { peerBox: null, agentsUnwalled })) return refuse(403, NOT_SHARED_WITH_APPROVER);
   if (accountExpired(account, now)) return refuse(409, expirySentence(account, now));
   return { ok: true };
 }
@@ -207,13 +219,14 @@ export function discardVerdict(
   groups: readonly Group[],
   now: number,
   sessionVisible: boolean,
+  agentsUnwalled = false,
 ): Verdict {
   if (!viewer || isAgentViewer(viewer)) return refuse(403, AGENT_CANNOT_APPROVE);
   // The session is the boundary that still holds when the account is gone.
   if (!sessionVisible) return refuse(403, SESSION_NOT_VISIBLE);
   const np = notPending(draft, now);
   if (np) return np;
-  if (account && !accountVisible(account, viewer, groups, { peerBox: null })) return refuse(403, NOT_SHARED_WITH_APPROVER);
+  if (account && !accountVisible(account, viewer, groups, { peerBox: null, agentsUnwalled })) return refuse(403, NOT_SHARED_WITH_APPROVER);
   return { ok: true };
 }
 
@@ -285,6 +298,8 @@ export function makeDraft(o: {
   accountId: string;
   text: string;
   imagePath?: string;
+  imageSnapshot?: string;
+  imageSha256?: string;
   origin: DraftOrigin;
   now: number;
 }): Draft {
@@ -294,6 +309,8 @@ export function makeDraft(o: {
     accountId: o.accountId,
     text: o.text,
     ...(o.imagePath ? { imagePath: o.imagePath } : {}),
+    ...(o.imageSnapshot ? { imageSnapshot: o.imageSnapshot } : {}),
+    ...(o.imageSha256 ? { imageSha256: o.imageSha256 } : {}),
     status: "pending",
     createdAt: o.now,
     origin: o.origin,
@@ -343,16 +360,19 @@ export interface DraftView {
 /**
  * The ONLY draft shape sent to a client. Built field by field, so nothing the
  * account carries (its token above all) can ride along. `image` is whatever the
- * caller renders the image as (a file card).
+ * caller renders the image as (a file card of the SNAPSHOT) — offered only while
+ * the snapshot exists, i.e. while the draft is undecided; afterwards the card
+ * names the image and no longer shows it.
  */
 export function draftView(d: Draft, account: Pick<ConnectedAccount, "label"> | undefined, image?: unknown): DraftView {
+  const live = d.imageSnapshot && !snapshotDone(d);
   return {
     id: d.id,
     sessionId: d.sessionId,
     accountId: d.accountId,
     account: account?.label ?? "(disconnected account)",
     text: d.text,
-    ...(d.imagePath ? { image: image ?? path.basename(d.imagePath) } : {}),
+    ...(d.imagePath ? { image: (live && image) || path.basename(d.imagePath) } : {}),
     status: d.status,
     createdAt: d.createdAt,
     ...(d.decidedBy ? { decidedBy: d.decidedBy } : {}),
@@ -431,6 +451,106 @@ export function appendLog(file: string, e: LogEntry): void {
   fs.chmodSync(file, 0o600);
 }
 
+export const ACCOUNT_LOG_LIMIT = 50;
+
+/**
+ * One account's log entries, newest first, at most `limit`. Each line is
+ * re-built through `serialiseLogEntry`'s field list, so whatever a line might
+ * carry beyond it never reaches a reader; an unparseable line is skipped.
+ */
+export function accountLog(raw: string, accountId: string, limit = ACCOUNT_LOG_LIMIT): LogEntry[] {
+  const out: LogEntry[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let e: LogEntry;
+    try {
+      e = JSON.parse(line) as LogEntry;
+    } catch {
+      continue;
+    }
+    if (!e || typeof e !== "object" || e.accountId !== accountId || typeof e.at !== "number") continue;
+    out.push(JSON.parse(serialiseLogEntry(e)) as LogEntry);
+  }
+  return out.sort((a, b) => b.at - a.at).slice(0, limit);
+}
+
+/** The log as text; a missing file is an empty log. */
+export function readLogFile(file: string): string {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+// ---- the image snapshot --------------------------------------------------
+// A person approves what the card SHOWS. Were the image re-read from the
+// agent's path at publish, the agent could swap the file after the person
+// looked at it. So the bytes are copied once, when the agent drafts, into a
+// directory only the server writes, and both the card and the publish read
+// that copy — checked against its sha256.
+
+export function sha256Hex(b: Buffer): string {
+  return createHash("sha256").update(b).digest("hex");
+}
+
+/** `<dir>/<draftId><ext>`. The id is ours (hex), never a path fragment. */
+export function snapshotPathFor(dir: string, draftId: string, imagePath: string): string {
+  if (!/^[0-9a-f]+$/.test(draftId)) throw new Error("invalid draft id");
+  return path.join(dir, `${draftId}${path.extname(imagePath).toLowerCase()}`);
+}
+
+/** A decided draft (no Publish left to click) no longer needs its snapshot. */
+export function snapshotDone(d: Pick<Draft, "status">): boolean {
+  return d.status !== "pending" && d.status !== "publishing";
+}
+
+/**
+ * The image to publish with this draft: the snapshot's bytes when they are
+ * there and match the recorded hash, none when the draft has no image, and a
+ * refusal otherwise — including a draft with an image but no snapshot.
+ */
+export function snapshotBytes(
+  d: Pick<Draft, "imagePath" | "imageSnapshot" | "imageSha256">,
+  read: (p: string) => Buffer | null,
+): { ok: true; image: { bytes: Buffer; mime: string } | null } | { ok: false; reason: string } {
+  if (!d.imagePath) return { ok: true, image: null };
+  const mime = imageMimeFor(d.imagePath);
+  if (!d.imageSnapshot || !d.imageSha256 || !mime) return { ok: false, reason: IMAGE_GONE_SENTENCE };
+  const bytes = read(d.imageSnapshot);
+  if (!bytes || sha256Hex(bytes) !== d.imageSha256) return { ok: false, reason: IMAGE_GONE_SENTENCE };
+  return { ok: true, image: { bytes, mime } };
+}
+
+/** Atomic (tmp + rename), mode 600, directory 700. */
+export function writeSnapshot(file: string, bytes: Buffer): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  fs.chmodSync(path.dirname(file), 0o700);
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  fs.writeFileSync(tmp, bytes, { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, file);
+}
+
+/** Missing or unreadable → null. Never throws. */
+export function readSnapshot(file: string): Buffer | null {
+  try {
+    return fs.readFileSync(file);
+  } catch {
+    return null;
+  }
+}
+
+/** Best effort: a snapshot left behind is a stray file, not a failure. */
+export function removeSnapshot(file: string | undefined): void {
+  if (!file) return;
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    /* already gone */
+  }
+}
+
 // ---- store ---------------------------------------------------------------
 
 function storeDir(): string {
@@ -439,6 +559,11 @@ function storeDir(): string {
 
 export function draftsFileFor(cwd: string): string {
   return path.join(storeDir(), `${instanceKey(cwd)}.drafts.json`);
+}
+
+/** Where draft image snapshots live, per instance. */
+export function mediaDirFor(cwd: string): string {
+  return path.join(storeDir(), `${instanceKey(cwd)}.media`);
 }
 
 export function socialLogFileFor(cwd: string): string {

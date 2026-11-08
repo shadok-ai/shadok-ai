@@ -156,3 +156,38 @@ test("store: missing/garbage -> [], save is atomic 600", () => {
   assert.deepEqual(loadAccountsStore(file), []);
   fs.rmSync(dir, { recursive: true });
 });
+
+// C1: a mono-tenant instance has no private groups and every agent's group is
+// null, so a freshly connected (private) account was invisible to every agent.
+test("agentsUnwalled: an agent sees every account whatever the share scope", () => {
+  const unwalled = { peerBox: null, agentsUnwalled: true };
+  for (const s of Object.values(shares)) {
+    assert.equal(accountVisible(acct(s), agent(null), [], unwalled), true, JSON.stringify(s));
+    assert.equal(accountVisible(acct(s), agent(null), groups, unwalled), true, JSON.stringify(s));
+    assert.equal(accountVisible(acct(s), agent("g2"), groups, unwalled), true, JSON.stringify(s));
+  }
+});
+
+test("agentsUnwalled: a peer box still never sees, nor does a null viewer", () => {
+  for (const s of Object.values(shares)) {
+    assert.equal(accountVisible(acct(s), agent(null), [], { peerBox: "box", agentsUnwalled: true }), false);
+    assert.equal(accountVisible(acct(s), null, [], { peerBox: null, agentsUnwalled: true }), false);
+  }
+});
+
+test("agentsUnwalled leaves person visibility unchanged", () => {
+  for (const [sk, row] of Object.entries(matrix)) {
+    for (const vk of ["owner", "memberG1", "nonMember", "admin"]) {
+      assert.equal(accountVisible(acct(shares[sk]), viewers[vk], groups, { peerBox: null, agentsUnwalled: true }), row[vk], `${sk} x ${vk}`);
+    }
+  }
+});
+
+test("agentsUnwalled false is the walled matrix (multi-tenant unchanged)", () => {
+  for (const [sk, row] of Object.entries(matrix)) {
+    for (const [vk, expected] of Object.entries(row)) {
+      assert.equal(accountVisible(acct(shares[sk]), viewers[vk], groups, { peerBox: null, agentsUnwalled: false }), expected, `${sk} x ${vk}`);
+    }
+  }
+  assert.equal(accountVisible(acct({ scope: "private" }), agent(null), [], { peerBox: null, agentsUnwalled: false }), false);
+});

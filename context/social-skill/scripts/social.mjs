@@ -46,7 +46,7 @@ const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 async function accounts() {
   const { accounts: list = [] } = await call("GET", "/social/accounts");
   if (!list.length) {
-    console.log("No LinkedIn account is shared with this agent. Ask the person to connect one in Secrets → Connected accounts.");
+    console.log("No LinkedIn account is available to this agent. Ask the person to connect one in Secrets → Connected accounts, or to share theirs with this agent's group.");
     return;
   }
   // Only these fields are ever printed, whatever else the server sent.

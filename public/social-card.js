@@ -129,3 +129,43 @@ export function accountRowModel(account, now = Date.now(), groups = []) {
     policyText: a.policy === "autonomous" ? "Posts without approval" : "Every post needs approval",
   };
 }
+
+function isoDay(ms) {
+  return new Date(Number(ms) || 0).toISOString().slice(0, 10);
+}
+
+/**
+ * The header banners for the viewer's OWN accounts (GET /connected-accounts
+ * flags only those: `expiringSoon` / `expired`). The Telegram DM reaches the
+ * operator alone, so for every other owner this is the only warning. `key`
+ * changes with `expiresAt`, so a dismissal does not outlive a reconnect.
+ */
+export function accountBanners(accounts) {
+  const out = [];
+  for (const a of Array.isArray(accounts) ? accounts : []) {
+    if (!a || typeof a !== "object") continue;
+    const label = a.label || "(unnamed account)";
+    const key = String(a.id) + ":" + String(a.expiresAt);
+    if (a.expired === true) {
+      out.push({ key, text: `Your LinkedIn connection '${label}' has expired — reconnect it in Secrets → Connected accounts.` });
+    } else if (a.expiringSoon === true) {
+      out.push({ key, text: `Your LinkedIn connection '${label}' expires on ${isoDay(a.expiresAt)} — reconnect it in Secrets → Connected accounts.` });
+    }
+  }
+  return out;
+}
+
+/** One publication-log entry (GET /connected-accounts/:id/log) as one plain line. */
+export function logEntryLine(e) {
+  const x = e && typeof e === "object" ? e : {};
+  const when = new Date(Number(x.at) || 0).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+  const who = x.channel ? `${x.channel} (${x.origin || "agent"})` : String(x.origin || "agent");
+  const parts = [when, String(x.outcome || ""), who];
+  if (x.approvedBy === "autonomous") parts.push("without approval");
+  else if (x.approvedBy && x.approvedBy !== "none" && x.approvedBy !== "system") parts.push("approved by " + x.approvedBy);
+  if (x.outcome === "published" && x.postUrl) parts.push(String(x.postUrl));
+  else if (x.error) parts.push(String(x.error));
+  const text = typeof x.text === "string" ? x.text.replace(/\s+/g, " ").trim() : "";
+  parts.push(text.length > 80 ? text.slice(0, 79) + "…" : text);
+  return parts.filter(Boolean).join(" · ");
+}
