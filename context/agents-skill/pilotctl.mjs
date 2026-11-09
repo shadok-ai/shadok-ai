@@ -161,6 +161,13 @@ export function parseArgs(argv) {
   return { cmd, pos, flags };
 }
 
+// Normalise the `set-parent` target: `none`/`null`/empty mean DETACH (report to
+// nobody), anything else is the parent session id. Pure, so the rule is
+// testable without a server.
+export function parseParentArg(arg) {
+  return arg && arg !== "none" && arg !== "null" ? arg : null;
+}
+
 function connect() {
   return new Promise((resolve, reject) => {
     const ws = makeWS(wsUrl(), { headers: authHeaders() });
@@ -532,6 +539,32 @@ async function cmdDiff(id) {
   };
 }
 
+// Attach an agent under another, or detach it with `none`. The link is what
+// makes the parent hear when this agent finishes, blocks or dies — set
+// automatically at spawn, flipped by hand here (e.g. to stop reporting to a
+// lead once a side task is done). `parent` is SERVER_OWNED on the channel, so
+// this WS message is the only legitimate path, exactly like the web menu's
+// "Detach from…". The server validates the link (cycle/depth/fan-out) and
+// refuses out loud; detaching (`none`) is always allowed.
+async function cmdSetParent(id, parentArg, flags) {
+  if (!id) throw new Error("usage: pilotctl set-parent <id> <parent-id|none>");
+  await ensureServer();
+  const st = readState(id);
+  // cwd may be unknown for a session we did not spawn; the server resolves the
+  // target from its own registry (it is the authority on where a session lives).
+  const cwd = flags.cwd ?? st?.cwd ?? undefined;
+  const parent = parseParentArg(parentArg);
+  const client = await openSession({ resume: id, cwd });
+  client.send({ type: "set-parent", parent });
+  // The server echoes the new link with a `parent` broadcast; a refused link
+  // comes back as `error` (code "link-refused").
+  const r = await client.waitFor(["parent", "error"], 15_000);
+  client.ws.close();
+  if (r.type === "error") throw new Error(r.message || "set-parent refused");
+  if (r.type === "timeout") throw new Error("set-parent not confirmed within 15s");
+  return { sessionId: id, parent: r.parent ?? null };
+}
+
 async function cmdStop(id) {
   await ensureServer();
   const st = readState(id);
@@ -657,7 +690,8 @@ async function cmdScreen(id, flags) {
 }
 
 const HELP =
-  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt|talk|talk-handle|peer> …\n" +
+  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|set-parent|screen|profile-prompt|talk|talk-handle|peer> …\n" +
+  "       pilotctl set-parent <id> <parent-id|none>   # re-link or detach an agent from its parent\n" +
   "       add --peer <alias> to any command to run it against another instance's agents\n" +
   "       pilotctl peer <add <alias> <url> <ticket> [--token]|list|rm <alias>>";
 
@@ -764,6 +798,8 @@ export async function run(argv) {
       return cmdDiff(pos[0]);
     case "stop":
       return cmdStop(pos[0]);
+    case "set-parent":
+      return cmdSetParent(pos[0], pos[1], flags);
     case "screen":
       return cmdScreen(pos[0], flags);
     case "profile-prompt":

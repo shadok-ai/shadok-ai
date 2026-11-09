@@ -29,6 +29,7 @@ and automatically starts the shadok-ai server when it is not running (port
 | `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions. With `--peer X`: the agents running ON X (from X itself, tagged `peer`), plus X's resumable sessions only for a `--cwd` you name — a path on X |
 | `diff <id>` | the agent's changes (git status + diff against the worktree's base) |
 | `stop <id>` | ends the session (for ALL its clients) |
+| `set-parent <id> <parent-id\|none>` | re-link an agent to a parent, or **detach** it with `none` (it then reports to nobody). The link is what makes the parent hear when the agent finishes, blocks or dies — set automatically at spawn, flipped here when a side task is done and you want it off a lead's back |
 | `screen <id>` | raw TUI screen (debug) |
 | `profile-prompt "<text>" [--name NAME] [--readonly]` | rewrites a profile's **system prompt**: your own by default; any of them (and creation with `--name`) under the lead profile |
 | `talk-handle` | prints **your own** handle — the "here is a handle to me" you share so another agent can send you a letter → `{handle}` |
@@ -113,7 +114,12 @@ Practical consequence: **do not loop to watch an agent any more.** Launch the
 time, and the information comes to you.
 
 `--parent none` spawns an agent deliberately unattached; `--parent <id>`
-attaches it elsewhere.
+attaches it elsewhere. To change the link on an agent that is **already
+running** — detach one whose notifications you no longer want, or move it under
+a different lead — use `set-parent <id> <parent-id|none>`. In the cockpit the
+same thing is a click: an agent's tab menu offers "Detach from…" (child side)
+and, on the parent, "Children reporting here…", and a 🔗 on the tab marks any
+agent that has a link.
 
 ## Talking across groups: a letter, not a remote control (`talk`)
 
