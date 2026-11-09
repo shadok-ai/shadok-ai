@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Group } from "./groups.js";
 
 /**
  * Persistent per-container SSH identity.
@@ -40,6 +41,88 @@ export function sshPaths(home: string): SshPaths {
     knownHosts: path.join(dir, "known_hosts"),
     dotSsh: path.join(home, ".ssh"),
   };
+}
+
+/** A keypair on the shadok-data VOLUME, and whether it is the shared one. */
+export interface VolumeKeyPaths {
+  dir: string;
+  key: string;
+  pub: string;
+  /** Is this the cockpit's HISTORICAL identity, shared by every public group? */
+  shared: boolean;
+}
+
+/**
+ * Where a drop user's keypair lives ON THE VOLUME — the one place that survives a
+ * `docker rm` + recreate, which wipes `/home` and with it every agent HOME copy.
+ *
+ * The split is the operator's decision (2026-11-03): the COMMONS reuses the
+ * container's HISTORICAL key, because that is the identity already registered on
+ * the forge, while each ISOLATED group gets its OWN key under `groups/<os-user>/`.
+ * A public group has no OS user of its own — its agents run as the commons user —
+ * so it resolves to the shared key, and so does every group on a mono-tenant
+ * instance, where there is exactly one identity for the whole cockpit.
+ *
+ * Pure, and shared by the two sides that must never disagree: the provisioner
+ * that MINTS the keypair and copies it into an agent's HOME, and the endpoint
+ * that shows the public line to register. When those were two inline ternaries,
+ * nothing stopped one from reading a directory the other never wrote.
+ */
+export function volumeKeyPaths(serverHome: string, user: string | null, commonsUser: string | null): VolumeKeyPaths {
+  const base = sshPaths(serverHome).dir;
+  const shared = !user || user === commonsUser;
+  const dir = shared ? base : path.join(base, "groups", user);
+  return { dir, key: path.join(dir, "id_ed25519"), pub: path.join(dir, "id_ed25519.pub"), shared };
+}
+
+/** One group's SSH identity, as the operator needs to read it. */
+export interface GroupKeyRow {
+  group: string;
+  name: string;
+  /** The OS user this group's agents run as — the commons user for a public
+   *  group, `null` on a mono-tenant instance (they run as the server's own). */
+  osUser: string | null;
+  /** The OpenSSH public line to register on the forge, or `null` when no keypair
+   *  exists YET — an honest "not provisioned", never an empty string that reads
+   *  like a key with no content. */
+  publicKey: string | null;
+  /** True when this is the cockpit's shared historical identity rather than a
+   *  key of this group's own: registering it once covers every public group. */
+  shared: boolean;
+}
+
+/**
+ * The public keys an operator has to register for the groups they can see.
+ *
+ * PURE over an injected `readPub`, so the visibility rule and the "no key yet"
+ * case are tested without a filesystem. The CALLER does the row filtering
+ * (`listableGroups`), exactly as `GET /groups` does: a private group stays
+ * invisible even to an admin (operator decision 2026-11-03), and a public key is
+ * not a reason to widen that — the roster and the group's very existence are
+ * what the filter protects.
+ */
+export function groupKeyRows(
+  groups: readonly Group[],
+  deps: {
+    serverHome: string;
+    commonsUser: string | null;
+    osUserFor: (g: Group) => string | null;
+    readPub: (p: string) => string | null;
+  },
+): GroupKeyRow[] {
+  return groups.map((g) => {
+    const own = deps.osUserFor(g);
+    const user = own ?? deps.commonsUser;
+    const p = volumeKeyPaths(deps.serverHome, user, deps.commonsUser);
+    const line = deps.readPub(p.pub);
+    return {
+      group: g.id,
+      name: g.name,
+      osUser: user,
+      publicKey: line && line.trim() ? line.trim() : null,
+      shared: p.shared,
+    };
+  });
 }
 
 /**

@@ -308,6 +308,20 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     immediate entries, because a hand repair usually re-owns the directory and
     leaves the key inside it foreign — the one state where `ssh` still refuses and
     a top-level check alone would call it healed.
+    **Multi-tenant has one identity per OS user, and the OS user is the boundary
+    that matters** — not the group, because the user is the only thing the kernel
+    enforces. The commons (`main`, i.e. every public group) reuses the historical
+    key; each walled group gets its own under `<store>/groups/<os-user>/`;
+    `volumeKeyPaths` is the single place that decides which, so the provisioner
+    and `GET /groups/ssh` can never read a directory the other never wrote. Two
+    consequences learned here. The HOME copy is wired at BOOT as well as at spawn
+    (`preseedGroupHomes`): `/home` is not on the volume, so a recreate wipes every
+    copy while the keypairs survive, and an agent that is merely RESUMED never
+    runs the spawn path — it stayed without an identity until someone reloaded it.
+    And the keypair is minted when a group is PROVISIONED rather than at its first
+    agent's spawn, because a key the operator cannot read is not an identity: it
+    used to appear only in the boot log, so registering it on the forge meant
+    going to read a log.
 
 <a id="inv-20"></a>
 

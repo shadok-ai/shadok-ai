@@ -1,3 +1,4 @@
+import { INSTANCE_CONTEXT_LABEL } from "./instance-context.js";
 /**
  * What shadok itself adds to an agent's context, as labelled sections.
  *
@@ -28,6 +29,8 @@ export interface PrepromptInput {
   profileName?: string | null;
   /** The profile's role prompt, as resolved at spawn. */
   role?: string;
+  /** The instance context (src/instance-context.ts), as read at spawn. */
+  instanceContext?: string;
   model?: string;
   deny?: string[];
   allow?: string[];
@@ -49,6 +52,16 @@ const bullets = (items: string[]): string => items.map((i) => `• ${i}`).join("
 /** Pure: the sections to show, in reading order, skipping what is absent. */
 export function prepromptParts(input: PrepromptInput): PrepromptPart[] {
   const parts: PrepromptPart[] = [];
+
+  // First, as at spawn: what the instance is for, before this agent's role.
+  if (input.instanceContext?.trim()) {
+    parts.push({
+      label: INSTANCE_CONTEXT_LABEL,
+      source: "Instance context (cockpit menu)",
+      text: input.instanceContext.trim(),
+    });
+  }
+
 
   if (input.role?.trim()) {
     parts.push({
@@ -128,7 +141,10 @@ export function prepromptParts(input: PrepromptInput): PrepromptPart[] {
  */
 export function prepromptFingerprint(parts: PrepromptPart[]): string {
   let h = 5381;
-  const s = parts.map((p) => `${p.label}\u0000${p.source}\u0000${p.text}`).join("\u0001");
+  // The instance context is left out on purpose: one Save in the cockpit must
+  // not mark every running agent stale and offer to respawn the whole fleet —
+  // the editor offers a restart instead (instance-context design).
+  const s = parts.filter((p) => p.label !== INSTANCE_CONTEXT_LABEL).map((p) => `${p.label}\u0000${p.source}\u0000${p.text}`).join("\u0001");
   for (let i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
   return h.toString(16);
 }
