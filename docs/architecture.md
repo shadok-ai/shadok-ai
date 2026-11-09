@@ -1950,7 +1950,13 @@ Scope is the **current** session file, which is why it cannot drag (no
 cross-session sweep). It also returns `upSince` (the transcript's first timestamp —
 session age, stable across restarts) and `lastRespawn` (the running process's
 start: a tmux pane's `session_created`, which survives a server restart, else the
-`Live`'s build time for node-pty). A WS `start`/resume goes through
+`Live`'s build time for node-pty). `GET /instance/stats` (header ⋯ menu) is the
+fleet total: the same windows summed over `visibleChannels` for the caller
+(member → their groups, admin → all). A live agent is summed from its in-memory
+`usageSamples`; a dormant one is read with `scanUsageSamplesAsync` (off the event
+loop, one agent at a time) and cached by `(mtime,size)` in `statsScanCache`, so a
+repeat open only `stat()`s unchanged transcripts — a big fleet never blocks the
+single-threaded server. A WS `start`/resume goes through
 `canResumeAs` — **including for an already-live session**; attaching before
 authorising was a real leak (invariant 49). Each turn passes `mayDriveSession`,
 which does not exempt the bootstrap admin: admin reach is administrative

@@ -193,7 +193,11 @@ Enter to skip; you can add it later from the web UI).
   at Anthropic API list prices, a way to compare agents rather than an invoice. It
   also shows how long the agent has been **up** (session age, which survives
   restarts) and when it **last respawned** (the running process's start). Scope is
-  the current session's transcript, read once, so opening it never drags.
+  the current session's transcript, read once, so opening it never drags. The
+  header **⋯** menu has the **instance-wide total** — the same windows summed over
+  every agent you can see (a member → their groups, admin → all). Running agents
+  are summed from memory and a dormant agent's transcript is read once and cached,
+  so the fleet total doesn't stall the cockpit either.
 - **Agents that report back** — an agent that launches other agents is told when
   each one finishes, blocks on a question, or dies. It hears about **its own**
   children and nothing else, so a busy channel never wakes it. What arrives is
