@@ -1085,17 +1085,22 @@
   .ca-section { margin: 0 0 14px; padding: 0 0 12px; border-bottom: 1px solid var(--line); }
   .ca-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
   .ca-list { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 8px; }
-  .ca-list li { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
-  .ca-list .ca-label { font-weight: 600; }
-  .ca-list .ca-meta { font-size: 12px; color: var(--text-dim); }
-  .ca-list .ca-exp.soon { color: var(--amber); }
-  .ca-list .ca-exp.expired { color: #e2564a; }
-  .ca-list .ca-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
-  .ca-list .ca-ctl select { font-size: 16px; }
-  .ca-list .ca-ctl label { display: inline-flex; align-items: center; gap: 4px; }
-  .ca-list .ca-share { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; border: 0; padding: 0; margin: 0; font-size: 13px; }
-  .ca-list .ca-share legend { float: left; margin-right: 8px; color: var(--text-dim); }
-  .ca-list .ca-share label { display: inline-flex; align-items: center; gap: 4px; }
+  .ca-list li { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+  .ca-list .ca-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .ca-list .ca-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ca-list .ca-label { font-weight: 600; font-size: 14px; }
+  .ca-list .ca-via { font-size: 12px; color: var(--text-dim); }
+  .ca-list .ca-exp { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--text-dim); white-space: nowrap; }
+  .ca-list .ca-exp.soon { color: var(--amber); border-color: var(--amber); }
+  .ca-list .ca-exp.expired { color: #e2564a; border-color: #e2564a; }
+  .ca-list .sec-ctl { margin-top: 0; }
+  .ca-list .sec-chip:has(input:disabled) { opacity: .6; cursor: progress; }
+  .ca-list .ca-foot { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .ca-list .ca-spacer { flex: 1; }
+  .ca-list .ca-btn { font-size: 12px; padding: 3px 12px; border-radius: 6px; border: 1px solid var(--line); background: none; color: var(--text); cursor: pointer; }
+  .ca-list .ca-btn:hover:not(:disabled) { border-color: var(--amber); }
+  .ca-list .ca-btn.danger { color: #e2564a; }
+  .ca-list .ca-btn.danger:hover:not(:disabled) { border-color: #e2564a; background: color-mix(in srgb, #e2564a 8%, transparent); }
   .ca-list .ca-log { list-style: none; margin: 4px 0 0; padding: 6px 8px; font-size: 12px; color: var(--text-dim);
     background: var(--bg); border-radius: 6px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
   /* Beats `.ca-list li` (the account row's card), which would box every entry. */
@@ -10889,8 +10894,16 @@
     };
     const share = field("Shared with", "Groups that may READ this secret (it stays owned by its group)",
       targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith);
+    // "Any profile" (the vault's ANY_PROFILE, "*") is exclusive with the named
+    // profiles: picking one clears the other, so the chips never say both.
     const inject = field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
-      profs.map((n) => ({ value: n, label: n })), sec.profiles);
+      profs.length ? [{ value: "*", label: "Any profile" }, ...profs.map((n) => ({ value: n, label: n }))] : [], sec.profiles);
+    if (inject) {
+      for (const cb of inject.cbs) cb.addEventListener("change", () => {
+        if (!cb.checked) return;
+        for (const o of inject.cbs) if (o !== cb && (cb.value === "*" || o.value === "*")) o.checked = false;
+      });
+    }
     if (!fields.length) return box;
     const foot = document.createElement("div"); foot.className = "sec-foot";
     const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
@@ -11101,96 +11114,78 @@
   }
   function connectedAccountRow(a) {
     const m = window.accountRowModel(a, Date.now(), vaultGroups);
-    const li = document.createElement("li");
-    const label = document.createElement("span");
-    label.className = "ca-label";
-    label.textContent = m.label;
-    const meta = document.createElement("span");
-    meta.className = "ca-meta";
-    const exp = document.createElement("span");
-    exp.className = "ca-exp " + m.tone;
-    exp.textContent = m.expiryText;
-    meta.append(m.via + " · ", exp, " · " + m.policyText);
-    const ctl = document.createElement("div");
-    ctl.className = "ca-ctl";
-    // Share with: any combination of Personal / groups / Everyone, then an
-    // optional profile filter. Each tick PUTs the whole share; a refusal
-    // re-renders from the account as it was.
-    const putShare = async (next, box) => {
-      box.disabled = true;
-      const ok = await updateConnectedAccount(a, { share: next });
-      box.disabled = false;
-      if (!ok) box.checked = !box.checked;
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
     };
-    const shareBox = document.createElement("fieldset");
-    shareBox.className = "ca-share";
-    const shareLegend = document.createElement("legend");
-    shareLegend.textContent = "Share with";
-    shareBox.appendChild(shareLegend);
-    for (const c of window.shareChoices(vaultGroups, a.share)) {
-      const lab = document.createElement("label");
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = c.checked;
-      box.addEventListener("change", () => putShare(window.toggleShare(a.share, c.key, box.checked, vaultGroups), box));
-      lab.append(box, c.label);
-      shareBox.appendChild(lab);
-    }
-    const profBox = document.createElement("fieldset");
-    profBox.className = "ca-share";
-    const profLegend = document.createElement("legend");
-    profLegend.textContent = "Only agents on profile (none ticked = any)";
-    profBox.appendChild(profLegend);
+    const li = el("li");
+    // Header: who the account posts as, how long it lasts, where it came from.
+    const head = el("div", "ca-card-head");
+    const title = el("div", "ca-title");
+    title.append(el("span", "ca-label", m.label), el("span", "ca-via", m.via));
+    head.append(title, el("span", "ca-exp " + m.tone, m.expiryText));
+
+    // A row of chips (the vault's own `.sec-chip`: click the name, no box).
+    // `onPick(key, on)` returns the new body to PUT, or null for "no change";
+    // the card re-renders from the server's answer, so a refusal undoes itself.
+    const chipRow = (labelText, hint, choices, onPick) => {
+      const row = el("div", "sec-field");
+      const l = el("span", "sec-field-label", labelText);
+      l.title = hint;
+      const chips = el("div", "sec-chips");
+      for (const c of choices) {
+        const lab = el("label", "sec-chip");
+        const cb = el("input");
+        cb.type = "checkbox";
+        cb.checked = c.checked;
+        cb.addEventListener("change", async () => {
+          const body = onPick(c.key, cb.checked);
+          if (!body) { cb.checked = c.checked; return; }
+          chips.querySelectorAll("input").forEach((x) => { x.disabled = true; });
+          if (!(await updateConnectedAccount(a, body))) {
+            chips.querySelectorAll("input").forEach((x) => { x.disabled = false; });
+            cb.checked = c.checked;
+          }
+        });
+        lab.append(cb, el("span", null, c.label));
+        chips.appendChild(lab);
+      }
+      row.append(l, chips);
+      return row;
+    };
+    const fields = el("div", "sec-ctl");
+    fields.appendChild(chipRow("Shared with", "Whose agents may post as this account — any combination",
+      window.shareChoices(vaultGroups, a.share),
+      (key, on) => ({ share: window.toggleShare(a.share, key, on, vaultGroups) })));
     const pickable = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n)));
-    for (const c of window.profileChoices(pickable, a.share)) {
-      const lab = document.createElement("label");
-      const box = document.createElement("input");
-      box.type = "checkbox";
-      box.checked = c.checked;
-      box.addEventListener("change", () => putShare(window.toggleProfile(a.share, c.name, box.checked, vaultGroups), box));
-      lab.append(box, c.name);
-      profBox.appendChild(lab);
+    const profiles = window.profileChoices(pickable, a.share);
+    if (profiles.length > 1) {
+      fields.appendChild(chipRow("Profiles", "Only agents running one of these profiles; Any profile = no filter",
+        profiles,
+        (key, on) => (key === "*" && !on ? null : { share: window.toggleProfile(a.share, key, on, vaultGroups) })));
     }
-    profBox.hidden = !profBox.querySelector("input");
-    const polLab = document.createElement("label");
-    const pol = document.createElement("input");
-    pol.type = "checkbox";
-    pol.checked = a.policy === "autonomous";
-    pol.addEventListener("change", async () => {
-      const autonomous = pol.checked;
-      if (autonomous && !confirm(window.autonomousConfirmText(a, vaultGroups))) { pol.checked = false; return; }
-      if (!(await updateConnectedAccount(a, { policy: autonomous ? "autonomous" : "approve" }))) pol.checked = !autonomous;
-    });
-    polLab.append(pol, "Post without approval");
-    ctl.append(polLab);
-    if (caState.available) {
-      const re = document.createElement("button");
-      re.type = "button";
-      re.textContent = "Reconnect";
-      re.addEventListener("click", () => startLinkedInConnect(re));
-      ctl.appendChild(re);
-    }
-    const dis = document.createElement("button");
-    dis.type = "button";
-    dis.textContent = "Disconnect";
-    dis.addEventListener("click", async () => {
-      if (!confirm("Disconnect " + m.label + "?\n\nAgents will no longer be able to post as this account.")) return;
-      dis.disabled = true;
-      const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), { method: "DELETE" }).catch(() => null);
-      const j = r ? await r.json().catch(() => ({})) : {};
-      if (!r || !r.ok) { dis.disabled = false; showCaError(j.error || "The cockpit did not answer."); return; }
-      showCaError("");
-      loadConnectedAccounts();
-    });
-    ctl.appendChild(dis);
-    // The publication log (GET /connected-accounts/:id/log), toggled under the
-    // row. Each entry carries agent-written text: textContent only.
-    const logBtn = document.createElement("button");
+    const autonomous = a.policy === "autonomous";
+    fields.appendChild(chipRow("Posting", "Whether a person approves each post on a card in the chat",
+      [
+        { key: "approve", label: "Ask before posting", checked: !autonomous },
+        { key: "autonomous", label: "Post on its own", checked: autonomous },
+      ],
+      (key, on) => {
+        if (!on) return null; // one of the two is always lit: click the other
+        if (key === "autonomous" && !confirm(window.autonomousConfirmText(a, vaultGroups))) return null;
+        return { policy: key };
+      }));
+
+    // Actions: the log, then reconnect / disconnect.
+    const foot = el("div", "ca-foot");
+    const logBtn = el("button", "ca-btn", "Log");
     logBtn.type = "button";
-    logBtn.textContent = "Log";
-    const logList = document.createElement("ul");
-    logList.className = "ca-log";
+    const logList = el("ul", "ca-log");
     logList.hidden = true;
+    // The publication log (GET /connected-accounts/:id/log), toggled under the
+    // card. Each entry carries agent-written text: textContent only.
     logBtn.addEventListener("click", async () => {
       if (!logList.hidden) { logList.hidden = true; return; }
       logBtn.disabled = true;
@@ -11200,20 +11195,31 @@
       if (!r || !r.ok) { showCaError(j.error || "The cockpit did not answer."); return; }
       logList.textContent = "";
       const entries = Array.isArray(j.entries) ? j.entries : [];
-      for (const e of entries) {
-        const item = document.createElement("li");
-        item.textContent = window.logEntryLine(e);
-        logList.appendChild(item);
-      }
-      if (!entries.length) {
-        const item = document.createElement("li");
-        item.textContent = "Nothing published or attempted on this account yet.";
-        logList.appendChild(item);
-      }
+      for (const e of entries) logList.appendChild(el("li", null, window.logEntryLine(e)));
+      if (!entries.length) logList.appendChild(el("li", null, "Nothing published or attempted on this account yet."));
       logList.hidden = false;
     });
-    ctl.appendChild(logBtn);
-    li.append(label, meta, shareBox, profBox, ctl, logList);
+    foot.appendChild(logBtn);
+    foot.appendChild(el("span", "ca-spacer"));
+    if (caState.available) {
+      const re = el("button", "ca-btn", "Reconnect");
+      re.type = "button";
+      re.addEventListener("click", () => startLinkedInConnect(re));
+      foot.appendChild(re);
+    }
+    const dis = el("button", "ca-btn danger", "Disconnect");
+    dis.type = "button";
+    dis.addEventListener("click", async () => {
+      if (!confirm("Disconnect " + m.label + "?\n\nAgents will no longer be able to post as this account.")) return;
+      dis.disabled = true;
+      const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), { method: "DELETE" }).catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      if (!r || !r.ok) { dis.disabled = false; showCaError(j.error || "The cockpit did not answer."); return; }
+      showCaError("");
+      loadConnectedAccounts();
+    });
+    foot.appendChild(dis);
+    li.append(head, fields, foot, logList);
     return li;
   }
 

@@ -137,22 +137,30 @@ export function toggleShare(share, key, on, groups = []) {
 }
 
 /**
- * The profile filter's checkboxes: every profile one can pick (managed roles
- * left out by the caller), plus any the share names that is gone. None ticked
- * = any profile.
+ * The profile filter's chips: "Any profile" first (lit when the filter is
+ * empty), then every pickable profile (managed roles left out by the caller)
+ * plus any the share names that is gone. Keys: "*" for Any, else the name.
  */
 export function profileChoices(names, share) {
   const s = normalizeShare(share);
   const all = [...new Set([...(Array.isArray(names) ? names.map(String) : []), ...s.profiles])].sort();
-  return all.map((name) => ({ name, checked: s.profiles.includes(name) }));
+  return [
+    { key: "*", label: "Any profile", checked: s.profiles.length === 0 },
+    ...all.map((name) => ({ key: name, label: name, checked: s.profiles.includes(name) })),
+  ];
 }
 
-/** The share after ticking or unticking one profile. */
-export function toggleProfile(share, name, on, groups = []) {
+/**
+ * The share after a click on one profile chip. Any ("*") clears the filter and
+ * cannot be switched off by itself (an empty filter IS "any"); a named profile
+ * toggles, and unticking the last one falls back to Any.
+ */
+export function toggleProfile(share, key, on, groups = []) {
   const s = normalizeShare(share, groups);
-  const n = String(name ?? "");
-  const rest = s.profiles.filter((p) => p !== n);
-  return { ...s, profiles: on ? [...rest, n] : rest };
+  const k = String(key ?? "");
+  if (k === "*") return { ...s, profiles: [] };
+  const rest = s.profiles.filter((p) => p !== k);
+  return { ...s, profiles: on ? [...rest, k] : rest };
 }
 
 /** One row of the Connected accounts list (`publicView`, src/connected-accounts.ts). */

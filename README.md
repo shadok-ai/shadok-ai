@@ -149,7 +149,9 @@ Enter to skip; you can add it later from the web UI).
 - **Secret vault** — stored under `~/.shadok-ai`, never in your repo, injected
   as env vars into the agents that need them. Add or **update** a secret from the
   panel, tick the **profiles** it should feed right there, and reload the running
-  agents on those profiles in one click so a rotated value takes effect now. An
+  agents on those profiles in one click so a rotated value takes effect now. On
+  an instance with groups, **Any profile** feeds a secret to every agent that can
+  read it, whatever its profile (only a person can pick it, not an agent). An
   agent that **obtains** a credential (a CLI login, a key it just provisioned)
   can add it to the vault itself so the next agent doesn't start from nothing —
   write-only, the value piped in rather than typed as an argument, and never

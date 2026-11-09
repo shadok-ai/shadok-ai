@@ -143,12 +143,19 @@ test("share boxes: Personal, the groups (not Main, not Personal groups), Everyon
   assert.ok(shareChoices(groups, sh({ groups: ["gone"] })).some((o: { key: string; checked: boolean }) => o.key === "group:gone" && o.checked));
 });
 
-test("profile boxes: every pickable profile, a vanished one kept, toggles round-trip", () => {
+test("profile chips: Any first, every pickable profile, a vanished one kept", () => {
   const c = profileChoices(["Writer", "Dev"], sh({ profiles: ["Old"] }));
-  assert.deepEqual(c, [{ name: "Dev", checked: false }, { name: "Old", checked: true }, { name: "Writer", checked: false }]);
+  assert.deepEqual(c.map((o: { key: string; checked: boolean }) => [o.key, o.checked]), [["*", false], ["Dev", false], ["Old", true], ["Writer", false]]);
+  assert.equal(c[0].label, "Any profile");
+  assert.equal(profileChoices(["Writer"], sh({}))[0].checked, true, "an empty filter lights Any");
+});
+
+test("profile chips: a name toggles, the last one off falls back to Any, Any clears", () => {
   const s = toggleProfile(sh({ everyone: true }), "Writer", true);
   assert.deepEqual(s, sh({ everyone: true, profiles: ["Writer"] }));
   assert.deepEqual(toggleProfile(s, "Writer", false), sh({ everyone: true }));
+  assert.deepEqual(toggleProfile(sh({ profiles: ["Writer", "Dev"] }), "*", true), sh({}));
+  assert.deepEqual(toggleProfile(sh({}), "*", false), sh({}), "Any cannot be switched off by itself");
 });
 
 test("accountBanners: own accounts that expire soon or expired, keyed by id + expiresAt", () => {

@@ -13,6 +13,14 @@ import { MAIN_GROUP_ID, canWriteSecretGroup, spawnGroupFor, type Group, type Vie
  * global. A group may SHARE a secret by reference (`sharedWith`), and `Main`
  * is the instance-wide fallback. A profile lists the NAMES it wants injected.
  */
+/**
+ * In a secret's `profiles`: "every profile" — injected into EVERY agent the
+ * secret resolves for (own group, shared-in, commons), with or without a
+ * profile. Only a person may set it (`PUT /secrets/profiles`): it widens a
+ * credential to agents nobody picked one by one.
+ */
+export const ANY_PROFILE = "*";
+
 export interface SecretEntry {
   value: string;
   ownerGroup: string;
@@ -125,16 +133,17 @@ export function secretNamesForProfile(
   commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): string[] {
   const out = new Set<string>(profileSecrets.filter((n) => typeof n === "string" && n));
-  if (profileName) {
-    const names = new Set<string>();
-    for (const slice of Object.values(vault)) {
-      if (!slice || typeof slice !== "object") continue;
-      for (const n of Object.keys(slice)) if (Object.hasOwn(slice, n)) names.add(n);
-    }
-    for (const name of names) {
-      const e = resolveSecretEntry(vault, groupId, name, commonsIds);
-      if (e && e.profiles.includes(profileName)) out.add(name);
-    }
+  const names = new Set<string>();
+  for (const slice of Object.values(vault)) {
+    if (!slice || typeof slice !== "object") continue;
+    for (const n of Object.keys(slice)) if (Object.hasOwn(slice, n)) names.add(n);
+  }
+  for (const name of names) {
+    const e = resolveSecretEntry(vault, groupId, name, commonsIds);
+    if (!e) continue;
+    // `ANY_PROFILE` reaches an agent without a profile too: "any" is every agent
+    // the secret resolves for, which is the only thing still gating it.
+    if (e.profiles.includes(ANY_PROFILE) || (profileName && e.profiles.includes(profileName))) out.add(name);
   }
   return [...out];
 }

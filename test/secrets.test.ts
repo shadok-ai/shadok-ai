@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
@@ -24,6 +24,17 @@ test("secretNamesForProfile: binds on the SECRET side (entry.profiles), scoped t
   assert.deepEqual(secretNamesForProfile(v, "g", "Dev", ["LEGACY"]).sort(), ["COMMON", "LEGACY", "OWN", "SHARED"]);
   // No profile name → only the legacy list, never the bindings.
   assert.deepEqual(secretNamesForProfile(v, "g", "", ["LEGACY"]), ["LEGACY"]);
+});
+
+test("secretNamesForProfile: ANY_PROFILE reaches every agent the secret resolves for — and no further", () => {
+  const v: Vault = {
+    g: { ANY: eb("a", "g", [ANY_PROFILE]), DEV: eb("d", "g", ["Dev"]) },
+    x: { FOREIGN_ANY: eb("z", "x", [ANY_PROFILE]) }, // another group: still not reachable from g
+  };
+  assert.deepEqual(secretNamesForProfile(v, "g", "Dev").sort(), ["ANY", "DEV"]);
+  assert.deepEqual(secretNamesForProfile(v, "g", "QA"), ["ANY"]);
+  assert.deepEqual(secretNamesForProfile(v, "g", ""), ["ANY"], "an agent with no profile is 'any' too");
+  assert.deepEqual(secretNamesForProfile(v, "x", "QA"), ["FOREIGN_ANY"]);
 });
 
 test("resolve: a PUBLIC group is a commons — its secret resolves for every group", () => {

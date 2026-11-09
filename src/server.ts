@@ -314,6 +314,7 @@ import {
   loadVault,
   recordOrigin,
   originProfile,
+  ANY_PROFILE,
 } from "./secrets.js";
 import {
   recordSecretAudit,
@@ -4066,6 +4067,11 @@ app.put("/secrets/profiles", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   const profiles = Array.isArray(req.body?.profiles) ? req.body.profiles.map(String) : [];
   if (!name) return res.status(400).json({ error: "name required" });
+  // "Any profile" hands the credential to every agent that can resolve it —
+  // a person's decision, never an agent's (invariant 58). Removing it is not
+  // gated: narrowing is always safe.
+  if (profiles.includes(ANY_PROFILE) && !requestFromBrowser(req))
+    return res.status(403).json({ error: "Only a person, from the web UI, can give a secret to every profile." });
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
   if (!setSecretProfiles(name, target.ownerGroup, profiles))
@@ -5434,6 +5440,9 @@ app.put("/profiles", (req, res) => {
   if (typeof b.name !== "string" || !b.name.trim())
     return res.status(400).json({ error: "name required" });
   const name = b.name.trim();
+  // "*" is the vault's "any profile" marker (ANY_PROFILE): a profile by that
+  // name would receive every secret bound to it by name — and confuse the rest.
+  if (name === ANY_PROFILE) return res.status(400).json({ error: `"${ANY_PROFILE}" is reserved; pick another profile name.` });
   const written = typeof b.systemPrompt === "string" ? b.systemPrompt : undefined;
   const shipped = shippedProfile(name)?.systemPrompt;
   // Saving a shipped role UNCHANGED leaves it tracking the build rather than

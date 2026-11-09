@@ -1857,6 +1857,12 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   to the caller's group; `PUT /secrets/profiles` and the panel's profile editor
   follow it; the profile editor is read-only for a group that does not own the
   profile. Values still travel only in the child's env (invariant 36).
+  A secret's `profiles` may hold `ANY_PROFILE` (`"*"`, the panel's *Any
+  profile* chip): it is then injected into EVERY agent it resolves for, with or
+  without a profile — the group resolution is still the only wall, the profile
+  list just stops narrowing it. Only a browser person can set it (the route
+  refuses an agent key: widening a credential to agents nobody picked is a
+  person's call, invariant 58), and `"*"` is refused as a profile name.
 - **Ledger** (`ledger.ts`, `context/ledger-skill/`): rows carry `group` and
   `scope`. The skill no longer writes the file; it calls `POST /ledger/record`,
   where the server stamps the caller's group from the session. Default is
