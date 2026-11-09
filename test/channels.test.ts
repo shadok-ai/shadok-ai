@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Group } from "../src/groups.js";
 import {
   upsertInto,
   mergeChannels,
@@ -475,6 +476,16 @@ test("ensureMainGroup: [] yields exactly one public main group", () => {
 test("ensureMainGroup is idempotent", () => {
   const once = ensureMainGroup([]);
   assert.deepEqual(ensureMainGroup(once), once);
+});
+
+test("ensureMainGroup restores a missing main beside other groups, and returns the SAME list when main is present", () => {
+  // The boot heal (ensureGroupsProvisioned) saves only when the list changed,
+  // and tells that by identity.
+  const others = [{ id: "2", name: "Tech", nature: "public", members: [], osUser: null, createdAt: 0 }] as Group[];
+  const healed = ensureMainGroup(others);
+  assert.notEqual(healed, others);
+  assert.deepEqual(healed.map((g) => g.id), ["main", "2"]);
+  assert.equal(ensureMainGroup(healed), healed);
 });
 
 test("mergeChannels: group is server-owned once the channel exists", () => {
