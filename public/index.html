@@ -2020,6 +2020,10 @@
   }
   .spawn-loader .es-title { font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text); }
   .spawn-loader .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  /* The lead's first turn (startBirth): the loader stays over the chat until it
+     has answered, so the history underneath and the pump line stay hidden. */
+  .transcript.birth > :not(.spawn-loader) { display: none; }
+  #transcripts:has(> .transcript.birth:not([hidden])) ~ #thinking { display: none !important; }
   .spawn-steps { list-style: none; margin: 4px 0 0; padding: 0; text-align: left; font-size: 13px; color: var(--text-dim); }
   .spawn-steps li { padding: 2px 0; transition: color .3s; }
   .spawn-steps li::before { content: "○"; display: inline-block; width: 1.4em; }
@@ -4670,9 +4674,9 @@
   /** Fill a steps <ul> for the step the server last announced. Built with
    *  textContent, never markup. Before the module bridge is up (invariant 10) it
    *  leaves the list empty rather than guess. */
-  function renderSpawnSteps(ul, step) {
+  function renderSpawnSteps(ul, step, hello = false) {
     if (!ul || !window.spawnStepStates) return;
-    ul.replaceChildren(...window.spawnStepStates(step).map((s) => {
+    ul.replaceChildren(...window.spawnStepStates(step, { hello }).map((s) => {
       const li = document.createElement("li");
       li.className = s.state;
       li.textContent = s.label;
@@ -4685,6 +4689,9 @@
    *  text it chose, so it goes in as textContent). */
   function showSpawnLoader(t) {
     if (t.transcriptEl.childElementCount) return;
+    t.transcriptEl.replaceChildren(buildSpawnLoader(t, null, false));
+  }
+  function buildSpawnLoader(t, step, hello) {
     const box = document.createElement("div");
     box.className = "spawn-loader";
     box.setAttribute("aria-busy", "true");
@@ -4706,15 +4713,35 @@
     }
     const ul = document.createElement("ul");
     ul.className = "spawn-steps";
-    renderSpawnSteps(ul, null);
+    renderSpawnSteps(ul, step, hello);
     box.append(ul);
-    t.transcriptEl.replaceChildren(box);
+    return box;
   }
   function setSpawnStep(t, step) {
-    renderSpawnSteps(t.transcriptEl.querySelector(":scope > .spawn-loader .spawn-steps"), step);
+    renderSpawnSteps(t.transcriptEl.querySelector(":scope > .spawn-loader .spawn-steps"), step, !!t.birth);
+  }
+  /** The LEAD's birth: it keeps the loader (with "Saying hello") over its chat
+   *  until it has answered — the history arriving underneath stays hidden. */
+  function startBirth(t, step = firstAgentStep) {
+    if (!t.birth) {
+      t.birth = true;
+      t.transcriptEl.classList.add("birth");
+      const old = t.transcriptEl.querySelector(":scope > .spawn-loader");
+      if (old) old.remove();
+      t.transcriptEl.prepend(buildSpawnLoader(t, step, true));
+    } else setSpawnStep(t, step);
+  }
+  /** It answered (or the wait ended): the conversation takes over. */
+  function endBirth(t) {
+    if (!t.birth) return;
+    t.birth = false;
+    t.transcriptEl.classList.remove("birth");
+    clearSpawnLoader(t);
+    t.transcriptEl._stickBottom = true;
   }
   /** Every way out of a birth — ready, refusal, exit, gone — ends the loader. */
   function clearSpawnLoader(t) {
+    if (t.birth) { endBirth(t); return; }
     const l = t.transcriptEl.querySelector(":scope > .spawn-loader");
     if (l) l.remove();
   }
@@ -6729,6 +6756,7 @@
           nt.nameEl.textContent = c.name;
         }
         if (isMain(c)) markMainTab(nt);
+        if (isMain(c) && firstAgentPending) startBirth(nt);
         launchTab(nt, {
           cwd: c.cwd,
           resume: c.sessionId,
@@ -6760,12 +6788,19 @@
   // (invariant 18), and guessing would either tell a returning user their first
   // agent is starting forever, or invite a newcomer to create a second one.
   let firstAgentPending = false;
+  let firstAgentStep = null;
   async function syncFirstAgent() {
     let st;
     try { st = await (await fetch("/first-agent")).json(); } catch { return; }
     const now = !!(st && st.pending);
-    // The lead's spawn reports the same real steps as a tab (src/first-agent.ts).
-    if (now) renderSpawnSteps($("startingSteps"), st.step || null);
+    // The lead's spawn reports the same real steps as a tab (src/first-agent.ts),
+    // plus "Saying hello" while its greeting is under way.
+    firstAgentStep = now ? st.step || null : null;
+    if (now) renderSpawnSteps($("startingSteps"), firstAgentStep, true);
+    for (const t of tabs) {
+      if (now && st.greeting && t.sessionId === st.greeting) startBirth(t, firstAgentStep);
+      else if (!now) endBirth(t);
+    }
     if (now === firstAgentPending) return;
     firstAgentPending = now;
     // Only the no-agent panel changes; a cockpit with an active tab shows neither.
@@ -6781,12 +6816,18 @@
   // the poll up for everyone would be paying for it forever.
   const SYNC_IDLE_MS = 4000;
   const SYNC_STARTING_MS = 800;
+  let firstSyncPass = true;
   async function syncLoop() {
     try {
+      // Asked BEFORE the channels on the first pass: a lead discovered then must
+      // be born in birth mode (startBirth), and with a tab already restored the
+      // condition below would never ask at all.
+      if (firstSyncPass) await syncFirstAgent();
       await syncChannels();
       // Only asked while it can change anything: with no tab on screen, or to
       // see a pending wait end. Steady state stays exactly one /channels fetch.
-      if (!tabs.length || firstAgentPending) await syncFirstAgent();
+      if (!firstSyncPass && (!tabs.length || firstAgentPending)) await syncFirstAgent();
+      firstSyncPass = false;
     } catch {
       // One bad pass must never END the reconciliation. A setInterval could not
       // die; a self-rescheduling loop can, and losing it would silently stop
@@ -8676,6 +8717,9 @@
     if (typeof msg.mirror === "boolean") setMirror(t, msg.mirror, false);
     t.closing = false;      // set when the user closes the tab (no reconnect then)
     t.reconnectAttempts = 0;
+    // A birth shows at ONCE: opening the socket costs a TLS round trip behind a
+    // proxy (about a second, measured), and that second was a black pane.
+    if (!t.sessionId) showSpawnLoader(t);
     openLink(t);
   }
 
@@ -8698,7 +8742,7 @@
       // starts fresh (no sessionId yet).
       const start = t.sessionId ? { ...t.launchMsg, resume: t.sessionId } : t.launchMsg;
       if (t.sessionId) showChatSkeleton(t); // a resume has history on its way
-      else showSpawnLoader(t); // a birth: say what is happening, step by step
+      else showSpawnLoader(t); // a reconnect before `ready`: no-op if already shown
       ws.send(JSON.stringify({ type: "start", origin: "web", ...start }));
     });
     ws.addEventListener("close", () => {
@@ -9591,7 +9635,11 @@
         const el = t.transcriptEl;
         const wasStick = el._stickBottom !== false;
         const fromBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+        // The lead's birth loader survives the wipe: it stays over the replayed
+        // history until the first answer (endBirth).
+        const birthLoader = t.birth ? el.querySelector(":scope > .spawn-loader") : null;
         el.innerHTML = "";
+        if (birthLoader) el.append(birthLoader);
         t.unreadSep = null; // the separator element went with the wipe
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
@@ -9636,7 +9684,9 @@
         setSpawnStep(t, msg.step);
         break;
       case "ready":
-        clearSpawnLoader(t); // born: the loader gives way to the conversation
+        // Born: the loader gives way to the conversation — except the lead's,
+        // which waits for its first answer (endBirth).
+        if (!t.birth) clearSpawnLoader(t);
         // The server just named the instance it is. If it's not the one this
         // page was loaded from, the port was taken over — stop writing, prompt a
         // reload. (The write guard on the server refuses the PUT anyway; this is
@@ -9788,6 +9838,7 @@
         addBashCard(t, msg, msg.at ?? Date.now());
         break;
       case "stream-text":
+        endBirth(t); // the lead has answered: show it
         // A complete assistant text block, streamed from the transcript.
         // Text ends the current activity block: the next tool call opens a new
         // one, so the transcript keeps the real text/tools interleaving.

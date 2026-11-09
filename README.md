@@ -427,7 +427,8 @@ Enter to skip; you can add it later from the web UI).
   appears twice.
   While it is being started the central panel says so — *your first agent is
   waking up…*, with the real steps ticking off (access to Claude, workspace,
-  Claude Code) — instead of the *no agent open* invitation, which would ask you to
+  Claude Code, then *Saying hello* — the screen stays until it has actually
+  greeted you) — instead of the *no agent open* invitation, which would ask you to
   create a second one while the first is being born. It is a status, not a
   screen: nothing to click, nothing to dismiss, and it ends on its own whichever
   way the spawn goes (started, refused because the instance is signed out,

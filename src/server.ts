@@ -71,6 +71,8 @@ import {
   ensureFirstAgent,
   firstAgentStatus,
   settleFirstAgent,
+  greetFirstAgent,
+  endFirstAgentGreeting,
 } from "./first-agent.js";
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief, instanceContextInterviewBrief } from "./greeting.js";
@@ -659,6 +661,8 @@ function adoptHomeChannel(): void {
  * a far smaller problem than one whose boot path threw. `SHADOK_GREETING=0`
  * turns it off, the way `SHADOK_PILOT_PROMPT=0` does for the pilot prompt.
  */
+/** The longest the first-agent loader waits for the lead's greeting. */
+const GREETING_WAIT_MAX_MS = 3 * 60_000;
 function greetHomeAgent(id: string): void {
   if (process.env.SHADOK_GREETING === "0") return;
   const tag = `first agent: greeting ${id.slice(0, 8)}`;
@@ -679,10 +683,20 @@ function greetHomeAgent(id: string): void {
     console.log(`${tag} — not built (${e instanceof Error ? e.message : String(e)})`);
     return;
   }
+  // The page keeps its loader up until the lead has answered (the person sees
+  // the hello, not an empty chat filling in). Every way out ends the wait; the
+  // guard covers a turn that never reports back.
+  greetFirstAgent(id);
+  setTimeout(() => endFirstAgentGreeting(id), GREETING_WAIT_MAX_MS).unref?.();
   void deliverWithRetry(
     () => driveChannel(id, brief, resolveSessionTarget(loadChannels(), id, process.cwd())),
     () => sessions.has(id),
   ).then((res) => {
+    // Only a FAILED delivery ends the wait here. A delivered one ends it when
+    // the lead's first text lands (the stream-text broadcast): the turn-done
+    // that resolves the delivery can come early — measured ~3s after the
+    // prompt while the lead was still thinking for 28s.
+    if (!res.ok) endFirstAgentGreeting(id);
     if (res.ok) console.log(`${tag} — delivered (attempt ${res.attempts})`);
     else if (res.gone) console.log(`${tag} — session gone before it landed`);
     else console.log(`${tag} — gave up after ${res.attempts} tries (${res.reason})`);
@@ -7866,6 +7880,9 @@ function startContentTail(s: Live): void {
       // TailEvent): the client shows it as is instead of dating everything on
       // reception.
       broadcast(s, { type: "stream-text", text: e.text, at: e.at, afterInternal, ...(e.uuid ? { msgId: e.uuid } : {}) });
+      // The lead's greeting has a first answer: the first-agent loader may go
+      // (a no-op for every other session — src/first-agent.ts).
+      endFirstAgentGreeting(s.id);
     } else if (e.kind === "prompt") {
       // The echoed prompt bubble learns its transcript id (see TailEvent).
       broadcast(s, { type: "prompt-id", msgId: e.uuid, text: e.text });

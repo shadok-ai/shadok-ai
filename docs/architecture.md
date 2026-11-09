@@ -886,6 +886,20 @@ the `starting` messages its loopback socket receives — `noteFirstAgentStep`), 
 is recorded only while `pending` and is cleared by `settleFirstAgent`, so a late
 message cannot put a step back on a settled status.
 
+The wait then **outlives the spawn** by the lead's first turn: `greetHomeAgent`
+hands it to the greeting (`greetFirstAgent`, step `hello`, `greeting` = the
+session id), the spawn's own exit no longer settles it (`settleAfterSpawn`), and
+it ends when the lead's first TEXT block is broadcast (`endFirstAgentGreeting`
+beside the `stream-text` broadcast) — not when the delivery resolves, whose
+`turn-done` was measured arriving ~3s after the prompt while the lead thought
+for 28s more. A failed delivery ends it too, and `GREETING_WAIT_MAX_MS` (3 min)
+is the guard. On the page the lead's tab is born in **birth mode**
+(`startBirth`): the loader, with *Saying hello*, stays over its chat — the
+replayed history underneath hidden by `.transcript.birth` — until its first
+`stream-text` or the wait ending (`endBirth`). The page asks `/first-agent`
+before building tabs on its first pass, so a lead it discovers then is born
+that way too.
+
 ### A birth is shown, not a black pane (`starting`)
 
 A fresh tab used to sit on an empty transcript from the click until `ready` —
@@ -897,7 +911,9 @@ and the steps (`public/spawn-steps.js`, `showSpawnLoader`). The steps are the
 server's, never a timer: a step not yet announced stays unticked. Every way out —
 `ready`, `error` (a refusal shows itself, not a spinner), `exited`, `gone` —
 removes it (`clearSpawnLoader`). A resume announces nothing: it has history to
-show, and the chat skeleton covers that wait.
+show, and the chat skeleton covers that wait. The loader is drawn in `launchTab`,
+BEFORE the socket opens: that open is a TLS round trip behind a proxy (about a
+second), and drawing it on `open` left exactly that second black.
 
 It is announced at boot **before** the deferred spawn, not inside it: the
 browser is opened first, so otherwise the very page this exists for loads inside

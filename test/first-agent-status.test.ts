@@ -32,7 +32,7 @@ test("an instance with no channel announces the spawn before it happens", () => 
   // probe costs another ~850ms on top. Without this the page that the status
   // exists for loads inside that gap and is told there is nothing coming.
   announceFirstAgent(0);
-  assert.deepEqual(firstAgentStatus(), { pending: true, reason: "starting", step: null });
+  assert.deepEqual(firstAgentStatus(), { pending: true, reason: "starting", step: null, greeting: null });
 });
 
 test("announcing is authoritative, not sticky", () => {
@@ -64,7 +64,9 @@ test("every exit from the spawn settles the status", () => {
   // that moved the clear into the success branch would restore the stuck flag.
   assert.match(
     SRC,
-    /\} finally \{[^}]*settleFirstAgent\("first-boot"\);/s,
+    // settleAfterSpawn settles unless the greeting took the wait over — and the
+    // greeting ends it itself, with a guard (test/spawn-birth.test.ts).
+    /\} finally \{[^}]*settleAfterSpawn\(\);/s,
     "ensureFirstAgent must settle in a finally, not on the happy path only",
   );
   assert.match(
