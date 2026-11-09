@@ -3233,6 +3233,8 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // exactly what bit a migrated instance. test/system-skills.test.ts pins that
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
+  // The lead's once-only write of the instance context (src/instance-context.ts).
+  ["instance-context-skill", "shadok-instance-context"],
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
   // group's own OS user reads only this tier.
   ["factory-skill", "shadok-factory"],
@@ -9515,6 +9517,24 @@ function seedFilesSkill(): void {
   }
 }
 if (SEED_SKILLS) seedFilesSkill();
+
+// The lead agent's once-only write of the instance context: seeded to the server
+// HOME like shadok-files (a root lead reads it there), and listed in
+// SKILL_SOURCES for the machine-wide tier a dropped lead reads.
+function seedInstanceContextSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "instance-context-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-instance-context");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "write.mjs"), path.join(dst, "scripts", "write.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "write.mjs"), 0o755);
+  } catch {
+    /* best effort — without it the lead says it cannot save, nothing breaks */
+  }
+}
+if (SEED_SKILLS) seedInstanceContextSkill();
 
 // The Skill Factory's agent side (pull / push / scan of a factory skill's clone).
 function seedFactorySkill(): void {
