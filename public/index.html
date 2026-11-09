@@ -3036,6 +3036,22 @@
   .cmp-attach { border-radius: 50%; }
   #composer button.primary { border-radius: 22px; }
 
+  /* A narrow composer: the field gets the whole first row, the buttons a row of
+     their own beneath it. On one row, four buttons + Send left the textarea
+     ~110px wide — the placeholder wrapped mid-word and was clipped. Keyed on the
+     COMPOSER's width, not the viewport's: on desktop the chat pane is narrowed by
+     the rail, the agents column and the engine room, so a wide window can still
+     hold a narrow composer. */
+  #composer { container: composer / inline-size; }
+  @container composer (max-width: 560px) {
+    #composer .cmp-mic-msg { order: -3; }
+    #composer .cmp-atts { order: -2; }
+    #composer textarea { order: -1; flex-basis: 100%; }
+    #composer .cmp-mic { margin-left: auto; }
+    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 38px; }
+    #composer .cmp-attach { width: 38px; }
+  }
+
   /* Floating menus: lifted, not outlined. */
   #moreMenu, #tabMenu, #verMenu, .slash-menu {
     border-color: transparent; border-radius: 14px;
