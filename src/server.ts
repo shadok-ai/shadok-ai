@@ -231,6 +231,7 @@ import {
   isTransient,
   CRON_MAX_RETRIES,
   markCronPrompt,
+  isCronPrompt,
   normalizeSchedule,
   onceAt,
   stateAfterFire,
@@ -6467,9 +6468,9 @@ function installedCapabilities(): { name: string; description: string }[] {
 const runningPlugins = new Map<string, string[]>();
 
 /** One `Skill(<name>:<name>)` call = one run of that factory skill (for the panel's counts). */
-function countFactoryRun(skillArg: string, agentId: string): void {
+function countFactoryRun(skillArg: string, agentId: string, viaCron: boolean): void {
   const name = skillOfCall(skillArg, loadRegistry(factoryRoot()).skills.map((x) => x.name));
-  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId });
+  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId, ...(viaCron ? { via: "cron" as const } : {}) });
 }
 
 /** Remove the release directories no attachment and no running process uses. */
@@ -7163,6 +7164,13 @@ interface Live {
    *  history-replay flag (`HistoryTurn.afterInternal`). Cleared when a visible
    *  prompt (which breaks the group itself) takes over. */
   gapBeforeNextText?: boolean;
+  /**
+   * The turn in flight was started by a cron fire (origin `cron` AND the cron
+   * mark — a parent notification rides the same hidden path without it). Tags
+   * the skill runs it makes, so a skill's card can list the agents that run it
+   * on a schedule.
+   */
+  cronTurn?: boolean;
   /** Stops the .jsonl tail loop (content streaming). */
   stopTail: (() => void) | null;
   /** The last text blocks ALREADY broadcast, so they are not offered again as
@@ -7864,7 +7872,7 @@ function startContentTail(s: Live): void {
     } else if (e.kind === "tool") {
       // A `Skill(<name>:<name>)` call is one run of a factory skill: counted
       // for the Skills page, then streamed like any other tool.
-      if (e.skill) countFactoryRun(e.skill, s.id);
+      if (e.skill) countFactoryRun(e.skill, s.id, !!s.cronTurn);
       broadcast(s, {
         type: "stream-tool", id: e.id, name: e.name, summary: e.summary,
         // Files a SendUserFile delivered → the client renders a download / inline
@@ -9146,6 +9154,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           clearRetry(session, true);
           session.retryCount = 0;
           session.lastPrompt = text;
+          session.cronTurn = origin === "cron" && isCronPrompt(text);
           // The session's other clients see the prompt arrive — except a cron:
           // that is not someone speaking, and its text (the prompt PLUS its
           // guard's dump) drowned the answer in both interfaces. The mark in
