@@ -375,6 +375,7 @@ a Node test — which is why the client has a test suite at all:
 |---|---|---|
 | `public/live-text.js` | `extractLiveText(screen)` | `test/live-text.test.ts` |
 | `public/shadok-soul.js` | `pumpLine`, `gabuzomeu`, `pickMaxim`, `mascotSay` | `test/shadok-soul.test.ts` |
+| `public/spawn-steps.js` (+ `src/spawn-steps.ts`) | `spawnStepStates`, `spawnLoaderTitle`, `SPAWN_HINT`; server `SPAWN_STEP_KEYS`, `isSpawnStep` | `test/spawn-loader.test.ts` |
 | `public/notify.js` | `notifyState(channels, view)` | `test/notify.test.ts` |
 | `public/profile-card.js` | `profileBlurb`, `profileBadges` | `test/profile-card.test.ts` |
 
@@ -878,6 +879,25 @@ promise), the `!plan.spawn` branch before the socket is even opened, and
 Announcing is authoritative rather than sticky in the other direction too:
 called with channels present it clears the flag, since an instance that has
 agents has nothing pending by definition.
+
+The status also carries the **step** the lead's spawn has reached (`step`, from
+the `starting` messages its loopback socket receives — `noteFirstAgentStep`), so
+`#startingState` shows the same real progress as any tab's birth loader. A step
+is recorded only while `pending` and is cleared by `settleFirstAgent`, so a late
+message cannot put a step back on a settled status.
+
+### A birth is shown, not a black pane (`starting`)
+
+A fresh tab used to sit on an empty transcript from the click until `ready` —
+the `claude` install check, the sign-in probe (~850ms), the worktree, the spawn.
+Now the start handler announces `{type:"starting", step}` before each of those
+(`connect`, `workspace`, `claude` — `src/spawn-steps.ts`), and the page fills
+the empty transcript with the pumping Shadok, one sentence on what is happening
+and the steps (`public/spawn-steps.js`, `showSpawnLoader`). The steps are the
+server's, never a timer: a step not yet announced stays unticked. Every way out —
+`ready`, `error` (a refusal shows itself, not a spinner), `exited`, `gone` —
+removes it (`clearSpawnLoader`). A resume announces nothing: it has history to
+show, and the chat skeleton covers that wait.
 
 It is announced at boot **before** the deferred spawn, not inside it: the
 browser is opened first, so otherwise the very page this exists for loads inside
@@ -2014,7 +2034,7 @@ a spawn arg, so it ALWAYS respawns. An unknown level is refused OUT LOUD, becaus
 the CLI itself would only warn and silently run at the default), `stop`
 (`sessionId?` — kills a specific channel, so the UI can remove a zombie).
 
-**server → client:** `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
+**server → client:** `starting` (a FRESH spawn's progress, `step` = `connect` / `workspace` / `claude`, each sent just BEFORE the work it names — `src/spawn-steps.ts`; the page's birth loader, `public/spawn-steps.js`, ticks them off and gives way on `ready` or the refusal; a resume sends none, it has history to show), `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
 `stream-tool` (carries `files` — `{path,name,image,video}[]` — when it's a `SendUserFile`, so the client renders a download / inline-image / inline-video card instead of a folded tool line, and Telegram uploads them), `stream-result`, `stream-bash` (`command` then `output`/`isError` — a shell-mode exchange read from the transcript), `history` (whose turns may be `role:"file"` for a delivered file, or `role:"bash"` for a shell-mode exchange), `dialog` (question, options, `multi`, optional `body` — the box's own text, invariant 43 — and optional `preface`), `screen`, `tokens`,
 `context`, `background` (`shells` + `monitors` — what the pane reports still running; live only, never stored, like the context percentage), `parent` (the parent channel changed — broadcast, so every tab follows),
 `profile` (the `{profile, applied}` pair — desired vs the one the running process

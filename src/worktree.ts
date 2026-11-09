@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listSessions } from "./extract.js";
+import { foreignOwner, gitIn } from "./git-exec.js";
 
 export interface Worktree {
   /** Working directory of the isolated checkout. */
@@ -13,9 +13,10 @@ export interface Worktree {
   repo: string;
 }
 
+// Through `gitIn`: under multi-tenant the server is root and these checkouts
+// belong to a drop user, which git refuses as "dubious ownership" (src/git-exec.ts).
 function git(cwd: string, args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], {
-    encoding: "utf8",
+  return gitIn(cwd, args, {
     timeout: 15_000,
     maxBuffer: 16 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
@@ -84,7 +85,19 @@ export function createWorktree(repo: string, tag: string, stateHome: string = os
   const head = git(repo, ["rev-parse", "HEAD"]);
   const branch = `shadok-ai/${tag}`;
   const dir = worktreeDir(stateHome, repo, tag);
-  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const created = fs.mkdirSync(path.dirname(dir), { recursive: true });
+  // A repo another user owns is driven AS that user (`gitIn`), so the parent the
+  // root server just made must be theirs too, or `worktree add` dies on
+  // "could not create leading directories … Permission denied". Only what THIS
+  // call created, and only when the repo is not root's: a root-owned repo keeps
+  // today's path (the caller chowns the finished checkout).
+  const owner = created ? foreignOwner(repo) : null;
+  if (created && owner) {
+    for (let d = path.dirname(dir); ; d = path.dirname(d)) {
+      fs.chownSync(d, owner.uid, owner.gid);
+      if (d === created || d === path.dirname(d)) break;
+    }
+  }
   git(repo, ["worktree", "add", "-b", branch, dir, head]);
   return { path: dir, branch, repo };
 }

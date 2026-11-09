@@ -424,6 +424,7 @@ import {
 } from "./worktree.js";
 import { latestVersion, update } from "./updater.js";
 import { resolveChannel, type UpdateChannel } from "./update-channel.js";
+import type { SpawnStep } from "./spawn-steps.js";
 import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
@@ -8595,6 +8596,15 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Install the `claude` CLI first if it's missing: otherwise the auth
           // probe below (it runs `claude auth status`) can't run and reads as
           // "unknown", and the spawn itself would throw "posix_spawnp failed".
+          // A FRESH spawn tells its client where it is (public/spawn-steps.js
+          // draws the loader from it), each step just BEFORE the work it names.
+          // A resume shows its history instead, so it announces nothing.
+          const freshSpawn = !msg.resume && !msg.continue;
+          const announceStep = (step: SpawnStep) => {
+            if (!freshSpawn) return;
+            send({ type: "starting", step });
+          };
+          announceStep("connect");
           const claude = await ensureClaudeOnce();
           if (!claude.ok) return fail(claude.error);
           // An agent on a custom backend authenticates with its own token and
@@ -8749,6 +8759,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const early = await connectRefusal(earlyUser);
             if (early) return fail(early.message, early.code, early.user);
           }
+          announceStep("workspace");
           if (msg.worktree && !resumed && isGitRepo(cwd)) {
             try {
               // Create the checkout under the DROP USER's own home (not the
@@ -8978,6 +8989,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // assigned, else the one the client created it in.
             pendingCtx.set(id, { group: agentGroupId ?? requestedGroupId, createdBy: initialCreatedBy ?? null });
           }
+          announceStep("claude");
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),

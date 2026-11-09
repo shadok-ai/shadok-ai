@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import { loadChannels } from "./channels.js";
 import type { Connected } from "./connect-gate.js";
 import { BOSS_PROFILE_NAME } from "./profiles.js";
+import { isSpawnStep, type SpawnStep } from "./spawn-steps.js";
 
 /**
  * The lead agent an instance starts life with.
@@ -94,9 +95,13 @@ export interface FirstAgentStatus {
   pending: boolean;
   /** Why — the plan's reason once one has been computed, before that "starting". */
   reason: FirstAgentPlan["reason"] | "starting" | "idle";
+  /** The spawn step the server last announced (src/spawn-steps.ts), so the
+   *  page's "starting" panel shows the same real progress as a tab's loader.
+   *  Null before the first one and whenever nothing is pending. */
+  step: SpawnStep | null;
 }
 
-let status: FirstAgentStatus = { pending: false, reason: "idle" };
+let status: FirstAgentStatus = { pending: false, reason: "idle", step: null };
 
 /** A copy, so no caller can hold a handle on the state and edit it. */
 export function firstAgentStatus(): FirstAgentStatus {
@@ -118,13 +123,21 @@ export function firstAgentStatus(): FirstAgentStatus {
 export function announceFirstAgent(channelCount: number): void {
   status =
     channelCount > 0
-      ? { pending: false, reason: "channels-exist" }
-      : { pending: true, reason: "starting" };
+      ? { pending: false, reason: "channels-exist", step: null }
+      : { pending: true, reason: "starting", step: null };
+}
+
+/** Record the step the lead's spawn has reached. Ignored once the wait is over
+ *  (a late message must not put a step back on a settled status) and for
+ *  anything that is not a known step. */
+export function noteFirstAgentStep(step: unknown): void {
+  if (!status.pending || !isSpawnStep(step)) return;
+  status = { ...status, step };
 }
 
 /** The one way out of `pending`. Never conditional: every reason ends the wait. */
 export function settleFirstAgent(reason: FirstAgentPlan["reason"]): void {
-  status = { pending: false, reason };
+  status = { pending: false, reason, step: null };
 }
 
 /** Guards the two callers (boot, sign-in) against firing at the same moment. */
@@ -195,9 +208,11 @@ export async function ensureFirstAgent(deps: {
         ),
       );
       ws.on("message", (raw) => {
-        let m: { type?: string; sessionId?: string };
+        let m: { type?: string; sessionId?: string; step?: unknown };
         try { m = JSON.parse(String(raw)); } catch { return; }
-        if (m.type === "ready" && m.sessionId) {
+        if (m.type === "starting") {
+          noteFirstAgentStep(m.step);
+        } else if (m.type === "ready" && m.sessionId) {
           deps.onReady(m.sessionId, plan.name!);
           finish();
         } else if (m.type === "error" || m.type === "exited") {
