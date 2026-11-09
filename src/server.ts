@@ -2320,6 +2320,38 @@ app.put("/title", (req, res) => {
   setTitleForCwd(loadConfig(), process.cwd(), raw);
   res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
 });
+// The instance context (src/instance-context.ts): one short text per instance
+// that every agent receives at spawn. Humans edit it from the cockpit; the lead
+// agent writes it ONCE, while it is empty, at first run.
+app.get("/instance-context", (_req, res) => {
+  res.json({ text: instanceContextForCwd(loadConfig(), process.cwd()), max: INSTANCE_CONTEXT_MAX });
+});
+app.put("/instance-context", (req, res) => {
+  // Every agent is told this text, so only a human in the browser writes it
+  // (an agent's only door is the once-only route below) — like PUT /profiles.
+  if (!accountAdmin(req, res, true, "edit the instance context")) return;
+  const r = normalizeInstanceContext(req.body?.text);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  setInstanceContextForCwd(loadConfig(), process.cwd(), r.text);
+  res.json({ text: r.text });
+});
+app.put("/instance-context/first", (req, res) => {
+  const key = String(req.headers["x-shadok-session-key"] ?? "");
+  const id = localSessionForKey(req, key);
+  if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  const ch = loadChannels().find((c) => c.sessionId === id);
+  const refused = firstWriteVerdict({
+    isHome: !!ch && isHomeChannel(ch),
+    current: instanceContextForCwd(loadConfig(), process.cwd()),
+  });
+  if (refused) return res.status(409).json({ error: refused });
+  const r = normalizeInstanceContext(req.body?.text);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  if (!r.text) return res.status(400).json({ error: "the instance context is empty" });
+  setInstanceContextForCwd(loadConfig(), process.cwd(), r.text);
+  console.log(`instance context: written by the lead agent (${id.slice(0, 8)}, ${r.text.length} chars)`);
+  res.json({ ok: true });
+});
 // Colour palette, per launch directory — an accent key ("emerald"…). The setter
 // validates against the known palettes; the default/unknown clears it.
 app.get("/theme", (_req, res) => {
