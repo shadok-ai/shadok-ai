@@ -3071,6 +3071,12 @@ app.get("/channels/stats", (req, res) => {
 // agent's scan is cached by (mtime,size), so re-opening only stat()s unchanged
 // files; a LIVE agent is read from memory. Invalidated when the transcript grows.
 const statsScanCache = new Map<string, { mtime: number; size: number; samples: Map<string, MsgSample> }>();
+// Bounded on purpose: the entries hold one object PER MESSAGE of a transcript,
+// the server runs for weeks, and nothing ever removed a file that stopped
+// existing (a closed agent, a pruned worktree) — so an unbounded map here grows
+// with every agent that ever lived on the instance. Insertion order gives a
+// plain FIFO eviction; an evicted file is simply re-scanned next time.
+const STATS_CACHE_MAX = 64;
 async function channelStatsSamples(ch: Channel): Promise<Iterable<MsgSample>> {
   const live = sessions.get(ch.sessionId);
   if (live) return live.usageSamples.values(); // in memory — no I/O
@@ -3084,6 +3090,11 @@ async function channelStatsSamples(ch: Channel): Promise<Iterable<MsgSample>> {
   const cached = statsScanCache.get(file);
   if (cached && cached.mtime === st.mtimeMs && cached.size === st.size) return cached.samples.values();
   const { samples } = await scanUsageSamplesAsync(file);
+  statsScanCache.delete(file); // re-insert, so a refreshed file is the newest entry
+  if (statsScanCache.size >= STATS_CACHE_MAX) {
+    const oldest = statsScanCache.keys().next();
+    if (!oldest.done) statsScanCache.delete(oldest.value);
+  }
   statsScanCache.set(file, { mtime: st.mtimeMs, size: st.size, samples });
   return samples.values();
 }

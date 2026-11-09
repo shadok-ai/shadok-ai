@@ -13831,8 +13831,13 @@
   $("cronOverlay").addEventListener("click", (e) => { if (e.target === $("cronOverlay")) { $("cronOverlay").hidden = true; resetCronEditMode(); } });
 
   // ── Per-agent stats panel (📊 in the agent menu) ──────────────────────────
-  // Compact token counts — abbreviated so a 17M total reads at a glance.
-  function fmtTokens(n) {
+  // Compact token counts — abbreviated so a 17M total reads at a glance, and a
+  // fleet total that reaches a billion still fits a cell.
+  // NOT named `fmtTokens`: there is already one above (the browser-tab title's
+  // counter), and a second function DECLARATION of that name in the same classic
+  // script silently overrides it for every caller — the title's "25k" quietly
+  // became "25.0k". A redeclaration is legal here, so nothing complains.
+  function fmtTokensWide(n) {
     if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
     if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
@@ -13865,9 +13870,9 @@
     for (const [label, w] of rows) {
       const tr = document.createElement("tr");
       const td1 = document.createElement("td"); td1.textContent = label;
-      const td2 = document.createElement("td"); td2.className = "num"; td2.textContent = fmtTokens(w.tokens);
-      td2.title = "input " + fmtTokens(w.input) + " · output " + fmtTokens(w.output)
-        + " · cache-write " + fmtTokens(w.cacheCreation) + " · cache-read " + fmtTokens(w.cacheRead);
+      const td2 = document.createElement("td"); td2.className = "num"; td2.textContent = fmtTokensWide(w.tokens);
+      td2.title = "input " + fmtTokensWide(w.input) + " · output " + fmtTokensWide(w.output)
+        + " · cache-write " + fmtTokensWide(w.cacheCreation) + " · cache-read " + fmtTokensWide(w.cacheRead);
       const td3 = document.createElement("td"); td3.className = "num"; td3.textContent = fmtCost(w.costUSD, w.costPartial);
       tr.append(td1, td2, td3);
       frag.appendChild(tr);
