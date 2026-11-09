@@ -60,6 +60,30 @@ repo=shadok-ai/shadok-ai
 # and /root/.shadok-ai survive a container recreate. The scripts themselves lived
 # under /Users once and were wiped on 2026-08-10, taking every guard down at once.
 state_file="$HOME/.shadok-ai/checks/pr-open.state"
+# How many consecutive `gh` failures we absorb before saying so out loud.
+# Swallowing the FIRST one is deliberate (a stalled TCP connect must not wake
+# the agent, see the header); swallowing them FOREVER is the bug this counter
+# closes. A guard that cannot reach GitHub looks exactly like a calm repository,
+# and that is how this one stayed silent for days with mergeable PRs open: it
+# ran dropped as the agent's OS user, whose gh config dir is its own and empty,
+# so every call failed with no credential and no trace. On the 2nd failure in a
+# row we write to STDERR, which is what invariant 16 reads as "broken guard" —
+# it wakes the agent, which costs tokens each slot until someone repairs it.
+# That is the intended price: a monitoring job that dies quietly is worse.
+fail_state="$HOME/.shadok-ai/checks/pr-open.ghfail"
+gh_fail_threshold=2
+
+# Record one failed `gh` call and complain once the run of failures reaches the
+# threshold. Always exits 0: the caller decides to stop, not this.
+note_gh_failure() {
+  n=$(cat "$fail_state" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1))
+  printf '%s' "$n" > "$fail_state" 2>/dev/null
+  [ "$n" -ge "$gh_fail_threshold" ] && \
+    echo "pr-open guard: \`gh\` has failed $n times in a row (no PR data). Check the guard's GitHub credential — it runs as the agent's own OS user, not the server's." >&2
+  return 0
+}
 
 # A `hold` label means a human is deciding: the PR is deliberately parked, so
 # waking the agent for it every minute is the noise this guard exists to avoid.
@@ -78,7 +102,10 @@ rows=$(timeout 25 gh pr list --repo "$repo" --state open --limit 50 \
              else "" end) as $why
           | [ (if $why == "" then "ACT" else "TELL" end),
               "#\(.number)", .mergeStateStatus, $why, (.author.login // "?"), .title ]
-          | @tsv' 2>/dev/null) || exit 0
+          | @tsv' 2>/dev/null) || { note_gh_failure; exit 0; }
+# The call came back: forget any run of failures, so the next one starts over
+# and a single hiccup every other day never accumulates into a false alarm.
+: > "$fail_state" 2>/dev/null
 
 printf '%s\n' "$rows" | awk -F'\t' -v state="$state_file" '
   $1 == "ACT"  { act = act sprintf("%s %s — %s\n", $2, $3, $6) }
