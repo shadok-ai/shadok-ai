@@ -2051,7 +2051,8 @@ existing name with 409 unless `overwrite: true`. `PUT /profiles` writes the
 GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
 agents get exactly two profile writes, and neither can reach a guardrail:
 `/profiles/prompt` (PUT) — a `systemPrompt`, its own or, under the lead profile,
-any — and `/profiles/secret` (PUT) — attach to ITS OWN profile a vault secret
+any; refused outright in multi-tenant, where profiles are shared by every group
+(`promptWriteRefusal`, invariant 63) — and `/profiles/secret` (PUT) — attach to ITS OWN profile a vault secret
 IT created (provenance from `secret-origin.json`; no exception for the lead,
 cf. invariant 37). `GET /profiles`
 adds a **derived** `origin` per profile (`stock` / `edited` / `custom`, never

@@ -336,6 +336,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **60.** What the server does on a group's behalf (cron checks, offered files, media) it does with that group's rights — never root's; and an agent may put a cron `check` only on ITSELF. · [detail](docs/invariants.md#inv-64)
 - **61.** Who is speaking is decided by the CONNECTION (`connectionOrigin`), and text a person types can never pass for a header, ledger block or hiding mark the server wrote (`markHumanPrompt`). · [detail](docs/invariants.md#inv-65)
 - **62.** Same-origin is not "ours": a rebound name is same-origin with itself, so the Host is checked too — strictly only with no password (or with `SHADOK_ALLOWED_HOSTS`), so proxied deployments on a domain keep working. · [detail](docs/invariants.md#inv-66)
+- **63.** A global object an agent may write is a cross-group write — in multi-tenant an agent may not edit any profile prompt (`promptWriteRefusal`). · [detail](docs/invariants.md#inv-67)
 
 ## Conventions
 
