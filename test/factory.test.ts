@@ -26,6 +26,7 @@ import {
   findSkill,
   prepareWorkspace,
   MAIN_GROUP,
+  publishGroups,
 } from "../src/factory.js";
 
 const SECRET = { name: "HUBSPOT_TOKEN", value: "hs-pat-9f8e7d6c5b4a" };
@@ -274,6 +275,24 @@ test("availableAttachments: an agent runs what is shared with it, at its group's
   assert.deepEqual(availableAttachments(skills, { group: "g-hr", createdBy: "max" }, "g-hr"), [{ skill: "hr", release: 1 }]);
   // What it then RECEIVES is still the acceptance's: resolveAttachments keeps the gate.
   assert.equal(resolveAttachments(skills, availableAttachments(skills, { group: "g-hr" }, "g-hr"), "g-hr").ok.length, 1);
+});
+
+test("publishGroups: Save accepts for every group the skill reaches that the saver may act for", () => {
+  const base = { description: "", createdBy: "a", createdAt: 0, releases: [], acceptances: [] };
+  const groups = ["main", "1", "2", "priv-other"];
+  const mayAct = (g: string) => g !== "priv-other"; // another person's private group: never
+  // Shared with everyone: Main's agents AND every group's (the multi-tenant bug:
+  // Save accepted for one group, so agents outside Main ran nothing).
+  const all = { ...base, id: "all", name: "all", owner: "main", editors: ["main"], users: ["main"] };
+  assert.deepEqual(publishGroups(all, "mine", groups, mayAct), ["mine", "main", "1", "2"]);
+  // A `groups:` scope reaches those groups only.
+  const two = { ...base, id: "two", name: "two", owner: "groups:2", editors: ["2"], users: ["2"] };
+  assert.deepEqual(publishGroups(two, "2", groups, mayAct), ["2"]);
+  // Not shared with a group: not accepted there, whatever the scope says.
+  const narrow = { ...base, id: "n", name: "n", owner: "main", editors: ["1"], users: [] };
+  assert.deepEqual(publishGroups(narrow, "1", groups, mayAct), ["1"]);
+  // Mono-tenant: the saver acts for Main only, so nothing changes there.
+  assert.deepEqual(publishGroups(all, "main", groups, (g) => g === "main"), ["main"]);
 });
 
 // ── What the use cases needed (2026-10-31) ───────────────────────────────────

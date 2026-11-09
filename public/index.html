@@ -10521,11 +10521,12 @@
   function paintSlash() {
     slashMenu.textContent = "";
     if (slash.picker && !slash.list.length) {
-      // Only ATTACHED skills run (they load as a plugin at spawn), so an empty
-      // menu says where to attach one rather than staying silently shut.
+      // A skill is never attached to one agent: it runs where it is SHARED once
+      // it is saved (loaded as a plugin at spawn). An empty menu says how to get
+      // there rather than staying silently shut.
       const d = document.createElement("div");
       d.className = "slash-empty";
-      d.textContent = "No skill attached to this agent yet. Attach one from the Skills page, then reload the agent.";
+      d.textContent = "No skill runs on this agent yet. In the Skills page, share a skill with this agent's group and click Save, then reload the agent.";
       slashMenu.appendChild(d);
       slashMenu.hidden = false;
       return;

@@ -865,6 +865,37 @@ export function availableAttachments(skills: FactorySkill[], agent: AgentCtx, te
 }
 
 /**
+ * Pure: the groups a "Save" accepts the release for. A release runs in a group
+ * only once a person of that group accepted it (`acceptanceFor`), and Save used
+ * to accept for the saver's ONE group — so a skill shared with everyone ran in
+ * Main and nowhere else, with no screen to accept it for the other groups
+ * (measured on a multi-tenant instance: every agent outside Main had none).
+ * Save is that person's acceptance for EVERY group the skill reaches and they
+ * may act for — exactly the groups an explicit `/accept` would let them name,
+ * so it grants nothing a person could not already grant one group at a time.
+ * `primary` (the group they would accept for by default) always comes first.
+ */
+export function publishGroups(
+  skill: FactorySkill,
+  primary: string,
+  groupIds: string[],
+  mayAct: (group: string) => boolean,
+): string[] {
+  const scoped = scopeGroups(skill.owner);
+  const out = [primary];
+  for (const g of new Set([MAIN_GROUP, ...groupIds])) {
+    if (out.includes(g)) continue;
+    // A `groups:` scope runs only on those groups' agents (a group-less agent
+    // counts as Main's, see `scopeRunsOn`); "everyone" and "only me" can reach
+    // an agent of any group.
+    if (scoped && !scoped.includes(g)) continue;
+    if (!sharedWith(skill, g) || !mayAct(g)) continue;
+    out.push(g);
+  }
+  return out;
+}
+
+/**
  * Materialise a release as a Claude Code plugin directory, once, content
  * addressed: `<name>@<N>-<tree8>/.claude-plugin/plugin.json` + `skills/<name>/…`.
  * Read-only on disk: what an agent runs must not be editable in place.
