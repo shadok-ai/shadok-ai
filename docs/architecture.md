@@ -2027,6 +2027,28 @@ dir surfaces as a visible `check-failed` rather than a silent repoint to nothing
 (twin of `rewriteSkillsBase`). Idempotent and best-effort; a no-op unless the HOME
 actually moved. New agents never hit this — their HOME is already `/home/main`.
 
+A second carry the one-shot migration can miss when **interrupted** — a container
+restart mid-run, where the `chown -R` is seconds long and the respawn kills and
+re-adopts panes — is an agent's **worktree** itself. The migration relocates each
+agent's checkout into the drop user's own home and respawns it there; cut short,
+some worktrees stay under `/root/.shadok-ai/worktrees/…`, which the drop user
+cannot even traverse (`/root` is 0700). That agent can then only run as **root**
+("stuck on root"), and the marker is already written, so the one-shot migration
+will not re-run to finish. `healStrandedWorktrees` (also in `ensureGroupsProvisioned`,
+marker-independent) finishes it: `strandedWorktreePlan` (pure, `worktree-relocate.ts`,
+tested) lists every channel whose drop user **cannot reach** its checkout and the
+canonical home it belongs in (`<drop-home>/.shadok-ai/worktrees/<name>`); a working,
+already-migrated agent (reachable checkout) is never touched. Each relocation stops
+the stale pane, **copies** the checkout to the canonical home (copy, never move, so
+a failure never loses work), `git worktree repair`s the admin link, chowns both the
+checkout and the external admin dir to the drop user (`chownAgentStateToDropUser`),
+carries the transcript across (best-effort — the work is already safe in the
+worktree, this only keeps history visible), repoints the channel's `cwd`, and only
+THEN removes the stale source. The agent resumes as its drop user on next resume.
+Idempotent (a relocated agent is reachable next boot → skipped) and fail-safe per
+agent. Companion to the ownership re-assert that completes a partial `chown` of the
+commons tree on the same boot.
+
 **Human-verify before release** (the privileged `cp`/`chown`/drop only exercise
 on a real migrated container; the tests inject the side effects): boot on a copy
 of a real migrated volume and confirm every cron guard fires. A script that
