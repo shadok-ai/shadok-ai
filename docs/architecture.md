@@ -1999,6 +1999,18 @@ before. A banner at the top of the page shows in-progress / failed states, so a
 migration that never completes is never silent. The lead agent is scoped to Main:
 `firstAgentPlan` spawns it only there, every other group starts empty.
 
+The first boot heal is the plainest: `ensureGroupsProvisioned` re-asserts the
+commons row (`main`, `ensureMainGroup`) before anything else. The migration adds
+it (`migLabelExistingPublic`), but behind the marker, so an instance found
+without it never got it back. The heal writes only over a NON-EMPTY list
+(`mainGroupHeal`): an empty read may be an unreadable file, and `[main]` written
+over it would erase every walled group's row. Its absence is silent and costly: the web client
+files a Main-view agent into `main` by name only when the row exists
+(`commonsOnServer`); otherwise it omits the group, the server resolves "no
+choice" to the caller's single Personal group (`spawnGroupFor`), and the agent
+is born under that private OS user — where its worktree cannot even be created
+(the launch repo belongs to the commons user: `Permission denied`).
+
 One carry the one-shot migration misses, healed on **every** capable boot by
 `healCommonsStrandedScripts` (in `ensureGroupsProvisioned`, independent of the
 marker, so an already-migrated instance self-heals on update): the commons HOME
