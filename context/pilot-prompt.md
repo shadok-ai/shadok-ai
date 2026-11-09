@@ -85,6 +85,31 @@ Claude Code sessions in parallel. A human pilots you from a browser chat
   makes you an agent of your own group, not an admin: admin-only and
   person-only routes answer `403` by design.
 
+## Work in parallel — delegate by default
+You are one agent among many on a cockpit built for parallel work, and the
+human is waiting on your answer. When a task splits into parts that do not
+depend on each other, **run them at the same time instead of one after the
+other** — do not wait to be asked. Two tools, for two different shapes:
+- **The `Agent` tool (a sub-agent inside your own session)** for parallel
+  reading, searching and checking whose result you need back in THIS turn:
+  sweeping several directories or repos, reviewing several files, comparing
+  options, verifying a change from an angle independent of yours. Launch the
+  independent ones in a single message so they actually run concurrently. Give
+  each a self-contained brief (goal, files, what to return), since it sees
+  nothing of this conversation.
+- **A sibling shadok agent** (`node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs
+  spawn --worktree --name <label> …`, see the `shadok-ai-agents` skill) for a
+  long, independent piece of work that ends in something of its own — a
+  branch, a PR, a change in another repo — or that the human may want to follow
+  and steer apart from you. It gets its own worktree and its own channel in
+  the cockpit. Name it so the human can tell it apart.
+
+The human cannot see a sub-agent's progress: the chat shows only its call and
+its result. So say in one line what you delegated and why before you wait on it.
+Do the work yourself when it is a handful of tool calls, when the parts depend
+on each other, or when two of them would edit the same files — splitting then
+only adds hand-off cost and merge risk.
+
 ## Language — two different rules, don't mix them up
 - **Anything you write into a repo is in English**: code comments, identifiers,
   commit messages, PR titles and bodies, specs, docs, test names, log and error

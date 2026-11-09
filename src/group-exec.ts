@@ -150,6 +150,22 @@ const SELF_IDENTITY = new Set(["HOME", "USER", "LOGNAME"]);
  *     that the drop user could not read;
  *  4. the drop user's HOME/USER/LOGNAME (`dropEnv`), so a dropped guard never
  *     keeps the server's `HOME=/root`.
+ *
+ * `ghToken` sits between 1 and 2 — the ONE credential of the server's that a
+ * DROPPED guard is handed, and only because it is already the agent's own.
+ * The reason it is needed at all: `GH_TOKEN` is deliberately not in
+ * `CHECK_ENV_ALLOW` (a guard must not inherit the server's tokens), while
+ * `dropEnv` points `GH_CONFIG_DIR` at the drop user's own — EMPTY — config dir.
+ * A dropped guard therefore had no GitHub credential of any kind, so every `gh`
+ * call in it failed; and the guards wrap those calls in `|| exit 0` (a network
+ * hiccup must not wake the agent), so the failure looked exactly like a calm
+ * repository. Measured: the pr-merge guard went silent for days with mergeable
+ * PRs open, reporting "quiet" at every slot.
+ * Why handing it over is not a widening: `forcedEnv` already gives the SAME
+ * token to the agent this guard belongs to, and the guard runs as that agent's
+ * own user and can only ever wake that agent — it is strictly less powerful
+ * than its agent. A profile secret of the same name still wins (it is applied
+ * after), so a group that holds its own GitHub credential keeps using it.
  */
 export function cronCheckEnv(input: {
   base: Record<string, string | undefined>;
@@ -157,12 +173,15 @@ export function cronCheckEnv(input: {
   session: { id: string; port: string; key: string; peersFile?: string };
   user: string | null;
   home: string | null;
+  /** The server's own `gh` token, passed ONLY when dropping (see above). */
+  ghToken?: string | null;
 }): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.base)) {
     if (v === undefined) continue;
     if (CHECK_ENV_ALLOW.test(k) || (!input.user && SELF_IDENTITY.has(k))) env[k] = v;
   }
+  if (input.user && input.ghToken) env.GH_TOKEN = input.ghToken;
   Object.assign(env, input.secrets);
   env.SHADOK_SESSION_ID = input.session.id;
   env.SHADOK_PORT = input.session.port;

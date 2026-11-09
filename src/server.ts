@@ -108,6 +108,7 @@ import {
   saveGroups,
   normalizeGroups,
   ensureMainGroup,
+  mainGroupHeal,
   upsertChannel,
   removeChannel,
   mergeClientChannels,
@@ -890,6 +891,12 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
       },
       user,
       home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
+      // The same `gh` token the agent itself is spawned with (`makePilot`), and
+      // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
+      // own empty home, so without this every `gh` call in it fails — silently,
+      // because guards swallow a failed call to survive a network hiccup. Only
+      // when dropping; the server's own user reads its config dir directly.
+      ghToken: user ? serverGhToken() : undefined,
     });
     const run = cronCheckCommand(user, c.check!);
     recordSecretAudit({
@@ -3770,6 +3777,22 @@ async function ensurePrivateGroupProvisioned(accountName: string): Promise<void>
  */
 async function ensureGroupsProvisioned(): Promise<void> {
   if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  // The commons row (`main`) must exist on a migrated instance: the web client
+  // files an agent created on the Main view into it BY NAME only when the row is
+  // there (`commonsOnServer`), and otherwise omits the group — which the server
+  // reads as "no choice" and resolves to the caller's single Personal group
+  // (`spawnGroupFor`). An instance found without the row (migrated by a build
+  // that did not guarantee it) therefore sent every "Main" agent to the admin's
+  // Personal group, as its private OS user — whose worktree creation then died
+  // on "Permission denied" (the launch repo belongs to the commons user). The
+  // migration's own `migLabelExistingPublic` is behind the marker and never
+  // re-runs, so heal it here, on every capable boot. Idempotent, and never on an
+  // empty read (see `mainGroupHeal`: empty may mean "could not read").
+  const withMain = mainGroupHeal(loadGroups());
+  if (withMain) {
+    saveGroups(withMain);
+    console.log("groups: the commons group (main) was missing — restored");
+  }
   const r = await reconcileGroupProvisioning(loadGroups(), {
     userExists: osUserExists,
     provision: async (g) => {

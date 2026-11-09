@@ -1620,9 +1620,14 @@ business — it is set from the agent, never from the skill.)
 - *Acceptance is per group.* Multi-tenant, an agent's releases must be accepted
   for its isolation group (`factoryAgentGroup` in `server.ts`); mono-tenant it is
   always `main`, since a channel's `group` there is a folder. A person accepts
-  for their own spawn group (or one they can see) — Save in the editor is how a
-  person of another group the skill is shared with accepts it for theirs.
-  `sharedWith` treats `main` in users/editors as everyone.
+  for their own spawn group (or one they can see). Save in the editor accepts
+  for EVERY group the skill reaches and the saver may act for
+  (`publishGroups`: shared with it, inside a `groups:` scope, `mayActForGroup`),
+  not only their spawn group — it used to accept for that one group, so on a
+  multi-tenant instance a skill shared with everyone ran in Main and in no other
+  group, with no screen to accept it there. A group the saver cannot see (another
+  person's private group) is never accepted for; a person of that group does it
+  by saving. `sharedWith` treats `main` in users/editors as everyone.
 - *Tenancy.* The `GET /factory/skills` agent list (and each skill's
   `attachedTo`, the agents that have it) and the publish reloads only touch
   agents the caller may drive (`mayDrive`, the `/diff` boundary), and a Save
@@ -1993,6 +1998,18 @@ cf. `/restart-all`). `runMigration` takes injected deps and only writes
 before. A banner at the top of the page shows in-progress / failed states, so a
 migration that never completes is never silent. The lead agent is scoped to Main:
 `firstAgentPlan` spawns it only there, every other group starts empty.
+
+The first boot heal is the plainest: `ensureGroupsProvisioned` re-asserts the
+commons row (`main`, `ensureMainGroup`) before anything else. The migration adds
+it (`migLabelExistingPublic`), but behind the marker, so an instance found
+without it never got it back. The heal writes only over a NON-EMPTY list
+(`mainGroupHeal`): an empty read may be an unreadable file, and `[main]` written
+over it would erase every walled group's row. Its absence is silent and costly: the web client
+files a Main-view agent into `main` by name only when the row exists
+(`commonsOnServer`); otherwise it omits the group, the server resolves "no
+choice" to the caller's single Personal group (`spawnGroupFor`), and the agent
+is born under that private OS user — where its worktree cannot even be created
+(the launch repo belongs to the commons user: `Permission denied`).
 
 One carry the one-shot migration misses, healed on **every** capable boot by
 `healCommonsStrandedScripts` (in `ensureGroupsProvisioned`, independent of the

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Group } from "../src/groups.js";
 import {
   upsertInto,
   mergeChannels,
@@ -16,6 +17,7 @@ import {
   normalizeGroups,
   normalizeChannelGroups,
   ensureMainGroup,
+  mainGroupHeal,
   type Channel,
 } from "../src/channels.js";
 
@@ -477,6 +479,16 @@ test("ensureMainGroup is idempotent", () => {
   assert.deepEqual(ensureMainGroup(once), once);
 });
 
+test("ensureMainGroup restores a missing main beside other groups, and returns the SAME list when main is present", () => {
+  // The boot heal (ensureGroupsProvisioned) saves only when the list changed,
+  // and tells that by identity.
+  const others = [{ id: "2", name: "Tech", nature: "public", members: [], osUser: null, createdAt: 0 }] as Group[];
+  const healed = ensureMainGroup(others);
+  assert.notEqual(healed, others);
+  assert.deepEqual(healed.map((g) => g.id), ["main", "2"]);
+  assert.equal(ensureMainGroup(healed), healed);
+});
+
 test("mergeChannels: group is server-owned once the channel exists", () => {
   const stored = [{ sessionId: "a", cwd: "/x", group: "g1" }] as Channel[];
   const out = mergeChannels(stored, [{ sessionId: "a", cwd: "/x", group: "other" }] as Channel[], new Set());
@@ -494,4 +506,17 @@ test("normalizeChannelGroups: a legacy numeric group comes back as the equivalen
   assert.strictEqual(out[1].group, "g1");
   assert.strictEqual(out[2].group, null);
   assert.ok(!("group" in out[3]));
+});
+
+test("mainGroupHeal: never writes on an empty read — it may be an unreadable file, not an absent one", () => {
+  assert.equal(mainGroupHeal([]), null);
+});
+
+test("mainGroupHeal: restores main into an observed list missing it, keeping every row", () => {
+  const stored = [
+    { id: "2", name: "Tech", nature: "public", members: [], osUser: null, createdAt: 0 },
+    { id: "p1", name: "Personal", nature: "private", members: ["a"], osUser: "sk-p1", createdAt: 0 },
+  ] as Group[];
+  assert.deepEqual(mainGroupHeal(stored)?.map((g) => g.id), ["main", "2", "p1"]);
+  assert.equal(mainGroupHeal(ensureMainGroup(stored)), null);
 });

@@ -1825,7 +1825,34 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     plumbing, then the profile's secrets) — an allow-list because the server's
     env is exactly where unknown secrets live, and a deny-list would rot
     (invariant 29's subtraction lesson). Mono-tenant keeps the server's user,
-    since there is only one, but gets the same clean env. A file is stat'ed
+    since there is only one, but gets the same clean env.
+    **The bill for that allow-list, paid once: a dropped guard that needs a
+    credential has NONE, and says nothing about it.** `GH_TOKEN` is not
+    allow-listed (correctly — it is the server's), and `dropEnv` points
+    `GH_CONFIG_DIR` at the drop user's own config dir, which is empty. So every
+    `gh` call inside a guard failed; and a guard wraps those calls in
+    `|| exit 0` on purpose, because a stalled TCP connect must not wake the
+    agent — which makes "I cannot reach GitHub" byte-identical to "the
+    repository is calm". Measured: the pr-merge guard reported `quiet` at every
+    five-minute slot for days with mergeable PRs open the whole time, and the
+    log line for a blind guard is the same one it writes when there is genuinely
+    nothing. Two halves to the fix, both needed. The guard is handed the SAME
+    `gh` token as the agent it belongs to (`cronCheckEnv`'s `ghToken`, gated on
+    a drop user, beaten by a profile secret of that name): not a widening, since
+    it runs as that agent's user and can only ever wake that agent — strictly
+    less powerful than the agent itself. And a guard must stop hiding a tool
+    failure: `check-open-prs.sh` counts consecutive `gh` failures and writes to
+    **stderr** on the second, which is what invariant 16 reads as a broken
+    guard. Keep that shape in any new guard — absorb one hiccup, never a run.
+    One more inherited path has the same `/root` shape: `GIT_SSH_COMMAND` IS
+    allow-listed (a container's ssh fallback), and it names a config file under
+    the server's `/root`, so every `git` over SSH in a dropped guard — or a
+    dropped AGENT — died on "Can't open user config file …: Permission denied".
+    `dropEnv` resets it to a bare `ssh`, which reads the per-user `~/.ssh`
+    `ensureAgentSshKey` already writes. Diagnose that one with `git ls-remote`,
+    never `ssh -T`: a bare `ssh` ignores `GIT_SSH_COMMAND` and answers
+    "Hi &lt;user&gt;!" while every git call is broken.
+    A file is stat'ed
     and READ as the agent's user (`statAsUserArgv`, `readAsUserArgv` — `stat`
     and `dd` under `setpriv`), which also neutralises the transcript forgery a
     writable HOME allows: a forged `SendUserFile` line buys an agent a file it

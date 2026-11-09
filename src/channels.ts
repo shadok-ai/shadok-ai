@@ -455,6 +455,21 @@ export function ensureMainGroup(list: Group[]): Group[] {
   return [{ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], osUser: null, createdAt: Date.now() }, ...list];
 }
 
+/**
+ * The boot heal's decision: the list to save so a migrated instance gets its
+ * commons row back, or null to write nothing. Only a NON-EMPTY list missing
+ * `main` is an observed state worth healing. An empty one is ambiguous —
+ * `loadGroups` returns [] for an absent file AND for one it could not read — and
+ * writing `[main]` over an unreadable file would erase every private/restricted
+ * row, and with them the osUser that walls those agents (invariants 6 and 27).
+ * The empty case is the migration's job (`migLabelExistingPublic`).
+ */
+export function mainGroupHeal(stored: Group[]): Group[] | null {
+  if (stored.length === 0) return null;
+  const healed = ensureMainGroup(stored);
+  return healed === stored ? null : healed;
+}
+
 /** Groups, persisted per launch dir like channels. */
 export function loadGroups(): Group[] {
   return normalizeGroups(readJson("groups"));

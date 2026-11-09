@@ -49,6 +49,7 @@ import {
   log,
   MAIN_GROUP,
   prepareWorkspace,
+  publishGroups,
   readFile,
   scopeError,
   groupsScope,
@@ -575,13 +576,22 @@ export function mountFactory(app: Express, deps: FactoryDeps): void {
         ? last
         : cutRelease(root(), s.id, { by: by(req), secrets: secretsOf(deps.vault(req)) });
       if (rel !== last) deps.audit({ action: "release", skill: s.name, release: rel.n, tree: rel.tree, by: by(req) });
-      if (!acceptanceFor(findSkill(root(), s.id)!, rel, group)) {
+      // Every group the skill reaches and this person may accept for — not only
+      // their default one, or a skill shared with everyone runs in Main alone
+      // (`publishGroups`). A group named explicitly is that group only.
+      const explicit = typeof req.body?.group === "string" && req.body.group.trim();
+      const groups = explicit ? [group] : publishGroups(s, group, deps.groups().map((g) => g.id), (g) => deps.mayActForGroup(req, g));
+      const fresh = findSkill(root(), s.id)!;
+      const missing = groups.filter((g) => !acceptanceFor(fresh, rel, g));
+      if (missing.length) {
         // The release is cut (a retry reuses it); what it may RECEIVE waits for
         // the person to approve each secret name it asks for.
         const approved = approval(rel, req.body?.approveSecrets, res);
         if (!approved) return;
-        accept(root(), s.id, { group, release: rel.n, by: by(req), secrets: approved });
-        deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group, secrets: approved, by: by(req) });
+        for (const g of missing) {
+          accept(root(), s.id, { group: g, release: rel.n, by: by(req), secrets: approved });
+          deps.audit({ action: "accept", skill: s.name, release: rel.n, tree: rel.tree, group: g, secrets: approved, by: by(req) });
+        }
       }
       const updated: { name: string; result: string }[] = [];
       for (const c of deps.loadChannels()) {
