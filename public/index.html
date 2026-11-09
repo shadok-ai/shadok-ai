@@ -1086,8 +1086,28 @@
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   #secretAttach[data-grouped="1"] { display: none; }
   .sec-from { margin-left: 8px; font-size: 11px; color: var(--text-dim); font-family: var(--sans, inherit); }
-  .sec-ctl { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; font-size: 12px; margin-top: 4px; }
-  .sec-ctl label { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+  /* Grouped mode: each own secret is a card — name + actions, one meta line, then
+     the "Shared with" / "Injected into" chip rows and ONE Save. */
+  #secretsList li.sec-row { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: none; }
+  #secretsList li.sec-row:nth-child(odd) { background: none; }
+  .sec-ctl { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; font-size: 12px; margin-top: 10px; }
+  .sec-field { display: grid; grid-template-columns: 96px 1fr; gap: 8px; align-items: start; }
+  .sec-field-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .05em; padding-top: 5px; }
+  .sec-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .sec-chip { position: relative; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; padding: 3px 10px; border: 1px solid var(--line); border-radius: 14px; cursor: pointer; user-select: none; }
+  .sec-chip:hover { border-color: var(--amber); }
+  .sec-chip input { position: absolute; opacity: 0; pointer-events: none; }
+  .sec-chip:has(input:checked) { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--text); }
+  .sec-chip:has(input:checked)::before { content: "✓"; font-size: 11px; color: var(--amber); }
+  .sec-chip:has(input:focus-visible) { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .sec-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+  .sec-status { flex: 1; font-size: 12px; color: var(--text-dim); }
+  .sec-status.err { color: #e2564a; }
+  #secretsList button.sec-save { font-size: 12px; padding: 4px 14px; border-radius: 6px; border: 1px solid var(--amber); color: var(--amber); }
+  #secretsList button.sec-save:hover:not(:disabled) { background: color-mix(in srgb, var(--amber) 15%, transparent); }
+  #secretsList button.sec-save:disabled { opacity: .35; cursor: default; border-color: var(--line); color: var(--text-dim); }
+  .sec-err { margin: 0 0 10px; padding: 8px 11px; border: 1px solid #e2564a; border-radius: 8px; color: #e2564a; background: color-mix(in srgb, #e2564a 8%, transparent); font-size: 12.5px; }
+  @media (max-width: 520px) { .sec-field { grid-template-columns: 1fr; gap: 4px; } .sec-field-label { padding-top: 0; } }
   .group-head .gkey { flex: none; font-size: 12px; padding: 0 4px; cursor: pointer; visibility: hidden; }
   .group-head:hover .gkey { visibility: visible; }
   /* A touch screen has no hover, so the group-head ⚙/🔑 (the single-column /
@@ -1751,6 +1771,7 @@
   .slash-menu[hidden] { display: none; }
   .slash-item { display: flex; gap: 10px; align-items: baseline; width: 100%; padding: 7px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
   .slash-item[aria-selected="true"] { background: var(--amber-soft); }
+  .slash-empty { padding: 8px 10px; color: var(--text-dim); font-size: 13px; }
   .slash-name { font-family: var(--mono); font-size: 13px; flex: none; }
   .slash-desc { color: var(--text-dim); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .cmp-attach {
@@ -2469,6 +2490,11 @@
   .fp-col.fp-doc { padding: 22px 26px; background: var(--bg); }
   .fp-doc-head { display: flex; gap: 14px; align-items: center; margin-bottom: 6px; }
   .fp-doc-head h1 { font-size: 20px; font-weight: 650; }
+  /* The skill's name, renamed in place: reads as a title until hovered/focused. */
+  .fp-main .fp-doc-head input.fp-title-in { width: 100%; box-sizing: border-box; font: inherit; font-size: 20px; font-weight: 650; color: var(--text);
+    background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 2px 6px; margin-left: -7px; }
+  .fp-main .fp-doc-head input.fp-title-in:hover { border-color: var(--line); }
+  .fp-main .fp-doc-head input.fp-title-in:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
   .fp-doc-head .fp-sub { margin-top: 4px; }
   .fp-doc textarea { border-radius: 10px; padding: 10px 12px; background: var(--bg-raised); border: 1px solid var(--line); color: var(--text); font-family: var(--sans); }
   .fp-doc textarea:focus { outline: none; border-color: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
@@ -3017,6 +3043,7 @@
     </div>
     <div class="pin-body">
       <div id="secretsScope" class="sec-scope" hidden><span>Group</span><select id="secretsGroup" aria-label="Group whose secrets are shown"></select></div>
+      <p id="secretsErr" class="sec-err" role="alert" hidden></p>
       <ul id="secretsList"></ul>
       <form id="secretsAdd">
         <div class="sec-add-row">
@@ -3233,11 +3260,6 @@
         <input type="checkbox" id="mirrorInput">
         <span>Mirror to Telegram <span class="check-hint">— gives this agent its own topic in the board group, so you can follow it and reply from your phone. Off by default; switchable later from the agent menu.</span></span>
       </label>
-      <details class="fold" id="skillsField" hidden>
-        <summary>Factory skills <span class="fold-count" id="skillsCount"></span></summary>
-        <div class="field"><span class="check-hint">Born with these skills (their latest accepted release, and the secrets it was granted).</span>
-        <div id="skillsPick" class="fac-pick"></div></div>
-      </details>
       <details class="fold" id="advancedField">
           <summary>Advanced — working directory, resume an existing session</summary>
           <div class="field">
@@ -3731,6 +3753,11 @@
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <input type="file" id="attachInput" multiple hidden>
+      <!-- Pick a skill like an emoji: opens the `/` menu with every skill attached
+           to this agent; the choice goes in at the head of the prompt. -->
+      <button type="button" id="skillBtn" class="cmp-attach" title="Add a skill to this prompt" aria-label="Add a skill" aria-haspopup="listbox">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z M18.5 15.5l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+      </button>
       <div id="slashMenu" class="slash-menu" role="listbox" aria-label="Commands" hidden></div>
       <textarea id="promptInput" rows="1"
         placeholder="Write your prompt — Enter to send, Shift+Enter for a new line"></textarea>
@@ -3871,7 +3898,7 @@
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
   window.samePrompt = samePrompt;
-  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty } from "/group-nav.js?v=__ASSET_V__";
+  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget } from "/group-nav.js?v=__ASSET_V__";
   window.GROUP_ICONS = GROUP_ICONS;
   window.UNGROUPED = UNGROUPED;
   window.randomGroupIcon = randomGroupIcon;
@@ -3880,6 +3907,7 @@
   window.cleanGroupIcon = cleanGroupIcon;
   window.reconcileTabGroup = reconcileTabGroup;
   window.groupIsDirty = groupIsDirty;
+  window.focusTarget = focusTarget;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
@@ -4060,6 +4088,11 @@
       return { move: true, synced: srv };
     },
     groupIsDirty: (local, synced) => synced === undefined || (local ?? null) !== synced,
+    // A group switch is a user click, long after the module lands; the stub
+    // mirrors the real "remembered-or-first" so even a race keeps today's
+    // top-agent fallback.
+    focusTarget: (ids, remembered) =>
+      (remembered != null && (ids || []).includes(remembered)) ? remembered : ((ids || []).length ? ids[0] : null),
     // The emoji keyword search feeds the icon picker, which opens well after
     // load; before the module lands, no suggestions (and typed text is treated
     // as a word, not an emoji) — both harmless, repainted on bridge-ready.
@@ -4592,10 +4625,15 @@
     if (act === "reload") reasons.push("Claude Code updated — reload to apply");
     if (act === "install") reasons.push("Claude Code auto-update failed — install then reload");
     for (const r of stale) reasons.push(r.label);
-    return { needs: !!act || stale.length > 0, install: act === "install", reasons };
+    // `auto`: the server applies it by itself once the agent is idle (nothing
+    // running, no question, empty input box) — only a failed install still
+    // needs a human.
+    const auto = !!tab.staleAuto && act !== "install";
+    return { needs: !!act || stale.length > 0, install: act === "install", auto, reasons };
   }
   /** The server reported this agent's staleness → store and repaint. */
-  function setStaleReasons(tab, reasons) {
+  function setStaleReasons(tab, reasons, auto) {
+    tab.staleAuto = !!auto;
     const list = Array.isArray(reasons) ? reasons : [];
     const sig = JSON.stringify(list);
     if ((tab.staleSig || "[]") === sig) return;
@@ -4628,7 +4666,8 @@
     // anything that just needs a reload reads as the green update glyph.
     el.textContent = info.install ? "⚠" : "↻";
     el.classList.toggle("failed", info.install);
-    el.title = (info.reasons.join(" · ") || "Reload this agent to apply changes") + " — click to reload";
+    el.title = (info.reasons.join(" · ") || "Reload this agent to apply changes") +
+      (info.auto ? " — applies by itself once this agent is idle; click to reload now" : " — click to reload");
   }
   function paintChanUpdate() {
     const btn = $("chanUpdate");
@@ -4641,8 +4680,16 @@
     btn.disabled = false;
     btn.hidden = !info.needs;
     if (!info.needs) return;
-    btn.textContent = info.install ? "⤓ install update" : "↻ reload to apply";
-    btn.title = info.reasons.join(" · ") || "Reload this agent to apply changes";
+    // Just the glyph: the WHY lives in the tooltip (what changed, and whether
+    // it applies by itself once the agent is idle).
+    btn.textContent = info.install ? "⤓ install update" : "↻";
+    const why = (info.reasons.length ? info.reasons.join("\n") : "This agent's settings changed since it started");
+    btn.title = info.install
+      ? why
+      : why + "\n\n" + (info.auto
+        ? "It reloads by itself (history kept) once it has nothing running and has been idle a moment. Click to reload now."
+        : "Click to reload it (history kept).");
+    btn.setAttribute("aria-label", info.install ? "Install update then reload" : "Reload to apply changes");
     btn.classList.toggle("failed", info.install);
   }
   /** The badge/button click: reload the agent, or install then reload. */
@@ -5288,6 +5335,16 @@
   // real group, because Main HAS its own vault).
   const COMMONS_GROUP_ID = "main";
   const foldCommons = (id) => (id != null && String(id) === COMMONS_GROUP_ID ? null : id);
+  // Does the server carry that commons row (multi-tenant)? Then the "Main" view is
+  // a REAL group a new agent must be filed into by name: a start with no `group`
+  // is read by the server as "no choice made" and lands in the caller's own single
+  // private group — the admin's Personal — so an agent created on the Main view
+  // jumped to Personal on the next sync. Mono-tenant has no such row and keeps
+  // omitting the key (its start message stays byte-for-byte what it was).
+  let commonsOnServer = false;
+  const noteCommons = (list) => {
+    if (Array.isArray(list)) commonsOnServer = list.some((g) => g && String(g.id) === COMMONS_GROUP_ID);
+  };
 
   // Group nature (server-owned): public / restricted / private. A walled group
   // (restricted or private) carries a padlock. The operator never sees the
@@ -5548,6 +5605,10 @@
   const railEl = $("groupRail"), railList = $("railList");
   const VIEW_KEY = () => dirKey("cp.groupView", instanceKey);
   let groupView = localStorage.getItem(VIEW_KEY()) || "ungrouped";
+  // The agent last focused in each group view (view id → sessionId), so
+  // switching groups returns to where you were instead of the top agent.
+  // In-memory: a reload restores one active agent via `cp.activeSession`.
+  const lastAgentByView = {};
 
   /** Is the two-column layout on screen? (Hidden on a phone.) */
   const railShown = () => getComputedStyle(railEl).display !== "none";
@@ -5596,10 +5657,14 @@
     applyView();
     animateViewSwitch(from, currentView());
     // Picking a group shows one of ITS agents: staying on an agent that is no
-    // longer in the list would leave the chat and the list disagreeing.
+    // longer in the list would leave the chat and the list disagreeing. Return
+    // to the agent you last had focused in this group rather than snapping to
+    // the top one every time (focusTarget falls back to the first).
     if (follow && active && !active.btnEl.closest("#tweakSlot") && viewOfTab(active) !== currentView()) {
-      const first = tabsInView(currentView())[0];
-      if (first) activate(first);
+      const inView = tabsInView(currentView());
+      const wantId = window.focusTarget(inView.map((t) => t.sessionId), lastAgentByView[currentView()]);
+      const pick = inView.find((t) => t.sessionId === wantId) || inView[0];
+      if (pick) activate(pick);
     }
   }
   /** Whatever opens an agent (a click, a link, a notification) brings its group. */
@@ -6110,6 +6175,7 @@
     // A group created on another device must exist here before an agent can be
     // filed into it. Additive only: a group missing from the server may be one
     // this tab just made and has not pushed yet.
+    noteCommons(srvGroups);
     if (Array.isArray(srvGroups)) {
       for (const sg of srvGroups) {
         if (sg == null || sg.id == null) continue;
@@ -6279,6 +6345,9 @@
       persistDraft(active);
     }
     active = tab;
+    // Remember this as the group's last-focused agent, so returning to the
+    // group comes back to it rather than the top one (consumed by setView).
+    if (tab.sessionId) lastAgentByView[viewOfTab(tab)] = tab.sessionId;
     showTabGroup(tab);
     // A reload must come back to the channel you were watching: remember its
     // sessionId (outside the initial restore, which replays the activates itself).
@@ -8254,7 +8323,6 @@
    */
   function openSetup(groupId = null) {
     setupGroup = groupId;
-    facFillPicker();
     renderModelRow();
     // Close the mobile agents sheet first: the setup overlay sits BELOW it in
     // the stack, so leaving the sheet open would hide the form behind it.
@@ -8423,10 +8491,6 @@
     const model = mode === "new" ? window.composeModel(selectedModel, $("longCtxInput").checked) : null;
     if (model) msg.model = model;
     msg.mirror = $("mirrorInput").checked;
-    if (mode === "new") {
-      const picked = facPickedSkills();
-      if (picked.length) msg.skills = picked;
-    }
     localStorage.setItem("cp.cwd", cwd);
     if (mode === "new") {
       localStorage.setItem("cp.profile", selectedProfile);
@@ -8437,6 +8501,9 @@
     if (mode === "new") {
       const tg = viewGroupId();
       if (tg) msg.group = tg;
+      // The Main view on screen is a choice too (see `commonsOnServer`). Only when
+      // the rail shows it: a phone has no view, and keeps the server's default.
+      else if (commonsOnServer && setupGroup == null && railShown()) msg.group = COMMONS_GROUP_ID;
     }
     $("startBtn").disabled = true;
     closeSetup();
@@ -8940,7 +9007,7 @@
         // the honest UX so the user isn't silently driving the wrong instance.)
         if (window.serverSwapped(instanceKey, msg.instanceKey)) { handleSwap(); break; }
         if (Array.isArray(msg.preprompt)) renderPreprompt(t, msg.preprompt);
-        if (Array.isArray(msg.stale)) setStaleReasons(t, msg.stale);
+        if (Array.isArray(msg.stale)) setStaleReasons(t, msg.stale, msg.staleAuto);
         t.cwd = msg.cwd;
         t.sessionId = msg.sessionId;
         t.branch = msg.branch || null;
@@ -9203,7 +9270,7 @@
         // spawn would give it (prompt/guardrails/skills/secrets, auth age,
         // claude binary) — drives the same per-agent reload badge + the
         // version-menu "reload N agents" count.
-        setStaleReasons(t, msg.reasons);
+        setStaleReasons(t, msg.reasons, msg.auto);
         break;
       case "term-data":
         // Experimental raw terminal: bytes from the pane (base64) → xterm.
@@ -9931,9 +9998,19 @@
     slash.cache.set(sessionId, { at: Date.now(), list });
     return list;
   }
-  function closeSlash() { slashMenu.hidden = true; slash.list = []; }
+  function closeSlash() { slashMenu.hidden = true; slash.list = []; slash.picker = false; }
   function paintSlash() {
     slashMenu.textContent = "";
+    if (slash.picker && !slash.list.length) {
+      // Only ATTACHED skills run (they load as a plugin at spawn), so an empty
+      // menu says where to attach one rather than staying silently shut.
+      const d = document.createElement("div");
+      d.className = "slash-empty";
+      d.textContent = "No skill attached to this agent yet. Attach one from the Skills page, then reload the agent.";
+      slashMenu.appendChild(d);
+      slashMenu.hidden = false;
+      return;
+    }
     slash.list.forEach((c, i) => {
       const b = document.createElement("button");
       b.type = "button";
@@ -9964,16 +10041,34 @@
   function pickSlash(i) {
     const c = slash.list[i];
     if (!c) return;
-    promptInput.value = "/" + c.name + " ";
+    // From the picker the prompt may already hold text: a `/command` only runs at
+    // the very start (isSlashCommand), so the skill goes in FRONT and the text
+    // becomes its argument; a command already there is replaced, not stacked.
+    const rest = slash.picker ? promptInput.value.replace(/^\/[A-Za-z][\w:.-]*\s*/, "") : "";
+    promptInput.value = "/" + c.name + " " + rest;
     promptInput.setSelectionRange(promptInput.value.length, promptInput.value.length);
     closeSlash();
     promptInput.dispatchEvent(new Event("input"));
     promptInput.focus();
   }
   promptInput.addEventListener("input", updateSlash);
+  const skillBtn = $("skillBtn");
+  // mousedown would blur the textarea, whose blur handler closes the menu.
+  skillBtn.addEventListener("mousedown", (e) => e.preventDefault());
+  skillBtn.addEventListener("click", async () => {
+    if (!active) return;
+    if (!slashMenu.hidden && slash.picker) { closeSlash(); return; }
+    const all = await slashCommands(active.sessionId);
+    slash.list = all.slice(0, 40);
+    slash.at = 0;
+    slash.picker = true;
+    paintSlash();
+    promptInput.focus(); // arrows / Enter / Escape go through its keydown
+  });
   promptInput.addEventListener("blur", () => setTimeout(closeSlash, 100));
 
   promptInput.addEventListener("keydown", (e) => {
+    if (!slashMenu.hidden && slash.picker && !slash.list.length && e.key === "Escape") { e.preventDefault(); closeSlash(); return; }
     if (!slashMenu.hidden && slash.list.length) {
       if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
@@ -10504,8 +10599,11 @@
       actions.append(
         actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
-          const g = secretWriteGroup();
-          await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
+          // The row's OWNER group, not the panel's write target (see secretControls).
+          const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
+          const r = await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
+          const e = await vaultError(r);
+          if (e) { showVaultError("Could not remove " + k + ": " + e); return; }
           if (editingSecret === k) resetSecretForm();
           await loadVault(); renderSecrets();
         }),
@@ -10519,35 +10617,88 @@
     }
     return li;
   }
+  /** Read a refused vault write's message: the server answers `{error}` JSON;
+   *  a proxy may answer HTML, so fall back to the status line. */
+  async function vaultError(r) {
+    if (r.ok) return null;
+    try { const j = await r.json(); if (j && j.error) return String(j.error); } catch {}
+    return "refused (HTTP " + r.status + ")";
+  }
   /** Own secret, grouped mode: who it is lent to (PUT /secrets/share) and which
-   *  profiles inject it (PUT /secrets/profiles). Each saves on its own button so
-   *  a half-ticked state never reaches the server. */
+   *  profiles inject it (PUT /secrets/profiles), edited as chips and saved by ONE
+   *  button that only lights up once something changed. Both calls target the
+   *  secret's OWNER group, never the panel's selection: in the "Public groups"
+   *  view the panel's write target is the first public group, which sent every
+   *  row there (a 403 or a 404 for a secret living in another public group). A
+   *  refusal is shown in the card, not swallowed. */
   function secretControls(sec) {
     const box = document.createElement("div"); box.className = "sec-ctl";
     const targets = window.shareTargets ? window.shareTargets(vaultGroups, sec.ownerGroup) : [];
     const profs = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n))).sort();
-    const picker = (label, options, current, onSave) => {
-      if (!options.length) return;
-      const wrap = document.createElement("span");
-      wrap.append(label + ": ");
+    const same = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+    const fields = [];
+    const field = (label, hint, options, current) => {
+      if (!options.length) return null;
+      const row = document.createElement("div"); row.className = "sec-field";
+      const l = document.createElement("span"); l.className = "sec-field-label"; l.textContent = label; l.title = hint;
+      const chips = document.createElement("div"); chips.className = "sec-chips";
+      const initial = (current || []).map(String);
       const cbs = options.map((o) => {
-        const l = document.createElement("label");
-        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = (current || []).includes(o.value);
+        const lab = document.createElement("label"); lab.className = "sec-chip";
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = initial.includes(o.value);
         const t = document.createElement("span"); t.textContent = o.label;
-        l.append(cb, t); wrap.appendChild(l); return cb;
+        lab.append(cb, t); chips.appendChild(lab); return cb;
       });
-      wrap.appendChild(actionBtn("linkish", "save", "Save", async () => {
-        await onSave(cbs.filter((c) => c.checked).map((c) => c.value));
-        await loadVault(); renderSecrets();
-      }));
-      box.appendChild(wrap);
+      row.append(l, chips); box.appendChild(row);
+      const f = { cbs, initial: initial.filter((v) => options.some((o) => o.value === v)), value: () => cbs.filter((c) => c.checked).map((c) => c.value) };
+      fields.push(f);
+      return f;
     };
-    // A secret's own controls target its OWNER group (the section it lives in).
-    picker("shared read with", targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith, (sharedWith) =>
-      fetch("/secrets/share", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, sharedWith })) }));
-    picker("attach to profiles", profs.map((n) => ({ value: n, label: n })), sec.profiles, (profiles) =>
-      fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name: sec.name, profiles })) }));
+    const share = field("Shared with", "Groups that may READ this secret (it stays owned by its group)",
+      targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith);
+    const inject = field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
+      profs.map((n) => ({ value: n, label: n })), sec.profiles);
+    if (!fields.length) return box;
+    const foot = document.createElement("div"); foot.className = "sec-foot";
+    const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
+    const save = document.createElement("button"); save.type = "button"; save.className = "sec-save"; save.textContent = "Save"; save.disabled = true;
+    const dirty = () => fields.some((f) => !same(f.value(), f.initial));
+    box.addEventListener("change", () => {
+      save.disabled = !dirty();
+      if (status.classList.contains("ok")) { status.textContent = ""; status.className = "sec-status"; }
+    });
+    save.addEventListener("click", async () => {
+      save.disabled = true; status.className = "sec-status"; status.textContent = "Saving…";
+      const put = (url, body) => fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: sec.name, group: String(sec.ownerGroup), ...body }) });
+      const errors = [];
+      try {
+        if (share && !same(share.value(), share.initial)) {
+          const e = await vaultError(await put("/secrets/share", { sharedWith: share.value() }));
+          if (e) errors.push("Sharing not saved: " + e);
+        }
+        if (inject && !same(inject.value(), inject.initial)) {
+          const e = await vaultError(await put("/secrets/profiles", { profiles: inject.value() }));
+          if (e) errors.push("Profiles not saved: " + e);
+        }
+      } catch (err) { errors.push("Network error: " + (err && err.message || err)); }
+      if (errors.length) {
+        // Keep the user's ticks on screen so they can retry or undo — a reload
+        // here would silently reset them to the server's state.
+        status.className = "sec-status err"; status.textContent = errors.join(" · ");
+        save.disabled = false;
+        return;
+      }
+      await loadVault(); renderSecrets();
+    });
+    foot.append(status, save); box.appendChild(foot);
     return box;
+  }
+  /** Panel-level refusal (add / update / delete): shown above the list until the
+   *  next successful write or the panel is reopened. */
+  function showVaultError(msg) {
+    const el = $("secretsErr");
+    el.textContent = msg || ""; el.hidden = !msg;
   }
   function renderSecrets() {
     const ul = $("secretsList");
@@ -10689,6 +10840,7 @@
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
     resetSecretForm();
+    showVaultError("");
     $("secretsReload").hidden = true;
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
@@ -11160,20 +11312,6 @@
     if (owner.startsWith("user:")) return ["Only me"];
     return (facScopeIds(owner) || []).map((id) => { const g = facGroup(id); return g ? `${g.icon ? g.icon + " " : ""}${g.name}` : `group ${id}`; });
   }
-  /** Same rule as the server's scopeOffersAgent: is it offered first on this
-   *  agent? Never a refusal: sharing keeps lists short, it does not lock. */
-  function facAllows(s, a) {
-    if (!s.owner || s.owner === "main") return true;
-    const ids = facScopeIds(s.owner);
-    if (ids) return a.group != null && ids.includes(String(a.group));
-    if (s.owner.startsWith("user:")) return true; // private: you see it, so you put it where you want
-    return false;
-  }
-  /** Every agent, the ones of the groups it is shared with first. */
-  function facAgentsFor(s) {
-    const all = (fac.data && fac.data.agents) || [];
-    return [...all.filter((a) => facAllows(s, a)), ...all.filter((a) => !facAllows(s, a))];
-  }
   /** A coloured tile with the skill's initials — the same palette as the agents' avatars. */
   function facAvatar(s, size) {
     const el = facEl("span", { class: "fp-av" + (size ? " " + size : ""), "aria-hidden": "true" });
@@ -11321,7 +11459,6 @@
     for (const s of list) {
       const last = facLast(s);
       const st = facStatus(s);
-      const crons = s.attachedTo.reduce((n, a) => n + (a.crons || []).length, 0);
       const ck = facEl("input", { type: "checkbox", "aria-label": "Select " + facTitle(s), checked: fac.checked.has(s.id) });
       ck.addEventListener("click", (e) => e.stopPropagation());
       ck.addEventListener("change", () => { ck.checked ? fac.checked.add(s.id) : fac.checked.delete(s.id); facRenderBulk(); });
@@ -11339,7 +11476,7 @@
         facEl("td", {}, [st.includes("draft")
           ? facEl("span", { class: "fp-badge warn", text: last ? "draft changes" : "draft" })
           : facEl("span", { class: "fp-ver", text: "saved" })]),
-        facEl("td", {}, [s.attachedTo.length ? `${s.attachedTo.length} agent${s.attachedTo.length > 1 ? "s" : ""}${crons ? ` · ${crons} cron${crons > 1 ? "s" : ""}` : ""}` : facEl("span", { class: "fp-sub", text: "unused" })]),
+        facEl("td", {}, [s.attachedTo.length ? `${s.attachedTo.length} agent${s.attachedTo.length > 1 ? "s" : ""}` : facEl("span", { class: "fp-sub", text: "unused" })]),
         facEl("td", {}, [facEl("span", { class: "fp-runs", text: String(s.runs7d || 0) }),
           facOpenFeedback(s).length ? facEl("div", {}, [facEl("span", { class: "fp-badge info", text: `💬 ${facOpenFeedback(s).length}` })]) : null]),
       ]));
@@ -11408,7 +11545,7 @@
     box.appendChild(facEl("div", { class: "fp-empty" }, [
       facEl("h1", { text: "Your team's know-how, as skills" }),
       facEl("p", { text: "A skill teaches an agent how to do one job well: prepare the daily marketing summary, take a sprint ticket to a pull request, answer a customer the way your team does." }),
-      facEl("p", { text: "Write it together, by hand or by asking an agent. Save a draft while you work; Save when it is ready, and the agents and schedules that have it use it." }),
+      facEl("p", { text: "Write it together, by hand or by asking an agent. Save a draft while you work; Save when it is ready, and every agent it is shared with uses it." }),
       facEl("div", { class: "fp-actions", style: "justify-content:center" }, [
         facEl("button", { class: "primary", text: "＋ New skill", onclick: () => facGo("new") }),
         facEl("button", { text: "Import one from this machine", onclick: () => facGo("import") }),
@@ -11439,7 +11576,6 @@
     d.textContent = "";
     const last = facLast(s);
     const agents = s.attachedTo.length;
-    const crons = s.attachedTo.reduce((n, a) => n + (a.crons || []).length, 0);
     const reload = async () => { await facLoad(); facRenderTable(); facRenderDrawer(); };
     const meta = (patch) => facCall("PUT", `/factory/skills/${s.id}/meta`, patch).then(reload).catch((e) => facMsg(e.message, true));
     // Head
@@ -11458,19 +11594,19 @@
     d.appendChild(facEl("div", { class: "fp-stats" }, [
       facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(s.runs7d || 0) }), facEl("span", { class: "fp-sub", text: "runs, 7 days" })]),
       facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(agents) }), facEl("span", { class: "fp-sub", text: "agents" })]),
-      facEl("div", { class: "fp-stat" }, [facEl("b", { text: String(crons) }), facEl("span", { class: "fp-sub", text: "schedules" })]),
     ]));
     // Shared with
     d.appendChild(facEl("h2", { text: "Shared with" }));
     const share = facEl("div", { class: "fp-card" }, [
       ...facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x })),
       facEl("button", { class: "fp-link", text: "change", onclick: () => facSharePicker(share, s, (scope) => meta({ scope })) }),
-      facEl("div", { class: "fp-hint", text: s.owner === "main" ? "Any agent can run it." : s.owner.startsWith("user:") ? "Only you see it; you can use it on any agent." : "Only the agents of these groups can run it." }),
+      facEl("div", { class: "fp-hint", text: s.owner === "main" ? "Every agent has it." : s.owner.startsWith("user:") ? "Only you see it, and only the agents you created have it." : "The agents of these groups have it." }),
     ]);
     d.appendChild(share);
-    // Where it runs, by group
-    d.appendChild(facEl("h2", { text: "Where it runs" }));
-    if (!agents) d.appendChild(facEl("div", { class: "fp-sub", text: "No agent uses it yet." }));
+    // Who has it: derived from the sharing above, never given agent by agent.
+    d.appendChild(facEl("h2", { text: "Agents that have it" }));
+    d.appendChild(facEl("div", { class: "fp-hint", text: "A skill is not given to an agent: every agent it is shared with has it once saved, with only the secrets approved for its group. An agent picks up a new save at its next reload. Schedules are set from the agent itself." }));
+    if (!agents) d.appendChild(facEl("div", { class: "fp-sub", text: "No agent has it yet." }));
     const byGroup = {};
     for (const a of s.attachedTo) (byGroup[a.group == null ? "" : a.group] ||= []).push(a);
     for (const [gid, list] of Object.entries(byGroup)) {
@@ -11479,25 +11615,12 @@
         facEl("b", { text: g ? `${g.icon ? g.icon + " " : ""}${g.name}` : "No group" }),
         ...list.map((a) => facEl("div", { style: "margin-top:4px" }, [
           a.name,
-          ...(a.crons || []).map((c) => facEl("span", { class: "fp-sub", text: ` · ${c.label}` })),
           facEl("span", { class: "fp-sub", text: ` · ${a.runs || 0} run${a.runs === 1 ? "" : "s"}` }),
           ...a.secrets.filter((x) => !x.bound).map((x) => facEl("span", { class: "fp-ko", text: ` · ${x.name} missing` })),
           ...a.mcp.filter((x) => !x.present).map((x) => facEl("span", { class: "fp-ko", text: ` · tool ${x.name} missing` })),
-          facEl("button", { class: "fp-link", text: "remove", onclick: () => facAttach(s, a.sessionId, null, false, reload) }),
         ])),
       ]));
     }
-    const use = facEl("div", { class: "fp-actions" });
-    if (s.latestAccepted && !s.archived) {
-      const eligible = facAgentsFor(s).filter((a) => !s.attachedTo.some((x) => x.sessionId === a.sessionId));
-      if (eligible.length) {
-        const sel = facEl("select", { "aria-label": "Agent" });
-        for (const a of eligible) sel.add(new Option(a.name, a.sessionId));
-        use.append(sel, facEl("button", { text: "Give to agent", onclick: () => facAttach(s, sel.value, s.latestAccepted, false, reload) }));
-      }
-      use.appendChild(facEl("button", { text: "Run on a schedule…", onclick: (e) => facScheduleForm(s, d, e.target) }));
-    }
-    if (use.childNodes.length) d.appendChild(use);
     // What agents running it receive: shown, never a step to take.
     if (last && last.secrets.length) d.appendChild(facEl("div", { class: "fp-sub" }, ["Agents running it get: ", ...last.secrets.map((n) => {
       const bound = s.bindings.find((b) => b.name === n);
@@ -11525,62 +11648,6 @@
     ]));
   }
 
-  async function facAttach(s, sessionId, release, reloadAgent, after) {
-    try {
-      const out = await facCallApproving("/factory/attach", { sessionId, skill: s.id, release, ...(reloadAgent ? { reload: true } : {}) });
-      if (after) await after();
-      facMsg(release === null ? "Removed. The agent drops it at its next reload."
-        : out.reload === "reloaded" ? "Given to the agent, which is reloading with it."
-        : "Given to the agent. Reload it to load the skill (its reload indicator is on).");
-      return true;
-    } catch (e) { facMsg(e.message, true); return false; }
-  }
-  function facScheduleForm(s, host, btn) {
-    if (host.querySelector(".fac-sched")) return;
-    btn.disabled = true;
-    const agent = facEl("select", { "aria-label": "Agent that runs it" });
-    agent.add(new Option(`a new agent "${facTitle(s)}"`, ""));
-    for (const a of facAgentsFor(s)) agent.add(new Option(a.name, a.sessionId));
-    const kind = facEl("select", {});
-    kind.add(new Option("every day at", "daily"));
-    kind.add(new Option("every N minutes", "interval"));
-    const time = facEl("input", { type: "time", value: "08:30" });
-    const every = facEl("input", { type: "number", min: "5", value: "60", hidden: true });
-    kind.addEventListener("change", () => { time.hidden = kind.value !== "daily"; every.hidden = kind.value === "daily"; });
-    const text = facEl("textarea", { rows: "2", style: "width:100%;box-sizing:border-box" });
-    text.value = `Use the ${s.name}:${s.name} skill to `;
-    const go = facEl("button", { class: "primary", text: "Schedule", onclick: async () => {
-      const [h, mi] = time.value.split(":").map(Number);
-      const schedule = kind.value === "daily" ? { kind: "daily", hour: h, minute: mi } : { kind: "interval", everyMin: Number(every.value) };
-      const p = text.value.trim();
-      if (!p) return;
-      const makeCron = (sessionId) => facCall("POST", "/crons", { sessionId, prompt: p, schedule });
-      try {
-        if (agent.value) {
-          const already = s.attachedTo.some((a) => a.sessionId === agent.value && a.release === s.latestAccepted);
-          if (!already && !(await facAttach(s, agent.value, s.latestAccepted, true))) return;
-          await makeCron(agent.value);
-          await facLoad(); facRenderTable(); facRenderDrawer();
-          facMsg(`Scheduled on ${agent.selectedOptions[0].textContent}.`);
-        } else {
-          // A new agent, born with the skill — in the skill's first group, if shared with groups.
-          const gid = (facScopeIds(s.owner) || [])[0] ?? null;
-          facSetMode(false);
-          const t = createTab(gid);
-          t.customName = true;
-          t.nameEl.textContent = facTitle(s);
-          t.afterReady = (sessionId) => makeCron(sessionId).catch((e) => alert("Could not schedule: " + e.message));
-          launchTab(t, { skills: [{ skill: s.id, release: s.latestAccepted }], ...(gid != null ? { group: gid } : {}) });
-        }
-      } catch (e) { facMsg(e.message, true); }
-    } });
-    host.appendChild(facEl("div", { class: "fac-sched fp-card" }, [
-      facEl("div", { class: "fp-actions", style: "margin-top:0" }, [facEl("span", { text: "Run with" }), agent, kind, time, every]),
-      text,
-      facEl("div", { class: "fp-actions" }, [go, facEl("span", { class: "fp-sub", text: "The prompt can say what to do it on: one skill, several topics." })]),
-    ]));
-  }
-
   async function facDuplicate(s) {
     const title = prompt(`Name of the variant (it starts from the saved "${facTitle(s)}"):`, facTitle(s) + " (variant)");
     if (!title) return;
@@ -11596,7 +11663,7 @@
   async function facDelete(s) {
     if (!confirm(`Delete "${facTitle(s)}" and its whole history? Archive it instead to keep it.`)) return;
     try {
-      await facCall("DELETE", `/factory/skills/${s.id}${s.attachedTo.length ? "?force=1" : ""}`);
+      await facCall("DELETE", `/factory/skills/${s.id}`);
       fac.sel = null; fac.drawer = false; fac.checked.delete(s.id);
       await facRefresh();
     } catch (e) { facMsg(e.message, true); }
@@ -11607,8 +11674,31 @@
     const scroll = facEl("div", { class: "fp-scroll" });
     m.appendChild(scroll);
     const title = facEl("input", { type: "text", id: "fpTitle", placeholder: "Daily marketing summary", autocomplete: "off" });
-    const slugHint = facEl("div", { class: "fp-hint", text: "Agents see it under a short technical name, made from this one." });
-    title.addEventListener("input", () => { const sl = facSlug(title.value); slugHint.textContent = sl ? `Agents will see it as ${sl}:${sl}.` : "Agents see it under a short technical name, made from this one."; });
+    // The technical name agents call it by (`/<name>:<name>`): proposed from the
+    // name above until the person types their own, then left alone. Unlike the
+    // displayed name it can NOT be changed later (it is the repo, the plugin and
+    // every attachment's key), so it is chosen here or never.
+    const slug = facEl("input", { type: "text", id: "fpSlug", placeholder: "daily-marketing-summary", autocomplete: "off", spellcheck: "false", maxlength: "40", style: "font-family:var(--mono)" });
+    let slugTouched = false;
+    const slugHint = facEl("div", { class: "fp-hint" });
+    const paintSlug = () => {
+      const sl = facSlug(slug.value);
+      const taken = sl && fac.data && fac.data.skills.some((x) => x.name === sl);
+      slugHint.textContent = !sl ? "Lowercase letters, digits and dashes. It cannot be changed later."
+        : sl.length < 2 ? "At least 2 characters."
+        : taken ? `${sl} is already used: it will be saved as ${sl}-2 (or the next free number).`
+        : `Agents will call it /${sl}:${sl}. It cannot be changed later.`;
+    };
+    title.addEventListener("input", () => { if (!slugTouched) slug.value = facSlug(title.value); paintSlug(); });
+    slug.addEventListener("input", () => {
+      // Light clean-up while typing (a trailing dash must survive, "my-" is on its
+      // way to "my-skill"); the full facSlug runs when it is sent.
+      const v = slug.value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+/, "").replace(/--+/g, "-");
+      if (v !== slug.value) slug.value = v;
+      slugTouched = !!v; // emptied → follows the name again (at its next edit, or on Create)
+      paintSlug();
+    });
+    paintSlug();
     const desc = facEl("textarea", { rows: "4", id: "fpDescIn",
       placeholder: "Writes a short summary of yesterday's marketing numbers (traffic, signups, campaigns) and posts it in #marketing. Use it every morning, or when someone asks for the marketing summary." });
     const tags = facEl("input", { type: "text", placeholder: "reporting, slack" });
@@ -11624,7 +11714,7 @@
       const v = (scroll.querySelector('input[name="fpScope"]:checked') || {}).value || "me";
       const scope = v === "groups" ? { groups: [...ids] } : v;
       try {
-        const out = await facCall("POST", "/factory/skills", { title: title.value.trim(), description: desc.value.trim(), scope, tags: tags.value });
+        const out = await facCall("POST", "/factory/skills", { title: title.value.trim(), name: facSlug(slug.value) || facSlug(title.value) || undefined, description: desc.value.trim(), scope, tags: tags.value });
         await facLoad();
         facEdit(out.skill.id, true);
       } catch (e) { facMsg(e.message, true); }
@@ -11633,7 +11723,9 @@
       facEl("div", { class: "fp-bar" }, [facEl("button", { class: "fp-link", text: "← Skills", onclick: () => facGo("list") })]),
       facEl("h1", { text: "New skill" }),
       facEl("div", { class: "fp-sub", text: "A short set of instructions an agent follows to do one job." }),
-      facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpTitle", text: "Name" }), title, slugHint]),
+      facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpTitle", text: "Name" }), title,
+        facEl("div", { class: "fp-hint", text: "What people see. You can rename it any time." })]),
+      facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpSlug", text: "Technical name" }), slug, slugHint]),
       facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpDescIn", text: "What does it do, and when should it be used?" }), desc,
         facEl("div", { class: "fp-hint", text: "An agent reads this to decide to use the skill. You can refine it later." })]),
       facEl("div", { class: "fp-field" }, [facEl("span", { class: "fp-label", text: "Shared with" }),
@@ -11752,7 +11844,29 @@
     const ed = fac.ed;
     const dirty = () => ed.desc !== ed.saved.desc || ed.body !== ed.saved.body;
     // Center content per tab
-    center.appendChild(facEl("div", { class: "fp-doc-head" }, [facAvatar(s, "lg"), facEl("div", {}, [facEl("h1", { text: facTitle(s) }),
+    // The name is edited in place: it is only the DISPLAY title (PUT …/meta), the
+    // technical name agents call it by (`<name>:<name>`) stays put, so attached
+    // agents and typed `/` commands keep working after a rename.
+    const nameIn = facEl("input", { type: "text", class: "fp-title-in", value: facTitle(s), maxlength: "80",
+      "aria-label": "Skill name", title: `Click to rename. Agents still call it ${s.name}:${s.name}.` });
+    const saveName = async () => {
+      const v = nameIn.value.trim();
+      if (!v) { nameIn.value = facTitle(s); return; }
+      if (v === facTitle(s)) return;
+      try {
+        await facCall("PUT", `/factory/skills/${s.id}/meta`, { title: v });
+        await facLoad();
+        // A blur caused by clicking another skill in the list: that click already
+        // rendered the other one — repainting here would race it.
+        if (fac.view === "edit" && fac.sel && fac.sel.id === s.id) facRender();
+      } catch (e) { nameIn.value = facTitle(s); facMsg(e.message, true); }
+    };
+    nameIn.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); nameIn.blur(); }
+      if (e.key === "Escape") { nameIn.value = facTitle(s); nameIn.blur(); }
+    });
+    nameIn.addEventListener("blur", saveName);
+    center.appendChild(facEl("div", { class: "fp-doc-head" }, [facAvatar(s, "lg"), facEl("div", { style: "flex:1;min-width:0" }, [nameIn,
       facEl("div", { class: "fp-sub" }, [
         facStatus(s).includes("draft") ? facEl("span", { class: "fp-ver draft", text: "draft changes" }) : facEl("span", { class: "fp-ver live", text: "saved" }),
         "  ", ...facSharedLabels(s.owner).map((x) => facEl("span", { class: "fp-gp", text: x }))])])]));
@@ -11978,27 +12092,6 @@
   $("factoryBtn").addEventListener("click", () => facSetMode(!document.body.classList.contains("factory-mode")));
   try { if (localStorage.getItem("cp.factoryMode") === "1") facSetMode(true); } catch {}
 
-  // The new-agent dialog's "Factory skills" fold: born with approved, non-archived skills.
-  async function facFillPicker() {
-    const box = $("skillsPick");
-    if (!box) return;
-    box.textContent = "";
-    let data;
-    try { data = await facCall("GET", "/factory/skills"); } catch { data = { skills: [] }; }
-    // Only what is shared with the group the agent goes to (or with everyone,
-    // or yours): the point of sharing is a short list, not a lock.
-    const usable = data.skills.filter((s) => s.latestAccepted && !s.archived && facAllows(s, { group: setupGroup }));
-    $("skillsField").hidden = !usable.length;
-    $("skillsCount").textContent = usable.length ? String(usable.length) : "";
-    for (const s of usable)
-      box.appendChild(facEl("label", { class: "fac-chk", title: s.description || "" }, [
-        facEl("input", { type: "checkbox", value: s.id, "data-release": String(s.latestAccepted) }),
-        ` ${s.title || s.name}`,
-      ]));
-  }
-  function facPickedSkills() {
-    return [...document.querySelectorAll("#skillsPick input:checked")].map((i) => ({ skill: i.value, release: Number(i.dataset.release) }));
-  }
 
 
 
@@ -12008,7 +12101,10 @@
     const r = await fetch("/oauth-relay", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url: $("relayUrl").value }) })
       .then((x) => x.json()).catch(() => ({ ok: false, error: "the cockpit did not answer" }));
     out.hidden = false;
-    out.textContent = r.ok ? `Relayed (HTTP ${r.status})${r.text ? " — " + r.text : ""}` : r.error;
+    // Status only (the listener's page is not passed back — see src/oauth-relay.ts).
+    out.textContent = r.ok
+      ? `Relayed (HTTP ${r.status}) — ${r.status < 400 ? "the sign-in listener accepted it; check the agent" : "the listener refused it; the sign-in may have expired, start it again"}`
+      : r.error;
     if (r.ok) $("relayUrl").value = "";   // a one-time code: nothing to keep
   });
   $("secretsAdd").addEventListener("submit", async (e) => {
@@ -12024,8 +12120,12 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     if (!keepValue) {
-      await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
+      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
+      const err = await vaultError(r);
+      // Refused: say so and keep the form filled, rather than clearing it as if saved.
+      if (err) { showVaultError("Could not save " + name + ": " + err); return; }
     }
+    showVaultError("");
     // Grouped mode binds profiles per row (PUT /secrets/profiles) and hides the
     // ticks: syncing here would read an empty selection and detach everything.
     if (window.secretsPanelMode(vaultGroups) === "flat") await syncSecretToProfiles(name, wanted); // refreshes profileCache
@@ -14152,6 +14252,7 @@
     // empty. Only a failed fetch falls back to the (now dir-scoped) cache.
     let savedGroups = pickChannelSource(groupsR, JSON.parse(localStorage.getItem(dirKey("cp.groups", instanceKey)) || "[]"));
     // The commons group ("main") is the "Main" view, never a rail group (see foldCommons).
+    if (groupsR.status === "fulfilled") noteCommons(groupsR.value);
     for (const g of savedGroups) if (String(g.id) !== COMMONS_GROUP_ID) createGroup(g);
 
     let saved = pickChannelSource(channelsR, JSON.parse(localStorage.getItem(dirKey("cp.channels", instanceKey)) || "[]"));

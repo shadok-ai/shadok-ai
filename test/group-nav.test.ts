@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 // @ts-ignore — plain ESM shared with the browser
-import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty } from "../public/group-nav.js";
+import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget } from "../public/group-nav.js";
 
 test("group icon: drawn from the list, bounds included", () => {
   assert.equal(randomGroupIcon(() => 0), GROUP_ICONS[0]);
@@ -62,4 +62,26 @@ test("tab group push: only a tab that moved the agent sends its group", () => {
   assert.equal(groupIsDirty(null, null), false);
   assert.equal(groupIsDirty(2, 1), true);
   assert.equal(groupIsDirty(null, undefined), true);
+});
+
+test("focus target: the remembered agent is restored when still in the group", () => {
+  // Switching groups used to snap to the top agent; now we return to the one
+  // you last had focused in that group.
+  assert.equal(focusTarget(["a", "b", "c"], "b"), "b");
+  assert.equal(focusTarget(["a", "b", "c"], "c"), "c");
+});
+
+test("focus target: falls back to the first agent when nothing is remembered", () => {
+  assert.equal(focusTarget(["a", "b"], null), "a");
+  assert.equal(focusTarget(["a", "b"], undefined), "a");
+});
+
+test("focus target: a remembered agent that has since gone falls back to the first", () => {
+  // Closed, or dragged to another group — the memory is stale, so take the top.
+  assert.equal(focusTarget(["a", "b"], "z"), "a");
+});
+
+test("focus target: an empty group yields nothing to focus", () => {
+  assert.equal(focusTarget([], "a"), null);
+  assert.equal(focusTarget([], null), null);
 });

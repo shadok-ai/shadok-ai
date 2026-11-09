@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { DeploymentMode } from "./capability.js";
 import type { Group } from "./groups.js";
 
@@ -121,6 +122,201 @@ export function migrationPlan(input: {
  */
 export function commonsOsUser(input: { migrated: boolean; mode: DeploymentMode }): string | null {
   return input.migrated && input.mode === "multi-tenant" ? COMMONS_USER : null;
+}
+
+/**
+ * Repoint a cron `check` command from the OLD commons HOME's `.claude` tree to the
+ * NEW one, after migration moved the commons agent off `/root` to `/home/main`.
+ *
+ * Why this is needed at all: an agent that authored a monitoring script stored it
+ * (and hard-coded the guard path) under `$HOME/.claude/skills/.../scripts/` when
+ * its HOME was still `/root`. Since cron guards now run DROPPED as the commons
+ * `main` user (which cannot traverse `/root`, 0700), that absolute `/root/.claude`
+ * path is unreadable and the guard dies `check-failed` in silence. The migration
+ * relocates the `.claude` tree into the new HOME, so the reference must follow.
+ *
+ * The `<oldHome>/.claude` base is ALWAYS rewritten — the tree the migration moved —
+ * plus any extra RELATIVE prefix the caller passes (the `~/.shadok-ai/<dir>` script
+ * dirs a guard also names; see `shadokScriptDirs`). Every OTHER `/root/...` mention
+ * is left intact, so a reference to a dir that was NOT relocated keeps pointing at
+ * the original. Identity when the home did not move (mono-tenant, or old === new) or
+ * when either base is blank (never blank out a path). A `$HOME`-relative check is
+ * already portable and contains no absolute base to match, so it passes through
+ * untouched. Pure, so the boot self-heal that walks the cron file stays a thin
+ * caller — and the exact substitution is locked by test, the twin of
+ * `rewriteSkillsBase`.
+ */
+export function rewriteCronCheckHome(
+  check: string,
+  oldHome: string,
+  newHome: string,
+  extraRelPrefixes: readonly string[] = [],
+): string {
+  if (!check || !oldHome || !newHome || oldHome === newHome) return check;
+  let out = check;
+  for (const rel of [".claude", ...extraRelPrefixes]) {
+    out = out.split(oldHome + "/" + rel).join(newHome + "/" + rel);
+  }
+  return out;
+}
+
+/** Escape a string for literal use inside a `RegExp`. */
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Shadok's OWN directories under `~/.shadok-ai` — NEVER carried into the commons
+ * HOME by the stranded-script heal, even if a cron check names one. The credential
+ * stores (`ssh`, `users`, `secrets`) are the load-bearing entries: copying them
+ * into `/home/main` would hand every commons agent the SSH private key, the
+ * per-session signing keys and the account password hashes. The rest are internal
+ * per-instance state a guard has no business reading. A denylist (not an allowlist)
+ * on purpose: an operator/agent names its script dir whatever it likes (`scripts`,
+ * `checks`, `marketing`, …), and an allowlist would silently fail to heal a
+ * custom-named one — reintroducing the exact silent breakage this closes.
+ */
+export const SHADOK_INTERNAL_DIRS: readonly string[] = [
+  "app",
+  "browsers",
+  "channels",
+  "config",
+  "crons",
+  "files",
+  "keys",
+  "ledger",
+  "locks",
+  "media",
+  "peers",
+  "pilotctl",
+  "profiles",
+  "run",
+  "secrets",
+  "self",
+  "ssh",
+  "tail",
+  "tokens",
+  "users",
+  "whisper",
+  "worktrees",
+  "wt",
+];
+
+/**
+ * Shadok's OWN credential and identity state under `~/.shadok-ai`, which the
+ * SERVER must keep OWNING across the commons chown. `migChownTreeToCommons` runs
+ * an unbounded `chown -R main:main ~/.shadok-ai` on purpose — the commons agent
+ * has to keep working on what it already worked on — but that sweeps the
+ * credential stores along with the working state, and "who may read this" is not
+ * the same question as "who owns this".
+ *
+ * Nothing LEAKS from it: the server's HOME stays 0700, so `main` cannot even
+ * traverse `/root` (the same wall that stranded the cron guards #419-#421 healed).
+ * What breaks is the SERVER's own use of its files, and the SSH identity is where
+ * that bites first: `~/.ssh` is a symlink to `~/.shadok-ai/ssh` (invariant 19,
+ * the only path that survives a container recreate), so once the key and its
+ * config belonged to `main`, every root-side `ssh` refused to run at all —
+ * `Bad owner or permissions on /root/.ssh/config`, because OpenSSH checks the
+ * OWNER of those files, not just their mode. Measured on the dogfood instance:
+ * `git` over SSH and every `ssh` to the host were dead while looking configured,
+ * and no merge noticed because `gh` speaks HTTPS.
+ *
+ * So this is re-asserted at EVERY capable boot rather than only right after the
+ * migration — an instance already migrated by an older build heals on its next
+ * update instead of needing a hand repair. Twin of `healCommonsStrandedScripts`.
+ *
+ * Every DIRECTORY here is also in `SHADOK_INTERNAL_DIRS`, the list that keeps the
+ * heal from COPYING it into a group HOME. The two halves answer the same question
+ * by different means — ownership in place, and relocation — so a test pins the
+ * pairing: otherwise they drift apart one entry at a time, and a credential store
+ * added to one list only would be half-protected in silence.
+ */
+export const SERVER_OWNED_STATE: readonly string[] = [
+  // Stores (directories).
+  "ssh", // the persistent SSH identity; `~/.ssh` points here (invariant 19)
+  "users", // account hashes + the per-instance session-signing key (invariant 33)
+  "peers", // the inbound peer tokens this instance minted for other cockpits
+  "keys",
+  "secrets",
+  "tokens",
+  // Files.
+  "config.json", // the GUI password and the per-launch-dir Telegram tokens
+  "secrets.json", // the vault
+  "secret-origin.json",
+  "secret-audit.jsonl",
+  "profiles.json", // the GUARDRAILS, which an agent must never write (invariant 26)
+  "profiles-declined.json",
+];
+
+/**
+ * Absolute paths of `SERVER_OWNED_STATE` under `home`. PURE: whether a path
+ * exists is the caller's business, so this needs no filesystem to test. A blank
+ * home yields nothing rather than paths rooted at `/.shadok-ai` — a chown there
+ * would be aimed at the wrong machine entirely.
+ */
+export function serverOwnedStatePaths(home: string): string[] {
+  if (!home) return [];
+  return SERVER_OWNED_STATE.map((rel) => path.join(home, ".shadok-ai", rel));
+}
+
+/**
+ * The `~/.claude/<dir>` subtrees NEVER carried by the heal. `.credentials` is a
+ * FILE, not a dir, so it can't match anyway — the real entries are the big
+ * already-migrated trees (`migChownTreeToCommons` copies `projects`/`todos`/
+ * `shell-snapshots`/`file-history`) and the caches (`statsig`/`plugins`/`ide`):
+ * re-copying them would be wasteful, and they are not scripts a guard runs.
+ * `skills` and `scripts` (and any custom dir) are deliberately NOT here — those
+ * are where an agent keeps the monitoring scripts it authored.
+ */
+export const CLAUDE_INTERNAL_DIRS: readonly string[] = [
+  "projects",
+  "todos",
+  "shell-snapshots",
+  "file-history",
+  "statsig",
+  "plugins",
+  "ide",
+];
+
+/** The two home subtrees under which an agent/operator legitimately drops a
+ *  script a cron guard runs. An ALLOWLIST of TOPS (safe — scripts never live
+ *  anywhere else under the HOME) combined with a per-top DENYLIST of SUBS (so a
+ *  custom-named script dir still heals). */
+const RELOCATABLE_TOPS: Record<string, readonly string[]> = {
+  ".claude": CLAUDE_INTERNAL_DIRS,
+  ".shadok-ai": SHADOK_INTERNAL_DIRS,
+};
+
+/**
+ * The home-rooted `<top>/<sub>` script directories a cron `check` names, that the
+ * HOME move off `/root` stranded. A dropped `main` guard cannot traverse `/root`
+ * (0700), so ANY `/root/<top>/<sub>/…` path it names — a script or its sibling
+ * state file — is unreachable and the guard dies `check-failed` in silence. #419
+ * relocated only `.claude/skills`; this generalises the discovery so `.claude/scripts`
+ * (seen on the biosense cockpit), every `.shadok-ai/<dir>` (the dogfood instance),
+ * and any future script dir are all carried across — the trap is not one directory,
+ * it is "any `/root` path a check names".
+ *
+ * Matches an absolute `oldHome` reference AND a `$HOME`/`${HOME}`/`~`-relative one
+ * (a portable check still needs its dir to EXIST in the new HOME). Only the 2-level
+ * `<top>/<sub>` unit is relocated, with `<top>` restricted to the two script homes
+ * and `<sub>` refused when it is shadok's own state/credentials or a big
+ * already-migrated `.claude` tree (`RELOCATABLE_TOPS`). Returns distinct RELATIVE
+ * prefixes (`".claude/scripts"`, `".shadok-ai/checks"`, …), ready to feed
+ * `rewriteCronCheckHome` and `path.join`. Pure.
+ */
+export function strandedCheckDirs(check: string, oldHome: string): string[] {
+  if (!check || !oldHome) return [];
+  const homeAlt = [escapeRegExp(oldHome), "\\$HOME", "\\$\\{HOME\\}", "~"].join("|");
+  const tops = Object.keys(RELOCATABLE_TOPS).map((t) => escapeRegExp(t)).join("|");
+  const re = new RegExp("(?:" + homeAlt + ")/(" + tops + ")/([^/\\s'\"]+)/", "g");
+  const out = new Set<string>();
+  for (let m = re.exec(check); m; m = re.exec(check)) {
+    const [, top, sub] = m;
+    if (RELOCATABLE_TOPS[top]?.includes(sub)) continue;
+    out.add(top + "/" + sub);
+  }
+  return [...out];
 }
 
 /**

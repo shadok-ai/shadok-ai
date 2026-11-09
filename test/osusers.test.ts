@@ -14,6 +14,8 @@ import {
   createGroupFlow,
   deleteGroupFlow,
   runAsUser,
+  tierStateDir,
+  tierStateDirAction,
   sharedPotWiring,
   sharedPotPlan,
   SHARED_POT_GROUP,
@@ -177,6 +179,34 @@ test("resolveSpawnIsolation: a resume of a commons (group-less) agent stays on t
     viewer: { name: "ada", role: "member" },
     groups: [main, comex],
     storedGroupId: null,
+  });
+  assert.deepEqual(r, { user: null, groupPatch: {} });
+});
+
+test("resolveSpawnIsolation: a NEW agent launched by a parent is born into the PARENT's group, not the viewer's", () => {
+  // The viewer here resolves to the commons (null), as an agent-driven spawn does
+  // when the admin cookie's own group is ambiguous/absent. The launcher runs in
+  // comex, so the child joins comex and drops to its user — this is the fix for
+  // "a spawned agent lands in the admin's Personal group instead of its launcher's".
+  const r = resolveSpawnIsolation({
+    mode: "multi-tenant",
+    resumed: false,
+    viewer: null,
+    groups: [main, comex],
+    storedGroupId: null,
+    parentGroupId: "comex",
+  });
+  assert.deepEqual(r, { user: "sk-comex", groupPatch: { group: "comex" } });
+});
+
+test("resolveSpawnIsolation: a RESUME ignores the parent group — the stored group is SERVER_OWNED", () => {
+  const r = resolveSpawnIsolation({
+    mode: "multi-tenant",
+    resumed: true,
+    viewer: { name: "ada", role: "member" },
+    groups: [main, comex],
+    storedGroupId: null,
+    parentGroupId: "comex",
   });
   assert.deepEqual(r, { user: null, groupPatch: {} });
 });
@@ -741,4 +771,25 @@ test("createGroupFlow: nature private is refused 400 (Personal is auto-provision
   assert.equal(r.status, 400);
   assert.equal((r.body as { error: string }).error, "a personal group is created automatically, not here");
   assert.equal(saved.length + provisioned.length, 0);
+});
+
+test("tierStateDir: the agent's state parent sits inside its own tier HOME", () => {
+  assert.equal(tierStateDir("/home/main"), "/home/main/.shadok-ai");
+  assert.equal(tierStateDir("/home/sk-comex"), "/home/sk-comex/.shadok-ai");
+});
+
+test("tierStateDirAction: absent → create it AS the user, so it is born owned by them", () => {
+  assert.equal(tierStateDirAction({ exists: false, writableByUser: false }), "create");
+});
+
+test("tierStateDirAction: already the user's → null, the pre-spawn path stays free", () => {
+  assert.equal(tierStateDirAction({ exists: true, writableByUser: true }), null);
+});
+
+test("tierStateDirAction: present but not writable → chown, the repair an existing instance needs", () => {
+  // The case measured on correctsms: the server (root) created
+  // /home/main/.shadok-ai with `recursive: true` on its way to the self-clone,
+  // and `pilotctl` then died on EACCES inside a home `main` otherwise owns. A
+  // create is a silent no-op here, which is why this is not a two-way answer.
+  assert.equal(tierStateDirAction({ exists: true, writableByUser: false }), "chown");
 });

@@ -102,13 +102,16 @@ export function dropEnv(
  *
  * - Mono-tenant is byte-for-byte today: no user (never wrap the spawn), no group
  *   written (a group-less channel is the commons, visible to everyone).
- * - A NEW multi-tenant agent is born into the CALLER's own group
+ * - A NEW multi-tenant agent is born into the LAUNCHER's group when it was
+ *   spawned by another agent (`parentGroupId`), else the CALLER's own group
  *   (`spawnGroupFor`, derived from the viewer and the server's group list — no
- *   client input) and drops to that group's user. The `groupPatch` is what the
- *   start-path upsert writes server-side; the commons resolves to no user.
+ *   client input), and drops to that group's user. Inheriting the launcher's
+ *   group is what keeps an agent-spawned child in the SAME isolation domain as
+ *   its parent instead of the admin viewer's Personal group. The `groupPatch` is
+ *   what the start-path upsert writes server-side; the commons resolves to no user.
  * - A RESUME never reassigns the group (it is SERVER_OWNED and already set), but
  *   still drops to the stored group's user — a private agent must come back
- *   under its own user, not as root.
+ *   under its own user, not as root. The parent group is ignored on resume.
  */
 export function resolveSpawnIsolation(input: {
   mode: DeploymentMode;
@@ -119,13 +122,22 @@ export function resolveSpawnIsolation(input: {
   storedGroupId: string | null;
   /** NEW spawns only: the group the client asked for; honoured iff the caller may see it. */
   requestedGroupId?: string | null;
+  /** NEW spawns only: the group of the AGENT that launched this one, if any —
+   *  inherited (no canSeeGroup gate; it is server-proven) unless a visible
+   *  request overrides it. */
+  parentGroupId?: string | null;
 }): { user: string | null; groupPatch: { group?: string } } {
   if (input.mode !== "multi-tenant") return { user: null, groupPatch: {} };
   if (input.resumed) {
     const g = input.storedGroupId ? input.groups.find((x) => x.id === input.storedGroupId) ?? null : null;
     return { user: g ? osUserFor(g) : null, groupPatch: {} };
   }
-  const g = spawnGroupForRequest(input.viewer, input.groups, input.requestedGroupId ?? null);
+  const g = spawnGroupForRequest(
+    input.viewer,
+    input.groups,
+    input.requestedGroupId ?? null,
+    input.parentGroupId ?? null,
+  );
   return {
     user: g ? osUserFor(g) : null,
     groupPatch: g ? { group: g.id } : {},
@@ -135,6 +147,49 @@ export function resolveSpawnIsolation(input: {
 /** The default base directory a group's HOME is created under. Overridable
  *  (`SHADOK_HOME_BASE`) for unusual layouts; `/home` is the Linux standard. */
 export const DEFAULT_HOME_BASE = "/home";
+
+/**
+ * The state directory a dropped agent owns inside its tier HOME — the parent of
+ * everything shadok and its own tooling keep per agent (`pilotctl`'s state, the
+ * peers file a hand-run CLI falls back to, the worktrees and the self-clone
+ * invariant 54 moved here).
+ */
+export function tierStateDir(home: string): string {
+  return `${home}/.shadok-ai`;
+}
+
+/**
+ * Invariant 54's third case, and the one the first two CREATED. Moving a dropped
+ * agent's state into its own home fixed the LOCATION, but the server is root and
+ * every writer there (`selfRepoDir`, `worktreeDir`, `factoryDir`) mkdirs with
+ * `recursive: true` — so whichever ran first made `<home>/.shadok-ai` ITSELF
+ * root-owned, inside a home the agent otherwise owns. The agent can then reach
+ * the directory and not write it: `pilotctl` dies on
+ * `EACCES: mkdir '/home/main/.shadok-ai/pilotctl'`, which is how it was found —
+ * every worker spawn of a production dispatch loop failing while the home, the
+ * skills and the credentials were all correct. MEASURED on correctsms 0.17.33.
+ *
+ * Deliberately a three-way answer rather than "mkdir -p and hope":
+ *  - absent → `create`, performed AS the user so it is born owned by them (the
+ *    same rule as `writeAsUserAtomic`: root must not write through a 0700 home);
+ *  - present and writable by the user → `null`, touch nothing. The common case,
+ *    and it must stay free: this runs before every spawn;
+ *  - present and NOT writable → `chown`, which is the repair half. Without it
+ *    only brand-new homes would be correct and every already-running instance
+ *    would stay broken — the directory exists, so a create is a silent no-op.
+ *
+ * The chown is the DIRECTORY only, never its contents: what is inside has owners
+ * for its own reasons (a root-owned self-clone checkout, a worktree already
+ * chowned by `chownAgentStateToDropUser`), and rewriting those would undo
+ * decisions made elsewhere.
+ */
+export function tierStateDirAction(probe: {
+  exists: boolean;
+  writableByUser: boolean;
+}): "create" | "chown" | null {
+  if (!probe.exists) return "create";
+  return probe.writableByUser ? null : "chown";
+}
 
 // ── Privileged wiring plans ───────────────────────────────────────────────────
 //

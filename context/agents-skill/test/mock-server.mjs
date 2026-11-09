@@ -19,8 +19,12 @@ export function startMockServer(script = {}) {
       const raw = Buffer.concat(chunks).toString("utf8");
       let body;
       try { body = raw ? JSON.parse(raw) : undefined; } catch { body = raw; }
-      http_.push({ method: req.method, url: req.url, body, sessionKey: req.headers["x-shadok-session-key"] });
+      http_.push({ method: req.method, url: req.url, body, sessionKey: req.headers["x-shadok-session-key"], peer: req.headers["x-shadok-peer"] });
       res.setHeader("content-type", "application/json");
+      if (req.url.startsWith("/live")) {
+        if (script.liveStatus) res.statusCode = script.liveStatus;
+        return res.end(JSON.stringify(script.live ?? []));
+      }
       if (req.url.startsWith("/sessions")) return res.end(JSON.stringify(script.sessions ?? []));
       if (req.url.startsWith("/diff"))
         return res.end(

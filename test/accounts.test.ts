@@ -183,8 +183,10 @@ test("author: a web client with no session names nobody", () => {
   assert.equal(promptAuthor("web", undefined, "root"), undefined);
 });
 
-test("author: other origins keep whatever they supplied", () => {
-  assert.equal(promptAuthor("cli", "admin", "script"), "script");
+test("author: a claimed name is honoured ONLY from the Telegram bridge", () => {
+  // `origin` is now derived from the connection, but a bare local client is
+  // still a client writing its own frames: its `from` names nobody.
+  assert.equal(promptAuthor("cli", "admin", "script"), undefined);
   assert.equal(promptAuthor("cron", "admin", undefined), undefined);
 });
 

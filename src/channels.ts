@@ -81,9 +81,10 @@ export interface Channel {
   /** The `claude` binary version at that real spawn, to flag an agent still on
    *  an older binary than the one now installed. Null when it couldn't be read. */
   spawnClaudeVer?: string | null;
-  /** Skill Factory releases attached to this agent (`--plugin-dir` at spawn).
-   *  Server-owned, assert-only like `model`: only `POST /factory/attach` writes
-   *  it, and a resume that omits it never erases it. See src/factory.ts. */
+  /** LEGACY, no longer read: the per-agent factory attachments of before
+   *  skills ran by sharing (`availableAttachments`, src/factory.ts). Nothing
+   *  writes it any more; kept in the type so old rows still parse, and still
+   *  server-owned so a browser PUT cannot reintroduce it. */
   skills?: { skill: string; release: number }[];
   /** The account that created this agent (at its first spawn). Server-owned,
    *  assert-only: what a "just me" factory skill is scoped by. Absent on agents
@@ -365,9 +366,8 @@ export function mergeChannels(
     }
     const merged: Channel = { ...c };
     for (const k of SERVER_OWNED) if (prev[k] !== undefined) (merged as any)[k] = prev[k];
-    // Factory attachments decide which code an agent loads: only the server
-    // writes them (`POST /factory/attach`), so a browser PUT can neither change
-    // them (above) nor introduce them on an agent that has none.
+    // Legacy factory attachments (no longer read, see `Channel.skills`): a
+    // browser PUT can neither change them (above) nor introduce them.
     if (prev.skills === undefined) delete merged.skills;
     if (prev.createdBy === undefined) delete merged.createdBy;
     if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;

@@ -20,6 +20,7 @@ import {
   readFile,
   receivePush,
   resolveAttachments,
+  availableAttachments,
   saveFile,
   scanMain,
   findSkill,
@@ -251,6 +252,30 @@ test("resolveAttachments: every reason to drop is explicit", () => {
   assert.equal(resolveAttachments([moved], [{ skill: "k", release: 1 }], "marketing").ok.length, 0);
 });
 
+test("availableAttachments: an agent runs what is shared with it, at its group's latest accepted release", () => {
+  const rel = (n: number) => ({ n, tree: `t${n}`, commit: `c${n}`, by: "a", at: 0, secrets: [], warnings: [] });
+  const base = { description: "", editors: ["main"], users: ["main"], createdBy: "a", createdAt: 0 };
+  const skills = [
+    // Everyone, v1 + v2 accepted for main, v3 not yet: main runs v2, g-hr nothing.
+    { ...base, id: "all", name: "all", owner: "main", releases: [rel(1), rel(2), rel(3)],
+      acceptances: [{ group: "main", release: 1, tree: "t1", by: "m", at: 0 }, { group: "main", release: 2, tree: "t2", by: "m", at: 0 }] },
+    // Shared with g-hr only, accepted there.
+    { ...base, id: "hr", name: "hr", owner: "groups:g-hr", releases: [rel(1)], acceptances: [{ group: "g-hr", release: 1, tree: "t1", by: "h", at: 0 }] },
+    // Private to lea.
+    { ...base, id: "lea", name: "lea", owner: "user:lea", releases: [rel(1)], acceptances: [{ group: "main", release: 1, tree: "t1", by: "lea", at: 0 }] },
+    // Archived: nobody.
+    { ...base, id: "old", name: "old", owner: "main", archived: true, releases: [rel(1)], acceptances: [{ group: "main", release: 1, tree: "t1", by: "m", at: 0 }] },
+    // Never saved: nobody.
+    { ...base, id: "draft", name: "draft", owner: "main", releases: [], acceptances: [] },
+  ];
+  assert.deepEqual(availableAttachments(skills, { group: null, createdBy: "max" }, "main"), [{ skill: "all", release: 2 }]);
+  assert.deepEqual(availableAttachments(skills, { group: null, createdBy: "lea" }, "main"), [{ skill: "all", release: 2 }, { skill: "lea", release: 1 }]);
+  // g-hr's agent: "all" was never accepted for g-hr (Main's yes does not run there).
+  assert.deepEqual(availableAttachments(skills, { group: "g-hr", createdBy: "max" }, "g-hr"), [{ skill: "hr", release: 1 }]);
+  // What it then RECEIVES is still the acceptance's: resolveAttachments keeps the gate.
+  assert.equal(resolveAttachments(skills, availableAttachments(skills, { group: "g-hr" }, "g-hr"), "g-hr").ok.length, 1);
+});
+
 // ── What the use cases needed (2026-10-31) ───────────────────────────────────
 
 import { adoptable, adoptSkill, addFeedback, closeFeedback, duplicateSkill, grantedSecrets, loadRegistry } from "../src/factory.js";
@@ -353,18 +378,21 @@ test("prune removes release dirs nothing references — the old path an updated 
   assert.equal(fs.existsSync(d2), true);
 });
 
-import { cleanTags, groupsScope, recordRun, runStats, scopeOffersAgent, scopeError, scopeGroups, scopeVisibleTo, skillOfCall, slugify, updateMeta } from "../src/factory.js";
+import { cleanTags, groupsScope, recordRun, runStats, scopeRunsOn, scopeError, scopeGroups, scopeVisibleTo, skillOfCall, slugify, updateMeta } from "../src/factory.js";
 
 test("scope: shared with several groups, only me, or everyone", () => {
   assert.equal(groupsScope(["3", "1", "3"]), "groups:1,3");
   assert.deepEqual(scopeGroups("groups:1,3"), ["1", "3"]);
   assert.deepEqual(scopeGroups("group:2"), ["2"]); // the one-group spelling still reads
-  // Offered first on those groups' agents; never a refusal.
-  assert.equal(scopeOffersAgent("groups:1,3", { group: "3" }), true);
-  assert.equal(scopeOffersAgent("groups:1,3", { group: "2" }), false);
-  assert.equal(scopeOffersAgent("main", {}), true);
-  // Private: hidden from others, and its owner puts it on any agent.
-  assert.equal(scopeOffersAgent("user:lea", { createdBy: "max", group: "2" }), true);
+  // The sharing IS where it runs: those groups' agents, nobody else's.
+  assert.equal(scopeRunsOn("groups:1,3", { group: "3" }), true);
+  assert.equal(scopeRunsOn("groups:1,3", { group: "2" }), false);
+  assert.equal(scopeRunsOn("groups:main", { group: null }), true); // group-less counts as main
+  assert.equal(scopeRunsOn("main", {}), true);
+  // Private: hidden from others, and it runs only on the agents its owner created.
+  assert.equal(scopeRunsOn("user:lea", { createdBy: "max", group: "2" }), false);
+  assert.equal(scopeRunsOn("user:lea", { createdBy: "lea", group: "2" }), true);
+  assert.equal(scopeRunsOn("user:admin", {}), true); // an agent nobody signed for is the bootstrap admin's
   assert.equal(scopeVisibleTo("user:lea", "lea"), true);
   assert.equal(scopeVisibleTo("user:lea", "max"), false);
   assert.equal(scopeVisibleTo("groups:1", "max"), true);
@@ -374,7 +402,7 @@ test("scope: shared with several groups, only me, or everyone", () => {
   // Multi-tenant group ids are uuids: they share like any other.
   const g = "0b6c2f9e-5d3a-4c1e-9a7b-2f4e8d1c3a5b";
   assert.deepEqual(scopeGroups(`groups:${g},main`), [g, "main"]);
-  assert.equal(scopeOffersAgent(`groups:${g}`, { group: g }), true);
+  assert.equal(scopeRunsOn(`groups:${g}`, { group: g }), true);
 });
 
 test("titles become technical names; tags are normalised", () => {

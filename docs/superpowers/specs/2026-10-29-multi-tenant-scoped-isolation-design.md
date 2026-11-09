@@ -237,6 +237,17 @@ scopes.
   agent's OS user / HOME / secrets mid-life — incoherent. An agent **is born into
   its group and stays there**. "The same thing elsewhere" = spawn a fresh agent in
   the other group.
+- **[DECIDED] An agent launched BY another agent is born into its launcher's
+  group**, not the admin viewer's own. An agent-driven spawn authenticates as the
+  bootstrap admin (the cookie/session-key it carries), so resolving the group from
+  the *viewer* dropped every child into the admin's Personal group — surprising,
+  and it crosses the parent's isolation domain. The spawn therefore inherits the
+  **launcher's** group (`parentGroupId` in `resolveSpawnIsolation`), taken from the
+  launching session's stored `channel.group` and keyed to the **unforgeable
+  session key** (`callerAgent`), never the client-declared `parent` link — so it is
+  server-proven and needs no `canSeeGroup` check (the launcher already runs in that
+  domain). An explicit, visible `requestedGroupId` still overrides it; a human /
+  browser / peer spawn has no launcher and keeps the viewer's own group.
 
 ### Terminology: we enrich the existing group, we do not add a "team"
 
@@ -328,6 +339,27 @@ install must degrade **honestly**, not half-way.
   actually provision an OS user (root, or the needed sudo rights) rather than
   guessing from "am I root", so it is wrong in neither direction. One source of
   truth for the mode.
+- **[DECIDED] The commons chown stops at the server's own credentials.** Step 2
+  (`migChownTreeToCommons`) hands all of `~/.shadok-ai` to `main` on purpose, but
+  the credential stores are the server's, not the commons agent's: the SSH
+  identity, the vault, the accounts file with its session-signing key, the
+  guardrails. `healServerOwnedState` re-asserts the server's ownership of that set
+  at every capable boot (twin of the stranded-script heal, so already-migrated
+  instances catch up on their next update). What this is NOT: a leak fix — the
+  server's HOME is 0700, so the commons user could never read into it. It is the
+  server losing the use of its OWN files, and SSH is where that bites first,
+  because OpenSSH refuses a key or a config owned by someone else whatever its
+  mode. Found the hard way on the dogfood cockpit, four days after its migration:
+  every root-side `ssh` answered `Bad owner or permissions on /root/.ssh/config`,
+  and nothing surfaced it because `gh` speaks HTTPS and the merges kept working.
+- **[DECIDED] The probe is also Linux-gated.** The isolation is implemented with
+  `useradd` / `setpriv` / `runuser`, which exist only on Linux, so
+  `probeCanProvision` returns false on macOS/Windows however privileged the host.
+  Without it a root (or cached/passwordless-sudo) macOS cockpit with a GUI
+  password auto-flipped to multi-tenant and failed the boot migration on the
+  first `useradd`, stranding the red "isolation did NOT complete" banner. The
+  `SHADOK_FORCE_MULTITENANT` override is still checked first, for tests and
+  deliberate setups.
 - **[DECIDED] Capable requires identities too — the probe also gates on the
   accounts system being active.** The entire ACL (visibility, membership, admin
   reach, and one private group *per account*) keys on `src/accounts.ts`

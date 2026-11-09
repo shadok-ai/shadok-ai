@@ -20,13 +20,13 @@ and automatically starts the shadok-ai server when it is not running (port
 
 | Command | Effect |
 |---|---|
-| `spawn [--cwd DIR] [--worktree] [--profile NAME] [--name LABEL] [--skill NAME[@N]]… [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. `--skill` (repeatable) gives it a Skill Factory skill from birth — the latest *accepted* release, or `@N`; one an agent was never cleared to run is dropped, and the server log says why. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`). `--profile` gives it a role + its guardrails + its secrets (see below). `--name` sets the agent's tab name in the cockpit (spawn only; a later rename in the UI is kept) — without it the name is derived from the profile/directory, so several agents look alike |
+| `spawn [--cwd DIR] [--worktree] [--profile NAME] [--name LABEL] [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. Skill Factory skills are not passed here: the agent runs every factory skill shared with its group (or with everyone, or private to its creator), at the latest release accepted for that group. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`). `--profile` gives it a role + its guardrails + its secrets (see below). `--name` sets the agent's tab name in the cockpit (spawn only; a later rename in the UI is kept) — without it the name is derived from the profile/directory, so several agents look alike |
 | `prompt <id> "text" [--timeout s]` | sends a prompt, waits for the end of the turn → `{status:"answer", text, tools}` or `{status:"dialog", question, options, multi}` or `{status:"timeout", screen}` or `{status:"pace-blocked", reason}` |
 | `dialog <id>` | queries the state → `{status:"idle"}` or the pending dialog |
 | `choose <id> <n>` | single-select dialog: picks and commits option n |
 | `toggle <id> <n>` then `confirm <id>` | multi-select dialog: check/uncheck then submit |
 | `freetext <id> <n> "text"` | the "Type something" option: a free answer |
-| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions |
+| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions. With `--peer X`: the agents running ON X (from X itself, tagged `peer`), plus X's resumable sessions only for a `--cwd` you name — a path on X |
 | `diff <id>` | the agent's changes (git status + diff against the worktree's base) |
 | `stop <id>` | ends the session (for ALL its clients) |
 | `screen <id>` | raw TUI screen (debug) |
@@ -192,7 +192,9 @@ pilotctl stop <id> --peer brasdroit1
   - **member** — you act like an invited user: `list`, `diff`, resume/drive/stop
     **any** agent on X, spawn more, read its usage. You are not an admin (no
     account or peer management).
-  Track the ids you `spawn` either way and drive them by id.
+  Track the ids you `spawn` either way and drive them by id. `list --peer X`
+  answers with X's agents and says so (`peer: <url>`); a refusal comes back as
+  an explicit `peer-scope` error, never as your own machine's list.
 
 ## Guardrails
 

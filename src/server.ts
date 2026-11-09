@@ -12,8 +12,8 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import { factoryAudit, mountFactory, SKILLSMITH_PROFILE_NAME } from "./factory-routes.js";
-import { scopeVisibleTo, recordRun, skillOfCall } from "./factory.js";
-import { acceptanceFor, attachmentDirNames, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
+import { recordRun, skillOfCall } from "./factory.js";
+import { attachmentDirNames, availableAttachments, factoryRoot, grantedSecrets, loadRegistry, MAIN_GROUP, pluginArgs, prunePlugins, resolveAttachments, type AgentCtx, type Attachment } from "./factory.js";
 import { WebSocketServer, WebSocket } from "ws";
 import {
   detectDialog,
@@ -37,7 +37,8 @@ import {
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { backgroundTasks, screenShowsWork, moveToOption } from "./detect.js";
+import { backgroundTasks, screenShowsWork, moveToOption, boxText } from "./detect.js";
+import { autoReloadVerdict, autoReloadEnabled } from "./auto-reload.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted,
   getDefaultModel,
@@ -78,6 +79,9 @@ import {
   commonsOsUser,
   COMMONS_USER,
   MIGRATION_MARKER_FILE,
+  rewriteCronCheckHome,
+  strandedCheckDirs,
+  serverOwnedStatePaths,
 } from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
@@ -155,6 +159,8 @@ import {
   resolveSpawnIsolation,
   osUserFor,
   homeForUser,
+  tierStateDir,
+  tierStateDirAction,
   runAsUser,
   provisionGroupUser,
   teardownGroupUser,
@@ -205,6 +211,7 @@ import {
   removePeer,
   ownedByPeer,
   peersOutFileFor,
+  tierPeersOutSeed,
   agentInvitePrompt,
   peerScope,
   type Peer,
@@ -231,7 +238,8 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
-import { isSlashCommand, markPromptMeta, promptMetaHeader } from "./promptmeta.js";
+import { isSlashCommand, promptMetaHeader, connectionOrigin } from "./promptmeta.js";
+import { markHumanPrompt } from "./prompt-kind.js";
 import { listCommands } from "./slash-commands.js";
 import { runRefusal, isShellMode } from "./bang.js";
 import {
@@ -348,7 +356,8 @@ import {
 import {
   BOOTSTRAP_ADMIN,
   loadAccounts,
-  verifyPassword,
+  verifyPasswordAsync,
+  burnPasswordCheck,
   sessionSecret,
   signSession,
   readSessionFull,
@@ -358,7 +367,7 @@ import {
   userWriteVerdict,
   newInvite,
   inviteVerdict,
-  hashPassword,
+  hashPasswordAsync,
   promptAuthor,
   type Role,
   signSessionKey,
@@ -413,8 +422,10 @@ import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
 import { bindRefusal, originAllowed, parseOrigins, resolveHost,
-  browserOrigin, isLocalCaller,
+  browserOrigin, isLocalCaller, hostHeaderAllowed, hostRefusal, parseAllowedHosts,
+  clientAddress, requestIsHttps, type HostPolicy,
 } from "./net.js";
+import { AttemptLimiter, LOGIN_LIMITS, loginKeys } from "./login-limit.js";
 import { pctFromUsage, windowForModel } from "./context.js";
 import {
   BACKEND_PRESETS,
@@ -459,6 +470,14 @@ const HOST = resolveHost(process.env);
 // Browser origins accepted on top of same-origin (typically a reverse proxy
 // that rewrites the Host).
 const EXTRA_ORIGINS = parseOrigins(process.env.SHADOK_ORIGINS);
+// The DNS-rebinding guard's lists (see `hostHeaderAllowed`). `passwordSet` is
+// filled in once GUI_PASSWORD is known, below.
+const HOST_POLICY: HostPolicy = {
+  passwordSet: false,
+  allowedHosts: parseAllowedHosts(process.env.SHADOK_ALLOWED_HOSTS),
+  originHosts: parseAllowedHosts(process.env.SHADOK_ORIGINS),
+  machineNames: [os.hostname().toLowerCase()],
+};
 
 // Single instance per launch directory. A second server sharing this dir's
 // registry + telegram-group config (a port-fallback duplicate, a stray dev
@@ -485,6 +504,7 @@ const PASTE_LIMIT = "50mb";
 // flag), the whole GUI — pages, endpoints AND the WebSocket — requires a login.
 // Unset → no auth (the default).
 const GUI_PASSWORD = (process.env.SHADOK_GUI_PASSWORD ?? "").trim();
+HOST_POLICY.passwordSet = !!GUI_PASSWORD;
 // Read once, then gone from our own environment BEFORE anything is spawned: the
 // password IS the bootstrap admin, and every child this process starts — an
 // agent's PTY, a cron guard, a tmux server started on first use — would
@@ -518,6 +538,22 @@ console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 // it, and — unlike a client-settable field such as `origin` — a browser cannot
 // claim it, which is why the exemption is gated on THIS and nothing else.
 const SYSTEM_DRIVE_SECRET = randomBytes(32).toString("hex");
+// The Telegram bridge's own proof, on the same terms (per-process, in memory,
+// never sent anywhere but our loopback WS as `x-shadok-bridge`). It is what
+// makes a connection's origin "telegram" — and so what lets its `from` (the
+// Telegram sender) and its `voice` flag be believed (`connectionOrigin`). The
+// bridge's cookie cannot serve: `driveChannel` presents the very same one, and
+// with no password there is no cookie at all.
+const TELEGRAM_BRIDGE_SECRET = randomBytes(32).toString("hex");
+/** Does a request present `secret` in header `name`? Constant time, length-guarded. */
+function presentsSecret(req: { headers: Record<string, unknown> }, name: string, secret: string): boolean {
+  const raw = req.headers[name];
+  const header = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof header !== "string") return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(secret);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 // The session cookie is derived DETERMINISTICALLY from the password (HMAC), not
 // a per-login random token kept in memory. That way it survives a server
@@ -680,7 +716,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -741,7 +777,13 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
     const env = cronCheckEnv({
       base: process.env,
       secrets: secretEnv,
-      session: { id: c.sessionId, port: String(boundPort || START_PORT), key: sessionKeyFor(c.sessionId) },
+      session: {
+        id: c.sessionId,
+        port: String(boundPort || START_PORT),
+        key: sessionKeyFor(c.sessionId),
+        // The TARGET agent's own registry, resolved exactly like its spawn's.
+        peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
+      },
       user,
       home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
     });
@@ -1222,13 +1264,21 @@ function rpFor(req: { headers: Record<string, unknown> }): Rp | null {
   }
 }
 
-function sessionCookie(name: string, mfa: boolean): string {
-  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
+type CookieReq = { headers: Record<string, unknown>; socket?: { remoteAddress?: string; encrypted?: boolean } };
+/** `; Secure` when the browser reached us over HTTPS (directly, or through a
+ *  local/private proxy that says so in `X-Forwarded-Proto`). Never on plain
+ *  http: a Secure cookie there is simply not stored, i.e. no sign-in at all. */
+function secureAttr(req: CookieReq): string {
+  const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
+  return requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers) ? "; Secure" : "";
 }
-function pendingCookie(name: string): string {
-  return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}`;
+function sessionCookie(name: string, mfa: boolean, req: CookieReq): string {
+  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
 }
-const CLEAR_PENDING = "sk_pending=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0";
+function pendingCookie(name: string, req: CookieReq): string {
+  return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}${secureAttr(req)}`;
+}
+const clearPending = (req: CookieReq) => `sk_pending=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureAttr(req)}`;
 function pendingUser(req: { headers: Record<string, unknown> }): string | null {
   const m = /(?:^|;\s*)sk_pending=([^;]+)/.exec((req.headers.cookie as string | undefined) ?? "");
   return m ? readPending(decodeURIComponent(m[1]), signingSecret(), Date.now()) : null;
@@ -1678,6 +1728,26 @@ function requestOriginOk(req: { headers: Record<string, unknown> }): boolean {
   );
 }
 
+// DNS rebinding (see `hostHeaderAllowed`): a Host naming none of our own names
+// is refused before anything else — the Origin check below cannot see it,
+// since a rebound page is same-origin with itself. Logged once per name, so a
+// lockout from a legitimate name is diagnosable from the log.
+const refusedHostsLogged = new Set<string>();
+function requestHostOk(req: { headers: Record<string, unknown> }): boolean {
+  const host = req.headers.host as string | undefined;
+  if (hostHeaderAllowed(host, HOST_POLICY)) return true;
+  const key = String(host);
+  if (!refusedHostsLogged.has(key) && refusedHostsLogged.size < 100) {
+    refusedHostsLogged.add(key);
+    console.warn(`net: refused Host ${JSON.stringify(key)} — not one of this cockpit's names (set SHADOK_ALLOWED_HOSTS if it is)`);
+  }
+  return false;
+}
+app.use((req, res, next) => {
+  if (requestHostOk(req)) return next();
+  res.status(403).json({ error: hostRefusal(String(req.headers.host ?? "")) });
+});
+
 // A browser from another origin has no business here — /login included, or a
 // third-party page could try passwords. Placed BEFORE everything else.
 app.use((req, res, next) => {
@@ -1696,21 +1766,42 @@ const webauthnUmd = path.join(
 );
 app.get("/vendor/simplewebauthn.js", (_req, res) => res.sendFile(webauthnUmd, { dotfiles: "allow" }));
 
+// Failed sign-ins and enrollment codes, per address and per account. In
+// memory: a restart forgets it, deliberately (src/login-limit.ts).
+const loginLimiter = new AttemptLimiter(LOGIN_LIMITS);
+const enrollLimiter = new AttemptLimiter(LOGIN_LIMITS);
+function tooManyAttempts(res: express.Response, retryAfterMs: number) {
+  const s = Math.ceil(retryAfterMs / 1000);
+  res.setHeader("Retry-After", String(s));
+  return res.status(429).json({ error: `too many failed attempts — try again in ${Math.ceil(s / 60)} min` });
+}
+
 // Login endpoint (always reachable) — sets an HttpOnly cookie naming the user.
-app.post("/login", (req, res) => {
+app.post("/login", async (req, res) => {
   if (!GUI_PASSWORD) return res.json({ ok: true });
   const user = String(req.body?.user ?? "").trim();
   const password = String(req.body?.password ?? "");
+  // Charged to the caller's address AND the account (src/login-limit.ts). A
+  // blocked attempt is refused before any hashing, with one wording whether
+  // the name exists or not.
+  const keys = loginKeys(clientAddress(req.socket.remoteAddress, req.headers), user === BOOTSTRAP_ADMIN ? "" : user);
+  const gate = loginLimiter.check(keys);
+  if (!gate.ok) return tooManyAttempts(res, gate.retryAfterMs);
   // No username means the instance password: the habit of typing just the
   // password keeps working, and that IS the bootstrap admin.
-  const ok =
-    !user || user === BOOTSTRAP_ADMIN
-      ? passwordMatches(password)
-      : (() => {
-          const a = loadAccounts().find((x) => x.name === user);
-          return !!a?.passwordHash && verifyPassword(password, a.passwordHash);
-        })();
-  if (!ok) return res.status(401).json({ error: "wrong username or password" });
+  let ok: boolean;
+  if (!user || user === BOOTSTRAP_ADMIN) ok = passwordMatches(password);
+  else {
+    const a = loadAccounts().find((x) => x.name === user);
+    // An unknown name (or an unredeemed invitation) pays the same scrypt as a
+    // real one, so the answer's timing says nothing about who exists.
+    ok = a?.passwordHash ? await verifyPasswordAsync(password, a.passwordHash) : await burnPasswordCheck(password);
+  }
+  if (!ok) {
+    loginLimiter.fail(keys);
+    return res.status(401).json({ error: "wrong username or password" });
+  }
+  loginLimiter.succeed(keys);
   const name = user || BOOTSTRAP_ADMIN;
   if (twoFactorOn()) {
     // Only AFTER the password checked out, so this says nothing to a guesser.
@@ -1719,10 +1810,10 @@ app.post("/login", (req, res) => {
     // The password is half: a short-lived pending cookie carries it to the
     // passkey step, and no session exists until that step succeeds.
     const next = loginNext(loadAccounts().find((a) => a.name === name), true);
-    res.setHeader("Set-Cookie", pendingCookie(name));
+    res.setHeader("Set-Cookie", pendingCookie(name, req));
     return res.json({ ok: true, user: name, next });
   }
-  res.setHeader("Set-Cookie", sessionCookie(name, false));
+  res.setHeader("Set-Cookie", sessionCookie(name, false, req));
   return res.json({ ok: true, user: name });
 });
 
@@ -1746,7 +1837,7 @@ app.post("/login/passkey", async (req, res) => {
   const used = await verifyAuthentication(rp, challenge, req.body?.response, acct, Date.now());
   if (!used) return res.status(401).json({ error: "the passkey was not accepted" });
   updateAccount(name, (a) => ({ ...a, passkeys: (a.passkeys ?? []).map((p) => (p.id === used.id ? used : p)) }));
-  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.setHeader("Set-Cookie", [sessionCookie(name, true, req), clearPending(req)]);
   res.json({ ok: true, user: name });
 });
 
@@ -1758,8 +1849,15 @@ app.post("/login/enroll/options", async (req, res) => {
   const rp = rpFor(req);
   const acct = name ? loadAccounts().find((a) => a.name === name) : undefined;
   if (!name || !rp || !acct) return res.status(401).json({ error: "sign in with your password again" });
+  // An enrollment code is short enough to guess at speed: same limiter shape.
+  const keys = loginKeys(clientAddress(req.socket.remoteAddress, req.headers), name);
+  const gate = enrollLimiter.check(keys);
+  if (!gate.ok) return tooManyAttempts(res, gate.retryAfterMs);
   const v = enrollCodeVerdict(acct, req.body?.code, Date.now());
-  if (!v.ok) return res.status(403).json({ error: v.error });
+  if (!v.ok) {
+    enrollLimiter.fail(keys);
+    return res.status(403).json({ error: v.error });
+  }
   const options = await registrationOptions(rp, acct);
   res.json({ options, challengeId: putChallenge(options.challenge, name, "register") });
 });
@@ -1781,7 +1879,7 @@ app.post("/login/enroll", async (req, res) => {
   });
   console.log(`2fa: ${name} registered a passkey (${pk.label}) with an enrollment code from ${acct.enroll?.by}`);
   recordEvent({ kind: "passkey-added", actor: name, target: name, detail: pk.label, passkeyId: pk.id });
-  res.setHeader("Set-Cookie", [sessionCookie(name, true), CLEAR_PENDING]);
+  res.setHeader("Set-Cookie", [sessionCookie(name, true, req), clearPending(req)]);
   res.json({ ok: true, user: name });
 });
 
@@ -1798,11 +1896,17 @@ app.get("/invite/:token", (req, res) => {
 app.post("/invite/:token", async (req, res) => {
   const token = String(req.params.token ?? "");
   const password = String(req.body?.password ?? "");
+  const pre = inviteVerdict(loadAccounts().find((a) => a.invite?.token === token), token, Date.now());
+  if (!pre.ok) return res.status(400).json({ error: pre.error });
+  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
+  // Hashed off the event loop (src/accounts.ts), THEN the file is read and the
+  // invitation checked again: a second redemption that raced this one during
+  // the hash finds the invite already gone.
+  const passwordHash = await hashPasswordAsync(password);
   const list = loadAccounts();
   const acct = list.find((a) => a.invite?.token === token);
   const v = inviteVerdict(acct, token, Date.now());
   if (!v.ok) return res.status(400).json({ error: v.error });
-  if (password.length < 8) return res.status(400).json({ error: "password must be at least 8 characters" });
   // Redeeming DROPS the invite and sets the hash: the link is single-use by
   // construction, not by a flag someone could forget to check.
   // With two-factor on, the invitation ALSO authorises registering a passkey:
@@ -1821,7 +1925,7 @@ app.post("/invite/:token", async (req, res) => {
             name: a.name,
             role: a.role,
             createdAt: a.createdAt,
-            passwordHash: hashPassword(password),
+            passwordHash,
             ...(a.passkeys?.length ? { passkeys: a.passkeys } : {}),
             // Kept: dropping it would bring a session from before the reset
             // back to life the moment the new password is set.
@@ -1838,7 +1942,7 @@ app.post("/invite/:token", async (req, res) => {
   // which is why it is awaited but cannot throw out of the handler.
   await ensurePrivateGroupProvisioned(acct!.name);
   if (tfa) {
-    res.setHeader("Set-Cookie", pendingCookie(acct!.name));
+    res.setHeader("Set-Cookie", pendingCookie(acct!.name, req));
     if (keptPasskey) return res.json({ ok: true, user: acct!.name, next: "passkey" });
     return res.json({ ok: true, user: acct!.name, next: "enroll", code: enroll!.code });
   }
@@ -1846,18 +1950,15 @@ app.post("/invite/:token", async (req, res) => {
   // authentication, and without this the browser keeps whatever session it
   // already had — an admin who invites someone from their own browser lands
   // back as the admin, with nothing to say the redemption did not take.
-  res.setHeader(
-    "Set-Cookie",
-    `sk_auth=${signSession(acct!.name, Date.now(), signingSecret())}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`,
-  );
+  res.setHeader("Set-Cookie", sessionCookie(acct!.name, false, req));
   res.json({ ok: true, user: acct!.name });
 });
 
 // Signing out expires the cookie. Before the gate on purpose: throwing away a
 // session must work even when that session is already invalid, otherwise a
 // stale cookie would leave you stuck on a 401 with no way to clear it.
-app.post("/logout", (_req, res) => {
-  res.setHeader("Set-Cookie", ["sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0", CLEAR_PENDING]);
+app.post("/logout", (req, res) => {
+  res.setHeader("Set-Cookie", [`sk_auth=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0${secureAttr(req)}`, clearPending(req)]);
   res.json({ ok: true });
 });
 
@@ -2079,9 +2180,9 @@ app.get("/sessions", (req, res) => {
 // Sessions alive in THIS server (agents spawned by any client, including the
 // pilotctl thin client). They own no transcript until their first turn, so
 // /sessions cannot see them — this is the only way the UI can list them.
-// The `/` commands the composer offers: the factory skills attached to this
-// agent (src/slash-commands.ts). Read on each call, so a skill attached a minute
-// ago shows up without a restart.
+// The `/` commands the composer offers: the factory skills this agent has
+// (shared with it, src/slash-commands.ts). Read on each call, so a skill shared
+// a minute ago shows up without a restart.
 app.get("/commands", (req, res) => {
   const id = String(req.query.session ?? "");
   const skills = loadRegistry(factoryRoot()).skills;
@@ -3339,6 +3440,161 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // of trusted directories in one write each, so none strands on the trust
   // dialog when the resume storm rebuilds a wiped (ephemeral) group HOME.
   preseedGroupHomes();
+  // And heal the commons agent's own helper scripts + cron guards, which the HOME
+  // move off /root left stranded (see below).
+  await healCommonsStrandedScripts();
+  // Then take back the ownership of the server's OWN credentials, which the
+  // commons chown swept (see below) — the SSH identity first of all.
+  await healServerOwnedState();
+}
+
+/**
+ * Boot self-heal for the commons agent's OWN helper scripts and cron guards after
+ * its HOME moved off `/root` to `/home/main`. A cron guard runs DROPPED as the
+ * commons `main` user, which cannot traverse `/root` (0700) — so ANY absolute
+ * `/root/...` path it names (script or sibling state file) is unreadable and the
+ * guard dies `check-failed` in silence (measured on a live instance: monitoring
+ * crons stuck, "son script est sous /root"). New agents are fine (their HOME is
+ * already `/home/main`); this is the one-way carry for what predates the move.
+ *
+ * What is relocated here and then repointed:
+ *  1. `~/.claude/skills` — ALWAYS, the subtree `migChownTreeToCommons` skipped,
+ *     where an agent keeps the custom skills it authored even when no guard names
+ *     them (#419).
+ *  2. Every home-rooted `<top>/<sub>` script dir a cron check NAMES — `.claude/scripts`
+ *     (seen on the biosense cockpit), any `.shadok-ai/<dir>` (the dogfood instance),
+ *     and any future one — discovered by `strandedCheckDirs`. The trap is not one
+ *     directory, it is "any `/root` path a check names". Its denylist refuses shadok's
+ *     own state/credential stores and the big already-migrated `.claude` trees, so a
+ *     key/secret dir is NEVER copied into `/home/main`.
+ *
+ * Runs on EVERY capable boot, independent of the migration marker (the twin of
+ * the reprovision reconciler above), so an ALREADY-migrated instance self-heals on
+ * the next update rather than needing a hand fix. Idempotent and best-effort: a
+ * failure here must never take down boot, and a re-run finds the copy already done
+ * (`cp -rn`, non-clobber) and the checks already rewritten (identity). No-op unless
+ * the HOME actually moved (mono-tenant / pre-migration: old === new).
+ */
+async function healCommonsStrandedScripts(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const oldHome = os.homedir();
+  const newHome = homeForUser(COMMONS_USER, GROUP_HOME_BASE);
+  if (!newHome || newHome === oldHome) return; // not migrated off /root → nothing moved
+  const owner = `${COMMONS_USER}:${COMMONS_USER}`;
+  // Carry one relative tree <oldHome>/<rel> → <newHome>/<rel>, non-clobber, owned
+  // by `main`. The parent is `install -d`'d too so `~/.shadok-ai` exists in the new
+  // HOME. No-op when the source is absent.
+  const copyTree = async (rel: string): Promise<void> => {
+    const src = path.join(oldHome, rel);
+    if (!fs.existsSync(src)) return;
+    const dst = path.join(newHome, rel);
+    await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, path.dirname(dst)]);
+    await runPrivileged("install", ["-d", "-o", COMMONS_USER, "-g", COMMONS_USER, dst]);
+    await runPrivileged("cp", ["-rn", `${src}/.`, `${dst}/`], { timeoutMs: TREE_OP_TIMEOUT_MS });
+    await runPrivileged("chown", ["-R", owner, dst], { timeoutMs: TREE_OP_TIMEOUT_MS });
+  };
+  // Load once; the same list feeds the dir discovery AND the rewrite below.
+  let crons: ReturnType<typeof loadCrons> = [];
+  try {
+    crons = loadCrons();
+  } catch (e) {
+    console.error(`heal: reading crons failed (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+  // The home-rooted <top>/<sub> script dirs the guards name (.claude/scripts,
+  // .shadok-ai/<dir>, …), deduped — never a credential/state dir, strandedCheckDirs
+  // denylists those.
+  const scriptDirs = [
+    ...new Set(crons.flatMap((c) => (c.check ? strandedCheckDirs(c.check, oldHome) : []))),
+  ];
+  // 1) Relocate ~/.claude/skills unconditionally (the subtree the migration skipped,
+  //    where an agent's custom skills live even when no guard names them), plus every
+  //    discovered script dir. Deduped; each copy is independent and best-effort.
+  for (const rel of [...new Set([path.join(".claude", "skills"), ...scriptDirs])]) {
+    try {
+      await copyTree(rel);
+    } catch (e) {
+      console.error(`heal: relocating commons ~/${rel} failed (best-effort): ${(e as Error)?.message ?? e}`);
+    }
+  }
+  // 2) Repoint this instance's cron guards: the .claude base (covers any .claude/*
+  //    path) AND every relocated .shadok-ai/<dir>. A /root path NOT relocated (a
+  //    denylisted or unknown dir) stays intact — surfaced as a check-failed, not
+  //    silently repointed to a place nothing was copied.
+  try {
+    let changed = false;
+    for (const c of crons) {
+      if (!c.check) continue;
+      const next = rewriteCronCheckHome(c.check, oldHome, newHome, scriptDirs);
+      if (next !== c.check) {
+        c.check = next;
+        changed = true;
+      }
+    }
+    if (changed) {
+      saveCrons(crons);
+      console.log(
+        `heal: repointed cron guard path(s) from ${oldHome} → ${newHome} ` +
+          `(.claude${scriptDirs.length ? ", " + scriptDirs.join(", ") : ""})`,
+      );
+    }
+  } catch (e) {
+    console.error(`heal: rewriting cron guard paths failed (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+}
+
+/**
+ * Boot self-heal, twin of `healCommonsStrandedScripts`: give the SERVER back the
+ * ownership of its own credential and identity state, which the migration's
+ * unbounded `chown -R main:main ~/.shadok-ai` swept along with the working state
+ * (`SERVER_OWNED_STATE` carries the full reasoning and the measured symptom —
+ * every root-side `ssh` dying on `Bad owner or permissions on /root/.ssh/config`,
+ * because OpenSSH checks the OWNER of a key and a config, not only its mode).
+ *
+ * Runs on EVERY capable boot, independent of the migration marker, so an instance
+ * already migrated by an older build heals on its next update. Idempotent and
+ * cheap in the normal case: a few `lstat`s and NO privileged spawn once everything
+ * is ours again — which is what makes it safe to run unconditionally.
+ *
+ * A directory is judged on itself AND its immediate entries, because a hand repair
+ * typically re-owns the directory and leaves the key inside it foreign — the one
+ * state in which `ssh` still refuses and the top-level check alone would call it
+ * healed. Best-effort per path: a failure here must never take down the boot, and
+ * it is reported rather than swallowed (a silent chown is indistinguishable from
+ * one that never ran — the lesson of `src/claude-home.ts`).
+ */
+async function healServerOwnedState(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const owner = `${uid}:${gid}`;
+  // Is anything under `p` owned by someone else? One level deep is enough: the
+  // chown that causes this is `-R`, so a subtree moves as a whole, and a partial
+  // tree is a hand repair, whose usual shape is "dir re-owned, contents not".
+  const foreign = (p: string): boolean => {
+    try {
+      if (fs.lstatSync(p).uid !== uid) return true;
+      if (!fs.statSync(p).isDirectory()) return false;
+      for (const e of fs.readdirSync(p)) {
+        try {
+          if (fs.lstatSync(path.join(p, e)).uid !== uid) return true;
+        } catch {
+          /* raced away — nothing to re-own */
+        }
+      }
+      return false;
+    } catch {
+      return false; // unreadable or gone: not ours to repair
+    }
+  };
+  for (const p of serverOwnedStatePaths(os.homedir())) {
+    if (!fs.existsSync(p) || !foreign(p)) continue;
+    try {
+      await runPrivileged("chown", ["-R", owner, p], { timeoutMs: TREE_OP_TIMEOUT_MS });
+      console.log(`heal: ${p} was owned by another user; given back to the server (${owner})`);
+    } catch (e) {
+      console.error(`heal: could not re-own ${p} (best-effort): ${(e as Error)?.message ?? e}`);
+    }
+  }
 }
 
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
@@ -3684,10 +3940,19 @@ mountFactory(app, {
   },
   tenantGroup: (g) => factoryTenantGroup(g),
   loadChannels: () => loadChannels(),
-  upsertChannel: (patch) => upsertChannel(patch),
-  onAttachmentsChanged: (id) => {
-    const s = sessions.get(id);
-    if (s) broadcastStaleness(s);
+  skillsOf: (id) => attachmentsFor(id) ?? [],
+  runningSkills: (id) => {
+    // `<name>@<N>-<tree8>` (pluginDirName): the release each spawned dir holds.
+    const out: Record<string, number> = {};
+    for (const d of runningPlugins.get(id) ?? []) {
+      const m = /^(.+)@(\d+)-[0-9a-f]+$/.exec(path.basename(d));
+      if (m) out[m[1]] = Number(m[2]);
+    }
+    return out;
+  },
+  onSkillsChanged: () => {
+    const channels = loadChannels();
+    for (const s of sessions.values()) if (!s.pilot.hasExited) broadcastStaleness(s, channels);
   },
   prune: () => pruneFactoryPlugins(),
   reloadIfIdle: (id) => {
@@ -3715,10 +3980,6 @@ mountFactory(app, {
     const user = iso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
     return { home: agentStateHome(user), user, group: iso.groupPatch.group ?? null };
   },
-  cronsOf: (id) =>
-    loadCrons()
-      .filter((c) => c.sessionId === id && c.enabled)
-      .map((c) => ({ label: scheduleLabel(c.schedule, cronTimeZone(c)), prompt: c.prompt.slice(0, 120) })),
   agentMcp: (id) => {
     const p = loadChannels().find((c) => c.sessionId === id)?.profile;
     const prof = p ? effectiveProfile(getProfile(p)) : undefined;
@@ -3832,7 +4093,7 @@ app.delete("/secrets", (req, res) => {
 // only: the address carries a one-time sign-in code. See src/oauth-relay.ts.
 app.post("/oauth-relay", async (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "web UI only" });
-  const r = await relayOAuthCallback(req.body?.url);
+  const r = await relayOAuthCallback(req.body?.url, 10_000, { ownPort: boundPort || START_PORT });
   res.status(r.ok ? 200 : 400).json(r);
 });
 
@@ -4171,7 +4432,7 @@ app.post("/2fa/passkey/delete", async (req, res) => {
   if (twoFactorOn() && owner === me.name && !after.find((a) => a.name === owner)?.passkeys?.length)
     return res.status(400).json({ error: "that is your last passkey — with two-factor on you could no longer sign in" });
   saveAccounts(after);
-  if (owner === me.name) res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa));
+  if (owner === me.name) res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa, req));
   console.log(`2fa: ${me.name} removed a passkey of ${owner}`);
   recordEvent({ kind: "passkey-removed", actor: me.name, target: owner });
   res.json({ ok: true });
@@ -4264,7 +4525,7 @@ app.post("/2fa/not-me", (req, res) => {
     ...(v.removePasskey ? { passkeys: (a.passkeys ?? []).filter((p) => p.id !== v.removePasskey) } : {}),
   }));
   if (v.cancelRequest) closeRequest(v.cancelRequest, "cancelled", me.name);
-  res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa));
+  res.setHeader("Set-Cookie", sessionCookie(me.name, !!cookieSession(req)?.mfa, req));
   saveEvents(events.map((e) => (e.id === ev!.id ? { ...e, disowned: true } : e)));
   recordEvent({ kind: "not-me", actor: me.name, target: me.name, about: ev!.id, detail: describeEvent(ev!) });
   console.log(`2fa: ${me.name} reported "this wasn't me" on ${ev!.kind}`);
@@ -4462,7 +4723,7 @@ app.post("/2fa/enabled", async (req, res) => {
   recordEvent({ kind: "two-factor", actor: me.name, target: "*", detail: on ? "on" : "off" });
   // Re-issue the actor's cookie with the second-factor flag: they just proved
   // it, and the switch would otherwise sign them out of their own tab.
-  res.setHeader("Set-Cookie", sessionCookie(me.name, true));
+  res.setHeader("Set-Cookie", sessionCookie(me.name, true, req));
   res.json({ ok: true, enabled: on });
 });
 
@@ -4640,7 +4901,7 @@ app.put("/profiles/prompt", (req, res) => {
   const id = localSessionForKey(req, key);
   if (!id) return res.status(403).json({ error: "unknown or missing session key" });
   // Profiles are global: in multi-tenant this write crosses every group's wall
-  // (invariant 61) — refused before any per-profile rule is consulted.
+  // (invariant 63) — refused before any per-profile rule is consulted.
   const modeRefusal = promptWriteRefusal({ mode: DEPLOYMENT_MODE });
   if (modeRefusal) return res.status(modeRefusal.status).json({ error: modeRefusal.error });
   const caller =
@@ -4849,7 +5110,7 @@ const wss = new WebSocketServer({
   // same-origin policy, so without it any page the user visits could open a
   // session and drive an agent.
   verifyClient: (info, cb) =>
-    cb(requestOriginOk(info.req) && (requestAuthed(info.req) || peerName(info.req) !== null)),
+    cb(requestHostOk(info.req) && requestOriginOk(info.req) && (requestAuthed(info.req) || peerName(info.req) !== null)),
 });
 // The ws server re-emits the http server's listen error; let the http server's
 // own handler drive the port fallback instead of crashing on the re-emit.
@@ -5995,12 +6256,6 @@ function installedCapabilities(): { name: string; description: string }[] {
  * plugin directories themselves are materialised by `makePilot`, never by the
  * staleness sweep.
  */
-/**
- * Skills asked for at `start` (the creation popin's picker, `pilotctl --skill`),
- * held until `ready` records them on the channel: the channel row does not
- * exist yet when `makePilot` runs for a brand-new agent.
- */
-const pendingSkills = new Map<string, Attachment[]>();
 /** Plugin directories each process was SPAWNED with — a busy agent not yet
  *  reloaded still runs from these, so they must survive a prune. */
 const runningPlugins = new Map<string, string[]>();
@@ -6015,9 +6270,9 @@ function countFactoryRun(skillArg: string, agentId: string): void {
 function pruneFactoryPlugins(): void {
   const skills = loadRegistry(factoryRoot()).skills;
   const keep = new Set<string>();
-  for (const c of loadChannels()) for (const n of attachmentDirNames(skills, c.skills)) keep.add(n);
+  for (const c of loadChannels()) for (const n of attachmentDirNames(skills, attachmentsFor(c.sessionId))) keep.add(n);
   for (const [, dirs] of runningPlugins) for (const d of dirs) keep.add(path.basename(d));
-  for (const [, att] of pendingSkills) for (const n of attachmentDirNames(skills, att)) keep.add(n);
+  for (const id of pendingCtx.keys()) for (const n of attachmentDirNames(skills, attachmentsFor(id))) keep.add(n);
   const removed = prunePlugins(factoryRoot(), keep);
   if (removed.length) console.log(`factory: removed unused release dirs ${removed.join(", ")}`);
 }
@@ -6033,9 +6288,17 @@ function agentCtxFor(sessionId?: string | null): AgentCtx {
   return { group: ch?.group ?? p?.group ?? null, createdBy: ch?.createdBy ?? p?.createdBy ?? null };
 }
 
+/**
+ * The factory skills an agent runs: DERIVED from each skill's sharing and its
+ * group's acceptance (`availableAttachments`), never a per-agent list — a
+ * skill is not given to an agent, it is available to whoever it is shared
+ * with. Read at every call, so a share change or a Save reaches the agent at
+ * its next reload (the staleness sweep lights the indicator).
+ */
 function attachmentsFor(sessionId?: string | null): Attachment[] | undefined {
   if (!sessionId) return undefined;
-  return loadChannels().find((c) => c.sessionId === sessionId)?.skills ?? pendingSkills.get(sessionId);
+  const ctx = agentCtxFor(sessionId);
+  return availableAttachments(loadRegistry(factoryRoot()).skills, ctx, factoryTenantGroup(ctx.group));
 }
 
 /**
@@ -6096,26 +6359,6 @@ function factorySecretsFor(sessionId?: string | null): string[] {
  */
 function factorySecretEnv(sessionId: string | null | undefined, group: string | null | undefined): Record<string, string> {
   return secretsFor(factorySecretsFor(sessionId), group ?? MAIN_GROUP_ID, commonsGroupIds());
-}
-
-/** Pure-ish: turn a `start`'s requested skills into accepted attachments. */
-function resolveBirthSkills(req: { skill: string; release?: number }[], agent: AgentCtx): { ok: Attachment[]; refused: string[] } {
-  const skills = loadRegistry(factoryRoot()).skills;
-  const ok: Attachment[] = [];
-  const refused: string[] = [];
-  for (const r of req.slice(0, 20)) {
-    const s = skills.find((x) => x.id === r?.skill || x.name === r?.skill);
-    if (!s) { refused.push(`${r?.skill}: no such skill`); continue; }
-    // Accepted for THIS agent's group (multi-tenant), not merely for Main.
-    const accepted = s.releases.filter((rel) => !!acceptanceFor(s, rel, factoryTenantGroup(agent.group)));
-    const rel = r.release == null ? accepted[accepted.length - 1] : accepted.find((x) => x.n === Number(r.release));
-    if (!rel) { refused.push(`${s.name}${r.release != null ? "@" + r.release : ""}: no accepted release`); continue; }
-    // A private skill is attached by its owner only: the person starting the agent.
-    if (!scopeVisibleTo(s.owner, agent.createdBy ?? null)) { refused.push(`${s.name}: private to someone else`); continue; }
-    if (s.archived) { refused.push(`${s.name}: archived`); continue; }
-    if (!ok.some((a) => a.skill === s.id)) ok.push({ skill: s.id, release: rel.n });
-  }
-  return { ok, refused };
 }
 
 function factorySkillsFor(sessionId?: string | null): { name: string; release: number; tree: string }[] {
@@ -6346,11 +6589,41 @@ function dropUserCwds(): Map<string, Set<string>> {
  * comment on `seedHomeTrust` / `preseedGroupHomes`. Runs AS the group user,
  * SYNCHRONOUSLY and ADDITIVELY; best-effort.
  */
+/**
+ * Make sure the tier's own state directory exists AND belongs to the tier user,
+ * before anything the server does as root can create it with `recursive: true`.
+ * See `tierStateDirAction` for why this is a three-way decision and why the
+ * chown stops at the directory. Best-effort and silent on the happy path: it
+ * runs before every spawn, and a failure here must never block one — the agent
+ * then fails the way it did before, with its own clear EACCES.
+ */
+function ensureTierStateDir(user: string, home: string): void {
+  const dir = tierStateDir(home);
+  try {
+    const exists = fs.existsSync(dir);
+    const writableByUser = exists && spawnAsUserSync(user, "test", ["-w", dir]).ok;
+    const action = tierStateDirAction({ exists, writableByUser });
+    if (!action) return;
+    if (action === "create") {
+      if (!spawnAsUserSync(user, "mkdir", ["-p", dir]).ok) throw new Error(`mkdir ${dir} as ${user} failed`);
+      console.log(`osusers: created ${dir} for ${user}`);
+      return;
+    }
+    // Repair: root owns a directory inside someone else's home. Not recursive.
+    const r = spawnSync("chown", [`${user}:${user}`, dir], { encoding: "utf8", timeout: 15_000 });
+    if (r.status !== 0) throw new Error(`chown ${dir} → ${user} failed`);
+    console.log(`osusers: ${dir} was not writable by ${user} — ownership restored`);
+  } catch (e) {
+    console.log(`osusers: could not secure ${dir} for ${user} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function seedGroupAgentHome(user: string, home: string, cwd: string): void {
   const cwds = new Set<string>([cwd]);
   const siblings = dropUserCwds().get(user);
   if (siblings) for (const c of siblings) cwds.add(c);
   seedHomeTrust(user, home, [...cwds]);
+  ensureTierStateDir(user, home);
 }
 
 /**
@@ -6364,11 +6637,47 @@ function seedGroupAgentHome(user: string, home: string, cwd: string): void {
  * while `/root`'s — volume-backed — had it). Best-effort; mono-tenant or
  * un-migrated → no drop users → no-op.
  */
+/**
+ * Carry the PRE-TIER outbound peers registry (the one in the server's home) into
+ * the COMMONS tier's own, once. See `tierPeersOutSeed` for why the commons and
+ * nowhere else: before the tiers existed every agent ran as root and read exactly
+ * this file, so the commons inheriting it changes nothing about who holds what,
+ * while copying it into a private group would hand it a credential nobody granted.
+ *
+ * Copied AS the commons user (`writeAsUserAtomic`), so the new file is owned by
+ * the tier and root never writes through a home it does not own. Best-effort:
+ * an instance with no peers configured has nothing to carry, and a failure leaves
+ * `--peer` exactly as broken as it already was, with nothing new to diagnose.
+ */
+function seedCommonsPeersOut(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  const user = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  if (!user) return;
+  const serverFile = peersOutFileFor(process.cwd(), os.homedir());
+  const tierFile = peersOutFileFor(process.cwd(), agentStateHome(user));
+  try {
+    const seed = tierPeersOutSeed({
+      tier: "commons",
+      serverHasFile: fs.existsSync(serverFile),
+      tierHasFile: fs.existsSync(tierFile),
+    });
+    if (!seed) return;
+    writeAsUserAtomic(user, tierFile, fs.readFileSync(serverFile, "utf8"));
+    spawnAsUserSync(user, "chmod", ["600", tierFile]);
+    console.log(`peers: carried the outbound registry into ${tierFile}`);
+  } catch (e) {
+    console.log(`peers: could not seed ${tierFile} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 function preseedGroupHomes(): void {
   if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
   for (const [user, cwds] of dropUserCwds()) {
-    seedHomeTrust(user, homeForUser(user, GROUP_HOME_BASE), [...cwds]);
+    const home = homeForUser(user, GROUP_HOME_BASE);
+    seedHomeTrust(user, home, [...cwds]);
+    ensureTierStateDir(user, home);
   }
+  seedCommonsPeersOut();
 }
 
 function makePilot(
@@ -6438,7 +6747,10 @@ function makePilot(
   env.SHADOK_LEDGER_FILE = ledgerFileFor(process.cwd());
   // The PER-INSTANCE outbound-peers file (same reason): `pilotctl --peer <alias>`
   // reads it to reach another instance's agents. See src/peers.ts.
-  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd());
+  // Per TIER, not per server home: the path used to be derived from `os.homedir()`,
+  // so a dropped agent was handed a registry under /root (700) it cannot read and
+  // `--peer` died silently (an unreadable file parses as "no peers"). Invariant 54.
+  env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd(), agentStateHome(user));
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
@@ -6653,6 +6965,14 @@ interface Live {
   /** Last staleness reasons broadcast for this session (serialised), so the
    *  periodic sweep only re-broadcasts when they actually change. */
   lastStaleSig?: string;
+  /** When anything last happened on this agent (a client message, a turn
+   *  ending, a respawn) — the auto-reload's quiet window counts from here. */
+  lastActivityAt?: number;
+  /** When the auto-reload last respawned this agent (its loop backoff). */
+  lastAutoReloadAt?: number;
+  /** Settles when the restart in progress has finished — a prompt arriving
+   *  mid-respawn waits on it instead of typing into a process being replaced. */
+  restartDone?: Promise<void>;
   /** Experimental raw terminal: pilot detach fn + the clients streaming it.
    *  The pipe stays open while ≥1 client is attached, closed when the last
    *  leaves. */
@@ -6696,6 +7016,14 @@ function broadcast(s: Live, msg: object, except?: WebSocket) {
  * Shared by the `restart` message and by `set-profile` with `restart: true`.
  */
 async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void> {
+  const done = restartSessionNow(s, by).finally(() => {
+    s.lastActivityAt = Date.now();
+  });
+  s.restartDone = done.catch(() => {});
+  return done;
+}
+
+async function restartSessionNow(s: Live, by: SpawnBy): Promise<void> {
   // Fail-closed group check BEFORE any teardown. A restart re-derives the OS
   // user from the channel's stored group; if that group no longer resolves,
   // `resolveSpawnIsolation` would derive a null user and respawn a private agent
@@ -6810,6 +7138,7 @@ async function restartSession(s: Live, by: SpawnBy = SYSTEM_SPAWN): Promise<void
     sessionId: s.id,
     preprompt: prepromptById.get(s.id) ?? [],
     stale: sessionStaleness(s),
+    staleAuto: AUTO_RELOAD,
     cwd: s.cwd,
     branch: s.worktree?.branch ?? null,
     lastTurnMs: s.lastTurnMs,
@@ -6922,7 +7251,67 @@ function sessionStaleness(s: Live, channels?: Channel[]): StaleReason[] {
 }
 
 function staleMessage(s: Live, channels?: Channel[]) {
-  return { type: "stale" as const, sessionId: s.id, reasons: sessionStaleness(s, channels) };
+  // `auto`: the cockpit will apply it by itself once the agent is idle, so the
+  // badge reads "applies when idle" rather than asking for a click.
+  return { type: "stale" as const, sessionId: s.id, reasons: sessionStaleness(s, channels), auto: AUTO_RELOAD };
+}
+
+// ── Auto-reload: apply a pending reload at a moment that cuts nothing ────────
+// See src/auto-reload.ts for why each condition exists. One agent at a time —
+// the same no-herd rule as /restart-all (concurrent `--resume` race the OAuth
+// refresh) — and never a nudge afterwards: the agent was idle, so it stays idle.
+const AUTO_RELOAD = autoReloadEnabled(process.env.SHADOK_AUTO_RELOAD);
+const AUTO_RELOAD_QUIET_MS = Number(process.env.SHADOK_AUTO_RELOAD_IDLE_SEC ?? 120) * 1000;
+const AUTO_RELOAD_BACKOFF_MS = 30 * 60_000;
+let autoReloadRunning = false;
+
+/** Why `s` is behind, counting a profile stored "at next reload" too. */
+function pendingReloadReasons(s: Live, channels: Channel[]): string[] {
+  const out = sessionStaleness(s, channels).map((r) => r.kind as string);
+  if ((s.appliedProfile ?? null) !== (s.profile ?? null)) out.push("profile");
+  return out;
+}
+
+async function autoReloadSweep(): Promise<void> {
+  if (!AUTO_RELOAD || autoReloadRunning) return;
+  const channels = loadChannels();
+  const now = Date.now();
+  for (const s of sessions.values()) {
+    const reasons = pendingReloadReasons(s, channels);
+    if (!reasons.length) continue;
+    const screen = s.pilot.hasExited ? "" : s.pilot.screen();
+    const verdict = autoReloadVerdict({
+      enabled: AUTO_RELOAD,
+      pendingReasons: reasons.length,
+      busy: s.busy,
+      working: !s.pilot.hasExited && s.pilot.isWorking(),
+      submitting: !!s.submitting,
+      restarting: !!s.restarting,
+      exited: s.pilot.hasExited,
+      dialogOpen: s.lastDialogKey !== null || !!detectDialog(screen),
+      inputBox: boxText(screen),
+      shells: s.shells,
+      monitors: s.monitors,
+      inboxPending: parentInbox.get(s.id)?.length ?? 0,
+      retryPending: s.retryTimer !== null,
+      idleMs: now - Math.max(s.lastActivityAt ?? 0, s.lastContentAt ?? 0),
+      quietMs: AUTO_RELOAD_QUIET_MS,
+      sinceLastAutoMs: s.lastAutoReloadAt ? now - s.lastAutoReloadAt : Infinity,
+      backoffMs: AUTO_RELOAD_BACKOFF_MS,
+    });
+    if (!verdict.reload) continue;
+    autoReloadRunning = true;
+    s.lastAutoReloadAt = now;
+    console.log(`auto-reload: ${s.id.slice(0, 8)} idle — respawning to apply ${reasons.join(", ")}`);
+    try {
+      await restartSession(s, { actor: "auto-reload", via: "system" });
+    } catch {
+      /* logged by restartSession; the backoff keeps it from looping */
+    } finally {
+      autoReloadRunning = false;
+    }
+    return; // one per sweep: the next one waits for the next tick
+  }
 }
 
 /** Broadcast the staleness reasons, but only when they changed. */
@@ -7126,6 +7515,9 @@ async function createSession(
     monitors: 0,
     stopTail: null,
     recentTexts: [],
+    // A new Live (a spawn, an adoption after a server restart) counts as
+    // activity: the auto-reload waits a quiet window before touching it.
+    lastActivityAt: Date.now(),
     lastTurnSilent: false,
     worktree,
     idleTimer: null,
@@ -7558,6 +7950,7 @@ async function finishTurn(s: Live) {
   } finally {
     s.busy = false;
     s.interruptedAt = null;
+    s.lastActivityAt = Date.now();
     // Remember how long it took: a dialog suspends the turn and a completion
     // ends it, but both freeze the client's timer, so both are worth keeping.
     if (s.turnStartedAt) s.lastTurnMs = Date.now() - s.turnStartedAt;
@@ -7821,14 +8214,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     const b = Buffer.from(SYSTEM_DRIVE_SECRET);
     return a.length === b.length && timingSafeEqual(a, b);
   })();
+  // The Telegram bridge, proved the same way (its own secret, same compare).
+  const isTelegramBridge = presentsSecret(req, "x-shadok-bridge", TELEGRAM_BRIDGE_SECRET);
   // Who a respawn asked from this socket is credited to in the secret audit
   // log. A function, not a value: `origin` is only known once `start` arrives.
   const wsBy = (): SpawnBy =>
     spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent?.name });
   let session: Live | null = null;
-  // Where does this client come from? Declared at `start` (web, cron, telegram,
-  // cli…), it travels with the prompt echo: other clients must be able to SAY
-  // who spoke. Without it, a cron firing looks like a human message.
+  // Where does this client come from (web, cron, telegram, agent, peer, cli…)?
+  // It travels with the prompt echo — other clients must be able to SAY who
+  // spoke — and it decides the header the agent reads, whether `from` is
+  // believed, and whether the prompt is hidden. So it is DERIVED from what the
+  // connection proved (`connectionOrigin`), never taken from the `start` frame:
+  // a browser that declared `origin: "cron"` spoke to the agent unseen, and one
+  // that declared `"telegram"` signed its prompt with any name it liked. The
+  // frame's claim only ever narrows a bare local client to "cli"/"boot".
   let origin: string | undefined;
 
   const send = (msg: object) => {
@@ -7889,6 +8289,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       if (session) {
         const current = sessions.get(session.id);
         if (current && current !== session) session = current;
+        // Someone is interacting: hold the auto-reload's quiet window open.
+        session.lastActivityAt = Date.now();
       }
       // Any user takeover cancels a pending auto-retry and ends the streak.
       // "prompt" is settled inside its own case instead: a prompt refused on
@@ -7941,7 +8343,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               );
             }
           }
-          if (typeof msg.origin === "string") origin = msg.origin.slice(0, 16);
+          origin = connectionOrigin(
+            {
+              systemDrive: isSystemDrive,
+              telegramBridge: isTelegramBridge,
+              agent: !!callerAgent,
+              peer: !!callerPeer && !callerAgent,
+              browser: fromBrowser,
+            },
+            msg.origin,
+          );
           const cwd = msg.cwd?.trim() || process.cwd();
           // Deterministic id: enforced with --session-id for a new session,
           // known for a resume. NEVER derive it from the most recent file
@@ -8030,6 +8441,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // resolution further down. Hoisted out of the MT-token guard because the
           // worktree below must land in (and be owned by) this same user's home.
           let earlyUser: string | null = null;
+          // The group of the AGENT that launched this spawn, so a child joins its
+          // launcher's isolation domain instead of the admin viewer's Personal
+          // group. Read from `callerAgent` ONLY — the launcher identified by the
+          // unforgeable `x-shadok-session-key`, never the client-declared
+          // `msg.parent` (which a browser could set to any session id to plant a
+          // child in a group it does not belong to). A human/browser/peer spawn
+          // has no `callerAgent`, so this stays null and the viewer default
+          // applies. Computed once; reused by the early token pre-check and the
+          // real isolation resolution below.
+          const parentGroupId = callerAgent
+            ? loadChannels().find((c) => c.sessionId === callerAgent.id)?.group ?? null
+            : null;
           if (!resumed) {
             const earlyIso = resolveSpawnIsolation({
               mode: DEPLOYMENT_MODE,
@@ -8038,6 +8461,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               groups: loadGroups(),
               storedGroupId: null,
               requestedGroupId: typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null,
+              parentGroupId,
             });
             earlyUser = earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
             const earlyMsg = mtRefusal(earlyUser);
@@ -8132,6 +8556,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               sessionId: id,
               preprompt: prepromptById.get(id) ?? [],
               stale: sessionStaleness(session),
+              staleAuto: AUTO_RELOAD,
               cwd: session.cwd,
               lastTurnMs: session.lastTurnMs,
             });
@@ -8216,13 +8641,15 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               ? msg.name.trim().slice(0, 80)
               : undefined;
           // Isolation wall: the OS user to drop to, and the group a NEW agent is
-          // born into — BOTH derived from the caller's own identity (`me`), never
-          // from the caller's identity. A start msg MAY name its target group,
-          // honoured only when `canSeeGroup` (public or member), else ignored: it
-          // can place an agent in a group you belong to, never plant one in a
-          // group you don't. A resume keeps the channel's stored group and runs as
-          // that group's user. Mono-tenant resolves to no user / no group, so the
-          // spawn and the channel record stay byte-for-byte today's.
+          // born into — derived server-side, never from client claims. A start
+          // msg MAY name its target group, honoured only when `canSeeGroup`
+          // (public or member); else, a spawn launched BY another agent inherits
+          // that launcher's group (`parentGroupId`, from the unforgeable session
+          // key — so an agent-spawned child joins its parent's domain, not the
+          // admin viewer's Personal group); else the caller's own group. A resume
+          // keeps the channel's stored group and runs as that group's user.
+          // Mono-tenant resolves to no user / no group, so the spawn and the
+          // channel record stay byte-for-byte today's.
           // `storedGroupId`/`groupsNow` and the resume people-boundary gate were
           // resolved ABOVE the live-attach branch (see CRIT1 note there).
           const requestedGroupId =
@@ -8234,6 +8661,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             groups: groupsNow,
             storedGroupId,
             requestedGroupId,
+            parentGroupId,
           });
           // The group this agent really belongs to: a resume keeps the channel's
           // stored group; a new spawn gets the one the isolation policy derived
@@ -8252,9 +8680,6 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // instead of letting the spawn die on a bare auth error.
           const mtMsg = mtRefusal(dropUser);
           if (mtMsg) return fail(mtMsg);
-          // Born with skills: resolved and checked BEFORE the spawn, since
-          // `--plugin-dir` is a spawn arg. Held in `pendingSkills` until the
-          // channel row exists (written at ready, below).
           // Who this new agent belongs to, for factory skill scopes: the person
           // spawning it (an agent's spawn inherits its parent's creator, so a
           // lead's ticket agents stay "yours"), and the cockpit group the client
@@ -8266,22 +8691,14 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // creator — never for its principal name (`agent:<id>`).
             const ownCreator = me?.agent ? me.agent.createdBy ?? undefined : me?.name;
             initialCreatedBy = parentCh?.createdBy ?? ownCreator ?? undefined;
-            // The group only steers which shared skills are OFFERED: the one the
-            // isolation policy assigned, else the one the client created it in.
+            // The group decides which shared factory skills this agent RUNS (a
+            // skill runs wherever it is shared): the one the isolation policy
+            // assigned, else the one the client created it in.
             pendingCtx.set(id, { group: agentGroupId ?? requestedGroupId, createdBy: initialCreatedBy ?? null });
-          }
-          let initialSkills: Attachment[] | undefined;
-          if (!resumed && Array.isArray(msg.skills) && msg.skills.length) {
-            const { ok, refused } = resolveBirthSkills(msg.skills, pendingCtx.get(id) ?? {});
-            for (const r of refused) console.log(`factory: ${id.slice(0, 8)} not born with ${r}`);
-            if (ok.length) {
-              initialSkills = ok;
-              pendingSkills.set(id, ok);
-            }
           }
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
-            spawnActor({ account: me?.name, origin: msg.origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
+            spawnActor({ account: me?.name, origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
             dropUser,
             agentGroupId,
           );
@@ -8311,6 +8728,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             sessionId: id,
             preprompt: prepromptById.get(id) ?? [],
             stale: sessionStaleness(session),
+            staleAuto: AUTO_RELOAD,
             cwd: effectiveCwd,
             branch: worktree?.branch ?? null,
           });
@@ -8386,10 +8804,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // = commons, today's behaviour). A channel is never born with a
             // dangling group id: `spawnGroupFor` returns a real group or null.
             ...isolation.groupPatch,
-            ...(initialSkills ? { skills: initialSkills } : {}),
             ...(initialCreatedBy ? { createdBy: initialCreatedBy } : {}),
           });
-          pendingSkills.delete(id);
           pendingCtx.delete(id);
           send({ type: "tokens", tokens: tokenTotals(session) });
           send(profileMessage(session));
@@ -8410,7 +8826,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // browser is not: for a web client the SESSION decides, and whatever
           // `from` the frame carried is discarded. An agent is not trusted
           // either: its name comes from the key that signed the socket.
-          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name);
+          const author = promptAuthor(origin, me?.name, msg.from, callerAgent?.name, callerPeer ?? undefined);
           // Above the ideal pace, a prompt needs an explicit second click. The
           // check lives here because this is the single door every user prompt
           // goes through — including the pilotctl thin client.
@@ -8422,6 +8838,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // client's prompt) can have claimed the session while we awaited
             // getUsage(). Submitting now would interleave two texts into one
             // TUI. Mirrors the re-check fire() does after its own await.
+            if (session.busy) return fail("a response is already in progress", "busy");
+          }
+          // A respawn (an auto-reload, a reload click elsewhere) is swapping the
+          // process: typing now would land in the one being torn down. Wait for
+          // the new one — a few seconds — rather than refuse or lose the prompt.
+          if (session.restarting) {
+            await session.restartDone;
             if (session.busy) return fail("a response is already in progress", "busy");
           }
           // Getting here means the prompt is really being sent — that is the
@@ -8470,14 +8893,18 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // A slash command goes in bare: anything ahead of the `/` makes the
             // TUI read it as prose, and the agent never runs the command.
             const command = isSlashCommand(text);
-            if (!command && (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent")) {
+            if (
+              !command &&
+              (origin === "web" || origin === "telegram" || origin === "cli" || origin === "agent" || origin === "peer")
+            ) {
               // A transcribed voice note says so IN the platform field rather than
               // through a different `origin`: the gate just above matches the origin
               // EXACTLY, so an origin of "telegram vocal" would drop the header
               // entirely — losing the time and the sender to gain one word.
               // `parsePromptMeta` reads the platform as the first field and the
               // sender as everything past the time, so this widens neither.
-              const platform = msg.voice === true ? `${origin} vocal` : origin;
+              // Only the bridge transcribes voice notes, so only it may say so.
+              const platform = msg.voice === true && origin === "telegram" ? `${origin} vocal` : origin;
               // An agent header ends with the sender's REPLY ADDRESS — its short
               // session id — because a name is not an address: nothing makes tab
               // names unique and every tool takes an id, so naming the sender was
@@ -8486,7 +8913,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // rather than guessing). It is stripped back out by
               // `parsePromptMeta`, so it never reaches the chat.
               const ref = origin === "agent" ? callerAgent?.id.slice(0, 8) : undefined;
-              submitText = markPromptMeta(
+              // ALWAYS the server's header, and the person's text neutralised
+              // beneath it: a header-, ledger- or mark-shaped line they typed
+              // stays text and can never pass for one the server wrote.
+              submitText = markHumanPrompt(
                 text,
                 promptMetaHeader(platform, new Date(), author, defaultTimeZone(), ref),
               );
@@ -9222,7 +9652,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile });
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).
@@ -9238,6 +9668,10 @@ server.listen(port, HOST, () => {
     for (const s of sessions.values()) if (!s.pilot.hasExited) broadcastStaleness(s, channels);
   }, 60_000);
   staleTimer.unref();
+  // Auto-reload: twice a minute, respawn (at most) one idle agent that is
+  // behind — the "reload to apply" badge applying itself. See autoReloadSweep.
+  const autoReloadTimer = setInterval(() => void autoReloadSweep().catch(() => {}), 30_000);
+  autoReloadTimer.unref();
   // The lead agent, if this instance has none. Deferred a beat so it dials a
   // server that is already accepting, and never awaited: a cockpit that starts
   // without its lead agent is a far smaller problem than a boot that hangs.

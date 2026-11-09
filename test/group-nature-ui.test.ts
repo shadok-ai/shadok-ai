@@ -307,3 +307,11 @@ test("syncChannels prunes a server-seen group absent from a fulfilled /groups", 
 test("a NEW agent's launch message names the on-screen group (never on resume)", () => {
   assert.match(html, /if \(mode === "new"\) \{\s*const tg = viewGroupId\(\);\s*if \(tg\) msg\.group = tg;/);
 });
+
+test("a NEW agent created on the Main view names the commons group (multi-tenant only)", () => {
+  // Without it the server files it into the creator's Personal and the tab jumps there.
+  assert.match(html, /else if \(commonsOnServer && setupGroup == null && railShown\(\)\) msg\.group = COMMONS_GROUP_ID;/);
+  // commonsOnServer is learned from the server's /groups, at boot AND on each sync.
+  assert.match(html, /if \(groupsR\.status === "fulfilled"\) noteCommons\(groupsR\.value\);/);
+  assert.match(html, /noteCommons\(srvGroups\);/);
+});
