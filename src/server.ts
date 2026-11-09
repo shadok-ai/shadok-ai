@@ -50,6 +50,7 @@ import { ensureClaudeHome, ensureProjectTrusted,
   type ClaudeHome,
   type ClaudeSettings,
 } from "./claude-home.js";
+import { mergeAppendedPrompts } from "./prompt-args.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { connectVerdict, connectedState, type ConnectFacts } from "./connect-gate.js";
 import { normalizePastedToken } from "./token-paste.js";
@@ -83,6 +84,7 @@ import {
   MIGRATION_MARKER_FILE,
   rewriteCronCheckHome,
   strandedCheckDirs,
+  serverOwnedStatePaths,
 } from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
@@ -3515,6 +3517,9 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // And heal the commons agent's own helper scripts + cron guards, which the HOME
   // move off /root left stranded (see below).
   await healCommonsStrandedScripts();
+  // Then take back the ownership of the server's OWN credentials, which the
+  // commons chown swept (see below) — the SSH identity first of all.
+  await healServerOwnedState();
 }
 
 /**
@@ -3608,6 +3613,61 @@ async function healCommonsStrandedScripts(): Promise<void> {
     }
   } catch (e) {
     console.error(`heal: rewriting cron guard paths failed (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+}
+
+/**
+ * Boot self-heal, twin of `healCommonsStrandedScripts`: give the SERVER back the
+ * ownership of its own credential and identity state, which the migration's
+ * unbounded `chown -R main:main ~/.shadok-ai` swept along with the working state
+ * (`SERVER_OWNED_STATE` carries the full reasoning and the measured symptom —
+ * every root-side `ssh` dying on `Bad owner or permissions on /root/.ssh/config`,
+ * because OpenSSH checks the OWNER of a key and a config, not only its mode).
+ *
+ * Runs on EVERY capable boot, independent of the migration marker, so an instance
+ * already migrated by an older build heals on its next update. Idempotent and
+ * cheap in the normal case: a few `lstat`s and NO privileged spawn once everything
+ * is ours again — which is what makes it safe to run unconditionally.
+ *
+ * A directory is judged on itself AND its immediate entries, because a hand repair
+ * typically re-owns the directory and leaves the key inside it foreign — the one
+ * state in which `ssh` still refuses and the top-level check alone would call it
+ * healed. Best-effort per path: a failure here must never take down the boot, and
+ * it is reported rather than swallowed (a silent chown is indistinguishable from
+ * one that never ran — the lesson of `src/claude-home.ts`).
+ */
+async function healServerOwnedState(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const owner = `${uid}:${gid}`;
+  // Is anything under `p` owned by someone else? One level deep is enough: the
+  // chown that causes this is `-R`, so a subtree moves as a whole, and a partial
+  // tree is a hand repair, whose usual shape is "dir re-owned, contents not".
+  const foreign = (p: string): boolean => {
+    try {
+      if (fs.lstatSync(p).uid !== uid) return true;
+      if (!fs.statSync(p).isDirectory()) return false;
+      for (const e of fs.readdirSync(p)) {
+        try {
+          if (fs.lstatSync(path.join(p, e)).uid !== uid) return true;
+        } catch {
+          /* raced away — nothing to re-own */
+        }
+      }
+      return false;
+    } catch {
+      return false; // unreadable or gone: not ours to repair
+    }
+  };
+  for (const p of serverOwnedStatePaths(os.homedir())) {
+    if (!fs.existsSync(p) || !foreign(p)) continue;
+    try {
+      await runPrivileged("chown", ["-R", owner, p], { timeoutMs: TREE_OP_TIMEOUT_MS });
+      console.log(`heal: ${p} was owned by another user; given back to the server (${owner})`);
+    } catch (e) {
+      console.error(`heal: could not re-own ${p} (best-effort): ${(e as Error)?.message ?? e}`);
+    }
   }
 }
 
@@ -6784,7 +6844,9 @@ function makePilot(
     instanceDefault: user ? getDefaultModel() : null,
     dropped: !!user,
   });
-  const fullArgs = [
+  // ONE --append-system-prompt: Claude Code keeps only the last of several
+  // (src/prompt-args.ts), which silently dropped the role and the pilot prompt.
+  const fullArgs = mergeAppendedPrompts([
     ...args,
     ...permissionModeArgs(permissionMode),
     // A flag+value pair, before the profile's flags: nothing here can land
@@ -6794,7 +6856,7 @@ function makePilot(
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
-  ];
+  ]);
   // NAMES only: the values are in `env`, and never travel to a client. Built
   // through the shared `buildPreprompt`, so this spawn snapshot is comparable
   // byte-for-byte with the one the staleness check recomputes later.
