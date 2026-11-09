@@ -254,6 +254,7 @@ import { rowKind } from "../context/ledger-skill/ledger-core.mjs";
 import {
   profileWriteRefusal,
   profileDeleteRefusal,
+  promptWriteRefusal,
   mayReadMcpValues,
   redactMcpServers,
   setProfileRefusal,
@@ -4638,6 +4639,10 @@ app.put("/profiles/prompt", (req, res) => {
   const key = typeof b.key === "string" ? b.key : "";
   const id = localSessionForKey(req, key);
   if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  // Profiles are global: in multi-tenant this write crosses every group's wall
+  // (invariant 61) — refused before any per-profile rule is consulted.
+  const modeRefusal = promptWriteRefusal({ mode: DEPLOYMENT_MODE });
+  if (modeRefusal) return res.status(modeRefusal.status).json({ error: modeRefusal.error });
   const caller =
     sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
   const target = typeof b.name === "string" && b.name.trim() ? b.name.trim() : (caller ?? "");

@@ -327,6 +327,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **58.** An instance-wide or cross-group write is an AUTHORIZATION decision, not just an authentication one — and a filtered READ needs a matching WRITE. · [detail](docs/invariants.md#inv-62)
 - **59.** An agent's credential is the AGENT, never the admin — and "browser-only" means a person's cookie, not an `Origin` header anyone can type. · [detail](docs/invariants.md#inv-63)
 - **60.** What the server does on a group's behalf (cron checks, offered files, media) it does with that group's rights — never root's; and an agent may put a cron `check` only on ITSELF. · [detail](docs/invariants.md#inv-64)
+- **61.** A global object an agent may write is a cross-group write — in multi-tenant an agent may not edit any profile prompt (`promptWriteRefusal`). · [detail](docs/invariants.md#inv-65)
 
 ## Conventions
 
