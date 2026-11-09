@@ -32,7 +32,7 @@ test("an instance with no channel announces the spawn before it happens", () => 
   // probe costs another ~850ms on top. Without this the page that the status
   // exists for loads inside that gap and is told there is nothing coming.
   announceFirstAgent(0);
-  assert.deepEqual(firstAgentStatus(), { pending: true, reason: "starting" });
+  assert.deepEqual(firstAgentStatus(), { pending: true, reason: "starting", step: null });
 });
 
 test("announcing is authoritative, not sticky", () => {
