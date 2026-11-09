@@ -310,6 +310,9 @@
   /* Same for the opposite: an agent with scheduled prompts can speak without
      anyone having asked it anything. */
   .tab .cron, .tab .tg { font-size: 9px; opacity: 0.75; flex: 0 0 auto; }
+  /* A parent/child link exists on this agent (it reports to another, or others
+     report to it). Clicking opens the tab menu, where the link can be cut. */
+  .tab .link { font-size: 9px; opacity: 0.75; flex: 0 0 auto; cursor: pointer; }
   /* Background shells the agent left running. Last of the row on purpose: it is
      the most transient thing a tab says, so it must not shift the icons that sit
      still. It TURNS because a stopped hourglass and a running one look the same,
@@ -4935,6 +4938,18 @@
     update.className = "update";
     update.hidden = true;
     update.addEventListener("click", (e) => { e.stopPropagation(); handleClaudeUpdate(tab); });
+    // Parent/child link indicator. Shown when this agent reports to another OR
+    // others report to it; clicking opens the tab menu, where either link can be
+    // cut (both the child-side "Detach from…" and the parent-side children list).
+    const link = document.createElement("span");
+    link.className = "link";
+    link.hidden = true;
+    link.textContent = "🔗";
+    link.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const r = link.getBoundingClientRect();
+      openTabMenu(tab, r.left, r.bottom + 4);
+    });
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
     // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
     // left, context % hard right (no longer hidden behind the icons).
@@ -4949,7 +4964,7 @@
     paintAvatar();
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(name, timer, mute, cron, tg, shells, monitors, update, close);
+    row1.append(name, timer, mute, cron, tg, shells, monitors, update, link, close);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
     row2.append(lastAt, ctxNum);
@@ -4986,7 +5001,7 @@
       updateState: null, // Claude Code update: "restart" (reload to apply) | "failed" (install then reload) | null
       staleReasons: [],  // server-side "reload to apply" reasons: prompt/guardrails/skills/secrets changed, auth token expired, claude binary updated
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update,
+      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, linkEl: link,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -5486,6 +5501,31 @@
     return t && t.nameEl ? t.nameEl.textContent : String(sessionId).slice(0, 8);
   }
 
+  /** The agents that report to this one (its children in the kinship tree). */
+  function childTabsOf(tab) {
+    return tab.sessionId ? tabs.filter((t) => t.sessionId && t.parent === tab.sessionId) : [];
+  }
+
+  /**
+   * Light the 🔗 on a tab when it has a parent OR any children, and say which in
+   * the tooltip. A parent change moves the badge on BOTH ends (the child gains a
+   * parent, the parent gains a child), so callers refresh every tab — cheap, and
+   * it never leaves one side stale.
+   */
+  function refreshLinkBadge(tab) {
+    if (!tab.linkEl) return;
+    const kids = childTabsOf(tab);
+    const hasParent = !!tab.parent;
+    tab.linkEl.hidden = !hasParent && kids.length === 0;
+    const bits = [];
+    if (hasParent) bits.push("Reports to " + parentLabel(tab.parent));
+    if (kids.length) bits.push(kids.length + (kids.length > 1 ? " agents report here" : " agent reports here"));
+    tab.linkEl.title = bits.join(" · ");
+  }
+  function refreshAllLinkBadges() {
+    for (const t of tabs) refreshLinkBadge(t);
+  }
+
   /**
    * Second page of the tab menu: which agent this one reports to.
    *
@@ -5514,6 +5554,48 @@
     }
     // Reopen in place: the click handler that brought us here closed the menu,
     // and left/top are still the coordinates openTabMenu measured.
+    tabMenu.hidden = false;
+    tabMenuOpenedAt = Date.now();
+  }
+
+  /**
+   * Second page of the tab menu, from the PARENT's side: the agents reporting to
+   * this one, each detachable in one click. The symmetric twin of the child-side
+   * "Detach from…" — it is how you cut a link while looking at the parent, which
+   * is the natural place when a lead wants an agent off its back. Detaching is
+   * always legal (no cycle to check), so unlike the picker there is nothing to
+   * refuse. Sending `set-parent {parent:null}` on the CHILD's socket is what the
+   * server expects (the message acts on the attached session).
+   */
+  function openChildrenDetacher(tab) {
+    const kids = childTabsOf(tab);
+    tabMenu.replaceChildren();
+    const head = document.createElement("div");
+    head.className = "tm-head";
+    head.textContent = kids.length ? "Detach which agent?" : "No agent reports here";
+    tabMenu.appendChild(head);
+    if (kids.length > 1) {
+      const all = document.createElement("button");
+      all.className = "tm-item";
+      all.textContent = "✕ Detach all (" + kids.length + ")";
+      all.addEventListener("click", (e) => {
+        e.stopPropagation();
+        closeTabMenu();
+        for (const kid of kids) sendTo(kid, { type: "set-parent", parent: null });
+      });
+      tabMenu.appendChild(all);
+    }
+    for (const kid of kids) {
+      const b = document.createElement("button");
+      b.className = "tm-item";
+      b.textContent = "✕ " + (kid.nameEl ? kid.nameEl.textContent : kid.sessionId.slice(0, 8));
+      b.addEventListener("click", (e) => {        // never onclick=: the CSP nonce
+        e.stopPropagation();                       // does not cover inline handlers
+        closeTabMenu();
+        sendTo(kid, { type: "set-parent", parent: null });
+      });
+      tabMenu.appendChild(b);
+    }
     tabMenu.hidden = false;
     tabMenuOpenedAt = Date.now();
   }
@@ -5585,6 +5667,13 @@
       items.push([
         tab.parent ? "🔗 Detach from " + parentLabel(tab.parent) : "🔗 Report to…",
         () => (tab.parent ? sendTo(tab, { type: "set-parent", parent: null }) : openParentPicker(tab)),
+      ]);
+      // The parent-side half: the agents reporting to THIS one, detachable from
+      // here — so you can cut a link without hunting down the child's own tab.
+      const kids = childTabsOf(tab);
+      if (kids.length) items.push([
+        "🔗 Children reporting here (" + kids.length + ")…",
+        () => openChildrenDetacher(tab),
       ]);
     }
     // The main channel is the environment's home base — it can't be closed.
@@ -6915,6 +7004,9 @@
       }
     }
     lastChannelIds = current;
+    // Parents are re-applied above from the registry; refresh every 🔗 once the
+    // pass has settled, so a link made on another device lights up here too.
+    refreshAllLinkBadges();
   }
 
   // Is the server currently starting this instance's lead agent? Never inferred
@@ -10084,6 +10176,7 @@
         // Broadcast to every client, like `profile`: attaching from one tab
         // must update the others without a reload.
         t.parent = msg.parent;
+        refreshAllLinkBadges();   // moves the 🔗 on both ends of the link
         break;
       case "tokens":
         t.tokens = msg.tokens;
