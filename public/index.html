@@ -2874,6 +2874,182 @@
     .rail-pill { transition: none; }
     .skel { animation: none; }
   }
+
+  /* ══ Fluid layer ═════════════════════════════════════════════════════════
+     The cockpit read as austere: flat grey slabs cut apart by hairlines. This
+     layer keeps the layout and swaps LINES for DEPTH — surfaces are separated
+     by tint, radius and soft shadow, the accent colours the page itself, and
+     state changes glide instead of snapping. Few new details on purpose: the
+     main lever is the tokens (--line fades, --radius grows), so every older
+     rule that draws a border or a corner follows on its own. Placed last so it
+     wins at equal specificity; all motion is off under reduced motion. */
+  :root {
+    --radius: 14px;
+    /* Hairlines fade to a whisper: they stay where a field needs an edge, but
+       stop carving the screen into boxes. */
+    --line: color-mix(in srgb, var(--text) 7%, transparent);
+    --card-shadow: 0 18px 40px -22px rgba(0, 0, 0, .75), 0 2px 6px -2px rgba(0, 0, 0, .35);
+    --soft-shadow: 0 6px 18px -10px rgba(0, 0, 0, .6);
+    --ease-fluid: cubic-bezier(.22, 1, .36, 1);
+  }
+  :root[data-mode="light"] {
+    --radius: 14px;
+    --line: rgba(0, 0, 0, .07);
+    --card-shadow: 0 18px 40px -24px rgba(30, 30, 60, .28), 0 1px 3px rgba(30, 30, 60, .06);
+    --soft-shadow: 0 6px 16px -10px rgba(30, 30, 60, .25);
+  }
+
+  /* The page carries the accent as an ambient glow, so the instance's colour
+     is felt everywhere instead of only on buttons. */
+  body {
+    background:
+      radial-gradient(1100px 620px at -5% -10%, color-mix(in srgb, var(--amber) 22%, transparent), transparent 62%),
+      radial-gradient(900px 620px at 105% 110%, color-mix(in srgb, var(--phosphor) 14%, transparent), transparent 60%),
+      var(--page);
+  }
+  header { background: transparent; }
+
+  /* Everything that changes state glides. */
+  button, .tab, .rail-item, .group-head, .bubble, #composer textarea, .profile-card, .member-tile {
+    transition: background-color .22s var(--ease-fluid), color .22s var(--ease-fluid),
+      border-color .22s var(--ease-fluid), box-shadow .22s var(--ease-fluid), transform .22s var(--ease-fluid);
+  }
+  button { border-radius: 10px; }
+  button:active:not(:disabled) { transform: scale(.97); }
+  header button.icon { border-radius: 10px; }
+  button.primary {
+    border: 0;
+    background: linear-gradient(135deg, var(--amber), var(--phosphor));
+    box-shadow: 0 6px 16px -8px var(--amber);
+  }
+  button.primary:hover { background: linear-gradient(135deg, var(--amber), var(--phosphor)); box-shadow: 0 8px 22px -8px var(--amber); }
+
+  /* Columns become floating cards on the glow (desktop only: the phone keeps
+     its full-bleed sheet). */
+  @media (min-width: 641px) {
+    main { padding: 2px 12px 12px; gap: 12px; }
+    #tabbar { border: 0; box-shadow: var(--card-shadow); }
+    /* The rail and the agents column used to be two halves of one card; with
+       the gap back they are two cards, each fully rounded. */
+    body.has-groups #groupRail { border: 0; border-radius: var(--radius); box-shadow: var(--card-shadow); }
+    body.has-groups #tabbar { border-radius: var(--radius); }
+    .chat-pane {
+      border: 0; border-radius: calc(var(--radius) + 4px);
+      background: var(--pane-main); box-shadow: var(--card-shadow);
+    }
+    #machine, #diffpanel { border: 0; border-radius: calc(var(--radius) + 4px); box-shadow: var(--card-shadow); }
+  }
+
+  /* Lists: soft pills, no rings. The selected agent lifts off the list with a
+     glow in its own colour; the state fills (working / unread / waiting) stay
+     untouched so they keep their meaning. */
+  .tab, .group-head, .rail-item { border-radius: 12px; }
+  .tab:hover, .group-head:hover { background-color: color-mix(in srgb, var(--text) 5%, transparent); }
+  .tab.active,
+  :root:not([data-mode="light"]) .tab.active {
+    background-color: color-mix(in srgb, var(--text) 7%, transparent);
+    box-shadow: 0 8px 20px -14px var(--ac, var(--amber));
+  }
+  :root[data-mode="light"] .tab.active { background-color: var(--bg-raised); box-shadow: var(--soft-shadow); }
+  .tab.unread { border-radius: 12px; }
+  .tav { box-shadow: 0 4px 10px -4px var(--ac, var(--amber)); }
+  .rail-item.active { border-color: transparent; }
+  .rail-pill {
+    border: 0; border-radius: 12px;
+    background: color-mix(in srgb, var(--amber) 16%, var(--bg-raised));
+    box-shadow: var(--soft-shadow);
+  }
+  .group-head .gicon { border-radius: 10px; }
+
+  /* Channel header melts into the conversation instead of a ruled band. */
+  #chanBar { background: transparent; border-bottom: 0; }
+
+  /* Messages: rounder bubbles with a tail corner; yours carry the accent. */
+  .bubble { border-radius: 18px; }
+  .turn.user .bubble {
+    border-bottom-right-radius: 6px;
+    background: linear-gradient(135deg,
+      color-mix(in srgb, var(--amber) 30%, var(--bg-raised)),
+      color-mix(in srgb, var(--phosphor) 16%, var(--bg-raised)));
+  }
+  .turn.user.other .bubble { border-bottom-right-radius: 18px; border-bottom-left-radius: 6px; }
+  .turn.claude .bubble { border: 0; border-bottom-left-radius: 6px; box-shadow: var(--soft-shadow); }
+  .turn.dialog .bubble {
+    border-top: 0; border-radius: 18px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 16%, var(--bg-raised)), var(--bg-raised) 70px);
+    box-shadow: var(--soft-shadow);
+  }
+  .turn.dialog.spent .bubble { background: var(--bg-raised); }
+  .bubble.md pre { border: 0; border-radius: 12px; }
+  @keyframes turn-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+  /* Only a message that ARRIVES slides in. Replayed history (.hist) does not:
+     a hidden transcript restarts its animations each time it is shown, so
+     hundreds of old turns would replay at every channel switch — the
+     transcript's own `chat-in` already eases that view in as a whole. */
+  .turn:not(.hist) { animation: turn-in .32s var(--ease-fluid) both; }
+
+  /* Composer: a floating pill that glows on focus. */
+  #composer textarea,
+  #composer textarea:focus-visible {
+    border: 0; border-radius: 22px; padding: 11px 18px;
+    background: var(--bg-raised); box-shadow: var(--soft-shadow);
+  }
+  #composer textarea:focus-visible {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 45%, transparent), 0 10px 28px -12px var(--amber);
+  }
+  .cmp-attach { border-radius: 50%; }
+  #composer button.primary { border-radius: 22px; }
+
+  /* Floating menus: lifted, not outlined. */
+  #moreMenu, #tabMenu, #verMenu, .slash-menu {
+    border-color: transparent; border-radius: 14px;
+    box-shadow: 0 22px 50px -18px rgba(0, 0, 0, .6), 0 0 0 1px var(--line);
+  }
+
+  /* Scrollbars: thin and rounded, gone until needed. */
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 16%, transparent) transparent; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .turn:not(.hist) { animation: none; }
+    button:active:not(:disabled) { transform: none; }
+  }
+
+  /* ══ Shadok soul ═════════════════════════════════════════════════════════
+     The Shadok's voice (shadok-soul.js): the header mark answers a click with a
+     maxim in a speech bubble, the empty states carry a big Shadok and a thought,
+     and the thinking indicator rotates its pump lines. Few pixels, much logic. */
+  header .brand { position: relative; }
+  header .brand-logo { cursor: pointer; outline-offset: 3px; }
+  header .brand-logo.speaking svg { animation: sk-hop .6s var(--ease-fluid); }
+  .sk-say {
+    position: absolute; top: calc(100% + 10px); left: 0; z-index: 60;
+    width: max-content; max-width: 280px;
+    padding: 10px 14px; border-radius: 16px 16px 16px 4px;
+    background: var(--bg-raised); color: var(--text);
+    font-size: 13px; font-weight: 500; line-height: 1.4;
+    box-shadow: 0 18px 40px -16px rgba(0, 0, 0, .55), 0 0 0 1px var(--line);
+    opacity: 0; transform: translateY(-6px) scale(.96); transform-origin: 12px 0;
+    pointer-events: none;
+    transition: opacity .25s var(--ease-fluid), transform .3s var(--ease-fluid);
+  }
+  .sk-say::before {
+    content: ""; position: absolute; top: -6px; left: 12px; width: 12px; height: 12px;
+    background: inherit; transform: rotate(45deg); border-radius: 2px;
+  }
+  .sk-say.show { opacity: 1; transform: none; }
+
+  .es-shadok { display: inline-flex; color: var(--amber); filter: drop-shadow(0 12px 18px color-mix(in srgb, var(--amber) 35%, transparent)); }
+  .es-shadok svg { width: 84px; height: 84px; overflow: visible; }
+  #emptyState .es-shadok { animation: es-float 3.2s ease-in-out infinite; }
+  @keyframes es-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  .es-maxim { margin-top: 6px; color: var(--text-dim); font-size: 13px; font-style: italic; max-width: 40ch; }
+  .es-maxim:empty { display: none; }
+  .es-maxim::before { content: "“"; } .es-maxim::after { content: "”"; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #emptyState .es-shadok, header .brand-logo.speaking svg { animation: none; }
+    .sk-say { transition: none; }
+  }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a light-preferring viewer never sees a
@@ -2912,7 +3088,7 @@
 <body>
 
 <header>
-  <span class="brand"><span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 32 32"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><g class="sk-leg sk-leg-l"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/></g><g class="sk-leg sk-leg-r"><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/></g><g class="sk-bob"><line class="sk-arm" x1="21.6" y1="17.2" x2="26" y2="20.4"/><g class="sk-ant sk-ant-l" stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/></g><g class="sk-ant sk-ant-r" stroke-width="0.9"><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><path d="M14.4 18.2 L17.6 18.2 L16 21.6 Z" stroke="none"/><g class="sk-eyes" stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><g class="sk-pupils"><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></g></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
+  <span class="brand"><span class="brand-logo" role="button" tabindex="0" aria-label="Ask the Shadok" title="Ask the Shadok"><svg viewBox="0 0 32 32"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><g class="sk-leg sk-leg-l"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/></g><g class="sk-leg sk-leg-r"><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/></g><g class="sk-bob"><line class="sk-arm" x1="21.6" y1="17.2" x2="26" y2="20.4"/><g class="sk-ant sk-ant-l" stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/></g><g class="sk-ant sk-ant-r" stroke-width="0.9"><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><path d="M14.4 18.2 L17.6 18.2 L16 21.6 Z" stroke="none"/><g class="sk-eyes" stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><g class="sk-pupils"><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></g></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
   <span class="spacer"></span>
   <div class="quotas">
     <div class="quota" id="quota5h" data-window="5h" role="img" aria-label="5h rolling limit" title="5h rolling limit">
@@ -3713,10 +3889,15 @@
     <!-- No agent: an invitation, not a pre-filled form. Creation happens in a
          popin (#setupOverlay) and only creates the channel on submit — opening it
          then backing out no longer leaves a stillborn tab. -->
+    <!-- .es-shadok is filled by the script (`shadokInner`, the favicon's drawing):
+         idle and bobbing here, pumping in #startingState. .es-maxim gets a fresh
+         maxim each time the empty state shows (shadok-soul.js). -->
     <div id="emptyState">
+      <span class="es-shadok" aria-hidden="true"></span>
       <span class="es-title">No agent open</span>
       <p class="es-hint">Every agent is a real Claude Code session with its own directory and its own branch. Start one and it takes the controls.</p>
       <button class="primary" id="emptyNewBtn">＋ new agent</button>
+      <p class="es-maxim"></p>
     </div>
 
     <!-- The same "nothing to show" moment, but one the server has told us is
@@ -3727,6 +3908,7 @@
          being born; the two are told apart by GET /first-agent, never guessed
          from the tab count. -->
     <div id="startingState">
+      <span class="es-shadok pumping" aria-hidden="true"></span>
       <span class="es-title">Starting your first agent…</span>
       <p class="es-hint">This cockpit has no agent yet, so one is being started for you in the launch directory. It takes a few seconds, then it takes the controls and says hello.</p>
     </div>
@@ -3911,6 +4093,10 @@
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
+  import { pumpLine, mascotSay, pickMaxim } from "/shadok-soul.js?v=__ASSET_V__";
+  window.pumpLine = pumpLine;
+  window.mascotSay = mascotSay;
+  window.pickMaxim = pickMaxim;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
   import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
@@ -4100,6 +4286,11 @@
     looksLikeEmoji: () => false,
     uploadFailure: (status, contentType) =>
       /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
+    // The Shadok's voice (shadok-soul.js): before the module lands it says the
+    // classic line, one maxim, and the empty state's thought stays empty (hidden).
+    pumpLine: () => "Shadok is pumping",
+    mascotSay: () => "When in doubt, pump.",
+    pickMaxim: () => "",
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -6748,13 +6939,66 @@
       `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", { lever, bob })}</svg>`;
   }
   renderTw(0); // populate immediately so it isn't blank on first show
-  if (!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
-    let twPhase = 0;
-    setInterval(() => {
-      if (!thinkingEl || !thinkingEl.classList.contains("visible")) return;
-      twPhase = (twPhase + 1) % PUMP_FRAMES;
-      renderTw((Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2);
-    }, 95);
+  // The empty states get the same Shadok, big: idle in #emptyState (CSS bobs
+  // it), pumping in #startingState — the first agent is being pumped into being.
+  const esIdle = document.querySelector("#emptyState .es-shadok");
+  const esPump = document.querySelector("#startingState .es-shadok");
+  const startingEl = document.getElementById("startingState");
+  const shadokSvg = (pose) => `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", pose)}</svg>`;
+  if (esIdle) esIdle.innerHTML = shadokSvg({});
+  if (esPump) esPump.innerHTML = shadokSvg(pumpPose(0));
+  // The indicator's words rotate through the Shadok's pump lines (shadok-soul.js)
+  // from the moment a turn shows it; that is text, not motion, so it runs under
+  // reduced motion too — only the pumping frames are gated.
+  const twText = document.querySelector("#thinking .tw-text");
+  const pumpMotion = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  let twPhase = 0, twSince = 0;
+  setInterval(() => {
+    const thinkingOn = !!thinkingEl && thinkingEl.classList.contains("visible");
+    const startingOn = !!startingEl && startingEl.classList.contains("visible");
+    if (!thinkingOn) twSince = 0;
+    if (!thinkingOn && !startingOn) return;
+    if (thinkingOn && twText && window.pumpLine) {
+      if (!twSince) twSince = Date.now();
+      const line = window.pumpLine(Date.now() - twSince);
+      if (twText.textContent !== line) twText.textContent = line;
+    }
+    if (!pumpMotion) return;
+    twPhase = (twPhase + 1) % PUMP_FRAMES;
+    const p = (Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2;
+    if (thinkingOn) renderTw(p);
+    if (startingOn && esPump) esPump.innerHTML = shadokSvg(pumpPose(p));
+  }, 95);
+
+  // Click the header mark and the Shadok says something: a maxim, or now and
+  // then a head count of the agents in Shadok numerals. One bubble, re-used; a
+  // second click while it is up just gives a new thought.
+  const brandLogo = document.querySelector("header .brand-logo");
+  let skSay = null, skSayTimer = 0, skLast = null;
+  function shadokSpeak() {
+    if (!brandLogo || !window.mascotSay) return;
+    if (!skSay) {
+      skSay = document.createElement("span");
+      skSay.className = "sk-say";
+      skSay.setAttribute("role", "status");
+      brandLogo.parentElement.appendChild(skSay);
+    }
+    skLast = window.mascotSay(tabs.length, Math.random, skLast);
+    skSay.textContent = skLast;
+    skSay.classList.remove("show");
+    void skSay.offsetWidth; // restart the pop-in on a repeat click
+    skSay.classList.add("show");
+    brandLogo.classList.remove("speaking");
+    void brandLogo.offsetWidth;
+    brandLogo.classList.add("speaking");
+    clearTimeout(skSayTimer);
+    skSayTimer = setTimeout(() => { skSay.classList.remove("show"); brandLogo.classList.remove("speaking"); }, 5200);
+  }
+  if (brandLogo) {
+    brandLogo.addEventListener("click", (e) => { e.stopPropagation(); shadokSpeak(); });
+    brandLogo.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); shadokSpeak(); }
+    });
   }
   // Coming back must stop the blink at once, not at the next tick. Both signals
   // matter: switching tabs fires visibilitychange, switching application only
@@ -6904,6 +7148,11 @@
       // second lead agent while theirs is being born.
       $("emptyState").classList.toggle("visible", !firstAgentPending);
       $("startingState").classList.toggle("visible", firstAgentPending);
+      // A fresh Shadok thought each time the empty panel shows. The bridge may
+      // not be up yet on the very first paint (invariant 10): then the line
+      // stays empty, which is harmless.
+      const esMaxim = document.querySelector("#emptyState .es-maxim");
+      if (esMaxim && window.pickMaxim) esMaxim.textContent = window.pickMaxim(Math.random, esMaxim.textContent);
       return;
     }
     $("emptyState").classList.remove("visible");
