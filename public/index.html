@@ -8656,7 +8656,7 @@
     // isNothingToShow, src/tail.ts — no bundler here, hence the duplication).
     // Without this guard the grey preview would stay up the whole turn waiting
     // for a stream-text that never comes.
-    if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
+    if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt) || /^[*_`\s]*NOTHING TO SHOW(?![A-Za-z0-9])/.test(txt)) { clearLivePreview(tab); return; }
     // Content THEN a trailing sign-off sentinel: strip the marker, keep the text,
     // so the grey preview matches the finalised block the server strips (twin of
     // stripTrailingNothingToShow, src/tail.ts). A mid-message sentinel stays.
