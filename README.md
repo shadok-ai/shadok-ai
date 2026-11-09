@@ -314,8 +314,13 @@ Enter to skip; you can add it later from the web UI).
     (draft changes, unused, feedback, archived). Ticked rows can be shared,
     tagged or archived in one go.
   - **The detail panel.** Its numbers, the agents that have it (group by group:
-    each agent and its runs), the secrets agents running it get, and its
-    feedback.
+    each agent and its runs), the agents that **run it on a schedule** (a cron
+    whose prompt names it, or a scheduled run that called it — click the agent
+    to open it), the secrets agents running it get, and its feedback.
+  - **From the agent's side.** The ▯ button in an agent's bar opens its info
+    panel: its directory and profile, the skills it has (runs this week, ⏰ how
+    many on a schedule), and its schedules with the skills each one uses. Click
+    a skill to open its card in the Skill Factory.
   - **Creating.** The new-skill form asks for a **name** (what people see) and
     a **technical name** (what agents call it, `/name:name`), proposed from the
     name until you type your own. Choose it then: it is the skill's repository
@@ -1236,6 +1241,8 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
+`/channels/glance` (GET — each visible row's last-message time and context %,
+read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
 register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so

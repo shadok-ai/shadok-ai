@@ -118,6 +118,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/bang.ts` + `public/bang.js` | Running an agent's `!` command from the chat, on the HUMAN's behalf. |
 | `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. |
 | `src/backend.ts` | Which model backend an agent talks to: the subscription, or a CUSTOM one (a self-hosted open model, a gateway) reached through Claude Code's own `ANTHROPIC_BASE_URL`. |
+| `src/glance.ts` | A row's "xxx ago" + context % from the transcript's TAIL — `GET /channels/glance`, so the list fills at boot before the agents resume. |
 | `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. |
 | `src/git-exec.ts` | `gitIn` — the server running git in a checkout ANOTHER user owns. Under multi-tenant the server is root and the Tweak self-clone / an agent's worktree belong to a drop user, which git refuses as "detected dubious ownership" (the second *Tweak Shadok-AI* click died on it, and `isGitRepo` silently read the refusal as "not a repo"). On that refusal ONLY, the command is re-run as the directory's owner (`setpriv` to its uid/gid, its HOME) — never whitelisted with `safe.directory`, because the repo's `.git/config` is agent-writable and can name `core.fsmonitor`, a filter or a hook that git EXECUTES: whitelisting it would run an agent's command as root. Every invocation that works today runs unchanged. `createWorktree` hands the parent dirs it creates to that owner, or `worktree add` (now running as them) cannot write there. Pure cores tested; the root-vs-owner path is exercised for real when the suite runs as root. |
@@ -155,6 +156,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `context/reload-skill/` | The `shadok-reload` skill (seeded by `seedReloadSkill`, twin of the above): an agent respawns itself to pick up a changed pilot prompt or newly-seeded skills (the prompt/skills are fixed at spawn). |
 | `context/files-skill/` | The `shadok-files` skill (seeded by `seedFilesSkill`, twin of secrets/reload/ledger): `send.mjs <abs path…> [--caption]` → `POST /files`, authenticated by `SHADOK_SESSION_KEY`. |
 | `src/factory.ts` + `src/factory-scan.ts` + `src/factory-routes.ts` | The Skill Factory: skills written together (one bare git repo per skill, the server is the origin), scanned for secrets on every save/push, saved as a draft or **Save**d (release + accept, hidden), shared with only me / some groups / everyone — and the share IS where it runs: every agent it covers loads it as `--plugin-dir` (`availableAttachments`, derived, never given agent by agent). |
+| `src/skill-usage.ts` | Pure `cronUsers` — which agents run a skill ON A SCHEDULE: crons whose prompt names it (`cronMentionsSkill`) ∪ runs recorded during a cron fire (`via: "cron"` in `usage.jsonl`). Feeds the skill card's "Used by schedules" and the agent info panel (`#infopanel`). |
 | `context/factory-skill/` + `context/skillsmith-prompt.md` | The agent side of the factory: the `shadok-factory` skill (`factory.mjs pull/push/scan`) and the managed `Shadok-Skillsmith` role. |
 | `context/ledger-skill/` + `context/ledger-reflex.md` | The `shadok-ledger` skill (seeded by `seedLedgerSkill`, twin of secrets/scheduler) and its gated pilot-prompt reflex, so agents stop re-surfacing what a sibling already resolved. `record`/`check` go through the server, and a **404 degrades to the local table** (announced, never silent): a seeded copy can be NEWER than the server that answers it — see invariant 57. A 401 stays loud, it means a human action (invariant 33). |
 | `src/ledger.ts` | The SERVER side of the shared ledger (the skill's `ledger-core.mjs` is the agent side). |
@@ -260,7 +262,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 **HTTP** (everything but `/login` sits behind the optional password gate):
 
 - usage/sessions: `/usage`, `/live`, `/sessions`, `/recover`, `/diff`
-- per-dir cockpit: `/channels`, `/groups`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
+- per-dir cockpit: `/channels` (+ `/glance`), `/groups`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
 - agents & roles: `/tweak/prepare`, `/profiles` (+ `/prompt`, `/secret`, `/restore`), `/secrets`, `/reload`, `/restart-all`, `/models`, `/backend`
 - accounts & 2FA: `/users`, `/users/role`, `/peers`, `/invite/:token`, `/me`, `/login*`, `/2fa*`
 - media & voice: `/paste`, `/media/:name`, `/files`, `/download`, `/transcribe`

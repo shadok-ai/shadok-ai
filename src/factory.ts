@@ -1233,30 +1233,59 @@ export function skillOfCall(skillArg: string, names: string[]): string | null {
   return n && names.includes(n) ? n : null;
 }
 
-export function recordRun(root: string, run: { skill: string; agent: string; at?: number }): void {
+/**
+ * Does a cron's prompt name this skill? `/name`, `name:name`, or the bare name
+ * as a whole word. The STATIC half of "which schedules use this skill": a cron
+ * created a minute ago has never fired, so the run log alone would miss it.
+ * A word boundary that counts `-` as part of the word, so `daily` does not
+ * match inside `daily-report`.
+ */
+export function cronMentionsSkill(prompt: string, name: string): boolean {
+  if (!prompt || !name) return false;
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^a-z0-9-])${esc}(?![a-z0-9-])`, "i").test(prompt);
+}
+
+/**
+ * One run. `via: "cron"` when the turn that made the call was a cron fire —
+ * what lets a skill's card say which agents run it ON A SCHEDULE, not only
+ * which ones have it.
+ */
+export function recordRun(root: string, run: { skill: string; agent: string; at?: number; via?: "cron" }): void {
   try {
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-    fs.appendFileSync(usagePath(root), JSON.stringify({ at: run.at ?? Date.now(), skill: run.skill, agent: run.agent }) + "\n", { mode: 0o600 });
+    const row: Record<string, unknown> = { at: run.at ?? Date.now(), skill: run.skill, agent: run.agent };
+    if (run.via) row.via = run.via;
+    fs.appendFileSync(usagePath(root), JSON.stringify(row) + "\n", { mode: 0o600 });
   } catch {
     /* a lost count is a lost statistic, never a failed turn */
   }
 }
 
+export interface RunStats {
+  bySkill: Record<string, number>;
+  byAgent: Record<string, Record<string, number>>;
+  /** The subset of `byAgent` made during a cron fire. */
+  cronByAgent: Record<string, Record<string, number>>;
+  last: Record<string, number>;
+}
+
 /** Runs per skill and per (skill, agent) since `since`. Old lines are dropped on the way. */
-export function runStats(root: string, since: number, now = Date.now()): { bySkill: Record<string, number>; byAgent: Record<string, Record<string, number>>; last: Record<string, number> } {
+export function runStats(root: string, since: number, now = Date.now()): RunStats {
   const bySkill: Record<string, number> = {};
   const byAgent: Record<string, Record<string, number>> = {};
+  const cronByAgent: Record<string, Record<string, number>> = {};
   const last: Record<string, number> = {};
   let raw = "";
   try {
     raw = fs.readFileSync(usagePath(root), "utf8");
   } catch {
-    return { bySkill, byAgent, last };
+    return { bySkill, byAgent, cronByAgent, last };
   }
   const keep: string[] = [];
   for (const line of raw.split("\n")) {
     if (!line) continue;
-    let r: { at: number; skill: string; agent: string };
+    let r: { at: number; skill: string; agent: string; via?: string };
     try {
       r = JSON.parse(line);
     } catch {
@@ -1268,6 +1297,7 @@ export function runStats(root: string, since: number, now = Date.now()): { bySki
     if (r.at < since) continue;
     bySkill[r.skill] = (bySkill[r.skill] ?? 0) + 1;
     (byAgent[r.skill] ??= {})[r.agent] = (byAgent[r.skill][r.agent] ?? 0) + 1;
+    if (r.via === "cron") (cronByAgent[r.skill] ??= {})[r.agent] = (cronByAgent[r.skill][r.agent] ?? 0) + 1;
   }
   // Compact when a good share of the file has aged out (bounded by 30 days).
   if (keep.length < raw.split("\n").length - 50) {
@@ -1277,7 +1307,7 @@ export function runStats(root: string, since: number, now = Date.now()): { bySki
       /* best effort */
     }
   }
-  return { bySkill, byAgent, last };
+  return { bySkill, byAgent, cronByAgent, last };
 }
 
 /** Pure: is `main` ahead of the latest release (so "unreleased changes")? */

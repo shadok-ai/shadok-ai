@@ -233,6 +233,7 @@ import {
   isTransient,
   CRON_MAX_RETRIES,
   markCronPrompt,
+  isCronPrompt,
   normalizeSchedule,
   onceAt,
   stateAfterFire,
@@ -436,6 +437,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
 } from "./net.js";
 import { AttemptLimiter, LOGIN_LIMITS, loginKeys } from "./login-limit.js";
 import { pctFromUsage, windowForModel } from "./context.js";
+import { glanceFile } from "./glance.js";
 import {
   BACKEND_PRESETS,
   backendEnv,
@@ -2900,6 +2902,31 @@ app.get("/channels", (req, res) => {
       return mine.length ? { ...ch, crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : ch;
     }),
   );
+});
+
+// What each visible row shows before its agent is resumed: the last message's
+// time and the context fill, from the transcript's TAIL (src/glance.ts). The
+// boot paints every row from this one call instead of waiting for N resumes
+// (each a spawn + full history replay); the WS `history`/`context` that follow
+// overwrite it with the authoritative values. Same ACL as GET /channels.
+app.get("/channels/glance", async (req, res) => {
+  const box = restrictedBoxOf(req);
+  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))).filter(
+    (ch) => !box || ownedByPeer(ch, box),
+  );
+  const rows = await Promise.all(
+    visible.map(async (ch) => {
+      const live = sessions.get(ch.sessionId);
+      const home = live ? live.transcriptHome : channelStateHome(ch);
+      const g = await glanceFile(sessionFilePath(ch.cwd, ch.sessionId, home));
+      const pct =
+        live && !live.pilot.hasExited && live.contextPct !== null
+          ? live.contextPct
+          : pctFromUsage(g.usage ?? undefined, assumedContextWindow(ch.profile, ch.model, ch.group ?? null));
+      return { sessionId: ch.sessionId, lastAt: g.lastAt, contextPct: pct };
+    }),
+  );
+  res.json(rows);
 });
 
 // ── Crons (scheduled channel prompts) ───────────────────────────────────────
@@ -6455,9 +6482,9 @@ function installedCapabilities(): { name: string; description: string }[] {
 const runningPlugins = new Map<string, string[]>();
 
 /** One `Skill(<name>:<name>)` call = one run of that factory skill (for the panel's counts). */
-function countFactoryRun(skillArg: string, agentId: string): void {
+function countFactoryRun(skillArg: string, agentId: string, viaCron: boolean): void {
   const name = skillOfCall(skillArg, loadRegistry(factoryRoot()).skills.map((x) => x.name));
-  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId });
+  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId, ...(viaCron ? { via: "cron" as const } : {}) });
 }
 
 /** Remove the release directories no attachment and no running process uses. */
@@ -7151,6 +7178,13 @@ interface Live {
    *  history-replay flag (`HistoryTurn.afterInternal`). Cleared when a visible
    *  prompt (which breaks the group itself) takes over. */
   gapBeforeNextText?: boolean;
+  /**
+   * The turn in flight was started by a cron fire (origin `cron` AND the cron
+   * mark — a parent notification rides the same hidden path without it). Tags
+   * the skill runs it makes, so a skill's card can list the agents that run it
+   * on a schedule.
+   */
+  cronTurn?: boolean;
   /** Stops the .jsonl tail loop (content streaming). */
   stopTail: (() => void) | null;
   /** The last text blocks ALREADY broadcast, so they are not offered again as
@@ -7717,6 +7751,16 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
   return p;
 }
 
+/** The context window an agent is metered against. A custom backend's window is
+ *  whatever its server was started with, which no model name can tell us:
+ *  SHADOK_CONTEXT_WINDOW says it, and without it the usual assumption stands
+ *  (and `effectiveWindow` still promotes on proof). Shared by the spawn and
+ *  `GET /channels/glance`, so a row's pre-resume % matches the live one. */
+function assumedContextWindow(profile?: string | null, model?: string | null, group?: string | null): number {
+  const backend = sessionBackend(profile, group);
+  return (backend.kind === "custom" ? backend.contextWindow : null) ?? windowForModel(sessionModelSetting(profile, model));
+}
+
 async function createSession(
   id: string,
   cwd: string,
@@ -7742,12 +7786,7 @@ async function createSession(
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id, transcriptHome));
   const backend = sessionBackend(profile, group);
-  // A custom backend's window is whatever its server was started with, which
-  // no model name can tell us: SHADOK_CONTEXT_WINDOW says it, and without it
-  // the usual assumption stands (and `effectiveWindow` still promotes on proof).
-  const contextWindow =
-    (backend.kind === "custom" ? backend.contextWindow : null) ??
-    windowForModel(sessionModelSetting(profile, model));
+  const contextWindow = assumedContextWindow(profile, model, group);
   const s: Live = {
     id,
     cwd,
@@ -7850,7 +7889,7 @@ function startContentTail(s: Live): void {
     } else if (e.kind === "tool") {
       // A `Skill(<name>:<name>)` call is one run of a factory skill: counted
       // for the Skills page, then streamed like any other tool.
-      if (e.skill) countFactoryRun(e.skill, s.id);
+      if (e.skill) countFactoryRun(e.skill, s.id, !!s.cronTurn);
       broadcast(s, {
         type: "stream-tool", id: e.id, name: e.name, summary: e.summary,
         // Files a SendUserFile delivered → the client renders a download / inline
@@ -9132,6 +9171,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           clearRetry(session, true);
           session.retryCount = 0;
           session.lastPrompt = text;
+          session.cronTurn = origin === "cron" && isCronPrompt(text);
           // The session's other clients see the prompt arrive — except a cron:
           // that is not someone speaking, and its text (the prompt PLUS its
           // guard's dump) drowned the answer in both interfaces. The mark in

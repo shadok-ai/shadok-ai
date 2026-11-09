@@ -428,6 +428,18 @@ test("runs: a Skill(name:name) call counts for that factory skill, per agent, ov
   assert.ok(st.last.s >= now - 1000);
 });
 
+test("runs: a run made during a cron fire is counted apart, and still counts as a run", (t) => {
+  const root = scratch(t);
+  const now = Date.now();
+  recordRun(root, { skill: "s", agent: "a1", at: now - 1000, via: "cron" });
+  recordRun(root, { skill: "s", agent: "a1", at: now - 2000 });
+  recordRun(root, { skill: "s", agent: "a2", at: now - 3000 });
+  const st = runStats(root, now - 7 * 86_400_000, now);
+  assert.equal(st.byAgent.s.a1, 2);
+  assert.equal(st.cronByAgent.s.a1, 1);
+  assert.equal(st.cronByAgent.s.a2, undefined);
+});
+
 test("updateMeta: share, tag, archive", (t) => {
   const root = scratch(t);
   const s = createSkill(root, { name: "meta", by: "a", owner: "user:a" });

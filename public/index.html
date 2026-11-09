@@ -615,6 +615,15 @@
      without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
+  /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
+     glance lands (paintGlance) — a quick cascade top to bottom instead of one
+     late burst. --gi is the row's rank, capped so the tail never drags. */
+  .tab.glance-in .tab-row2, .tab.glance-in .ctxbar {
+    animation: glance-in 0.28s ease-out both;
+    animation-delay: calc(var(--gi, 0) * 35ms);
+  }
+  @keyframes glance-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .tab.glance-in .tab-row2, .tab.glance-in .ctxbar { animation: none; } }
   .tab .name {
     flex: 1;
     min-width: 0;
@@ -2097,6 +2106,41 @@
     border-bottom: 1px solid var(--line);
   }
   #diffpanel .mhead button { margin-left: 6px; }
+  /* Agent info panel: what this agent is and what it uses (skills, schedules),
+     the per-agent twin of the Skill Factory's "agents that have it". */
+  #infopanel {
+    width: 340px; max-width: 46%;
+    border-left: 1px solid var(--line);
+    background: var(--bg-inset);
+    display: none; flex-direction: column; min-width: 0;
+  }
+  #infopanel.open { display: flex; }
+  #infopanel .mhead { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  #infopanel .mhead button { margin-left: 6px; }
+  #infoBody { flex: 1; overflow: auto; padding: 6px 16px 18px; font-size: 13px; }
+  #infoBody h3 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+  #infoBody h3 .ip-count { font-weight: 400; color: var(--text-dim); font-size: 12px; }
+  #infoBody .ip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 5px 0; }
+  #infoBody .ip-row .ip-k { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+  #infoBody .ip-row .ip-v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+  #infoBody .ip-sep { height: 1px; background: var(--line); margin: 12px 0 0; }
+  #infoBody .ip-skill {
+    display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 10px;
+    text-align: left; background: none; border: 0; border-radius: 8px; padding: 6px 8px; margin: 0 -8px; color: var(--text); cursor: pointer;
+  }
+  #infoBody .ip-skill:hover { background: var(--amber-soft); }
+  #infoBody .ip-skill .ip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #infoBody .ip-skill .ip-meta { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+  #infoBody .ip-cron { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; background: var(--bg); }
+  #infoBody .ip-cron .ip-prompt { color: var(--text-dim); font-size: 12px; margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #infoBody .ip-chip {
+    display: inline-block; margin: 6px 6px 0 0; padding: 2px 9px; border-radius: 999px; font-size: 12px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); color: var(--text);
+  }
+  #infoBody .ip-chip:hover { border-color: var(--amber); }
+  #infoBody .ip-empty { color: var(--text-dim); font-size: 12px; font-style: italic; padding: 4px 0; }
+  #infoBody .ip-link { background: none; border: 0; padding: 0; color: var(--amber); cursor: pointer; font-size: 12px; }
+  .fp-agent-link { background: none; border: 0; padding: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline dotted; }
   #diffStatus {
     font-family: var(--mono);
     font-size: 11.5px;
@@ -2126,7 +2170,7 @@
   #diffBody .meta { color: var(--text-dim); }
 
   @media (max-width: 900px) {
-    #machine, #diffpanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
+    #machine, #diffpanel, #infopanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
   }
   /* ── Popins ───────────────────────────────────────────────
      ONE CLASS, not a list of ids. The rule used to name
@@ -2825,7 +2869,7 @@
     main { padding: 0; gap: 0; }
     /* Conversation */
     .chat-pane { border: 0; border-radius: 0; background: var(--pane-main); }
-    #machine, #diffpanel { border-radius: 0; border-top: 0; border-bottom: 0; border-right: 0; }
+    #machine, #diffpanel, #infopanel { border-radius: 0; border-top: 0; border-bottom: 0; border-right: 0; }
   }
 
   /* Channel header: avatar, name, status, then actions. */
@@ -2835,11 +2879,12 @@
   #chanBar .gauge .label { display: none; }
   #chanBar .gauge .value { color: var(--text-dim); font-size: 12px; }
   #chanBar .gauge:nth-of-type(3) { display: none; } /* the session id: in the tooltip of the menu */
-  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm {
+  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm, #chanBar .chan-actions #chanInfo {
     position: relative; align-self: stretch; display: inline-flex; align-items: center; gap: 6px;
     border: 0; border-radius: 0; background: none; padding: 0 10px; color: var(--text-dim); font-size: 14px;
   }
-  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover, #chanBar .chan-actions #chanInfo:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanInfo.on { color: var(--amber); }
   #chanBar .chan-actions #chanTerm.on { color: var(--text); font-weight: 600; background: none; border: 0; }
   #chanBar .chan-actions #chanTerm.on::after {
     content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--amber);
@@ -2994,7 +3039,7 @@
       border: 0; border-radius: calc(var(--radius) + 4px);
       background: var(--pane-main); box-shadow: var(--card-shadow);
     }
-    #machine, #diffpanel { border: 0; border-radius: calc(var(--radius) + 4px); box-shadow: var(--card-shadow); }
+    #machine, #diffpanel, #infopanel { border: 0; border-radius: calc(var(--radius) + 4px); box-shadow: var(--card-shadow); }
   }
 
   /* Lists: soft pills, no rings. The selected agent lifts off the list with a
@@ -4021,6 +4066,8 @@
         <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
         <button id="chanGallery" class="icon" title="Media gallery — every photo and video in this conversation" aria-label="Media gallery"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8.5" cy="9.5" r="1.4" fill="currentColor"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <!-- About this agent: its environment, the skills it uses, its schedules. -->
+        <button id="chanInfo" class="icon" title="About this agent — skills it uses, schedules" aria-label="About this agent" aria-pressed="false"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M14.5 4v16M17 8.5h0M17 12h0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 9h5M6.5 12.5h5M6.5 16h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <!-- No end-session icon here: "✕ Close agent" lives in the ⋯ menu below. -->
         <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <!-- The per-agent menu (rename, profile, mirror, report to, close). It's
@@ -4137,6 +4184,17 @@
     </div>
     <div id="diffStatus"></div>
     <pre id="diffBody"></pre>
+  </aside>
+
+  <aside id="infopanel" aria-label="About this agent">
+    <div class="mhead">
+      <span class="label" id="infoTitle">Agent</span>
+      <span>
+        <button id="refreshInfo">Refresh</button>
+        <button id="closeInfo">Close</button>
+      </span>
+    </div>
+    <div id="infoBody"></div>
   </aside>
 </main>
 
@@ -6798,6 +6856,8 @@
     // The gallery is per-agent; switching agents under it would show the old
     // one's media. Close it rather than silently mislabel the grid.
     if (switched) closeGallery();
+    // The info panel follows the agent instead (it is cheap and always right).
+    if (switched && $("infopanel").classList.contains("open")) renderInfoPanel();
     tabs.forEach((t) => {
       t.btnEl.classList.toggle("active", t === tab);
       t.transcriptEl.hidden = t !== tab;
@@ -7395,6 +7455,7 @@
       // about an agent that does not exist.
       $("chanCron").disabled = true;
       $("chanGallery").disabled = true;
+      $("chanInfo").disabled = true;
       closeGallery(); // no agent → its media grid is stale; don't leave it up
       paintChanUpdate();
       // Two different truths behind the same empty panel — the server tells us
@@ -7413,6 +7474,7 @@
     $("startingState").classList.remove("visible");
     $("chanCron").disabled = !t.sessionId;
     $("chanGallery").disabled = !t.sessionId;
+    $("chanInfo").disabled = !t.sessionId;
     paintChanUpdate();
     $("led").className = "led " +
       ({ setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[t.status]);
@@ -7565,6 +7627,48 @@
     tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
     tab.lastAtEl.style.opacity = String(ageOpacity(Date.now() - tab.lastMsgAt));
     tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
+  }
+  /**
+   * Fills the rows' "xxx ago" + context % from `GET /channels/glance` (the end
+   * of each transcript, no resume needed), cascading them in top to bottom.
+   * Never overwrites what a tab's own WebSocket already delivered: `history`
+   * and `context` are the authority, the glance only fills the wait.
+   */
+  async function paintGlance(list) {
+    let rows;
+    try {
+      const r = await fetch("/channels/glance");
+      if (!r.ok) return;
+      rows = await r.json();
+    } catch { return; }
+    if (!Array.isArray(rows)) return;
+    const byId = new Map(rows.map((g) => [g.sessionId, g]));
+    // Rank by on-screen order so the cascade runs down the column.
+    const ordered = list
+      .filter((t) => t.btnEl?.isConnected)
+      .sort((a, b) => (a.btnEl.compareDocumentPosition(b.btnEl) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    let rank = 0;
+    for (const t of ordered) {
+      const g = byId.get(t.sessionId);
+      if (!g) continue;
+      let painted = false;
+      if (!Number.isFinite(t.lastMsgAt) && Number.isFinite(g.lastAt)) {
+        t.lastMsgAt = g.lastAt;
+        renderLastAt(t);
+        painted = true;
+      }
+      if (t.contextPct == null && Number.isFinite(g.contextPct)) {
+        t.contextPct = g.contextPct;
+        renderContext(t);
+        painted = true;
+      }
+      // Only rows on screen take a rank: a hidden group's rows must not push
+      // the visible ones further down the cascade.
+      if (!painted || t.btnEl.offsetParent === null) continue;
+      t.btnEl.style.setProperty("--gi", Math.min(rank++, 12));
+      t.btnEl.classList.add("glance-in");
+      setTimeout(() => t.btnEl.classList.remove("glance-in"), 800);
+    }
   }
   // The relative time ages on its own: refresh every tab periodically.
   setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
@@ -11071,6 +11175,7 @@
     // Only a voluntary (dismissable) re-login card; the signed-out funnel ignores Escape.
     if (!$("authOverlay").hidden && authDismissable) { closeAuthCard(); e.preventDefault(); return; }
     if ($("diffpanel").classList.contains("open")) { $("diffpanel").classList.remove("open"); e.preventDefault(); return; }
+    if ($("infopanel").classList.contains("open")) { setInfoOpen(false); e.preventDefault(); return; }
     // 2. A clickable dialog awaiting an answer → do nothing.
     if (active && active.dialogBubble) return;
     // 3. Session active (engine room ouvert inclus) → envoyer esc.
@@ -11938,7 +12043,7 @@
     $("factoryPage").hidden = !on;
     $("factoryBtn").setAttribute("aria-pressed", String(on));
     try { localStorage.setItem("cp.factoryMode", on ? "1" : ""); } catch {}
-    if (on) facRefresh();
+    if (on) return facRefresh();
     else if (was) {
       // Coming back: the cockpit slides in from the other side.
       const m = document.querySelector("main");
@@ -12208,6 +12313,21 @@
         ])),
       ]));
     }
+    // Who runs it ON A SCHEDULE: a cron that names it, or a run recorded during
+    // a cron fire (src/skill-usage.ts). Clicking an agent opens it.
+    const cu = s.cronUsers || [];
+    d.appendChild(facEl("h2", { text: `Used by schedules${cu.length ? " (" + cu.length + ")" : ""}` }));
+    if (!cu.length) d.appendChild(facEl("div", { class: "fp-sub", text: "No schedule uses it — none names it, and no scheduled run called it in the last 7 days." }));
+    for (const u of cu)
+      d.appendChild(facEl("div", { class: "fp-card" }, [
+        facEl("button", { class: "fp-agent-link", type: "button", title: "Open this agent", text: u.name, onclick: () => openAgentInfo(u.sessionId) }),
+        facEl("span", { class: "fp-sub", text: u.cronRuns ? ` · ${u.cronRuns} scheduled run${u.cronRuns === 1 ? "" : "s"}, 7 days` : " · not fired yet" }),
+        ...u.crons.map((c) => facEl("div", { style: "margin-top:4px" }, [
+          facEl("b", { text: "⏰ " + c.label }),
+          c.enabled ? null : facEl("span", { class: "fp-sub", text: " (paused)" }),
+          facEl("div", { class: "fp-sub", style: "white-space:pre-wrap;overflow-wrap:anywhere", text: c.prompt }),
+        ])),
+      ]));
     // What agents running it receive: shown, never a step to take.
     if (last && last.secrets.length) d.appendChild(facEl("div", { class: "fp-sub" }, ["Agents running it get: ", ...last.secrets.map((n) => {
       const bound = s.bindings.find((b) => b.name === n);
@@ -12759,6 +12879,96 @@
     await loadVault(); renderSecrets();
     $("secretKey").focus();
   });
+  // ── Agent info panel (the chan bar's ▯ button) ──────────────────────────
+  // What this agent is and what it USES: its factory skills (with runs, and how
+  // many came from a schedule) and its schedules (with the skills each names).
+  // A skill is a button: it opens that skill's card in the Skill Factory. Data
+  // only through textContent (facEl): skill titles and cron prompts can be
+  // written by an agent.
+  let infoSeq = 0;
+  async function renderInfoPanel() {
+    const body = $("infoBody");
+    const t = active;
+    const seq = ++infoSeq;
+    if (!t || !t.sessionId) { body.textContent = ""; body.appendChild(facEl("div", { class: "ip-empty", text: "Open an agent." })); return; }
+    $("infoTitle").textContent = t.nameEl ? t.nameEl.textContent : t.sessionId.slice(0, 8);
+    let skills = [], crons = [];
+    try { skills = (await facCall("GET", "/factory/skills")).skills || []; } catch { skills = []; }
+    try { crons = await (await fetch("/crons")).json(); } catch { crons = []; }
+    if (seq !== infoSeq || active !== t) return; // a newer render (or another agent) won
+    const sid = t.sessionId;
+    body.textContent = "";
+    // Environment
+    const row = (k, v, title) => facEl("div", { class: "ip-row" }, [facEl("span", { class: "ip-k", text: k }), facEl("span", { class: "ip-v", text: v, title: title || v })]);
+    body.appendChild(facEl("h3", { text: "Environment" }));
+    body.appendChild(row("Directory", t.cwd || "—"));
+    if (t.branch) body.appendChild(row("Branch", t.branch));
+    body.appendChild(row("Profile", t.profile || "none"));
+    body.appendChild(row("Session", sid.slice(0, 8), sid));
+    body.appendChild(facEl("div", { class: "ip-sep" }));
+    // Skills it has, most used first.
+    const mine = skills
+      .map((s) => ({ s, a: (s.attachedTo || []).find((a) => a.sessionId === sid) }))
+      .filter((x) => x.a)
+      .sort((x, y) => (y.a.runs || 0) - (x.a.runs || 0) || facTitle(x.s).localeCompare(facTitle(y.s)));
+    body.appendChild(facEl("h3", {}, ["Skills", facEl("span", { class: "ip-count", text: String(mine.length) })]));
+    if (!mine.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No Skill Factory skill is shared with this agent." }));
+    for (const { s, a } of mine) {
+      const runs = a.runs || 0, cr = a.cronRuns || 0;
+      const meta = runs ? `${runs} run${runs === 1 ? "" : "s"}${cr ? ` · ⏰ ${cr}` : ""}` : "not used yet";
+      body.appendChild(facEl("button", { class: "ip-skill", type: "button", title: `Open “${facTitle(s)}” in the Skill Factory — ${meta}, last 7 days`, onclick: () => openSkillCard(s.id) }, [
+        facEl("span", { class: "ip-name", text: facTitle(s) }),
+        facEl("span", { class: "ip-meta", text: meta }),
+      ]));
+    }
+    body.appendChild(facEl("div", { class: "ip-sep" }));
+    // Schedules, each with the skills it uses.
+    const list = (Array.isArray(crons) ? crons : []).filter((c) => c.sessionId === sid);
+    body.appendChild(facEl("h3", {}, ["Schedules", facEl("span", { class: "ip-count", text: String(list.length) })]));
+    if (!list.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No schedule." }));
+    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
+    const chip = (s) => facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory", text: "✦ " + facTitle(s),
+      onclick: () => openSkillCard(s.id), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSkillCard(s.id); } } });
+    for (const c of list) {
+      const uses = named(c.id);
+      body.appendChild(facEl("div", { class: "ip-cron" }, [
+        facEl("b", { text: "⏰ " + fmtSchedule(c.schedule) }),
+        c.enabled ? null : facEl("span", { class: "ip-k", text: " (paused)" }),
+        facEl("div", { class: "ip-prompt", text: c.prompt.length > 200 ? c.prompt.slice(0, 197) + "…" : c.prompt }),
+        uses.length ? facEl("div", {}, uses.map(chip)) : null,
+      ]));
+    }
+    // Skills a scheduled run CALLED without any prompt naming them: the agent
+    // picked them itself, so they belong to no cron in particular.
+    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
+    if (picked.length) body.appendChild(facEl("div", { style: "margin-top:8px" }, [facEl("span", { class: "ip-k", text: "Also called by scheduled runs:" }), facEl("div", {}, picked.map(chip))]));
+    body.appendChild(facEl("div", { style: "margin-top:10px" }, [facEl("button", { class: "ip-link", type: "button", text: "Manage schedules…", onclick: () => { $("cronOverlay").hidden = false; renderCrons(); } })]));
+  }
+  function setInfoOpen(on) {
+    $("infopanel").classList.toggle("open", on);
+    $("chanInfo").classList.toggle("on", on);
+    $("chanInfo").setAttribute("aria-pressed", String(on));
+    if (on) renderInfoPanel();
+  }
+  $("chanInfo").addEventListener("click", () => setInfoOpen(!$("infopanel").classList.contains("open")));
+  $("closeInfo").addEventListener("click", () => setInfoOpen(false));
+  $("refreshInfo").addEventListener("click", renderInfoPanel);
+  /** Open one skill's card in the Skill Factory (from the info panel). */
+  async function openSkillCard(id) {
+    fac.view = "list";
+    await facSetMode(true);
+    if (!facById(id)) return facMsg("That skill is no longer visible to you.", true);
+    facOpenDrawer(id);
+  }
+  /** From a skill's card: back to the cockpit, on that agent, its panel open. */
+  function openAgentInfo(sessionId) {
+    const t = tabs.find((x) => x.sessionId === sessionId);
+    if (!t) return facMsg("That agent is not open in this cockpit.", true);
+    facSetMode(false);
+    activate(t);
+    setInfoOpen(true);
+  }
+
   // ── Schedule panel (per-channel cron: monitoring / reporting) ───────────
   let cronZone = "";           // the zone the SERVER applies (see showCronTz)
   function fmtSchedule(s) {
@@ -12791,6 +13001,8 @@
     } catch { /* the popin works perfectly well without this note */ }
   }
   async function renderCrons() {
+    // A schedule added, edited or removed changes what the info panel lists.
+    if ($("infopanel").classList.contains("open")) renderInfoPanel();
     const ul = $("cronList"); ul.innerHTML = "";
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
@@ -15020,6 +15232,10 @@
       for (let i = 0; i < pending.length; i++) {
         if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
       }
+      // 3) Paint every row's "xxx ago" + context % NOW, from one cheap read of
+      //    the transcripts' tails — not from N resumes, each of which spawns
+      //    `claude` and replays a whole history before its row says anything.
+      paintGlance(pending.map((p) => p.t));
     } else {
       // Nothing to restore: the invitation — unless the server said it is
       // starting this instance's lead agent (read above, before this first
