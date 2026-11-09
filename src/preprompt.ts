@@ -53,19 +53,21 @@ const bullets = (items: string[]): string => items.map((i) => `• ${i}`).join("
 export function prepromptParts(input: PrepromptInput): PrepromptPart[] {
   const parts: PrepromptPart[] = [];
 
-  if (input.role?.trim()) {
-    parts.push({
-      label: input.profileName ? `Role — ${input.profileName}` : "Role",
-      source: "Profiles panel",
-      text: input.role.trim(),
-    });
-  }
-
+  // First, as at spawn: what the instance is for, before this agent's role.
   if (input.instanceContext?.trim()) {
     parts.push({
       label: INSTANCE_CONTEXT_LABEL,
       source: "Instance context (cockpit menu)",
       text: input.instanceContext.trim(),
+    });
+  }
+
+
+  if (input.role?.trim()) {
+    parts.push({
+      label: input.profileName ? `Role — ${input.profileName}` : "Role",
+      source: "Profiles panel",
+      text: input.role.trim(),
     });
   }
 

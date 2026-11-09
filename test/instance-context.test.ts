@@ -63,14 +63,15 @@ test("instanceContextArgs: nothing when empty; a hostile text survives byte-for-
   assert.ok(a[1].endsWith(hostile));
 });
 
-test("pre-prompt panel shows it right after the role, and the staleness fingerprint ignores it", async () => {
+test("pre-prompt panel shows it first, before the role, and the staleness fingerprint ignores it", async () => {
   const { prepromptParts, prepromptFingerprint } = await import("../src/preprompt.js");
   const base = { profileName: "Shadok-dev", role: "You build.", pilotPrompt: "pilot" };
   const without = prepromptParts(base);
   const withCtx = prepromptParts({ ...base, instanceContext: "Side projects with friends." });
   const i = withCtx.findIndex((p) => p.label === "Instance context");
-  assert.ok(i > 0, "the part exists");
-  assert.equal(withCtx[i - 1].label.startsWith("Role"), true);
+  // General before specific: what the instance is for, THEN the agent's role.
+  assert.equal(i, 0, "the instance context comes first");
+  assert.equal(withCtx[1].label.startsWith("Role"), true);
   assert.ok(withCtx[i].text.includes("Side projects with friends."));
   assert.equal(prepromptFingerprint(withCtx), prepromptFingerprint(without));
   assert.equal(prepromptParts({ ...base, instanceContext: "  " }).some((p) => p.label === "Instance context"), false);

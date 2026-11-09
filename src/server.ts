@@ -7012,12 +7012,13 @@ function makePilot(
     // A flag+value pair, before the profile's flags: nothing here can land
     // after `--mcp-config`'s variadic JSON as a bare word.
     ...factory.args,
-    ...profileArgs(resolvedProfile, spawnModel, effort),
-    // The instance context: right after the role (which stays first), before
-    // the cockpit's own notes. Nothing at all when it is empty. One more
-    // --append-system-prompt flag: it relies on the spawn merging them into ONE
-    // (mergeAppendedPrompts, PR #433), since Claude Code keeps only the last.
+    // The instance context FIRST, then the role: general before specific — what
+    // this instance is for, then what this agent does in it. Nothing at all when
+    // it is empty. A flag+value pair, so it is safe before the profile's flags;
+    // mergeAppendedPrompts (PR #433) joins every --append-system-prompt into one,
+    // in this order, since Claude Code keeps only the last.
     ...instanceContextArgs(instanceContextForCwd(loadConfig(), process.cwd())),
+    ...profileArgs(resolvedProfile, spawnModel, effort),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),

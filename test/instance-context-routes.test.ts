@@ -62,3 +62,11 @@ test("the instance context rides the ONE merged --append-system-prompt (#433)", 
   const block = SRC.slice(i, SRC.indexOf("]);", i));
   assert.match(block, /instanceContextArgs\(instanceContextForCwd\(/);
 });
+
+test("the instance context is sent BEFORE the role in the merged prompt", () => {
+  const i = SRC.indexOf("const fullArgs = mergeAppendedPrompts([");
+  const block = SRC.slice(i, SRC.indexOf("]);", i));
+  const ctx = block.indexOf("instanceContextArgs(");
+  const role = block.indexOf("profileArgs(");
+  assert.ok(ctx > 0 && role > 0 && ctx < role, "instanceContextArgs precedes profileArgs");
+});
