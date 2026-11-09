@@ -53,3 +53,12 @@ test("draft answers only once the hidden prompt was delivered (or says why not)"
   assert.match(r, /await deliverWithRetry\(/);
   assert.match(r, /res\.status\(503\)/);
 });
+
+test("the instance context rides the ONE merged --append-system-prompt (#433)", () => {
+  // Claude Code keeps only the last --append-system-prompt: a second flag outside
+  // the merge would swallow the role and the pilot prompt.
+  const i = SRC.indexOf("const fullArgs = mergeAppendedPrompts([");
+  assert.ok(i > 0, "makePilot merges its appended prompts");
+  const block = SRC.slice(i, SRC.indexOf("]);", i));
+  assert.match(block, /instanceContextArgs\(instanceContextForCwd\(/);
+});
