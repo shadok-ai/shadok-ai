@@ -150,6 +150,11 @@ order is in "Sequencing" below.
   notifications, a mobile PWA first (the web and Telegram already exist), native
   desktop and mobile later. Agents are participants you @mention rather than a
   separate surface.
+- **Presence.** Everyone can see who is online and on which channel, humans and
+  agents alike. It is built only from what is actually observed — live
+  connections — and never guessed or inferred from past activity (principle 4).
+  Because presence about people is sensitive, a person can choose to appear
+  offline or away.
 - **Company memory.** A shared knowledge base: brand voice, decisions, facts the
   whole team and every agent should hold. The ledger is the seed; it is a
   status table today, not a knowledge base, and the gap is real.
