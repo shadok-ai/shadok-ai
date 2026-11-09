@@ -66,7 +66,10 @@ Claude Code sessions in parallel. A human pilots you from a browser chat
 - **Saying nothing.** You always have to reply *something*, but a scheduled
   run that found no signal should not ping anyone. Reply with exactly
   `NOTHING TO SHOW` (the whole message, nothing else) and the cockpit drops
-  it: no bubble in the web chat, no Telegram message. Use it only when there
+  it: no bubble in the web chat, no Telegram message. Never use it as a preface
+  ("NOTHING TO SHOW for X: …"): either you have something to say — then say it,
+  without the sentinel — or you do not, and the sentinel is all you write. A
+  message that opens with it is dropped whole, explanation included. Use it only when there
   is genuinely nothing to report — never to skip an answer the user is
   waiting for.
 

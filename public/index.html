@@ -1127,7 +1127,13 @@
   #secretsList li.sec-ro code { opacity: .85; }
   #secretsList li.sec-row { flex-wrap: wrap; }
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
-  #secretAttach[data-grouped="1"] { display: none; }
+  #secretAttach[data-grouped="1"][data-editing="1"] { display: none; }
+  #secretsAdd { margin-bottom: 12px; }
+  .sec-val { flex-basis: 100%; display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
+  .sec-val .sec-mask { font-family: var(--mono); letter-spacing: .1em; color: var(--text-dim); }
+  .sec-val input { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--amber); background: rgba(0,0,0,.25); color: inherit; font-size: 16px; }
+  .sec-val button { flex: none; font-size: 12px; padding: 4px 12px; border-radius: 6px; border: 1px solid var(--line); background: none; color: inherit; cursor: pointer; }
+  .sec-val button.sec-val-save { border-color: var(--amber); color: var(--amber); }
   .sec-from { margin-left: 8px; font-size: 11px; color: var(--text-dim); font-family: var(--sans, inherit); }
   /* Grouped mode: each own secret is a card — name + actions, one meta line, then
      the "Shared with" / "Injected into" chip rows and ONE Save. */
@@ -3413,7 +3419,6 @@
       </section>
       <div id="secretsScope" class="sec-scope" hidden><span>Group</span><select id="secretsGroup" aria-label="Group whose secrets are shown"></select></div>
       <p id="secretsErr" class="sec-err" role="alert" hidden></p>
-      <ul id="secretsList"></ul>
       <form id="secretsAdd">
         <div class="sec-add-row">
           <input id="secretKey" placeholder="NAME" autocomplete="off" spellcheck="false" />
@@ -3426,6 +3431,7 @@
           <div id="secretProfiles" class="sec-profiles"></div>
         </div>
       </form>
+      <ul id="secretsList"></ul>
       <div id="secretsReload" class="sec-reload" hidden></div>
       <details class="sec-relay">
         <summary>Finish a sign-in for an agent (OAuth)</summary>
@@ -8674,7 +8680,7 @@
     // isNothingToShow, src/tail.ts — no bundler here, hence the duplication).
     // Without this guard the grey preview would stay up the whole turn waiting
     // for a stream-text that never comes.
-    if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt)) { clearLivePreview(tab); return; }
+    if (/^[*_`\s]*nothing to show[*_`\s.!]*$/i.test(txt) || /^[*_`\s]*NOTHING TO SHOW(?![A-Za-z0-9])/.test(txt)) { clearLivePreview(tab); return; }
     // Content THEN a trailing sign-off sentinel: strip the marker, keep the text,
     // so the grey preview matches the finalised block the server strips (twin of
     // stripTrailingNothingToShow, src/tail.ts). A mid-message sentinel stays.
@@ -11683,7 +11689,8 @@
     actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
     if (!ro) {
       actions.append(
-        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k, grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : null)),
+        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () =>
+          grouped ? startInlineEdit(li, sec) : startEditSecret(k, null)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
           // The row's OWNER group, not the panel's write target (see secretControls).
           const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
@@ -11699,9 +11706,59 @@
     if (grouped) {
       const line = window.auditLine ? window.auditLine(sec) : "";
       if (line) { const m = document.createElement("div"); m.className = "sec-meta"; m.textContent = line; li.appendChild(m); }
+      if (!ro) li.appendChild(secretValueLine(li, sec));
       if (!ro) li.appendChild(secretControls(sec));
     }
     return li;
+  }
+  /** The value line of an own secret's card. The vault is write-only — the page
+   *  never receives a value, not even its length — so this is a FIXED mask, the
+   *  same for every secret: a length-shaped one would need the server to send
+   *  the length, which tells an onlooker how long a credential is. */
+  function secretValueLine(li, sec) {
+    const row = document.createElement("div"); row.className = "sec-val";
+    const mask = document.createElement("span"); mask.className = "sec-mask"; mask.textContent = "••••••••";
+    mask.title = "Value hidden — the vault is write-only. ✎ to replace it.";
+    row.appendChild(mask);
+    return row;
+  }
+  /** ✎ on a card: replace the value right there, instead of loading the form at
+   *  the other end of the panel. Writes to the secret's OWNER group (see
+   *  startEditSecret for why not the panel's target). Profiles and sharing stay
+   *  on the card's own chips. */
+  function startInlineEdit(li, sec) {
+    const row = li.querySelector(".sec-val");
+    if (!row || row.querySelector("input")) return;
+    const input = document.createElement("input");
+    input.type = "password"; input.placeholder = "new value";
+    input.autocomplete = "new-password"; input.spellcheck = false;
+    input.setAttribute("aria-label", "New value for " + sec.name);
+    const save = document.createElement("button"); save.type = "button"; save.className = "sec-val-save"; save.textContent = "Update";
+    const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel";
+    const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
+    const close = () => row.replaceWith(secretValueLine(li, sec));
+    const submit = async () => {
+      const value = input.value;
+      if (!value) { input.focus(); return; }
+      save.disabled = true; status.className = "sec-status"; status.textContent = "Saving…";
+      const body = { name: sec.name, value, overwrite: true, ...(sec.ownerGroup != null ? { group: String(sec.ownerGroup) } : {}) };
+      let err;
+      try {
+        err = await vaultError(await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+      } catch (e) { err = "network error: " + (e && e.message || e); }
+      if (err) { status.className = "sec-status err"; status.textContent = "Not saved: " + err; save.disabled = false; return; }
+      showVaultError("");
+      await loadVault(); renderSecrets();
+      offerReload(sec.name); // the new value reaches an agent only at spawn
+    };
+    save.addEventListener("click", submit);
+    cancel.addEventListener("click", close);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); submit(); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+    });
+    row.replaceChildren(input, save, cancel, status);
+    input.focus();
   }
   /** Read a refused vault write's message: the server answers `{error}` JSON;
    *  a proxy may answer HTML, so fall back to the status line. */
@@ -11879,6 +11936,7 @@
     $("secretVal").value = ""; $("secretVal").placeholder = "value";
     $("secretSubmit").textContent = "Add";
     $("secretEditCancel").hidden = true;
+    $("secretAttach").dataset.editing = "";
     renderSecretProfiles(new Set());
   }
   function startEditSecret(name, ownerGroup = null) {
@@ -11891,6 +11949,9 @@
     $("secretVal").value = ""; $("secretVal").placeholder = "new value (blank = keep)";
     $("secretSubmit").textContent = "Update";
     $("secretEditCancel").hidden = false;
+    // Grouped mode: an existing secret's profiles live on its card's chips, so
+    // the form hides its own ticks rather than offer a second, divergent copy.
+    $("secretAttach").dataset.editing = "1";
     const users = window.secretUsers ? window.secretUsers(profileCache, name) : [];
     renderSecretProfiles(new Set(users));
     $("secretVal").focus();
@@ -12180,7 +12241,16 @@
     $("secretsOverlay").hidden = false;
     $("secretKey").focus();
   }
-  $("secretsBtn").addEventListener("click", () => openSecretsPanel(null));
+  // Opened on the group on screen: Personal or a private group as itself, any
+  // public group — the Main view included — as the "Public" bucket (renderSecrets'
+  // `toOption` folds a public id into it). A phone (no rail) has no view and keeps
+  // the panel's own default.
+  const secretsGroupOnScreen = () => {
+    if (!railShown()) return null;
+    const v = viewGroupId();
+    return v == null || v === COMMONS_GROUP_ID ? PUBLIC_BUCKET : String(v);
+  };
+  $("secretsBtn").addEventListener("click", () => openSecretsPanel(secretsGroupOnScreen()));
   // ── Member picker: avatar toggle grid ───────────────────────────────
   // Shared by the create-group form and the group panel. Names go through
   // textContent (invariant 13); the only innerHTML is the constant check SVG.
@@ -13469,8 +13539,11 @@
     // because a human at the vault is acting deliberately; the flag only stops an
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
+    const isNew = !editingSecret;
+    let writtenGroup = null;
     if (!keepValue) {
       const body = editingSecret && editingSecretGroup ? { name, value, overwrite: true, group: editingSecretGroup } : withSecretGroup({ name, value, overwrite: true });
+      writtenGroup = body.group ?? null;
       const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const err = await vaultError(r);
       // Refused: say so and keep the form filled, rather than clearing it as if saved.
@@ -13480,6 +13553,14 @@
     // Grouped mode binds profiles per row (PUT /secrets/profiles) and hides the
     // ticks: syncing here would read an empty selection and detach everything.
     if (window.secretsPanelMode(vaultGroups) === "flat") await syncSecretToProfiles(name, wanted); // refreshes profileCache
+    else if (isNew && wanted.length) {
+      // Grouped mode: a new secret is bound to the ticked profiles in its group
+      // right away (the same route as the card's chips), so creating one no
+      // longer means "add, then find its card, tick, Save".
+      const e = await vaultError(await fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, profiles: wanted, ...(writtenGroup ? { group: writtenGroup } : {}) }) }));
+      if (e) showVaultError(name + " was saved, but not attached to its profiles: " + e);
+    }
     await loadVault(); renderSecrets();
     offerReload(name); // propose reloading the live agents that now feed on it
     resetSecretForm();
@@ -14186,7 +14267,7 @@
   }
   $("profToSecrets").addEventListener("click", () => {
     $("profilesOverlay").hidden = true;
-    openSecretsPanel(null);
+    openSecretsPanel(secretsGroupOnScreen());
   });
   const READONLY_DENY = ["Bash(git commit:*)","Bash(git push:*)","Bash(git add:*)","Bash(git reset:*)","Bash(git rebase:*)","Bash(git merge:*)","Bash(git checkout:*)"];
   /** The typed patterns, one per line, without the empty ones. */

@@ -352,13 +352,24 @@ function emitLine(line: string, onEvent: (e: TailEvent) => void) {
  * web or in Telegram. Documented in `context/pilot-prompt.md`.
  *
  * Deliberately STRICT: the sentinel must be the WHOLE block (emphasis and a
- * trailing period tolerated). An agent explaining the convention in a sentence
+ * trailing period tolerated) — or, upper-case, the block's opening words (see
+ * `LEADING_NOTHING_TO_SHOW`). An agent explaining the convention in a sentence
  * does not get muzzled — invariant 2 is the reminder of what an over-broad
  * heuristic has already cost here.
  */
 const NOTHING_TO_SHOW = /^[*_`\s]*nothing to show[*_`\s.!]*$/i;
+/**
+ * The sentinel used as a PREFACE — "NOTHING TO SHOW for the home page: <why>".
+ * Observed on a docs agent woken by a PR: it decided to stay silent, then
+ * justified the decision in the same block, and the whole justification landed in
+ * the chat. Opening a block with the sentinel IS the decision to be silent, so the
+ * block is dropped whole. Kept narrow on purpose (invariant 2): the literal
+ * UPPER-CASE sentinel only, as the block's first words — "Nothing to show yet,
+ * the build is still running" is prose and stays.
+ */
+const LEADING_NOTHING_TO_SHOW = /^[*_`\s]*NOTHING TO SHOW(?![A-Za-z0-9])/;
 export function isNothingToShow(text: string): boolean {
-  return NOTHING_TO_SHOW.test(text);
+  return NOTHING_TO_SHOW.test(text) || LEADING_NOTHING_TO_SHOW.test(text);
 }
 
 /**
