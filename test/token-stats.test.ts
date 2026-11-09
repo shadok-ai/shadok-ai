@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { messageCostUSD, windowStats, MODEL_PRICING, type MsgSample } from "../src/token-stats.js";
-import { scanUsageSamples } from "../src/tail.js";
+import { scanUsageSamples, scanUsageSamplesAsync } from "../src/tail.js";
 
 const u = (input: number, output: number, cacheCreation: number, cacheRead: number) => ({
   input,
@@ -96,6 +96,34 @@ test("scanUsageSamples: collapses streaming partials per id, earliest ts is upSi
     assert.equal(samples.size, 1); // m1 collapsed to one; m2 skipped (no timestamp)
     assert.equal(samples.get("m1")!.usage.output, 40); // final count, not the partial 2
     assert.equal(firstAt, Date.parse("2026-11-01T08:00:00.000Z")); // the user prompt, not the first assistant turn
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("scanUsageSamplesAsync: same result as the sync scanner (used for the instance total)", async () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cp-stats-"));
+  try {
+    const file = path.join(tmp, "s.jsonl");
+    fs.writeFileSync(
+      file,
+      [
+        JSON.stringify({ type: "user", timestamp: "2026-11-01T08:00:00.000Z", message: { content: "go" } }),
+        JSON.stringify({
+          type: "assistant",
+          timestamp: "2026-11-01T08:00:10.000Z",
+          message: { id: "m1", model: "claude-opus-5", usage: { input_tokens: 3, output_tokens: 9, cache_creation_input_tokens: 1, cache_read_input_tokens: 2 } },
+        }),
+      ].join("\n"),
+    );
+    const sync = scanUsageSamples(file);
+    const async_ = await scanUsageSamplesAsync(file);
+    assert.deepEqual([...async_.samples], [...sync.samples]);
+    assert.equal(async_.firstAt, sync.firstAt);
+    // A missing file is empty, not a throw (a dormant agent whose file is gone).
+    const gone = await scanUsageSamplesAsync(path.join(tmp, "nope.jsonl"));
+    assert.equal(gone.samples.size, 0);
+    assert.equal(gone.firstAt, null);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

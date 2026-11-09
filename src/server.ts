@@ -97,7 +97,7 @@ import {
 } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd, tmuxSessionCreated } from "./tmux.js";
-import { scanUsageSamples, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
+import { scanUsageSamples, scanUsageSamplesAsync, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
 import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
@@ -3065,6 +3065,54 @@ app.get("/channels/stats", (req, res) => {
   }
   const windows: TokenStats = windowStats(samples, Date.now());
   res.json({ windows, upSince, lastRespawn, model });
+});
+
+// The instance-wide total, for the header ⋯ menu's "Instance stats". A dormant
+// agent's scan is cached by (mtime,size), so re-opening only stat()s unchanged
+// files; a LIVE agent is read from memory. Invalidated when the transcript grows.
+const statsScanCache = new Map<string, { mtime: number; size: number; samples: Map<string, MsgSample> }>();
+// Bounded on purpose: the entries hold one object PER MESSAGE of a transcript,
+// the server runs for weeks, and nothing ever removed a file that stopped
+// existing (a closed agent, a pruned worktree) — so an unbounded map here grows
+// with every agent that ever lived on the instance. Insertion order gives a
+// plain FIFO eviction; an evicted file is simply re-scanned next time.
+const STATS_CACHE_MAX = 64;
+async function channelStatsSamples(ch: Channel): Promise<Iterable<MsgSample>> {
+  const live = sessions.get(ch.sessionId);
+  if (live) return live.usageSamples.values(); // in memory — no I/O
+  const file = sessionFilePath(ch.cwd, ch.sessionId, channelStateHome(ch));
+  let st: fs.Stats;
+  try {
+    st = await fs.promises.stat(file);
+  } catch {
+    return [];
+  }
+  const cached = statsScanCache.get(file);
+  if (cached && cached.mtime === st.mtimeMs && cached.size === st.size) return cached.samples.values();
+  const { samples } = await scanUsageSamplesAsync(file);
+  statsScanCache.delete(file); // re-insert, so a refreshed file is the newest entry
+  if (statsScanCache.size >= STATS_CACHE_MAX) {
+    const oldest = statsScanCache.keys().next();
+    if (!oldest.done) statsScanCache.delete(oldest.value);
+  }
+  statsScanCache.set(file, { mtime: st.mtimeMs, size: st.size, samples });
+  return samples.values();
+}
+
+// Sum of every agent the caller may SEE (a member → their groups; admin → all) —
+// so the total means the same thing per viewer. Reads happen async and one agent
+// at a time, so the single-threaded server stays responsive even on a big fleet;
+// the per-file cache makes a repeat open cheap.
+app.get("/instance/stats", async (req, res) => {
+  const box = restrictedBoxOf(req);
+  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))).filter(
+    (ch) => !box || ownedByPeer(ch, box),
+  );
+  const all: MsgSample[] = [];
+  for (const ch of visible) {
+    for (const s of await channelStatsSamples(ch)) all.push(s);
+  }
+  res.json({ windows: windowStats(all, Date.now()), agents: visible.length });
 });
 
 // ── Crons (scheduled channel prompts) ───────────────────────────────────────
