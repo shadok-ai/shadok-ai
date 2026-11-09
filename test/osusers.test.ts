@@ -42,7 +42,17 @@ test("dropEnv: a drop user sets HOME/USER/LOGNAME to that user's own", () => {
     HOME: "/home/sk-comex",
     USER: "sk-comex",
     LOGNAME: "sk-comex",
+    // The inherited GH_CONFIG_DIR points at the server's /root/.claude/gh, which
+    // a dropped user cannot traverse (0700) — EVERY gh call then dies "permission
+    // denied" reading config, before auth. Override it to the drop user's OWN
+    // writable config dir; the token is injected separately (GH_TOKEN, forcedEnv).
+    GH_CONFIG_DIR: "/home/sk-comex/.config/gh",
   });
+});
+
+test("dropEnv: GH_CONFIG_DIR is only set when there is a HOME to put it under", () => {
+  // A drop user with no HOME cannot get a reachable config dir; don't invent one.
+  assert.equal("GH_CONFIG_DIR" in dropEnv("sk-x", null), false);
 });
 
 test("dropEnv: NO user → {} (mono-tenant / commons-pre-migration: HOME left as today)", () => {

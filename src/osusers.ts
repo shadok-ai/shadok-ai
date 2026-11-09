@@ -90,7 +90,16 @@ export function dropEnv(
 ): Record<string, string> {
   if (!user) return {};
   const env: Record<string, string> = { USER: user, LOGNAME: user };
-  if (home) env.HOME = home;
+  if (home) {
+    env.HOME = home;
+    // The server's inherited `GH_CONFIG_DIR` points at its own `/root/.claude/gh`,
+    // which a privilege-dropped user cannot traverse (mode 0700) — so EVERY `gh`
+    // call (and `git` via `gh auth git-credential`) dies "permission denied"
+    // reading config before auth is even consulted. Point it at the drop user's
+    // OWN writable config dir instead; the auth token is injected separately as
+    // `GH_TOKEN` (`forcedEnv`), so `gh` is both reachable AND authenticated.
+    env.GH_CONFIG_DIR = `${home}/.config/gh`;
+  }
   return env;
 }
 

@@ -3675,6 +3675,24 @@ function uidOf(user: string): number | null {
     return null;
   }
 }
+/** The server's gh auth token, probed once and cached (`undefined` = not probed,
+ *  `null` = none). Best-effort: gh missing or signed out → no token, so a dropped
+ *  agent simply gets no `GH_TOKEN` and gh is reachable-but-unauthenticated rather
+ *  than crashing on the server's unreadable `/root/.claude/gh`. One `gh` spawn at
+ *  most (not per agent), so a restart-all herd does not fork it 30 times. */
+let ghTokenCache: string | null | undefined;
+function serverGhToken(): string | undefined {
+  if (ghTokenCache === undefined) {
+    try {
+      const t = execFileSync("gh", ["auth", "token"], { encoding: "utf8", timeout: 5000 }).trim();
+      ghTokenCache = t || null;
+    } catch {
+      ghTokenCache = null;
+    }
+  }
+  return ghTokenCache ?? undefined;
+}
+
 /** Already migrated iff the marker is present AND `main` exists (the latter is
  *  what a docker recreate loses, re-triggering the idempotent provisioning). */
 function alreadyMigratedNow(): boolean {
@@ -7983,9 +8001,14 @@ function makePilot(
     user && authMode === "token"
       ? secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME]
       : undefined;
+  // A dropped agent's GH_CONFIG_DIR is pointed at its own home (dropEnv), away
+  // from the server's unreachable /root/.claude/gh — so hand it the server's gh
+  // token to auth with. Only when dropping; a mono-tenant/root agent reads the
+  // config dir directly and needs nothing.
+  const ghToken = user ? serverGhToken() : undefined;
   return USE_TMUX
-    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home, oauthToken })
-    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home, oauthToken });
+    ? new TmuxPilot({ cwd, args: fullArgs, env, tmuxName: "sk-" + id, claudePath, user, home, oauthToken, ghToken })
+    : new PtyPilot({ cwd, args: fullArgs, env, claudePath, user, home, oauthToken, ghToken });
 }
 
 interface Live {
