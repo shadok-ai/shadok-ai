@@ -18,9 +18,10 @@ export interface Channel {
   branch?: string | null;
   /** Repo the worktree belongs to, to recreate a reclaimed checkout. */
   repo?: string;
-  /** Id of the `Group` this agent was born into. Server-owned: an agent never
-   *  moves between groups, so a client PUT must not reassign it across an
-   *  isolation wall. */
+  /** Id of the `Group` this agent lives in. Server-owned: a client PUT changes
+   *  it only through `mergeChannels`' `mayMove` — freely in mono-tenant, and
+   *  under multi-tenant only between groups that share an OS user (public ↔
+   *  public/Main, `groupMoveRefusal`), never across an isolation wall. */
   group?: string | null;
   /** The environment's home base: pinned, never closable. Server-owned, so a
    *  stale client's PUT cannot clear it. See `isHomeChannel`. */
@@ -340,6 +341,14 @@ export function mergeChannels(
    * Omitted → every row is visible (mono-tenant, internal callers).
    */
   canSee: (c: Channel) => boolean = () => true,
+  /**
+   * May the caller move this stored row to group `to`? `group` is SERVER_OWNED,
+   * so with no predicate a client can never change it (the safe default, and
+   * what every internal caller gets). `PUT /channels` passes one: anything in
+   * mono-tenant, where groups are cosmetic, and `groupMoveRefusal` under
+   * multi-tenant, where a group decides the OS user an agent runs as.
+   */
+  mayMove?: (prev: Channel, to: string | null) => boolean,
 ): Channel[] {
   const byId = new Map(stored.map((c) => [c.sessionId, c]));
   const result: Channel[] = [];
@@ -371,6 +380,12 @@ export function mergeChannels(
     if (prev.skills === undefined) delete merged.skills;
     if (prev.createdBy === undefined) delete merged.createdBy;
     if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;
+    // A move the caller is entitled to: the only way a client changes `group`.
+    if (mayMove && "group" in c) {
+      const to = c.group ?? null;
+      if (to !== (prev.group ?? null) && mayMove(prev, to)) merged.group = to;
+      else if (prev.group === undefined) delete merged.group;
+    }
     result.push(merged);
   }
   for (const c of stored) {
@@ -396,8 +411,9 @@ export function mergeClientChannels(
   clientList: Channel[],
   liveIds: Set<string>,
   canSee?: (c: Channel) => boolean,
+  mayMove?: (prev: Channel, to: string | null) => boolean,
 ): Channel[] {
-  const result = mergeChannels(loadChannels(), clientList, liveIds, canSee);
+  const result = mergeChannels(loadChannels(), clientList, liveIds, canSee, mayMove);
   saveChannels(result);
   return result;
 }

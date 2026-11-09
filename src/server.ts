@@ -157,6 +157,7 @@ import {
   newPrivateGroup,
   accountDeleteGroups,
   MAIN_GROUP_ID,
+  groupMoveRefusal,
   type Viewer,
   type Group,
   type Nature,
@@ -3078,7 +3079,21 @@ app.put("/channels", (req, res) => {
     const g = groupsNow.find((x) => x.id === c.group);
     return !!g && canSeeGroup(g, viewer);
   };
-  const merged = mergeClientChannels(body, live, canSee);
+  // Moving an agent between groups: free in mono-tenant (groups are cosmetic);
+  // under multi-tenant only where it does not change the OS user the agent runs
+  // as (`groupMoveRefusal` — public ↔ public/Main, never across a private wall).
+  // A refused move keeps the stored group; the client already said why at the
+  // drop, and its next sync puts the tab back.
+  const mayMove = (prev: Channel, to: string | null): boolean => {
+    if (DEPLOYMENT_MODE !== "multi-tenant") return true;
+    const why = groupMoveRefusal(prev.group ?? null, to, groupsNow, viewer);
+    if (why) console.warn(`channels: refused moving ${prev.sessionId.slice(0, 8)} to group ${to ?? "main"}: ${why}`);
+    // Same group spelled two ways (null and "main" are both the commons): keep
+    // what is stored rather than rewrite it.
+    const same = (prev.group ?? MAIN_GROUP_ID) === (to ?? MAIN_GROUP_ID);
+    return !why && !same;
+  };
+  const merged = mergeClientChannels(body, live, canSee, mayMove);
   // A web-side rename of a Telegram-bound channel → rename its topic too.
   for (const c of merged) {
     if (c.telegram?.threadId && c.name && c.name !== before.get(c.sessionId)) {
