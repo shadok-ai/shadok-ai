@@ -731,6 +731,21 @@ would race for the same keychain entry. The upside is free: the web card
 (`#authOverlay`) and Telegram's `/login` + `/code` share the same URL, and a
 code pasted from either finishes the other's flow.
 
+**Which credential is checked is the agent's own** (`src/connect-gate.ts`,
+`connectVerdict`, pure): the root sign-in only for an agent that runs as the
+server's user (mono-tenant, or a commons not yet migrated); a privilege-dropped
+multi-tenant agent needs the token (token mode) or its own space's login (login
+mode), never the root sign-in. Before this, every spawn also required the root
+login, so a fresh hosted instance demanded TWO OAuth round-trips, and a
+login-mode agent was refused for a token it never uses. `/auth` reports the
+commons' state as `connect`, which the cockpit's single **Connect Claude** card
+reads (`public/connect-card.js`: choose 1 month / 1 year on multi-tenant, then
+authorise behind an "Open claude.ai" button — never the raw URL — or paste a
+`setup-token` token via `POST /mt-token/paste`; a member gets "ask an admin").
+A successful `/mt-token/code`, `/mt-token/paste` or commons `/agent-login/code`
+starts the first agent exactly as `/auth/code` does. Design:
+`docs/superpowers/specs/2026-11-09-onboarding-connect-claude-design.md`.
+
 The `start` WS handler refuses to spawn while signed out, with `code:
 "logged-out"` — following the `code: "busy"` precedent so a machine client
 classifies the refusal without matching message text. That refusal, not the
@@ -1992,7 +2007,9 @@ a link to it; `stream-text` carries its own `msgId`, a `history` turn `ids`),
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
 `stopped`. `error` carries an optional `code` — `"busy"` (prompt refused
 mid-turn), `"link-refused"` (a `set-parent` the server will not accept) or
-`"logged-out"` (a spawn refused because the instance is not signed in to Claude) or
+`"logged-out"` (a spawn refused because the instance is not signed in to Claude),
+`"space-not-connected"` (a multi-tenant spawn whose OS user has no credential of
+its own — the token in token mode, its login in login mode; carries `user`) or
 `"resume-refused"` (a `resume` whose shortened id matches no agent, or several)
 — so a machine client can classify a refusal without matching on the message
 text.

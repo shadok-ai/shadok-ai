@@ -570,12 +570,16 @@ in to Claude, which happens after boot; the banner stays up until then and the
 migration **finishes on its own the moment you sign in** (no restart needed).
 **One-time provisioning:** isolated-group agents authenticate with a
 subscription token injected into their environment, not a shared credential
-file. Until it is set, group spawns are refused with a message naming this step,
-and the cockpit shows a red "no subscription token" banner. Provide it from the
-cockpit itself — **no shell needed**: as an admin, click **Provide token** on
-that banner (or **Replace subscription token…** in the version menu to rotate
-it), authorise on your Claude subscription in the browser, and paste the code
-back; the server mints and stores it. From Telegram, `/mttoken` then
+file. A fresh instance asks for it through the **Connect Claude** card that opens
+after the welcome tour — **no shell needed**: as an admin, pick **1 month** (an
+interactive login, the agents get your claude.ai connectors, one connection per
+isolated space) or **1 year** (this long-lived token, model access only), click
+**Open claude.ai**, authorise, and paste the code back; the server mints and
+stores it. **I already have a token** takes one minted elsewhere with
+`claude setup-token`. Rotate it later with **Replace subscription token…** in the
+version menu. Until a space is connected, its spawns are refused (`code:
+"space-not-connected"`): an admin gets the card for that space, a member is told
+to ask an admin. From Telegram, `/mttoken` then
 `/mtcode <code>` do the same. The token is captured and vaulted server-side and
 is never shown. It is valid for about a year; re-run the card (or `/mttoken`)
 before it expires. The shell path still works as a fallback: `claude setup-token`
@@ -916,8 +920,8 @@ are **never held by the quota guard** (they don't spend your subscription).
 
 Three ways to do it:
 
-- **From the cockpit — the easy one.** The sign-in card a fresh instance opens
-  has a second side, **Another model**: pick a provider (Ollama, a llama.cpp
+- **From the cockpit — the easy one.** The Connect Claude card a fresh instance
+  opens has a **Use another model** link: pick a provider (Ollama, a llama.cpp
   server, DeepSeek, Z.ai/GLM, Moonshot/Kimi, or any Anthropic-compatible
   server), the address and model are pre-filled, the models a local server
   serves are listed for you, and **Test** sends one real request before
