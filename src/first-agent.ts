@@ -1,7 +1,7 @@
 import { MAIN_GROUP_ID } from "./groups.js";
 import WebSocket from "ws";
 import { loadChannels } from "./channels.js";
-import { authStatus, type AuthState } from "./claude-auth.js";
+import type { Connected } from "./connect-gate.js";
 import { BOSS_PROFILE_NAME } from "./profiles.js";
 
 /**
@@ -26,6 +26,18 @@ export function countMainChannels(channels: ReadonlyArray<{ group?: string | nul
 
 export const FIRST_AGENT_NAME = "general";
 
+/**
+ * Pure: the `start` the lead agent is spawned with. The launch directory and no
+ * worktree — this is the main channel, not one of the isolated agents it will go
+ * on to spawn. And an EXPLICIT `group: Main`: the spawn is made over the
+ * loopback as the bootstrap admin, and on a multi-tenant instance a spawn with no
+ * group lands in its creator's private group — the lead agent then lived in the
+ * admin's Personal, where nobody else could see it. Mono-tenant ignores the field.
+ */
+export function firstAgentStartMessage(cwd: string, profile: string | undefined) {
+  return { type: "start" as const, cwd, profile, origin: "boot", group: MAIN_GROUP_ID };
+}
+
 export interface FirstAgentPlan {
   spawn: boolean;
   reason: "first-boot" | "channels-exist" | "not-signed-in";
@@ -45,7 +57,8 @@ export function firstAgentPlan(input: {
    *  the user launches its first agent on demand, so a brand-new private group
    *  must never read as "no channel, spawn a lead". */
   mainChannelCount: number;
-  authState: AuthState;
+  /** Can the agent this spawns authenticate (src/connect-gate.ts)? */
+  connected: Connected;
   /** The whole instance runs on a custom model backend (src/backend.ts): its
    *  agents carry their own token, so the Claude sign-in is irrelevant. */
   customBackend?: boolean;
@@ -55,7 +68,7 @@ export function firstAgentPlan(input: {
     return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
   // "unknown" is not "signed in": the probe failed. Waiting costs one boot,
   // guessing costs an agent with no credentials — the zombie shape (invariant 27).
-  if (input.authState !== "signed-in") return { spawn: false, reason: "not-signed-in" };
+  if (input.connected !== "yes") return { spawn: false, reason: "not-signed-in" };
   return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
 }
 
@@ -131,6 +144,9 @@ export async function ensureFirstAgent(deps: {
   /** The instance runs on a custom model backend (src/backend.ts) — decided by
    *  the server, which owns both the env and the saved choice. */
   customBackend?: boolean;
+  /** Whether the commons' first agent could authenticate (src/connect-gate.ts),
+   *  computed by the server, which owns the facts (auth mode, token, logins). */
+  connected: () => Promise<Connected>;
   /** Called with the new session id once the server reports it ready. */
   onReady: (sessionId: string, name: string) => void;
 }): Promise<FirstAgentPlan["reason"]> {
@@ -141,7 +157,7 @@ export async function ensureFirstAgent(deps: {
   const plan = firstAgentPlan({
     mainChannelCount: countMainChannels(loadChannels()),
     // No probe when it cannot change the answer (~850ms, and a process spawn).
-    authState: customBackend ? "unknown" : (await authStatus()).state,
+    connected: customBackend ? "unknown" : await deps.connected(),
     customBackend,
   });
   if (!plan.spawn) {
@@ -175,14 +191,7 @@ export async function ensureFirstAgent(deps: {
       guard.unref?.();
       ws.on("open", () =>
         ws.send(
-          JSON.stringify({
-            type: "start",
-            // The launch directory, and no worktree: this is the main channel,
-            // not one of the isolated agents it will go on to spawn.
-            cwd: deps.cwd,
-            profile: plan.profile,
-            origin: "boot",
-          }),
+          JSON.stringify(firstAgentStartMessage(deps.cwd, plan.profile)),
         ),
       );
       ws.on("message", (raw) => {

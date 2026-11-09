@@ -527,6 +527,20 @@ group already bound before this change stays bound.
 
 ## Profiles & secrets
 
+**Instance context** (`src/instance-context.ts`, design
+`docs/superpowers/specs/2026-11-09-instance-context-design.md`). One short text
+per launch directory (`config.instanceContext[cwd]`, ≤ 2,000 chars, never
+truncated) that every agent receives at spawn, BEFORE its role (general before specific), as a `## This
+instance` section — nothing at all when empty. It shows in the pre-prompt panel
+but is left out of `prepromptFingerprint`, so one Save does not mark the fleet
+stale. Writes: `PUT /instance-context` (browser + admin, like `PUT /profiles`:
+every agent is told this text), and `PUT /instance-context/first` — the lead's
+ONLY door, `x-shadok-session-key`, home channel (`isHomeChannel`), and only while
+empty (`firstWriteVerdict`); clearing it re-arms that door. The lead uses it from
+the `shadok-instance-context` skill (stdin only), prompted by the first-run
+greeting (`instanceContextInterviewBrief`, two or three questions, language
+deduced from the answer) or by `POST /instance-context/draft` from the editor.
+
 - **Secret vault** (`src/secrets.ts`, `~/.shadok-ai/secrets.json`, mode 600) —
   central, name→value. Values live outside any repo.
 - **Secret audit log** (`src/secret-audit.ts`, `~/.shadok-ai/secret-audit.jsonl`,
@@ -731,6 +745,21 @@ flow**, because the credentials are machine-global and two concurrent logins
 would race for the same keychain entry. The upside is free: the web card
 (`#authOverlay`) and Telegram's `/login` + `/code` share the same URL, and a
 code pasted from either finishes the other's flow.
+
+**Which credential is checked is the agent's own** (`src/connect-gate.ts`,
+`connectVerdict`, pure): the root sign-in only for an agent that runs as the
+server's user (mono-tenant, or a commons not yet migrated); a privilege-dropped
+multi-tenant agent needs the token (token mode) or its own space's login (login
+mode), never the root sign-in. Before this, every spawn also required the root
+login, so a fresh hosted instance demanded TWO OAuth round-trips, and a
+login-mode agent was refused for a token it never uses. `/auth` reports the
+commons' state as `connect`, which the cockpit's single **Connect Claude** card
+reads (`public/connect-card.js`: choose 1 month / 1 year on multi-tenant, then
+authorise behind an "Open claude.ai" button — never the raw URL — or paste a
+`setup-token` token via `POST /mt-token/paste`; a member gets "ask an admin").
+A successful `/mt-token/code`, `/mt-token/paste` or commons `/agent-login/code`
+starts the first agent exactly as `/auth/code` does. Design:
+`docs/superpowers/specs/2026-11-09-onboarding-connect-claude-design.md`.
 
 The `start` WS handler refuses to spawn while signed out, with `code:
 "logged-out"` — following the `code: "busy"` precedent so a machine client
@@ -1946,7 +1975,7 @@ editor. The editor's prompt panel mirrors a background Skillsmith tab through
 | `public/ledger-view.js` | Pure `filterLedger` / `ledgerFacets` / `ledgerAge` / `ldgNorm` + the `LEDGER_AGES` / `LEDGER_SORTS` option lists — how the read-only ledger viewer narrows a table that is 144 rows here and 498 on a sibling instance one day later. Client-side over rows already in hand (`GET /ledger` sends the table whole), so no endpoint and no round trip per keystroke. Four rules carry it. Search is accent-INSENSITIVE, because a sibling instance's rows are written in French and `hopital` has to find `hôpital` — a box that fails exactly the people whose rows need it is worse than none. The haystack includes the **id**, since that is the handle the pushed block and the CLI both print, so pasting `a1b2` back must land on the row it names (the viewer also SHOWS it now, and it was the one place that did not). An age window reads `verifiedAt ?? updatedAt` like everything else that judges staleness, and **never drops an undated row** — hiding what we know nothing about is how it stops existing. And the chips are counted from the data, never from a fixed list: `status` is free text, so a hardcoded set would silently hide whatever word no one predicted. ESM: loaded by the browser AND imported by `test/ledger-view.test.ts`. |
 | `public/upload.js` | Pure `uploadFailure(status, contentType)` — should `attachFile` refuse to parse a `/paste` response, and with what message? A proxy rejects an oversized body with its OWN `413 text/html` page that never reaches our JSON route, so `r.json()` on it threw `Unexpected token '<'` and the composer showed that instead of "too large". Returns null for a JSON response (the caller parses it), else a plain string (413 → "too large", else the status). The server accepts 50 MB (`PASTE_LIMIT`), so a `<html>` here is always the proxy — see the README "Upload size" note. ESM: bridged to `window.uploadFailure` AND imported by `test/upload.test.ts`. |
 | `public/update-ready.js` | Pure `claudeUpdateState(screen)` → `"restart"` / `"failed"` / `null` — reads Claude Code's OWN update footer from the agent's TUI screen (which the client already has as `t.screenText`): `Update installed · Restart to apply` → the binary is in, reload to apply; `Auto-update failed · … npm i -g …` → the auto-update failed, the cockpit installs it (`POST /claude-update`) then reloads. Scanned only in the **tail** of the screen (last lines) so an agent that merely PRINTS the phrase up-screen doesn't trip the badge — the invariant-2 false-positive class. Surfaced as a per-agent ↻/⚠ badge on the tab + a chanBar button. ESM: bridged to `window.claudeUpdateState` AND imported by `test/update-ready.test.ts`. |
-| `context/pilot-prompt.md` | System prompt appended to **every piloted session** via `--append-system-prompt` (wired in `makePilot`, server.ts). Tells the agent it runs under the cockpit (chat rendering, sibling sessions, worktree discipline). `SHADOK_PILOT_PROMPT=0` disables. |
+| `context/pilot-prompt.md` | System prompt appended to **every piloted session** via `--append-system-prompt` (wired in `makePilot`, server.ts). **One flag, never several:** Claude Code's `--append-system-prompt <prompt>` takes a single value and keeps only the LAST when repeated (measured on 2.1.319: three flags, the model saw only the third). The role, the env note, this prompt and the ledger reflex were four flags, so with the ledger on an agent silently kept the ledger reflex alone. `mergeAppendedPrompts` (`src/prompt-args.ts`) joins them, in order, into one value; a `claude -p` probe with the merged form returns all three codewords. Tells the agent it runs under the cockpit (chat rendering, sibling sessions, worktree discipline). `SHADOK_PILOT_PROMPT=0` disables. |
 | `context/agents-skill/` (`pilotctl.mjs`) | The `shadok-ai-agents` skill: a thin client that lets an agent spawn/pilot other agents through the server. **Seeded globally at boot** (`seedAgentsSkill`, twin of secrets/scheduler) so an agent in ANY repo has it — it used to live only in the repo's `.claude/skills`, a project skill invisible to agents working elsewhere (e.g. a lead in another repo told to delegate). SKILL.md invokes it by its seeded path (`~/.claude/skills/shadok-ai-agents/pilotctl.mjs`); `REPO_ROOT` (the in-repo server auto-start) is guarded so a globally-seeded copy never `npm build`s `$HOME`. It uses Node's **built-in `WebSocket`** (a tiny `makeWS` shim adds the `ws`-style `.on`/`.once`), NOT the `ws` package: seeded outside a repo there is no `node_modules` to resolve `ws` from, and the missing module broke every out-of-repo pilot with `ERR_MODULE_NOT_FOUND`. |
 
 
@@ -1994,7 +2023,9 @@ a link to it; `stream-text` carries its own `msgId`, a `history` turn `ids`),
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
 `stopped`. `error` carries an optional `code` — `"busy"` (prompt refused
 mid-turn), `"link-refused"` (a `set-parent` the server will not accept) or
-`"logged-out"` (a spawn refused because the instance is not signed in to Claude) or
+`"logged-out"` (a spawn refused because the instance is not signed in to Claude),
+`"space-not-connected"` (a multi-tenant spawn whose OS user has no credential of
+its own — the token in token mode, its login in login mode; carries `user`) or
 `"resume-refused"` (a `resume` whose shortened id matches no agent, or several)
 — so a machine client can classify a refusal without matching on the message
 text.

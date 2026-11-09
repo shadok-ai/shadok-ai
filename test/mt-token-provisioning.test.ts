@@ -29,6 +29,9 @@ function mtMsgFor(drops: boolean, custom: boolean, hasToken: boolean) {
 
 test("server guard is keyed on dropUser (same as makePilot's injection), not groupsMigrated", () => {
   const src = fs.readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
-  assert.ok(src.includes("mtTokenNeeded(!!dropUser,"), "guard uses the spawn's dropUser");
+  // The guard is now the connect verdict (src/connect-gate.ts), fed the SAME
+  // dropUser the spawn hands makePilot.
+  assert.ok(src.includes("await connectRefusal(dropUser)"), "guard uses the spawn's dropUser");
+  assert.ok(src.includes("dropUser: user,"), "the verdict is keyed on that user");
   assert.ok(!src.includes("DEPLOYMENT_MODE === \"multi-tenant\" && groupsMigrated,"), "old migration-keyed trigger is gone");
 });

@@ -16,13 +16,13 @@ test("ui: the token card markup exists with a link and a code form", () => {
   assert.ok(/id="mtTokenClose"/.test(HTML), "the card is closable (admin action, not a funnel)");
 });
 
-test("ui: both entry points are wired — the blocking banner and the replace button", () => {
+test("ui: the replace button is wired, and no red banner precedes the first connection", () => {
   assert.ok(/id="mtTokenReplaceBtn"/.test(HTML), "replace button in the version menu");
-  assert.ok(/function updateMtTokenBanner\(/.test(HTML), "the missing-token banner builder");
-  assert.ok(/updateMtTokenBanner\(lastAuth\)/.test(HTML), "the banner is refreshed from /auth");
-  // The banner and replace button are admin-gated client-side (the server also enforces it).
-  assert.ok(/a\.mtTokenMissing && me && me\.role === "admin"/.test(HTML), "banner is admin + mtTokenMissing");
   assert.ok(/a\.multiTenant && me && me\.role === "admin"/.test(HTML), "replace button is admin + multi-tenant");
+  // The blocking "no subscription token" banner shouted at a brand-new instance
+  // before anyone had done anything wrong; the Connect Claude card replaces it
+  // (docs/superpowers/specs/2026-11-09-onboarding-connect-claude-design.md).
+  assert.ok(!/updateMtTokenBanner/.test(HTML), "the first-run banner is gone");
 });
 
 test("ui: the card talks to the /mt-token endpoints and never puts a token in markup", () => {

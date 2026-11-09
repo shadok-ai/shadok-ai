@@ -385,20 +385,6 @@
   }
   #migrationBanner.pending { background: var(--amber); color: var(--on-accent); }
   #migrationBanner.failed { background: #b91c1c; color: #fff; }
-  /* Blocking: a multi-tenant instance with no subscription token can start no
-     agent. Same strip as the re-login reminder, red because it blocks. */
-  #mtTokenBanner {
-    flex: 0 0 auto; width: 100%; z-index: 1000;
-    background: #b91c1c; color: #fff;
-    font-family: var(--sans); font-size: 12px;
-    padding: 6px 12px;
-    display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
-  }
-  #mtTokenBanner button {
-    font: inherit; cursor: pointer; padding: 2px 10px;
-    border: 1px solid currentColor; border-radius: 4px;
-    background: transparent; color: inherit;
-  }
   .gauge { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .gauge .value {
     font-family: var(--sans);
@@ -1995,6 +1981,8 @@
   @media (pointer: coarse) {
     textarea, select,
     input[type="text"], input[type="password"], input[type="number"], input[type="search"],
+    .ic-panel textarea,
+    .cx-row input,
     #composer textarea { font-size: 16px; }
   }
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
@@ -2186,25 +2174,69 @@
     transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
   }
   #tourOverlay:not(.spotlight) #tourHole { display: none; }
-  /* A real OAuth URL is ~400 chars. Shown in full on purpose — a headless
-     server's operator often has to carry it to another device by hand — so it
-     has to wrap instead of pushing the panel off screen. The page sets no <a>
-     colour anywhere else (this is its first link), so without this the browser
-     default blue lands on a near-black panel and is unreadable. */
-  #authLink {
-    display: block;
-    word-break: break-all;
-    font-family: var(--mono);
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--amber);
-    text-decoration: none;
-    border: 1px solid var(--line);
-    background: var(--bg-inset);
-    border-radius: 6px;
-    padding: 8px 10px;
+  /* The Connect Claude card (public/connect-card.js decides the step). The
+     OAuth URL is ~350 characters: it was shown raw, as a block of underlined
+     blue text that even overflowed one panel. It now sits behind a real
+     button, with a quiet "copy the link" for the person who must carry it to
+     another device. */
+  .cx-panel { width: min(600px, 100%); padding: 20px 22px; }
+  .cx-tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+  .cx-tag.ok { color: var(--ok); }
+  .cx-title { margin: 2px 0 6px; font-size: 17px; font-weight: 600; }
+  .cx-lead { color: var(--text-dim); line-height: 1.55; margin: 0 0 16px; font-size: 13px; }
+  .cx-tiles { display: flex; gap: 12px; align-items: stretch; }
+  .cx-tile {
+    flex: 1; display: flex; flex-direction: column; gap: 6px; text-align: left; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px;
+    background: var(--bg-inset); color: var(--text); font: inherit; font-size: 13px;
   }
-  #authLink:hover { border-color: var(--amber); text-decoration: underline; }
+  .cx-tile.active { border-color: var(--amber); background: var(--amber-soft); }
+  .cx-tile-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+  .cx-rec { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--amber); }
+  .cx-li { color: var(--text-dim); line-height: 1.45; padding-left: 12px; position: relative; }
+  .cx-li::before { content: "•"; position: absolute; left: 0; }
+  .cx-foot {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
+  }
+  .cx-links { display: flex; gap: 14px; flex-wrap: wrap; }
+  .cx-link { color: var(--text-dim); font-size: 12px; text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
+  .cx-link:hover { color: var(--text); }
+  .cx-hint { color: var(--text-dim); font-size: 12px; }
+  .cx-primary, .cx-open, #mtTokenLink, #agentLoginLink {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border-radius: 6px; padding: 9px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--line); background: var(--bg-inset); color: var(--text); text-decoration: none;
+  }
+  .cx-primary.primary, .cx-open.primary, #mtTokenLink[href], #agentLoginLink[href] {
+    background: var(--amber); border-color: var(--amber); color: var(--on-accent);
+  }
+  .cx-open[aria-disabled="true"] { opacity: .55; pointer-events: none; }
+  .cx-step { display: flex; gap: 12px; margin-top: 14px; }
+  .cx-num {
+    flex: none; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%;
+    border: 1px solid var(--amber); color: var(--amber);
+    display: flex; align-items: center; justify-content: center; font-size: 11px;
+  }
+  .cx-step-body { flex: 1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+  .cx-form { flex-direction: column; align-items: stretch; gap: 6px; }
+  #cxPasteForm { display: flex; }
+  #cxPasteForm[hidden] { display: none; }
+  .cx-label { color: var(--text-dim); font-size: 12.5px; }
+  .cx-row { display: flex; gap: 8px; }
+  .cx-row input { flex: 1; min-width: 0; }
+  .cx-msg { font-size: 12.5px; margin: 12px 0 0; }
+  .cx-msg.bad { color: var(--err); }
+  @media (max-width: 640px) {
+    .cx-panel { padding: 16px; }
+    .cx-tiles { flex-direction: column; }
+    .cx-foot .cx-primary, .cx-open { width: 100%; }
+    .cx-foot { flex-direction: column-reverse; align-items: stretch; }
+    .cx-row { flex-direction: column; }
+    .cx-row button { width: 100%; padding: 10px; }
+    /* Safari zooms into a field under 16px (invariant 28). */
+    .cx-row input { font-size: 16px; }
+  }
   /* The panel was off-palette: #1b1d22 instead of --bg-raised, #e8e8ea instead
      of --text, rgba(255,255,255,.15) borders and a 10px radius where the whole
      cockpit uses 6 — i.e. a grey and a white that existed nowhere else. The amber
@@ -2312,14 +2344,16 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
-  /* Backend choice on the sign-in card (src/backend.ts). */
-  .auth-modes { display: flex; gap: 6px; margin: 4px 0 10px; }
-  .auth-modes button {
-    flex: 1; padding: 6px 10px; font-size: 12px; cursor: pointer;
-    border: 1px solid var(--line); border-radius: 6px;
-    background: var(--bg-inset); color: var(--text-dim);
+  .ic-panel textarea {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 140px;
+    background: var(--bg-inset); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px; font-family: var(--sans); line-height: 1.5;
   }
-  .auth-modes button.active { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .ic-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .ic-row .spacer { flex: 1; }
+  .ic-count { font-size: 11.5px; color: var(--text-dim); }
+  .ic-count.over { color: var(--err); }
+  .ic-link { color: var(--text); text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
   .bk-form .field { margin: 10px 0; }
   .bk-form .bk-opt { opacity: .6; font-weight: normal; }
   .bk-form .bk-hint { font-size: 11px; color: var(--text-dim); min-height: 1em; }
@@ -2579,6 +2613,8 @@
     border-radius: 6px; color: inherit; font-family: inherit; padding: 5px 8px; }
   /* Same fine-pointer gate as the ledger's tools (invariant 28). */
   @media (pointer: fine) { #secAuditTools input, #secAuditTools select { font-size: 13px; } }
+  /* The instance-context editor: compact only for a mouse — on touch it would make Safari zoom (invariant 28). */
+  @media (pointer: fine) { .ic-panel textarea { font-size: 13px; } }
   #secAuditTools input { flex: 1 1 120px; min-width: 100px; }
   #secAuditTools .ldg-count { color: var(--text-dim); font-size: 11px; margin-top: 7px; }
   #secAuditList { list-style: none; margin: 0; padding: 0; }
@@ -3179,6 +3215,8 @@
        Multi-tenant + admin only; shown by renderAuthRows. -->
   <button class="vm-btn" id="agentAuthBtn" type="button" hidden>🔌 Agent auth &amp; connectors…</button>
   <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
+  <!-- The instance context every agent receives at spawn (src/instance-context.ts). -->
+  <button class="vm-btn" id="instanceContextBtn" type="button">🧭 Instance context…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
   <div class="vm-row"><span class="vm-label">Channel</span>
@@ -3672,36 +3710,87 @@
      nothing to say. Deliberately has no close button — while signed out
      nothing works, so dismissing it would only hide the reason. -->
 <div id="authOverlay" class="overlay" hidden>
-  <div id="authPanel" class="sec-panel">
+  <div id="authPanel" class="sec-panel cx-panel">
     <div class="sec-head">
-      <strong id="authTitle">Sign in to Claude</strong>
-      <!-- Shown only for a VOLUNTARY re-login (opened from the panel / banner
-           while already signed in): that card is optional, so it must close.
-           The signed-OUT card has no ✕ on purpose — signing in is the only way
-           to make the instance usable, so it stays a funnel. -->
+      <span class="cx-tag" id="cxTag">Connect Claude</span>
+      <!-- Only a dismissable card (a re-login, a space to connect, the "ask an
+           admin" note) can be closed: the first-run funnel stays a funnel,
+           since nothing works until Claude is connected. -->
       <button id="authClose" type="button" title="Cancel" hidden aria-label="Cancel">✕</button>
     </div>
-    <!-- Where agents get their model: the Claude subscription, or any server
-         that speaks the Anthropic Messages API (src/backend.ts). -->
-    <div class="auth-modes" id="authModes" role="tablist">
-      <button type="button" role="tab" data-mode="claude" class="active">Claude subscription</button>
-      <button type="button" role="tab" data-mode="other">Another model</button>
-    </div>
-    <div id="authClaudeBox">
-      <p class="sec-note" id="authNote">This instance isn't signed in to Claude, so it can't start any agent.</p>
-      <div class="field">
-        <span class="label">1 — Open this link and authorise</span>
-        <a id="authLink" target="_blank" rel="noopener">starting…</a>
+
+    <!-- Step 1 (multi-tenant only): how long the permission lasts. -->
+    <div id="cxChoose" hidden>
+      <h2 class="cx-title">Connect your Claude subscription</h2>
+      <p class="cx-lead">Every agent here is a real Claude Code session, and it runs on <b>your</b> Claude plan — nothing is billed per call. Shadok needs your permission once to use it. Pick how long that permission lasts:</p>
+      <div class="cx-tiles" role="radiogroup">
+        <button type="button" class="cx-tile active" data-dur="token" role="radio" aria-checked="true">
+          <span class="cx-tile-head"><b>1 year</b><span class="cx-rec">recommended</span></span>
+          <span class="cx-li">Set it and forget it</span>
+          <span class="cx-li">Model access only — no connectors</span>
+        </button>
+        <button type="button" class="cx-tile" data-dur="login" role="radio" aria-checked="false">
+          <span class="cx-tile-head"><b>1 month</b></span>
+          <span class="cx-li">Your agents get your claude.ai connectors (Gmail, Drive, Slack…)</span>
+          <span class="cx-li">Shadok reminds you a few days before it expires</span>
+        </button>
       </div>
-      <div class="field">
-        <span class="label">2 — Paste the code you get back</span>
-        <form id="authCodeForm" style="display:flex;gap:8px">
-          <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
-          <button type="submit">Sign in</button>
-        </form>
+      <div class="cx-foot">
+        <span class="cx-links"><a href="#" class="cx-link" id="cxPasteLink">I already have a token</a><a href="#" class="cx-link" id="cxOtherLink">Use another model</a></span>
+        <button type="button" class="primary cx-primary" id="cxContinue">Continue →</button>
       </div>
-      <p class="sec-note" id="authMsg" hidden></p>
     </div>
+
+    <!-- Step 2: authorise on claude.ai and bring the code back — or paste a
+         long-lived token minted elsewhere. Never the raw OAuth URL as text. -->
+    <div id="cxAuth" hidden>
+      <h2 class="cx-title" id="authTitle">Authorise Shadok on claude.ai</h2>
+      <p class="cx-lead" id="authNote">A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.</p>
+      <div id="cxOauth">
+        <div class="cx-step"><span class="cx-num">1</span>
+          <div class="cx-step-body">
+            <a id="authLink" class="cx-open primary" target="_blank" rel="noopener" aria-disabled="true">Preparing…</a>
+            <a href="#" class="cx-link" id="cxCopy" hidden>copy the link instead</a>
+          </div>
+        </div>
+        <div class="cx-step"><span class="cx-num">2</span>
+          <form id="authCodeForm" class="cx-step-body cx-form">
+            <label class="cx-label" for="authCode">Paste the code Claude gave you</label>
+            <span class="cx-row">
+              <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false">
+              <button type="submit">Connect</button>
+            </span>
+          </form>
+        </div>
+      </div>
+      <form id="cxPasteForm" class="cx-form" hidden>
+        <label class="cx-label" for="cxToken">Paste the token <code>claude setup-token</code> printed</label>
+        <span class="cx-row">
+          <input id="cxToken" type="password" placeholder="paste the token…" autocomplete="off" spellcheck="false">
+          <button type="submit">Connect</button>
+        </span>
+      </form>
+      <p class="cx-msg" id="authMsg" hidden></p>
+      <div class="cx-foot">
+        <span class="cx-links"><a href="#" class="cx-link" id="cxBack" hidden>← change duration</a><a href="#" class="cx-link" id="cxOtherLink2" hidden>Use another model</a></span>
+        <span class="cx-hint" id="cxHint">The code expires after about 10 minutes.</span>
+      </div>
+    </div>
+
+    <!-- Step 3: connected. -->
+    <div id="cxDone" hidden>
+      <h2 class="cx-title">✓ Claude is connected</h2>
+      <p class="cx-lead" id="cxDoneText"></p>
+      <div class="cx-foot"><span></span><button type="button" class="primary cx-primary" id="cxGo">Let's go →</button></div>
+    </div>
+
+    <!-- A member on a space nobody connected yet: no OAuth flow, just say who can. -->
+    <div id="cxAsk" hidden>
+      <h2 class="cx-title">This space isn't connected to Claude yet</h2>
+      <p class="cx-lead">Agents here can't start until an admin connects this space to a Claude subscription. Ask an admin to do it from the cockpit.</p>
+      <div class="cx-foot"><span></span><button type="button" class="cx-primary" id="cxAskOk">OK</button></div>
+    </div>
+
     <form id="authOtherBox" class="bk-form" hidden autocomplete="off">
       <p class="sec-note">A model on this machine or a hosted provider. Agents on it need no Claude sign-in and spend none of your subscription.</p>
       <label class="field"><span class="label">Provider</span>
@@ -3717,6 +3806,7 @@
       <label class="field"><span class="label">Context window <span class="bk-opt">— optional, for the gauge</span></span>
         <input id="bkWindow" placeholder="64k" spellcheck="false"></label>
       <div class="bk-actions">
+        <a href="#" class="cx-link" id="cxOtherBack">← back</a>
         <button type="button" id="bkClear" hidden>Back to the Claude subscription</button>
         <span class="spacer"></span>
         <button type="button" id="bkTest">Test</button>
@@ -3782,6 +3872,24 @@
       </div>
     </div>
     <p class="sec-note" id="agentAuthMsg" hidden></p>
+  </div>
+</div>
+
+<!-- Instance context editor (src/instance-context.ts): the few lines every agent
+     on this cockpit receives at spawn, whatever its profile. -->
+<div id="icOverlay" class="overlay" hidden>
+  <div class="sec-panel ic-panel">
+    <div class="sec-head">
+      <strong>Instance context</strong>
+      <button id="icClose" type="button" title="Close" aria-label="Close">✕</button>
+    </div>
+    <p class="sec-note">What this cockpit is for, who works on it, its language — a handful of lines every agent here receives at spawn, on top of its role.</p>
+    <textarea id="icText" rows="8" spellcheck="true" placeholder="e.g. This instance runs side projects with a few friends, to try to get small businesses off the ground. Language: French in conversation; code and docs in English."></textarea>
+    <div class="ic-row"><span class="ic-count" id="icCount">0 / 2000</span><span class="spacer"></span>
+      <button type="button" id="icDraft" hidden>Ask general to draft it</button>
+      <button type="button" class="primary" id="icSave">Save</button></div>
+    <p class="sec-note" id="icMsg" hidden></p>
+    <p class="sec-note">Running agents see a change at their next reload. <a href="#" class="ic-link" id="icRestart">Restart all agents now</a></p>
   </div>
 </div>
 
@@ -4076,6 +4184,9 @@
   window.envVarAsks = envVarAsks;
   import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
   window.claudeUpdateState = claudeUpdateState;
+  import { connectCardPlan, sameConnectTarget } from "/connect-card.js?v=__ASSET_V__";
+  window.connectCardPlan = connectCardPlan;
+  window.sameConnectTarget = sameConnectTarget;
   import { buildMessageLink, parseMessageLink, samePrompt } from "/deep-link.js?v=__ASSET_V__";
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
@@ -4254,6 +4365,9 @@
     fmtExpiry: () => "—",
     expiryWarning: () => null,
     accountExpiryLine: () => null,
+    // Before the module lands, never open the Connect card on a guess.
+    connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
+    sameConnectTarget: () => false,
     // No module → no link button, and a link opened before it lands is read
     // again on `shadok-bridge-ready`.
     buildMessageLink: () => null,
@@ -8940,7 +9054,6 @@
     catch { lastAuth = null; }
     if (!verMenu.hidden) renderAuthRows();
     updateExpiryBanner();   // the banner must track the clock even menu-closed
-    updateMtTokenBanner(lastAuth);   // the blocking no-token banner (multi-tenant)
   }
 
   // ── Re-login reminder banner (sign-in within 48h / expired) ───────────────
@@ -9160,6 +9273,71 @@
   });
   // Change where agents get their model, any time — the same card, opened on
   // its "Another model" side, and dismissable since nothing is broken.
+  // ── Instance context editor ───────────────────────────────────────────────
+  // One text per instance, every agent gets it at spawn (src/instance-context.ts).
+  function icMsg(t) { $("icMsg").textContent = t || ""; $("icMsg").hidden = !t; }
+  function icCount() {
+    const n = $("icText").value.trim().length;
+    $("icCount").textContent = n + " / 2000";
+    // Over the cap is SHOWN, never silently cut: the server refuses it whole.
+    $("icCount").className = "ic-count" + (n > 2000 ? " over" : "");
+  }
+  async function openInstanceContext() {
+    verMenu.hidden = true;
+    icMsg("");
+    // Nothing editable until the stored text is here: a failed load must never
+    // look like an empty context that Save would then write back over it.
+    $("icText").value = "";
+    $("icText").disabled = true;
+    $("icSave").disabled = true;
+    $("icDraft").hidden = true;
+    $("icOverlay").hidden = false;
+    try {
+      const res = await fetch("/instance-context");
+      const r = res.ok ? await res.json() : null;
+      if (!r || typeof r.text !== "string") throw new Error("status " + res.status);
+      $("icText").value = r.text;
+      $("icDraft").hidden = !!r.text.trim();
+      $("icText").disabled = false;
+      $("icSave").disabled = false;
+      icCount();
+    } catch {
+      icMsg("✗ Could not load the instance context — close and try again.");
+    }
+  }
+  $("instanceContextBtn").addEventListener("click", openInstanceContext);
+  $("icClose").addEventListener("click", () => { $("icOverlay").hidden = true; });
+  $("icText").addEventListener("input", icCount);
+  $("icSave").addEventListener("click", async () => {
+    $("icSave").disabled = true;
+    try {
+      const res = await fetch("/instance-context", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("icText").value }) });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok) icMsg("✗ " + (r.error || "could not save"));
+      else {
+        $("icText").value = r.text || "";
+        $("icDraft").hidden = !!(r.text || "").trim();
+        icCount();
+        icMsg(r.text ? "✓ Saved. New agents get it; running ones at their next reload." : "✓ Cleared.");
+      }
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icSave").disabled = false; }
+  });
+  $("icDraft").addEventListener("click", async () => {
+    $("icDraft").disabled = true;
+    icMsg("Asking the lead agent…");
+    try {
+      const res = await fetch("/instance-context/draft", { method: "POST" });
+      const r = await res.json().catch(() => ({}));
+      if (res.ok) {
+        $("icDraft").hidden = true;   // asked once — a second click would send a second interview
+        icMsg("✓ " + (r.agent || "The lead agent") + " is asking you its questions — answer in its chat.");
+      } else icMsg("✗ " + (r.error || "could not ask"));
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icDraft").disabled = false; }
+  });
+  $("icRestart").addEventListener("click", (e) => { e.preventDefault(); $("icOverlay").hidden = true; restartAllBtn.click(); });
+
   document.getElementById("backendBtn").addEventListener("click", () => {
     toggleVerMenu(false);
     openAuthCard(true, "other");
@@ -9538,7 +9716,7 @@
       case "error":
         // A refusal for lack of credentials is not this agent's problem: it is
         // the instance's. Surface the fix instead of a line in the transcript.
-        if (msg.code === "logged-out") { openAuthCard(); }
+        if (msg.code === "logged-out" || msg.code === "space-not-connected") checkAuth({ code: msg.code, user: msg.user || null });
         addTurn(t, "system", "", "Error: " + msg.message);
         // A turn died before it could flush what was queued behind it (a fast
         // double-send): hand those back to the box rather than strand them.
@@ -10723,6 +10901,7 @@
     if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("icOverlay").hidden) { $("icOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
@@ -13711,102 +13890,277 @@
     startTour(() => checkAuth());
   }
 
-  // --- Sign-in card -------------------------------------------------------
-  // Opened at exactly two moments: on load when /auth reports signed out, and
-  // on a `start` refused with code "logged-out". Never otherwise.
-  async function checkAuth() {
-    try {
-      const s = await (await fetch("/auth")).json();
-      // ONLY a signed-out state we actually observed opens the card. "unknown"
-      // means the probe failed, and treating that as signed out is what made
-      // the card pop — and a `claude auth login` child spawn — on instances
-      // that were signed in the whole time.
-      // A custom model backend (self-hosted model, gateway) needs no Claude
-      // sign-in at all, so a signed-out probe means nothing there.
-      if (s && s.state === "signed-out" && s.backend !== "custom") openAuthCard();
-      else $("authOverlay").hidden = true;
-    } catch {
-      // A failed check must not block a cockpit that is in fact working.
-    }
-  }
-
-  // `force` is a deliberate re-login from a SIGNED-IN instance (the version-menu
-  // button and the expiry banner). Without it the server short-circuits to
-  // {alreadySignedIn} and the card closes doing nothing — which is exactly the
-  // no-op the signed-in re-login affordances would otherwise be.
-  // A voluntary re-login (force) is dismissable; the signed-out funnel is not.
-  // Tracked so Escape and a backdrop click only close the card they should.
+  // --- Connect Claude card ------------------------------------------------
+  // ONE card for every way in: the first run, a spawn refused because its
+  // space is not connected, a voluntary re-login. Which step it shows is pure
+  // (window.connectCardPlan, public/connect-card.js); this is only the DOM and
+  // the three server flows behind it — the instance sign-in (/auth/*), the
+  // long-lived token (/mt-token/*) and a space's own login (/agent-login/*).
+  // The browser only ever sees {url} and {ok}: no credential reaches the page.
+  // `seq` identifies the current flow: closing the card or starting another
+  // bumps it, so a start whose POST resolves afterwards knows it is stale and
+  // cancels its own server child instead of leaving it waiting on stdin.
+  let cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: 0 };
   let authDismissable = false;
 
-  // Close a VOLUNTARY re-login card, cancelling the pending `claude auth login`
-  // child on the server so it is not left waiting on stdin (DELETE /auth/login
-  // → cancelLogin). Never the way out of the signed-out funnel.
+  const cxIsAdmin = () => !me || me.role === "admin";
+  function cxShow(step) {
+    for (const [id, st] of [["cxChoose", "choose"], ["cxAuth", "authorise"], ["cxDone", "done"], ["cxAsk", "ask-admin"]])
+      $(id).hidden = st !== step;
+    $("authOtherBox").hidden = step !== "other";
+    $("cxTag").textContent =
+      step === "choose" ? "Step 1 of 2 · Connect Claude"
+      : step === "authorise" ? (cx.fromChoose ? "Step 2 of 2 · Connect Claude · " + (cx.flow === "login" ? "1 month" : "1 year") : "Connect Claude")
+      : step === "done" ? "Connected"
+      : step === "other" ? "Another model"
+      : "Connect Claude";
+    $("cxTag").classList.toggle("ok", step === "done");
+  }
+
+  // Opened on load (after the tour) when /auth reports the commons cannot
+  // authenticate, and on a `start` refused with "logged-out" or
+  // "space-not-connected". "unknown" never opens it (invariant 27).
+  async function checkAuth(refusal = null, force = false) {
+    let s;
+    try { s = await (await fetch("/auth")).json(); } catch { return; }   // never block a working cockpit
+    lastAuth = s;
+    const plan = window.connectCardPlan({ connect: s && s.connect, backend: s && s.backend, isAdmin: cxIsAdmin(), refusal, force });
+    if (!plan.open) { if (!force && !authDismissable) $("authOverlay").hidden = true; return; }
+    openConnectCard(plan);
+  }
+
+  function openConnectCard(plan) {
+    if (!$("authOverlay").hidden && !authDismissable) return;   // the funnel is already on screen
+    // The same card again (several tabs restoring, a second refused spawn):
+    // restarting it would kill the child whose code the admin is typing.
+    if (!$("authOverlay").hidden && window.sameConnectTarget(cx.plan, plan)) return;
+    cxCancel();
+    cx = { plan, flow: plan.flow, user: plan.user, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+    authDismissable = plan.dismissable;
+    $("authClose").hidden = !plan.dismissable;
+    $("authMsg").hidden = true;
+    $("authOverlay").hidden = false;
+    if (plan.step === "choose") { cxPickDur("token"); cxShow("choose"); }
+    else if (plan.step === "ask-admin") cxShow("ask-admin");
+    else cxStartAuthorise(plan.flow, plan.user, false);
+  }
+
+  // Kept for the existing callers: the version menu's re-login, the expiry
+  // banner (force), and "Another model" (mode "other").
+  function openAuthCard(force = false, mode = "claude") {
+    if (mode === "other") {
+      // The backend form only: no sign-in child is started behind it.
+      cxCancel();
+      cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+      authDismissable = true;
+      $("authClose").hidden = false;
+      $("authMsg").hidden = true;
+      $("authOverlay").hidden = false;
+      cxShow("other");
+      loadBackendForm();
+      return;
+    }
+    checkAuth(null, force);
+  }
+
   function closeAuthCard() {
     if (!authDismissable) return;
-    fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    cxCancel();
     authDismissable = false;
     $("authClose").hidden = true;
     $("authOverlay").hidden = true;
   }
 
-  // The card has two sides: the Claude sign-in, and "Another model" (a
-  // self-hosted or hosted backend, src/backend.ts). The sign-in child is only
-  // started when its side is actually shown — choosing another model must not
-  // leave a `claude auth login` waiting on stdin.
-  let authForce = false;
-  let authLoginStarted = false;
-  function setAuthMode(mode) {
-    for (const b of $("authModes").querySelectorAll("button"))
-      b.classList.toggle("active", b.dataset.mode === mode);
-    $("authClaudeBox").hidden = mode !== "claude";
-    $("authOtherBox").hidden = mode !== "other";
-    if (mode === "claude") {
-      $("authTitle").textContent = authForce ? "Re-login to Claude" : "Sign in to Claude";
-      if (!authLoginStarted) { authLoginStarted = true; startClaudeLogin(authForce); }
-    } else {
-      $("authTitle").textContent = "Run agents on another model";
-      loadBackendForm();
+  // Cancel whatever OAuth child the server holds for this card, so none is left
+  // waiting on stdin.
+  function cxCancel() {
+    cx.seq++;   // any start still in flight is now stale
+    if (!cx.started) return;
+    cx.started = false;
+    cxCancelFlow(cx.flow, cx.user);
+  }
+  function cxCancelFlow(flow, user) {
+    const json = { "Content-Type": "application/json" };
+    if (flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    else if (flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
+    else if (flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user }) }).catch(() => {});
+  }
+
+  function cxPickDur(dur) {
+    cx.dur = dur;
+    for (const t of document.querySelectorAll("#cxChoose .cx-tile")) {
+      const on = t.dataset.dur === dur;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-checked", on ? "true" : "false");
     }
   }
-  $("authModes").addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-mode]");
-    if (b) setAuthMode(b.dataset.mode);
+  for (const t of document.querySelectorAll("#cxChoose .cx-tile"))
+    t.addEventListener("click", () => cxPickDur(t.dataset.dur));
+
+  async function cxSetMode(mode) {
+    try {
+      await fetch("/agent-login/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
+    } catch {}
+  }
+
+  $("cxContinue").addEventListener("click", async () => {
+    $("cxContinue").disabled = true;
+    await cxSetMode(cx.dur);
+    $("cxContinue").disabled = false;
+    cxStartAuthorise(cx.dur, cx.plan && cx.plan.user, true);
+  });
+  $("cxPasteLink").addEventListener("click", (e) => {
+    e.preventDefault();
+    cx.fromChoose = true;
+    cx.flow = "paste";
+    $("cxOauth").hidden = true;
+    $("cxPasteForm").hidden = false;
+    $("authTitle").textContent = "Use a token you already have";
+    $("authNote").textContent = "Paste a long-lived token minted with claude setup-token on any machine signed in to your Claude account. It lasts about a year; agents get model access, no connectors.";
+    $("cxBack").hidden = false;
+    $("cxHint").hidden = true;
+    $("authMsg").hidden = true;
+    cxShow("authorise");
+    $("cxTag").textContent = "Step 2 of 2 · Connect Claude · 1 year";
+    $("cxToken").focus();
+  });
+  for (const id of ["cxOtherLink", "cxOtherLink2"])
+    $(id).addEventListener("click", (e) => { e.preventDefault(); cxCancel(); cxShow("other"); loadBackendForm(); });
+  $("cxOtherBack").addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!cx.plan) { authDismissable = true; closeAuthCard(); }   // opened from "Model backend…"
+    else if (cx.plan.step === "choose") cxShow("choose");
+    else cxStartAuthorise(cx.plan.flow, cx.plan.user, false);
+  });
+  $("cxBack").addEventListener("click", (e) => { e.preventDefault(); cxCancel(); $("authMsg").hidden = true; cxShow("choose"); });
+  $("cxAskOk").addEventListener("click", closeAuthCard);
+  $("cxGo").addEventListener("click", () => { authDismissable = true; closeAuthCard(); });
+
+  const CX_FLOWS = {
+    instance: { start: "/auth/login", code: "/auth/code" },
+    token: { start: "/mt-token/start", code: "/mt-token/code" },
+    login: { start: "/agent-login/start", code: "/agent-login/code" },
+  };
+
+  async function cxStartAuthorise(flow, user, fromChoose) {
+    cxCancel();   // never two children: the previous flow goes first
+    const seq = cx.seq;
+    cx.flow = flow;
+    cx.user = user || null;
+    cx.fromChoose = fromChoose;
+    $("cxOauth").hidden = false;
+    $("cxPasteForm").hidden = true;
+    $("cxBack").hidden = !fromChoose;
+    // The first-run sign-in of a mono instance has no choose step, so the
+    // "Another model" way out lives here.
+    $("cxOtherLink2").hidden = !(flow === "instance" && cx.plan && !cx.plan.dismissable);
+    $("cxHint").hidden = false;
+    $("authCode").value = "";
+    $("authTitle").textContent = flow === "instance" && lastAuth && lastAuth.state === "signed-in"
+      ? "Renew the Claude sign-in" : "Authorise Shadok on claude.ai";
+    $("authNote").textContent = flow === "login" && cx.user && cx.plan && cx.plan.step !== "choose" && !fromChoose
+      ? "Connect this space (" + cx.user + ") to your Claude account. A Claude page opens in a new tab; approve it, then paste the short code it shows."
+      : "A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.";
+    cxShow("authorise");
+    const link = $("authLink");
+    link.textContent = "Preparing…";
+    link.removeAttribute("href");
+    link.setAttribute("aria-disabled", "true");
+    $("cxCopy").hidden = true;
+    cx.url = "";
+    const body = flow === "login" ? { user: cx.user } : flow === "instance" ? { force: !!(lastAuth && lastAuth.state === "signed-in") } : {};
+    try {
+      const r = await (await fetch(CX_FLOWS[flow].start, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      })).json();
+      // Closed, or another flow started, while this POST was in flight: the
+      // child it created belongs to nobody — cancel it rather than orphan it.
+      if (seq !== cx.seq) { if (r && r.url) cxCancelFlow(flow, user || null); return; }
+      cx.started = true;
+      // The server has the last word: an instance that turns out to be signed
+      // in spawns nothing and says so.
+      if (r && r.alreadySignedIn) { authDismissable = true; closeAuthCard(); return; }
+      if (r && r.url) {
+        cx.url = r.url;
+        link.href = r.url;
+        link.textContent = "Open claude.ai ↗";
+        link.removeAttribute("aria-disabled");
+        $("cxCopy").hidden = false;
+      } else {
+        link.textContent = "Could not start";
+        cxMsg((r && r.error) || "could not start the sign-in", "bad");
+      }
+    } catch {
+      link.textContent = "Could not start";
+      cxMsg("the cockpit did not answer", "bad");
+    }
+  }
+
+  function cxMsg(text, kind) {
+    const m = $("authMsg");
+    m.textContent = text;
+    m.className = "cx-msg" + (kind ? " " + kind : "");
+    m.hidden = !text;
+  }
+
+  $("cxCopy").addEventListener("click", async (e) => {
+    e.preventDefault();
+    if (!cx.url) return;
+    try { await navigator.clipboard.writeText(cx.url); } catch { return cxMsg("copy failed — long-press the button to copy its link", "bad"); }
+    $("cxCopy").textContent = "copied";
+    setTimeout(() => { $("cxCopy").textContent = "copy the link instead"; }, 2000);
   });
 
-  async function openAuthCard(force = false, mode = "claude") {
-    if (!$("authOverlay").hidden) return;   // a flow is already on screen
-    authDismissable = force;
-    authForce = force;
-    authLoginStarted = false;
-    $("authClose").hidden = !force;
-    // A forced re-login comes from a SIGNED-IN instance, so the "not signed in"
-    // copy would be wrong there; say what the card actually does.
-    $("authNote").textContent = force
-      ? "Renew this instance's Claude sign-in. Your agents keep running in the meantime."
-      : "This instance isn't signed in to Claude, so it can't start any agent.";
-    $("authOverlay").hidden = false;
-    $("authMsg").hidden = true;
-    setAuthMode(mode);
+  async function cxPost(path, body) {
+    try {
+      const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      let j = {};
+      try { j = await r.json(); } catch {}
+      if (!r.ok && !j.error) j.error = "the cockpit answered " + r.status;
+      return j;
+    } catch { return { ok: false, error: "the cockpit did not answer" }; }
   }
 
-  async function startClaudeLogin(force) {
-    const link = $("authLink");
-    link.textContent = "starting…";
-    link.removeAttribute("href");
-    try {
-      const r = await (await fetch("/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force }),
-      })).json();
-      // The server has the last word: it re-checks, and if the instance turns
-      // out to be signed in it spawns nothing and says so.
-      if (r && r.alreadySignedIn) { $("authOverlay").hidden = true; return; }
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
-      else link.textContent = (r && r.error) || "could not start the sign-in";
-    } catch {
-      link.textContent = "could not start the sign-in";
-    }
+  $("authCodeForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = $("authCode").value.trim();
+    if (!code || !CX_FLOWS[cx.flow]) return;
+    cxMsg("");
+    const body = cx.flow === "login" ? { user: cx.user, code } : { code };
+    const r = await cxPost(CX_FLOWS[cx.flow].code, body);
+    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cxConnected(); }
+    else cxMsg((r && r.error) || "the code was refused", "bad");
+  });
+
+  $("cxPasteForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const token = $("cxToken").value;
+    if (!token.trim()) return;
+    cxMsg("");
+    const r = await cxPost("/mt-token/paste", { token });
+    $("cxToken").value = "";   // never leave a credential sitting in the DOM
+    if (r && r.ok) cxConnected();
+    else cxMsg((r && r.error) || "the token was refused", "bad");
+  });
+
+  // Success: say until when, and that the lead agent is on its way when it is.
+  async function cxConnected() {
+    // The login just wrote the credentials the usage gauges read: repaint them
+    // and the expiry rows now rather than on the next poll.
+    refreshUsage();
+    await refreshAuthRows();
+    const a = lastAuth || {};
+    let text = "Your agents run on your Claude subscription.";
+    const until = a.connect && typeof a.connect.expiresAt === "number" ? a.connect.expiresAt : null;
+    if (until) text += " This connection lasts until " + new Date(until).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) + " — Shadok reminds you a few days before, and you can renew it from the account menu.";
+    if (a.email) text = "Signed in as " + a.email + ". " + text;
+    let pending = false;
+    try { pending = !!((await (await fetch("/first-agent")).json()) || {}).pending; } catch {}
+    if (pending || !tabs.length) text += " Your first agent, general, is starting — it will introduce itself in a moment.";
+    $("cxDoneText").textContent = text;
+    authDismissable = true;
+    $("authClose").hidden = false;
+    cxShow("done");
   }
 
   // --- "Another model" (src/backend.ts) ---------------------------------
@@ -13941,7 +14295,7 @@
     if (!r.ok) return bkMsg("✗ " + (r.error || "could not save"), "bad");
     bkMsg("✓ Saved. New agents run on " + r.current.model + "; running ones keep their model until they are reloaded.", "ok");
     refreshAuthRows();
-    setTimeout(() => { authDismissable = false; $("authClose").hidden = true; $("authOverlay").hidden = true; }, 1800);
+    setTimeout(() => { authDismissable = true; closeAuthCard(); }, 1800);
   });
   $("bkClear").addEventListener("click", async () => {
     const r = await bkPost("/backend", { clear: true }, "PUT").catch(() => ({ error: "the cockpit did not answer" }));
@@ -13949,45 +14303,6 @@
     bkMsg("✓ New agents run on the Claude subscription again.", "ok");
     $("bkClear").hidden = true;
     refreshAuthRows();
-  });
-
-  $("authCodeForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const code = $("authCode").value.trim();
-    if (!code) return;
-    const msg = $("authMsg");
-    msg.hidden = true;
-    let r;
-    try {
-      r = await (await fetch("/auth/code", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-      })).json();
-    } catch {
-      r = { ok: false, error: "the server did not answer" };
-    }
-    if (r && r.ok) {
-      $("authCode").value = "";
-      // The login just wrote the OAuth credentials the usage gauges read from
-      // (src/usage.ts, live-first). Repaint them now — otherwise a freshly
-      // signed-in instance shows blank dials until the next 60s poll, which
-      // reads as "usage is broken" right after onboarding.
-      refreshUsage();
-      // The deadline just jumped ~22 days out: repaint so the reminder banner
-      // (and the version-menu Token row) clear at once instead of next poll.
-      refreshAuthRows();
-      // Name the account: a machine can serve several people, and "signed in"
-      // without saying as whom is the kind of detail that costs an hour later.
-      let who = "";
-      try { who = ((await (await fetch("/auth")).json()) || {}).email || ""; } catch {}
-      msg.textContent = "✅ Signed in" + (who ? " as " + who : "") + ".";
-      msg.hidden = false;
-      setTimeout(() => { $("authOverlay").hidden = true; }, 1500);
-    } else {
-      msg.textContent = (r && r.error) || "the code was refused";
-      msg.hidden = false;
-    }
   });
 
   $("authClose").addEventListener("click", closeAuthCard);
@@ -14019,7 +14334,7 @@
       const r = await (await fetch("/mt-token/start", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
       })).json();
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      if (r && r.url) { link.href = r.url; link.textContent = "Open claude.ai ↗"; }
       else link.textContent = (r && r.error) || "could not start";
     } catch {
       link.textContent = "could not start";
@@ -14116,7 +14431,7 @@
     link.textContent = "starting…"; link.removeAttribute("href");
     try {
       const r = await (await fetch("/agent-login/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user }) })).json();
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      if (r && r.url) { link.href = r.url; link.textContent = "Open claude.ai ↗"; }
       else link.textContent = (r && r.error) || "could not start";
     } catch { link.textContent = "could not start"; }
   }
@@ -14156,24 +14471,6 @@
     }
   });
 
-  // The blocking "no subscription token" banner (multi-tenant + admin), mirror
-  // of the re-login reminder; clears the instant a token is stored.
-  function updateMtTokenBanner(a) {
-    let el = document.getElementById("mtTokenBanner");
-    const show = a && a.mtTokenMissing && me && me.role === "admin";
-    if (!show) { if (el) el.remove(); return; }
-    if (el) return;
-    el = document.createElement("div");
-    el.id = "mtTokenBanner";
-    const span = document.createElement("span");
-    span.textContent = "This instance has no subscription token — agents can't start.";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "Provide token";
-    btn.addEventListener("click", openMtTokenCard);
-    el.append(span, btn);
-    document.body.insertBefore(el, document.body.firstChild);
-  }
   // Backdrop click closes a dismissable (voluntary) card; the panel itself does not.
   $("authOverlay").addEventListener("click", (e) => { if (e.target === $("authOverlay")) closeAuthCard(); });
 
