@@ -158,7 +158,9 @@ Enter to skip; you can add it later from the web UI).
 - **Secret vault** — stored under `~/.shadok-ai`, never in your repo, injected
   as env vars into the agents that need them. Add or **update** a secret from the
   panel, tick the **profiles** it should feed right there, and reload the running
-  agents on those profiles in one click so a rotated value takes effect now. An
+  agents on those profiles in one click so a rotated value takes effect now. On
+  an instance with groups, **Any profile** feeds a secret to every agent that can
+  read it, whatever its profile (only a person can pick it, not an agent). An
   agent that **obtains** a credential (a CLI login, a key it just provisioned)
   can add it to the vault itself so the next agent doesn't start from nothing —
   write-only, the value piped in rather than typed as an argument, and never
@@ -452,6 +454,51 @@ Enter to skip; you can add it later from the web UI).
   you what it is?") rather than guessing a stack. It is an **offer, not a
   first-run screen**: ignore it entirely and the cockpit works exactly the same.
   `SHADOK_GREETING=0` turns it off.
+- **Connected accounts (LinkedIn)** — connect a LinkedIn account once, then ask
+  an agent to post ("write a post about the release and publish it on our
+  LinkedIn"). In *Secrets → Connected accounts* a person clicks **Connect
+  LinkedIn**, consents on LinkedIn, and the account appears. The agent uses the
+  seeded `shadok-social` skill (`social.mjs accounts` / `post --account <id>
+  --stdin`) and **never sees the token**: it names an account, the server holds
+  the credential. By default the post is a **draft**: an approval card shows
+  the account, the exact text and the image in the agent's chat, and nothing
+  goes out until a person clicks *Publish* (or *Discard*). The image published
+  is the one on the card: the server keeps its own copy from the moment the
+  agent drafts, so changing the file afterwards changes nothing. Each account has an
+  **owner**, a **share** setting — any combination of the owner's *Personal*
+  group (the default), chosen restricted groups and *Public* (Main and every public group, one commons),
+  optionally narrowed to agents running given **profiles** — and a **policy** (`approve`, the default, or `autonomous`,
+  which publishes at once — only the account's **owner** can switch it to
+  `autonomous`). Every attempt — published, refused, expired,
+  failed — is written to a **publication log** (who triggered it, who approved
+  it, the text, the post URL or LinkedIn's error), readable by anyone who can
+  use the account through the row's **Log** button (the last 50 entries). A pending draft counts as "waiting for an answer" like a
+  dialog (favicon badge, tab blink), and an unapproved draft expires after 7
+  days. LinkedIn tokens last about 60 days: seven days before expiry the owner
+  gets a dismissible banner at the top of the cockpit (and again once it has
+  expired) and, when they are the Telegram DM owner, a DM; an expired
+  account refuses to publish with a sentence the agent can relay. Posts to
+  Company Pages need a second LinkedIn app and are planned for v1.1.
+  On a mono-tenant instance (a laptop, any macOS cockpit) agents run as your own
+  OS user, so this is a **soft layer**: it stops accidents and prompt injection
+  (an agent posting because a web page told it to), not an agent determined to
+  read `~/.shadok-ai/connected-accounts/`. It also means **every agent on a
+  mono-tenant instance can use every connected account**: there is no wall
+  between agents to scope by, so the share setting decides which *people* see
+  an account (and, on a multi-tenant instance, which groups' agents may use it).
+  The profile filter applies on both kinds of instance.
+  Multi-tenant instances, where agents run as other OS users, make it a real
+  boundary.
+  **Operator setup** (once, for whoever runs the broker): a small stateless
+  Cloudflare Worker (`broker/`) holds the LinkedIn client secret so instances
+  never do; see [`broker/README.md`](broker/README.md). It needs two LinkedIn
+  apps — **A**: Sign in with LinkedIn (OIDC) + *Share on LinkedIn*, for member
+  posts; **B**: the Community Management API *alone* (LinkedIn requires that
+  product to stand by itself), for Pages, v1.1 — with the redirect URL
+  `https://connect.shadok.ai/linkedin/callback`. Instances reach the broker at
+  `SHADOK_CONNECT_BROKER` (default `https://connect.shadok.ai`). LinkedIn
+  sunsets API versions, so `LINKEDIN_VERSION` in `src/linkedin.ts` must be
+  bumped about once a year, or posting stops working.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)
@@ -1228,6 +1275,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"stream-text", text, at?}` | a complete assistant text block, from the transcript. `at` is when it was **written**, not when we read it |
 | `{type:"stream-tool", id, name, summary}` / `{type:"stream-result", …}` | tool call / tool result |
 | `{type:"tokens", tokens}` / `{type:"context", pct}` | token usage / context fill |
+| `{type:"social-draft", draft}` | a post waiting for approval, or its new state (published with URL, discarded, expired, failed) — the approval card. Also replayed inside `history` on reload. Never carries a token |
 | `{type:"parent", parent}` | the channel's parent changed (broadcast, so every tab follows) |
 | `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web, agent or peer prompt (the signed-in account / the calling agent's tab name / the peer's name); a frame's `from` is believed only from the Telegram bridge |
 | `{type:"dialog", question, options:[{n,label,hint,checked?}], multi}` | choice pending |
@@ -1263,6 +1311,17 @@ or door that caused it; names only, never a value; filters `secret`, `action`,
 🕘 on each secret), `/telegram`, `/defaults`, `/first-agent` (GET —
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
+`/connect/status` (GET — `{available}`: is the broker reachable/configured),
+`/connect/linkedin/start` · `/connect/linkedin/complete` (POST, browser person
+only — the OAuth hand-back; `/connect/linkedin/done` (GET) is the page the
+broker returns the browser to), `/connected-accounts` (GET — the accounts
+you may use, never a token, plus `softLayer`; your own accounts also carry
+`expiringSoon` / `expired`, for the banner; `GET /:id/log` — that account's
+last 50 publication-log entries, newest first; `PUT /:id` changes share/policy,
+`DELETE /:id` disconnects — owner or admin, browser only),
+`/social/accounts` (GET) and `/social/posts` (POST) — the **agent** side,
+authenticated by `x-shadok-session-key` —, and `/social/drafts/:id/publish` ·
+`/social/drafts/:id/discard` (POST, browser person only),
 `/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
 returns the cwd to start the tweak agent in). The instance-wide writes —
 `/autoupdate`, `/update-channel`, `/permission-mode`, `POST /ledger`, a bare

@@ -1712,6 +1712,148 @@ be every agent on the machine. The Skillsmith is a managed profile (prompt
 re-seeded from `context/skillsmith-prompt.md` at boot, `secrets: []` on
 creation) because it runs draft code nobody has reviewed yet.
 
+## Connected accounts (`src/connect-crypto.ts`, `src/connect-routes.ts`, `src/connected-accounts.ts`, `src/linkedin.ts`, `src/social-drafts.ts`, `src/account-expiry.ts`, `broker/`)
+
+An agent can publish on a LinkedIn account a person connected, without ever
+holding the credential. Design: `docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md`.
+
+### The broker (`broker/`)
+
+LinkedIn's token exchange needs the app's client secret, and nothing shipped in
+the npm package can be secret. So a small **stateless Cloudflare Worker**
+(`connect.shadok.ai`) holds it. It stores nothing: `GET /linkedin/start` mints
+a `state` carrying `{returnUrl, instance public key, nonce}` signed with an
+HMAC (`STATE_KEY`), so the callback cannot be fed a state the broker did not
+make. The return URL is validated (https, or http only on loopback/private
+addresses; the path is fixed to `/connect/linkedin/done`; no credentials, no
+query, no fragment — the broker appends its own `#n=…`), and `pub` / `nonce`
+must have the exact shapes the instance makes (87 and 22 base64url
+characters). A token exchange that throws or answers garbage still ends on a
+page with a way back (`error=token_exchange_failed`), never a bare Worker error.
+After the code exchange the token goes **back through the browser, in the URL
+fragment** (never sent to a server log), encrypted for the instance: ECDH P-256
+with the instance's ephemeral key, HKDF-SHA256, AES-256-GCM with the nonce as
+associated data (`connect-crypto.ts` on the instance, `broker/src/core.ts` on
+the Worker — WebCrypto and `node:crypto`, no dependency). Before redirecting
+back, an **anti-phishing interstitial** names the host the token is about to be
+handed to: a stranger's link made with the stranger's key would otherwise
+deliver the victim's token to the stranger after an ordinary consent screen.
+
+### The instance side
+
+`POST /connect/linkedin/start` (browser person only) makes the key pair and
+nonce and keeps them in memory (`PendingAttempts`, 10 min TTL, single-use). The
+return URL is the page's own `location.origin`, since behind a TLS proxy the
+server does not know its public name (invariant 20). `GET /connect/linkedin/done`
+serves a nonce'd page (`context/connect-done.html`, deliberately outside
+`public/` so `express.static` cannot serve it raw) that posts the fragment to
+`/connect/linkedin/complete`; that decrypts, asks LinkedIn `userinfo` for the
+member, and stores the account — only for the person who started the attempt.
+A restart inside the ten minutes loses the pending key; the person clicks
+Connect again.
+
+### Files
+
+Per instance (keyed like channels and crons, mode 600) under
+`~/.shadok-ai/connected-accounts/`: `<key>.json` (accounts: owner, share,
+policy, token, expiry), `<key>.drafts.json` (posts awaiting a decision),
+`<key>.media/` (directory 700: one snapshot per undecided draft's image,
+`<draftId>.<ext>`, deleted once the draft is decided or expires),
+`<key>.warned.json` (when each expiry DM last went out, rewritten only when it
+changes) and `<key>.log.jsonl` (the append-only publication log, read back
+through `GET /connected-accounts/:id/log` — `accountLog`, newest first, 50
+entries, each rebuilt field by field). No endpoint, skill output,
+log line or transcript carries the token; `publicView` is the only projection
+that leaves the store.
+
+### The publish gate
+
+Two principals, never mixed. An **agent** reaches `GET /social/accounts` and
+`POST /social/posts` through `x-shadok-session-key` (invariant 33) and is
+checked against `accountVisible`. With policy `approve` (the default) the
+post becomes a draft and the agent is answered `pending`; the card is
+broadcast as `social-draft` and merged into `history` on reload, and the
+channel counts as waiting for an answer. `POST /social/drafts/:id/publish|discard`
+and every account mutation require **a browser person** (`requestFromBrowser`),
+who must be able to use the account; an agent has no way to approve its own
+draft. **What the person approves is what goes out**: `POST /social/posts`
+reads the image ONCE, with the agent's rights (`readSessionFile`, invariant
+60), and for a draft writes a server-owned snapshot with its sha256 on the
+draft. The card's image (`/download`'s draft branch) and the publish both read
+that snapshot; re-reading the agent's path at publish would let it swap the
+file after the person looked. A missing or altered snapshot fails the publish
+("The draft's image is gone — ask the agent to draft again."). A request
+refused on an account the agent may use (expired, the text, the image) is
+logged as `refused`. Every LinkedIn call carries a 30 s deadline; a `createPost`
+that got no answer is `PostOutcomeUnknownError` and says *check LinkedIn
+before retrying, the post may have gone out* — unlike any earlier call, it may
+have succeeded. Publishing is **claimed before LinkedIn is called**: the draft is saved
+as `publishing` with `publishingAt`, so a double click or a retry cannot post
+twice. A process-local in-flight set keeps the hourly watcher from failing a
+publish that is genuinely under way; a draft left in `publishing` by a process
+that died is swept to `failed` once stale (`stalePublishing`), never
+re-attempted — a duplicate public post is worse than a failed one. Unapproved
+drafts expire after 7 days and the agent is told, so a cron does not assume the
+post went out. `account-expiry.ts` runs an hourly no-LLM check: a warning seven
+days before `expiresAt`, re-sent at most once a day (`REWARN_AFTER_MS`) — a
+Telegram DM to the owner when they are the DM owner, stamped in the warned
+sidecar only once the DM actually went out — then refusals worded as sentences
+the agent can relay. Every OTHER owner is reached by the page: `GET
+/connected-accounts` flags the viewer's own accounts (`ownerExpiryFlags`), and a
+header banner (`accountBanners`, `public/social-card.js`; checked at load and
+every 30 min, dismissal kept in `sessionStorage` per id + `expiresAt`) says it
+expires or has expired.
+
+### Visibility
+
+An account is private to its owner by default. `share` (`ShareScope`) is a
+UNION of tiers — `personal` (the owner's own Personal group), `groups` (named
+groups), `everyone` — any combination, then `profiles`: when not empty, only
+agents running one of those profiles pass. The profile is a filter on top of
+the tiers, never a way past them, and it holds even when `agentsUnwalled` (it
+is the owner's choice, not a wall the OS must build); `publishVerdict` re-runs
+`accountVisible` for the drafting agent as it is at click time (group, profile,
+peer box), so a share narrowed after a draft refuses it. A v1
+single-choice share (`{scope}`) is read through `normalizeShare`, which also
+folds the owner's own Personal group named in `groups` into `personal`, and a
+public group (Main included) into `everyone` — the commons is one tier, and the
+server and the client picker must agree on reach (`accountVisible` folds with
+the live group natures). `accountEditVerdict` checks only what an edit ADDS, so
+a group or profile deleted since never blocks the next edit. For a person: owner, or `everyone`, or a group they belong to (Main
+and public groups count as commons); profiles never filter people. For an
+agent the rule is stricter on purpose: `everyone` reaches agents in Main,
+in a public group, or in the owner's own private group — **not other people's
+private groups**, which the vault's commons rule would let through. A secret
+can be read by anything that can see it; an account is a standing ability to
+speak publicly as someone, so the default errs towards "no". A peer-driven
+agent never sees accounts in v1.
+
+On a **mono-tenant** instance none of that applies to agents: there are no
+private groups and every agent's group is null, so the walled rule made a
+freshly connected (`private`) account invisible to every agent, the one it was
+connected for included. The server passes `agentsUnwalled` (`DEPLOYMENT_MODE
+!== "multi-tenant"`) at every call site and an agent viewer then sees every
+account the instance holds — they already share the server's OS user, which is
+the soft layer below. Person visibility is unchanged, and a peer box still
+never sees. The share tiers there govern people; on a multi-tenant instance,
+people and agents alike. The profile filter applies on both.
+
+### Trade-offs
+
+- **The token never reaches an agent.** The agent names an account id and the
+  server calls LinkedIn. Handing the token over would have made every
+  prompt injection a credential theft, and made the approval card advisory.
+- **Mono-tenant is a soft layer.** There, agents share the server's OS user and
+  can read the store, and with no GUI password "a browser person" reduces to
+  "no agent key plus a same-origin `Origin`", which a `curl` can forge. No code
+  fixes that without separate OS users; the layer stops accidents and
+  injection, as profiles do (invariant 26), and the Connected accounts panel
+  says so in one sentence. Multi-tenant makes it real.
+- **LinkedIn versions are sunset.** `LINKEDIN_VERSION` (`src/linkedin.ts`) pins
+  the API version and must be bumped about yearly.
+- **Pages are a second app.** The Community Management API must stand alone on
+  its LinkedIn app, so Company Pages (v1.1) use app B; members use app A.
+
 ## Groups and isolation (`src/groups.ts`, `src/capability.ts`, `src/osusers.ts`, `src/talk.ts`, `src/migrate-groups.ts`)
 
 Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
@@ -1810,6 +1952,23 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   to the caller's group; `PUT /secrets/profiles` and the panel's profile editor
   follow it; the profile editor is read-only for a group that does not own the
   profile. Values still travel only in the child's env (invariant 36).
+  A secret's `profiles` may hold `ANY_PROFILE` (`"*"`, the panel's *Any
+  profile* chip): it is then injected into EVERY agent it resolves for, with or
+  without a profile — the group resolution is still the only wall, the profile
+  list just stops narrowing it. On a commons secret (Main, a public group) that
+  is every agent on the instance, and the panel's confirm says so. Which
+  profiles receive a secret is a person's decision: `PUT /secrets/profiles` is
+  browser-only altogether (an agent binding a Main secret it wrote to other
+  profiles would inject values into every group's agents on them; an agent
+  attaches a secret it CREATED to its OWN profile via `PUT /profiles/secret`),
+  an agent may not overwrite a `*` secret (`agentOverwriteRefusal`), and `"*"`
+  is refused as a profile name.
+  The panel's group selector always offers **Public** first (Main and every public group are one commons), then Personal, then the restricted groups:
+  a caller the write gate would let into Main (`canWriteSecretGroup`, i.e. an
+  admin or a Main member) gets Main's secrets tagged `editable` with their
+  profiles, and edits them there; everyone else still sees them as the
+  read-only "Inherited from Main" tier. A commons-owned secret offers no
+  "Shared with" targets — it already resolves for every agent.
 - **Ledger** (`ledger.ts`, `context/ledger-skill/`): rows carry `group` and
   `scope`. The skill no longer writes the file; it calls `POST /ledger/record`,
   where the server stamps the caller's group from the session. Default is
@@ -1924,6 +2083,13 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | File | Responsibility |
 |---|---|
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
+| `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
+| `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
+| `src/connected-accounts.ts` | The account store (`~/.shadok-ai/connected-accounts/<key>.json`), `publicView` (the only projection that leaves it), `accountVisible` (the `instance` scope does not reach other people's private groups), `accountEditVerdict`. |
+| `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
+| `src/social-drafts.ts` | Drafts (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
+| `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |
+| `broker/` | The stateless Cloudflare Worker holding the LinkedIn client secret. See `broker/README.md`. |
 | `src/live-handover.ts` | `supersedeSession(old, next)` — the ONE-`Live`-per-agent rule (invariant 55). When a resume can't attach (the old pilot `hasExited`) it makes a NEW `Live` and `sessions.set` replaces the entry; this hands the retired `Live`'s viewers to the new one and quiets the old (tail, timers, raw pipe) WITHOUT killing the pilot or clearing the shared tail position — the new `Live` may drive the same tmux pane. `HandoverLive` omits `pilot`/`cwd`/`id` on purpose, so the handover CANNOT kill the agent or reset the transcript. Pure, tested (`test/live-handover.test.ts`). |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
 | `src/claude-bin.ts` | Makes sure a RUNNABLE `claude` is there before every spawn, and says which binary that is. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Since the split packaging, "a file named claude that is executable" is NOT "a claude that works": `classifyBin` recognises the npm placeholder, `findClaudeBin` falls back to the native binary behind it, and `claudeCommand` is the ONE answer to "which binary do we spawn" — the pilots, the auth probe, the sign-in and the version probe all go through it. See invariant 32. It also never installs over Claude Code's own self-update: `claudeInstallInProgress` spots npm's reify directory and `ensureClaude` waits for it (bounded), then looks again after a failed install before calling the CLI missing. Pure cores (`classifyBin`, `platformPkg`, `nativeBinCandidates`, `findClaudeBin`, `findClaudeBinWithRetry`, `rewriteInProgress`, `globalScopeDirs`) tested; the placeholder is also read off a real file on disk. |

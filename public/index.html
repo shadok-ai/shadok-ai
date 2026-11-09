@@ -1076,6 +1076,51 @@
   .sec-sect { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
   .sec-scope { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; }
   .sec-scope select { font-size: 16px; }
+  /* Connected accounts (top of the vault panel). */
+  .ca-section { margin: 0 0 14px; padding: 0 0 12px; border-bottom: 1px solid var(--line); }
+  .ca-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .ca-list { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 8px; }
+  .ca-list li { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+  .ca-list .ca-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .ca-list .ca-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ca-list .ca-label { font-weight: 600; font-size: 14px; }
+  .ca-list .ca-via { font-size: 12px; color: var(--text-dim); }
+  .ca-list .ca-exp { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--text-dim); white-space: nowrap; }
+  .ca-list .ca-exp.soon { color: var(--amber); border-color: var(--amber); }
+  .ca-list .ca-exp.expired { color: #e2564a; border-color: #e2564a; }
+  .ca-list .sec-ctl { margin-top: 0; }
+  .ca-list .sec-chip:has(input:disabled) { opacity: .6; cursor: progress; }
+  .ca-list .ca-foot { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .ca-list .ca-spacer { flex: 1; }
+  .ca-list .ca-btn { font-size: 12px; padding: 3px 12px; border-radius: 6px; border: 1px solid var(--line); background: none; color: var(--text); cursor: pointer; }
+  .ca-list .ca-btn:hover:not(:disabled) { border-color: var(--amber); }
+  .ca-list .ca-btn.danger { color: #e2564a; }
+  .ca-list .ca-btn.danger:hover:not(:disabled) { border-color: #e2564a; background: color-mix(in srgb, #e2564a 8%, transparent); }
+  .ca-list .ca-log { list-style: none; margin: 4px 0 0; padding: 6px 8px; font-size: 12px; color: var(--text-dim);
+    background: var(--bg); border-radius: 6px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+  /* Beats `.ca-list li` (the account row's card), which would box every entry. */
+  .ca-list .ca-log li { border: 0; padding: 0; border-radius: 0; display: block; }
+  /* The connected-account expiry reminder: same top strip as the re-login one. */
+  #caExpiryBanner {
+    flex: 0 0 auto; width: 100%; z-index: 1000;
+    background: var(--amber); color: var(--on-accent);
+    font-family: var(--sans); font-size: 12px;
+    padding: 6px 12px;
+    display: flex; flex-direction: column; gap: 4px; align-items: center;
+  }
+  #caExpiryBanner .ca-bn { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  #caExpiryBanner button {
+    font: inherit; cursor: pointer; padding: 2px 10px;
+    border: 1px solid currentColor; border-radius: 4px;
+    background: transparent; color: inherit;
+  }
+  /* The LinkedIn draft card in the chat: the dialog skin, the text kept as written. */
+  .turn.social-draft .sd-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; padding: 8px 10px; border-left: 2px solid var(--amber); background: var(--bg); }
+  .turn.social-draft .sd-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .turn.social-draft .sd-status { font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+  .turn.social-draft .sd-status a { color: var(--amber); }
+  .turn.social-draft.decided .bubble { border-top-color: var(--line); }
+  .turn.social-draft.decided .bubble::before { content: "LinkedIn post"; color: var(--text-dim); }
   #secretsList li.sec-ro code { opacity: .85; }
   #secretsList li.sec-row { flex-wrap: wrap; }
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
@@ -3346,6 +3391,18 @@
         <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
     </div>
     <div class="pin-body">
+      <!-- Connected accounts (LinkedIn): the token is held by the server and
+           never reaches this page — every row is the server's publicView. -->
+      <section id="connectedAccounts" class="ca-section" aria-labelledby="caTitle">
+        <div class="ca-head">
+          <strong id="caTitle">Connected accounts</strong>
+          <button type="button" id="caConnect" hidden>Connect LinkedIn</button>
+        </div>
+        <p id="caUnavailable" class="sec-note" hidden>LinkedIn connection is unavailable right now.</p>
+        <p id="caSoftLayer" class="sec-note warn" hidden>On this instance agents run as the same system user as the cockpit: approval protects against mistakes, not against an agent that tries to work around it.</p>
+        <p id="caErr" class="sec-err" role="alert" hidden></p>
+        <ul id="caList" class="ca-list"></ul>
+      </section>
       <div id="secretsScope" class="sec-scope" hidden><span>Group</span><select id="secretsGroup" aria-label="Group whose secrets are shown"></select></div>
       <p id="secretsErr" class="sec-err" role="alert" hidden></p>
       <ul id="secretsList"></ul>
@@ -4319,6 +4376,17 @@
   window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
+  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine } from "/social-card.js?v=__ASSET_V__";
+  window.draftCardModel = draftCardModel;
+  window.accountRowModel = accountRowModel;
+  window.hasPendingDraft = hasPendingDraft;
+  window.autonomousConfirmText = autonomousConfirmText;
+  window.shareChoices = shareChoices;
+  window.toggleShare = toggleShare;
+  window.profileChoices = profileChoices;
+  window.toggleProfile = toggleProfile;
+  window.accountBanners = accountBanners;
+  window.logEntryLine = logEntryLine;
   import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
@@ -4512,6 +4580,29 @@
     looksLikeEmoji: () => false,
     uploadFailure: (status, contentType) =>
       /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
+    // A draft can arrive in the history replay before the module lands. The
+    // stubs mirror the real pending rule, so the tab still asks for an answer
+    // and the card still offers its buttons; the card repaints on bridge-ready.
+    draftCardModel: (d) => {
+      const pending = !d || !d.status || d.status === "pending";
+      const actions = pending ? [{ action: "publish", label: "Publish" }, { action: "discard", label: "Discard" }] : [];
+      const title = "LinkedIn post as " + ((d && d.account) || "(disconnected account)");
+      const text = d && typeof d.text === "string" ? d.text : "";
+      return { title, text, image: null, actions, statusLine: pending ? "" : String((d && d.status) || ""), link: null, pending };
+    },
+    hasPendingDraft: (drafts) => [...(drafts || [])].some((d) => d && d.status === "pending"),
+    // The panel opens on a click, long after the module lands; neutral rows.
+    accountRowModel: (a) => ({ label: (a && a.label) || "", via: "", expiryText: "", tone: "ok", shareText: "", policyText: "" }),
+    autonomousConfirmText: (a) => `Agents will be able to post as ${(a && a.label) || "this account"} without asking anyone.`,
+    // Until the module lands the row shows no share boxes at all: a stub that
+    // guessed the share could PUT a wrong one on the first click.
+    shareChoices: () => [],
+    toggleShare: (s) => s,
+    profileChoices: () => [],
+    toggleProfile: (s) => s,
+    // No banner until the module lands: the check re-runs on bridge-ready.
+    accountBanners: () => [],
+    logEntryLine: (e) => String((e && e.outcome) || ""),
     // The Shadok's voice (shadok-soul.js): before the module lands it says the
     // classic line, one maxim, and the empty state's thought stays empty (hidden).
     pumpLine: () => "Shadok is pumping",
@@ -4546,6 +4637,9 @@
       if (typeof renderProfileGrid === "function" && $("profileGrid")) renderProfileGrid(false);
       if (typeof renderProfilesList === "function" && !$("profilesOverlay").hidden) renderProfilesList();
       if (typeof renderSecrets === "function" && !$("secretsOverlay").hidden) renderSecrets();
+      if (typeof renderConnectedAccounts === "function" && !$("secretsOverlay").hidden) renderConnectedAccounts();
+      if (typeof paintAccountBanner === "function") paintAccountBanner();
+      if (typeof repaintDraftCards === "function") repaintDraftCards();
       // The re-login banner's first pass may have run on the neutral stub
       // (expiryWarning → null); re-evaluate now the real clock has landed.
       if (typeof updateExpiryBanner === "function") updateExpiryBanner();
@@ -6569,6 +6663,9 @@
 
   /** Channel highlight: "working" | "needs-answer" | "unread" | null. */
   function setTabMood(tab, mood) {
+    // A LinkedIn draft waiting for a person outranks every other mood until it
+    // is decided: a turn ending or a dialog being answered must not hide it.
+    if (mood !== "needs-answer" && tab.drafts && window.hasPendingDraft(tab.drafts.values())) mood = "needs-answer";
     const wasNeeds = tab.btnEl.classList.contains("needs-answer");
     tab.btnEl.classList.toggle("working", mood === "working");
     tab.btnEl.classList.toggle("needs-answer", mood === "needs-answer");
@@ -8295,6 +8392,132 @@
     pinBottom(tab);
   }
 
+  /** A LinkedIn draft (`DraftView`, src/social-drafts.ts) as an approval card.
+   *  Upserted by id: the live `social-draft` message and the history replay
+   *  both land here, so a decision updates the card in place. The TEXT is the
+   *  agent's and goes through textContent only (invariant 13). */
+  function renderSocialDraft(tab, draft, at) {
+    if (!draft || !draft.id) return;
+    if (!tab.drafts) tab.drafts = new Map();
+    if (!tab.draftEls) tab.draftEls = new Map();
+    tab.drafts.set(draft.id, draft);
+    let turn = tab.draftEls.get(draft.id);
+    const fresh = !turn || !turn.isConnected;
+    if (fresh) {
+      turn = document.createElement("div");
+      turn.className = "turn claude dialog social-draft";
+      turn.dataset.draftId = draft.id;
+      tab.draftEls.set(draft.id, turn);
+      if (Number.isFinite(at)) { tab.lastMsgAt = at; renderLastAt(tab); }
+    }
+    paintDraftCard(tab, turn, draft, at);
+    if (fresh) {
+      tab.transcriptEl.appendChild(turn);
+      pinBottom(tab);
+    }
+    refreshDraftMood(tab);
+  }
+
+  function paintDraftCard(tab, turn, draft, at) {
+    const m = window.draftCardModel(draft);
+    turn.classList.toggle("decided", !m.pending);
+    turn.textContent = "";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "claude — " + m.title;
+    const time = fmtTime(Number.isFinite(at) ? at : draft.createdAt);
+    if (time) label.appendChild(time);
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    const text = document.createElement("div");
+    text.className = "sd-text";
+    text.textContent = m.text;
+    bubble.appendChild(text);
+    if (m.image && m.image.path) {
+      const url = fileDownloadUrl(tab, m.image);
+      const fig = document.createElement("figure");
+      fig.className = "file-img";
+      const img = document.createElement("img");
+      img.src = url; img.alt = m.image.name || ""; img.loading = "lazy";
+      fig.appendChild(img);
+      bubble.appendChild(fig);
+    }
+    const status = document.createElement("div");
+    status.className = "sd-status";
+    status.setAttribute("role", "status");
+    if (m.link) {
+      status.append(m.statusLine.slice(0, m.statusLine.length - m.link.length));
+      const a = document.createElement("a");
+      a.href = m.link; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = m.link;
+      status.appendChild(a);
+    } else {
+      status.textContent = m.statusLine;
+    }
+    bubble.appendChild(status);
+    if (m.actions.length) {
+      const row = document.createElement("div");
+      row.className = "sd-actions";
+      const buttons = m.actions.map((act) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = act.action === "publish" ? "primary" : "";
+        b.textContent = act.label;
+        b.dataset.action = act.action;
+        return b;
+      });
+      for (const b of buttons) {
+        b.addEventListener("click", () => decideDraft(tab, draft, b.dataset.action, buttons, status));
+        row.appendChild(b);
+      }
+      bubble.appendChild(row);
+    }
+    turn.append(label, bubble);
+  }
+
+  /** Publish / Discard. The buttons stay disabled while the request is in
+   *  flight, so a double click sends ONE request; the server's answer (or the
+   *  `social-draft` broadcast that follows) repaints the card. */
+  async function decideDraft(tab, draft, action, buttons, statusEl) {
+    if (buttons.some((b) => b.disabled)) return;
+    buttons.forEach((b) => (b.disabled = true));
+    statusEl.textContent = action === "publish" ? "Publishing…" : "Discarding…";
+    let r = null, j = {};
+    try {
+      r = await fetch("/social/drafts/" + encodeURIComponent(draft.id) + "/" + action, { method: "POST" });
+      j = await r.json().catch(() => ({}));
+    } catch { r = null; }
+    if (r && r.ok && j.draft) { renderSocialDraft(tab, j.draft, j.draft.createdAt); return; }
+    // A failed publish comes back with the draft in its new (failed) state: show
+    // that card, then the server's sentence on it.
+    if (j && j.draft) renderSocialDraft(tab, j.draft, j.draft.createdAt);
+    const el = tab.draftEls && tab.draftEls.get(draft.id);
+    const line = (el && el.querySelector(".sd-status")) || statusEl;
+    line.textContent = (j && j.error) || (r ? "The cockpit refused (HTTP " + r.status + ")." : "The cockpit did not answer.");
+    // Still pending (a refusal that changed nothing): let them try again.
+    if (!(j && j.draft) && el) el.querySelectorAll(".sd-actions button").forEach((b) => (b.disabled = false));
+  }
+
+  /** A pending draft keeps the tab on needs-answer; once none is left, the
+   *  highlight goes — unless a real dialog or a pace bubble still holds it. */
+  function refreshDraftMood(tab) {
+    const pending = tab.drafts && window.hasPendingDraft(tab.drafts.values());
+    if (pending) setTabMood(tab, "needs-answer");
+    else if (tab.btnEl.classList.contains("needs-answer") && !tab.pendingChoices && !tab.paceBubble) setTabMood(tab, null);
+  }
+
+  /** Repaint every draft card (after the ESM bridge lands: stubs drew them). */
+  function repaintDraftCards() {
+    for (const tab of tabs) {
+      if (!tab.drafts || !tab.draftEls) continue;
+      for (const [id, el] of tab.draftEls) {
+        const d = tab.drafts.get(id);
+        if (d && el.isConnected) paintDraftCard(tab, el, d, d.createdAt);
+      }
+      refreshDraftMood(tab);
+    }
+  }
+
   /* ── Live preview of the in-flight text ──────────────────
      The .jsonl only writes a text block once FINISHED, so nothing shows while it
      is generated. We fill the gap with the last block read off the TUI screen
@@ -9678,6 +9901,9 @@
         el.innerHTML = "";
         if (birthLoader) el.append(birthLoader);
         t.unreadSep = null; // the separator element went with the wipe
+        // The draft cards went with it too; the replay re-renders them.
+        t.drafts = new Map();
+        t.draftEls = new Map();
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
           if (h.role === "bash") {
@@ -9686,6 +9912,10 @@
             // A file the agent delivered (SendUserFile) — its card survives the
             // reload so the download / image stays reachable.
             addFileCard(t, h.files || [], h.at);
+          } else if (h.role === "social-draft") {
+            // A LinkedIn draft card (src/social-drafts.ts): a pending one is
+            // still there to publish after a reload.
+            if (h.draft) renderSocialDraft(t, h.draft, h.at);
           } else if (h.role === "user" && h.compaction) {
             // A compaction summary: a huge "This session is being continued…"
             // block. Fold it into a collapsible box so it doesn't bury the chat.
@@ -9708,6 +9938,9 @@
             if (h.afterInternal) b.parentElement.classList.add("after-gap");
           }
         }
+        // Re-evaluate the draft mood once the replay is in: a draft decided
+        // while this tab was away must stop asking for an answer.
+        refreshDraftMood(t);
         // Restore the reader's place deterministically — never trust the
         // browser's implicit scroll anchoring for a full teardown.
         el._stickBottom = wasStick;
@@ -9917,6 +10150,11 @@
           markUnreadBoundary(t, b.parentElement);
         }
         if (t === active) updateJumpButton();
+        break;
+      case "social-draft":
+        // A LinkedIn draft appeared or changed state (published, discarded…):
+        // its card is updated in place, and the tab's mood follows.
+        if (msg.draft) renderSocialDraft(t, msg.draft, msg.draft.createdAt);
         break;
       case "stream-tool":
         // A tool call, grouped into the open activity block.
@@ -11258,7 +11496,7 @@
   // window value being loaded).
   const PUBLIC_BUCKET = "__public__";
   function groupName(id) {
-    if (String(id) === PUBLIC_BUCKET) return "Public groups";
+    if (String(id) === PUBLIC_BUCKET) return "Public";
     const g = vaultGroups.find((x) => String(x.id) === String(id));
     if (!g) return String(id);
     // Match the rail + the selector: a private group is the sealed "Personal"
@@ -11326,7 +11564,7 @@
     actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
     if (!ro) {
       actions.append(
-        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
+        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k, grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : null)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
           // The row's OWNER group, not the panel's write target (see secretControls).
           const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
@@ -11385,8 +11623,20 @@
     };
     const share = field("Shared with", "Groups that may READ this secret (it stays owned by its group)",
       targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith);
+    // "Any profile" (the vault's ANY_PROFILE, "*") is exclusive with the named
+    // profiles: picking one clears the other, so the chips never say both.
     const inject = field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
-      profs.map((n) => ({ value: n, label: n })), sec.profiles);
+      profs.length ? [{ value: "*", label: "Any profile" }, ...profs.map((n) => ({ value: n, label: n }))] : [], sec.profiles);
+    if (inject) {
+      const commons = String(sec.ownerGroup) === "main" || vaultGroups.some((g) => String(g.id) === String(sec.ownerGroup) && g.nature === "public");
+      for (const cb of inject.cbs) cb.addEventListener("change", () => {
+        if (!cb.checked) return;
+        if (cb.value === "*" && !confirm(commons
+          ? `Give ${sec.name} to EVERY agent on this instance — every group, Personal ones included, whatever its profile?`
+          : `Give ${sec.name} to every agent that can read it, whatever its profile?`)) { cb.checked = false; return; }
+        for (const o of inject.cbs) if (o !== cb && (cb.value === "*" || o.value === "*")) o.checked = false;
+      });
+    }
     if (!fields.length) return box;
     const foot = document.createElement("div"); foot.className = "sec-foot";
     const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
@@ -11444,8 +11694,8 @@
     }
     const sel = $("secretsGroup");
     // Each restricted/private group individually + ONE "Public groups" entry
-    // (public = visible to all, so not listed one by one). Main is the commons,
-    // shown as the "Inherited from Main" section, never a selector entry.
+    // (public = visible to all, so not listed one by one) — always offered, as
+    // Main is public: that view edits Main's secrets for whoever may write Main.
     const opts = window.panelGroupOptions(vaultGroups);
     sel.replaceChildren(...opts.map((o) => { const el = document.createElement("option"); el.value = o.value; el.textContent = o.label; return el; }));
     const valid = new Set(opts.map((o) => o.value));
@@ -11456,7 +11706,7 @@
       if (id == null) return null;
       if (valid.has(String(id))) return String(id);
       const g = vaultGroups.find((x) => String(x.id) === String(id));
-      return g && g.nature === "public" && String(g.id) !== "main" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
+      return g && g.nature === "public" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
     };
     panelGroup =
       toOption(panelGroup) ??
@@ -11480,6 +11730,7 @@
   // and the profiles it already feeds, so you can rotate the value or change
   // which profiles get it in one place.
   let editingSecret = null;
+  let editingSecretGroup = null; // the edited row's owner group (grouped mode)
   /** Paint a checkbox per (non-managed) profile; `checked` is the set to tick. */
   function renderSecretProfiles(checked) {
     const box = $("secretProfiles");
@@ -11504,14 +11755,19 @@
   }
   function resetSecretForm() {
     editingSecret = null;
+    editingSecretGroup = null;
     $("secretKey").value = ""; $("secretKey").readOnly = false;
     $("secretVal").value = ""; $("secretVal").placeholder = "value";
     $("secretSubmit").textContent = "Add";
     $("secretEditCancel").hidden = true;
     renderSecretProfiles(new Set());
   }
-  function startEditSecret(name) {
+  function startEditSecret(name, ownerGroup = null) {
     editingSecret = name;
+    // An update goes to the group that HOLDS the secret — not the panel's write
+    // target: in "Public" that is the first public group, and editing a Main
+    // secret there would write a second copy beside it instead.
+    editingSecretGroup = ownerGroup;
     $("secretKey").value = name; $("secretKey").readOnly = true;
     $("secretVal").value = ""; $("secretVal").placeholder = "new value (blank = keep)";
     $("secretSubmit").textContent = "Update";
@@ -11564,10 +11820,241 @@
   }
   // profileCache feeds the "no profile uses it" warning: it must be fresh when
   // the panel opens, or we would show a stale diagnosis.
+  // ── Connected accounts (LinkedIn) ──────────────────────────────────
+  // GET /connect/status probes the broker (up to 5s on a cold cache), so the
+  // section loads on its own and never holds the vault panel back.
+  let caState = { available: false, accounts: [], softLayer: false, loaded: false };
+  async function loadConnectedAccounts() {
+    const [st, ac] = await Promise.all([
+      fetch("/connect/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/connected-accounts").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    caState = {
+      available: !!(st && st.available),
+      accounts: ac && Array.isArray(ac.accounts) ? ac.accounts : [],
+      softLayer: !!(ac && ac.softLayer),
+      loaded: true,
+    };
+    renderConnectedAccounts();
+    // A reconnect from the panel clears its banner at once, not 30 min later.
+    if (ac && Array.isArray(ac.accounts)) { caBannerAccounts = ac.accounts; paintAccountBanner(); }
+  }
+  function showCaError(text) {
+    $("caErr").textContent = text || "";
+    $("caErr").hidden = !text;
+  }
+  function renderConnectedAccounts() {
+    $("caConnect").hidden = !caState.loaded || !caState.available;
+    $("caUnavailable").hidden = !caState.loaded || caState.available;
+    $("caSoftLayer").hidden = !caState.softLayer;
+    const ul = $("caList");
+    ul.textContent = "";
+    for (const a of caState.accounts) ul.appendChild(connectedAccountRow(a));
+  }
+  function connectedAccountRow(a) {
+    const m = window.accountRowModel(a, Date.now(), vaultGroups);
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    const li = el("li");
+    // Header: who the account posts as, how long it lasts, where it came from.
+    const head = el("div", "ca-card-head");
+    const title = el("div", "ca-title");
+    title.append(el("span", "ca-label", m.label), el("span", "ca-via", m.via));
+    head.append(title, el("span", "ca-exp " + m.tone, m.expiryText));
+
+    // A row of chips (the vault's own `.sec-chip`: click the name, no box).
+    // `onPick(key, on)` returns the new body to PUT, or null for "no change";
+    // the card re-renders from the server's answer, so a refusal undoes itself.
+    const chipRow = (labelText, hint, choices, onPick) => {
+      const row = el("div", "sec-field");
+      const l = el("span", "sec-field-label", labelText);
+      l.title = hint;
+      const chips = el("div", "sec-chips");
+      for (const c of choices) {
+        const lab = el("label", "sec-chip");
+        const cb = el("input");
+        cb.type = "checkbox";
+        cb.checked = c.checked;
+        cb.addEventListener("change", async () => {
+          const body = onPick(c.key, cb.checked);
+          if (!body) { cb.checked = c.checked; return; }
+          chips.querySelectorAll("input").forEach((x) => { x.disabled = true; });
+          if (!(await updateConnectedAccount(a, body))) {
+            chips.querySelectorAll("input").forEach((x) => { x.disabled = false; });
+            cb.checked = c.checked;
+          }
+        });
+        lab.append(cb, el("span", null, c.label));
+        chips.appendChild(lab);
+      }
+      row.append(l, chips);
+      return row;
+    };
+    const fields = el("div", "sec-ctl");
+    fields.appendChild(chipRow("Shared with", "Whose agents may post as this account — any combination",
+      window.shareChoices(vaultGroups, a.share),
+      (key, on) => ({ share: window.toggleShare(a.share, key, on, vaultGroups) })));
+    const pickable = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n)));
+    const profiles = window.profileChoices(pickable, a.share);
+    if (profiles.length > 1) {
+      fields.appendChild(chipRow("Profiles", "Only agents running one of these profiles; Any profile = no filter",
+        profiles,
+        (key, on) => (key === "*" && !on ? null : { share: window.toggleProfile(a.share, key, on, vaultGroups) })));
+    }
+    const autonomous = a.policy === "autonomous";
+    fields.appendChild(chipRow("Posting", "Whether a person approves each post on a card in the chat",
+      [
+        { key: "approve", label: "Ask before posting", checked: !autonomous },
+        { key: "autonomous", label: "Post on its own", checked: autonomous },
+      ],
+      (key, on) => {
+        if (!on) return null; // one of the two is always lit: click the other
+        if (key === "autonomous" && !confirm(window.autonomousConfirmText(a, vaultGroups))) return null;
+        return { policy: key };
+      }));
+
+    // Actions: the log, then reconnect / disconnect.
+    const foot = el("div", "ca-foot");
+    const logBtn = el("button", "ca-btn", "Log");
+    logBtn.type = "button";
+    const logList = el("ul", "ca-log");
+    logList.hidden = true;
+    // The publication log (GET /connected-accounts/:id/log), toggled under the
+    // card. Each entry carries agent-written text: textContent only.
+    logBtn.addEventListener("click", async () => {
+      if (!logList.hidden) { logList.hidden = true; return; }
+      logBtn.disabled = true;
+      const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id) + "/log").catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      logBtn.disabled = false;
+      if (!r || !r.ok) { showCaError(j.error || "The cockpit did not answer."); return; }
+      logList.textContent = "";
+      const entries = Array.isArray(j.entries) ? j.entries : [];
+      for (const e of entries) logList.appendChild(el("li", null, window.logEntryLine(e)));
+      if (!entries.length) logList.appendChild(el("li", null, "Nothing published or attempted on this account yet."));
+      logList.hidden = false;
+    });
+    foot.appendChild(logBtn);
+    foot.appendChild(el("span", "ca-spacer"));
+    if (caState.available) {
+      const re = el("button", "ca-btn", "Reconnect");
+      re.type = "button";
+      re.addEventListener("click", () => startLinkedInConnect(re));
+      foot.appendChild(re);
+    }
+    const dis = el("button", "ca-btn danger", "Disconnect");
+    dis.type = "button";
+    dis.addEventListener("click", async () => {
+      if (!confirm("Disconnect " + m.label + "?\n\nAgents will no longer be able to post as this account.")) return;
+      dis.disabled = true;
+      const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), { method: "DELETE" }).catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      if (!r || !r.ok) { dis.disabled = false; showCaError(j.error || "The cockpit did not answer."); return; }
+      showCaError("");
+      loadConnectedAccounts();
+    });
+    foot.appendChild(dis);
+    li.append(head, fields, foot, logList);
+    return li;
+  }
+
+  // ── Connected-account expiry banner ───────────────────────────────────
+  // The Telegram DM reaches the instance operator only, so every other owner
+  // learns of an expiring LinkedIn connection here. GET /connected-accounts
+  // flags the viewer's OWN accounts (`expiringSoon` / `expired`); the pure
+  // decision is window.accountBanners (public/social-card.js). A dismissal is
+  // remembered for the browser session, keyed by id + expiresAt, so a
+  // reconnect (new expiry) can warn again.
+  let caBannerAccounts = [];
+  const CA_DISMISSED = "cp.caBannerDismissed";
+  function caDismissed() {
+    try { return JSON.parse(sessionStorage.getItem(CA_DISMISSED) || "[]"); } catch { return []; }
+  }
+  function paintAccountBanner() {
+    const dismissed = caDismissed();
+    const items = window.accountBanners(caBannerAccounts).filter((b) => !dismissed.includes(b.key));
+    let el = document.getElementById("caExpiryBanner");
+    if (!items.length) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "caExpiryBanner";
+      el.setAttribute("role", "status");
+      // First child → above the header in the flex chassis, not floating over it.
+      document.body.insertBefore(el, document.body.firstChild);
+    }
+    el.textContent = "";
+    for (const b of items) {
+      const row = document.createElement("div");
+      row.className = "ca-bn";
+      const span = document.createElement("span");
+      span.textContent = b.text;
+      const x = document.createElement("button");
+      x.type = "button";
+      x.textContent = "Dismiss";
+      x.addEventListener("click", () => {
+        try { sessionStorage.setItem(CA_DISMISSED, JSON.stringify([...caDismissed(), b.key])); } catch { /* private mode: dismiss for this page only */ }
+        caBannerAccounts = caBannerAccounts.filter((a) => String(a.id) + ":" + String(a.expiresAt) !== b.key);
+        paintAccountBanner();
+      });
+      row.append(span, x);
+      el.appendChild(row);
+    }
+  }
+  async function refreshAccountBanner() {
+    const r = await fetch("/connected-accounts").catch(() => null);
+    const j = r && r.ok ? await r.json().catch(() => null) : null;
+    // A failed fetch keeps what is shown: an unreachable server is not a reconnect.
+    if (j && Array.isArray(j.accounts)) caBannerAccounts = j.accounts;
+    paintAccountBanner();
+  }
+  document.addEventListener("DOMContentLoaded", refreshAccountBanner);
+  setInterval(refreshAccountBanner, 30 * 60_000);
+  /** PUT a share or policy change; true when the server took it. */
+  async function updateConnectedAccount(a, body) {
+    const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    const j = r ? await r.json().catch(() => ({})) : {};
+    if (!r || !r.ok || !j.account) { showCaError(j.error || "The cockpit did not answer."); return false; }
+    showCaError("");
+    caState.accounts = caState.accounts.map((x) => (x.id === a.id ? j.account : x));
+    renderConnectedAccounts();
+    return true;
+  }
+  /** Connect / Reconnect: the server mints a single-use attempt and answers the
+   *  broker URL; the broker sends the browser back to /connect/linkedin/done. */
+  async function startLinkedInConnect(btn) {
+    btn.disabled = true;
+    const r = await fetch("/connect/linkedin/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ origin: location.origin }),
+    }).catch(() => null);
+    const j = r ? await r.json().catch(() => ({})) : {};
+    if (r && r.ok && j.url) { location.href = j.url; return; }
+    btn.disabled = false;
+    showCaError(j.error || "The cockpit did not answer.");
+  }
+  $("caConnect").addEventListener("click", () => startLinkedInConnect($("caConnect")));
+  // Back from the broker (or the done page) with the panel still open — a
+  // bfcache restore or a tab switch: refresh, the account list has changed.
+  const refreshCaIfOpen = () => { if (!$("secretsOverlay").hidden && !document.hidden) loadConnectedAccounts(); };
+  window.addEventListener("pageshow", (e) => { if (e.persisted) refreshCaIfOpen(); });
+  document.addEventListener("visibilitychange", refreshCaIfOpen);
+
   async function openSecretsPanel(groupId) {
     panelGroup = groupId == null ? null : String(groupId);
+    showCaError("");
+    loadConnectedAccounts();
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
+    renderConnectedAccounts();
     resetSecretForm();
     showVaultError("");
     $("secretsReload").hidden = true;
@@ -12864,7 +13351,8 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     if (!keepValue) {
-      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
+      const body = editingSecret && editingSecretGroup ? { name, value, overwrite: true, group: editingSecretGroup } : withSecretGroup({ name, value, overwrite: true });
+      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const err = await vaultError(r);
       // Refused: say so and keep the form filled, rather than clearing it as if saved.
       if (err) { showVaultError("Could not save " + name + ": " + err); return; }

@@ -160,6 +160,8 @@ import {
   groupMoveRefusal,
   type Viewer,
   type Group,
+  isAgentViewer,
+  canWriteSecretGroup,
   type Nature,
 } from "./groups.js";
 import {
@@ -325,6 +327,8 @@ import {
   loadVault,
   recordOrigin,
   originProfile,
+  ANY_PROFILE,
+  agentOverwriteRefusal,
 } from "./secrets.js";
 import {
   recordSecretAudit,
@@ -362,6 +366,7 @@ import {
   adoptTracking,
   shippedProfile,
   withManagedPrompt,
+  profileNames,
 } from "./profiles.js";
 import {
   BOOTSTRAP_ADMIN,
@@ -469,6 +474,79 @@ import {
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
+import { newAttempt, decryptPayload, PendingAttempts, type TokenPayload } from "./connect-crypto.js";
+import {
+  accountsFileFor,
+  loadAccountsStore,
+  saveAccountsStore,
+  upsertAccount,
+  resolveAccountId,
+  commonsGroupIds as commonsGroupIdsOf,
+  accountVisible,
+  accountEditVerdict,
+  publicView,
+  type ConnectedAccount,
+  normalizeShare,
+} from "./connected-accounts.js";
+import { fetchMember, createPost, uploadImage, LinkedInError } from "./linkedin.js";
+import {
+  appendLog,
+  approvalCaller,
+  discardVerdict,
+  draftNotice,
+  draftView,
+  draftsFileFor,
+  imagePathVerdict,
+  loadDrafts,
+  newDraftId,
+  postRequestVerdict,
+  publishVerdict,
+  resolveDraftId,
+  saveDrafts,
+  sessionDrafts,
+  socialLogFileFor,
+  draftLogEntry,
+  failureOutcome,
+  makeDraft,
+  PublishInputError,
+  refusalLogOutcome,
+  accountLog,
+  mediaDirFor,
+  readLogFile,
+  readSnapshot,
+  removeSnapshot,
+  sha256Hex,
+  snapshotBytes,
+  snapshotPathFor,
+  writeSnapshot,
+  type Draft,
+  type LogEntry,
+} from "./social-drafts.js";
+import {
+  draftExpiredNotice,
+  expiryActions,
+  expiryWarningText,
+  loadWarned,
+  ownerIsOperator,
+  ownerExpiryFlags,
+  pendingDraftText,
+  saveWarned,
+  stalePublishing,
+  warnedFileFor,
+} from "./account-expiry.js";
+import {
+  brokerBase,
+  brokerStartUrl,
+  connectedMember,
+  connectReadAllowed,
+  errorOutcome,
+  healthOffersLinkedIn,
+  outcomeLabel,
+  outcomeResponse,
+  parseConnectHash,
+  startOriginOk,
+  type ConnectOutcome,
+} from "./connect-routes.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const START_PORT = Number(process.env.PORT ?? 3789);
@@ -614,6 +692,7 @@ let tgBridge: TelegramHandle = {
   stop() {},
   running: () => false,
   status: () => ({ username: null, tokenError: null }),
+  notifyOwner: async () => false,
 };
 let boundPort = 0;
 // The bridge is in-process and reaches us over the loopback WS: it is the
@@ -1544,6 +1623,11 @@ export function agentPrincipal(req: Caller): AgentPrincipal | null {
   if (typeof key !== "string" || !key) return null;
   const id = localSessionForKey(req, key);
   if (!id) return null;
+  return principalForSession(id);
+}
+
+/** The principal of a KNOWN session id (already authenticated, or not a caller at all). */
+function principalForSession(id: string): AgentPrincipal {
   return resolveAgentPrincipal(
     id,
     loadChannels(),
@@ -1728,7 +1812,13 @@ function auditProfileSecrets(
  * on top as the CSRF layer (src/agent-principal.ts, `isBrowserPerson`).
  */
 function requestFromBrowser(req: { headers: Record<string, unknown> }): boolean {
-  return isBrowserPerson({
+  return isBrowserPerson(browserPersonInputs(req));
+}
+
+/** The facts `requestFromBrowser` judges — shared with `approvalCaller`, so the
+ *  LinkedIn approval gate can never drift from the browser-person rule. */
+function browserPersonInputs(req: { headers: Record<string, unknown> }) {
+  return {
     hasAgentKey: headerPresent(req.headers["x-shadok-session-key"]),
     hasPeerToken: headerPresent(req.headers["x-shadok-peer"]),
     passwordSet: !!GUI_PASSWORD,
@@ -1741,7 +1831,7 @@ function requestFromBrowser(req: { headers: Record<string, unknown> }): boolean 
       req.headers.host as string | undefined,
       EXTRA_ORIGINS,
     ),
-  });
+  };
 }
 
 function requestOriginOk(req: { headers: Record<string, unknown> }): boolean {
@@ -3235,9 +3325,8 @@ function agentStateHome(user: string | null | undefined): string {
  *  for every agent like Main's — not only for an agent that happens to run in it.
  *  Mono-tenant (no groups) collapses to Main alone, today's behaviour. */
 function commonsGroupIds(): string[] {
-  const ids: string[] = [MAIN_GROUP_ID];
-  for (const g of loadGroups()) if (g.nature === "public" && g.id !== MAIN_GROUP_ID) ids.push(g.id);
-  return ids;
+  // ONE definition (src/connected-accounts.ts); a Set keeps insertion order, so Main stays first.
+  return [...commonsGroupIdsOf(loadGroups())];
 }
 
 /** The state HOME for a CHANNEL that may not be live (e.g. GET /download of a
@@ -3429,6 +3518,7 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // exactly what bit a migrated instance. test/system-skills.test.ts pins that
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
+  ["social-skill", "shadok-social"],
   // The lead's once-only write of the instance context (src/instance-context.ts).
   ["instance-context-skill", "shadok-instance-context"],
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
@@ -4149,7 +4239,11 @@ app.get("/secrets", (req, res) => {
   // (operator decision 2026-11-03: "public = commun") — `secretOwnGroupIds` adds
   // them to the member set, so a secret added to a public group no longer
   // vanishes from the panel. Member-only groups stay member-gated.
-  const list = visibleSecrets(loadVault(), secretOwnGroupIds(loadGroups(), viewer));
+  const groups = loadGroups();
+  // Same rule as the write gate (`secretWriteDecision`), so the panel only
+  // offers to edit Main to whoever the PUT would let through.
+  const mainGroup = groups.find((g) => g.id === MAIN_GROUP_ID) ?? ({ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], createdAt: 0 } as Group);
+  const list = visibleSecrets(loadVault(), secretOwnGroupIds(groups, viewer), !isAgentViewer(viewer) && canWriteSecretGroup(mainGroup, viewer));
   // `names` stays a string[] for the existing client; `secrets` carries the tags.
   res.json({ names: list.map((s) => s.name), secrets: list });
 });
@@ -4243,6 +4337,12 @@ app.put("/secrets", (req, res) => {
   const ownerGroup = target.ownerGroup;
   const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
+  if (verdict === "updated") {
+    const slice = loadVault()[ownerGroup];
+    const entry = slice && Object.hasOwn(slice, key) ? slice[key] : undefined;
+    const r = agentOverwriteRefusal(entry, agentPrincipal(req) !== null);
+    if (r) return res.status(403).json({ error: r });
+  }
   // Mono-tenant has one commons and no group gate: anyone may ADD a secret,
   // but replacing one every agent may depend on is an admin act.
   if (verdict === "updated" && DEPLOYMENT_MODE !== "multi-tenant") {
@@ -4280,6 +4380,14 @@ app.put("/secrets/profiles", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   const profiles = Array.isArray(req.body?.profiles) ? req.body.profiles.map(String) : [];
   if (!name) return res.status(400).json({ error: "name required" });
+  // Which profiles receive a secret is a person's decision, never an agent's
+  // (invariants 37, 58): an agent able to bind a secret it wrote to OTHER
+  // profiles — in Main, every agent of every group on them — would be injecting
+  // values into agents it does not own, and "Any profile" would widen that to
+  // all. An agent attaches a secret it created to its OWN profile through
+  // `PUT /profiles/secret`; this route is the web UI's alone.
+  if (!requestFromBrowser(req))
+    return res.status(403).json({ error: "Only a person, from the web UI, can choose which profiles receive a secret." });
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
   if (!setSecretProfiles(name, target.ownerGroup, profiles))
@@ -4322,6 +4430,569 @@ app.delete("/secrets", (req, res) => {
   }
   res.json({ names: secretNames(ownerGroup) });
 });
+
+// Connected accounts (LinkedIn). The token comes back from the broker
+// encrypted for a key pair made here (src/connect-crypto.ts), is stored
+// server-side, and never leaves through any route: every answer is a
+// `publicView`. Every route is browser-person only — an agent neither connects
+// nor manages an account. Design:
+// docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §2–3.
+const CONNECT_BROKER = brokerBase(process.env.SHADOK_CONNECT_BROKER);
+const connectPending = new PendingAttempts();
+const accountsFile = () => accountsFileFor(process.cwd());
+
+// The broker's health, probed at most every 5 minutes (a failure only 1 minute,
+// so a broker that comes back shows up soon). Never throws.
+let brokerHealth: { available: boolean; at: number } | null = null;
+async function brokerAvailable(now: number): Promise<boolean> {
+  if (brokerHealth && now - brokerHealth.at < (brokerHealth.available ? 5 * 60_000 : 60_000)) return brokerHealth.available;
+  let available = false;
+  try {
+    const r = await fetch(`${CONNECT_BROKER}/health`, { signal: AbortSignal.timeout(5_000) });
+    available = r.ok && healthOffersLinkedIn(await r.json().catch(() => null));
+  } catch {
+    available = false;
+  }
+  brokerHealth = { available, at: Date.now() };
+  return available;
+}
+
+/** The person behind a browser request (`requestFromBrowser` already passed). */
+function connectPerson(req: Caller): string | null {
+  const a = currentAccount(req);
+  return a && !a.agent ? a.name : null;
+}
+
+/** The READ gate for the two GETs: a person, no `Origin` required (`connectReadAllowed`). */
+function connectReader(req: Caller & { headers: Record<string, unknown> }): boolean {
+  return connectReadAllowed({
+    hasAgentKey: headerPresent(req.headers["x-shadok-session-key"]),
+    hasPeerToken: headerPresent(req.headers["x-shadok-peer"]),
+    internalClient: !!GUI_PASSWORD && isInternalClient(cookieSession(req)),
+    account: currentAccount(req),
+  });
+}
+
+app.get("/connect/status", async (req, res) => {
+  if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
+  res.json({ available: await brokerAvailable(Date.now()) });
+});
+
+app.post("/connect/linkedin/start", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  const person = connectPerson(req);
+  if (!person) return res.status(401).json({ error: "Sign in to connect an account." });
+  const origin = req.body?.origin;
+  if (!startOriginOk(origin, req.headers.origin)) return res.status(400).json({ error: "origin must be this page's own origin" });
+  const now = Date.now();
+  connectPending.sweep(now);
+  const { attempt, pub, nonce } = newAttempt(person, now);
+  connectPending.add(attempt);
+  console.log(`connect: linkedin started for ${person}`);
+  res.json({ url: brokerStartUrl(CONNECT_BROKER, origin as string, pub, nonce) });
+});
+
+// The broker sends the browser back here with the encrypted token in the HASH
+// (never sent to a server, never logged by a proxy). Behind the gate like any page.
+// Kept OUT of public/: express.static would serve it raw at /connect-done.html
+// with the literal nonce marker. Only this route serves it, nonce injected.
+const CONNECT_DONE_PATH = path.join(__dirname, "..", "context", "connect-done.html");
+app.get("/connect/linkedin/done", (_req, res) => {
+  let html: string;
+  try {
+    html = fs.readFileSync(CONNECT_DONE_PATH, "utf8");
+  } catch {
+    return res.status(500).type("text").send("connect-done.html not found");
+  }
+  const nonce = randomUUID();
+  res.setHeader("Content-Security-Policy", cspHeader(nonce));
+  res.setHeader("Cache-Control", "no-store");
+  res.type("html").send(injectNonce(html, nonce));
+});
+
+app.post("/connect/linkedin/complete", async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
+  const person = connectPerson(req);
+  if (!person) return res.status(401).json({ error: "Sign in to connect an account." });
+  const refuse = (o: ConnectOutcome) => {
+    console.log(`connect: linkedin ${outcomeLabel(o)} for ${person}`);
+    const r = outcomeResponse(o);
+    return res.status(r.status).json(r.body);
+  };
+  const now = Date.now();
+  const h = parseConnectHash(req.body?.hash);
+  if (h.kind === "malformed") return refuse("damaged");
+  if (h.kind === "error") {
+    // Consume the attempt (its owner only) so a cancelled nonce cannot be reused.
+    if (h.nonce && connectPending.take(h.nonce, person, now) === "wrong-person") return refuse("wrong-person");
+    return refuse(errorOutcome(h.error));
+  }
+  const attempt = connectPending.take(h.nonce, person, now);
+  if (typeof attempt === "string") return refuse(attempt);
+  let payload: TokenPayload;
+  try {
+    payload = decryptPayload(attempt, h.blob);
+  } catch {
+    return refuse("damaged");
+  }
+  let member: { sub: string; name: string };
+  try {
+    member = await fetchMember(payload.access_token, fetch);
+  } catch {
+    return refuse("profile-failed");
+  }
+  const { list, account } = upsertAccount(loadAccountsStore(accountsFile()), connectedMember(person, member, payload, now), now);
+  saveAccountsStore(accountsFile(), list);
+  console.log(`connect: linkedin connected ${account.id} for ${person}`);
+  res.json({ account: publicView(account) });
+});
+
+app.get("/connected-accounts", (req, res) => {
+  if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
+  const viewer = viewerFor(currentAccount(req));
+  const groups = loadGroups();
+  const now = Date.now();
+  // The owner's own rows carry the banner flags (`ownerExpiryFlags`): the DM
+  // reaches the operator alone, the page reaches every owner.
+  const accounts = loadAccountsStore(accountsFile())
+    .filter((a) => accountVisible(a, viewer, groups, { peerBox: null, agentsUnwalled: AGENTS_UNWALLED }))
+    .map((a) => ({ ...publicView(a), ...ownerExpiryFlags(a, viewer?.name ?? null, now) }));
+  res.json({ accounts, softLayer: DEPLOYMENT_MODE !== "multi-tenant" });
+});
+
+/**
+ * The publication log of one account, newest first, at most 50 entries —
+ * readable by anyone who can use the account (spec §5), behind the same read
+ * gate as the list above. An account the reader cannot see answers like one
+ * that does not exist. `accountLog` rebuilds every entry field by field.
+ */
+app.get("/connected-accounts/:id/log", (req, res) => {
+  if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
+  const viewer = viewerFor(currentAccount(req));
+  const groups = loadGroups();
+  const visible = loadAccountsStore(accountsFile()).filter((a) =>
+    accountVisible(a, viewer, groups, { peerBox: null, agentsUnwalled: AGENTS_UNWALLED }),
+  );
+  const hit = resolveAccountId(visible, String(req.params.id ?? ""));
+  if (hit === "none") return res.status(404).json({ error: "No such connected account." });
+  if (hit === "ambiguous") return res.status(409).json({ error: "Several connected accounts match that id — give more characters." });
+  res.json({ entries: accountLog(readLogFile(socialLogFile()), hit.id) });
+});
+
+/** The account `:id` names (unique prefix, invariant 17), or the refusal already sent. */
+function connectedAccountFor(req: express.Request, res: express.Response) {
+  if (!requestFromBrowser(req)) {
+    res.status(403).json({ error: "web UI only" });
+    return null;
+  }
+  const list = loadAccountsStore(accountsFile());
+  const hit = resolveAccountId(list, String(req.params.id ?? ""));
+  if (hit === "none") {
+    res.status(404).json({ error: "No such connected account." });
+    return null;
+  }
+  if (hit === "ambiguous") {
+    res.status(409).json({ error: "Several connected accounts match that id — give more characters." });
+    return null;
+  }
+  return { list, account: hit };
+}
+
+app.put("/connected-accounts/:id", (req, res) => {
+  const found = connectedAccountFor(req, res);
+  if (!found) return;
+  const { share, policy } = req.body ?? {};
+  if (share === undefined && policy === undefined) return res.status(400).json({ error: "share or policy required" });
+  const groups = loadGroups();
+  // The owner's own Personal group named as a group IS `personal` (normalizeShare).
+  const nextShare = share === undefined ? undefined : normalizeShare(share, privateGroupFor(found.account.owner, groups)?.id ?? null, commonsGroupIdsOf(groups));
+  if (share !== undefined && !nextShare) return res.status(400).json({ error: "invalid share" });
+  if (policy !== undefined && policy !== "approve" && policy !== "autonomous") return res.status(400).json({ error: "invalid policy" });
+  const viewer = viewerFor(currentAccount(req));
+  let next = found.account;
+  if (nextShare) {
+    const v = accountEditVerdict(found.account, viewer, "share", { share: nextShare }, groups, profileNames());
+    if (!v.ok) return res.status(403).json({ error: v.reason });
+    next = { ...next, share: nextShare };
+  }
+  if (policy !== undefined) {
+    const v = accountEditVerdict(found.account, viewer, "policy", { policy }, groups);
+    if (!v.ok) return res.status(403).json({ error: v.reason });
+    next = { ...next, policy };
+  }
+  next = { ...next, updatedAt: Date.now() };
+  saveAccountsStore(accountsFile(), found.list.map((a) => (a === found.account ? next : a)));
+  res.json({ account: publicView(next) });
+});
+
+app.delete("/connected-accounts/:id", (req, res) => {
+  const found = connectedAccountFor(req, res);
+  if (!found) return;
+  const v = accountEditVerdict(found.account, viewerFor(currentAccount(req)), "disconnect", undefined, loadGroups());
+  if (!v.ok) return res.status(403).json({ error: v.reason });
+  saveAccountsStore(accountsFile(), found.list.filter((a) => a !== found.account));
+  console.log(`connect: linkedin disconnected ${found.account.id} by ${currentAccount(req)?.name ?? "?"}`);
+  res.json({ ok: true });
+});
+
+// ---- Social posting (LinkedIn): drafts, the approval gate, the log ---------
+// An agent asks to post (`POST /social/posts`, its session key); the account's
+// policy decides between a DRAFT a person publishes from the browser and an
+// immediate publish. The token is read here and only here, and never leaves:
+// clients get `draftView`, the log gets `serialiseLogEntry`. Design:
+// docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §4–5.
+const draftsFile = () => draftsFileFor(process.cwd());
+const socialLogFile = () => socialLogFileFor(process.cwd());
+const socialMediaDir = () => mediaDirFor(process.cwd());
+// Mono-tenant: no wall between agents (they all run as this process's OS user),
+// so every agent may use every connected account — `VisibilityOpts.agentsUnwalled`.
+const AGENTS_UNWALLED = DEPLOYMENT_MODE !== "multi-tenant";
+
+/** The client view of a draft, its image as a file card of the SNAPSHOT (served
+ *  by /download's draft branch), named after the agent's file. */
+function draftCard(d: Draft, accounts: readonly ConnectedAccount[] = loadAccountsStore(accountsFile())) {
+  const account = accounts.find((a) => a.id === d.accountId);
+  const image = d.imageSnapshot && d.imagePath ? { ...fileCard(d.imageSnapshot), name: path.basename(d.imagePath) } : undefined;
+  return draftView(d, account, image);
+}
+
+function broadcastDraft(d: Draft): void {
+  const s = sessions.get(d.sessionId);
+  if (s) broadcast(s, { type: "social-draft", draft: draftCard(d) });
+}
+
+/** Replace one draft by id in the CURRENT store (load + save with no await between). */
+function storeDraft(d: Draft): void {
+  const list = loadDrafts(draftsFile());
+  saveDrafts(draftsFile(), list.some((x) => x.id === d.id) ? list.map((x) => (x.id === d.id ? d : x)) : [...list, d]);
+}
+
+/** The log must never take a publish down with it: a failed append is said, not thrown. */
+function logSocial(e: LogEntry): void {
+  try {
+    appendLog(socialLogFile(), e);
+  } catch (err) {
+    console.log(`social: log append failed (${(err as Error).message})`);
+  }
+}
+
+/** "cron" when the agent's current (or last) turn was a cron fire, else "agent".
+ *  Read when the agent ASKS to post — a draft keeps it (`Draft.origin`). */
+function socialOrigin(sessionId: string): "cron" | "agent" {
+  return sessions.get(sessionId)?.turnOrigin === "cron" ? "cron" : "agent";
+}
+
+/** LinkedIn said 401: the token is dead. Save `failureOutcome`'s patch so every
+ *  later publish refuses with the reconnect sentence instead of calling LinkedIn again. */
+function patchAccount(id: string, patch: Partial<ConnectedAccount>): void {
+  const list = loadAccountsStore(accountsFile());
+  const hit = list.find((a) => a.id === id);
+  if (!hit) return;
+  saveAccountsStore(accountsFile(), list.map((a) => (a === hit ? { ...hit, ...patch } : a)));
+  console.log(`social: linkedin account ${id} refused its token (401) — marked expired`);
+}
+
+/**
+ * Publish on the account's behalf, with bytes the caller already holds: the
+ * ones read when the agent asked (autonomous) or the draft's snapshot (a
+ * person's approval) — never a re-read of the agent's file, which could have
+ * changed since. Throws; `publishFailure` turns the error into the sentence to relay.
+ */
+async function publishToLinkedIn(account: ConnectedAccount, text: string, image: { bytes: Buffer; mime: string } | null): Promise<{ urn: string; url: string }> {
+  const imageUrn = image ? await uploadImage(account.token, account.externalId, image.bytes, image.mime, fetch) : undefined;
+  return createPost(account.token, { authorUrn: account.externalId, text, imageUrn }, fetch);
+}
+
+/** The draft's image for a publish: its snapshot, checked (`snapshotBytes`). */
+function draftImage(d: Draft): { bytes: Buffer; mime: string } | null {
+  const v = snapshotBytes(d, readSnapshot);
+  if (!v.ok) throw new PublishInputError(v.reason);
+  return v.image;
+}
+
+/** The sentence for a failed publish (`failureOutcome`); on a 401 the account is marked expired first. */
+function publishFailure(e: unknown, account: ConnectedAccount, now: number): { status: number; reason: string } {
+  const f = failureOutcome(e, account, now);
+  if (f.accountPatch) patchAccount(account.id, f.accountPatch);
+  return { status: f.httpStatus, reason: f.reason };
+}
+
+/** Tell the drafting agent what a person decided — the hidden loopback, retried
+ *  while it is busy (a notice lost to a busy turn would be invariant 15 again). */
+function notifyDraftAgent(d: Draft): void {
+  const text = draftNotice(d);
+  if (text) notifyDraftAgentText(d, text);
+}
+
+function notifyDraftAgentText(d: Draft, text: string): void {
+  const tag = `social: notice ${d.id} → ${d.sessionId.slice(0, 8)}`;
+  void deliverWithRetry(
+    () => driveChannel(d.sessionId, markAgentPrompt(text), resolveSessionTarget(loadChannels(), d.sessionId, process.cwd())),
+    () => loadChannels().some((c) => c.sessionId === d.sessionId),
+    { attempts: 20, delayMs: 15_000 },
+  ).then((res) => console.log(res.ok ? `${tag} delivered` : `${tag} failed (${res.reason})`));
+}
+
+/** DM the operator (the Telegram DM owner) — only for accounts the operator owns. */
+function notifyOperator(accountOwner: string, text: string): void {
+  if (!ownerIsOperator(accountOwner, BOOTSTRAP_ADMIN)) return;
+  void tgBridge.notifyOwner(text).then(
+    (ok) => {
+      if (!ok) console.log("social: owner DM not sent (no bot, no paired owner, or the send failed)");
+    },
+    () => {},
+  );
+}
+
+/**
+ * The hourly watch: warn about accounts close to expiry, mark lapsed ones
+ * expired, expire old drafts, fail publishes orphaned by a restart. Never throws.
+ */
+// Draft ids this process is publishing right now: the watcher must not fail a
+// slow but alive LinkedIn call.
+const publishesInFlight = new Set<string>();
+
+function watchConnectedAccounts(): void {
+  try {
+    const now = Date.now();
+    const accounts = loadAccountsStore(accountsFile());
+    const warnedFile = warnedFileFor(process.cwd());
+    const warned = loadWarned(warnedFile);
+    const stale = stalePublishing(loadDrafts(draftsFile()), now, publishesInFlight);
+    const { warn, expire, expiredDrafts } = expiryActions(accounts, stale.list, now, warned);
+
+    // Stamped only once the DM really went out: an owner who is not the
+    // operator, or a bot that is not there, has not been warned (the page's
+    // banner covers them), so tomorrow's watch tries again.
+    for (const a of warn) {
+      if (!ownerIsOperator(a.owner, BOOTSTRAP_ADMIN)) continue;
+      void tgBridge.notifyOwner(expiryWarningText(a)).then(
+        (ok) => {
+          if (!ok) return console.log("social: owner DM not sent (no bot, no paired owner, or the send failed)");
+          const w = loadWarned(warnedFile);
+          w[a.id] = Date.now();
+          saveWarned(warnedFile, w, loadAccountsStore(accountsFile()).map((x) => x.id));
+        },
+        () => {},
+      );
+    }
+    saveWarned(warnedFile, warned, accounts.map((a) => a.id));
+
+    if (expire.length) {
+      const ids = new Set(expire.map((a) => a.id));
+      saveAccountsStore(accountsFile(), accounts.map((a) => (ids.has(a.id) ? { ...a, status: "expired" as const, updatedAt: now } : a)));
+      for (const a of expire) console.log(`social: linkedin account ${a.id} expired`);
+    }
+
+    if (expiredDrafts.length || stale.failed.length) {
+      const current = loadDrafts(draftsFile());
+      saveDrafts(
+        draftsFile(),
+        current.map((d) => {
+          const f = stale.failed.find((x) => x.id === d.id);
+          if (f && d.status === "publishing") return f;
+          const e = expiredDrafts.find((x) => x.id === d.id);
+          return e && d.status === "pending" ? e : d;
+        }),
+      );
+      const channels = loadChannels();
+      for (const d of [...stale.failed, ...expiredDrafts]) {
+        removeSnapshot(d.imageSnapshot);
+        logSocial(draftLogEntry(d, { at: now, channel: channelLabel(channels, d.sessionId), approvedBy: "system", outcome: d.status === "expired" ? "expired" : "failed", ...(d.error ? { error: d.error } : {}) }));
+        broadcastDraft(d);
+        if (d.status === "expired") notifyDraftAgentText(d, draftExpiredNotice(d));
+        else notifyDraftAgent(d);
+      }
+    }
+  } catch (e) {
+    console.log(`social: expiry watch failed (${(e as Error).message})`);
+  }
+}
+
+app.get("/social/accounts", (req, res) => {
+  const agent = agentPrincipal(req);
+  if (!agent) return res.status(403).json({ error: "Agents only: send your x-shadok-session-key." });
+  const viewer = viewerFor(currentAccount(req));
+  const groups = loadGroups();
+  const peerBox = restrictedBoxOf(req);
+  const now = Date.now();
+  const accounts = loadAccountsStore(accountsFile())
+    .filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled: AGENTS_UNWALLED, agentProfile: agent.profile }))
+    .map((a) => ({
+      id: a.id,
+      label: a.label,
+      provider: a.provider,
+      kind: a.kind,
+      policy: a.policy,
+      expiresAt: a.expiresAt,
+      status: a.status === "expired" || now >= a.expiresAt ? "expired" : "ok",
+    }));
+  res.json({ accounts });
+});
+
+app.post("/social/posts", async (req, res) => {
+  const agent = agentPrincipal(req);
+  if (!agent) return res.status(403).json({ error: "Agents only: send your x-shadok-session-key." });
+  const body = req.body ?? {};
+  const now = Date.now();
+  const v = postRequestVerdict(
+    loadAccountsStore(accountsFile()),
+    body.account,
+    body.text,
+    viewerFor(currentAccount(req)),
+    loadGroups(),
+    restrictedBoxOf(req),
+    now,
+    AGENTS_UNWALLED,
+    agent.profile,
+  );
+  const channel = channelLabel(loadChannels(), agent.sessionId);
+  const origin = socialOrigin(agent.sessionId);
+  // A request on an account the agent may use, refused (expired, the text, the
+  // image), is a refused publication: it goes in that account's log (spec §6).
+  const refused = (accountId: string, status: number, reason: string) => {
+    logSocial({ at: Date.now(), accountId, sessionId: agent.sessionId, channel, origin, approvedBy: "none", text: typeof body.text === "string" ? body.text : "", outcome: "refused", error: reason });
+    return res.status(status).json({ error: reason });
+  };
+  if (!v.ok) return v.account ? refused(v.account.id, v.status, v.reason) : res.status(v.status).json({ error: v.reason });
+  const text = body.text as string;
+  const account = v.account;
+  let imagePath: string | undefined;
+  let image: { bytes: Buffer; mime: string } | null = null;
+  if (body.image !== undefined && body.image !== null && body.image !== "") {
+    const iv = imagePathVerdict(body.image);
+    if (!iv.ok) return refused(account.id, 400, iv.reason);
+    // Read with the agent's rights (invariant 60): an image it cannot read
+    // itself must not go out through the server's. Read ONCE, here: these
+    // bytes are what is published or what the person approves.
+    try {
+      image = { bytes: await readSessionFile(agent.sessionId, iv.path), mime: iv.mime };
+    } catch {
+      return refused(account.id, 400, `The image '${iv.path}' is not a file this agent can read.`);
+    }
+    imagePath = iv.path;
+  }
+
+  if (account.policy === "approve") {
+    const id = newDraftId(loadDrafts(draftsFile()));
+    let imageSnapshot: string | undefined;
+    if (image && imagePath) {
+      imageSnapshot = snapshotPathFor(socialMediaDir(), id, imagePath);
+      try {
+        writeSnapshot(imageSnapshot, image.bytes);
+      } catch (e) {
+        console.log(`social: draft image snapshot failed (${(e as Error).message})`);
+        return res.status(500).json({ error: "The cockpit could not keep a copy of the image. Try again." });
+      }
+    }
+    const d = makeDraft({
+      id, sessionId: agent.sessionId, accountId: account.id, text, imagePath, origin, now,
+      ...(imageSnapshot && image ? { imageSnapshot, imageSha256: sha256Hex(image.bytes) } : {}),
+    });
+    storeDraft(d);
+    broadcastDraft(d);
+    console.log(`social: draft ${d.id} for account ${account.id} from ${agent.sessionId.slice(0, 8)} (${origin}) — waiting for approval`);
+    notifyOperator(account.owner, pendingDraftText(channel));
+    return res.json({ status: "pending", draftId: d.id });
+  }
+
+  try {
+    const { url } = await publishToLinkedIn(account, text, image);
+    logSocial({ at: Date.now(), accountId: account.id, sessionId: agent.sessionId, channel, origin, approvedBy: "autonomous", text, outcome: "published", postUrl: url });
+    console.log(`social: account ${account.id} published autonomously from ${agent.sessionId.slice(0, 8)}`);
+    res.json({ status: "published", url });
+  } catch (e) {
+    const f = publishFailure(e, account, Date.now());
+    logSocial({ at: Date.now(), accountId: account.id, sessionId: agent.sessionId, channel, origin, approvedBy: "autonomous", text, outcome: "failed", error: f.reason });
+    console.log(`social: account ${account.id} autonomous publish failed (${e instanceof LinkedInError ? e.status : "error"})`);
+    res.status(f.status).json({ error: f.reason });
+  }
+});
+
+async function decideDraft(req: express.Request, res: express.Response, action: "publish" | "discard") {
+  const me = currentAccount(req);
+  const caller = approvalCaller({ ...browserPersonInputs(req), account: me });
+  if (!caller.ok) return res.status(caller.status).json({ error: caller.reason });
+  const hit = resolveDraftId(loadDrafts(draftsFile()), String(req.params.id ?? ""));
+  if (hit === "none") return res.status(404).json({ error: "No such LinkedIn draft." });
+  if (hit === "ambiguous") return res.status(409).json({ error: "Several LinkedIn drafts match that id — give more characters." });
+  const accounts = loadAccountsStore(accountsFile());
+  const account = accounts.find((a) => a.id === hit.accountId);
+  const viewer = viewerFor(me);
+  const groups = loadGroups();
+  const now = Date.now();
+  const channel = channelLabel(loadChannels(), hit.sessionId);
+  // A draft is its agent's content: the same session boundary as /download.
+  const sessionVisible = mayActFor(req, hit.sessionId);
+
+  // The drafting agent AS IT IS NOW (group, profile, peer box): a share
+  // narrowed since the draft — fewer groups, a profile filter — refuses it.
+  const drafter = principalForSession(hit.sessionId);
+  const v =
+    action === "publish"
+      ? publishVerdict(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED, {
+          viewer: viewerFor(agentAccount(drafter)),
+          peerBox: drafter.peer,
+          profile: drafter.profile,
+        })
+      : discardVerdict(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED);
+  if (!v.ok) {
+    // A pending draft the account no longer allows (unshared, disconnected,
+    // expired) is a refused publication, and one past its TTL an expired one;
+    // a second click on a decided draft, or a person who may not see the
+    // agent, is neither, and is not logged.
+    const outcome = action === "publish" ? refusalLogOutcome(hit, v.reason, now) : null;
+    if (outcome) logSocial(draftLogEntry(hit, { at: now, channel, approvedBy: caller.person, outcome, error: v.reason }));
+    return res.status(v.status).json({ error: v.reason });
+  }
+
+  if (action === "discard") {
+    const d: Draft = { ...hit, status: "discarded", decidedBy: caller.person };
+    storeDraft(d);
+    removeSnapshot(d.imageSnapshot);
+    broadcastDraft(d);
+    notifyDraftAgent(d);
+    console.log(`social: draft ${d.id} discarded by ${caller.person}`);
+    return res.json({ draft: draftCard(d, accounts) });
+  }
+
+  // Review Focus 2: `publishing` is SAVED before LinkedIn is called, so a second
+  // click (another tab, a double tap) sees it and gets 409 instead of a second
+  // post. A process that dies mid-call leaves the draft `publishing` — never
+  // published twice, at worst stuck; the log line below is how to tell.
+  const publishing: Draft = { ...hit, status: "publishing", decidedBy: caller.person, publishingAt: Date.now() };
+  storeDraft(publishing);
+  broadcastDraft(publishing);
+  console.log(`social: draft ${hit.id} publishing (approved by ${caller.person})`);
+  const acct = account as ConnectedAccount; // publishVerdict passed: the account exists
+  let done: Draft;
+  let failure: { status: number; reason: string } | null = null;
+  publishesInFlight.add(hit.id);
+  try {
+    const { url } = await publishToLinkedIn(acct, hit.text, draftImage(hit));
+    done = { ...publishing, status: "published", postUrl: url };
+    logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "published", postUrl: url }));
+    console.log(`social: draft ${hit.id} published`);
+  } catch (e) {
+    failure = publishFailure(e, acct, Date.now());
+    done = { ...publishing, status: "failed", error: failure.reason };
+    logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "failed", error: failure.reason }));
+    console.log(`social: draft ${hit.id} failed (${e instanceof LinkedInError ? e.status : "error"})`);
+  } finally {
+    publishesInFlight.delete(hit.id);
+  }
+  storeDraft(done);
+  // Published or failed, the draft is decided: nobody can click Publish on it again.
+  removeSnapshot(done.imageSnapshot);
+  broadcastDraft(done);
+  notifyDraftAgent(done);
+  const view = draftCard(done);
+  if (failure) return res.status(failure.status).json({ error: failure.reason, draft: view });
+  res.json({ draft: view });
+}
+
+app.post("/social/drafts/:id/publish", (req, res) => decideDraft(req, res, "publish"));
+app.post("/social/drafts/:id/discard", (req, res) => decideDraft(req, res, "discard"));
 
 // Finish an OAuth sign-in whose redirect points at an agent's localhost port,
 // unreachable from a browser on another machine (container, remote box). The
@@ -5089,6 +5760,9 @@ app.put("/profiles", (req, res) => {
   if (typeof b.name !== "string" || !b.name.trim())
     return res.status(400).json({ error: "name required" });
   const name = b.name.trim();
+  // "*" is the vault's "any profile" marker (ANY_PROFILE): a profile by that
+  // name would receive every secret bound to it by name — and confuse the rest.
+  if (name === ANY_PROFILE) return res.status(400).json({ error: `"${ANY_PROFILE}" is reserved; pick another profile name.` });
   const written = typeof b.systemPrompt === "string" ? b.systemPrompt : undefined;
   const shipped = shippedProfile(name)?.systemPrompt;
   // Saving a shipped role UNCHANGED leaves it tracking the build rather than
@@ -5608,11 +6282,16 @@ app.post("/files", (req, res) => {
  */
 function historyWithOffers(turns: HistoryTurn[], sessionId: string): HistoryTurn[] {
   const offers = loadOffers(filesFileFor(process.cwd())).filter((o) => o.sessionId === sessionId);
-  if (!offers.length) return turns;
-  const fileTurns: HistoryTurn[] = offers
-    .slice()
-    .sort((a, b) => (a.at ?? 0) - (b.at ?? 0))
-    .map((o) => ({ role: "file", text: "", files: [fileCard(o.path)], ...(o.at ? { at: o.at } : {}) }));
+  // The session's LinkedIn drafts live in their own store too, and come back
+  // the same way — as `social-draft` cards, so a pending one is still there to
+  // approve after a reload.
+  const drafts = sessionDrafts(loadDrafts(draftsFile()), sessionId);
+  if (!offers.length && !drafts.length) return turns;
+  const accounts = drafts.length ? loadAccountsStore(accountsFile()) : [];
+  const fileTurns: HistoryTurn[] = [
+    ...offers.map((o): HistoryTurn => ({ role: "file", text: "", files: [fileCard(o.path)], ...(o.at ? { at: o.at } : {}) })),
+    ...drafts.map((d): HistoryTurn => ({ role: "social-draft", text: "", draft: draftCard(d, accounts), at: d.createdAt })),
+  ].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
   // Stable merge into the (chronological) transcript turns: an offer goes before
   // the first turn it does not predate; a turn with no timestamp keeps its place.
   const out: HistoryTurn[] = [];
@@ -5765,6 +6444,17 @@ app.get("/download", async (req, res) => {
   // an agent can forge a SendUserFile line into it. That is why the READ below
   // runs with the agent's rights: a forged line buys it a file it could already
   // read, nothing more.
+  // The image of one of this session's undecided LinkedIn drafts, for the
+  // approval card: the server-owned SNAPSHOT (what Publish will send), read
+  // with the server's rights — it is our file, not the agent's.
+  const snap = loadDrafts(draftsFile()).find(
+    (d) => d.sessionId === session && d.imageSnapshot === wanted && (d.status === "pending" || d.status === "publishing"),
+  );
+  if (snap) {
+    const opened = openForServe(wanted, true);
+    if (!opened) return res.status(404).type("text").send("file no longer on disk");
+    return serveStaticFile(req, res, path.basename(snap.imagePath ?? wanted), opened.stat.size, fdSource(opened.fd));
+  }
   const offers = loadOffers(filesFileFor(process.cwd()));
   let allowed = offeredPaths(offers, session).has(wanted);
   if (!allowed) {
@@ -7193,6 +7883,10 @@ interface Live {
    *  history-replay flag (`HistoryTurn.afterInternal`). Cleared when a visible
    *  prompt (which breaks the group itself) takes over. */
   gapBeforeNextText?: boolean;
+  /** Who started the last submitted turn — "cron" only for a real cron fire
+   *  (the loopback also carries parent notifications under `origin: "cron"`,
+   *  told apart by the prompt's mark). Read by the publication log. */
+  turnOrigin?: string;
   /**
    * The turn in flight was started by a cron fire (origin `cron` AND the cron
    * mark — a parent notification rides the same hidden path without it). Tags
@@ -9206,6 +9900,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // text would glue onto the previous turn. Flag it for the tail.
             session.gapBeforeNextText = true;
           }
+          session.turnOrigin = origin === "cron" ? (isCronPrompt(text) ? "cron" : "agent") : origin;
           session.busy = true;
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));
@@ -9817,6 +10512,21 @@ function seedFilesSkill(): void {
 }
 if (SEED_SKILLS) seedFilesSkill();
 
+/** The `shadok-social` skill — posting on a connected LinkedIn account. */
+function seedSocialSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "social-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-social");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "social.mjs"), path.join(dst, "scripts", "social.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "social.mjs"), 0o755);
+  } catch {
+    /* best effort — a missing skill means no social posting, not a broken boot */
+  }
+}
+if (SEED_SKILLS) seedSocialSkill();
 // The lead agent's once-only write of the instance context: seeded to the server
 // HOME like shadok-files (a root lead reads it there), and listed in
 // SKILL_SOURCES for the machine-wide tier a dropped lead reads.
@@ -10012,6 +10722,10 @@ server.listen(port, HOST, () => {
   primeCrons();
   const cronTimer = setInterval(cronTick, 30_000);
   cronTimer.unref();
+  // Connected accounts: expiry warnings, lapsed drafts — hourly, plus once soon after boot.
+  const expiryTimer = setInterval(watchConnectedAccounts, 3_600_000);
+  expiryTimer.unref();
+  setTimeout(watchConnectedAccounts, 30_000).unref();
   // Reload indicator: re-evaluate every live agent's staleness once a minute and
   // push it when it changed — this is how a profile edit, a newly-seeded skill or
   // a freshly-installed `claude` reaches an idle agent's tab without any traffic

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, agentOverwriteRefusal, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
@@ -24,6 +24,17 @@ test("secretNamesForProfile: binds on the SECRET side (entry.profiles), scoped t
   assert.deepEqual(secretNamesForProfile(v, "g", "Dev", ["LEGACY"]).sort(), ["COMMON", "LEGACY", "OWN", "SHARED"]);
   // No profile name → only the legacy list, never the bindings.
   assert.deepEqual(secretNamesForProfile(v, "g", "", ["LEGACY"]), ["LEGACY"]);
+});
+
+test("secretNamesForProfile: ANY_PROFILE reaches every agent the secret resolves for — and no further", () => {
+  const v: Vault = {
+    g: { ANY: eb("a", "g", [ANY_PROFILE]), DEV: eb("d", "g", ["Dev"]) },
+    x: { FOREIGN_ANY: eb("z", "x", [ANY_PROFILE]) }, // another group: still not reachable from g
+  };
+  assert.deepEqual(secretNamesForProfile(v, "g", "Dev").sort(), ["ANY", "DEV"]);
+  assert.deepEqual(secretNamesForProfile(v, "g", "QA"), ["ANY"]);
+  assert.deepEqual(secretNamesForProfile(v, "g", ""), ["ANY"], "an agent with no profile is 'any' too");
+  assert.deepEqual(secretNamesForProfile(v, "x", "QA"), ["FOREIGN_ANY"]);
 });
 
 test("resolve: a PUBLIC group is a commons — its secret resolves for every group", () => {
@@ -133,4 +144,21 @@ test("longLivedTokenInfo: MT + token → updatedAt + 1 year; mono / absent → f
 
 test("filterReserved drops server-owned names and keeps the rest in order", () => {
   assert.deepEqual(filterReserved(["A", "MT_CLAUDE_OAUTH_TOKEN", "B"]), ["A", "B"]);
+});
+
+test("visibleSecrets: a Main secret carries its profiles only for a caller who may write Main", () => {
+  const v: Vault = { main: { M: eb("m", "main", ["Dev"]) } };
+  assert.deepEqual(visibleSecrets(v, new Set())[0], { name: "M", source: "main", createdBy: "u", createdAt: 1, updatedAt: 1 });
+  const w = visibleSecrets(v, new Set(), true)[0];
+  assert.equal(w.source, "main");
+  assert.equal(w.editable, true);
+  assert.equal(w.ownerGroup, "main");
+  assert.deepEqual(w.profiles, ["Dev"]);
+});
+
+test("agentOverwriteRefusal: an agent may not replace an Any-profile secret; a person may, and other secrets stay as before", () => {
+  assert.equal(typeof agentOverwriteRefusal({ profiles: [ANY_PROFILE] }, true), "string");
+  assert.equal(agentOverwriteRefusal({ profiles: [ANY_PROFILE] }, false), null);
+  assert.equal(agentOverwriteRefusal({ profiles: ["Dev"] }, true), null);
+  assert.equal(agentOverwriteRefusal(undefined, true), null);
 });

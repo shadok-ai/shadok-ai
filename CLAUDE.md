@@ -84,6 +84,10 @@ you're back to the old failure:
   server's included — scripts newer than the server they call. Measured: the
   ledger skill began posting a route the running build did not serve, so `record`
   answered 404 host-wide while `check` kept working. See invariant 57.
+- When your shell exports `SHADOK_GUI_PASSWORD` / `SHADOK_HOST` (an agent's does),
+  launch with `env -i HOME=$HOME PATH=$PATH PORT=3899 SHADOK_VERSION_CHECK_MIN=0 node dist/server.js`
+  — otherwise the side-by-side build silently becomes a password-gated (and, on a
+  capable host, multi-tenant) instance.
 
 Verify you're really on your build: `curl -s localhost:3899/version` must report
 the local `current` (0.1.0), not the published one. Check
@@ -125,6 +129,16 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/selfrepo.ts` | The working copy of shadok-ai's OWN source (`<stateHome>/.shadok-ai/self/shadok-ai`) behind the "Tweak Shadok-AI" CTA: anonymous clone (no auth needed to start), `main` hard-reset to the remote on each use, never the launch directory. |
 | `context/tweak-prompt.md` | Role of the tweak agent, written for the person it answers to rather than for the procedure: the non-developer rule comes FIRST and governs the rest (a named banned-words table — pull request / branch / CI / diff — with what to say instead, a three-line answer budget, never hand back a technical decision), and the job ends when the change is VISIBLE, not when it is merged — so the agent reads `updateChannel` / `autoUpdate` off `/version` and never promises a beta instance something only a release will bring. |
 | `context/tweak-pr-check.sh` | The cron guard behind that watch, seeded to `~/.shadok-ai/` at boot (`seedTweakPrCheck`) — outside the agent's worktree, which is pruned once its tree is clean. |
+| `src/connect-crypto.ts` | Instance half of the connected-accounts hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF-SHA256 + AES-256-GCM, nonce as AAD), `PendingAttempts` (10 min, single-use). Pure, tested. |
+| `src/connect-routes.ts` | Pure helpers for `/connect/*`: broker URL (`brokerBase`, `brokerStartUrl`), the fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
+| `src/connected-accounts.ts` | The connected-account store, `publicView` (the ONLY projection that leaves it — never a token), `accountVisible` (share = a union of Personal / groups / Everyone + an optional profile filter, `normalizeShare` reads the v1 single-choice form; Everyone deliberately does NOT reach other people's private groups), `accountEditVerdict`. Mono-tenant = soft layer, and `agentsUnwalled` (passed at EVERY call site as `DEPLOYMENT_MODE !== "multi-tenant"`) lets every agent use every account there — without it a fresh `private` account was invisible to all agents. |
+| `src/linkedin.ts` | LinkedIn API calls; `LINKEDIN_VERSION` must be bumped about yearly (LinkedIn sunsets versions). |
+| `src/social-drafts.ts` | Drafts + publication log (`accountLog` reads it back for `GET /connected-accounts/:id/log`). `publishing` is saved BEFORE LinkedIn is called. A draft's image is SNAPSHOTTED at draft time (`<key>.media/<draftId>.<ext>` + sha256) and both the card and the publish read the snapshot — re-reading the agent's path would let it swap the file after approval. |
+| `src/account-expiry.ts` | Hourly no-LLM expiry watch (`setInterval` in `server.ts`): warns the owner 7 days before expiry and re-warns at most once a day (`REWARN_AFTER_MS`, 24h), expired drafts. `stalePublishing` sweeps a dead process's leftover `publishing` drafts to `failed`, never retries. The DM goes to the operator only and is stamped `warned` only once sent; every owner gets the page banner via `ownerExpiryFlags`. |
+| `public/social-card.js` | Pure helpers for the approval card and the Connected accounts panel. ESM, browser + tests. |
+| `context/social-skill/` | The `shadok-social` skill (`social.mjs accounts` / `post --stdin`), seeded like the others; authenticates with `x-shadok-session-key`. |
+| `context/connect-done.html` | The page the broker returns the browser to; outside `public/` on purpose (it carries the nonce marker). |
+| `broker/` | The stateless Cloudflare Worker that holds the LinkedIn client secret (`broker/README.md`). Deployed separately, not part of the npm package. |
 | `src/usage.ts` | Fetches subscription usage (5h/7d) from `/api/oauth/usage`. |
 | `src/pace.ts` | The quota guardrail: ideal-pace computation + block verdict. |
 | `src/retry.ts` | Auto-retry of turns that died on a transient API error (529, 5xx, timeout). |
@@ -267,6 +281,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 - accounts & 2FA: `/users`, `/users/role`, `/peers`, `/invite/:token`, `/me`, `/login*`, `/2fa*`
 - media & voice: `/paste`, `/media/:name`, `/files`, `/download`, `/transcribe`
 - ops: `/version`, `/autoupdate`, `/permission-mode`, `/ledger`, `/claude-update`, `/telegram`
+- connected accounts: `/connect/status`, `/connect/linkedin/{start,complete,done}`, `/connected-accounts` (+ `/:id`, `/:id/log`) — browser person only; `/social/accounts`, `/social/posts` — the agent side (`x-shadok-session-key`); `/social/drafts/:id/{publish,discard}` — browser person only. WS: `social-draft`
 - skills: `/factory/*` (the Skill Factory, `src/factory-routes.ts`), `/commands`
 
 Browser-only writes, `SERVER_OWNED` fields, the `x-shadok-instance` / `x-shadok-session-key` / `x-shadok-peer` gates, and which routes an agent may call are all spelled out in architecture.md — read it before adding or moving an endpoint.

@@ -289,7 +289,9 @@ function dialogBody(region: string[], width: number): string {
 export { userPromptText } from "./prompt-kind.js";
 
 export interface HistoryTurn {
-  role: "user" | "assistant" | "file" | "bash";
+  role: "user" | "assistant" | "file" | "bash" | "social-draft";
+  /** A `social-draft` turn: the LinkedIn draft card (`draftView`, never the token). */
+  draft?: unknown;
   /** A `bash` turn: a shell-mode command and, once it ran, its output. */
   command?: string;
   output?: string;
