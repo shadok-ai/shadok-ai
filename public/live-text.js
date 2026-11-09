@@ -20,6 +20,17 @@
 const MARKERS = ["⏺ ", "● "];
 const markerOf = (line) => MARKERS.find((m) => line.startsWith(m)) ?? null;
 
+// Claude Code's own SYSTEM notices are drawn with the same column-0 bullet as
+// the model's prose — only their colour differs, and a plain screen capture has
+// no colour. The transcript records them as `type:"system"` (never streamed or
+// replayed), so on screen they are the one place they leak from: mid-turn the
+// grey preview bubble showed "Remote Control disconnected — /login", a line about
+// the terminal's own link to claude.ai that the cockpit's reader can do nothing
+// about. Matched on the family's prefix (connected / disconnected / stopped / got
+// an unexpected…), the only thing a capture carries. Such a line is SKIPPED, not
+// treated as the end of the search, so the real block above it still previews.
+const isSystemNotice = (head) => /^Remote Control\b/.test(head);
+
 /** The last visible assistant text block, unwrapped; "" otherwise. */
 export function extractLiveText(screen) {
   if (typeof screen !== "string" || !screen) return "";
@@ -30,6 +41,7 @@ export function extractLiveText(screen) {
   let marker = null;
   for (let i = lines.length - 1; i >= 0; i--) {
     const m = markerOf(lines[i]);
+    if (m && isSystemNotice(lines[i].slice(m.length).trim())) continue;
     if (m) { start = i; marker = m; break; }
   }
   if (start < 0) return "";
