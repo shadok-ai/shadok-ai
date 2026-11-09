@@ -47,3 +47,9 @@ test("the first-run greeting asks when the context is empty", () => {
   const body = SRC.slice(i, SRC.indexOf("\n}\n", i));
   assert.match(body, /instanceContextEmpty:\s*!instanceContextForCwd\(/);
 });
+
+test("draft answers only once the hidden prompt was delivered (or says why not)", () => {
+  const r = route('app.post("/instance-context/draft"');
+  assert.match(r, /await deliverWithRetry\(/);
+  assert.match(r, /res\.status\(503\)/);
+});

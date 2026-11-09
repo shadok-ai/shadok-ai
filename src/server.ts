@@ -2356,7 +2356,7 @@ app.put("/instance-context/first", (req, res) => {
 // "Ask general to draft it" (the cockpit editor, context still empty): the lead
 // runs the same short interview the first-run greeting does, delivered as a
 // HIDDEN prompt over the loopback exactly like the greeting.
-app.post("/instance-context/draft", (req, res) => {
+app.post("/instance-context/draft", async (req, res) => {
   if (!accountAdmin(req, res, true, "ask the lead agent to draft the instance context")) return;
   if (instanceContextForCwd(loadConfig(), process.cwd()))
     return res.status(409).json({ error: "the instance context is already set — edit it directly" });
@@ -2368,12 +2368,17 @@ app.post("/instance-context/draft", (req, res) => {
       "\n\nThe person just asked you, from the cockpit, to draft it now: ask your questions in one short message, " +
       "then wait for their answer.",
   );
-  void deliverWithRetry(
+  // Answer only once it really landed: "asked" while the lead never heard it
+  // (busy for the whole retry window) would leave the person waiting in a chat
+  // that never asks anything.
+  const r = await deliverWithRetry(
     () => driveChannel(id, brief, resolveSessionTarget(loadChannels(), id, process.cwd())),
     // The lead may be dormant (no live process after a restart): driveChannel
     // wakes it, so "still there" is the channel, not a live session.
     () => loadChannels().some((c) => c.sessionId === id),
-  ).then((r) => console.log(`instance context: draft request ${id.slice(0, 8)} — ${r.ok ? "delivered" : "not delivered"}`));
+  );
+  console.log(`instance context: draft request ${id.slice(0, 8)} — ${r.ok ? "delivered" : "not delivered"}`);
+  if (!r.ok) return res.status(503).json({ error: "the lead agent is busy or unreachable right now — try again in a moment" });
   res.json({ ok: true, agent: home.name ?? null });
 });
 
@@ -6840,7 +6845,9 @@ function makePilot(
     ...factory.args,
     ...profileArgs(resolvedProfile, spawnModel, effort),
     // The instance context: right after the role (which stays first), before
-    // the cockpit's own notes. Nothing at all when it is empty.
+    // the cockpit's own notes. Nothing at all when it is empty. One more
+    // --append-system-prompt flag: it relies on the spawn merging them into ONE
+    // (mergeAppendedPrompts, PR #433), since Claude Code keeps only the last.
     ...instanceContextArgs(instanceContextForCwd(loadConfig(), process.cwd())),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),

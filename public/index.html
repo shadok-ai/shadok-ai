@@ -2329,6 +2329,7 @@
   .ic-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
   .ic-row .spacer { flex: 1; }
   .ic-count { font-size: 11.5px; color: var(--text-dim); }
+  .ic-count.over { color: var(--err); }
   .ic-link { color: var(--text); text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
   .bk-form .field { margin: 10px 0; }
   .bk-form .bk-opt { opacity: .6; font-weight: normal; }
@@ -3632,7 +3633,7 @@
       <button id="icClose" type="button" title="Close" aria-label="Close">✕</button>
     </div>
     <p class="sec-note">What this cockpit is for, who works on it, its language — a handful of lines every agent here receives at spawn, on top of its role.</p>
-    <textarea id="icText" rows="8" maxlength="2000" spellcheck="true" placeholder="e.g. This instance runs side projects with a few friends, to try to get small businesses off the ground. Language: French in conversation; code and docs in English."></textarea>
+    <textarea id="icText" rows="8" spellcheck="true" placeholder="e.g. This instance runs side projects with a few friends, to try to get small businesses off the ground. Language: French in conversation; code and docs in English."></textarea>
     <div class="ic-row"><span class="ic-count" id="icCount">0 / 2000</span><span class="spacer"></span>
       <button type="button" id="icDraft" hidden>Ask general to draft it</button>
       <button type="button" class="primary" id="icSave">Save</button></div>
@@ -8946,16 +8947,34 @@
   // ── Instance context editor ───────────────────────────────────────────────
   // One text per instance, every agent gets it at spawn (src/instance-context.ts).
   function icMsg(t) { $("icMsg").textContent = t || ""; $("icMsg").hidden = !t; }
-  function icCount() { $("icCount").textContent = $("icText").value.trim().length + " / 2000"; }
+  function icCount() {
+    const n = $("icText").value.trim().length;
+    $("icCount").textContent = n + " / 2000";
+    // Over the cap is SHOWN, never silently cut: the server refuses it whole.
+    $("icCount").className = "ic-count" + (n > 2000 ? " over" : "");
+  }
   async function openInstanceContext() {
     verMenu.hidden = true;
     icMsg("");
+    // Nothing editable until the stored text is here: a failed load must never
+    // look like an empty context that Save would then write back over it.
+    $("icText").value = "";
+    $("icText").disabled = true;
+    $("icSave").disabled = true;
+    $("icDraft").hidden = true;
     $("icOverlay").hidden = false;
-    let r = {};
-    try { r = await (await fetch("/instance-context")).json(); } catch {}
-    $("icText").value = r.text || "";
-    $("icDraft").hidden = !!(r.text || "").trim();
-    icCount();
+    try {
+      const res = await fetch("/instance-context");
+      const r = res.ok ? await res.json() : null;
+      if (!r || typeof r.text !== "string") throw new Error("status " + res.status);
+      $("icText").value = r.text;
+      $("icDraft").hidden = !!r.text.trim();
+      $("icText").disabled = false;
+      $("icSave").disabled = false;
+      icCount();
+    } catch {
+      icMsg("✗ Could not load the instance context — close and try again.");
+    }
   }
   $("instanceContextBtn").addEventListener("click", openInstanceContext);
   $("icClose").addEventListener("click", () => { $("icOverlay").hidden = true; });
@@ -8977,10 +8996,14 @@
   });
   $("icDraft").addEventListener("click", async () => {
     $("icDraft").disabled = true;
+    icMsg("Asking the lead agent…");
     try {
       const res = await fetch("/instance-context/draft", { method: "POST" });
       const r = await res.json().catch(() => ({}));
-      icMsg(res.ok ? "✓ Asked " + (r.agent || "the lead agent") + " — answer its questions in its chat." : "✗ " + (r.error || "could not ask"));
+      if (res.ok) {
+        $("icDraft").hidden = true;   // asked once — a second click would send a second interview
+        icMsg("✓ " + (r.agent || "The lead agent") + " is asking you its questions — answer in its chat.");
+      } else icMsg("✗ " + (r.error || "could not ask"));
     } catch { icMsg("✗ the cockpit did not answer"); }
     finally { $("icDraft").disabled = false; }
   });
@@ -10549,6 +10572,7 @@
     if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("icOverlay").hidden) { $("icOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
