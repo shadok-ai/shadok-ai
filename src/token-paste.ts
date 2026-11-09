@@ -16,6 +16,6 @@ export function normalizePastedToken(raw: unknown): { ok: true; token: string } 
   if (TOKEN_RE.test(token)) return { ok: true, token };
   return {
     ok: false,
-    error: "that doesn't look like a long-lived Claude token (it starts with sk-ant-oat01-, from `claude setup-token`)",
+    error: "that doesn't look like a long-lived Claude token (it starts with sk-ant-oat01-, from claude setup-token)",
   };
 }
