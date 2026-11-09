@@ -236,6 +236,26 @@ test("parseLine: usage is emitted before content, keyed by message id", () => {
   assert.equal(ev[1].kind, "text");
 });
 
+test("parseLine: the usage event carries the RESOLVED model name, empty when absent", () => {
+  // The notional-cost table is keyed on resolved names, and the live stream is
+  // the only place a running agent's messages are seen — pricing them from the
+  // session's model SETTING is invariant 22's mistake one subsystem over.
+  const withModel = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: { id: "msg_m", model: "claude-opus-5-5", usage: { input_tokens: 1, output_tokens: 2 }, content: [] },
+    }),
+  );
+  assert.equal((withModel[0] as any).model, "claude-opus-5-5");
+  const noModel = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: { id: "msg_n", usage: { input_tokens: 1, output_tokens: 2 }, content: [] },
+    }),
+  );
+  assert.equal((noModel[0] as any).model, "");
+});
+
 test("parseLine: user tool_result → result event (string and block-array content)", () => {
   const asString = parseLine(
     JSON.stringify({

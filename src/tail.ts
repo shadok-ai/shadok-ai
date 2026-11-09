@@ -1,4 +1,5 @@
 import { parseBashMessage, userMessageText } from "./bang.js";
+import type { MsgSample } from "./token-stats.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -38,7 +39,12 @@ export type TailEvent =
   // blocks (parallel calls) whose results come back batched and out of order.
   | { kind: "tool"; id: string; name: string; summary: string; files?: string[]; at?: number; skill?: string }
   | { kind: "result"; toolUseId: string; text: string; isError: boolean; at?: number }
-  | { kind: "usage"; messageId: string; usage: TokenUsage }
+  /** `model` is the RESOLVED model name the transcript recorded (e.g.
+   *  "claude-opus-5-5"), empty when the line carries none. It travels with the
+   *  usage because that is the only place it is observable: a session's model
+   *  SETTING ("opus", "sonnet[1m]") is not a model name, and pricing a message
+   *  from the setting is invariant 22's mistake one subsystem over. */
+  | { kind: "usage"; messageId: string; usage: TokenUsage; model: string }
   /** The turn's answer was ONLY the silence placeholder. Emitted where the text
    *  block is dropped, because dropping it without a trace made the guard that
    *  honours the silence unreachable: the parent notification reads the last
@@ -420,7 +426,8 @@ export function parseLine(line: string): TailEvent[] {
 
   if (e.type === "assistant") {
     const usage = parseUsage(e.message);
-    if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage });
+    const usageModel = typeof e.message?.model === "string" ? e.message.model : "";
+    if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage, model: usageModel });
     // A hidden block (thinking / dropped placeholder) seen since the last VISIBLE
     // emit; carried onto the next text so the client can break the group there.
     let pendingInternal = false;
@@ -548,6 +555,43 @@ export function scanUsage(file: string): Map<string, TokenUsage> {
     if (usage) map.set(e.message.id ?? e.uuid, usage);
   }
   return map;
+}
+
+/**
+ * One pass over a transcript for the "stats" view: a per-message-id sample
+ * (final usage + the model that produced it + when it was written) and the
+ * session's earliest timestamp ("up since"). Keyed by id and last-wins, so
+ * streaming's growing partials collapse to each message's final usage — the
+ * same reason `scanUsage` keys by id. A message with no parseable timestamp is
+ * skipped (it cannot be placed in a window); `firstAt` still scans EVERY line
+ * with a timestamp, so it is the first prompt, not the first assistant turn.
+ */
+export function scanUsageSamples(file: string): { samples: Map<string, MsgSample>; firstAt: number | null } {
+  const samples = new Map<string, MsgSample>();
+  let firstAt: number | null = null;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(file, "utf8");
+  } catch {
+    return { samples, firstAt };
+  }
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let e: any;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const at = parseTimestamp(e.timestamp);
+    if (at !== null && (firstAt === null || at < firstAt)) firstAt = at;
+    if (e.type !== "assistant") continue;
+    const usage = parseUsage(e.message);
+    if (!usage || at === null) continue;
+    const model = typeof e.message?.model === "string" ? e.message.model : "";
+    samples.set(e.message.id ?? e.uuid, { at, model, usage });
+  }
+  return { samples, firstAt };
 }
 
 /** Flattens a tool_result's content (string or block array) to display text. */
