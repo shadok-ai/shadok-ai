@@ -57,6 +57,17 @@ counted once at its final usage — never summed across its partials. A
 first-seen message is stamped with arrival time (the event carries none); a
 growing partial keeps that first instant.
 
+## Instance-wide total (header ⋯ menu)
+
+The same windows summed over **every agent the caller can see** (`visibleChannels`:
+a member → their groups, admin → all), `GET /instance/stats`. The lag risk is
+real here — a fleet of agents with large transcripts — so: a **live** agent is
+summed from memory (`usageSamples`, no I/O); a **dormant** one is read with
+`scanUsageSamplesAsync` (off the event loop), one at a time (awaits yield), and
+cached by `(mtime,size)` so a repeat open only `stat()`s unchanged files. Scope
+stays each agent's current session. First cold open on a big fleet pays one async
+read per dormant agent; steady state is stats + stat().
+
 ## Verification
 
 - Pure units: `messageCostUSD` (known vs unknown model), `windowStats` (nesting,
@@ -64,6 +75,9 @@ growing partial keeps that first instant.
   collapse, `firstAt` is the first prompt).
 - End to end on a real 946-message transcript: 30 d = 17.8 M tokens, ~$13.3
   notional, cache-read dominating, `costPartial` false (all one priced model).
+- `GET /instance/stats` over that same transcript (seeded as one channel) returned
+  the identical 30 d total (17,834,971 tokens / $13.32) through the full HTTP path
+  (`visibleChannels` → dormant async scan → merge → `windowStats`).
 - Served build (free port): page serves the panel, every inline script parses
   (invariant 12), `GET /channels/stats` wired (400 no id, 404 unknown). Prod 3789
   untouched. No browser on this host (Playwright absent), so the render was

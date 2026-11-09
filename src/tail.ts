@@ -566,15 +566,9 @@ export function scanUsage(file: string): Map<string, TokenUsage> {
  * skipped (it cannot be placed in a window); `firstAt` still scans EVERY line
  * with a timestamp, so it is the first prompt, not the first assistant turn.
  */
-export function scanUsageSamples(file: string): { samples: Map<string, MsgSample>; firstAt: number | null } {
+export function parseUsageSamples(raw: string): { samples: Map<string, MsgSample>; firstAt: number | null } {
   const samples = new Map<string, MsgSample>();
   let firstAt: number | null = null;
-  let raw: string;
-  try {
-    raw = fs.readFileSync(file, "utf8");
-  } catch {
-    return { samples, firstAt };
-  }
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
     let e: any;
@@ -592,6 +586,26 @@ export function scanUsageSamples(file: string): { samples: Map<string, MsgSample
     samples.set(e.message.id ?? e.uuid, { at, model, usage });
   }
   return { samples, firstAt };
+}
+
+export function scanUsageSamples(file: string): { samples: Map<string, MsgSample>; firstAt: number | null } {
+  try {
+    return parseUsageSamples(fs.readFileSync(file, "utf8"));
+  } catch {
+    return { samples: new Map(), firstAt: null };
+  }
+}
+
+/** Async twin of `scanUsageSamples`: the read happens off the event loop, so
+ *  summing MANY transcripts (the instance-wide total) never blocks the server
+ *  the way a sync `readFileSync` of a large file would. The per-line parse is
+ *  still CPU, so callers await between files to stay responsive. */
+export async function scanUsageSamplesAsync(file: string): Promise<{ samples: Map<string, MsgSample>; firstAt: number | null }> {
+  try {
+    return parseUsageSamples(await fs.promises.readFile(file, "utf8"));
+  } catch {
+    return { samples: new Map(), firstAt: null };
+  }
 }
 
 /** Flattens a tool_result's content (string or block array) to display text. */

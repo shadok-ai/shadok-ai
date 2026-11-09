@@ -3314,6 +3314,7 @@
       <button id="signOut" hidden>Sign out</button>
       <div class="mm-sep" id="whoSep" hidden></div>
       <button id="toggleDiff">Diff</button>
+      <button id="instanceStatsBtn">📊 Instance stats</button>
       <button id="tourReplay">Guided tour</button>
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
            pushed the icons off the row); it reappears here instead. -->
@@ -11410,6 +11411,7 @@
     const open = $("diffpanel").classList.toggle("open");
     if (open) loadDiff();
   });
+  $("instanceStatsBtn").addEventListener("click", () => { $("moreMenu").hidden = true; openInstanceStats(); });
   $("closeDiff").addEventListener("click", () => $("diffpanel").classList.remove("open"));
   $("refreshDiff").addEventListener("click", loadDiff);
   document.querySelectorAll(".keys button[data-key]").forEach((b) =>
@@ -13849,10 +13851,36 @@
     if (m > 0) return m + "m";
     return "just now";
   }
+  // Shared table body: the four windows → rows (tokens + notional cost), the
+  // cache split in a per-row tooltip. Used by both the per-agent and the
+  // instance-wide panel.
+  function fillStatsRows(windows) {
+    const rows = [
+      ["Last hour", windows.h1],
+      ["Last 24h", windows.h24],
+      ["Last 7d", windows.d7],
+      ["Last 30d", windows.d30],
+    ];
+    const frag = document.createDocumentFragment();
+    for (const [label, w] of rows) {
+      const tr = document.createElement("tr");
+      const td1 = document.createElement("td"); td1.textContent = label;
+      const td2 = document.createElement("td"); td2.className = "num"; td2.textContent = fmtTokens(w.tokens);
+      td2.title = "input " + fmtTokens(w.input) + " · output " + fmtTokens(w.output)
+        + " · cache-write " + fmtTokens(w.cacheCreation) + " · cache-read " + fmtTokens(w.cacheRead);
+      const td3 = document.createElement("td"); td3.className = "num"; td3.textContent = fmtCost(w.costUSD, w.costPartial);
+      tr.append(td1, td2, td3);
+      frag.appendChild(tr);
+    }
+    $("statsRows").replaceChildren(frag);
+  }
+  const STATS_NOTE_AGENT = "* Notional — shadok runs on the Claude subscription, not the API, so nothing is billed per token. The cost is what these tokens would cost at Anthropic API list prices: a way to compare agents, not an invoice. Scope: the current session.";
+  const STATS_NOTE_INSTANCE = "* Notional — not a bill (shadok runs on the subscription). API list-price equivalent, to gauge the fleet. Summed over the agents you can see, each over its current session.";
   function openStatsPanel(tab) {
     if (!tab.sessionId) return;
     $("statsChanName").textContent = tab.name || "this agent";
     $("statsUptime").textContent = "Loading…";
+    $("statsNote").textContent = STATS_NOTE_AGENT;
     $("statsRows").replaceChildren();
     $("statsOverlay").hidden = false;
     renderStats(tab);
@@ -13873,25 +13901,26 @@
     if (data.lastRespawn) parts.push("↻ respawn " + relTime(data.lastRespawn));
     if (data.model) parts.push("🧠 " + modelLabel(data.model));
     $("statsUptime").textContent = parts.join("  ·  ") || "No activity yet.";
-    const rows = [
-      ["Last hour", data.windows.h1],
-      ["Last 24h", data.windows.h24],
-      ["Last 7d", data.windows.d7],
-      ["Last 30d", data.windows.d30],
-    ];
-    const frag = document.createDocumentFragment();
-    for (const [label, w] of rows) {
-      const tr = document.createElement("tr");
-      const td1 = document.createElement("td"); td1.textContent = label;
-      const td2 = document.createElement("td"); td2.className = "num"; td2.textContent = fmtTokens(w.tokens);
-      // Cache split in a tooltip: input / output / cache-write / cache-read.
-      td2.title = "input " + fmtTokens(w.input) + " · output " + fmtTokens(w.output)
-        + " · cache-write " + fmtTokens(w.cacheCreation) + " · cache-read " + fmtTokens(w.cacheRead);
-      const td3 = document.createElement("td"); td3.className = "num"; td3.textContent = fmtCost(w.costUSD, w.costPartial);
-      tr.append(td1, td2, td3);
-      frag.appendChild(tr);
+    fillStatsRows(data.windows);
+  }
+  // The instance-wide total — summed over every agent the viewer can see.
+  async function openInstanceStats() {
+    $("statsChanName").textContent = "this instance";
+    $("statsUptime").textContent = "Loading…";
+    $("statsNote").textContent = STATS_NOTE_INSTANCE;
+    $("statsRows").replaceChildren();
+    $("statsOverlay").hidden = false;
+    let data;
+    try {
+      const r = await fetch("/instance/stats");
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      data = await r.json();
+    } catch (e) {
+      $("statsUptime").textContent = "Stats unavailable (" + (e && e.message || "error") + ").";
+      return;
     }
-    $("statsRows").replaceChildren(frag);
+    $("statsUptime").textContent = "📊 Across " + (data.agents ?? 0) + " agent" + (data.agents === 1 ? "" : "s") + " you can see";
+    fillStatsRows(data.windows);
   }
   $("statsClose").addEventListener("click", () => { $("statsOverlay").hidden = true; });
   $("statsOverlay").addEventListener("click", (e) => { if (e.target === $("statsOverlay")) $("statsOverlay").hidden = true; });
