@@ -14885,7 +14885,16 @@
     t.nameEl.textContent = "tweak";
     t.profile = "Shadok-Tweak";
     markTweakTab(t);
-    launchTab(t, { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" });
+    // The tweak agent must run as the COMMONS user: `/tweak/prepare` put the
+    // self-clone in that user's home and gave it to them, and its worktree is
+    // created by them. With no `group` a multi-tenant server files the agent in
+    // the caller's Personal instead (see `commonsOnServer`), whose OS user can
+    // neither be written to by the clone's owner nor reach the clone — the
+    // worktree then died on "could not create leading directories … Permission
+    // denied". Mono-tenant has no commons row: the message is unchanged there.
+    const tweakStart = { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" };
+    if (commonsOnServer) tweakStart.group = COMMONS_GROUP_ID;
+    launchTab(t, tweakStart);
   });
   // ── Create-group form ─────────────────────────────────────────
   // "Public" is nature "public"; "Private" is the server's "restricted".
