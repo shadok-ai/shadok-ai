@@ -50,6 +50,7 @@ import { ensureClaudeHome, ensureProjectTrusted,
   type ClaudeHome,
   type ClaudeSettings,
 } from "./claude-home.js";
+import { mergeAppendedPrompts } from "./prompt-args.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
 import {
@@ -6769,7 +6770,9 @@ function makePilot(
     instanceDefault: user ? getDefaultModel() : null,
     dropped: !!user,
   });
-  const fullArgs = [
+  // ONE --append-system-prompt: Claude Code keeps only the last of several
+  // (src/prompt-args.ts), which silently dropped the role and the pilot prompt.
+  const fullArgs = mergeAppendedPrompts([
     ...args,
     ...permissionModeArgs(permissionMode),
     // A flag+value pair, before the profile's flags: nothing here can land
@@ -6779,7 +6782,7 @@ function makePilot(
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
-  ];
+  ]);
   // NAMES only: the values are in `env`, and never travel to a client. Built
   // through the shared `buildPreprompt`, so this spawn snapshot is comparable
   // byte-for-byte with the one the staleness check recomputes later.
