@@ -198,6 +198,8 @@ export interface VisibleSecret {
   /** Only on a secret the caller OWNS: the groups it is lent to / the profiles it feeds. */
   sharedWith?: string[];
   profiles?: string[];
+  /** A Main secret the caller may write (`mainWritable`): the panel edits it in "Public groups". */
+  editable?: true;
 }
 
 /**
@@ -250,7 +252,7 @@ export function longLivedTokenInfo(
  * own > shared > main. In mono-tenant the caller resolves to Main only, so this
  * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
  */
-export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>): VisibleSecret[] {
+export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>, mainWritable = false): VisibleSecret[] {
   const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2 };
   const chosen = new Map<string, VisibleSecret>();
   const consider = (cand: VisibleSecret) => {
@@ -264,7 +266,15 @@ export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>): 
       if (RESERVED_SECRET_NAMES.has(name)) continue;
       const e = slice[name];
       const audit = { createdBy: e.createdBy, createdAt: e.createdAt, updatedAt: e.updatedAt };
-      if (gid === MAIN_GROUP_ID) consider({ name, source: "main", ...audit });
+      // Main stays tagged `main` (every view lists it as inherited), but a caller
+      // who may WRITE Main gets its sharing/profiles too, so the "Public groups"
+      // view can edit it: Main is the first public group, not a read-only tier.
+      if (gid === MAIN_GROUP_ID)
+        consider(
+          mainWritable
+            ? { name, source: "main", ownerGroup: MAIN_GROUP_ID, ...audit, sharedWith: [...e.sharedWith], profiles: [...e.profiles], editable: true }
+            : { name, source: "main", ...audit },
+        );
       else if (ownGroupIds.has(gid))
         consider({ name, source: "own", ownerGroup: gid, ...audit, sharedWith: [...e.sharedWith], profiles: [...e.profiles] });
       else if (e.sharedWith.some((g) => ownGroupIds.has(g)))

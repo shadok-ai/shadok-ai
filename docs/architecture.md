@@ -1863,6 +1863,12 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   list just stops narrowing it. Only a browser person can set it (the route
   refuses an agent key: widening a credential to agents nobody picked is a
   person's call, invariant 58), and `"*"` is refused as a profile name.
+  The panel's group selector always offers **Public groups** (Main is public):
+  a caller the write gate would let into Main (`canWriteSecretGroup`, i.e. an
+  admin or a Main member) gets Main's secrets tagged `editable` with their
+  profiles, and edits them there; everyone else still sees them as the
+  read-only "Inherited from Main" tier. A commons-owned secret offers no
+  "Shared with" targets — it already resolves for every agent.
 - **Ledger** (`ledger.ts`, `context/ledger-skill/`): rows carry `group` and
   `scope`. The skill no longer writes the file; it calls `POST /ledger/record`,
   where the server stamps the caller's group from the session. Default is

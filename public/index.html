@@ -10961,8 +10961,8 @@
     }
     const sel = $("secretsGroup");
     // Each restricted/private group individually + ONE "Public groups" entry
-    // (public = visible to all, so not listed one by one). Main is the commons,
-    // shown as the "Inherited from Main" section, never a selector entry.
+    // (public = visible to all, so not listed one by one) — always offered, as
+    // Main is public: that view edits Main's secrets for whoever may write Main.
     const opts = window.panelGroupOptions(vaultGroups);
     sel.replaceChildren(...opts.map((o) => { const el = document.createElement("option"); el.value = o.value; el.textContent = o.label; return el; }));
     const valid = new Set(opts.map((o) => o.value));
@@ -10973,7 +10973,7 @@
       if (id == null) return null;
       if (valid.has(String(id))) return String(id);
       const g = vaultGroups.find((x) => String(x.id) === String(id));
-      return g && g.nature === "public" && String(g.id) !== "main" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
+      return g && g.nature === "public" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
     };
     panelGroup =
       toOption(panelGroup) ??

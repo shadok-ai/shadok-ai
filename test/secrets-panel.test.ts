@@ -84,22 +84,36 @@ test("panelGroupOptions: restricted/private listed individually, public groups c
     [
       { value: "t1", label: "test" },
       { value: "t2", label: "Personal" },
+      { value: PUBLIC_BUCKET, label: "Public groups" },
     ],
   );
-  // No public non-Main group → no bucket entry.
-  assert.deepEqual(panelGroupOptions([main, comex]), [{ value: "comex", label: "COMEX" }]);
+  // Main alone is public: the bucket is always there (it holds Main's secrets).
+  assert.deepEqual(panelGroupOptions([main, comex]), [{ value: "comex", label: "COMEX" }, { value: PUBLIC_BUCKET, label: "Public groups" }]);
   assert.deepEqual(panelGroupOptions(null), []);
 });
 
-test("publicWriteTarget: the first public non-Main group, or null", () => {
+test("publicWriteTarget: the first public non-Main group, else Main", () => {
   const groups = [
     { id: "main", name: "main", nature: "public" },
     { id: "pub1", name: "group 1", nature: "public" },
     { id: "pub2", name: "group 2", nature: "public" },
   ];
   assert.equal(publicWriteTarget(groups), "pub1");
-  assert.equal(publicWriteTarget([main, { id: "comex", name: "C", nature: "restricted" }]), null);
-  assert.equal(publicWriteTarget(null), null);
+  assert.equal(publicWriteTarget([main, { id: "comex", name: "C", nature: "restricted" }]), "main");
+  assert.equal(publicWriteTarget(null), "main");
+});
+
+test("sections: an editable Main secret is own in Public groups, inherited elsewhere", () => {
+  const secrets = [
+    { name: "MW", source: "main", ownerGroup: "main", editable: true, profiles: [] },
+    { name: "MR", source: "main" },
+  ];
+  const bucket = secretSections(secrets, PUBLIC_BUCKET, [main]);
+  assert.deepEqual(bucket.own.map((x: { name: string }) => x.name), ["MW"]);
+  assert.deepEqual(bucket.inheritedMain.map((x: { name: string }) => x.name), ["MR"]);
+  const other = secretSections(secrets, "comex", [main]);
+  assert.deepEqual(other.own, []);
+  assert.deepEqual(other.inheritedMain.map((x: { name: string }) => x.name), ["MW", "MR"]);
 });
 
 test("sections: the Public-groups bucket aggregates every public group's own secrets", () => {
@@ -149,4 +163,15 @@ test("auditLine: who and when, tolerant of missing fields", () => {
   assert.match(auditLine({ createdBy: "ada", createdAt: t, updatedAt: t + 86400000 }), /updated /);
   assert.equal(auditLine({}), "");
   assert.match(auditLine({ createdBy: "agent:abcdef123456", createdAt: t }), /agent abcdef12/);
+});
+
+test("shareTargets: a commons-owned secret (Main or a public group) offers no group to lend to", () => {
+  const groups = [
+    { id: "main", name: "main", nature: "public" },
+    { id: "pub", name: "P", nature: "public" },
+    { id: "comex", name: "C", nature: "restricted" },
+  ];
+  assert.deepEqual(shareTargets(groups, "main"), []);
+  assert.deepEqual(shareTargets(groups, "pub"), []);
+  assert.deepEqual(shareTargets(groups, "x").map((g: { id: string }) => g.id), ["comex"]);
 });

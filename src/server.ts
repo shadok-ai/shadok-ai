@@ -152,6 +152,8 @@ import {
   MAIN_GROUP_ID,
   type Viewer,
   type Group,
+  isAgentViewer,
+  canWriteSecretGroup,
   type Nature,
 } from "./groups.js";
 import {
@@ -3936,7 +3938,11 @@ app.get("/secrets", (req, res) => {
   // (operator decision 2026-11-03: "public = commun") — `secretOwnGroupIds` adds
   // them to the member set, so a secret added to a public group no longer
   // vanishes from the panel. Member-only groups stay member-gated.
-  const list = visibleSecrets(loadVault(), secretOwnGroupIds(loadGroups(), viewer));
+  const groups = loadGroups();
+  // Same rule as the write gate (`secretWriteDecision`), so the panel only
+  // offers to edit Main to whoever the PUT would let through.
+  const mainGroup = groups.find((g) => g.id === MAIN_GROUP_ID) ?? ({ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], createdAt: 0 } as Group);
+  const list = visibleSecrets(loadVault(), secretOwnGroupIds(groups, viewer), !isAgentViewer(viewer) && canWriteSecretGroup(mainGroup, viewer));
   // `names` stays a string[] for the existing client; `secrets` carries the tags.
   res.json({ names: list.map((s) => s.name), secrets: list });
 });

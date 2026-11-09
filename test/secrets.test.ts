@@ -145,3 +145,13 @@ test("longLivedTokenInfo: MT + token → updatedAt + 1 year; mono / absent → f
 test("filterReserved drops server-owned names and keeps the rest in order", () => {
   assert.deepEqual(filterReserved(["A", "MT_CLAUDE_OAUTH_TOKEN", "B"]), ["A", "B"]);
 });
+
+test("visibleSecrets: a Main secret carries its profiles only for a caller who may write Main", () => {
+  const v: Vault = { main: { M: eb("m", "main", ["Dev"]) } };
+  assert.deepEqual(visibleSecrets(v, new Set())[0], { name: "M", source: "main", createdBy: "u", createdAt: 1, updatedAt: 1 });
+  const w = visibleSecrets(v, new Set(), true)[0];
+  assert.equal(w.source, "main");
+  assert.equal(w.editable, true);
+  assert.equal(w.ownerGroup, "main");
+  assert.deepEqual(w.profiles, ["Dev"]);
+});

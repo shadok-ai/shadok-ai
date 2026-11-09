@@ -24,9 +24,9 @@ function publicGroupIds(groups) {
 /**
  * The group entries the panel's selector offers: each NON-public group
  * (restricted/private — a real per-group vault) individually, plus ONE
- * "Public groups" entry when any public non-Main group exists. Main is not an
- * entry — its secrets are the "Inherited from Main" section shown under every
- * view. Returns `{ value, label }[]`.
+ * "Public groups" entry — ALWAYS, since Main itself is public: it holds Main's
+ * secrets (editable by whoever may write Main) and every other public group's.
+ * Returns `{ value, label }[]`.
  */
 export function panelGroupOptions(groups) {
   const out = [];
@@ -39,15 +39,15 @@ export function panelGroupOptions(groups) {
     // same-named restricted group and makes the private one unselectable.
     out.push({ value: id, label: g.nature === "private" ? "Personal" : g.name });
   }
-  if (publicGroupIds(groups).length) out.push({ value: PUBLIC_BUCKET, label: "Public groups" });
+  if (Array.isArray(groups) && groups.length) out.push({ value: PUBLIC_BUCKET, label: "Public groups" });
   return out;
 }
 
 /** The concrete group a WRITE under "Public groups" lands in: the first public
- *  non-Main group (deterministic). They are all visible-to-all, so which one
- *  physically holds the value does not matter to any reader. Null when none. */
+ *  non-Main group (deterministic), else Main. They are all visible-to-all, so
+ *  which one physically holds the value does not matter to any reader. */
 export function publicWriteTarget(groups) {
-  return publicGroupIds(groups)[0] ?? null;
+  return publicGroupIds(groups)[0] ?? MAIN_ID;
 }
 
 /**
@@ -81,7 +81,12 @@ export function secretSections(secrets, selectedGroupId, groups) {
         selectedGroupId != null && selectedGroupId !== PUBLIC_BUCKET && owner === String(selectedGroupId);
       if (selectedGroupId == null || inBucket || inGroup) out.own.push(s);
     } else if (s.source === "shared") out.sharedIn.push(s);
-    else if (s.source === "main") out.inheritedMain.push(s);
+    else if (s.source === "main") {
+      // In "Public groups", a Main secret the caller may write is one of its
+      // own (Main is public); everywhere else it is the inherited tier.
+      if (selectedGroupId === PUBLIC_BUCKET && s.editable === true) out.own.push(s);
+      else out.inheritedMain.push(s);
+    }
   }
   return out;
 }
@@ -104,7 +109,12 @@ export function keyGroups(groups) {
  *  offering Main. Only restricted/private groups are real sealed vaults to lend
  *  to. (Server-side resolution is unchanged; this is the UI's offer only.) */
 export function shareTargets(groups, ownerGroupId) {
-  return (Array.isArray(groups) ? groups : []).filter(
+  const list = Array.isArray(groups) ? groups : [];
+  // A secret OWNED by the commons (Main, or a public group) already resolves for
+  // every agent: lending it anywhere is meaningless, so nothing is offered.
+  const owner = list.find((g) => g && String(g.id) === String(ownerGroupId));
+  if (String(ownerGroupId) === MAIN_ID || (owner && owner.nature === "public")) return [];
+  return list.filter(
     (g) =>
       g && g.id != null && String(g.id) !== MAIN_ID && String(g.id) !== String(ownerGroupId) && g.nature !== "public",
   );
