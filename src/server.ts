@@ -97,7 +97,8 @@ import {
 } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
-import { scanUsage, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, type TokenUsage } from "./tail.js";
+import { scanUsage, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
+import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
 import { getUsage, type Window } from "./usage.js";
@@ -3664,6 +3665,16 @@ function osUserExistsSync(u: string): boolean {
     return false;
   }
 }
+/** Synchronous uid of an OS user, or null if it does not exist. */
+function uidOf(user: string): number | null {
+  try {
+    const out = execFileSync("id", ["-u", user], { encoding: "utf8", timeout: 5000 }).trim();
+    const n = Number(out);
+    return Number.isInteger(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
 /** Already migrated iff the marker is present AND `main` exists (the latter is
  *  what a docker recreate loses, re-triggering the idempotent provisioning). */
 function alreadyMigratedNow(): boolean {
@@ -3772,6 +3783,14 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // Then take back the ownership of the server's OWN credentials, which the
   // commons chown swept (see below) — the SSH identity first of all.
   await healServerOwnedState();
+  // Finally finish an INTERRUPTED migration. First complete the commons-repo
+  // chown if it was left half-done (so a relocated worktree's agent can actually
+  // commit), then relocate any worktree still stranded under the server tree
+  // (unreachable by its drop user → "stuck on root") — the one-time migration
+  // would have done both, but the marker now blocks it from re-running.
+  // Idempotent and fail-safe.
+  await reassertCommonsRepoOwnership();
+  await healStrandedWorktrees();
 }
 
 /**
@@ -3921,6 +3940,151 @@ async function healServerOwnedState(): Promise<void> {
       console.error(`heal: could not re-own ${p} (best-effort): ${(e as Error)?.message ?? e}`);
     }
   }
+}
+
+/**
+ * Boot self-heal: complete the migration's `chown` of the commons repo (the
+ * launch dir) when it was left half-done. The migration chowns `process.cwd()`
+ * to `main` as a CORE step; an INTERRUPTED run (or a marker written by an older
+ * build before this was a step) can leave the launch repo `root:root`, so a
+ * commons (`main`) agent hits git's "dubious ownership" and cannot write `.git`
+ * — in particular the shared object store, so it can read but never COMMIT. One
+ * cheap `stat` gates the fix (already `main`-owned → no-op); best-effort.
+ */
+async function reassertCommonsRepoOwnership(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  const user = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  if (!user) return;
+  const repo = path.resolve(process.cwd());
+  try {
+    const uid = uidOf(user);
+    if (uid != null && fs.statSync(repo).uid === uid) return; // already owned → no-op
+    await runPrivileged("chown", ["-R", `${user}:${user}`, repo], { timeoutMs: TREE_OP_TIMEOUT_MS });
+    console.log(`heal: launch repo ${repo} re-owned to ${user} — completed a partial migration chown`);
+  } catch (e) {
+    console.error(`heal: re-owning the launch repo failed (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+}
+
+/**
+ * Boot self-heal, twin of `healCommonsStrandedScripts`, for the gap it leaves:
+ * a WORKTREE stranded under the server tree after an INTERRUPTED migration. The
+ * root→non-root migration relocates each agent's worktree into the drop user's
+ * own home and respawns it there; interrupted (a container restart mid-run), it
+ * leaves some worktrees under `/root/.shadok-ai/worktrees/…`, which the drop
+ * user cannot even traverse (`/root` is 0700). That agent is then "stuck on
+ * root", and the marker is already written so the one-time migration will not
+ * re-run to finish it. This finishes it, idempotently, on every capable boot.
+ *
+ * Fail-safe by construction: the checkout is COPIED first and the source removed
+ * only once the canonical copy is wired up, so a failure at any step leaves the
+ * agent exactly as it was (working, as root) — never half-moved, never lost. Each
+ * agent is independent and best-effort; a throw is logged, never fatal.
+ */
+async function healStrandedWorktrees(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant" || !groupsMigrated) return;
+  const groups = loadGroups();
+  const commons = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+  const launchDir = path.resolve(process.cwd());
+  const plan = strandedWorktreePlan(loadChannels(), {
+    dropUserFor: (gid) => {
+      const g = gid ? groups.find((x) => x.id === gid) : undefined;
+      return (g ? osUserFor(g) : null) ?? commons;
+    },
+    stateHomeFor: (u) => agentStateHome(u),
+    // Reachable := the drop user can enter the checkout AND write it. A working,
+    // already-migrated agent answers true and is left untouched; only a truly
+    // unreachable (stranded) worktree is relocated. The cwd is passed as an
+    // argv parameter (`$1`), never interpolated into the script.
+    canReach: (user, cwd) => spawnAsUserSync(user, "bash", ["-c", 'cd "$1" && test -w .', "_", cwd]).ok,
+    // A worktree, not the launch dir (which has no worktree to move): a checkout
+    // carrying a `.git` FILE, or sitting under a `.shadok-ai/worktrees` base.
+    isWorktreeCwd: (cwd) =>
+      path.resolve(cwd) !== launchDir &&
+      (fs.existsSync(path.join(cwd, ".git")) ||
+        cwd.includes(`${path.sep}.shadok-ai${path.sep}worktrees${path.sep}`)),
+  });
+  if (!plan.length) return;
+  console.log(`heal: ${plan.length} stranded worktree(s) to relocate off the server tree`);
+  for (const r of plan) {
+    try {
+      await relocateStrandedWorktree(r);
+    } catch (e) {
+      console.error(
+        `heal: relocating worktree ${r.sessionId.slice(0, 8)} failed (best-effort, agent left as-is): ${(e as Error)?.message ?? e}`,
+      );
+    }
+  }
+}
+
+/** Relocate ONE stranded worktree to its canonical home under the drop user, then
+ *  carry the transcript, repoint the channel and drop the stale source. Order is
+ *  load-bearing: COPY before any delete, so a failure never loses work. */
+async function relocateStrandedWorktree(r: WorktreeRelocation): Promise<void> {
+  const name = "sk-" + r.sessionId;
+  const owner = `${r.user}:${r.user}`;
+  // 1. Stop the stale pane and drop the live entry, so nothing holds the old
+  //    checkout while we move it and a resume rebuilds the session at the NEW cwd.
+  if (tmuxHasSession(name)) {
+    tmuxKillSession(name);
+    for (let i = 0; i < 30 && tmuxHasSession(name); i++) await sleep(100);
+  }
+  const live = sessions.get(r.sessionId);
+  if (live) {
+    try {
+      live.pilot.kill();
+    } catch {
+      /* already gone */
+    }
+    sessions.delete(r.sessionId);
+  }
+  // 2. Copy the checkout to its canonical home (never move: the source stays
+  //    intact until everything below is wired). `cp -an` merges a partial prior
+  //    run without clobbering, so a re-run is safe.
+  await runPrivileged("install", ["-d", "-o", r.user, "-g", r.user, path.dirname(r.to)], {
+    timeoutMs: TREE_OP_TIMEOUT_MS,
+  });
+  await runPrivileged("install", ["-d", "-o", r.user, "-g", r.user, r.to], { timeoutMs: TREE_OP_TIMEOUT_MS });
+  await runPrivileged("cp", ["-an", `${r.from}/.`, `${r.to}/`], { timeoutMs: TREE_OP_TIMEOUT_MS });
+  // 3. Repair git's worktree admin link to point at the NEW checkout (the repo
+  //    did not move, only the checkout), then hand the checkout AND git's admin
+  //    dir to the drop user (`chownAgentStateToDropUser` follows the `.git` file
+  //    to the external admin dir).
+  try {
+    await runPrivileged("git", ["-C", r.to, "worktree", "repair"]);
+  } catch (e) {
+    console.error(`heal: git worktree repair ${r.sessionId.slice(0, 8)} (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+  await chownAgentStateToDropUser(r.to, r.user);
+  // 4. Carry the transcript into the drop user's home (best-effort): the work is
+  //    already safe in the worktree, this only keeps the chat history visible on
+  //    reload. `loadHistory` finds a `<id>.jsonl` anywhere under the home.
+  try {
+    const src = newestTranscriptById(r.sessionId, os.homedir());
+    if (src && fs.existsSync(src)) {
+      const dstDir = path.join(agentStateHome(r.user), ".claude", "projects", path.basename(path.dirname(src)));
+      await runPrivileged("install", ["-d", "-o", r.user, "-g", r.user, dstDir]);
+      const dst = path.join(dstDir, path.basename(src));
+      await runPrivileged("cp", ["-n", src, dst]);
+      await runPrivileged("chown", [owner, dst]);
+    }
+  } catch (e) {
+    console.error(`heal: transcript carry ${r.sessionId.slice(0, 8)} (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+  // 5. Repoint the channel to the new cwd (ASSERT only cwd, invariant 1) BEFORE
+  //    removing the source, so a crash here leaves the still-present source usable.
+  upsertChannel({ sessionId: r.sessionId, cwd: r.to });
+  // 6. Everything is wired at the canonical home — drop the stale source copy and
+  //    prune the repo's now-dangling worktree registration.
+  await runPrivileged("rm", ["-rf", r.from], { timeoutMs: TREE_OP_TIMEOUT_MS });
+  if (r.repo) {
+    try {
+      await runPrivileged("git", ["-C", r.repo, "worktree", "prune"]);
+    } catch {
+      /* best-effort tidy-up */
+    }
+  }
+  console.log(`heal: relocated worktree ${r.sessionId.slice(0, 8)} → ${r.to} (resumes as ${r.user})`);
 }
 
 /** Step 1 — create the non-root commons user `main` (+ HOME). Idempotent. */
