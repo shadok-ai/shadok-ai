@@ -8178,7 +8178,7 @@ interface Live {
   usage: Map<string, TokenUsage>;
   /** Per-message samples (usage + model + when) for the "stats" view's rolling
    *  windows — richer than `usage` (carries time + model), same last-wins keying.
-   *  Scope: the current session file (invariant: session courante). */
+   *  Scope: the current session file, never a cross-session sweep. */
   usageSamples: Map<string, MsgSample>;
   /** Earliest transcript timestamp of this session — "up since" (survives
    *  restarts; re-read from the file on every Live rebuild). Null if none. */
@@ -8887,9 +8887,16 @@ function startContentTail(s: Live): void {
       // event carries no timestamp (unlike a seeded line), so a message seen for
       // the FIRST time is stamped "now" — it was just written; a growing partial
       // keeps that first instant and only refreshes its counts/model.
+      // The model comes from the EVENT (the transcript's resolved name), never
+      // from `s.model`: that field holds the model SETTING the process was given
+      // ("opus", or null for the default), and `MODEL_PRICING` is keyed on
+      // resolved names — so pricing from it left every message written by the
+      // RUNNING process unpriced, i.e. exactly the 1h window a user looks at.
+      // Invariant 22's lesson, one subsystem over. Falls back to the setting
+      // only when a line carries no model at all.
       s.usageSamples.set(e.messageId, {
         at: s.usageSamples.get(e.messageId)?.at ?? Date.now(),
-        model: s.model ?? "",
+        model: e.model || s.model || "",
         usage: e.usage,
       });
       broadcast(s, { type: "tokens", tokens: tokenTotals(s) });

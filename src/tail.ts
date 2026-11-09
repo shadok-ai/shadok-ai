@@ -39,7 +39,12 @@ export type TailEvent =
   // blocks (parallel calls) whose results come back batched and out of order.
   | { kind: "tool"; id: string; name: string; summary: string; files?: string[]; at?: number; skill?: string }
   | { kind: "result"; toolUseId: string; text: string; isError: boolean; at?: number }
-  | { kind: "usage"; messageId: string; usage: TokenUsage }
+  /** `model` is the RESOLVED model name the transcript recorded (e.g.
+   *  "claude-opus-5-5"), empty when the line carries none. It travels with the
+   *  usage because that is the only place it is observable: a session's model
+   *  SETTING ("opus", "sonnet[1m]") is not a model name, and pricing a message
+   *  from the setting is invariant 22's mistake one subsystem over. */
+  | { kind: "usage"; messageId: string; usage: TokenUsage; model: string }
   /** The turn's answer was ONLY the silence placeholder. Emitted where the text
    *  block is dropped, because dropping it without a trace made the guard that
    *  honours the silence unreachable: the parent notification reads the last
@@ -421,7 +426,8 @@ export function parseLine(line: string): TailEvent[] {
 
   if (e.type === "assistant") {
     const usage = parseUsage(e.message);
-    if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage });
+    const usageModel = typeof e.message?.model === "string" ? e.message.model : "";
+    if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage, model: usageModel });
     // A hidden block (thinking / dropped placeholder) seen since the last VISIBLE
     // emit; carried onto the next text so the client can break the group there.
     let pendingInternal = false;

@@ -103,7 +103,7 @@ function addSample(w: WindowStat, s: MsgSample): void {
 /**
  * Sum samples into the four nested rolling windows (1h ⊂ 24h ⊂ 7d ⊂ 30d), each
  * measured back from `now`. One pass: a message in the last hour counts in all
- * four. Samples are the CURRENT session's messages (scope: session courante) —
+ * four. Samples are the CURRENT session's messages —
  * the server keeps one per message id, so streaming partials are already
  * collapsed to each message's final usage.
  */
