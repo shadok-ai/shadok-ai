@@ -339,6 +339,19 @@ install must degrade **honestly**, not half-way.
   actually provision an OS user (root, or the needed sudo rights) rather than
   guessing from "am I root", so it is wrong in neither direction. One source of
   truth for the mode.
+- **[DECIDED] The commons chown stops at the server's own credentials.** Step 2
+  (`migChownTreeToCommons`) hands all of `~/.shadok-ai` to `main` on purpose, but
+  the credential stores are the server's, not the commons agent's: the SSH
+  identity, the vault, the accounts file with its session-signing key, the
+  guardrails. `healServerOwnedState` re-asserts the server's ownership of that set
+  at every capable boot (twin of the stranded-script heal, so already-migrated
+  instances catch up on their next update). What this is NOT: a leak fix — the
+  server's HOME is 0700, so the commons user could never read into it. It is the
+  server losing the use of its OWN files, and SSH is where that bites first,
+  because OpenSSH refuses a key or a config owned by someone else whatever its
+  mode. Found the hard way on the dogfood cockpit, four days after its migration:
+  every root-side `ssh` answered `Bad owner or permissions on /root/.ssh/config`,
+  and nothing surfaced it because `gh` speaks HTTPS and the merges kept working.
 - **[DECIDED] The probe is also Linux-gated.** The isolation is implemented with
   `useradd` / `setpriv` / `runuser`, which exist only on Linux, so
   `probeCanProvision` returns false on macOS/Windows however privileged the host.
