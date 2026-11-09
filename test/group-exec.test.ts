@@ -97,6 +97,9 @@ const serverEnv = {
   SHADOK_MT_CLAUDE_OAUTH_TOKEN: "oauth2",
   AWS_SECRET_ACCESS_KEY: "aws",
   HTTPS_PROXY: "http://proxy",
+  // What `ensureSshIdentity` exports in a container: allow-listed (a guard may
+  // need the ssh fallback) but pointing INTO the server's own /root.
+  GIT_SSH_COMMAND: "ssh -F /root/.shadok-ai/ssh/config",
 };
 const session = { id: "s1", port: "3789", key: "s1.mac" };
 
@@ -130,6 +133,46 @@ test("cronCheckEnv: a secret cannot spoof the session plumbing or the drop ident
   });
   assert.equal(env.HOME, "/home/sk-x");
   assert.equal(env.SHADOK_SESSION_ID, "s1");
+});
+
+test("cronCheckEnv: a DROPPED guard gets the server's gh token, so `gh` works at all", () => {
+  // Without it a dropped guard had no GitHub credential whatsoever: GH_TOKEN is
+  // (deliberately) not in the allow-list, and dropEnv points GH_CONFIG_DIR at
+  // the drop user's own empty config dir. Every `gh` call then failed, and the
+  // guards' `|| exit 0` turned that into "nothing to report" — days of silence
+  // with mergeable PRs open.
+  const env = cronCheckEnv({ base: serverEnv, secrets: {}, session, user: "sk-x", home: "/home/sk-x", ghToken: "srv-tok" });
+  assert.equal(env.GH_TOKEN, "srv-tok");
+});
+
+test("cronCheckEnv: the server's own user is NOT handed the token (it reads its config dir)", () => {
+  const env = cronCheckEnv({ base: serverEnv, secrets: {}, session, user: null, home: null, ghToken: "srv-tok" });
+  assert.equal(env.GH_TOKEN, undefined);
+});
+
+test("cronCheckEnv: a profile's own GH_TOKEN secret beats the server's", () => {
+  // A group holding its own GitHub credential keeps using it — the server's is
+  // only the fallback that makes an un-configured guard work at all.
+  const env = cronCheckEnv({
+    base: serverEnv, secrets: { GH_TOKEN: "group-tok" }, session, user: "sk-x", home: "/home/sk-x", ghToken: "srv-tok",
+  });
+  assert.equal(env.GH_TOKEN, "group-tok");
+});
+
+test("cronCheckEnv: no token passed → no GH_TOKEN invented", () => {
+  const env = cronCheckEnv({ base: serverEnv, secrets: {}, session, user: "sk-x", home: "/home/sk-x" });
+  assert.equal("GH_TOKEN" in env, false);
+});
+
+test("cronCheckEnv: a dropped guard never keeps the server's GIT_SSH_COMMAND", () => {
+  // It is allow-listed (a container needs the ssh fallback), but it names a
+  // config under the SERVER's /root — unreachable for the drop user, so every
+  // git-over-SSH call in the guard died. dropEnv resets it last.
+  const env = cronCheckEnv({ base: serverEnv, secrets: {}, session, user: "sk-x", home: "/home/sk-x" });
+  assert.equal(env.GIT_SSH_COMMAND, "ssh");
+  // The server's own user keeps its own, which it can read.
+  const own = cronCheckEnv({ base: serverEnv, secrets: {}, session, user: null, home: null });
+  assert.equal(own.GIT_SSH_COMMAND, "ssh -F /root/.shadok-ai/ssh/config");
 });
 
 test("CHECK_ENV_ALLOW is an allow-list, not a pattern that grows by accident", () => {
