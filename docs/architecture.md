@@ -1723,10 +1723,19 @@ expires or has expired.
 
 ### Visibility
 
-An account is private to its owner by default. `share` may name groups or the
-whole instance. For a person: owner, or the account is shared to the instance,
-or to a group they belong to (Main and public groups count as commons). For an
-agent the rule is stricter on purpose: scope `instance` reaches agents in Main,
+An account is private to its owner by default. `share` (`ShareScope`) is a
+UNION of tiers — `personal` (the owner's own Personal group), `groups` (named
+groups), `everyone` — any combination, then `profiles`: when not empty, only
+agents running one of those profiles pass. The profile is a filter on top of
+the tiers, never a way past them, and it holds even when `agentsUnwalled` (it
+is the owner's choice, not a wall the OS must build); `publishVerdict` re-reads
+the drafting agent's profile at click time, so a filter added after a draft
+refuses it like an unshare. A v1 single-choice share (`{scope}`) is read
+through `normalizeShare`, which also folds the owner's own Personal group named
+in `groups` into `personal` — the v1 picker offered both, and they meant the
+same thing. For a person: owner, or `everyone`, or a group they belong to (Main
+and public groups count as commons); profiles never filter people. For an
+agent the rule is stricter on purpose: `everyone` reaches agents in Main,
 in a public group, or in the owner's own private group — **not other people's
 private groups**, which the vault's commons rule would let through. A secret
 can be read by anything that can see it; an account is a standing ability to
@@ -1740,8 +1749,8 @@ connected for included. The server passes `agentsUnwalled` (`DEPLOYMENT_MODE
 !== "multi-tenant"`) at every call site and an agent viewer then sees every
 account the instance holds — they already share the server's OS user, which is
 the soft layer below. Person visibility is unchanged, and a peer box still
-never sees. The share scope there governs people; on a multi-tenant instance,
-people and agents alike.
+never sees. The share tiers there govern people; on a multi-tenant instance,
+people and agents alike. The profile filter applies on both.
 
 ### Trade-offs
 

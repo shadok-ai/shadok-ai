@@ -55,14 +55,44 @@ function groupName(groups, id) {
   return g ? g.name : String(id);
 }
 
+/**
+ * A share in the current shape (src/connected-accounts.ts `ShareScope`): any
+ * combination of the owner's Personal group, named groups and Everyone, then a
+ * profile filter. Reads the v1 single-choice form too, and folds a PERSONAL
+ * group named in `groups` into `personal` — the two meant the same thing.
+ */
+export function normalizeShare(share, groups = []) {
+  const s = share && typeof share === "object" ? share : {};
+  const list = (v) => (Array.isArray(v) ? [...new Set(v.map(String).filter(Boolean))] : []);
+  let out;
+  if (typeof s.scope === "string") {
+    out = {
+      personal: s.scope === "private",
+      groups: s.scope === "groups" ? list(s.groups) : [],
+      everyone: s.scope === "instance",
+      profiles: [],
+    };
+  } else {
+    out = { personal: s.personal === true, groups: list(s.groups), everyone: s.everyone === true, profiles: list(s.profiles) };
+  }
+  const personalIds = new Set((Array.isArray(groups) ? groups : []).filter((g) => g && g.nature === "private").map((g) => String(g.id)));
+  if (out.groups.some((id) => personalIds.has(id))) {
+    out.personal = true;
+    out.groups = out.groups.filter((id) => !personalIds.has(id));
+  }
+  return out;
+}
+
 /** Who may use the account, in words: the confirm copy's `<scope>`. */
 export function scopeText(share, groups) {
-  const s = share && typeof share === "object" ? share : { scope: "private" };
-  if (s.scope === "instance") return "every group";
-  if (s.scope === "groups" && Array.isArray(s.groups) && s.groups.length) {
-    return s.groups.map((id) => groupName(groups, id)).join(", ");
-  }
-  return "your private group";
+  const s = normalizeShare(share, groups);
+  const parts = [];
+  if (s.personal) parts.push("your Personal group");
+  for (const id of s.groups) parts.push(groupName(groups, id));
+  if (s.everyone) parts.push("every shared group");
+  if (!parts.length) return "no group";
+  const where = parts.join(", ");
+  return s.profiles.length ? `${where} (profile ${s.profiles.join(", ")} only)` : where;
 }
 
 /** The sentence a person confirms before letting an account post unasked. */
@@ -72,41 +102,57 @@ export function autonomousConfirmText(account, groups) {
 }
 
 /**
- * The share picker: Private, each group the person can share into, Everyone.
- * `groups` is what GET /groups returned (already filtered to the caller's
- * groups and the public ones); Main is left out — sharing with the commons is
- * what "Everyone" says. A current multi-group share keeps its own option so the
- * picker never silently rewrites it.
+ * The "Share with" checkboxes: Personal, each group the person can share into,
+ * Everyone — any combination. `groups` is what GET /groups returned; Main is
+ * left out (Everyone covers it) and so are Personal groups (the Personal box
+ * is the owner's own). A stored group the list no longer carries keeps its box,
+ * so the picker never silently drops it.
  */
-export function shareOptions(groups, share) {
-  const list = (Array.isArray(groups) ? groups : []).filter((g) => g && g.id != null && String(g.id) !== "main");
-  const out = [{ value: "private", label: "Private" }];
-  for (const g of list) out.push({ value: "group:" + g.id, label: g.nature === "private" ? "Personal" : g.name });
-  out.push({ value: "instance", label: "Everyone" });
-  const s = share || {};
-  if (s.scope === "groups" && Array.isArray(s.groups) && s.groups.length > 1) {
-    out.splice(out.length - 1, 0, { value: "groups:" + s.groups.join(","), label: s.groups.map((id) => groupName(groups, id)).join(", ") });
+export function shareChoices(groups, share) {
+  const s = normalizeShare(share, groups);
+  const list = (Array.isArray(groups) ? groups : []).filter((g) => g && g.id != null && String(g.id) !== "main" && g.nature !== "private");
+  const out = [{ key: "personal", label: "Personal", checked: s.personal }];
+  const seen = new Set();
+  for (const g of list) {
+    seen.add(String(g.id));
+    out.push({ key: "group:" + g.id, label: g.name, checked: s.groups.includes(String(g.id)) });
   }
+  for (const id of s.groups) if (!seen.has(id)) out.push({ key: "group:" + id, label: groupName(groups, id), checked: true });
+  out.push({ key: "everyone", label: "Everyone", checked: s.everyone });
   return out;
 }
 
-/** The picker value that matches a stored share. */
-export function shareValue(share) {
-  const s = share || {};
-  if (s.scope === "instance") return "instance";
-  if (s.scope === "groups" && Array.isArray(s.groups) && s.groups.length) {
-    return s.groups.length === 1 ? "group:" + s.groups[0] : "groups:" + s.groups.join(",");
+/** The share after ticking (`on`) or unticking one `shareChoices` key. */
+export function toggleShare(share, key, on, groups = []) {
+  const s = normalizeShare(share, groups);
+  const k = String(key ?? "");
+  if (k === "personal") return { ...s, personal: !!on };
+  if (k === "everyone") return { ...s, everyone: !!on };
+  if (k.startsWith("group:")) {
+    const id = k.slice(6);
+    const rest = s.groups.filter((g) => g !== id);
+    return { ...s, groups: on ? [...rest, id] : rest };
   }
-  return "private";
+  return s;
 }
 
-/** A picker value back to the `share` body PUT /connected-accounts/:id takes. */
-export function shareFromValue(value) {
-  const v = String(value ?? "");
-  if (v === "instance") return { scope: "instance" };
-  if (v.startsWith("group:")) return { scope: "groups", groups: [v.slice(6)] };
-  if (v.startsWith("groups:")) return { scope: "groups", groups: v.slice(7).split(",").filter(Boolean) };
-  return { scope: "private" };
+/**
+ * The profile filter's checkboxes: every profile one can pick (managed roles
+ * left out by the caller), plus any the share names that is gone. None ticked
+ * = any profile.
+ */
+export function profileChoices(names, share) {
+  const s = normalizeShare(share);
+  const all = [...new Set([...(Array.isArray(names) ? names.map(String) : []), ...s.profiles])].sort();
+  return all.map((name) => ({ name, checked: s.profiles.includes(name) }));
+}
+
+/** The share after ticking or unticking one profile. */
+export function toggleProfile(share, name, on, groups = []) {
+  const s = normalizeShare(share, groups);
+  const n = String(name ?? "");
+  const rest = s.profiles.filter((p) => p !== n);
+  return { ...s, profiles: on ? [...rest, n] : rest };
 }
 
 /** One row of the Connected accounts list (`publicView`, src/connected-accounts.ts). */

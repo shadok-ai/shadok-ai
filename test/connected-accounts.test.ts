@@ -7,6 +7,8 @@ import {
   accountEditVerdict,
   accountVisible,
   commonsGroupIds,
+  normalizeShare,
+  profileAllowed,
   loadAccountsStore,
   publicView,
   resolveAccountId,
@@ -65,11 +67,12 @@ const matrix: Record<string, Record<string, boolean>> = {
     agentOwnerPrivate: true, agentG1: false, agentMain: true, agentCommons: true, agentOtherPrivate: false, agentG2: false,
   },
 };
+const sh = (o: Partial<ShareScope>): ShareScope => ({ personal: false, groups: [], everyone: false, profiles: [], ...o });
 const shares: Record<string, ShareScope> = {
-  private: { scope: "private" },
-  g1: { scope: "groups", groups: ["g1"] },
-  main: { scope: "groups", groups: ["main"] },
-  instance: { scope: "instance" },
+  private: sh({ personal: true }),
+  g1: sh({ groups: ["g1"] }),
+  main: sh({ groups: ["main"] }),
+  instance: sh({ everyone: true }),
 };
 
 for (const [sk, row] of Object.entries(matrix)) {
@@ -92,32 +95,85 @@ test("commonsGroupIds is Main plus public groups", () => {
 });
 
 test("edit verdicts", () => {
-  const a = acct({ scope: "private" });
+  const a = acct(sh({ personal: true }));
   assert.equal(accountEditVerdict(a, viewers.owner, "reconnect").ok, true);
   assert.equal(accountEditVerdict(a, viewers.owner, "policy", { policy: "autonomous" }).ok, true);
   assert.equal(accountEditVerdict(a, viewers.admin, "disconnect").ok, true);
   const p = accountEditVerdict(a, viewers.admin, "policy", { policy: "autonomous" });
   assert.equal(p.ok, false);
-  assert.equal(accountEditVerdict(a, viewers.admin, "share", { share: { scope: "instance" } }).ok, false);
+  assert.equal(accountEditVerdict(a, viewers.admin, "share", { share: sh({ everyone: true }) }).ok, false);
   assert.equal(accountEditVerdict(a, viewers.memberG1, "disconnect").ok, false);
   assert.equal(accountEditVerdict(a, viewers.agentOwnerPrivate, "disconnect").ok, false);
   assert.equal(accountEditVerdict(a, null, "disconnect").ok, false);
-  const ok = (ids: string[]) => accountEditVerdict(a, viewers.owner, "share", { share: { scope: "groups", groups: ids } }, groups);
-  assert.equal(ok(["g1"]).ok, true);
-  assert.equal(ok(["p-ann", "main"]).ok, true);
-  assert.equal(ok(["g2"]).ok, false);
-  assert.equal(ok([]).ok, false);
-  assert.equal(ok(["nope"]).ok, false);
+  const ok = (o: Partial<ShareScope>, profiles: string[] | null = null) =>
+    accountEditVerdict(a, viewers.owner, "share", { share: sh(o) }, groups, profiles);
+  assert.equal(ok({ groups: ["g1"] }).ok, true);
+  assert.equal(ok({ personal: true, groups: ["g1", "main"], everyone: true }).ok, true, "tiers combine");
+  assert.equal(ok({}).ok, true, "nothing ticked: no agent may use it, the owner still sees it");
+  assert.equal(ok({ groups: ["g2"] }).ok, false);
+  assert.equal(ok({ groups: ["nope"] }).ok, false);
+  assert.equal(ok({ groups: ["p-cat"] }).ok, false, "someone else's Personal group");
+  assert.equal(ok({ profiles: ["Writer"] }, ["Writer", "Dev"]).ok, true);
+  assert.equal(ok({ profiles: ["Ghost"] }, ["Writer"]).ok, false, "an unknown profile");
+});
+
+test("normalizeShare: v1 shapes keep their reach, the owner's Personal folds in", () => {
+  assert.deepEqual(normalizeShare({ scope: "private" }), sh({ personal: true }));
+  assert.deepEqual(normalizeShare({ scope: "instance" }), sh({ everyone: true }));
+  assert.deepEqual(normalizeShare({ scope: "groups", groups: ["g1", "g1"] }), sh({ groups: ["g1"] }));
+  assert.deepEqual(normalizeShare({ scope: "groups", groups: ["p-ann", "g1"] }, "p-ann"), sh({ personal: true, groups: ["g1"] }));
+  assert.deepEqual(normalizeShare({ personal: true, everyone: true, profiles: ["W", "W"] }), sh({ personal: true, everyone: true, profiles: ["W"] }));
+  assert.equal(normalizeShare({ scope: "nope" }), null);
+  assert.equal(normalizeShare({ groups: "g1" }), null);
+  assert.equal(normalizeShare(null), null);
+});
+
+test("a v1 share in the store loads as the current shape", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ca-v1-"));
+  const file = path.join(dir, "a.json");
+  fs.writeFileSync(file, JSON.stringify([{ ...acct(sh({})), share: { scope: "instance" } }]));
+  assert.deepEqual(loadAccountsStore(file)[0].share, sh({ everyone: true }));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("tiers are a union: Personal + g1 reaches both, and nothing else", () => {
+  const a = acct(sh({ personal: true, groups: ["g1"] }));
+  assert.equal(accountVisible(a, viewers.agentOwnerPrivate, groups, noPeer), true);
+  assert.equal(accountVisible(a, viewers.agentG1, groups, noPeer), true);
+  assert.equal(accountVisible(a, viewers.agentMain, groups, noPeer), false);
+  assert.equal(accountVisible(a, viewers.agentG2, groups, noPeer), false);
+  // Everyone + g1: the commons AND a restricted group Everyone alone never reaches.
+  const b = acct(sh({ everyone: true, groups: ["g1"] }));
+  assert.equal(accountVisible(b, viewers.agentG1, groups, noPeer), true);
+  assert.equal(accountVisible(b, viewers.agentMain, groups, noPeer), true);
+  assert.equal(accountVisible(b, viewers.agentOtherPrivate, groups, noPeer), false);
+  // Nothing ticked: no agent, the owner still manages it.
+  const none = acct(sh({}));
+  for (const k of Object.keys(viewers).filter((k) => k.startsWith("agent"))) assert.equal(accountVisible(none, viewers[k], groups, noPeer), false, k);
+  assert.equal(accountVisible(none, viewers.owner, groups, noPeer), true);
+});
+
+test("profile filter: narrows agents (even unwalled), never people", () => {
+  const a = acct(sh({ everyone: true, profiles: ["Writer"] }));
+  assert.equal(accountVisible(a, viewers.agentMain, groups, { ...noPeer, agentProfile: "Writer" }), true);
+  assert.equal(accountVisible(a, viewers.agentMain, groups, { ...noPeer, agentProfile: "Dev" }), false);
+  assert.equal(accountVisible(a, viewers.agentMain, groups, { ...noPeer, agentProfile: null }), false, "no profile is not every profile");
+  assert.equal(accountVisible(a, viewers.agentMain, groups, { ...noPeer, agentsUnwalled: true, agentProfile: "Dev" }), false);
+  assert.equal(accountVisible(a, viewers.agentMain, groups, { ...noPeer, agentsUnwalled: true, agentProfile: "Writer" }), true);
+  assert.equal(accountVisible(a, viewers.nonMember, groups, noPeer), true, "a person is not filtered by profile");
+  // The filter never widens: the right profile in the wrong group stays out.
+  assert.equal(accountVisible(a, viewers.agentG2, groups, { ...noPeer, agentProfile: "Writer" }), false);
+  assert.equal(profileAllowed(sh({}), null), true);
 });
 
 test("upsert keeps id/owner/share/policy, supersedes token", () => {
-  const first = upsertAccount([], { ...acct({ scope: "private" }), id: undefined } as never, 5);
+  const first = upsertAccount([], { ...acct(sh({ personal: true })), id: undefined } as never, 5);
   assert.match(first.account.id, /^[0-9a-f]{8}$/);
-  const shared = { ...first.account, share: { scope: "instance" } as ShareScope, policy: "autonomous" as const };
-  const again = upsertAccount([shared], { ...acct({ scope: "private" }), token: "new", label: "Ann B", connectedVia: "bob", expiresAt: 99 }, 7);
+  const shared = { ...first.account, share: sh({ everyone: true }), policy: "autonomous" as const };
+  const again = upsertAccount([shared], { ...acct(sh({ personal: true })), token: "new", label: "Ann B", connectedVia: "bob", expiresAt: 99 }, 7);
   assert.equal(again.list.length, 1);
   assert.equal(again.account.id, first.account.id);
-  assert.deepEqual(again.account.share, { scope: "instance" });
+  assert.deepEqual(again.account.share, sh({ everyone: true }));
   assert.equal(again.account.policy, "autonomous");
   assert.equal(again.account.owner, "ann");
   assert.equal(again.account.token, "new");
@@ -127,7 +183,7 @@ test("upsert keeps id/owner/share/policy, supersedes token", () => {
 });
 
 test("resolveAccountId", () => {
-  const l = [{ ...acct({ scope: "private" }), id: "ab12cd34" }, { ...acct({ scope: "private" }), id: "ab99cd34" }, { ...acct({ scope: "private" }), id: "ab12" }];
+  const l = [{ ...acct(sh({ personal: true })), id: "ab12cd34" }, { ...acct(sh({ personal: true })), id: "ab99cd34" }, { ...acct(sh({ personal: true })), id: "ab12" }];
   assert.equal((resolveAccountId(l, "ab12") as ConnectedAccount).id, "ab12");
   assert.equal(resolveAccountId(l, "ab9") === l[1], true);
   assert.equal(resolveAccountId(l, "ab"), "ambiguous");
@@ -137,7 +193,7 @@ test("resolveAccountId", () => {
 });
 
 test("publicView drops secrets", () => {
-  const v = publicView({ ...acct({ scope: "private" }), refreshToken: "r" });
+  const v = publicView({ ...acct(sh({ personal: true })), refreshToken: "r" });
   assert.ok(!("token" in v));
   assert.ok(!("refreshToken" in v));
   assert.equal(v.label, "Ann");
@@ -147,7 +203,7 @@ test("store: missing/garbage -> [], save is atomic 600", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ca-"));
   const file = path.join(dir, "sub", "x.json");
   assert.deepEqual(loadAccountsStore(file), []);
-  saveAccountsStore(file, [acct({ scope: "private" })]);
+  saveAccountsStore(file, [acct(sh({ personal: true }))]);
   assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
   assert.equal(loadAccountsStore(file).length, 1);
@@ -189,5 +245,5 @@ test("agentsUnwalled false is the walled matrix (multi-tenant unchanged)", () =>
       assert.equal(accountVisible(acct(shares[sk]), viewers[vk], groups, { peerBox: null, agentsUnwalled: false }), expected, `${sk} x ${vk}`);
     }
   }
-  assert.equal(accountVisible(acct({ scope: "private" }), agent(null), [], { peerBox: null, agentsUnwalled: false }), false);
+  assert.equal(accountVisible(acct(sh({ personal: true })), agent(null), [], { peerBox: null, agentsUnwalled: false }), false);
 });

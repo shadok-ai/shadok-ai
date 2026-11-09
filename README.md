@@ -447,8 +447,9 @@ Enter to skip; you can add it later from the web UI).
   goes out until a person clicks *Publish* (or *Discard*). The image published
   is the one on the card: the server keeps its own copy from the moment the
   agent drafts, so changing the file afterwards changes nothing. Each account has an
-  **owner**, a **share** scope (`private` by default, chosen groups, or the
-  whole instance) and a **policy** (`approve`, the default, or `autonomous`,
+  **owner**, a **share** setting — any combination of the owner's *Personal*
+  group (the default), chosen groups and *Everyone* (Main and the public groups),
+  optionally narrowed to agents running given **profiles** — and a **policy** (`approve`, the default, or `autonomous`,
   which publishes at once — only the account's **owner** can switch it to
   `autonomous`). Every attempt — published, refused, expired,
   failed — is written to a **publication log** (who triggered it, who approved
@@ -467,6 +468,7 @@ Enter to skip; you can add it later from the web UI).
   mono-tenant instance can use every connected account**: there is no wall
   between agents to scope by, so the share setting decides which *people* see
   an account (and, on a multi-tenant instance, which groups' agents may use it).
+  The profile filter applies on both kinds of instance.
   Multi-tenant instances, where agents run as other OS users, make it a real
   boundary.
   **Operator setup** (once, for whoever runs the broker): a small stateless

@@ -1093,6 +1093,9 @@
   .ca-list .ca-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
   .ca-list .ca-ctl select { font-size: 16px; }
   .ca-list .ca-ctl label { display: inline-flex; align-items: center; gap: 4px; }
+  .ca-list .ca-share { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; border: 0; padding: 0; margin: 0; font-size: 13px; }
+  .ca-list .ca-share legend { float: left; margin-right: 8px; color: var(--text-dim); }
+  .ca-list .ca-share label { display: inline-flex; align-items: center; gap: 4px; }
   .ca-list .ca-log { list-style: none; margin: 4px 0 0; padding: 6px 8px; font-size: 12px; color: var(--text-dim);
     background: var(--bg); border-radius: 6px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
   /* Beats `.ca-list li` (the account row's card), which would box every entry. */
@@ -3962,14 +3965,15 @@
   window.looksLikeEmoji = looksLikeEmoji;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
-  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareOptions, shareValue, shareFromValue, accountBanners, logEntryLine } from "/social-card.js?v=__ASSET_V__";
+  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine } from "/social-card.js?v=__ASSET_V__";
   window.draftCardModel = draftCardModel;
   window.accountRowModel = accountRowModel;
   window.hasPendingDraft = hasPendingDraft;
   window.autonomousConfirmText = autonomousConfirmText;
-  window.shareOptions = shareOptions;
-  window.shareValue = shareValue;
-  window.shareFromValue = shareFromValue;
+  window.shareChoices = shareChoices;
+  window.toggleShare = toggleShare;
+  window.profileChoices = profileChoices;
+  window.toggleProfile = toggleProfile;
   window.accountBanners = accountBanners;
   window.logEntryLine = logEntryLine;
   import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
@@ -4173,21 +4177,12 @@
     // The panel opens on a click, long after the module lands; neutral rows.
     accountRowModel: (a) => ({ label: (a && a.label) || "", via: "", expiryText: "", tone: "ok", shareText: "", policyText: "" }),
     autonomousConfirmText: (a) => `Agents will be able to post as ${(a && a.label) || "this account"} without asking anyone.`,
-    shareOptions: () => [{ value: "private", label: "Private" }, { value: "instance", label: "Everyone" }],
-    // The value conversions mirror the module: a wrong one would rewrite a share.
-    shareValue: (s) => {
-      if (s && s.scope === "instance") return "instance";
-      if (s && s.scope === "groups" && Array.isArray(s.groups) && s.groups.length)
-        return s.groups.length === 1 ? "group:" + s.groups[0] : "groups:" + s.groups.join(",");
-      return "private";
-    },
-    shareFromValue: (value) => {
-      const v = String(value ?? "");
-      if (v === "instance") return { scope: "instance" };
-      if (v.startsWith("group:")) return { scope: "groups", groups: [v.slice(6)] };
-      if (v.startsWith("groups:")) return { scope: "groups", groups: v.slice(7).split(",").filter(Boolean) };
-      return { scope: "private" };
-    },
+    // Until the module lands the row shows no share boxes at all: a stub that
+    // guessed the share could PUT a wrong one on the first click.
+    shareChoices: () => [],
+    toggleShare: (s) => s,
+    profileChoices: () => [],
+    toggleProfile: (s) => s,
     // No banner until the module lands: the check re-runs on bridge-ready.
     accountBanners: () => [],
     logEntryLine: (e) => String((e && e.outcome) || ""),
@@ -11118,20 +11113,45 @@
     meta.append(m.via + " · ", exp, " · " + m.policyText);
     const ctl = document.createElement("div");
     ctl.className = "ca-ctl";
-    const shareLab = document.createElement("label");
-    shareLab.append("Share with");
-    const sel = document.createElement("select");
-    sel.setAttribute("aria-label", "Who may use " + m.label);
-    for (const o of window.shareOptions(vaultGroups, a.share)) {
-      const el = document.createElement("option");
-      el.value = o.value; el.textContent = o.label;
-      sel.appendChild(el);
+    // Share with: any combination of Personal / groups / Everyone, then an
+    // optional profile filter. Each tick PUTs the whole share; a refusal
+    // re-renders from the account as it was.
+    const putShare = async (next, box) => {
+      box.disabled = true;
+      const ok = await updateConnectedAccount(a, { share: next });
+      box.disabled = false;
+      if (!ok) box.checked = !box.checked;
+    };
+    const shareBox = document.createElement("fieldset");
+    shareBox.className = "ca-share";
+    const shareLegend = document.createElement("legend");
+    shareLegend.textContent = "Share with";
+    shareBox.appendChild(shareLegend);
+    for (const c of window.shareChoices(vaultGroups, a.share)) {
+      const lab = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = c.checked;
+      box.addEventListener("change", () => putShare(window.toggleShare(a.share, c.key, box.checked, vaultGroups), box));
+      lab.append(box, c.label);
+      shareBox.appendChild(lab);
     }
-    sel.value = window.shareValue(a.share);
-    sel.addEventListener("change", async () => {
-      if (!(await updateConnectedAccount(a, { share: window.shareFromValue(sel.value) }))) sel.value = window.shareValue(a.share);
-    });
-    shareLab.appendChild(sel);
+    const profBox = document.createElement("fieldset");
+    profBox.className = "ca-share";
+    const profLegend = document.createElement("legend");
+    profLegend.textContent = "Only agents on profile (none ticked = any)";
+    profBox.appendChild(profLegend);
+    const pickable = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n)));
+    for (const c of window.profileChoices(pickable, a.share)) {
+      const lab = document.createElement("label");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = c.checked;
+      box.addEventListener("change", () => putShare(window.toggleProfile(a.share, c.name, box.checked, vaultGroups), box));
+      lab.append(box, c.name);
+      profBox.appendChild(lab);
+    }
+    profBox.hidden = !profBox.querySelector("input");
     const polLab = document.createElement("label");
     const pol = document.createElement("input");
     pol.type = "checkbox";
@@ -11142,7 +11162,7 @@
       if (!(await updateConnectedAccount(a, { policy: autonomous ? "autonomous" : "approve" }))) pol.checked = !autonomous;
     });
     polLab.append(pol, "Post without approval");
-    ctl.append(shareLab, polLab);
+    ctl.append(polLab);
     if (caState.available) {
       const re = document.createElement("button");
       re.type = "button";
@@ -11193,7 +11213,7 @@
       logList.hidden = false;
     });
     ctl.appendChild(logBtn);
-    li.append(label, meta, ctl, logList);
+    li.append(label, meta, shareBox, profBox, ctl, logList);
     return li;
   }
 

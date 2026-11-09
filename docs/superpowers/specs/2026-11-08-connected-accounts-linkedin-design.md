@@ -161,7 +161,9 @@ interface ConnectedAccount {
   externalId: string;         // urn:li:person:… / urn:li:organization:…
   owner: string;              // shadok account name
   connectedVia: string;       // whose LinkedIn login produced the token
-  share: { scope: "private" } | { scope: "groups"; groups: string[] } | { scope: "instance" };
+  // v1.0.1: a union of tiers + an optional profile filter (was a single
+  // choice: { scope: "private" | "groups" | "instance" }, still read).
+  share: { personal: boolean; groups: string[]; everyone: boolean; profiles: string[] };
   policy: "approve" | "autonomous";
   token: string;              // never leaves the server
   expiresAt: number;
@@ -170,7 +172,7 @@ interface ConnectedAccount {
 }
 ```
 
-Defaults: `share: private`, `policy: approve`. Only the **owner** (a browser
+Defaults: `share: personal`, `policy: approve`. Only the **owner** (a browser
 person) changes share, policy, reconnects or disconnects; an admin can
 disconnect any account (an admin must be able to cut off a departed employee's
 Page access) but **cannot read** the token and cannot switch the policy to

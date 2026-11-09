@@ -21,7 +21,60 @@ import {
  * docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §3.
  */
 
-export type ShareScope = { scope: "private" } | { scope: "groups"; groups: string[] } | { scope: "instance" };
+/**
+ * Who may use an account: a UNION of tiers, any combination of them, then
+ * narrowed by profile. `personal` = the owner's own Personal group; `groups` =
+ * named groups; `everyone` = Main and every public group (never someone else's
+ * Personal or a restricted group the owner is not in). `profiles`, when not
+ * empty, keeps only agents running one of those profiles — on top of the
+ * tiers, never instead of them: the group is the wall, the profile a filter.
+ */
+export interface ShareScope {
+  personal: boolean;
+  groups: string[];
+  everyone: boolean;
+  profiles: string[];
+}
+
+/** What a new account starts with: its owner's Personal group, any profile. */
+export const DEFAULT_SHARE: ShareScope = Object.freeze({ personal: true, groups: [], everyone: false, profiles: [] }) as ShareScope;
+
+const strList = (v: unknown): string[] =>
+  Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim()))] : [];
+
+/**
+ * Any stored or posted share → the current shape. Reads the v1 single-choice
+ * form (`{scope:"private"|"groups"|"instance"}`) too, so an account saved
+ * before the multi-choice picker keeps exactly its reach. The owner's own
+ * Personal group named in `groups` folds into `personal` (the two meant the
+ * same thing — the duplicate the v1 picker offered). Null for a shape that is
+ * neither.
+ */
+export function normalizeShare(raw: unknown, ownerPersonalId: string | null = null): ShareScope | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  let out: ShareScope;
+  if (typeof r.scope === "string") {
+    if (r.scope === "private") out = { ...DEFAULT_SHARE };
+    else if (r.scope === "instance") out = { personal: false, groups: [], everyone: true, profiles: [] };
+    else if (r.scope === "groups" && Array.isArray(r.groups)) out = { personal: false, groups: strList(r.groups), everyone: false, profiles: [] };
+    else return null;
+  } else {
+    if (r.groups !== undefined && !Array.isArray(r.groups)) return null;
+    if (r.profiles !== undefined && !Array.isArray(r.profiles)) return null;
+    out = { personal: r.personal === true, groups: strList(r.groups), everyone: r.everyone === true, profiles: strList(r.profiles) };
+  }
+  if (ownerPersonalId && out.groups.includes(ownerPersonalId)) {
+    out = { ...out, personal: true, groups: out.groups.filter((g) => g !== ownerPersonalId) };
+  }
+  return out;
+}
+
+/** Does the share's profile filter let an agent on `profile` through? Empty filter = any profile. */
+export function profileAllowed(share: ShareScope, profile: string | null | undefined): boolean {
+  const profiles = Array.isArray(share?.profiles) ? share.profiles : [];
+  return profiles.length === 0 || (!!profile && profiles.includes(profile));
+}
 
 export interface ConnectedAccount {
   id: string;
@@ -63,7 +116,11 @@ export function accountsFileFor(cwd: string): string {
 export function loadAccountsStore(file: string): ConnectedAccount[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    return Array.isArray(parsed) ? (parsed as ConnectedAccount[]) : [];
+    // A v1 share is read as the current shape (`normalizeShare`), so every
+    // rule below only ever sees one form.
+    return Array.isArray(parsed)
+      ? (parsed as ConnectedAccount[]).map((a) => ({ ...a, share: normalizeShare(a?.share) ?? { ...DEFAULT_SHARE } }))
+      : [];
   } catch {
     return [];
   }
@@ -118,7 +175,7 @@ export function upsertAccount(
   const account: ConnectedAccount = {
     ...incoming,
     id: newAccountId(list),
-    share: incoming.share ?? { scope: "private" },
+    share: incoming.share ?? { ...DEFAULT_SHARE },
     policy: incoming.policy ?? "approve",
     createdAt: now,
     updatedAt: now,
@@ -160,6 +217,12 @@ export interface VisibilityOpts {
    * governs which PEOPLE see it; for agents it is the soft layer the spec names.
    */
   agentsUnwalled?: boolean;
+  /**
+   * The calling agent's profile (`AgentPrincipal.profile`), for the share's
+   * profile filter. Applied even when `agentsUnwalled`: it is a choice the
+   * owner made, not a wall the OS has to build.
+   */
+  agentProfile?: string | null;
 }
 
 /** May `viewer` use this account? A peer-driven agent never can (v1). */
@@ -170,34 +233,35 @@ export function accountVisible(
   opts: VisibilityOpts,
 ): boolean {
   if (!viewer || opts.peerBox) return false;
+  // Normalised here too, not only at load: an account built in memory (a
+  // test, a future caller) must not slip past the rules in the v1 shape.
+  const share = normalizeShare(a.share) ?? DEFAULT_SHARE;
+  if (isAgentViewer(viewer) && !profileAllowed(share, opts.agentProfile)) return false;
   if (opts.agentsUnwalled && isAgentViewer(viewer)) return true;
   const commons = commonsGroupIds(groups);
   const ownerPrivate = privateGroupFor(a.owner, groups);
 
   if (!isAgentViewer(viewer)) {
     if (viewer.name === a.owner) return true;
-    if (a.share.scope === "instance") return true;
-    if (a.share.scope === "groups") {
-      return a.share.groups.some((id) => {
-        if (commons.has(id)) return true;
-        const g = groups.find((x) => x.id === id);
-        return !!g && memberOf(g, viewer.name);
-      });
-    }
-    return false;
+    if (share.everyone) return true;
+    return share.groups.some((id) => {
+      if (commons.has(id)) return true;
+      const g = groups.find((x) => x.id === id);
+      return !!g && memberOf(g, viewer.name);
+    });
   }
 
   const ag = viewer.agentGroup ?? null;
   const inOwnerPrivate = ag !== null && ownerPrivate !== null && ag === ownerPrivate.id;
-  if (a.share.scope === "private") return inOwnerPrivate;
-  if (a.share.scope === "groups") {
-    if (ag === null) return a.share.groups.includes(MAIN_GROUP_ID);
-    return a.share.groups.some((id) => {
-      const g = groups.find((x) => x.id === id);
-      return g ? viewerInGroup(g, viewer) : id === ag;
-    });
-  }
-  return ag === null || commons.has(ag) || inOwnerPrivate;
+  if (share.personal && inOwnerPrivate) return true;
+  // Everyone: the commons, plus the owner's own Personal group — but never
+  // another person's Personal group or a restricted one.
+  if (share.everyone && (ag === null || commons.has(ag) || inOwnerPrivate)) return true;
+  return share.groups.some((id) => {
+    if (ag === null) return id === MAIN_GROUP_ID;
+    const g = groups.find((x) => x.id === id);
+    return g ? viewerInGroup(g, viewer) : id === ag;
+  });
 }
 
 // ---- edit rules ----------------------------------------------------------
@@ -210,6 +274,7 @@ export function accountEditVerdict(
   change: AccountChange,
   next?: { share?: ShareScope; policy?: "approve" | "autonomous" },
   groups: readonly Group[] = [],
+  profileNames: readonly string[] | null = null,
 ): { ok: true } | { ok: false; reason: string } {
   const no = (reason: string) => ({ ok: false as const, reason });
   if (!viewer) return no("Sign in to change a connected account.");
@@ -225,13 +290,15 @@ export function accountEditVerdict(
   if (change === "policy" && next?.policy === "autonomous" && !isOwner) {
     return no("Only the owner can let an account publish without approval.");
   }
-  if (change === "share" && next?.share?.scope === "groups") {
-    const ids = next.share.groups;
-    if (!Array.isArray(ids) || ids.length === 0) return no("Pick at least one group to share with.");
-    for (const id of ids) {
+  if (change === "share" && next?.share) {
+    for (const id of next.share.groups) {
       const g = groups.find((x) => x.id === id);
       if (!g) return no(`Group "${id}" does not exist.`);
+      if (g.nature === "private") return no(`"${g.name}" is someone's Personal group; it cannot be shared into.`);
       if (!commonsGroupIds(groups).has(id) && !memberOf(g, a.owner)) return no(`You are not a member of "${g.name}", so you cannot share into it.`);
+    }
+    if (profileNames) {
+      for (const p of next.share.profiles) if (!profileNames.includes(p)) return no(`There is no profile named "${p}".`);
     }
   }
   return { ok: true };

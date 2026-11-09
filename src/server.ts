@@ -351,6 +351,7 @@ import {
   adoptTracking,
   shippedProfile,
   withManagedPrompt,
+  profileNames,
 } from "./profiles.js";
 import {
   BOOTSTRAP_ADMIN,
@@ -470,7 +471,7 @@ import {
   accountEditVerdict,
   publicView,
   type ConnectedAccount,
-  type ShareScope,
+  normalizeShare,
 } from "./connected-accounts.js";
 import { fetchMember, createPost, uploadImage, LinkedInError } from "./linkedin.js";
 import {
@@ -4275,27 +4276,22 @@ function connectedAccountFor(req: express.Request, res: express.Response) {
   return { list, account: hit };
 }
 
-function isShareScope(v: unknown): v is ShareScope {
-  const s = v as { scope?: unknown; groups?: unknown } | null;
-  if (!s || typeof s !== "object") return false;
-  if (s.scope === "private" || s.scope === "instance") return true;
-  return s.scope === "groups" && Array.isArray(s.groups) && s.groups.every((g) => typeof g === "string");
-}
-
 app.put("/connected-accounts/:id", (req, res) => {
   const found = connectedAccountFor(req, res);
   if (!found) return;
   const { share, policy } = req.body ?? {};
   if (share === undefined && policy === undefined) return res.status(400).json({ error: "share or policy required" });
-  if (share !== undefined && !isShareScope(share)) return res.status(400).json({ error: "invalid share" });
+  const groups = loadGroups();
+  // The owner's own Personal group named as a group IS `personal` (normalizeShare).
+  const nextShare = share === undefined ? undefined : normalizeShare(share, privateGroupFor(found.account.owner, groups)?.id ?? null);
+  if (share !== undefined && !nextShare) return res.status(400).json({ error: "invalid share" });
   if (policy !== undefined && policy !== "approve" && policy !== "autonomous") return res.status(400).json({ error: "invalid policy" });
   const viewer = viewerFor(currentAccount(req));
-  const groups = loadGroups();
   let next = found.account;
-  if (share !== undefined) {
-    const v = accountEditVerdict(found.account, viewer, "share", { share }, groups);
+  if (nextShare) {
+    const v = accountEditVerdict(found.account, viewer, "share", { share: nextShare }, groups, profileNames());
     if (!v.ok) return res.status(403).json({ error: v.reason });
-    next = { ...next, share: share.scope === "groups" ? { scope: "groups", groups: [...new Set<string>(share.groups)] } : { scope: share.scope } };
+    next = { ...next, share: nextShare };
   }
   if (policy !== undefined) {
     const v = accountEditVerdict(found.account, viewer, "policy", { policy }, groups);
@@ -4499,7 +4495,7 @@ app.get("/social/accounts", (req, res) => {
   const peerBox = restrictedBoxOf(req);
   const now = Date.now();
   const accounts = loadAccountsStore(accountsFile())
-    .filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled: AGENTS_UNWALLED }))
+    .filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled: AGENTS_UNWALLED, agentProfile: agent.profile }))
     .map((a) => ({
       id: a.id,
       label: a.label,
@@ -4526,6 +4522,7 @@ app.post("/social/posts", async (req, res) => {
     restrictedBoxOf(req),
     now,
     AGENTS_UNWALLED,
+    agent.profile,
   );
   const channel = channelLabel(loadChannels(), agent.sessionId);
   const origin = socialOrigin(agent.sessionId);
@@ -4606,7 +4603,13 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   // A draft is its agent's content: the same session boundary as /download.
   const sessionVisible = mayActFor(req, hit.sessionId);
 
-  const v = (action === "publish" ? publishVerdict : discardVerdict)(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED);
+  // The drafting agent's profile AS OF NOW: a profile filter added since the
+  // draft refuses it, the same way an unshare does.
+  const agentProfile = sessions.get(hit.sessionId)?.profile ?? loadChannels().find((c) => c.sessionId === hit.sessionId)?.profile ?? null;
+  const v =
+    action === "publish"
+      ? publishVerdict(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED, agentProfile)
+      : discardVerdict(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED);
   if (!v.ok) {
     // A pending draft the account no longer allows (unshared, disconnected,
     // expired) is a refused publication, and one past its TTL an expired one;

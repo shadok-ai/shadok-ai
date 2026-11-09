@@ -7,6 +7,7 @@ import {
   DRAFT_TTL_MS,
   DISCONNECTED_SENTENCE,
   BEING_PUBLISHED_SENTENCE,
+  PROFILE_NOT_ALLOWED,
   NOT_SHARED_WITH_APPROVER,
   NOT_SHARED_WITH_AGENT,
   PUBLISH_FAILED_SENTENCE,
@@ -398,4 +399,16 @@ test("postRequestVerdict: a refusal after the account resolved carries it (for t
   assert.equal(!none.ok && none.account, undefined);
   const hidden = postRequestVerdict([acct({ owner: "cat" }, { scope: "private" })], "abcd", "Hi", agent, groups, null, NOW);
   assert.equal(!hidden.ok && hidden.account, undefined);
+});
+
+test("profile filter: the drafting agent's profile is checked at draft time AND at click time", () => {
+  const writersOnly = acct({}, { personal: false, groups: [], everyone: true, profiles: ["Writer"] });
+  // Click: the agent's profile as it is NOW.
+  assert.deepEqual(publishVerdict(draft(), writersOnly, paul, groups, NOW, true, false, "Writer"), { ok: true });
+  const r = publishVerdict(draft(), writersOnly, paul, groups, NOW, true, false, "Dev");
+  assert.deepEqual(r, { ok: false, status: 403, reason: PROFILE_NOT_ALLOWED });
+  assert.equal(refusalLogOutcome(draft(), PROFILE_NOT_ALLOWED, NOW), "refused");
+  // Draft: an agent on another profile does not see the account at all.
+  assert.equal(postRequestVerdict([writersOnly], "abcd", "Hi", agentViewer, groups, null, NOW, false, "Dev").ok, false);
+  assert.equal(postRequestVerdict([writersOnly], "abcd", "Hi", agentViewer, groups, null, NOW, false, "Writer").ok, true);
 });

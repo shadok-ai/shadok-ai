@@ -5,7 +5,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { instanceKey } from "./paths.js";
 import { isBrowserPerson } from "./agent-principal.js";
 import { isAgentViewer, type Group, type Viewer } from "./groups.js";
-import { accountVisible, resolveAccountId, type ConnectedAccount } from "./connected-accounts.js";
+import { accountVisible, profileAllowed, resolveAccountId, type ConnectedAccount } from "./connected-accounts.js";
 import { LinkedInError, PostOutcomeUnknownError, postTextVerdict } from "./linkedin.js";
 
 /**
@@ -58,6 +58,7 @@ export const DISCONNECTED_SENTENCE = "The LinkedIn account this draft was for ha
 export const BEING_PUBLISHED_SENTENCE = "This draft is being published.";
 export const DRAFT_EXPIRED_SENTENCE = "This draft expired after 7 days without approval — it was not published.";
 export const NOT_SHARED_WITH_APPROVER = "That LinkedIn account is not shared with you.";
+export const PROFILE_NOT_ALLOWED = "That LinkedIn account is no longer open to this agent's profile.";
 export const NOT_SHARED_WITH_AGENT = "That account is not shared with this agent.";
 export const AGENT_CANNOT_APPROVE = "Only a person can approve a LinkedIn post, from the cockpit.";
 export const SESSION_NOT_VISIBLE = "This draft belongs to an agent you cannot see.";
@@ -100,9 +101,10 @@ export function postRequestVerdict(
   peerBox: string | null,
   now: number,
   agentsUnwalled = false,
+  agentProfile: string | null = null,
 ): { ok: true; account: ConnectedAccount } | { ok: false; status: number; reason: string; account?: ConnectedAccount } {
   const arg = typeof accountArg === "string" ? accountArg.trim() : "";
-  const visible = accounts.filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled }));
+  const visible = accounts.filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled, agentProfile }));
   const hit = resolveAccountId(accounts, arg);
   // An account the agent cannot see answers like one that does not exist — but
   // only when it would not have matched otherwise; a hit it may not use says so.
@@ -111,7 +113,7 @@ export function postRequestVerdict(
     const vis = resolveAccountId(visible, arg);
     if (vis === "none") return { ok: false, status: 404, reason: `No LinkedIn account matches '${arg}'. Run \`social.mjs accounts\` to list yours.` };
     if (vis === "ambiguous") return { ok: false, status: 409, reason: `Several LinkedIn accounts match '${arg}' — give more characters.` };
-    return postRequestVerdict(visible, vis.id, text, viewer, groups, peerBox, now, agentsUnwalled);
+    return postRequestVerdict(visible, vis.id, text, viewer, groups, peerBox, now, agentsUnwalled, agentProfile);
   }
   if (!visible.includes(hit)) return { ok: false, status: 403, reason: NOT_SHARED_WITH_AGENT };
   // From here on the agent may use the account, so a refusal is a refused
@@ -195,12 +197,16 @@ export function publishVerdict(
   now: number,
   sessionVisible: boolean,
   agentsUnwalled = false,
+  agentProfile: string | null = null,
 ): Verdict {
   if (!viewer || isAgentViewer(viewer)) return refuse(403, AGENT_CANNOT_APPROVE);
   if (!sessionVisible) return refuse(403, SESSION_NOT_VISIBLE);
   const np = notPending(draft, now);
   if (np) return np;
   if (!account) return refuse(410, DISCONNECTED_SENTENCE);
+  // The drafting agent's profile, read at click time: a profile filter set
+  // after the draft refuses it like an unshare would.
+  if (!profileAllowed(account.share, agentProfile)) return refuse(403, PROFILE_NOT_ALLOWED);
   // The approver is a person: `agentsUnwalled` never widens what they see.
   if (!accountVisible(account, viewer, groups, { peerBox: null, agentsUnwalled })) return refuse(403, NOT_SHARED_WITH_APPROVER);
   if (accountExpired(account, now)) return refuse(409, expirySentence(account, now));

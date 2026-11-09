@@ -6,9 +6,11 @@ import {
   hasPendingDraft,
   scopeText,
   autonomousConfirmText,
-  shareOptions,
-  shareValue,
-  shareFromValue,
+  shareChoices,
+  toggleShare,
+  profileChoices,
+  toggleProfile,
+  normalizeShare,
   accountBanners,
   logEntryLine,
 } from "../public/social-card.js";
@@ -80,7 +82,7 @@ const account = (over: Record<string, unknown> = {}) => ({
   externalId: "urn:li:person:x",
   owner: "ada",
   connectedVia: "ada",
-  share: { scope: "private" },
+  share: { personal: true, groups: [], everyone: false, profiles: [] },
   policy: "approve",
   expiresAt: NOW + 30 * DAY,
   createdAt: NOW,
@@ -106,24 +108,47 @@ test("account row: label, via, share and policy in words", () => {
   assert.equal(accountRowModel(account(), NOW).policyText, "Every post needs approval");
 });
 
+const sh = (o: Record<string, unknown>) => ({ personal: false, groups: [], everyone: false, profiles: [], ...o });
+
 test("autonomous confirm: the exact copy for each scope", () => {
   const groups = [{ id: "g1", name: "Marketing" }, { id: "g2", name: "Sales" }];
   assert.equal(
     autonomousConfirmText(account(), groups),
-    "Agents in your private group will be able to post as Ada Lovelace without asking anyone.",
+    "Agents in your Personal group will be able to post as Ada Lovelace without asking anyone.",
   );
-  assert.equal(scopeText({ scope: "groups", groups: ["g1", "g2"] }, groups), "Marketing, Sales");
-  assert.equal(scopeText({ scope: "instance" }, groups), "every group");
+  assert.equal(scopeText(sh({ groups: ["g1", "g2"] }), groups), "Marketing, Sales");
+  assert.equal(scopeText(sh({ everyone: true }), groups), "every shared group");
+  assert.equal(scopeText(sh({ personal: true, groups: ["g1"], profiles: ["Writer"] }), groups), "your Personal group, Marketing (profile Writer only)");
+  assert.equal(scopeText(sh({}), groups), "no group");
+  assert.equal(scopeText({ scope: "instance" }, groups), "every shared group", "a v1 share still reads");
 });
 
-test("share picker: Private, the groups (not Main), Everyone — and values round-trip", () => {
-  const groups = [{ id: "main", name: "Main", nature: "public" }, { id: "g1", name: "Marketing", nature: "restricted" }];
-  assert.deepEqual(shareOptions(groups, { scope: "private" }).map((o: { label: string }) => o.label), ["Private", "Marketing", "Everyone"]);
-  for (const s of [{ scope: "private" }, { scope: "instance" }, { scope: "groups", groups: ["g1"] }, { scope: "groups", groups: ["g1", "g2"] }]) {
-    assert.deepEqual(shareFromValue(shareValue(s)), s);
-  }
-  const multi = shareOptions(groups, { scope: "groups", groups: ["g1", "g2"] });
-  assert.ok(multi.some((o: { value: string }) => o.value === shareValue({ scope: "groups", groups: ["g1", "g2"] })));
+test("share boxes: Personal, the groups (not Main, not Personal groups), Everyone — combinable", () => {
+  const groups = [
+    { id: "main", name: "Main", nature: "public" },
+    { id: "g1", name: "Marketing", nature: "restricted" },
+    { id: "p-ada", name: "Ada", nature: "private" },
+  ];
+  const c = shareChoices(groups, sh({ personal: true }));
+  assert.deepEqual(c.map((o: { label: string }) => o.label), ["Personal", "Marketing", "Everyone"]);
+  assert.deepEqual(c.map((o: { checked: boolean }) => o.checked), [true, false, false]);
+  let s = toggleShare(sh({ personal: true }), "group:g1", true, groups);
+  s = toggleShare(s, "everyone", true, groups);
+  assert.deepEqual(s, sh({ personal: true, groups: ["g1"], everyone: true }));
+  assert.deepEqual(toggleShare(s, "group:g1", false, groups), sh({ personal: true, everyone: true }));
+  assert.deepEqual(toggleShare(s, "personal", false, groups), sh({ groups: ["g1"], everyone: true }));
+  // A v1 share naming the owner's Personal group reads as the Personal box.
+  assert.deepEqual(normalizeShare({ scope: "groups", groups: ["p-ada", "g1"] }, groups), sh({ personal: true, groups: ["g1"] }));
+  // A stored group the list no longer carries keeps a ticked box.
+  assert.ok(shareChoices(groups, sh({ groups: ["gone"] })).some((o: { key: string; checked: boolean }) => o.key === "group:gone" && o.checked));
+});
+
+test("profile boxes: every pickable profile, a vanished one kept, toggles round-trip", () => {
+  const c = profileChoices(["Writer", "Dev"], sh({ profiles: ["Old"] }));
+  assert.deepEqual(c, [{ name: "Dev", checked: false }, { name: "Old", checked: true }, { name: "Writer", checked: false }]);
+  const s = toggleProfile(sh({ everyone: true }), "Writer", true);
+  assert.deepEqual(s, sh({ everyone: true, profiles: ["Writer"] }));
+  assert.deepEqual(toggleProfile(s, "Writer", false), sh({ everyone: true }));
 });
 
 test("accountBanners: own accounts that expire soon or expired, keyed by id + expiresAt", () => {
