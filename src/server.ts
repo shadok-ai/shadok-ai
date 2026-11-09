@@ -70,7 +70,7 @@ import {
 } from "./first-agent.js";
 import { readGroundAt } from "./ground.js";
 import { homeGreetingBrief } from "./greeting.js";
-import { ensureSshIdentity } from "./ssh.js";
+import { ensureSshIdentity, groupKeyRows, volumeKeyPaths } from "./ssh.js";
 import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
 import {
   migrationPlan,
@@ -2929,6 +2929,39 @@ app.get("/groups", (req, res) => {
   // Mono-tenant (only a public Main) keeps Main for everyone, unchanged.
   res.json(listableGroups(loadGroups(), viewerFor(currentAccount(req))));
 });
+/**
+ * The SSH public key to register for each group the caller can see.
+ *
+ * A public key is not a secret, but WHICH GROUPS EXIST is: the rows go through the
+ * very same `listableGroups` filter as `GET /groups`, so a private group stays
+ * invisible even to an admin (operator decision 2026-11-03) and a restricted
+ * group's existence is not leaked to a non-member. Never the private key, which
+ * no endpoint can reach by construction — `groupKeyRows` only ever reads `.pub`.
+ *
+ * `publicKey: null` is an honest "no keypair yet" (mono-tenant before any boot
+ * minted one, or a group provisioned by an older build), not an error.
+ */
+app.get("/groups/ssh", (req, res) => {
+  const groups = listableGroups(loadGroups(), viewerFor(currentAccount(req)));
+  res.json(
+    groupKeyRows(groups, {
+      serverHome: os.homedir(),
+      commonsUser: commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
+      // A walled group has an OS user of its OWN only under isolation. On a
+      // mono-tenant cockpit every agent runs as the server's user and shares the
+      // one identity, so naming `sk-<id>` here would point the operator at a key
+      // directory nothing will ever read — a plausible, complete and wrong answer.
+      osUserFor: (g) => (DEPLOYMENT_MODE === "multi-tenant" ? osUserFor(g) : null),
+      readPub: (p) => {
+        try {
+          return fs.readFileSync(p, "utf8");
+        } catch {
+          return null; // not minted yet (or unreadable): the row says so
+        }
+      },
+    }),
+  );
+});
 app.put("/groups", (req, res) => {
   // BROWSER-ONLY (T2/T6 carry): writing the group list is a person's act, and
   // `requestFromBrowser` refuses any request carrying an agent key or a peer
@@ -3435,6 +3468,10 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // invite-redeem hook nor the per-account migration loop ever fires for it.
   // Give it a Personal group here; idempotent (reuses an existing private group).
   await ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN);
+  // Each group's keypair on the volume, BEFORE any HOME is filled: that is what
+  // lets an operator register the public key (GET /groups/ssh) without waiting
+  // for the group's first agent to spawn.
+  ensureGroupVolumeKeys();
   // Before any agent comes back: fill every drop user's HOME with the full set
   // of trusted directories in one write each, so none strands on the trust
   // dialog when the resume storm rebuilds a wiped (ephemeral) group HOME.
@@ -6437,43 +6474,92 @@ function writeAsUserAtomic(user: string, file: string, content: string): void {
 }
 
 /** The SSH key store on the shadok-data VOLUME (survives a docker recreate, which
- *  wipes `/home`). The container's historical identity lives here (`id_ed25519`);
- *  per-group keys go under `groups/<os-user>/`. `/root` is 0700, so a dropped
- *  agent cannot read this — the server (root) copies the material into the
- *  agent's own HOME at spawn. Mirrors `ensureSshIdentity` (src/ssh.ts). */
-const SHADOK_SSH_DIR = path.join(os.homedir(), ".shadok-ai", "ssh");
+ *  wipes `/home`). The container's historical identity lives there (`id_ed25519`);
+ *  per-group keys under `groups/<os-user>/`. `/root` is 0700, so a dropped agent
+ *  cannot read it — the server (root) copies the material into the agent's own
+ *  HOME, as that user. The paths themselves come from `volumeKeyPaths`
+ *  (src/ssh.ts), so the provisioner and `GET /groups/ssh` cannot disagree about
+ *  where a group's key lives. Mirrors `ensureSshIdentity`. */
 const SSH_AGENT_CONFIG =
   "# Managed by shadok-ai — SSH identity for this agent.\n" +
   "Host *\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile ~/.ssh/known_hosts\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n";
 
 /**
+ * Mint-or-find a drop user's keypair ON THE VOLUME (it must survive a recreate,
+ * which wipes `/home`). The COMMONS reuses the container's HISTORICAL key — the
+ * identity already registered on the forge (operator: "récupère la clef
+ * historique") — while each ISOLATED group gets its own under `groups/<os-user>/`
+ * (operator decision: one key per group); `volumeKeyPaths` is where that split
+ * lives, so this and `GET /groups/ssh` always look in the same directory.
+ * Idempotent: an existing keypair is returned untouched, which is what keeps a
+ * group's identity STABLE across recreates and respawns.
+ */
+function ensureVolumeKeypair(user: string): { key: string; pub: string; shared: boolean } {
+  const p = volumeKeyPaths(os.homedir(), user, COMMONS_USER);
+  if (!fs.existsSync(p.key)) {
+    // No historical key for the commons (a fresh instance), or a new group: mint
+    // one on the VOLUME, as root. `accept-new` means the remote is trusted on
+    // first use; registering the PUBLIC line on the forge is the operator's step,
+    // which is why it is served by `GET /groups/ssh` and logged here.
+    fs.mkdirSync(p.dir, { recursive: true, mode: 0o700 });
+    execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-q", "-f", p.key, "-C", `shadok-${user}`]);
+    const line = (() => {
+      try {
+        return fs.readFileSync(p.pub, "utf8").trim();
+      } catch {
+        return "(unreadable)";
+      }
+    })();
+    console.log(`ssh: minted a keypair for ${user} on the volume — register it where its agents must push: ${line}`);
+  }
+  return p;
+}
+
+/**
+ * Mint the VOLUME keypair of every group that has one, without touching a single
+ * agent HOME. Called from the boot provisioning reconciler so a public key exists
+ * to REGISTER before the group's first agent ever spawns — until this ran, the key
+ * appeared at first spawn and only in the log, so an operator had to go read a log
+ * to learn what to paste on the forge (the follow-up the isolation work left open).
+ * Idempotent and best-effort: a `ssh-keygen` failure must never take down a boot,
+ * and the spawn path still mints what is missing.
+ */
+function ensureGroupVolumeKeys(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const users = new Set<string>([COMMONS_USER]);
+  for (const g of loadGroups()) {
+    const u = osUserFor(g);
+    if (u) users.add(u);
+  }
+  for (const user of users) {
+    try {
+      ensureVolumeKeypair(user);
+    } catch (e) {
+      console.log(`ssh: could not mint a keypair for ${user} (best-effort) — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/**
  * Give a DROPPED agent a working `~/.ssh` (git-over-SSH, private clones).
  *
- * The source keypair lives on the VOLUME under `SHADOK_SSH_DIR` (persists a
- * recreate): the COMMONS (`main`) reuses the container's HISTORICAL key — the
- * identity already registered on the forge (operator: "récupère la clef
- * historique") — while each ISOLATED group has its OWN key under
- * `groups/<os-user>/` (operator decision: one key per group). A dropped user
- * cannot read the volume dir (it is under the 0700 `/root`), so the server
- * (root) reads/generates the keypair there and writes a COPY into the agent's
- * own HOME AS THE USER (never root writing through a 0700 HOME). Idempotent
- * (skips when the HOME key is already present — so a recreate re-copies the same
- * volume key, keeping the identity stable). Best-effort: SSH just stays
- * unavailable to that agent on failure, never a spawn failure.
+ * A dropped user cannot read the volume key store (it is under the 0700 `/root`),
+ * so the server (root) takes the keypair from `ensureVolumeKeypair` and writes a
+ * COPY into the agent's own HOME **as that user** — never root writing through a
+ * 0700 HOME it does not own, where an agent could have planted a symlink (the
+ * same rule as `writeAsUserAtomic` and the provisioning plans' root/user split).
+ * Idempotent (skips the moment the HOME key is present, so a recreate re-copies
+ * the same volume key and the identity stays stable). Best-effort: on failure SSH
+ * is simply unavailable to that agent, never a failed spawn.
+ *
+ * Called from the spawn path AND from `preseedGroupHomes` at boot — the second is
+ * what covers an agent that is merely RESUMED, and a HOME wiped by a recreate.
  */
 function ensureAgentSshKey(user: string, home: string): void {
   try {
     const ssh = `${home}/.ssh`;
     if (spawnAsUserSync(user, "test", ["-f", `${ssh}/id_ed25519`]).ok) return; // already wired
-    const isCommons = user === COMMONS_USER;
-    const srcDir = isCommons ? SHADOK_SSH_DIR : path.join(SHADOK_SSH_DIR, "groups", user);
-    const srcKey = path.join(srcDir, "id_ed25519");
-    if (!fs.existsSync(srcKey)) {
-      // No historical key for the commons (a fresh instance), or a new group:
-      // mint one on the VOLUME, as root. accept-new keys are registered later.
-      fs.mkdirSync(srcDir, { recursive: true, mode: 0o700 });
-      execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-q", "-f", srcKey, "-C", `shadok-${user}`]);
-    }
+    const { key: srcKey, shared: isCommons } = ensureVolumeKeypair(user);
     const priv = fs.readFileSync(srcKey, "utf8");
     const pub = fs.readFileSync(`${srcKey}.pub`, "utf8");
     spawnAsUserSync(user, "mkdir", ["-p", ssh]);
@@ -6671,6 +6757,12 @@ function preseedGroupHomes(): void {
     const home = homeForUser(user, GROUP_HOME_BASE);
     seedHomeTrust(user, home, [...cwds]);
     ensureTierStateDir(user, home);
+    // `~/.ssh` too, at BOOT and not only at the next spawn. `/home` is NOT on the
+    // volume (invariant 19's whole reason), so a docker recreate wipes every HOME
+    // copy while the keypair survives on the volume — and a dropped agent that is
+    // merely RESUMED never runs the spawn path, so it stayed without an identity
+    // until someone reloaded it. Idempotent: skipped the moment the key is there.
+    ensureAgentSshKey(user, home);
   }
   seedCommonsPeersOut();
 }

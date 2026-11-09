@@ -595,6 +595,24 @@ across OS users (Claude rewrites the credential single-owner on refresh), which
 is why each user logs in separately. Design:
 `docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
 
+**Git over SSH, per group.** Each group has its own SSH identity: the shared
+*commons* (every public group) reuses the cockpit's historical container key —
+the one already registered on your forge — and every **walled** group (restricted
+or private) gets a key of its own. The keypairs live on the `shadok-data` volume,
+so they survive a recreate even though the agent homes do not, and the private
+half never leaves the server's own 0700 home: a copy is written into each
+agent's `~/.ssh` as that OS user.
+
+A key is only an identity once a remote accepts it, so **read a group's public
+key and register it** where its agents must clone or push: `GET /groups/ssh`
+returns one row per group you can see — `{group, name, osUser, publicKey,
+shared}` — and `shared: true` marks the historical key, which you register once
+for every public group. The rows go through the same visibility filter as
+`GET /groups` (a private group stays invisible even to an admin), and only the
+`.pub` half is ever read. A `publicKey: null` means no keypair has been minted
+yet, not an error. Until a group's key is registered, its agents simply cannot
+reach that remote over SSH.
+
 **Persist the group homes (recommended in Docker).** Each dropped agent runs as
 its own OS user with HOME under `SHADOK_HOME_BASE` (default `/home`), which is
 **not** on the `shadok-data` volume by default — so a `docker rm` + recreate
@@ -1203,7 +1221,8 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
-`/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/title` (GET/PUT — the
+`/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
+register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
