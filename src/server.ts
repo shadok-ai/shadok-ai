@@ -890,6 +890,12 @@ function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
       },
       user,
       home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
+      // The same `gh` token the agent itself is spawned with (`makePilot`), and
+      // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
+      // own empty home, so without this every `gh` call in it fails — silently,
+      // because guards swallow a failed call to survive a network hiccup. Only
+      // when dropping; the server's own user reads its config dir directly.
+      ghToken: user ? serverGhToken() : undefined,
     });
     const run = cronCheckCommand(user, c.check!);
     recordSecretAudit({
