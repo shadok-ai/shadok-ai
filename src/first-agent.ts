@@ -98,10 +98,14 @@ export interface FirstAgentStatus {
   /** The spawn step the server last announced (src/spawn-steps.ts), so the
    *  page's "starting" panel shows the same real progress as a tab's loader.
    *  Null before the first one and whenever nothing is pending. */
-  step: SpawnStep | null;
+  step: SpawnStep | "hello" | null;
+  /** The lead's session while its FIRST turn (the greeting) is under way: the
+   *  wait stays open until it has answered, so the page keeps its loader up
+   *  instead of showing an empty chat that fills a few seconds later. */
+  greeting: string | null;
 }
 
-let status: FirstAgentStatus = { pending: false, reason: "idle", step: null };
+let status: FirstAgentStatus = { pending: false, reason: "idle", step: null, greeting: null };
 
 /** A copy, so no caller can hold a handle on the state and edit it. */
 export function firstAgentStatus(): FirstAgentStatus {
@@ -123,8 +127,8 @@ export function firstAgentStatus(): FirstAgentStatus {
 export function announceFirstAgent(channelCount: number): void {
   status =
     channelCount > 0
-      ? { pending: false, reason: "channels-exist", step: null }
-      : { pending: true, reason: "starting", step: null };
+      ? { pending: false, reason: "channels-exist", step: null, greeting: null }
+      : { pending: true, reason: "starting", step: null, greeting: null };
 }
 
 /** Record the step the lead's spawn has reached. Ignored once the wait is over
@@ -137,7 +141,24 @@ export function noteFirstAgentStep(step: unknown): void {
 
 /** The one way out of `pending`. Never conditional: every reason ends the wait. */
 export function settleFirstAgent(reason: FirstAgentPlan["reason"]): void {
-  status = { pending: false, reason, step: null };
+  status = { pending: false, reason, step: null, greeting: null };
+}
+
+/** The lead was born and is being greeted: keep the wait open on its behalf
+ *  (step "hello"). Never reopens a settled wait. */
+export function greetFirstAgent(sessionId: string): void {
+  if (!status.pending) return;
+  status = { ...status, step: "hello", greeting: sessionId };
+}
+
+/** The greeting of THIS session is over (answered, failed, or the guard fired). */
+export function endFirstAgentGreeting(sessionId: string): void {
+  if (status.greeting === sessionId) settleFirstAgent("first-boot");
+}
+
+/** The spawn's own exit: settles the wait unless a greeting now owns it. */
+export function settleAfterSpawn(): void {
+  if (status.greeting === null) settleFirstAgent("first-boot");
 }
 
 /** Guards the two callers (boot, sign-in) against firing at the same moment. */
@@ -228,7 +249,9 @@ export async function ensureFirstAgent(deps: {
     // on `exited`, on a socket failure and on the 60s guard, and every one of
     // them has to end the "starting…" status. `onReady` has already written the
     // channel by now, so the client sees the tab and the cleared flag together.
-    settleFirstAgent("first-boot");
+    // …unless `onReady` handed the wait to the greeting (greetFirstAgent), which
+    // ends it itself when the lead has answered.
+    settleAfterSpawn();
   }
   return "first-boot";
 }
