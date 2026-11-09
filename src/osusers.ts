@@ -90,7 +90,33 @@ export function dropEnv(
 ): Record<string, string> {
   if (!user) return {};
   const env: Record<string, string> = { USER: user, LOGNAME: user };
-  if (home) env.HOME = home;
+  if (home) {
+    env.HOME = home;
+    // The server's inherited `GH_CONFIG_DIR` points at its own `/root/.claude/gh`,
+    // which a privilege-dropped user cannot traverse (mode 0700) — so EVERY `gh`
+    // call (and `git` via `gh auth git-credential`) dies "permission denied"
+    // reading config before auth is even consulted. Point it at the drop user's
+    // OWN writable config dir instead; the auth token is injected separately as
+    // `GH_TOKEN` (`forcedEnv`), so `gh` is both reachable AND authenticated.
+    env.GH_CONFIG_DIR = `${home}/.config/gh`;
+  }
+  // Same family, one tool further: `ensureSshIdentity` exports the SERVER's
+  // `GIT_SSH_COMMAND=ssh -F <server home>/.shadok-ai/ssh/config` into the env
+  // every spawn inherits, and that path is under the server's `/root` — so for a
+  // dropped user EVERY `git` over SSH dies reading the config ("Can't open user
+  // config file …: Permission denied" → "Could not read from remote
+  // repository"), fetch and push alike. Reset it to a bare `ssh`, which reads
+  // the agent's OWN `~/.ssh/config` — already written per user by
+  // `ensureAgentSshKey` at spawn, and found because `HOME` is corrected above.
+  // Bare `ssh` rather than `-F <home>/.ssh/config` on purpose: `-F` on a file
+  // that is missing is a hard failure, while the bare form degrades to ssh's
+  // defaults. Reset for ANY drop user, with or without a home: the inherited
+  // value is unreachable either way, and a key the agent cannot read is worse
+  // than no `-F` at all.
+  // The trap this cost: a bare `ssh -T git@github.com` IGNORES
+  // `GIT_SSH_COMMAND`, so SSH answers "Hi <user>!" and looks healthy while
+  // every `git` call is broken. Diagnose with `git ls-remote`, never `ssh -T`.
+  env.GIT_SSH_COMMAND = "ssh";
   return env;
 }
 

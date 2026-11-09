@@ -14,7 +14,7 @@ import { availableAttachments, loadRegistry, saveFile } from "../src/factory.js"
  * person, on which agents, and what an acceptance grants. Two "tenants": the
  * browser (alice) may drive agents of `main` only; `hr-agent` is in `g-hr`.
  */
-async function harness(t: test.TestContext) {
+async function harness(t: test.TestContext, opts: { actFor?: string[] } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "factory-routes-"));
   const prev = process.env.SHADOK_FACTORY_DIR;
   process.env.SHADOK_FACTORY_DIR = dir;
@@ -36,7 +36,7 @@ async function harness(t: test.TestContext) {
     mayDrive: (_req, id) => (channels.find((c) => c.sessionId === id)?.group ?? null) === null,
     agentGroup: (id) => channels.find((c) => c.sessionId === id)?.group ?? "main",
     personGroup: () => "main",
-    mayActForGroup: (_req, g) => g === "main",
+    mayActForGroup: (_req, g) => (opts.actFor ?? ["main"]).includes(g),
     tenantGroup: (g) => g ?? "main",
     loadChannels: () => channels,
     skillsOf: (id) => {
@@ -104,6 +104,20 @@ test("routes: publishing a release that asks for secrets needs them approved BY 
   const ok = await h.call("POST", `/factory/skills/${id}/publish`, { approveSecrets: ["HR_DB_PASSWORD", "EXTRA"] });
   assert.equal(ok.status, 200);
   assert.deepEqual(loadRegistry(h.dir).skills[0].acceptances[0].secrets, ["HR_DB_PASSWORD"]);
+});
+
+test("routes: Save accepts for every group the person may act for, so a skill shared with everyone runs outside Main too", async (t) => {
+  const h = await harness(t, { actFor: ["main", "g-hr"] });
+  const id = (await h.call("POST", "/factory/skills", { title: "Notes" })).body.skill.id;
+  assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, {})).status, 200);
+  const skill = loadRegistry(h.dir).skills.find((s) => s.id === id)!;
+  assert.deepEqual(skill.acceptances.map((a) => a.group).sort(), ["g-hr", "main"]);
+  // The g-hr agent (not drivable by this person, so absent from the list) now runs it.
+  const hr = h.channels().find((c) => c.sessionId === "hr-agent-000000")!;
+  assert.deepEqual(availableAttachments(loadRegistry(h.dir).skills, { group: hr.group }, "g-hr"), [{ skill: id, release: 1 }]);
+  // A second Save with nothing changed reuses v1 and accepts nothing twice.
+  assert.equal((await h.call("POST", `/factory/skills/${id}/publish`, {})).status, 200);
+  assert.equal(loadRegistry(h.dir).skills.find((s) => s.id === id)!.acceptances.length, 2);
 });
 
 test("routes: a skill is not given to an agent — once saved, the agents it is shared with have it", async (t) => {

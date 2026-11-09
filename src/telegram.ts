@@ -1188,12 +1188,15 @@ export interface TelegramHandle {
   stop(): void;
   running(): boolean;
   status(): { username: string | null; tokenError: string | null };
+  /** DM the paired owner, plain text. False when there is no bot, no owner or the send failed; never throws. */
+  notifyOwner(text: string): Promise<boolean>;
 }
 
 const NOOP_HANDLE: TelegramHandle = {
   stop() {},
   running: () => false,
   status: () => ({ username: null, tokenError: null }),
+  notifyOwner: async () => false,
 };
 
 // Whether this instance runs multi-tenant, so `/mttoken` (which provisions the
@@ -2762,6 +2765,16 @@ export function startTelegram(
     },
     running: () => polling,
     status: () => ({ username: botUsername, tokenError }),
+    async notifyOwner(text: string) {
+      try {
+        const owner = loadTgOwner();
+        if (stopped || owner === null) return false;
+        const r = await tg("sendMessage", { chat_id: owner, text, disable_web_page_preview: true });
+        return r?.ok === true;
+      } catch {
+        return false;
+      }
+    },
   };
 }
 

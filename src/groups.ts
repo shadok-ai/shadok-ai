@@ -618,3 +618,39 @@ export function groupsPutFlow(input: {
   if (!r.ok) return { status: 403, body: { error: r.error } };
   return { status: 200, body: { ok: true }, groups: r.groups };
 }
+
+/**
+ * Why an agent may NOT be moved from group `fromId` to `toId`, or null when it
+ * may — the multi-tenant rule behind `PUT /channels` (mono-tenant groups are
+ * cosmetic and never reach it). A group's NATURE decides the OS user an agent
+ * runs as (`osUserFor`): every public group, Main included, is the commons user;
+ * a Private or Personal group has its own. So a move between two groups of the
+ * commons changes nothing about the running process and is allowed, while one
+ * into or out of a walled group would put the agent on the wrong side of the
+ * wall — its process, home and transcripts belong to the user it was born as —
+ * and is refused. A target the caller cannot see, or that no longer exists, is
+ * refused too: a move never plants an agent where its mover could not spawn one.
+ * Group-less (`null`) is the commons. Twin of `groupMoveRefusal` in
+ * `public/group-nav.js`, which says the same thing at the drop.
+ */
+export function groupMoveRefusal(
+  fromId: string | null | undefined,
+  toId: string | null | undefined,
+  groups: readonly Group[],
+  viewer: Viewer | null,
+): string | null {
+  const norm = (id: string | null | undefined): string => (id == null || id === "" ? MAIN_GROUP_ID : String(id));
+  const f = norm(fromId);
+  const t = norm(toId);
+  if (f === t) return null;
+  const commons: Group = { id: MAIN_GROUP_ID, name: "Main", nature: "public", members: [], createdAt: 0 } as Group;
+  const find = (id: string): Group | null => groups.find((g) => g.id === id) ?? (id === MAIN_GROUP_ID ? commons : null);
+  const from = find(f);
+  const to = find(t);
+  if (!to) return "that group no longer exists";
+  if (!canSeeGroup(to, viewer)) return "you are not a member of that group";
+  if (!from) return "this agent's group no longer exists";
+  if (from.nature !== "public") return "an agent cannot leave a private or Personal group: it runs as that group's own system user";
+  if (to.nature !== "public") return "an agent cannot be moved into a private or Personal group: it is walled off with its own system user";
+  return null;
+}

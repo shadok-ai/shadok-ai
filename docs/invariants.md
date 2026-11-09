@@ -308,6 +308,20 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     immediate entries, because a hand repair usually re-owns the directory and
     leaves the key inside it foreign — the one state where `ssh` still refuses and
     a top-level check alone would call it healed.
+    **Multi-tenant has one identity per OS user, and the OS user is the boundary
+    that matters** — not the group, because the user is the only thing the kernel
+    enforces. The commons (`main`, i.e. every public group) reuses the historical
+    key; each walled group gets its own under `<store>/groups/<os-user>/`;
+    `volumeKeyPaths` is the single place that decides which, so the provisioner
+    and `GET /groups/ssh` can never read a directory the other never wrote. Two
+    consequences learned here. The HOME copy is wired at BOOT as well as at spawn
+    (`preseedGroupHomes`): `/home` is not on the volume, so a recreate wipes every
+    copy while the keypairs survive, and an agent that is merely RESUMED never
+    runs the spawn path — it stayed without an identity until someone reloaded it.
+    And the keypair is minted when a group is PROVISIONED rather than at its first
+    agent's spawn, because a key the operator cannot read is not an identity: it
+    used to appear only in the boot log, so registering it on the forge meant
+    going to read a log.
 
 <a id="inv-20"></a>
 
@@ -1811,7 +1825,34 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     plumbing, then the profile's secrets) — an allow-list because the server's
     env is exactly where unknown secrets live, and a deny-list would rot
     (invariant 29's subtraction lesson). Mono-tenant keeps the server's user,
-    since there is only one, but gets the same clean env. A file is stat'ed
+    since there is only one, but gets the same clean env.
+    **The bill for that allow-list, paid once: a dropped guard that needs a
+    credential has NONE, and says nothing about it.** `GH_TOKEN` is not
+    allow-listed (correctly — it is the server's), and `dropEnv` points
+    `GH_CONFIG_DIR` at the drop user's own config dir, which is empty. So every
+    `gh` call inside a guard failed; and a guard wraps those calls in
+    `|| exit 0` on purpose, because a stalled TCP connect must not wake the
+    agent — which makes "I cannot reach GitHub" byte-identical to "the
+    repository is calm". Measured: the pr-merge guard reported `quiet` at every
+    five-minute slot for days with mergeable PRs open the whole time, and the
+    log line for a blind guard is the same one it writes when there is genuinely
+    nothing. Two halves to the fix, both needed. The guard is handed the SAME
+    `gh` token as the agent it belongs to (`cronCheckEnv`'s `ghToken`, gated on
+    a drop user, beaten by a profile secret of that name): not a widening, since
+    it runs as that agent's user and can only ever wake that agent — strictly
+    less powerful than the agent itself. And a guard must stop hiding a tool
+    failure: `check-open-prs.sh` counts consecutive `gh` failures and writes to
+    **stderr** on the second, which is what invariant 16 reads as a broken
+    guard. Keep that shape in any new guard — absorb one hiccup, never a run.
+    One more inherited path has the same `/root` shape: `GIT_SSH_COMMAND` IS
+    allow-listed (a container's ssh fallback), and it names a config file under
+    the server's `/root`, so every `git` over SSH in a dropped guard — or a
+    dropped AGENT — died on "Can't open user config file …: Permission denied".
+    `dropEnv` resets it to a bare `ssh`, which reads the per-user `~/.ssh`
+    `ensureAgentSshKey` already writes. Diagnose that one with `git ls-remote`,
+    never `ssh -T`: a bare `ssh` ignores `GIT_SSH_COMMAND` and answers
+    "Hi &lt;user&gt;!" while every git call is broken.
+    A file is stat'ed
     and READ as the agent's user (`statAsUserArgv`, `readAsUserArgv` — `stat`
     and `dd` under `setpriv`), which also neutralises the transcript forgery a
     writable HOME allows: a forged `SendUserFile` line buys an agent a file it
@@ -1923,3 +1964,28 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     service for whoever reached the cockpit. It now requires a callback-shaped
     query, refuses the shadok port walk and well-known local services, and
     returns the status alone.
+
+<a id="inv-67"></a>
+
+63. **A GLOBAL object an agent may write is a cross-group write — so in
+    multi-tenant the agent's prompt write is closed.** Invariant 26 gave agents
+    `PUT /profiles/prompt` (their own `systemPrompt`, or ANY role's under the
+    lead profile) on the premise that it is not a sandbox: an agent could
+    rewrite `profiles.json` directly anyway. That premise holds in mono-tenant
+    only. In multi-tenant an agent is dropped to its group's OS user and cannot
+    touch the file, so the HTTP route became the one path across the wall — and
+    profiles are GLOBAL. A security review (2026-11-06) traced it end to end: a
+    member spawns an agent on `Shadok-Boss` (or on any role another group also
+    uses — `start` takes any profile name), the agent PUTs a new prompt for that
+    role with its `SHADOK_SESSION_KEY`, and every other group's agent on that
+    role, private groups included, loads the attacker's instructions through
+    `--append-system-prompt` at its next spawn, as its own OS user, with its own
+    group's secrets. That is exactly the write invariant 58 already reserves to
+    an admin person (`profileWriteRefusal`); this route was the side door.
+    `promptWriteRefusal` (`src/route-guards.ts`) now refuses it outright in
+    multi-tenant, before `promptEditVerdict` runs. Rejected alternative: allow
+    the edit when only the caller's group uses the role — the NEXT spawn in
+    another group can still pick it, so "own group" is not a property a global
+    role can have. Choosing a profile at `start` stays open: without the write,
+    a role only lends its guardrails, and its secrets are resolved against the
+    spawning agent's group. Mono-tenant is unchanged.

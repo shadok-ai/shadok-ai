@@ -27,6 +27,24 @@ test("forcedEnv (tmux layer) emits the token after the static forced vars", () =
   assert.deepEqual(forcedEnv({ user: null, oauthToken: "T" }), FORCED_CLAUDE_ENV);
 });
 
+test("forcedEnv injects GH_TOKEN for a dropped agent (so gh/git auth works)", () => {
+  // A dropped agent cannot read the server's gh config (/root, 0700); it auths
+  // via GH_TOKEN instead. Gated on a drop user, exactly like the oauth token.
+  assert.equal(forcedEnv({ user: "sk-x", ghToken: "GHT" }).GH_TOKEN, "GHT");
+});
+
+test("no user => no GH_TOKEN; no ghToken => key absent", () => {
+  assert.equal(forcedEnv({ user: null, ghToken: "GHT" }).GH_TOKEN, undefined);
+  assert.ok(!("GH_TOKEN" in forcedEnv({ user: "sk-x", ghToken: "" })));
+  assert.ok(!("GH_TOKEN" in forcedEnv({ user: "sk-x" })));
+});
+
+test("spawnEnv wires GH_TOKEN (forced) and GH_CONFIG_DIR (drop home) together", () => {
+  const env = spawnEnv({ user: "sk-x", home: "/home/sk-x", ghToken: "GHT" }, { GH_CONFIG_DIR: "/root/.claude/gh" });
+  assert.equal(env.GH_TOKEN, "GHT");
+  assert.equal(env.GH_CONFIG_DIR, "/home/sk-x/.config/gh"); // the inherited /root value is overridden
+});
+
 test("PtyPilot builds its env through spawnEnv (the forced-token helper) — invariant 24", () => {
   const src = fs.readFileSync(new URL("../src/session.ts", import.meta.url), "utf8");
   assert.ok(src.includes("spawnEnv(this.opts"), "session.ts must call spawnEnv(this.opts, …)");

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gitIn } from "./git-exec.js";
 
 /**
  * A working copy of shadok-ai's own source, so a user who installed the cockpit
@@ -53,12 +54,18 @@ export interface SelfRepoResult {
 }
 
 function git(args: string[], cwd?: string): void {
-  execFileSync("git", cwd ? ["-C", cwd, ...args] : args, {
-    encoding: "utf8",
+  const opts = {
     // A cold clone over a slow link is minutes, not seconds.
     timeout: 180_000,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+  };
+  // An existing clone is chowned to the commons drop user under multi-tenant, so
+  // the refresh goes through `gitIn`, which re-runs it as that owner when git
+  // refuses root for "dubious ownership" (src/git-exec.ts) — never by
+  // whitelisting the directory, which would let an agent's `.git/config` run
+  // commands as root.
+  if (cwd) gitIn(cwd, args, opts);
+  else execFileSync("git", args, { ...opts, encoding: "utf8" });
 }
 
 /**

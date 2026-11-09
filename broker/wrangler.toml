@@ -1,0 +1,8 @@
+name = "shadok-connect"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+# A custom domain, not a zone route: wrangler creates the DNS record and the
+# certificate itself, so the hostname needs no pre-existing proxied record.
+routes = [{ pattern = "connect.shadok.ai", custom_domain = true }]
+
+# Secrets (never in this file): LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, STATE_KEY

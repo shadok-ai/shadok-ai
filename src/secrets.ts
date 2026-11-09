@@ -13,6 +13,24 @@ import { MAIN_GROUP_ID, canWriteSecretGroup, spawnGroupFor, type Group, type Vie
  * global. A group may SHARE a secret by reference (`sharedWith`), and `Main`
  * is the instance-wide fallback. A profile lists the NAMES it wants injected.
  */
+/**
+ * In a secret's `profiles`: "every profile" — injected into EVERY agent the
+ * secret resolves for (own group, shared-in, commons), with or without a
+ * profile. Only a person may set it (`PUT /secrets/profiles`): it widens a
+ * credential to agents nobody picked one by one.
+ */
+export const ANY_PROFILE = "*";
+
+/**
+ * May an AGENT overwrite this existing entry? Not one bound to `ANY_PROFILE`:
+ * its value reaches every agent that resolves it (for a commons secret, every
+ * agent on the instance), so replacing it is a person's act. Null = allowed.
+ */
+export function agentOverwriteRefusal(entry: Pick<SecretEntry, "profiles"> | undefined, isAgent: boolean): string | null {
+  if (!isAgent || !entry || !entry.profiles.includes(ANY_PROFILE)) return null;
+  return "This secret is given to every profile; only a person can change its value, from the web UI.";
+}
+
 export interface SecretEntry {
   value: string;
   ownerGroup: string;
@@ -125,16 +143,17 @@ export function secretNamesForProfile(
   commonsIds: readonly string[] = [MAIN_GROUP_ID],
 ): string[] {
   const out = new Set<string>(profileSecrets.filter((n) => typeof n === "string" && n));
-  if (profileName) {
-    const names = new Set<string>();
-    for (const slice of Object.values(vault)) {
-      if (!slice || typeof slice !== "object") continue;
-      for (const n of Object.keys(slice)) if (Object.hasOwn(slice, n)) names.add(n);
-    }
-    for (const name of names) {
-      const e = resolveSecretEntry(vault, groupId, name, commonsIds);
-      if (e && e.profiles.includes(profileName)) out.add(name);
-    }
+  const names = new Set<string>();
+  for (const slice of Object.values(vault)) {
+    if (!slice || typeof slice !== "object") continue;
+    for (const n of Object.keys(slice)) if (Object.hasOwn(slice, n)) names.add(n);
+  }
+  for (const name of names) {
+    const e = resolveSecretEntry(vault, groupId, name, commonsIds);
+    if (!e) continue;
+    // `ANY_PROFILE` reaches an agent without a profile too: "any" is every agent
+    // the secret resolves for, which is the only thing still gating it.
+    if (e.profiles.includes(ANY_PROFILE) || (profileName && e.profiles.includes(profileName))) out.add(name);
   }
   return [...out];
 }
@@ -189,6 +208,8 @@ export interface VisibleSecret {
   /** Only on a secret the caller OWNS: the groups it is lent to / the profiles it feeds. */
   sharedWith?: string[];
   profiles?: string[];
+  /** A Main secret the caller may write (`mainWritable`): the panel edits it in "Public groups". */
+  editable?: true;
 }
 
 /**
@@ -241,7 +262,7 @@ export function longLivedTokenInfo(
  * own > shared > main. In mono-tenant the caller resolves to Main only, so this
  * returns exactly today's Main names, all tagged `main` — unchanged behaviour.
  */
-export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>): VisibleSecret[] {
+export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>, mainWritable = false): VisibleSecret[] {
   const rank: Record<SecretSource, number> = { own: 0, shared: 1, main: 2 };
   const chosen = new Map<string, VisibleSecret>();
   const consider = (cand: VisibleSecret) => {
@@ -255,7 +276,15 @@ export function visibleSecrets(vault: Vault, ownGroupIds: ReadonlySet<string>): 
       if (RESERVED_SECRET_NAMES.has(name)) continue;
       const e = slice[name];
       const audit = { createdBy: e.createdBy, createdAt: e.createdAt, updatedAt: e.updatedAt };
-      if (gid === MAIN_GROUP_ID) consider({ name, source: "main", ...audit });
+      // Main stays tagged `main` (every view lists it as inherited), but a caller
+      // who may WRITE Main gets its sharing/profiles too, so the "Public groups"
+      // view can edit it: Main is the first public group, not a read-only tier.
+      if (gid === MAIN_GROUP_ID)
+        consider(
+          mainWritable
+            ? { name, source: "main", ownerGroup: MAIN_GROUP_ID, ...audit, sharedWith: [...e.sharedWith], profiles: [...e.profiles], editable: true }
+            : { name, source: "main", ...audit },
+        );
       else if (ownGroupIds.has(gid))
         consider({ name, source: "own", ownerGroup: gid, ...audit, sharedWith: [...e.sharedWith], profiles: [...e.profiles] });
       else if (e.sharedWith.some((g) => ownGroupIds.has(g)))

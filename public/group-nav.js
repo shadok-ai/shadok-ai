@@ -98,3 +98,28 @@ export function focusTarget(idsInView, rememberedId) {
   if (rememberedId != null && ids.includes(rememberedId)) return rememberedId;
   return ids.length ? ids[0] : null;
 }
+
+/**
+ * Why an agent may NOT be moved from one group to another, or null when it may.
+ * The twin of the server's `groupMoveRefusal` (src/groups.ts), which enforces
+ * it; this copy is what lets the drop say so at once instead of the agent
+ * silently sliding back on the next sync. `from`/`to` are `{id, name, nature}`
+ * or null for the commons (the "Main" view).
+ *
+ * On a multi-tenant instance a group's NATURE decides which OS user an agent
+ * runs as: every public group (Main included) shares the commons user, a
+ * Private or Personal group has its own. Moving between two groups of the
+ * commons changes nothing about the running agent; moving across that wall
+ * would need a different process, home and history, so it is refused.
+ */
+export function groupMoveRefusal(from, to) {
+  const walled = (g) => !!g && g.nature !== "public";
+  const same = (from ? String(from.id) : null) === (to ? String(to.id) : null);
+  if (same) return null;
+  const label = (g) => (g.nature === "private" ? "Personal" : `the private group “${g.name}”`);
+  if (walled(from))
+    return `This agent can’t leave ${label(from)}: it runs there under that space’s own system account, with its files and history. Create a new agent where you want it instead.`;
+  if (walled(to))
+    return `An agent can’t be moved into ${label(to)}: that space is walled off (its own system account, its own files). Create the agent from inside it instead.`;
+  return null;
+}

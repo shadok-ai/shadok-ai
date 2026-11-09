@@ -42,7 +42,30 @@ test("dropEnv: a drop user sets HOME/USER/LOGNAME to that user's own", () => {
     HOME: "/home/sk-comex",
     USER: "sk-comex",
     LOGNAME: "sk-comex",
+    // The inherited GH_CONFIG_DIR points at the server's /root/.claude/gh, which
+    // a dropped user cannot traverse (0700) — EVERY gh call then dies "permission
+    // denied" reading config, before auth. Override it to the drop user's OWN
+    // writable config dir; the token is injected separately (GH_TOKEN, forcedEnv).
+    GH_CONFIG_DIR: "/home/sk-comex/.config/gh",
+    // Twin of the above, one tool further: the inherited GIT_SSH_COMMAND names
+    // the SERVER's ssh config under its /root, so every git-over-SSH call died
+    // "Can't open user config file … Permission denied". A bare `ssh` reads the
+    // agent's own ~/.ssh (ensureAgentSshKey writes it) via the HOME above.
+    GIT_SSH_COMMAND: "ssh",
   });
+});
+
+test("dropEnv: GH_CONFIG_DIR is only set when there is a HOME to put it under", () => {
+  // A drop user with no HOME cannot get a reachable config dir; don't invent one.
+  assert.equal("GH_CONFIG_DIR" in dropEnv("sk-x", null), false);
+});
+
+test("dropEnv: GIT_SSH_COMMAND is reset even with no HOME — the inherited one is unreachable", () => {
+  // Unlike GH_CONFIG_DIR (which needs a home to point INTO), this one is a
+  // reset: whatever the server exported names a path under its own /root, so
+  // keeping it is never right for a dropped user. `-F` on a missing file is a
+  // hard failure, so the bare form is what degrades safely.
+  assert.equal(dropEnv("sk-x", null).GIT_SSH_COMMAND, "ssh");
 });
 
 test("dropEnv: NO user → {} (mono-tenant / commons-pre-migration: HOME left as today)", () => {

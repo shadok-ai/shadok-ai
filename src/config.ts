@@ -66,6 +66,8 @@ export interface Config {
    * stay distinguishable. Absent = the default "shadok-ai".
    */
   cockpitTitle?: Record<string, string>;
+  /** Per launch dir: the instance context every agent gets (src/instance-context.ts). */
+  instanceContext?: Record<string, string>;
   /**
    * Per launch-directory colour palette (an accent key like "emerald"), keyed by
    * absolute cwd. Absent = the default "amber". Like the name, it re-themes only
@@ -154,6 +156,25 @@ export function effectiveToken(cfg: Config, cwd: string, env: NodeJS.ProcessEnv 
 export function titleForCwd(cfg: Config, cwd: string): string | null {
   const t = cfg.cockpitTitle?.[cwd];
   return t && t.trim() ? t.trim() : null;
+}
+
+/** This directory's instance context, "" when unset (src/instance-context.ts). */
+export function instanceContextForCwd(cfg: Config, cwd: string): string {
+  return cfg.instanceContext?.[cwd]?.trim() ?? "";
+}
+
+/** Pure: set (or, with "", remove) this directory's instance context on `cfg`. */
+export function applyInstanceContext(cfg: Config, cwd: string, text: string): Config {
+  const t = text.trim();
+  cfg.instanceContext ??= {};
+  if (t) cfg.instanceContext[cwd] = t;
+  else delete cfg.instanceContext[cwd];
+  return cfg;
+}
+
+/** Set (or clear) this directory's instance context and persist. */
+export function setInstanceContextForCwd(cfg: Config, cwd: string, text: string): void {
+  saveConfig(applyInstanceContext(cfg, cwd, text));
 }
 
 /**

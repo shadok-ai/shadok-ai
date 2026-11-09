@@ -385,20 +385,6 @@
   }
   #migrationBanner.pending { background: var(--amber); color: var(--on-accent); }
   #migrationBanner.failed { background: #b91c1c; color: #fff; }
-  /* Blocking: a multi-tenant instance with no subscription token can start no
-     agent. Same strip as the re-login reminder, red because it blocks. */
-  #mtTokenBanner {
-    flex: 0 0 auto; width: 100%; z-index: 1000;
-    background: #b91c1c; color: #fff;
-    font-family: var(--sans); font-size: 12px;
-    padding: 6px 12px;
-    display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
-  }
-  #mtTokenBanner button {
-    font: inherit; cursor: pointer; padding: 2px 10px;
-    border: 1px solid currentColor; border-radius: 4px;
-    background: transparent; color: inherit;
-  }
   .gauge { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .gauge .value {
     font-family: var(--sans);
@@ -629,6 +615,15 @@
      without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
+  /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
+     glance lands (paintGlance) — a quick cascade top to bottom instead of one
+     late burst. --gi is the row's rank, capped so the tail never drags. */
+  .tab.glance-in .tab-row2, .tab.glance-in .ctxbar {
+    animation: glance-in 0.28s ease-out both;
+    animation-delay: calc(var(--gi, 0) * 35ms);
+  }
+  @keyframes glance-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .tab.glance-in .tab-row2, .tab.glance-in .ctxbar { animation: none; } }
   .tab .name {
     flex: 1;
     min-width: 0;
@@ -1081,6 +1076,51 @@
   .sec-sect { margin: 10px 0 4px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
   .sec-scope { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; }
   .sec-scope select { font-size: 16px; }
+  /* Connected accounts (top of the vault panel). */
+  .ca-section { margin: 0 0 14px; padding: 0 0 12px; border-bottom: 1px solid var(--line); }
+  .ca-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .ca-list { list-style: none; padding: 0; margin: 6px 0 0; display: flex; flex-direction: column; gap: 8px; }
+  .ca-list li { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; }
+  .ca-list .ca-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+  .ca-list .ca-title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ca-list .ca-label { font-weight: 600; font-size: 14px; }
+  .ca-list .ca-via { font-size: 12px; color: var(--text-dim); }
+  .ca-list .ca-exp { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--text-dim); white-space: nowrap; }
+  .ca-list .ca-exp.soon { color: var(--amber); border-color: var(--amber); }
+  .ca-list .ca-exp.expired { color: #e2564a; border-color: #e2564a; }
+  .ca-list .sec-ctl { margin-top: 0; }
+  .ca-list .sec-chip:has(input:disabled) { opacity: .6; cursor: progress; }
+  .ca-list .ca-foot { display: flex; align-items: center; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .ca-list .ca-spacer { flex: 1; }
+  .ca-list .ca-btn { font-size: 12px; padding: 3px 12px; border-radius: 6px; border: 1px solid var(--line); background: none; color: var(--text); cursor: pointer; }
+  .ca-list .ca-btn:hover:not(:disabled) { border-color: var(--amber); }
+  .ca-list .ca-btn.danger { color: #e2564a; }
+  .ca-list .ca-btn.danger:hover:not(:disabled) { border-color: #e2564a; background: color-mix(in srgb, #e2564a 8%, transparent); }
+  .ca-list .ca-log { list-style: none; margin: 4px 0 0; padding: 6px 8px; font-size: 12px; color: var(--text-dim);
+    background: var(--bg); border-radius: 6px; display: flex; flex-direction: column; gap: 3px; overflow-wrap: anywhere; }
+  /* Beats `.ca-list li` (the account row's card), which would box every entry. */
+  .ca-list .ca-log li { border: 0; padding: 0; border-radius: 0; display: block; }
+  /* The connected-account expiry reminder: same top strip as the re-login one. */
+  #caExpiryBanner {
+    flex: 0 0 auto; width: 100%; z-index: 1000;
+    background: var(--amber); color: var(--on-accent);
+    font-family: var(--sans); font-size: 12px;
+    padding: 6px 12px;
+    display: flex; flex-direction: column; gap: 4px; align-items: center;
+  }
+  #caExpiryBanner .ca-bn { display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap; }
+  #caExpiryBanner button {
+    font: inherit; cursor: pointer; padding: 2px 10px;
+    border: 1px solid currentColor; border-radius: 4px;
+    background: transparent; color: inherit;
+  }
+  /* The LinkedIn draft card in the chat: the dialog skin, the text kept as written. */
+  .turn.social-draft .sd-text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.5; padding: 8px 10px; border-left: 2px solid var(--amber); background: var(--bg); }
+  .turn.social-draft .sd-actions { display: flex; gap: 8px; justify-content: flex-end; }
+  .turn.social-draft .sd-status { font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+  .turn.social-draft .sd-status a { color: var(--amber); }
+  .turn.social-draft.decided .bubble { border-top-color: var(--line); }
+  .turn.social-draft.decided .bubble::before { content: "LinkedIn post"; color: var(--text-dim); }
   #secretsList li.sec-ro code { opacity: .85; }
   #secretsList li.sec-row { flex-wrap: wrap; }
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
@@ -1995,6 +2035,8 @@
   @media (pointer: coarse) {
     textarea, select,
     input[type="text"], input[type="password"], input[type="number"], input[type="search"],
+    .ic-panel textarea,
+    .cx-row input,
     #composer textarea { font-size: 16px; }
   }
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
@@ -2013,6 +2055,27 @@
     font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text);
   }
   #emptyState .es-hint, #startingState .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  /* An agent being born (public/spawn-steps.js): the pumping Shadok, what is
+     happening, and the REAL steps the server announces — in a fresh tab's
+     transcript and in #startingState alike. It fills the empty transcript and
+     leaves on \`ready\` or on the refusal that replaces it. */
+  .spawn-loader {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 24px 12px; text-align: center; animation: fade-in .3s ease;
+  }
+  .spawn-loader .es-title { font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text); }
+  .spawn-loader .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  /* The lead's first turn (startBirth): the loader stays over the chat until it
+     has answered, so the history underneath and the pump line stay hidden. */
+  .transcript.birth > :not(.spawn-loader) { display: none; }
+  #transcripts:has(> .transcript.birth:not([hidden])) ~ #thinking { display: none !important; }
+  .spawn-steps { list-style: none; margin: 4px 0 0; padding: 0; text-align: left; font-size: 13px; color: var(--text-dim); }
+  .spawn-steps li { padding: 2px 0; transition: color .3s; }
+  .spawn-steps li::before { content: "○"; display: inline-block; width: 1.4em; }
+  .spawn-steps li.on { color: var(--text); }
+  .spawn-steps li.on::before { content: "◐"; color: var(--amber); animation: breathe 1.2s ease-in-out infinite; }
+  .spawn-steps li.done::before { content: "●"; color: var(--ok); }
+  @media (prefers-reduced-motion: reduce) { .spawn-loader, .spawn-steps li.on::before { animation: none; } }
   .keys {
     display: flex;
     gap: 6px;
@@ -2088,6 +2151,41 @@
     border-bottom: 1px solid var(--line);
   }
   #diffpanel .mhead button { margin-left: 6px; }
+  /* Agent info panel: what this agent is and what it uses (skills, schedules),
+     the per-agent twin of the Skill Factory's "agents that have it". */
+  #infopanel {
+    width: 340px; max-width: 46%;
+    border-left: 1px solid var(--line);
+    background: var(--bg-inset);
+    display: none; flex-direction: column; min-width: 0;
+  }
+  #infopanel.open { display: flex; }
+  #infopanel .mhead { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  #infopanel .mhead button { margin-left: 6px; }
+  #infoBody { flex: 1; overflow: auto; padding: 6px 16px 18px; font-size: 13px; }
+  #infoBody h3 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+  #infoBody h3 .ip-count { font-weight: 400; color: var(--text-dim); font-size: 12px; }
+  #infoBody .ip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 5px 0; }
+  #infoBody .ip-row .ip-k { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+  #infoBody .ip-row .ip-v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+  #infoBody .ip-sep { height: 1px; background: var(--line); margin: 12px 0 0; }
+  #infoBody .ip-skill {
+    display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 10px;
+    text-align: left; background: none; border: 0; border-radius: 8px; padding: 6px 8px; margin: 0 -8px; color: var(--text); cursor: pointer;
+  }
+  #infoBody .ip-skill:hover { background: var(--amber-soft); }
+  #infoBody .ip-skill .ip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #infoBody .ip-skill .ip-meta { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+  #infoBody .ip-cron { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; background: var(--bg); }
+  #infoBody .ip-cron .ip-prompt { color: var(--text-dim); font-size: 12px; margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #infoBody .ip-chip {
+    display: inline-block; margin: 6px 6px 0 0; padding: 2px 9px; border-radius: 999px; font-size: 12px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); color: var(--text);
+  }
+  #infoBody .ip-chip:hover { border-color: var(--amber); }
+  #infoBody .ip-empty { color: var(--text-dim); font-size: 12px; font-style: italic; padding: 4px 0; }
+  #infoBody .ip-link { background: none; border: 0; padding: 0; color: var(--amber); cursor: pointer; font-size: 12px; }
+  .fp-agent-link { background: none; border: 0; padding: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline dotted; }
   #diffStatus {
     font-family: var(--mono);
     font-size: 11.5px;
@@ -2117,7 +2215,7 @@
   #diffBody .meta { color: var(--text-dim); }
 
   @media (max-width: 900px) {
-    #machine, #diffpanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
+    #machine, #diffpanel, #infopanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
   }
   /* ── Popins ───────────────────────────────────────────────
      ONE CLASS, not a list of ids. The rule used to name
@@ -2186,25 +2284,69 @@
     transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
   }
   #tourOverlay:not(.spotlight) #tourHole { display: none; }
-  /* A real OAuth URL is ~400 chars. Shown in full on purpose — a headless
-     server's operator often has to carry it to another device by hand — so it
-     has to wrap instead of pushing the panel off screen. The page sets no <a>
-     colour anywhere else (this is its first link), so without this the browser
-     default blue lands on a near-black panel and is unreadable. */
-  #authLink {
-    display: block;
-    word-break: break-all;
-    font-family: var(--mono);
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--amber);
-    text-decoration: none;
-    border: 1px solid var(--line);
-    background: var(--bg-inset);
-    border-radius: 6px;
-    padding: 8px 10px;
+  /* The Connect Claude card (public/connect-card.js decides the step). The
+     OAuth URL is ~350 characters: it was shown raw, as a block of underlined
+     blue text that even overflowed one panel. It now sits behind a real
+     button, with a quiet "copy the link" for the person who must carry it to
+     another device. */
+  .cx-panel { width: min(600px, 100%); padding: 20px 22px; }
+  .cx-tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+  .cx-tag.ok { color: var(--ok); }
+  .cx-title { margin: 2px 0 6px; font-size: 17px; font-weight: 600; }
+  .cx-lead { color: var(--text-dim); line-height: 1.55; margin: 0 0 16px; font-size: 13px; }
+  .cx-tiles { display: flex; gap: 12px; align-items: stretch; }
+  .cx-tile {
+    flex: 1; display: flex; flex-direction: column; gap: 6px; text-align: left; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px;
+    background: var(--bg-inset); color: var(--text); font: inherit; font-size: 13px;
   }
-  #authLink:hover { border-color: var(--amber); text-decoration: underline; }
+  .cx-tile.active { border-color: var(--amber); background: var(--amber-soft); }
+  .cx-tile-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+  .cx-rec { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--amber); }
+  .cx-li { color: var(--text-dim); line-height: 1.45; padding-left: 12px; position: relative; }
+  .cx-li::before { content: "•"; position: absolute; left: 0; }
+  .cx-foot {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
+  }
+  .cx-links { display: flex; gap: 14px; flex-wrap: wrap; }
+  .cx-link { color: var(--text-dim); font-size: 12px; text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
+  .cx-link:hover { color: var(--text); }
+  .cx-hint { color: var(--text-dim); font-size: 12px; }
+  .cx-primary, .cx-open, #mtTokenLink, #agentLoginLink {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border-radius: 6px; padding: 9px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--line); background: var(--bg-inset); color: var(--text); text-decoration: none;
+  }
+  .cx-primary.primary, .cx-open.primary, #mtTokenLink[href], #agentLoginLink[href] {
+    background: var(--amber); border-color: var(--amber); color: var(--on-accent);
+  }
+  .cx-open[aria-disabled="true"] { opacity: .55; pointer-events: none; }
+  .cx-step { display: flex; gap: 12px; margin-top: 14px; }
+  .cx-num {
+    flex: none; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%;
+    border: 1px solid var(--amber); color: var(--amber);
+    display: flex; align-items: center; justify-content: center; font-size: 11px;
+  }
+  .cx-step-body { flex: 1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+  .cx-form { flex-direction: column; align-items: stretch; gap: 6px; }
+  #cxPasteForm { display: flex; }
+  #cxPasteForm[hidden] { display: none; }
+  .cx-label { color: var(--text-dim); font-size: 12.5px; }
+  .cx-row { display: flex; gap: 8px; }
+  .cx-row input { flex: 1; min-width: 0; }
+  .cx-msg { font-size: 12.5px; margin: 12px 0 0; }
+  .cx-msg.bad { color: var(--err); }
+  @media (max-width: 640px) {
+    .cx-panel { padding: 16px; }
+    .cx-tiles { flex-direction: column; }
+    .cx-foot .cx-primary, .cx-open { width: 100%; }
+    .cx-foot { flex-direction: column-reverse; align-items: stretch; }
+    .cx-row { flex-direction: column; }
+    .cx-row button { width: 100%; padding: 10px; }
+    /* Safari zooms into a field under 16px (invariant 28). */
+    .cx-row input { font-size: 16px; }
+  }
   /* The panel was off-palette: #1b1d22 instead of --bg-raised, #e8e8ea instead
      of --text, rgba(255,255,255,.15) borders and a 10px radius where the whole
      cockpit uses 6 — i.e. a grey and a white that existed nowhere else. The amber
@@ -2312,14 +2454,16 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
-  /* Backend choice on the sign-in card (src/backend.ts). */
-  .auth-modes { display: flex; gap: 6px; margin: 4px 0 10px; }
-  .auth-modes button {
-    flex: 1; padding: 6px 10px; font-size: 12px; cursor: pointer;
-    border: 1px solid var(--line); border-radius: 6px;
-    background: var(--bg-inset); color: var(--text-dim);
+  .ic-panel textarea {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 140px;
+    background: var(--bg-inset); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px; font-family: var(--sans); line-height: 1.5;
   }
-  .auth-modes button.active { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .ic-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .ic-row .spacer { flex: 1; }
+  .ic-count { font-size: 11.5px; color: var(--text-dim); }
+  .ic-count.over { color: var(--err); }
+  .ic-link { color: var(--text); text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
   .bk-form .field { margin: 10px 0; }
   .bk-form .bk-opt { opacity: .6; font-weight: normal; }
   .bk-form .bk-hint { font-size: 11px; color: var(--text-dim); min-height: 1em; }
@@ -2579,6 +2723,8 @@
     border-radius: 6px; color: inherit; font-family: inherit; padding: 5px 8px; }
   /* Same fine-pointer gate as the ledger's tools (invariant 28). */
   @media (pointer: fine) { #secAuditTools input, #secAuditTools select { font-size: 13px; } }
+  /* The instance-context editor: compact only for a mouse — on touch it would make Safari zoom (invariant 28). */
+  @media (pointer: fine) { .ic-panel textarea { font-size: 13px; } }
   #secAuditTools input { flex: 1 1 120px; min-width: 100px; }
   #secAuditTools .ldg-count { color: var(--text-dim); font-size: 11px; margin-top: 7px; }
   #secAuditList { list-style: none; margin: 0; padding: 0; }
@@ -2768,7 +2914,7 @@
     main { padding: 0; gap: 0; }
     /* Conversation */
     .chat-pane { border: 0; border-radius: 0; background: var(--pane-main); }
-    #machine, #diffpanel { border-radius: 0; border-top: 0; border-bottom: 0; border-right: 0; }
+    #machine, #diffpanel, #infopanel { border-radius: 0; border-top: 0; border-bottom: 0; border-right: 0; }
   }
 
   /* Channel header: avatar, name, status, then actions. */
@@ -2778,11 +2924,12 @@
   #chanBar .gauge .label { display: none; }
   #chanBar .gauge .value { color: var(--text-dim); font-size: 12px; }
   #chanBar .gauge:nth-of-type(3) { display: none; } /* the session id: in the tooltip of the menu */
-  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm {
+  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm, #chanBar .chan-actions #chanInfo {
     position: relative; align-self: stretch; display: inline-flex; align-items: center; gap: 6px;
     border: 0; border-radius: 0; background: none; padding: 0 10px; color: var(--text-dim); font-size: 14px;
   }
-  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover, #chanBar .chan-actions #chanInfo:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanInfo.on { color: var(--amber); }
   #chanBar .chan-actions #chanTerm.on { color: var(--text); font-weight: 600; background: none; border: 0; }
   #chanBar .chan-actions #chanTerm.on::after {
     content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--amber);
@@ -2874,6 +3021,206 @@
     .rail-pill { transition: none; }
     .skel { animation: none; }
   }
+
+  /* ══ Fluid layer ═════════════════════════════════════════════════════════
+     The cockpit read as austere: flat grey slabs cut apart by hairlines. This
+     layer keeps the layout and swaps LINES for DEPTH — surfaces are separated
+     by tint, radius and soft shadow, the accent colours the page itself, and
+     state changes glide instead of snapping. Few new details on purpose: the
+     main lever is the tokens (--line fades, --radius grows), so every older
+     rule that draws a border or a corner follows on its own. Placed last so it
+     wins at equal specificity; all motion is off under reduced motion. */
+  :root {
+    --radius: 14px;
+    /* Hairlines fade to a whisper: they stay where a field needs an edge, but
+       stop carving the screen into boxes. */
+    --line: color-mix(in srgb, var(--text) 7%, transparent);
+    --card-shadow: 0 18px 40px -22px rgba(0, 0, 0, .75), 0 2px 6px -2px rgba(0, 0, 0, .35);
+    --soft-shadow: 0 6px 18px -10px rgba(0, 0, 0, .6);
+    --ease-fluid: cubic-bezier(.22, 1, .36, 1);
+  }
+  :root[data-mode="light"] {
+    --radius: 14px;
+    --line: rgba(0, 0, 0, .07);
+    --card-shadow: 0 18px 40px -24px rgba(30, 30, 60, .28), 0 1px 3px rgba(30, 30, 60, .06);
+    --soft-shadow: 0 6px 16px -10px rgba(30, 30, 60, .25);
+  }
+
+  /* The page carries the accent as an ambient glow, so the instance's colour
+     is felt everywhere instead of only on buttons. */
+  body {
+    background:
+      radial-gradient(1100px 620px at -5% -10%, color-mix(in srgb, var(--amber) 22%, transparent), transparent 62%),
+      radial-gradient(900px 620px at 105% 110%, color-mix(in srgb, var(--phosphor) 14%, transparent), transparent 60%),
+      var(--page);
+  }
+  header { background: transparent; }
+
+  /* Everything that changes state glides. */
+  button, .tab, .rail-item, .group-head, .bubble, #composer textarea, .profile-card, .member-tile {
+    transition: background-color .22s var(--ease-fluid), color .22s var(--ease-fluid),
+      border-color .22s var(--ease-fluid), box-shadow .22s var(--ease-fluid), transform .22s var(--ease-fluid);
+  }
+  button { border-radius: 10px; }
+  button:active:not(:disabled) { transform: scale(.97); }
+  header button.icon { border-radius: 10px; }
+  button.primary {
+    border: 0;
+    background: linear-gradient(135deg, var(--amber), var(--phosphor));
+    box-shadow: 0 6px 16px -8px var(--amber);
+  }
+  button.primary:hover { background: linear-gradient(135deg, var(--amber), var(--phosphor)); box-shadow: 0 8px 22px -8px var(--amber); }
+
+  /* Columns become floating cards on the glow (desktop only: the phone keeps
+     its full-bleed sheet). */
+  @media (min-width: 641px) {
+    main { padding: 2px 12px 12px; gap: 12px; }
+    #tabbar { border: 0; box-shadow: var(--card-shadow); }
+    /* The rail and the agents column used to be two halves of one card; with
+       the gap back they are two cards, each fully rounded. */
+    body.has-groups #groupRail { border: 0; border-radius: var(--radius); box-shadow: var(--card-shadow); }
+    body.has-groups #tabbar { border-radius: var(--radius); }
+    .chat-pane {
+      border: 0; border-radius: calc(var(--radius) + 4px);
+      background: var(--pane-main); box-shadow: var(--card-shadow);
+    }
+    #machine, #diffpanel, #infopanel { border: 0; border-radius: calc(var(--radius) + 4px); box-shadow: var(--card-shadow); }
+  }
+
+  /* Lists: soft pills, no rings. The selected agent lifts off the list with a
+     glow in its own colour; the state fills (working / unread / waiting) stay
+     untouched so they keep their meaning. */
+  .tab, .group-head, .rail-item { border-radius: 12px; }
+  .tab:hover, .group-head:hover { background-color: color-mix(in srgb, var(--text) 5%, transparent); }
+  .tab.active,
+  :root:not([data-mode="light"]) .tab.active {
+    background-color: color-mix(in srgb, var(--text) 7%, transparent);
+    box-shadow: 0 8px 20px -14px var(--ac, var(--amber));
+  }
+  :root[data-mode="light"] .tab.active { background-color: var(--bg-raised); box-shadow: var(--soft-shadow); }
+  .tab.unread { border-radius: 12px; }
+  .tav { box-shadow: 0 4px 10px -4px var(--ac, var(--amber)); }
+  .rail-item.active { border-color: transparent; }
+  .rail-pill {
+    border: 0; border-radius: 12px;
+    background: color-mix(in srgb, var(--amber) 16%, var(--bg-raised));
+    box-shadow: var(--soft-shadow);
+  }
+  .group-head .gicon { border-radius: 10px; }
+
+  /* Channel header melts into the conversation instead of a ruled band. */
+  #chanBar { background: transparent; border-bottom: 0; }
+
+  /* Messages: rounder bubbles with a tail corner; yours carry the accent. */
+  .bubble { border-radius: 18px; }
+  .turn.user .bubble {
+    border-bottom-right-radius: 6px;
+    background: linear-gradient(135deg,
+      color-mix(in srgb, var(--amber) 30%, var(--bg-raised)),
+      color-mix(in srgb, var(--phosphor) 16%, var(--bg-raised)));
+  }
+  .turn.user.other .bubble { border-bottom-right-radius: 18px; border-bottom-left-radius: 6px; }
+  .turn.claude .bubble { border: 0; border-bottom-left-radius: 6px; box-shadow: var(--soft-shadow); }
+  .turn.dialog .bubble {
+    border-top: 0; border-radius: 18px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 16%, var(--bg-raised)), var(--bg-raised) 70px);
+    box-shadow: var(--soft-shadow);
+  }
+  .turn.dialog.spent .bubble { background: var(--bg-raised); }
+  .bubble.md pre { border: 0; border-radius: 12px; }
+  @keyframes turn-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+  /* Only a message that ARRIVES slides in. Replayed history (.hist) does not:
+     a hidden transcript restarts its animations each time it is shown, so
+     hundreds of old turns would replay at every channel switch — the
+     transcript's own `chat-in` already eases that view in as a whole. */
+  .turn:not(.hist) { animation: turn-in .32s var(--ease-fluid) both; }
+
+  /* Composer: a floating pill that glows on focus. */
+  #composer textarea,
+  #composer textarea:focus-visible {
+    border: 0; border-radius: 22px; padding: 11px 18px;
+    background: var(--bg-raised); box-shadow: var(--soft-shadow);
+  }
+  #composer textarea:focus-visible {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 45%, transparent), 0 10px 28px -12px var(--amber);
+  }
+  .cmp-attach { border-radius: 50%; }
+  #composer button.primary { border-radius: 22px; }
+
+  /* A narrow composer: the field gets the whole first row, the buttons a row of
+     their own beneath it. On one row, four buttons + Send left the textarea
+     ~110px wide — the placeholder wrapped mid-word and was clipped. Keyed on the
+     COMPOSER's width, not the viewport's: on desktop the chat pane is narrowed by
+     the rail, the agents column and the engine room, so a wide window can still
+     hold a narrow composer. */
+  #composer { container: composer / inline-size; }
+  @container composer (max-width: 560px) {
+    #composer .cmp-mic-msg { order: -3; }
+    #composer .cmp-atts { order: -2; }
+    #composer textarea { order: -1; flex-basis: 100%; }
+    #composer .cmp-mic { margin-left: auto; }
+    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 38px; }
+    #composer .cmp-attach { width: 38px; }
+  }
+
+  /* Floating menus: lifted, not outlined. */
+  #moreMenu, #tabMenu, #verMenu, .slash-menu {
+    border-color: transparent; border-radius: 14px;
+    box-shadow: 0 22px 50px -18px rgba(0, 0, 0, .6), 0 0 0 1px var(--line);
+  }
+
+  /* Scrollbars: thin and rounded, gone until needed. */
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 16%, transparent) transparent; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .turn:not(.hist) { animation: none; }
+    button:active:not(:disabled) { transform: none; }
+  }
+
+  /* ══ Shadok soul ═════════════════════════════════════════════════════════
+     The Shadok's voice (shadok-soul.js): the header mark answers a click with a
+     maxim in a speech bubble, the empty states carry a big Shadok and a thought,
+     and the thinking indicator rotates its pump lines. Few pixels, much logic. */
+  header .brand { position: relative; }
+  header .brand-logo { cursor: pointer; outline-offset: 3px; }
+  header .brand-logo.speaking svg { animation: sk-hop .6s var(--ease-fluid); }
+  .sk-say {
+    position: absolute; top: calc(100% + 10px); left: 0; z-index: 60;
+    width: max-content; max-width: 280px;
+    padding: 10px 14px; border-radius: 16px 16px 16px 4px;
+    background: var(--bg-raised); color: var(--text);
+    font-size: 13px; font-weight: 500; line-height: 1.4;
+    box-shadow: 0 18px 40px -16px rgba(0, 0, 0, .55), 0 0 0 1px var(--line);
+    opacity: 0; transform: translateY(-6px) scale(.96); transform-origin: 12px 0;
+    pointer-events: none;
+    transition: opacity .25s var(--ease-fluid), transform .3s var(--ease-fluid);
+  }
+  .sk-say::before {
+    content: ""; position: absolute; top: -6px; left: 12px; width: 12px; height: 12px;
+    background: inherit; transform: rotate(45deg); border-radius: 2px;
+  }
+  .sk-say.show { opacity: 1; transform: none; }
+
+  .es-shadok { display: inline-flex; color: var(--amber); filter: drop-shadow(0 12px 18px color-mix(in srgb, var(--amber) 35%, transparent)); }
+  .es-shadok svg { width: 84px; height: 84px; overflow: visible; }
+  #emptyState .es-shadok { animation: es-float 3.2s ease-in-out infinite; }
+  @keyframes es-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  .es-maxim { margin-top: 6px; color: var(--text-dim); font-size: 13px; font-style: italic; max-width: 40ch; }
+  .es-maxim:empty { display: none; }
+  .es-maxim::before { content: "“"; } .es-maxim::after { content: "”"; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #emptyState .es-shadok, header .brand-logo.speaking svg { animation: none; }
+    .sk-say { transition: none; }
+  }
+  /* The "this agent can't move there" notice (see moveNotice). */
+  .move-notice {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    max-width: min(520px, 92vw); z-index: 200; padding: 10px 14px; border-radius: 10px;
+    background: var(--panel, #1b1d22); color: var(--text, #e8e8ea);
+    border: 1px solid var(--amber, #d9a441); box-shadow: 0 8px 30px rgba(0,0,0,.35);
+    font-size: 13px; line-height: 1.4; cursor: pointer;
+  }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a light-preferring viewer never sees a
@@ -2912,7 +3259,7 @@
 <body>
 
 <header>
-  <span class="brand"><span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 32 32"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><g class="sk-leg sk-leg-l"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/></g><g class="sk-leg sk-leg-r"><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/></g><g class="sk-bob"><line class="sk-arm" x1="21.6" y1="17.2" x2="26" y2="20.4"/><g class="sk-ant sk-ant-l" stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/></g><g class="sk-ant sk-ant-r" stroke-width="0.9"><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><path d="M14.4 18.2 L17.6 18.2 L16 21.6 Z" stroke="none"/><g class="sk-eyes" stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><g class="sk-pupils"><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></g></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
+  <span class="brand"><span class="brand-logo" role="button" tabindex="0" aria-label="Ask the Shadok" title="Ask the Shadok"><svg viewBox="0 0 32 32"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><g class="sk-leg sk-leg-l"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/></g><g class="sk-leg sk-leg-r"><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/></g><g class="sk-bob"><line class="sk-arm" x1="21.6" y1="17.2" x2="26" y2="20.4"/><g class="sk-ant sk-ant-l" stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/></g><g class="sk-ant sk-ant-r" stroke-width="0.9"><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><path d="M14.4 18.2 L17.6 18.2 L16 21.6 Z" stroke="none"/><g class="sk-eyes" stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><g class="sk-pupils"><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></g></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
   <span class="spacer"></span>
   <div class="quotas">
     <div class="quota" id="quota5h" data-window="5h" role="img" aria-label="5h rolling limit" title="5h rolling limit">
@@ -3003,6 +3350,8 @@
        Multi-tenant + admin only; shown by renderAuthRows. -->
   <button class="vm-btn" id="agentAuthBtn" type="button" hidden>🔌 Agent auth &amp; connectors…</button>
   <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
+  <!-- The instance context every agent receives at spawn (src/instance-context.ts). -->
+  <button class="vm-btn" id="instanceContextBtn" type="button">🧭 Instance context…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
   <div class="vm-row"><span class="vm-label">Channel</span>
@@ -3042,6 +3391,18 @@
         <button type="button" class="linkish" id="secretsToProfiles">Manage profiles →</button></p>
     </div>
     <div class="pin-body">
+      <!-- Connected accounts (LinkedIn): the token is held by the server and
+           never reaches this page — every row is the server's publicView. -->
+      <section id="connectedAccounts" class="ca-section" aria-labelledby="caTitle">
+        <div class="ca-head">
+          <strong id="caTitle">Connected accounts</strong>
+          <button type="button" id="caConnect" hidden>Connect LinkedIn</button>
+        </div>
+        <p id="caUnavailable" class="sec-note" hidden>LinkedIn connection is unavailable right now.</p>
+        <p id="caSoftLayer" class="sec-note warn" hidden>On this instance agents run as the same system user as the cockpit: approval protects against mistakes, not against an agent that tries to work around it.</p>
+        <p id="caErr" class="sec-err" role="alert" hidden></p>
+        <ul id="caList" class="ca-list"></ul>
+      </section>
       <div id="secretsScope" class="sec-scope" hidden><span>Group</span><select id="secretsGroup" aria-label="Group whose secrets are shown"></select></div>
       <p id="secretsErr" class="sec-err" role="alert" hidden></p>
       <ul id="secretsList"></ul>
@@ -3496,36 +3857,87 @@
      nothing to say. Deliberately has no close button — while signed out
      nothing works, so dismissing it would only hide the reason. -->
 <div id="authOverlay" class="overlay" hidden>
-  <div id="authPanel" class="sec-panel">
+  <div id="authPanel" class="sec-panel cx-panel">
     <div class="sec-head">
-      <strong id="authTitle">Sign in to Claude</strong>
-      <!-- Shown only for a VOLUNTARY re-login (opened from the panel / banner
-           while already signed in): that card is optional, so it must close.
-           The signed-OUT card has no ✕ on purpose — signing in is the only way
-           to make the instance usable, so it stays a funnel. -->
+      <span class="cx-tag" id="cxTag">Connect Claude</span>
+      <!-- Only a dismissable card (a re-login, a space to connect, the "ask an
+           admin" note) can be closed: the first-run funnel stays a funnel,
+           since nothing works until Claude is connected. -->
       <button id="authClose" type="button" title="Cancel" hidden aria-label="Cancel">✕</button>
     </div>
-    <!-- Where agents get their model: the Claude subscription, or any server
-         that speaks the Anthropic Messages API (src/backend.ts). -->
-    <div class="auth-modes" id="authModes" role="tablist">
-      <button type="button" role="tab" data-mode="claude" class="active">Claude subscription</button>
-      <button type="button" role="tab" data-mode="other">Another model</button>
-    </div>
-    <div id="authClaudeBox">
-      <p class="sec-note" id="authNote">This instance isn't signed in to Claude, so it can't start any agent.</p>
-      <div class="field">
-        <span class="label">1 — Open this link and authorise</span>
-        <a id="authLink" target="_blank" rel="noopener">starting…</a>
+
+    <!-- Step 1 (multi-tenant only): how long the permission lasts. -->
+    <div id="cxChoose" hidden>
+      <h2 class="cx-title">Connect your Claude subscription</h2>
+      <p class="cx-lead">Every agent here is a real Claude Code session, and it runs on <b>your</b> Claude plan — nothing is billed per call. Shadok needs your permission once to use it. Pick how long that permission lasts:</p>
+      <div class="cx-tiles" role="radiogroup">
+        <button type="button" class="cx-tile active" data-dur="token" role="radio" aria-checked="true">
+          <span class="cx-tile-head"><b>1 year</b><span class="cx-rec">recommended</span></span>
+          <span class="cx-li">Set it and forget it</span>
+          <span class="cx-li">Model access only — no connectors</span>
+        </button>
+        <button type="button" class="cx-tile" data-dur="login" role="radio" aria-checked="false">
+          <span class="cx-tile-head"><b>1 month</b></span>
+          <span class="cx-li">Your agents get your claude.ai connectors (Gmail, Drive, Slack…)</span>
+          <span class="cx-li">Shadok reminds you a few days before it expires</span>
+        </button>
       </div>
-      <div class="field">
-        <span class="label">2 — Paste the code you get back</span>
-        <form id="authCodeForm" style="display:flex;gap:8px">
-          <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
-          <button type="submit">Sign in</button>
-        </form>
+      <div class="cx-foot">
+        <span class="cx-links"><a href="#" class="cx-link" id="cxPasteLink">I already have a token</a><a href="#" class="cx-link" id="cxOtherLink">Use another model</a></span>
+        <button type="button" class="primary cx-primary" id="cxContinue">Continue →</button>
       </div>
-      <p class="sec-note" id="authMsg" hidden></p>
     </div>
+
+    <!-- Step 2: authorise on claude.ai and bring the code back — or paste a
+         long-lived token minted elsewhere. Never the raw OAuth URL as text. -->
+    <div id="cxAuth" hidden>
+      <h2 class="cx-title" id="authTitle">Authorise Shadok on claude.ai</h2>
+      <p class="cx-lead" id="authNote">A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.</p>
+      <div id="cxOauth">
+        <div class="cx-step"><span class="cx-num">1</span>
+          <div class="cx-step-body">
+            <a id="authLink" class="cx-open primary" target="_blank" rel="noopener" aria-disabled="true">Preparing…</a>
+            <a href="#" class="cx-link" id="cxCopy" hidden>copy the link instead</a>
+          </div>
+        </div>
+        <div class="cx-step"><span class="cx-num">2</span>
+          <form id="authCodeForm" class="cx-step-body cx-form">
+            <label class="cx-label" for="authCode">Paste the code Claude gave you</label>
+            <span class="cx-row">
+              <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false">
+              <button type="submit">Connect</button>
+            </span>
+          </form>
+        </div>
+      </div>
+      <form id="cxPasteForm" class="cx-form" hidden>
+        <label class="cx-label" for="cxToken">Paste the token <code>claude setup-token</code> printed</label>
+        <span class="cx-row">
+          <input id="cxToken" type="password" placeholder="paste the token…" autocomplete="off" spellcheck="false">
+          <button type="submit">Connect</button>
+        </span>
+      </form>
+      <p class="cx-msg" id="authMsg" hidden></p>
+      <div class="cx-foot">
+        <span class="cx-links"><a href="#" class="cx-link" id="cxBack" hidden>← change duration</a><a href="#" class="cx-link" id="cxOtherLink2" hidden>Use another model</a></span>
+        <span class="cx-hint" id="cxHint">The code expires after about 10 minutes.</span>
+      </div>
+    </div>
+
+    <!-- Step 3: connected. -->
+    <div id="cxDone" hidden>
+      <h2 class="cx-title">✓ Claude is connected</h2>
+      <p class="cx-lead" id="cxDoneText"></p>
+      <div class="cx-foot"><span></span><button type="button" class="primary cx-primary" id="cxGo">Let's go →</button></div>
+    </div>
+
+    <!-- A member on a space nobody connected yet: no OAuth flow, just say who can. -->
+    <div id="cxAsk" hidden>
+      <h2 class="cx-title">This space isn't connected to Claude yet</h2>
+      <p class="cx-lead">Agents here can't start until an admin connects this space to a Claude subscription. Ask an admin to do it from the cockpit.</p>
+      <div class="cx-foot"><span></span><button type="button" class="cx-primary" id="cxAskOk">OK</button></div>
+    </div>
+
     <form id="authOtherBox" class="bk-form" hidden autocomplete="off">
       <p class="sec-note">A model on this machine or a hosted provider. Agents on it need no Claude sign-in and spend none of your subscription.</p>
       <label class="field"><span class="label">Provider</span>
@@ -3541,6 +3953,7 @@
       <label class="field"><span class="label">Context window <span class="bk-opt">— optional, for the gauge</span></span>
         <input id="bkWindow" placeholder="64k" spellcheck="false"></label>
       <div class="bk-actions">
+        <a href="#" class="cx-link" id="cxOtherBack">← back</a>
         <button type="button" id="bkClear" hidden>Back to the Claude subscription</button>
         <span class="spacer"></span>
         <button type="button" id="bkTest">Test</button>
@@ -3606,6 +4019,24 @@
       </div>
     </div>
     <p class="sec-note" id="agentAuthMsg" hidden></p>
+  </div>
+</div>
+
+<!-- Instance context editor (src/instance-context.ts): the few lines every agent
+     on this cockpit receives at spawn, whatever its profile. -->
+<div id="icOverlay" class="overlay" hidden>
+  <div class="sec-panel ic-panel">
+    <div class="sec-head">
+      <strong>Instance context</strong>
+      <button id="icClose" type="button" title="Close" aria-label="Close">✕</button>
+    </div>
+    <p class="sec-note">What this cockpit is for, who works on it, its language — a handful of lines every agent here receives at spawn, on top of its role.</p>
+    <textarea id="icText" rows="8" spellcheck="true" placeholder="e.g. This instance runs side projects with a few friends, to try to get small businesses off the ground. Language: French in conversation; code and docs in English."></textarea>
+    <div class="ic-row"><span class="ic-count" id="icCount">0 / 2000</span><span class="spacer"></span>
+      <button type="button" id="icDraft" hidden>Ask general to draft it</button>
+      <button type="button" class="primary" id="icSave">Save</button></div>
+    <p class="sec-note" id="icMsg" hidden></p>
+    <p class="sec-note">Running agents see a change at their next reload. <a href="#" class="ic-link" id="icRestart">Restart all agents now</a></p>
   </div>
 </div>
 
@@ -3700,6 +4131,8 @@
         <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
         <button id="chanGallery" class="icon" title="Media gallery — every photo and video in this conversation" aria-label="Media gallery"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8.5" cy="9.5" r="1.4" fill="currentColor"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <!-- About this agent: its environment, the skills it uses, its schedules. -->
+        <button id="chanInfo" class="icon" title="About this agent — skills it uses, schedules" aria-label="About this agent" aria-pressed="false"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M14.5 4v16M17 8.5h0M17 12h0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 9h5M6.5 12.5h5M6.5 16h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <!-- No end-session icon here: "✕ Close agent" lives in the ⋯ menu below. -->
         <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <!-- The per-agent menu (rename, profile, mirror, report to, close). It's
@@ -3713,10 +4146,15 @@
     <!-- No agent: an invitation, not a pre-filled form. Creation happens in a
          popin (#setupOverlay) and only creates the channel on submit — opening it
          then backing out no longer leaves a stillborn tab. -->
+    <!-- .es-shadok is filled by the script (`shadokInner`, the favicon's drawing):
+         idle and bobbing here, pumping in #startingState. .es-maxim gets a fresh
+         maxim each time the empty state shows (shadok-soul.js). -->
     <div id="emptyState">
+      <span class="es-shadok" aria-hidden="true"></span>
       <span class="es-title">No agent open</span>
       <p class="es-hint">Every agent is a real Claude Code session with its own directory and its own branch. Start one and it takes the controls.</p>
       <button class="primary" id="emptyNewBtn">＋ new agent</button>
+      <p class="es-maxim"></p>
     </div>
 
     <!-- The same "nothing to show" moment, but one the server has told us is
@@ -3727,8 +4165,10 @@
          being born; the two are told apart by GET /first-agent, never guessed
          from the tab count. -->
     <div id="startingState">
-      <span class="es-title">Starting your first agent…</span>
+      <span class="es-shadok pumping" aria-hidden="true"></span>
+      <span class="es-title">Your first agent is waking up…</span>
       <p class="es-hint">This cockpit has no agent yet, so one is being started for you in the launch directory. It takes a few seconds, then it takes the controls and says hello.</p>
+      <ul class="spawn-steps" id="startingSteps"></ul>
     </div>
 
     <div id="transcripts"></div>
@@ -3809,6 +4249,17 @@
     </div>
     <div id="diffStatus"></div>
     <pre id="diffBody"></pre>
+  </aside>
+
+  <aside id="infopanel" aria-label="About this agent">
+    <div class="mhead">
+      <span class="label" id="infoTitle">Agent</span>
+      <span>
+        <button id="refreshInfo">Refresh</button>
+        <button id="closeInfo">Close</button>
+      </span>
+    </div>
+    <div id="infoBody"></div>
   </aside>
 </main>
 
@@ -3894,11 +4345,14 @@
   window.envVarAsks = envVarAsks;
   import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
   window.claudeUpdateState = claudeUpdateState;
+  import { connectCardPlan, sameConnectTarget } from "/connect-card.js?v=__ASSET_V__";
+  window.connectCardPlan = connectCardPlan;
+  window.sameConnectTarget = sameConnectTarget;
   import { buildMessageLink, parseMessageLink, samePrompt } from "/deep-link.js?v=__ASSET_V__";
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
   window.samePrompt = samePrompt;
-  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget } from "/group-nav.js?v=__ASSET_V__";
+  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget, groupMoveRefusal } from "/group-nav.js?v=__ASSET_V__";
   window.GROUP_ICONS = GROUP_ICONS;
   window.UNGROUPED = UNGROUPED;
   window.randomGroupIcon = randomGroupIcon;
@@ -3908,11 +4362,31 @@
   window.reconcileTabGroup = reconcileTabGroup;
   window.groupIsDirty = groupIsDirty;
   window.focusTarget = focusTarget;
+  window.groupMoveRefusal = groupMoveRefusal;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
+  import { pumpLine, mascotSay, pickMaxim } from "/shadok-soul.js?v=__ASSET_V__";
+  window.pumpLine = pumpLine;
+  window.mascotSay = mascotSay;
+  window.pickMaxim = pickMaxim;
+  import { spawnStepStates, spawnLoaderTitle, SPAWN_HINT } from "/spawn-steps.js?v=__ASSET_V__";
+  window.spawnStepStates = spawnStepStates;
+  window.spawnLoaderTitle = spawnLoaderTitle;
+  window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
+  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine } from "/social-card.js?v=__ASSET_V__";
+  window.draftCardModel = draftCardModel;
+  window.accountRowModel = accountRowModel;
+  window.hasPendingDraft = hasPendingDraft;
+  window.autonomousConfirmText = autonomousConfirmText;
+  window.shareChoices = shareChoices;
+  window.toggleShare = toggleShare;
+  window.profileChoices = profileChoices;
+  window.toggleProfile = toggleProfile;
+  window.accountBanners = accountBanners;
+  window.logEntryLine = logEntryLine;
   import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
@@ -4068,6 +4542,9 @@
     fmtExpiry: () => "—",
     expiryWarning: () => null,
     accountExpiryLine: () => null,
+    // Before the module lands, never open the Connect card on a guess.
+    connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
+    sameConnectTarget: () => false,
     // No module → no link button, and a link opened before it lands is read
     // again on `shadok-bridge-ready`.
     buildMessageLink: () => null,
@@ -4088,6 +4565,9 @@
       return { move: true, synced: srv };
     },
     groupIsDirty: (local, synced) => synced === undefined || (local ?? null) !== synced,
+    // A drop is a user gesture, long after the module lands; allowing it here
+    // costs nothing — the server enforces the same rule (src/groups.ts).
+    groupMoveRefusal: () => null,
     // A group switch is a user click, long after the module lands; the stub
     // mirrors the real "remembered-or-first" so even a race keeps today's
     // top-agent fallback.
@@ -4100,6 +4580,37 @@
     looksLikeEmoji: () => false,
     uploadFailure: (status, contentType) =>
       /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
+    // A draft can arrive in the history replay before the module lands. The
+    // stubs mirror the real pending rule, so the tab still asks for an answer
+    // and the card still offers its buttons; the card repaints on bridge-ready.
+    draftCardModel: (d) => {
+      const pending = !d || !d.status || d.status === "pending";
+      const actions = pending ? [{ action: "publish", label: "Publish" }, { action: "discard", label: "Discard" }] : [];
+      const title = "LinkedIn post as " + ((d && d.account) || "(disconnected account)");
+      const text = d && typeof d.text === "string" ? d.text : "";
+      return { title, text, image: null, actions, statusLine: pending ? "" : String((d && d.status) || ""), link: null, pending };
+    },
+    hasPendingDraft: (drafts) => [...(drafts || [])].some((d) => d && d.status === "pending"),
+    // The panel opens on a click, long after the module lands; neutral rows.
+    accountRowModel: (a) => ({ label: (a && a.label) || "", via: "", expiryText: "", tone: "ok", shareText: "", policyText: "" }),
+    autonomousConfirmText: (a) => `Agents will be able to post as ${(a && a.label) || "this account"} without asking anyone.`,
+    // Until the module lands the row shows no share boxes at all: a stub that
+    // guessed the share could PUT a wrong one on the first click.
+    shareChoices: () => [],
+    toggleShare: (s) => s,
+    profileChoices: () => [],
+    toggleProfile: (s) => s,
+    // No banner until the module lands: the check re-runs on bridge-ready.
+    accountBanners: () => [],
+    logEntryLine: (e) => String((e && e.outcome) || ""),
+    // The Shadok's voice (shadok-soul.js): before the module lands it says the
+    // classic line, one maxim, and the empty state's thought stays empty (hidden).
+    pumpLine: () => "Shadok is pumping",
+    mascotSay: () => "When in doubt, pump.",
+    pickMaxim: () => "",
+    // A birth loader before the module lands: a title, no steps — never a guess.
+    spawnStepStates: () => [],
+    spawnLoaderTitle: (n) => `${(typeof n === "string" && n.trim()) || "Your agent"} is waking up…`,
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -4126,6 +4637,9 @@
       if (typeof renderProfileGrid === "function" && $("profileGrid")) renderProfileGrid(false);
       if (typeof renderProfilesList === "function" && !$("profilesOverlay").hidden) renderProfilesList();
       if (typeof renderSecrets === "function" && !$("secretsOverlay").hidden) renderSecrets();
+      if (typeof renderConnectedAccounts === "function" && !$("secretsOverlay").hidden) renderConnectedAccounts();
+      if (typeof paintAccountBanner === "function") paintAccountBanner();
+      if (typeof repaintDraftCards === "function") repaintDraftCards();
       // The re-login banner's first pass may have run on the neutral stub
       // (expiryWarning → null); re-evaluate now the real clock has landed.
       if (typeof updateExpiryBanner === "function") updateExpiryBanner();
@@ -4262,6 +4776,80 @@
   function showChatSkeleton(t) {
     if (t.transcriptEl.childElementCount) return;
     t.transcriptEl.innerHTML = skeletonHTML("chat");
+  }
+  /** Fill a steps <ul> for the step the server last announced. Built with
+   *  textContent, never markup. Before the module bridge is up (invariant 10) it
+   *  leaves the list empty rather than guess. */
+  function renderSpawnSteps(ul, step, hello = false) {
+    if (!ul || !window.spawnStepStates) return;
+    ul.replaceChildren(...window.spawnStepStates(step, { hello }).map((s) => {
+      const li = document.createElement("li");
+      li.className = s.state;
+      li.textContent = s.label;
+      return li;
+    }));
+  }
+  /** A brand-new tab: the agent is being born — show it instead of a black pane.
+   *  Only on an EMPTY transcript; a reconnect keeps what is already there. The
+   *  title names the agent only when the person named it (an agent's name is
+   *  text it chose, so it goes in as textContent). */
+  function showSpawnLoader(t) {
+    if (t.transcriptEl.childElementCount) return;
+    t.transcriptEl.replaceChildren(buildSpawnLoader(t, null, false));
+  }
+  function buildSpawnLoader(t, step, hello) {
+    const box = document.createElement("div");
+    box.className = "spawn-loader";
+    box.setAttribute("aria-busy", "true");
+    box.setAttribute("aria-live", "polite");
+    const sk = document.createElement("span");
+    sk.className = "es-shadok pumping";
+    sk.setAttribute("aria-hidden", "true");
+    if (window.shadokPumpSvg) sk.innerHTML = window.shadokPumpSvg(0);
+    const title = document.createElement("span");
+    title.className = "es-title";
+    const name = t.customName ? t.nameEl.textContent : "";
+    title.textContent = window.spawnLoaderTitle ? window.spawnLoaderTitle(name) : "Your agent is waking up…";
+    box.append(sk, title);
+    if (window.SPAWN_HINT) {
+      const hint = document.createElement("p");
+      hint.className = "es-hint";
+      hint.textContent = window.SPAWN_HINT;
+      box.append(hint);
+    }
+    const ul = document.createElement("ul");
+    ul.className = "spawn-steps";
+    renderSpawnSteps(ul, step, hello);
+    box.append(ul);
+    return box;
+  }
+  function setSpawnStep(t, step) {
+    renderSpawnSteps(t.transcriptEl.querySelector(":scope > .spawn-loader .spawn-steps"), step, !!t.birth);
+  }
+  /** The LEAD's birth: it keeps the loader (with "Saying hello") over its chat
+   *  until it has answered — the history arriving underneath stays hidden. */
+  function startBirth(t, step = firstAgentStep) {
+    if (!t.birth) {
+      t.birth = true;
+      t.transcriptEl.classList.add("birth");
+      const old = t.transcriptEl.querySelector(":scope > .spawn-loader");
+      if (old) old.remove();
+      t.transcriptEl.prepend(buildSpawnLoader(t, step, true));
+    } else setSpawnStep(t, step);
+  }
+  /** It answered (or the wait ended): the conversation takes over. */
+  function endBirth(t) {
+    if (!t.birth) return;
+    t.birth = false;
+    t.transcriptEl.classList.remove("birth");
+    clearSpawnLoader(t);
+    t.transcriptEl._stickBottom = true;
+  }
+  /** Every way out of a birth — ready, refusal, exit, gone — ends the loader. */
+  function clearSpawnLoader(t) {
+    if (t.birth) { endBirth(t); return; }
+    const l = t.transcriptEl.querySelector(":scope > .spawn-loader");
+    if (l) l.remove();
   }
   function clearChatSkeleton(t) {
     const s = t.transcriptEl.querySelector(":scope > .skel-chat");
@@ -5535,12 +6123,30 @@
   let dragTabEl = null;
   let dragTabHome = null;
   let dragGroupEl = null;
-  // On a capable (multi-tenant) instance `channel.group` is SERVER_OWNED, set at
-  // spawn from identity: a cross-group drop would only LIE (the server ignores
-  // it, and a private agent would look like it sits in the commons). Reordering
-  // inside its own group stays free; mono-tenant groups are cosmetic and move.
+  // On a capable (multi-tenant) instance a group's nature decides the OS user an
+  // agent runs as, so a move is allowed only where it changes nothing about the
+  // running agent: between public groups and Main (all the commons user), never
+  // into or out of a Private/Personal one (`groupMoveRefusal`, enforced again by
+  // the server). Mono-tenant groups are cosmetic and always move.
+  const zoneGroup = (zone) => (zone && zone._group) || groups.find((g) => g.bodyEl === zone) || null;
+  function tabMoveRefusal(zone) {
+    if (groupCapable !== true || !dragTabHome || zone === dragTabHome) return null;
+    return window.groupMoveRefusal(zoneGroup(dragTabHome), zoneGroup(zone));
+  }
   function tabMoveAllowed(zone) {
-    return groupCapable !== true || !dragTabHome || zone === dragTabHome;
+    return tabMoveRefusal(zone) === null;
+  }
+  // The refusal is SAID, on the drop: a drag that simply does not move reads as
+  // a broken UI. One notice at a time, gone after a few seconds or on click.
+  function moveNotice(text) {
+    document.querySelectorAll(".move-notice").forEach((n) => n.remove());
+    const n = document.createElement("div");
+    n.className = "move-notice";
+    n.setAttribute("role", "status");
+    n.textContent = text;
+    n.addEventListener("click", () => n.remove());
+    document.body.appendChild(n);
+    setTimeout(() => n.remove(), 7000);
   }
 
   function endDrag() {
@@ -5596,6 +6202,11 @@
   });
   tabbar.addEventListener("drop", (e) => {
     if (dragTabEl || dragGroupEl) e.preventDefault();
+    if (!dragTabEl) return;
+    const head = e.target.closest(".group-head");
+    const zone = head ? head.parentNode._group.bodyEl : e.target.closest(".tab")?.parentNode || e.target.closest("#ungrouped, .group-body");
+    const why = zone && tabMoveRefusal(zone);
+    if (why) moveNotice(why);
   });
 
   // ── Groups column (two-column navigation) ──────────────
@@ -5856,7 +6467,9 @@
       e.preventDefault();
       if (!dragTabEl) return;
       const body = group ? group.bodyEl : ungroupedEl;
-      if (dragTabEl.parentNode !== body && tabMoveAllowed(body)) body.appendChild(dragTabEl);
+      const why = dragTabEl.parentNode !== body ? tabMoveRefusal(body) : null;
+      if (why) moveNotice(why);
+      else if (dragTabEl.parentNode !== body) body.appendChild(dragTabEl);
       endDrag();
     });
     return item;
@@ -6050,6 +6663,9 @@
 
   /** Channel highlight: "working" | "needs-answer" | "unread" | null. */
   function setTabMood(tab, mood) {
+    // A LinkedIn draft waiting for a person outranks every other mood until it
+    // is decided: a turn ending or a dialog being answered must not hide it.
+    if (mood !== "needs-answer" && tab.drafts && window.hasPendingDraft(tab.drafts.values())) mood = "needs-answer";
     const wasNeeds = tab.btnEl.classList.contains("needs-answer");
     tab.btnEl.classList.toggle("working", mood === "working");
     tab.btnEl.classList.toggle("needs-answer", mood === "needs-answer");
@@ -6274,6 +6890,7 @@
           nt.nameEl.textContent = c.name;
         }
         if (isMain(c)) markMainTab(nt);
+        if (isMain(c) && firstAgentPending) startBirth(nt);
         launchTab(nt, {
           cwd: c.cwd,
           resume: c.sessionId,
@@ -6305,10 +6922,19 @@
   // (invariant 18), and guessing would either tell a returning user their first
   // agent is starting forever, or invite a newcomer to create a second one.
   let firstAgentPending = false;
+  let firstAgentStep = null;
   async function syncFirstAgent() {
     let st;
     try { st = await (await fetch("/first-agent")).json(); } catch { return; }
     const now = !!(st && st.pending);
+    // The lead's spawn reports the same real steps as a tab (src/first-agent.ts),
+    // plus "Saying hello" while its greeting is under way.
+    firstAgentStep = now ? st.step || null : null;
+    if (now) renderSpawnSteps($("startingSteps"), firstAgentStep, true);
+    for (const t of tabs) {
+      if (now && st.greeting && t.sessionId === st.greeting) startBirth(t, firstAgentStep);
+      else if (!now) endBirth(t);
+    }
     if (now === firstAgentPending) return;
     firstAgentPending = now;
     // Only the no-agent panel changes; a cockpit with an active tab shows neither.
@@ -6324,12 +6950,18 @@
   // the poll up for everyone would be paying for it forever.
   const SYNC_IDLE_MS = 4000;
   const SYNC_STARTING_MS = 800;
+  let firstSyncPass = true;
   async function syncLoop() {
     try {
+      // Asked BEFORE the channels on the first pass: a lead discovered then must
+      // be born in birth mode (startBirth), and with a tab already restored the
+      // condition below would never ask at all.
+      if (firstSyncPass) await syncFirstAgent();
       await syncChannels();
       // Only asked while it can change anything: with no tab on screen, or to
       // see a pending wait end. Steady state stays exactly one /channels fetch.
-      if (!tabs.length || firstAgentPending) await syncFirstAgent();
+      if (!firstSyncPass && (!tabs.length || firstAgentPending)) await syncFirstAgent();
+      firstSyncPass = false;
     } catch {
       // One bad pass must never END the reconciliation. A setInterval could not
       // die; a self-rescheduling loop can, and losing it would silently stop
@@ -6358,6 +6990,8 @@
     // The gallery is per-agent; switching agents under it would show the old
     // one's media. Close it rather than silently mislabel the grid.
     if (switched) closeGallery();
+    // The info panel follows the agent instead (it is cheap and always right).
+    if (switched && $("infopanel").classList.contains("open")) renderInfoPanel();
     tabs.forEach((t) => {
       t.btnEl.classList.toggle("active", t === tab);
       t.transcriptEl.hidden = t !== tab;
@@ -6748,13 +7382,71 @@
       `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", { lever, bob })}</svg>`;
   }
   renderTw(0); // populate immediately so it isn't blank on first show
-  if (!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
-    let twPhase = 0;
-    setInterval(() => {
-      if (!thinkingEl || !thinkingEl.classList.contains("visible")) return;
-      twPhase = (twPhase + 1) % PUMP_FRAMES;
-      renderTw((Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2);
-    }, 95);
+  // The empty states get the same Shadok, big: idle in #emptyState (CSS bobs
+  // it), pumping in #startingState — the first agent is being pumped into being.
+  const esIdle = document.querySelector("#emptyState .es-shadok");
+  const esPump = document.querySelector("#startingState .es-shadok");
+  const startingEl = document.getElementById("startingState");
+  const shadokSvg = (pose) => `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", pose)}</svg>`;
+  if (esIdle) esIdle.innerHTML = shadokSvg({});
+  if (esPump) esPump.innerHTML = shadokSvg(pumpPose(0));
+  // A fresh tab's loader (showSpawnLoader) draws the same Shadok; exposed for it.
+  window.shadokPumpSvg = (p) => shadokSvg(pumpPose(p));
+  // The indicator's words rotate through the Shadok's pump lines (shadok-soul.js)
+  // from the moment a turn shows it; that is text, not motion, so it runs under
+  // reduced motion too — only the pumping frames are gated.
+  const twText = document.querySelector("#thinking .tw-text");
+  const pumpMotion = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  let twPhase = 0, twSince = 0;
+  setInterval(() => {
+    const thinkingOn = !!thinkingEl && thinkingEl.classList.contains("visible");
+    const startingOn = !!startingEl && startingEl.classList.contains("visible");
+    // The active tab's birth loader, if it has one — only the visible one pumps.
+    const tabPump = active ? active.transcriptEl.querySelector(":scope > .spawn-loader .es-shadok") : null;
+    if (!thinkingOn) twSince = 0;
+    if (!thinkingOn && !startingOn && !tabPump) return;
+    if (thinkingOn && twText && window.pumpLine) {
+      if (!twSince) twSince = Date.now();
+      const line = window.pumpLine(Date.now() - twSince);
+      if (twText.textContent !== line) twText.textContent = line;
+    }
+    if (!pumpMotion) return;
+    twPhase = (twPhase + 1) % PUMP_FRAMES;
+    const p = (Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2;
+    if (thinkingOn) renderTw(p);
+    if (startingOn && esPump) esPump.innerHTML = shadokSvg(pumpPose(p));
+    if (tabPump) tabPump.innerHTML = shadokSvg(pumpPose(p));
+  }, 95);
+
+  // Click the header mark and the Shadok says something: a maxim, or now and
+  // then a head count of the agents in Shadok numerals. One bubble, re-used; a
+  // second click while it is up just gives a new thought.
+  const brandLogo = document.querySelector("header .brand-logo");
+  let skSay = null, skSayTimer = 0, skLast = null;
+  function shadokSpeak() {
+    if (!brandLogo || !window.mascotSay) return;
+    if (!skSay) {
+      skSay = document.createElement("span");
+      skSay.className = "sk-say";
+      skSay.setAttribute("role", "status");
+      brandLogo.parentElement.appendChild(skSay);
+    }
+    skLast = window.mascotSay(tabs.length, Math.random, skLast);
+    skSay.textContent = skLast;
+    skSay.classList.remove("show");
+    void skSay.offsetWidth; // restart the pop-in on a repeat click
+    skSay.classList.add("show");
+    brandLogo.classList.remove("speaking");
+    void brandLogo.offsetWidth;
+    brandLogo.classList.add("speaking");
+    clearTimeout(skSayTimer);
+    skSayTimer = setTimeout(() => { skSay.classList.remove("show"); brandLogo.classList.remove("speaking"); }, 5200);
+  }
+  if (brandLogo) {
+    brandLogo.addEventListener("click", (e) => { e.stopPropagation(); shadokSpeak(); });
+    brandLogo.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); shadokSpeak(); }
+    });
   }
   // Coming back must stop the blink at once, not at the next tick. Both signals
   // matter: switching tabs fires visibilitychange, switching application only
@@ -6897,6 +7589,7 @@
       // about an agent that does not exist.
       $("chanCron").disabled = true;
       $("chanGallery").disabled = true;
+      $("chanInfo").disabled = true;
       closeGallery(); // no agent → its media grid is stale; don't leave it up
       paintChanUpdate();
       // Two different truths behind the same empty panel — the server tells us
@@ -6904,12 +7597,18 @@
       // second lead agent while theirs is being born.
       $("emptyState").classList.toggle("visible", !firstAgentPending);
       $("startingState").classList.toggle("visible", firstAgentPending);
+      // A fresh Shadok thought each time the empty panel shows. The bridge may
+      // not be up yet on the very first paint (invariant 10): then the line
+      // stays empty, which is harmless.
+      const esMaxim = document.querySelector("#emptyState .es-maxim");
+      if (esMaxim && window.pickMaxim) esMaxim.textContent = window.pickMaxim(Math.random, esMaxim.textContent);
       return;
     }
     $("emptyState").classList.remove("visible");
     $("startingState").classList.remove("visible");
     $("chanCron").disabled = !t.sessionId;
     $("chanGallery").disabled = !t.sessionId;
+    $("chanInfo").disabled = !t.sessionId;
     paintChanUpdate();
     $("led").className = "led " +
       ({ setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[t.status]);
@@ -7062,6 +7761,48 @@
     tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
     tab.lastAtEl.style.opacity = String(ageOpacity(Date.now() - tab.lastMsgAt));
     tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
+  }
+  /**
+   * Fills the rows' "xxx ago" + context % from `GET /channels/glance` (the end
+   * of each transcript, no resume needed), cascading them in top to bottom.
+   * Never overwrites what a tab's own WebSocket already delivered: `history`
+   * and `context` are the authority, the glance only fills the wait.
+   */
+  async function paintGlance(list) {
+    let rows;
+    try {
+      const r = await fetch("/channels/glance");
+      if (!r.ok) return;
+      rows = await r.json();
+    } catch { return; }
+    if (!Array.isArray(rows)) return;
+    const byId = new Map(rows.map((g) => [g.sessionId, g]));
+    // Rank by on-screen order so the cascade runs down the column.
+    const ordered = list
+      .filter((t) => t.btnEl?.isConnected)
+      .sort((a, b) => (a.btnEl.compareDocumentPosition(b.btnEl) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    let rank = 0;
+    for (const t of ordered) {
+      const g = byId.get(t.sessionId);
+      if (!g) continue;
+      let painted = false;
+      if (!Number.isFinite(t.lastMsgAt) && Number.isFinite(g.lastAt)) {
+        t.lastMsgAt = g.lastAt;
+        renderLastAt(t);
+        painted = true;
+      }
+      if (t.contextPct == null && Number.isFinite(g.contextPct)) {
+        t.contextPct = g.contextPct;
+        renderContext(t);
+        painted = true;
+      }
+      // Only rows on screen take a rank: a hidden group's rows must not push
+      // the visible ones further down the cascade.
+      if (!painted || t.btnEl.offsetParent === null) continue;
+      t.btnEl.style.setProperty("--gi", Math.min(rank++, 12));
+      t.btnEl.classList.add("glance-in");
+      setTimeout(() => t.btnEl.classList.remove("glance-in"), 800);
+    }
   }
   // The relative time ages on its own: refresh every tab periodically.
   setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
@@ -7651,6 +8392,132 @@
     pinBottom(tab);
   }
 
+  /** A LinkedIn draft (`DraftView`, src/social-drafts.ts) as an approval card.
+   *  Upserted by id: the live `social-draft` message and the history replay
+   *  both land here, so a decision updates the card in place. The TEXT is the
+   *  agent's and goes through textContent only (invariant 13). */
+  function renderSocialDraft(tab, draft, at) {
+    if (!draft || !draft.id) return;
+    if (!tab.drafts) tab.drafts = new Map();
+    if (!tab.draftEls) tab.draftEls = new Map();
+    tab.drafts.set(draft.id, draft);
+    let turn = tab.draftEls.get(draft.id);
+    const fresh = !turn || !turn.isConnected;
+    if (fresh) {
+      turn = document.createElement("div");
+      turn.className = "turn claude dialog social-draft";
+      turn.dataset.draftId = draft.id;
+      tab.draftEls.set(draft.id, turn);
+      if (Number.isFinite(at)) { tab.lastMsgAt = at; renderLastAt(tab); }
+    }
+    paintDraftCard(tab, turn, draft, at);
+    if (fresh) {
+      tab.transcriptEl.appendChild(turn);
+      pinBottom(tab);
+    }
+    refreshDraftMood(tab);
+  }
+
+  function paintDraftCard(tab, turn, draft, at) {
+    const m = window.draftCardModel(draft);
+    turn.classList.toggle("decided", !m.pending);
+    turn.textContent = "";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "claude — " + m.title;
+    const time = fmtTime(Number.isFinite(at) ? at : draft.createdAt);
+    if (time) label.appendChild(time);
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    const text = document.createElement("div");
+    text.className = "sd-text";
+    text.textContent = m.text;
+    bubble.appendChild(text);
+    if (m.image && m.image.path) {
+      const url = fileDownloadUrl(tab, m.image);
+      const fig = document.createElement("figure");
+      fig.className = "file-img";
+      const img = document.createElement("img");
+      img.src = url; img.alt = m.image.name || ""; img.loading = "lazy";
+      fig.appendChild(img);
+      bubble.appendChild(fig);
+    }
+    const status = document.createElement("div");
+    status.className = "sd-status";
+    status.setAttribute("role", "status");
+    if (m.link) {
+      status.append(m.statusLine.slice(0, m.statusLine.length - m.link.length));
+      const a = document.createElement("a");
+      a.href = m.link; a.target = "_blank"; a.rel = "noopener noreferrer";
+      a.textContent = m.link;
+      status.appendChild(a);
+    } else {
+      status.textContent = m.statusLine;
+    }
+    bubble.appendChild(status);
+    if (m.actions.length) {
+      const row = document.createElement("div");
+      row.className = "sd-actions";
+      const buttons = m.actions.map((act) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = act.action === "publish" ? "primary" : "";
+        b.textContent = act.label;
+        b.dataset.action = act.action;
+        return b;
+      });
+      for (const b of buttons) {
+        b.addEventListener("click", () => decideDraft(tab, draft, b.dataset.action, buttons, status));
+        row.appendChild(b);
+      }
+      bubble.appendChild(row);
+    }
+    turn.append(label, bubble);
+  }
+
+  /** Publish / Discard. The buttons stay disabled while the request is in
+   *  flight, so a double click sends ONE request; the server's answer (or the
+   *  `social-draft` broadcast that follows) repaints the card. */
+  async function decideDraft(tab, draft, action, buttons, statusEl) {
+    if (buttons.some((b) => b.disabled)) return;
+    buttons.forEach((b) => (b.disabled = true));
+    statusEl.textContent = action === "publish" ? "Publishing…" : "Discarding…";
+    let r = null, j = {};
+    try {
+      r = await fetch("/social/drafts/" + encodeURIComponent(draft.id) + "/" + action, { method: "POST" });
+      j = await r.json().catch(() => ({}));
+    } catch { r = null; }
+    if (r && r.ok && j.draft) { renderSocialDraft(tab, j.draft, j.draft.createdAt); return; }
+    // A failed publish comes back with the draft in its new (failed) state: show
+    // that card, then the server's sentence on it.
+    if (j && j.draft) renderSocialDraft(tab, j.draft, j.draft.createdAt);
+    const el = tab.draftEls && tab.draftEls.get(draft.id);
+    const line = (el && el.querySelector(".sd-status")) || statusEl;
+    line.textContent = (j && j.error) || (r ? "The cockpit refused (HTTP " + r.status + ")." : "The cockpit did not answer.");
+    // Still pending (a refusal that changed nothing): let them try again.
+    if (!(j && j.draft) && el) el.querySelectorAll(".sd-actions button").forEach((b) => (b.disabled = false));
+  }
+
+  /** A pending draft keeps the tab on needs-answer; once none is left, the
+   *  highlight goes — unless a real dialog or a pace bubble still holds it. */
+  function refreshDraftMood(tab) {
+    const pending = tab.drafts && window.hasPendingDraft(tab.drafts.values());
+    if (pending) setTabMood(tab, "needs-answer");
+    else if (tab.btnEl.classList.contains("needs-answer") && !tab.pendingChoices && !tab.paceBubble) setTabMood(tab, null);
+  }
+
+  /** Repaint every draft card (after the ESM bridge lands: stubs drew them). */
+  function repaintDraftCards() {
+    for (const tab of tabs) {
+      if (!tab.drafts || !tab.draftEls) continue;
+      for (const [id, el] of tab.draftEls) {
+        const d = tab.drafts.get(id);
+        if (d && el.isConnected) paintDraftCard(tab, el, d, d.createdAt);
+      }
+      refreshDraftMood(tab);
+    }
+  }
+
   /* ── Live preview of the in-flight text ──────────────────
      The .jsonl only writes a text block once FINISHED, so nothing shows while it
      is generated. We fill the gap with the last block read off the TUI screen
@@ -8110,6 +8977,9 @@
     if (typeof msg.mirror === "boolean") setMirror(t, msg.mirror, false);
     t.closing = false;      // set when the user closes the tab (no reconnect then)
     t.reconnectAttempts = 0;
+    // A birth shows at ONCE: opening the socket costs a TLS round trip behind a
+    // proxy (about a second, measured), and that second was a black pane.
+    if (!t.sessionId) showSpawnLoader(t);
     openLink(t);
   }
 
@@ -8132,6 +9002,7 @@
       // starts fresh (no sessionId yet).
       const start = t.sessionId ? { ...t.launchMsg, resume: t.sessionId } : t.launchMsg;
       if (t.sessionId) showChatSkeleton(t); // a resume has history on its way
+      else showSpawnLoader(t); // a reconnect before `ready`: no-op if already shown
       ws.send(JSON.stringify({ type: "start", origin: "web", ...start }));
     });
     ws.addEventListener("close", () => {
@@ -8691,7 +9562,6 @@
     catch { lastAuth = null; }
     if (!verMenu.hidden) renderAuthRows();
     updateExpiryBanner();   // the banner must track the clock even menu-closed
-    updateMtTokenBanner(lastAuth);   // the blocking no-token banner (multi-tenant)
   }
 
   // ── Re-login reminder banner (sign-in within 48h / expired) ───────────────
@@ -8911,6 +9781,71 @@
   });
   // Change where agents get their model, any time — the same card, opened on
   // its "Another model" side, and dismissable since nothing is broken.
+  // ── Instance context editor ───────────────────────────────────────────────
+  // One text per instance, every agent gets it at spawn (src/instance-context.ts).
+  function icMsg(t) { $("icMsg").textContent = t || ""; $("icMsg").hidden = !t; }
+  function icCount() {
+    const n = $("icText").value.trim().length;
+    $("icCount").textContent = n + " / 2000";
+    // Over the cap is SHOWN, never silently cut: the server refuses it whole.
+    $("icCount").className = "ic-count" + (n > 2000 ? " over" : "");
+  }
+  async function openInstanceContext() {
+    verMenu.hidden = true;
+    icMsg("");
+    // Nothing editable until the stored text is here: a failed load must never
+    // look like an empty context that Save would then write back over it.
+    $("icText").value = "";
+    $("icText").disabled = true;
+    $("icSave").disabled = true;
+    $("icDraft").hidden = true;
+    $("icOverlay").hidden = false;
+    try {
+      const res = await fetch("/instance-context");
+      const r = res.ok ? await res.json() : null;
+      if (!r || typeof r.text !== "string") throw new Error("status " + res.status);
+      $("icText").value = r.text;
+      $("icDraft").hidden = !!r.text.trim();
+      $("icText").disabled = false;
+      $("icSave").disabled = false;
+      icCount();
+    } catch {
+      icMsg("✗ Could not load the instance context — close and try again.");
+    }
+  }
+  $("instanceContextBtn").addEventListener("click", openInstanceContext);
+  $("icClose").addEventListener("click", () => { $("icOverlay").hidden = true; });
+  $("icText").addEventListener("input", icCount);
+  $("icSave").addEventListener("click", async () => {
+    $("icSave").disabled = true;
+    try {
+      const res = await fetch("/instance-context", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("icText").value }) });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok) icMsg("✗ " + (r.error || "could not save"));
+      else {
+        $("icText").value = r.text || "";
+        $("icDraft").hidden = !!(r.text || "").trim();
+        icCount();
+        icMsg(r.text ? "✓ Saved. New agents get it; running ones at their next reload." : "✓ Cleared.");
+      }
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icSave").disabled = false; }
+  });
+  $("icDraft").addEventListener("click", async () => {
+    $("icDraft").disabled = true;
+    icMsg("Asking the lead agent…");
+    try {
+      const res = await fetch("/instance-context/draft", { method: "POST" });
+      const r = await res.json().catch(() => ({}));
+      if (res.ok) {
+        $("icDraft").hidden = true;   // asked once — a second click would send a second interview
+        icMsg("✓ " + (r.agent || "The lead agent") + " is asking you its questions — answer in its chat.");
+      } else icMsg("✗ " + (r.error || "could not ask"));
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icDraft").disabled = false; }
+  });
+  $("icRestart").addEventListener("click", (e) => { e.preventDefault(); $("icOverlay").hidden = true; restartAllBtn.click(); });
+
   document.getElementById("backendBtn").addEventListener("click", () => {
     toggleVerMenu(false);
     openAuthCard(true, "other");
@@ -8960,8 +9895,15 @@
         const el = t.transcriptEl;
         const wasStick = el._stickBottom !== false;
         const fromBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+        // The lead's birth loader survives the wipe: it stays over the replayed
+        // history until the first answer (endBirth).
+        const birthLoader = t.birth ? el.querySelector(":scope > .spawn-loader") : null;
         el.innerHTML = "";
+        if (birthLoader) el.append(birthLoader);
         t.unreadSep = null; // the separator element went with the wipe
+        // The draft cards went with it too; the replay re-renders them.
+        t.drafts = new Map();
+        t.draftEls = new Map();
         addTurn(t, "system", "", "— resumed session history —");
         for (const h of msg.turns) {
           if (h.role === "bash") {
@@ -8970,6 +9912,10 @@
             // A file the agent delivered (SendUserFile) — its card survives the
             // reload so the download / image stays reachable.
             addFileCard(t, h.files || [], h.at);
+          } else if (h.role === "social-draft") {
+            // A LinkedIn draft card (src/social-drafts.ts): a pending one is
+            // still there to publish after a reload.
+            if (h.draft) renderSocialDraft(t, h.draft, h.at);
           } else if (h.role === "user" && h.compaction) {
             // A compaction summary: a huge "This session is being continued…"
             // block. Fold it into a collapsible box so it doesn't bury the chat.
@@ -8992,6 +9938,9 @@
             if (h.afterInternal) b.parentElement.classList.add("after-gap");
           }
         }
+        // Re-evaluate the draft mood once the replay is in: a draft decided
+        // while this tab was away must stop asking for an answer.
+        refreshDraftMood(t);
         // Restore the reader's place deterministically — never trust the
         // browser's implicit scroll anchoring for a full teardown.
         el._stickBottom = wasStick;
@@ -9000,7 +9949,14 @@
           : Math.max(0, el.scrollHeight - el.clientHeight - fromBottom);
         break;
       }
+      case "starting":
+        // A fresh spawn's progress (public/spawn-steps.js): tick the loader.
+        setSpawnStep(t, msg.step);
+        break;
       case "ready":
+        // Born: the loader gives way to the conversation — except the lead's,
+        // which waits for its first answer (endBirth).
+        if (!t.birth) clearSpawnLoader(t);
         // The server just named the instance it is. If it's not the one this
         // page was loaded from, the port was taken over — stop writing, prompt a
         // reload. (The write guard on the server refuses the PUT anyway; this is
@@ -9152,6 +10108,7 @@
         addBashCard(t, msg, msg.at ?? Date.now());
         break;
       case "stream-text":
+        endBirth(t); // the lead has answered: show it
         // A complete assistant text block, streamed from the transcript.
         // Text ends the current activity block: the next tool call opens a new
         // one, so the transcript keeps the real text/tools interleaving.
@@ -9193,6 +10150,11 @@
           markUnreadBoundary(t, b.parentElement);
         }
         if (t === active) updateJumpButton();
+        break;
+      case "social-draft":
+        // A LinkedIn draft appeared or changed state (published, discarded…):
+        // its card is updated in place, and the tab's mood follows.
+        if (msg.draft) renderSocialDraft(t, msg.draft, msg.draft.createdAt);
         break;
       case "stream-tool":
         // A tool call, grouped into the open activity block.
@@ -9277,6 +10239,7 @@
         if (term && termSession === t) term.write(b64ToBytes(msg.data));
         break;
       case "gone":
+        clearSpawnLoader(t);
         // Session's directory is gone (e.g. a removed worktree): stop trying
         // to restore it and forget it so it doesn't resurrect every reload.
         addTurn(t, "system", "", msg.message);
@@ -9287,9 +10250,10 @@
         setTabState(t, "dead", "directory gone");
         break;
       case "error":
+        clearSpawnLoader(t); // a refused birth shows the refusal, not a spinner
         // A refusal for lack of credentials is not this agent's problem: it is
         // the instance's. Surface the fix instead of a line in the transcript.
-        if (msg.code === "logged-out") { openAuthCard(); }
+        if (msg.code === "logged-out" || msg.code === "space-not-connected") checkAuth({ code: msg.code, user: msg.user || null });
         addTurn(t, "system", "", "Error: " + msg.message);
         // A turn died before it could flush what was queued behind it (a fast
         // double-send): hand those back to the box rather than strand them.
@@ -9306,6 +10270,7 @@
         }
         break;
       case "exited":
+        clearSpawnLoader(t);
         addTurn(t, "system", "", "The claude process exited (code " + msg.code + ").");
         drainQueueToBox(t);
         stopTurnTimer(t);
@@ -10002,11 +10967,12 @@
   function paintSlash() {
     slashMenu.textContent = "";
     if (slash.picker && !slash.list.length) {
-      // Only ATTACHED skills run (they load as a plugin at spawn), so an empty
-      // menu says where to attach one rather than staying silently shut.
+      // A skill is never attached to one agent: it runs where it is SHARED once
+      // it is saved (loaded as a plugin at spawn). An empty menu says how to get
+      // there rather than staying silently shut.
       const d = document.createElement("div");
       d.className = "slash-empty";
-      d.textContent = "No skill attached to this agent yet. Attach one from the Skills page, then reload the agent.";
+      d.textContent = "No skill runs on this agent yet. In the Skills page, share a skill with this agent's group and click Save, then reload the agent.";
       slashMenu.appendChild(d);
       slashMenu.hidden = false;
       return;
@@ -10474,6 +11440,7 @@
     if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("icOverlay").hidden) { $("icOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
@@ -10484,6 +11451,7 @@
     // Only a voluntary (dismissable) re-login card; the signed-out funnel ignores Escape.
     if (!$("authOverlay").hidden && authDismissable) { closeAuthCard(); e.preventDefault(); return; }
     if ($("diffpanel").classList.contains("open")) { $("diffpanel").classList.remove("open"); e.preventDefault(); return; }
+    if ($("infopanel").classList.contains("open")) { setInfoOpen(false); e.preventDefault(); return; }
     // 2. A clickable dialog awaiting an answer → do nothing.
     if (active && active.dialogBubble) return;
     // 3. Session active (engine room ouvert inclus) → envoyer esc.
@@ -10529,7 +11497,7 @@
   // window value being loaded).
   const PUBLIC_BUCKET = "__public__";
   function groupName(id) {
-    if (String(id) === PUBLIC_BUCKET) return "Public groups";
+    if (String(id) === PUBLIC_BUCKET) return "Public";
     const g = vaultGroups.find((x) => String(x.id) === String(id));
     if (!g) return String(id);
     // Match the rail + the selector: a private group is the sealed "Personal"
@@ -10597,7 +11565,7 @@
     actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
     if (!ro) {
       actions.append(
-        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
+        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k, grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : null)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
           // The row's OWNER group, not the panel's write target (see secretControls).
           const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
@@ -10656,8 +11624,20 @@
     };
     const share = field("Shared with", "Groups that may READ this secret (it stays owned by its group)",
       targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith);
+    // "Any profile" (the vault's ANY_PROFILE, "*") is exclusive with the named
+    // profiles: picking one clears the other, so the chips never say both.
     const inject = field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
-      profs.map((n) => ({ value: n, label: n })), sec.profiles);
+      profs.length ? [{ value: "*", label: "Any profile" }, ...profs.map((n) => ({ value: n, label: n }))] : [], sec.profiles);
+    if (inject) {
+      const commons = String(sec.ownerGroup) === "main" || vaultGroups.some((g) => String(g.id) === String(sec.ownerGroup) && g.nature === "public");
+      for (const cb of inject.cbs) cb.addEventListener("change", () => {
+        if (!cb.checked) return;
+        if (cb.value === "*" && !confirm(commons
+          ? `Give ${sec.name} to EVERY agent on this instance — every group, Personal ones included, whatever its profile?`
+          : `Give ${sec.name} to every agent that can read it, whatever its profile?`)) { cb.checked = false; return; }
+        for (const o of inject.cbs) if (o !== cb && (cb.value === "*" || o.value === "*")) o.checked = false;
+      });
+    }
     if (!fields.length) return box;
     const foot = document.createElement("div"); foot.className = "sec-foot";
     const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
@@ -10715,8 +11695,8 @@
     }
     const sel = $("secretsGroup");
     // Each restricted/private group individually + ONE "Public groups" entry
-    // (public = visible to all, so not listed one by one). Main is the commons,
-    // shown as the "Inherited from Main" section, never a selector entry.
+    // (public = visible to all, so not listed one by one) — always offered, as
+    // Main is public: that view edits Main's secrets for whoever may write Main.
     const opts = window.panelGroupOptions(vaultGroups);
     sel.replaceChildren(...opts.map((o) => { const el = document.createElement("option"); el.value = o.value; el.textContent = o.label; return el; }));
     const valid = new Set(opts.map((o) => o.value));
@@ -10727,7 +11707,7 @@
       if (id == null) return null;
       if (valid.has(String(id))) return String(id);
       const g = vaultGroups.find((x) => String(x.id) === String(id));
-      return g && g.nature === "public" && String(g.id) !== "main" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
+      return g && g.nature === "public" && valid.has(PUBLIC_BUCKET) ? PUBLIC_BUCKET : null;
     };
     panelGroup =
       toOption(panelGroup) ??
@@ -10751,6 +11731,7 @@
   // and the profiles it already feeds, so you can rotate the value or change
   // which profiles get it in one place.
   let editingSecret = null;
+  let editingSecretGroup = null; // the edited row's owner group (grouped mode)
   /** Paint a checkbox per (non-managed) profile; `checked` is the set to tick. */
   function renderSecretProfiles(checked) {
     const box = $("secretProfiles");
@@ -10775,14 +11756,19 @@
   }
   function resetSecretForm() {
     editingSecret = null;
+    editingSecretGroup = null;
     $("secretKey").value = ""; $("secretKey").readOnly = false;
     $("secretVal").value = ""; $("secretVal").placeholder = "value";
     $("secretSubmit").textContent = "Add";
     $("secretEditCancel").hidden = true;
     renderSecretProfiles(new Set());
   }
-  function startEditSecret(name) {
+  function startEditSecret(name, ownerGroup = null) {
     editingSecret = name;
+    // An update goes to the group that HOLDS the secret — not the panel's write
+    // target: in "Public" that is the first public group, and editing a Main
+    // secret there would write a second copy beside it instead.
+    editingSecretGroup = ownerGroup;
     $("secretKey").value = name; $("secretKey").readOnly = true;
     $("secretVal").value = ""; $("secretVal").placeholder = "new value (blank = keep)";
     $("secretSubmit").textContent = "Update";
@@ -10835,10 +11821,241 @@
   }
   // profileCache feeds the "no profile uses it" warning: it must be fresh when
   // the panel opens, or we would show a stale diagnosis.
+  // ── Connected accounts (LinkedIn) ──────────────────────────────────
+  // GET /connect/status probes the broker (up to 5s on a cold cache), so the
+  // section loads on its own and never holds the vault panel back.
+  let caState = { available: false, accounts: [], softLayer: false, loaded: false };
+  async function loadConnectedAccounts() {
+    const [st, ac] = await Promise.all([
+      fetch("/connect/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      fetch("/connected-accounts").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+    ]);
+    caState = {
+      available: !!(st && st.available),
+      accounts: ac && Array.isArray(ac.accounts) ? ac.accounts : [],
+      softLayer: !!(ac && ac.softLayer),
+      loaded: true,
+    };
+    renderConnectedAccounts();
+    // A reconnect from the panel clears its banner at once, not 30 min later.
+    if (ac && Array.isArray(ac.accounts)) { caBannerAccounts = ac.accounts; paintAccountBanner(); }
+  }
+  function showCaError(text) {
+    $("caErr").textContent = text || "";
+    $("caErr").hidden = !text;
+  }
+  function renderConnectedAccounts() {
+    $("caConnect").hidden = !caState.loaded || !caState.available;
+    $("caUnavailable").hidden = !caState.loaded || caState.available;
+    $("caSoftLayer").hidden = !caState.softLayer;
+    const ul = $("caList");
+    ul.textContent = "";
+    for (const a of caState.accounts) ul.appendChild(connectedAccountRow(a));
+  }
+  function connectedAccountRow(a) {
+    const m = window.accountRowModel(a, Date.now(), vaultGroups);
+    const el = (tag, cls, text) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (text != null) n.textContent = text;
+      return n;
+    };
+    const li = el("li");
+    // Header: who the account posts as, how long it lasts, where it came from.
+    const head = el("div", "ca-card-head");
+    const title = el("div", "ca-title");
+    title.append(el("span", "ca-label", m.label), el("span", "ca-via", m.via));
+    head.append(title, el("span", "ca-exp " + m.tone, m.expiryText));
+
+    // A row of chips (the vault's own `.sec-chip`: click the name, no box).
+    // `onPick(key, on)` returns the new body to PUT, or null for "no change";
+    // the card re-renders from the server's answer, so a refusal undoes itself.
+    const chipRow = (labelText, hint, choices, onPick) => {
+      const row = el("div", "sec-field");
+      const l = el("span", "sec-field-label", labelText);
+      l.title = hint;
+      const chips = el("div", "sec-chips");
+      for (const c of choices) {
+        const lab = el("label", "sec-chip");
+        const cb = el("input");
+        cb.type = "checkbox";
+        cb.checked = c.checked;
+        cb.addEventListener("change", async () => {
+          const body = onPick(c.key, cb.checked);
+          if (!body) { cb.checked = c.checked; return; }
+          chips.querySelectorAll("input").forEach((x) => { x.disabled = true; });
+          if (!(await updateConnectedAccount(a, body))) {
+            chips.querySelectorAll("input").forEach((x) => { x.disabled = false; });
+            cb.checked = c.checked;
+          }
+        });
+        lab.append(cb, el("span", null, c.label));
+        chips.appendChild(lab);
+      }
+      row.append(l, chips);
+      return row;
+    };
+    const fields = el("div", "sec-ctl");
+    fields.appendChild(chipRow("Shared with", "Whose agents may post as this account — any combination",
+      window.shareChoices(vaultGroups, a.share),
+      (key, on) => ({ share: window.toggleShare(a.share, key, on, vaultGroups) })));
+    const pickable = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n)));
+    const profiles = window.profileChoices(pickable, a.share);
+    if (profiles.length > 1) {
+      fields.appendChild(chipRow("Profiles", "Only agents running one of these profiles; Any profile = no filter",
+        profiles,
+        (key, on) => (key === "*" && !on ? null : { share: window.toggleProfile(a.share, key, on, vaultGroups) })));
+    }
+    const autonomous = a.policy === "autonomous";
+    fields.appendChild(chipRow("Posting", "Whether a person approves each post on a card in the chat",
+      [
+        { key: "approve", label: "Ask before posting", checked: !autonomous },
+        { key: "autonomous", label: "Post on its own", checked: autonomous },
+      ],
+      (key, on) => {
+        if (!on) return null; // one of the two is always lit: click the other
+        if (key === "autonomous" && !confirm(window.autonomousConfirmText(a, vaultGroups))) return null;
+        return { policy: key };
+      }));
+
+    // Actions: the log, then reconnect / disconnect.
+    const foot = el("div", "ca-foot");
+    const logBtn = el("button", "ca-btn", "Log");
+    logBtn.type = "button";
+    const logList = el("ul", "ca-log");
+    logList.hidden = true;
+    // The publication log (GET /connected-accounts/:id/log), toggled under the
+    // card. Each entry carries agent-written text: textContent only.
+    logBtn.addEventListener("click", async () => {
+      if (!logList.hidden) { logList.hidden = true; return; }
+      logBtn.disabled = true;
+      const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id) + "/log").catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      logBtn.disabled = false;
+      if (!r || !r.ok) { showCaError(j.error || "The cockpit did not answer."); return; }
+      logList.textContent = "";
+      const entries = Array.isArray(j.entries) ? j.entries : [];
+      for (const e of entries) logList.appendChild(el("li", null, window.logEntryLine(e)));
+      if (!entries.length) logList.appendChild(el("li", null, "Nothing published or attempted on this account yet."));
+      logList.hidden = false;
+    });
+    foot.appendChild(logBtn);
+    foot.appendChild(el("span", "ca-spacer"));
+    if (caState.available) {
+      const re = el("button", "ca-btn", "Reconnect");
+      re.type = "button";
+      re.addEventListener("click", () => startLinkedInConnect(re));
+      foot.appendChild(re);
+    }
+    const dis = el("button", "ca-btn danger", "Disconnect");
+    dis.type = "button";
+    dis.addEventListener("click", async () => {
+      if (!confirm("Disconnect " + m.label + "?\n\nAgents will no longer be able to post as this account.")) return;
+      dis.disabled = true;
+      const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), { method: "DELETE" }).catch(() => null);
+      const j = r ? await r.json().catch(() => ({})) : {};
+      if (!r || !r.ok) { dis.disabled = false; showCaError(j.error || "The cockpit did not answer."); return; }
+      showCaError("");
+      loadConnectedAccounts();
+    });
+    foot.appendChild(dis);
+    li.append(head, fields, foot, logList);
+    return li;
+  }
+
+  // ── Connected-account expiry banner ───────────────────────────────────
+  // The Telegram DM reaches the instance operator only, so every other owner
+  // learns of an expiring LinkedIn connection here. GET /connected-accounts
+  // flags the viewer's OWN accounts (`expiringSoon` / `expired`); the pure
+  // decision is window.accountBanners (public/social-card.js). A dismissal is
+  // remembered for the browser session, keyed by id + expiresAt, so a
+  // reconnect (new expiry) can warn again.
+  let caBannerAccounts = [];
+  const CA_DISMISSED = "cp.caBannerDismissed";
+  function caDismissed() {
+    try { return JSON.parse(sessionStorage.getItem(CA_DISMISSED) || "[]"); } catch { return []; }
+  }
+  function paintAccountBanner() {
+    const dismissed = caDismissed();
+    const items = window.accountBanners(caBannerAccounts).filter((b) => !dismissed.includes(b.key));
+    let el = document.getElementById("caExpiryBanner");
+    if (!items.length) { if (el) el.remove(); return; }
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "caExpiryBanner";
+      el.setAttribute("role", "status");
+      // First child → above the header in the flex chassis, not floating over it.
+      document.body.insertBefore(el, document.body.firstChild);
+    }
+    el.textContent = "";
+    for (const b of items) {
+      const row = document.createElement("div");
+      row.className = "ca-bn";
+      const span = document.createElement("span");
+      span.textContent = b.text;
+      const x = document.createElement("button");
+      x.type = "button";
+      x.textContent = "Dismiss";
+      x.addEventListener("click", () => {
+        try { sessionStorage.setItem(CA_DISMISSED, JSON.stringify([...caDismissed(), b.key])); } catch { /* private mode: dismiss for this page only */ }
+        caBannerAccounts = caBannerAccounts.filter((a) => String(a.id) + ":" + String(a.expiresAt) !== b.key);
+        paintAccountBanner();
+      });
+      row.append(span, x);
+      el.appendChild(row);
+    }
+  }
+  async function refreshAccountBanner() {
+    const r = await fetch("/connected-accounts").catch(() => null);
+    const j = r && r.ok ? await r.json().catch(() => null) : null;
+    // A failed fetch keeps what is shown: an unreachable server is not a reconnect.
+    if (j && Array.isArray(j.accounts)) caBannerAccounts = j.accounts;
+    paintAccountBanner();
+  }
+  document.addEventListener("DOMContentLoaded", refreshAccountBanner);
+  setInterval(refreshAccountBanner, 30 * 60_000);
+  /** PUT a share or policy change; true when the server took it. */
+  async function updateConnectedAccount(a, body) {
+    const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).catch(() => null);
+    const j = r ? await r.json().catch(() => ({})) : {};
+    if (!r || !r.ok || !j.account) { showCaError(j.error || "The cockpit did not answer."); return false; }
+    showCaError("");
+    caState.accounts = caState.accounts.map((x) => (x.id === a.id ? j.account : x));
+    renderConnectedAccounts();
+    return true;
+  }
+  /** Connect / Reconnect: the server mints a single-use attempt and answers the
+   *  broker URL; the broker sends the browser back to /connect/linkedin/done. */
+  async function startLinkedInConnect(btn) {
+    btn.disabled = true;
+    const r = await fetch("/connect/linkedin/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ origin: location.origin }),
+    }).catch(() => null);
+    const j = r ? await r.json().catch(() => ({})) : {};
+    if (r && r.ok && j.url) { location.href = j.url; return; }
+    btn.disabled = false;
+    showCaError(j.error || "The cockpit did not answer.");
+  }
+  $("caConnect").addEventListener("click", () => startLinkedInConnect($("caConnect")));
+  // Back from the broker (or the done page) with the panel still open — a
+  // bfcache restore or a tab switch: refresh, the account list has changed.
+  const refreshCaIfOpen = () => { if (!$("secretsOverlay").hidden && !document.hidden) loadConnectedAccounts(); };
+  window.addEventListener("pageshow", (e) => { if (e.persisted) refreshCaIfOpen(); });
+  document.addEventListener("visibilitychange", refreshCaIfOpen);
+
   async function openSecretsPanel(groupId) {
     panelGroup = groupId == null ? null : String(groupId);
+    showCaError("");
+    loadConnectedAccounts();
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
+    renderConnectedAccounts();
     resetSecretForm();
     showVaultError("");
     $("secretsReload").hidden = true;
@@ -11351,7 +12568,7 @@
     $("factoryPage").hidden = !on;
     $("factoryBtn").setAttribute("aria-pressed", String(on));
     try { localStorage.setItem("cp.factoryMode", on ? "1" : ""); } catch {}
-    if (on) facRefresh();
+    if (on) return facRefresh();
     else if (was) {
       // Coming back: the cockpit slides in from the other side.
       const m = document.querySelector("main");
@@ -11621,6 +12838,21 @@
         ])),
       ]));
     }
+    // Who runs it ON A SCHEDULE: a cron that names it, or a run recorded during
+    // a cron fire (src/skill-usage.ts). Clicking an agent opens it.
+    const cu = s.cronUsers || [];
+    d.appendChild(facEl("h2", { text: `Used by schedules${cu.length ? " (" + cu.length + ")" : ""}` }));
+    if (!cu.length) d.appendChild(facEl("div", { class: "fp-sub", text: "No schedule uses it — none names it, and no scheduled run called it in the last 7 days." }));
+    for (const u of cu)
+      d.appendChild(facEl("div", { class: "fp-card" }, [
+        facEl("button", { class: "fp-agent-link", type: "button", title: "Open this agent", text: u.name, onclick: () => openAgentInfo(u.sessionId) }),
+        facEl("span", { class: "fp-sub", text: u.cronRuns ? ` · ${u.cronRuns} scheduled run${u.cronRuns === 1 ? "" : "s"}, 7 days` : " · not fired yet" }),
+        ...u.crons.map((c) => facEl("div", { style: "margin-top:4px" }, [
+          facEl("b", { text: "⏰ " + c.label }),
+          c.enabled ? null : facEl("span", { class: "fp-sub", text: " (paused)" }),
+          facEl("div", { class: "fp-sub", style: "white-space:pre-wrap;overflow-wrap:anywhere", text: c.prompt }),
+        ])),
+      ]));
     // What agents running it receive: shown, never a step to take.
     if (last && last.secrets.length) d.appendChild(facEl("div", { class: "fp-sub" }, ["Agents running it get: ", ...last.secrets.map((n) => {
       const bound = s.bindings.find((b) => b.name === n);
@@ -12120,7 +13352,8 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     if (!keepValue) {
-      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
+      const body = editingSecret && editingSecretGroup ? { name, value, overwrite: true, group: editingSecretGroup } : withSecretGroup({ name, value, overwrite: true });
+      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const err = await vaultError(r);
       // Refused: say so and keep the form filled, rather than clearing it as if saved.
       if (err) { showVaultError("Could not save " + name + ": " + err); return; }
@@ -12172,6 +13405,96 @@
     await loadVault(); renderSecrets();
     $("secretKey").focus();
   });
+  // ── Agent info panel (the chan bar's ▯ button) ──────────────────────────
+  // What this agent is and what it USES: its factory skills (with runs, and how
+  // many came from a schedule) and its schedules (with the skills each names).
+  // A skill is a button: it opens that skill's card in the Skill Factory. Data
+  // only through textContent (facEl): skill titles and cron prompts can be
+  // written by an agent.
+  let infoSeq = 0;
+  async function renderInfoPanel() {
+    const body = $("infoBody");
+    const t = active;
+    const seq = ++infoSeq;
+    if (!t || !t.sessionId) { body.textContent = ""; body.appendChild(facEl("div", { class: "ip-empty", text: "Open an agent." })); return; }
+    $("infoTitle").textContent = t.nameEl ? t.nameEl.textContent : t.sessionId.slice(0, 8);
+    let skills = [], crons = [];
+    try { skills = (await facCall("GET", "/factory/skills")).skills || []; } catch { skills = []; }
+    try { crons = await (await fetch("/crons")).json(); } catch { crons = []; }
+    if (seq !== infoSeq || active !== t) return; // a newer render (or another agent) won
+    const sid = t.sessionId;
+    body.textContent = "";
+    // Environment
+    const row = (k, v, title) => facEl("div", { class: "ip-row" }, [facEl("span", { class: "ip-k", text: k }), facEl("span", { class: "ip-v", text: v, title: title || v })]);
+    body.appendChild(facEl("h3", { text: "Environment" }));
+    body.appendChild(row("Directory", t.cwd || "—"));
+    if (t.branch) body.appendChild(row("Branch", t.branch));
+    body.appendChild(row("Profile", t.profile || "none"));
+    body.appendChild(row("Session", sid.slice(0, 8), sid));
+    body.appendChild(facEl("div", { class: "ip-sep" }));
+    // Skills it has, most used first.
+    const mine = skills
+      .map((s) => ({ s, a: (s.attachedTo || []).find((a) => a.sessionId === sid) }))
+      .filter((x) => x.a)
+      .sort((x, y) => (y.a.runs || 0) - (x.a.runs || 0) || facTitle(x.s).localeCompare(facTitle(y.s)));
+    body.appendChild(facEl("h3", {}, ["Skills", facEl("span", { class: "ip-count", text: String(mine.length) })]));
+    if (!mine.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No Skill Factory skill is shared with this agent." }));
+    for (const { s, a } of mine) {
+      const runs = a.runs || 0, cr = a.cronRuns || 0;
+      const meta = runs ? `${runs} run${runs === 1 ? "" : "s"}${cr ? ` · ⏰ ${cr}` : ""}` : "not used yet";
+      body.appendChild(facEl("button", { class: "ip-skill", type: "button", title: `Open “${facTitle(s)}” in the Skill Factory — ${meta}, last 7 days`, onclick: () => openSkillCard(s.id) }, [
+        facEl("span", { class: "ip-name", text: facTitle(s) }),
+        facEl("span", { class: "ip-meta", text: meta }),
+      ]));
+    }
+    body.appendChild(facEl("div", { class: "ip-sep" }));
+    // Schedules, each with the skills it uses.
+    const list = (Array.isArray(crons) ? crons : []).filter((c) => c.sessionId === sid);
+    body.appendChild(facEl("h3", {}, ["Schedules", facEl("span", { class: "ip-count", text: String(list.length) })]));
+    if (!list.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No schedule." }));
+    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
+    const chip = (s) => facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory", text: "✦ " + facTitle(s),
+      onclick: () => openSkillCard(s.id), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSkillCard(s.id); } } });
+    for (const c of list) {
+      const uses = named(c.id);
+      body.appendChild(facEl("div", { class: "ip-cron" }, [
+        facEl("b", { text: "⏰ " + fmtSchedule(c.schedule) }),
+        c.enabled ? null : facEl("span", { class: "ip-k", text: " (paused)" }),
+        facEl("div", { class: "ip-prompt", text: c.prompt.length > 200 ? c.prompt.slice(0, 197) + "…" : c.prompt }),
+        uses.length ? facEl("div", {}, uses.map(chip)) : null,
+      ]));
+    }
+    // Skills a scheduled run CALLED without any prompt naming them: the agent
+    // picked them itself, so they belong to no cron in particular.
+    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
+    if (picked.length) body.appendChild(facEl("div", { style: "margin-top:8px" }, [facEl("span", { class: "ip-k", text: "Also called by scheduled runs:" }), facEl("div", {}, picked.map(chip))]));
+    body.appendChild(facEl("div", { style: "margin-top:10px" }, [facEl("button", { class: "ip-link", type: "button", text: "Manage schedules…", onclick: () => { $("cronOverlay").hidden = false; renderCrons(); } })]));
+  }
+  function setInfoOpen(on) {
+    $("infopanel").classList.toggle("open", on);
+    $("chanInfo").classList.toggle("on", on);
+    $("chanInfo").setAttribute("aria-pressed", String(on));
+    if (on) renderInfoPanel();
+  }
+  $("chanInfo").addEventListener("click", () => setInfoOpen(!$("infopanel").classList.contains("open")));
+  $("closeInfo").addEventListener("click", () => setInfoOpen(false));
+  $("refreshInfo").addEventListener("click", renderInfoPanel);
+  /** Open one skill's card in the Skill Factory (from the info panel). */
+  async function openSkillCard(id) {
+    fac.view = "list";
+    await facSetMode(true);
+    if (!facById(id)) return facMsg("That skill is no longer visible to you.", true);
+    facOpenDrawer(id);
+  }
+  /** From a skill's card: back to the cockpit, on that agent, its panel open. */
+  function openAgentInfo(sessionId) {
+    const t = tabs.find((x) => x.sessionId === sessionId);
+    if (!t) return facMsg("That agent is not open in this cockpit.", true);
+    facSetMode(false);
+    activate(t);
+    setInfoOpen(true);
+  }
+
   // ── Schedule panel (per-channel cron: monitoring / reporting) ───────────
   let cronZone = "";           // the zone the SERVER applies (see showCronTz)
   function fmtSchedule(s) {
@@ -12204,6 +13527,8 @@
     } catch { /* the popin works perfectly well without this note */ }
   }
   async function renderCrons() {
+    // A schedule added, edited or removed changes what the info panel lists.
+    if ($("infopanel").classList.contains("open")) renderInfoPanel();
     const ul = $("cronList"); ul.innerHTML = "";
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
@@ -13462,102 +14787,277 @@
     startTour(() => checkAuth());
   }
 
-  // --- Sign-in card -------------------------------------------------------
-  // Opened at exactly two moments: on load when /auth reports signed out, and
-  // on a `start` refused with code "logged-out". Never otherwise.
-  async function checkAuth() {
-    try {
-      const s = await (await fetch("/auth")).json();
-      // ONLY a signed-out state we actually observed opens the card. "unknown"
-      // means the probe failed, and treating that as signed out is what made
-      // the card pop — and a `claude auth login` child spawn — on instances
-      // that were signed in the whole time.
-      // A custom model backend (self-hosted model, gateway) needs no Claude
-      // sign-in at all, so a signed-out probe means nothing there.
-      if (s && s.state === "signed-out" && s.backend !== "custom") openAuthCard();
-      else $("authOverlay").hidden = true;
-    } catch {
-      // A failed check must not block a cockpit that is in fact working.
-    }
-  }
-
-  // `force` is a deliberate re-login from a SIGNED-IN instance (the version-menu
-  // button and the expiry banner). Without it the server short-circuits to
-  // {alreadySignedIn} and the card closes doing nothing — which is exactly the
-  // no-op the signed-in re-login affordances would otherwise be.
-  // A voluntary re-login (force) is dismissable; the signed-out funnel is not.
-  // Tracked so Escape and a backdrop click only close the card they should.
+  // --- Connect Claude card ------------------------------------------------
+  // ONE card for every way in: the first run, a spawn refused because its
+  // space is not connected, a voluntary re-login. Which step it shows is pure
+  // (window.connectCardPlan, public/connect-card.js); this is only the DOM and
+  // the three server flows behind it — the instance sign-in (/auth/*), the
+  // long-lived token (/mt-token/*) and a space's own login (/agent-login/*).
+  // The browser only ever sees {url} and {ok}: no credential reaches the page.
+  // `seq` identifies the current flow: closing the card or starting another
+  // bumps it, so a start whose POST resolves afterwards knows it is stale and
+  // cancels its own server child instead of leaving it waiting on stdin.
+  let cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: 0 };
   let authDismissable = false;
 
-  // Close a VOLUNTARY re-login card, cancelling the pending `claude auth login`
-  // child on the server so it is not left waiting on stdin (DELETE /auth/login
-  // → cancelLogin). Never the way out of the signed-out funnel.
+  const cxIsAdmin = () => !me || me.role === "admin";
+  function cxShow(step) {
+    for (const [id, st] of [["cxChoose", "choose"], ["cxAuth", "authorise"], ["cxDone", "done"], ["cxAsk", "ask-admin"]])
+      $(id).hidden = st !== step;
+    $("authOtherBox").hidden = step !== "other";
+    $("cxTag").textContent =
+      step === "choose" ? "Step 1 of 2 · Connect Claude"
+      : step === "authorise" ? (cx.fromChoose ? "Step 2 of 2 · Connect Claude · " + (cx.flow === "login" ? "1 month" : "1 year") : "Connect Claude")
+      : step === "done" ? "Connected"
+      : step === "other" ? "Another model"
+      : "Connect Claude";
+    $("cxTag").classList.toggle("ok", step === "done");
+  }
+
+  // Opened on load (after the tour) when /auth reports the commons cannot
+  // authenticate, and on a `start` refused with "logged-out" or
+  // "space-not-connected". "unknown" never opens it (invariant 27).
+  async function checkAuth(refusal = null, force = false) {
+    let s;
+    try { s = await (await fetch("/auth")).json(); } catch { return; }   // never block a working cockpit
+    lastAuth = s;
+    const plan = window.connectCardPlan({ connect: s && s.connect, backend: s && s.backend, isAdmin: cxIsAdmin(), refusal, force });
+    if (!plan.open) { if (!force && !authDismissable) $("authOverlay").hidden = true; return; }
+    openConnectCard(plan);
+  }
+
+  function openConnectCard(plan) {
+    if (!$("authOverlay").hidden && !authDismissable) return;   // the funnel is already on screen
+    // The same card again (several tabs restoring, a second refused spawn):
+    // restarting it would kill the child whose code the admin is typing.
+    if (!$("authOverlay").hidden && window.sameConnectTarget(cx.plan, plan)) return;
+    cxCancel();
+    cx = { plan, flow: plan.flow, user: plan.user, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+    authDismissable = plan.dismissable;
+    $("authClose").hidden = !plan.dismissable;
+    $("authMsg").hidden = true;
+    $("authOverlay").hidden = false;
+    if (plan.step === "choose") { cxPickDur("token"); cxShow("choose"); }
+    else if (plan.step === "ask-admin") cxShow("ask-admin");
+    else cxStartAuthorise(plan.flow, plan.user, false);
+  }
+
+  // Kept for the existing callers: the version menu's re-login, the expiry
+  // banner (force), and "Another model" (mode "other").
+  function openAuthCard(force = false, mode = "claude") {
+    if (mode === "other") {
+      // The backend form only: no sign-in child is started behind it.
+      cxCancel();
+      cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+      authDismissable = true;
+      $("authClose").hidden = false;
+      $("authMsg").hidden = true;
+      $("authOverlay").hidden = false;
+      cxShow("other");
+      loadBackendForm();
+      return;
+    }
+    checkAuth(null, force);
+  }
+
   function closeAuthCard() {
     if (!authDismissable) return;
-    fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    cxCancel();
     authDismissable = false;
     $("authClose").hidden = true;
     $("authOverlay").hidden = true;
   }
 
-  // The card has two sides: the Claude sign-in, and "Another model" (a
-  // self-hosted or hosted backend, src/backend.ts). The sign-in child is only
-  // started when its side is actually shown — choosing another model must not
-  // leave a `claude auth login` waiting on stdin.
-  let authForce = false;
-  let authLoginStarted = false;
-  function setAuthMode(mode) {
-    for (const b of $("authModes").querySelectorAll("button"))
-      b.classList.toggle("active", b.dataset.mode === mode);
-    $("authClaudeBox").hidden = mode !== "claude";
-    $("authOtherBox").hidden = mode !== "other";
-    if (mode === "claude") {
-      $("authTitle").textContent = authForce ? "Re-login to Claude" : "Sign in to Claude";
-      if (!authLoginStarted) { authLoginStarted = true; startClaudeLogin(authForce); }
-    } else {
-      $("authTitle").textContent = "Run agents on another model";
-      loadBackendForm();
+  // Cancel whatever OAuth child the server holds for this card, so none is left
+  // waiting on stdin.
+  function cxCancel() {
+    cx.seq++;   // any start still in flight is now stale
+    if (!cx.started) return;
+    cx.started = false;
+    cxCancelFlow(cx.flow, cx.user);
+  }
+  function cxCancelFlow(flow, user) {
+    const json = { "Content-Type": "application/json" };
+    if (flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    else if (flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
+    else if (flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user }) }).catch(() => {});
+  }
+
+  function cxPickDur(dur) {
+    cx.dur = dur;
+    for (const t of document.querySelectorAll("#cxChoose .cx-tile")) {
+      const on = t.dataset.dur === dur;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-checked", on ? "true" : "false");
     }
   }
-  $("authModes").addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-mode]");
-    if (b) setAuthMode(b.dataset.mode);
+  for (const t of document.querySelectorAll("#cxChoose .cx-tile"))
+    t.addEventListener("click", () => cxPickDur(t.dataset.dur));
+
+  async function cxSetMode(mode) {
+    try {
+      await fetch("/agent-login/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
+    } catch {}
+  }
+
+  $("cxContinue").addEventListener("click", async () => {
+    $("cxContinue").disabled = true;
+    await cxSetMode(cx.dur);
+    $("cxContinue").disabled = false;
+    cxStartAuthorise(cx.dur, cx.plan && cx.plan.user, true);
+  });
+  $("cxPasteLink").addEventListener("click", (e) => {
+    e.preventDefault();
+    cx.fromChoose = true;
+    cx.flow = "paste";
+    $("cxOauth").hidden = true;
+    $("cxPasteForm").hidden = false;
+    $("authTitle").textContent = "Use a token you already have";
+    $("authNote").textContent = "Paste a long-lived token minted with claude setup-token on any machine signed in to your Claude account. It lasts about a year; agents get model access, no connectors.";
+    $("cxBack").hidden = false;
+    $("cxHint").hidden = true;
+    $("authMsg").hidden = true;
+    cxShow("authorise");
+    $("cxTag").textContent = "Step 2 of 2 · Connect Claude · 1 year";
+    $("cxToken").focus();
+  });
+  for (const id of ["cxOtherLink", "cxOtherLink2"])
+    $(id).addEventListener("click", (e) => { e.preventDefault(); cxCancel(); cxShow("other"); loadBackendForm(); });
+  $("cxOtherBack").addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!cx.plan) { authDismissable = true; closeAuthCard(); }   // opened from "Model backend…"
+    else if (cx.plan.step === "choose") cxShow("choose");
+    else cxStartAuthorise(cx.plan.flow, cx.plan.user, false);
+  });
+  $("cxBack").addEventListener("click", (e) => { e.preventDefault(); cxCancel(); $("authMsg").hidden = true; cxShow("choose"); });
+  $("cxAskOk").addEventListener("click", closeAuthCard);
+  $("cxGo").addEventListener("click", () => { authDismissable = true; closeAuthCard(); });
+
+  const CX_FLOWS = {
+    instance: { start: "/auth/login", code: "/auth/code" },
+    token: { start: "/mt-token/start", code: "/mt-token/code" },
+    login: { start: "/agent-login/start", code: "/agent-login/code" },
+  };
+
+  async function cxStartAuthorise(flow, user, fromChoose) {
+    cxCancel();   // never two children: the previous flow goes first
+    const seq = cx.seq;
+    cx.flow = flow;
+    cx.user = user || null;
+    cx.fromChoose = fromChoose;
+    $("cxOauth").hidden = false;
+    $("cxPasteForm").hidden = true;
+    $("cxBack").hidden = !fromChoose;
+    // The first-run sign-in of a mono instance has no choose step, so the
+    // "Another model" way out lives here.
+    $("cxOtherLink2").hidden = !(flow === "instance" && cx.plan && !cx.plan.dismissable);
+    $("cxHint").hidden = false;
+    $("authCode").value = "";
+    $("authTitle").textContent = flow === "instance" && lastAuth && lastAuth.state === "signed-in"
+      ? "Renew the Claude sign-in" : "Authorise Shadok on claude.ai";
+    $("authNote").textContent = flow === "login" && cx.user && cx.plan && cx.plan.step !== "choose" && !fromChoose
+      ? "Connect this space (" + cx.user + ") to your Claude account. A Claude page opens in a new tab; approve it, then paste the short code it shows."
+      : "A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.";
+    cxShow("authorise");
+    const link = $("authLink");
+    link.textContent = "Preparing…";
+    link.removeAttribute("href");
+    link.setAttribute("aria-disabled", "true");
+    $("cxCopy").hidden = true;
+    cx.url = "";
+    const body = flow === "login" ? { user: cx.user } : flow === "instance" ? { force: !!(lastAuth && lastAuth.state === "signed-in") } : {};
+    try {
+      const r = await (await fetch(CX_FLOWS[flow].start, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      })).json();
+      // Closed, or another flow started, while this POST was in flight: the
+      // child it created belongs to nobody — cancel it rather than orphan it.
+      if (seq !== cx.seq) { if (r && r.url) cxCancelFlow(flow, user || null); return; }
+      cx.started = true;
+      // The server has the last word: an instance that turns out to be signed
+      // in spawns nothing and says so.
+      if (r && r.alreadySignedIn) { authDismissable = true; closeAuthCard(); return; }
+      if (r && r.url) {
+        cx.url = r.url;
+        link.href = r.url;
+        link.textContent = "Open claude.ai ↗";
+        link.removeAttribute("aria-disabled");
+        $("cxCopy").hidden = false;
+      } else {
+        link.textContent = "Could not start";
+        cxMsg((r && r.error) || "could not start the sign-in", "bad");
+      }
+    } catch {
+      link.textContent = "Could not start";
+      cxMsg("the cockpit did not answer", "bad");
+    }
+  }
+
+  function cxMsg(text, kind) {
+    const m = $("authMsg");
+    m.textContent = text;
+    m.className = "cx-msg" + (kind ? " " + kind : "");
+    m.hidden = !text;
+  }
+
+  $("cxCopy").addEventListener("click", async (e) => {
+    e.preventDefault();
+    if (!cx.url) return;
+    try { await navigator.clipboard.writeText(cx.url); } catch { return cxMsg("copy failed — long-press the button to copy its link", "bad"); }
+    $("cxCopy").textContent = "copied";
+    setTimeout(() => { $("cxCopy").textContent = "copy the link instead"; }, 2000);
   });
 
-  async function openAuthCard(force = false, mode = "claude") {
-    if (!$("authOverlay").hidden) return;   // a flow is already on screen
-    authDismissable = force;
-    authForce = force;
-    authLoginStarted = false;
-    $("authClose").hidden = !force;
-    // A forced re-login comes from a SIGNED-IN instance, so the "not signed in"
-    // copy would be wrong there; say what the card actually does.
-    $("authNote").textContent = force
-      ? "Renew this instance's Claude sign-in. Your agents keep running in the meantime."
-      : "This instance isn't signed in to Claude, so it can't start any agent.";
-    $("authOverlay").hidden = false;
-    $("authMsg").hidden = true;
-    setAuthMode(mode);
+  async function cxPost(path, body) {
+    try {
+      const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      let j = {};
+      try { j = await r.json(); } catch {}
+      if (!r.ok && !j.error) j.error = "the cockpit answered " + r.status;
+      return j;
+    } catch { return { ok: false, error: "the cockpit did not answer" }; }
   }
 
-  async function startClaudeLogin(force) {
-    const link = $("authLink");
-    link.textContent = "starting…";
-    link.removeAttribute("href");
-    try {
-      const r = await (await fetch("/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force }),
-      })).json();
-      // The server has the last word: it re-checks, and if the instance turns
-      // out to be signed in it spawns nothing and says so.
-      if (r && r.alreadySignedIn) { $("authOverlay").hidden = true; return; }
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
-      else link.textContent = (r && r.error) || "could not start the sign-in";
-    } catch {
-      link.textContent = "could not start the sign-in";
-    }
+  $("authCodeForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = $("authCode").value.trim();
+    if (!code || !CX_FLOWS[cx.flow]) return;
+    cxMsg("");
+    const body = cx.flow === "login" ? { user: cx.user, code } : { code };
+    const r = await cxPost(CX_FLOWS[cx.flow].code, body);
+    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cxConnected(); }
+    else cxMsg((r && r.error) || "the code was refused", "bad");
+  });
+
+  $("cxPasteForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const token = $("cxToken").value;
+    if (!token.trim()) return;
+    cxMsg("");
+    const r = await cxPost("/mt-token/paste", { token });
+    $("cxToken").value = "";   // never leave a credential sitting in the DOM
+    if (r && r.ok) cxConnected();
+    else cxMsg((r && r.error) || "the token was refused", "bad");
+  });
+
+  // Success: say until when, and that the lead agent is on its way when it is.
+  async function cxConnected() {
+    // The login just wrote the credentials the usage gauges read: repaint them
+    // and the expiry rows now rather than on the next poll.
+    refreshUsage();
+    await refreshAuthRows();
+    const a = lastAuth || {};
+    let text = "Your agents run on your Claude subscription.";
+    const until = a.connect && typeof a.connect.expiresAt === "number" ? a.connect.expiresAt : null;
+    if (until) text += " This connection lasts until " + new Date(until).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) + " — Shadok reminds you a few days before, and you can renew it from the account menu.";
+    if (a.email) text = "Signed in as " + a.email + ". " + text;
+    let pending = false;
+    try { pending = !!((await (await fetch("/first-agent")).json()) || {}).pending; } catch {}
+    if (pending || !tabs.length) text += " Your first agent, general, is starting — it will introduce itself in a moment.";
+    $("cxDoneText").textContent = text;
+    authDismissable = true;
+    $("authClose").hidden = false;
+    cxShow("done");
   }
 
   // --- "Another model" (src/backend.ts) ---------------------------------
@@ -13692,7 +15192,7 @@
     if (!r.ok) return bkMsg("✗ " + (r.error || "could not save"), "bad");
     bkMsg("✓ Saved. New agents run on " + r.current.model + "; running ones keep their model until they are reloaded.", "ok");
     refreshAuthRows();
-    setTimeout(() => { authDismissable = false; $("authClose").hidden = true; $("authOverlay").hidden = true; }, 1800);
+    setTimeout(() => { authDismissable = true; closeAuthCard(); }, 1800);
   });
   $("bkClear").addEventListener("click", async () => {
     const r = await bkPost("/backend", { clear: true }, "PUT").catch(() => ({ error: "the cockpit did not answer" }));
@@ -13700,45 +15200,6 @@
     bkMsg("✓ New agents run on the Claude subscription again.", "ok");
     $("bkClear").hidden = true;
     refreshAuthRows();
-  });
-
-  $("authCodeForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const code = $("authCode").value.trim();
-    if (!code) return;
-    const msg = $("authMsg");
-    msg.hidden = true;
-    let r;
-    try {
-      r = await (await fetch("/auth/code", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-      })).json();
-    } catch {
-      r = { ok: false, error: "the server did not answer" };
-    }
-    if (r && r.ok) {
-      $("authCode").value = "";
-      // The login just wrote the OAuth credentials the usage gauges read from
-      // (src/usage.ts, live-first). Repaint them now — otherwise a freshly
-      // signed-in instance shows blank dials until the next 60s poll, which
-      // reads as "usage is broken" right after onboarding.
-      refreshUsage();
-      // The deadline just jumped ~22 days out: repaint so the reminder banner
-      // (and the version-menu Token row) clear at once instead of next poll.
-      refreshAuthRows();
-      // Name the account: a machine can serve several people, and "signed in"
-      // without saying as whom is the kind of detail that costs an hour later.
-      let who = "";
-      try { who = ((await (await fetch("/auth")).json()) || {}).email || ""; } catch {}
-      msg.textContent = "✅ Signed in" + (who ? " as " + who : "") + ".";
-      msg.hidden = false;
-      setTimeout(() => { $("authOverlay").hidden = true; }, 1500);
-    } else {
-      msg.textContent = (r && r.error) || "the code was refused";
-      msg.hidden = false;
-    }
   });
 
   $("authClose").addEventListener("click", closeAuthCard);
@@ -13770,7 +15231,7 @@
       const r = await (await fetch("/mt-token/start", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
       })).json();
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      if (r && r.url) { link.href = r.url; link.textContent = "Open claude.ai ↗"; }
       else link.textContent = (r && r.error) || "could not start";
     } catch {
       link.textContent = "could not start";
@@ -13867,7 +15328,7 @@
     link.textContent = "starting…"; link.removeAttribute("href");
     try {
       const r = await (await fetch("/agent-login/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user }) })).json();
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      if (r && r.url) { link.href = r.url; link.textContent = "Open claude.ai ↗"; }
       else link.textContent = (r && r.error) || "could not start";
     } catch { link.textContent = "could not start"; }
   }
@@ -13907,24 +15368,6 @@
     }
   });
 
-  // The blocking "no subscription token" banner (multi-tenant + admin), mirror
-  // of the re-login reminder; clears the instant a token is stored.
-  function updateMtTokenBanner(a) {
-    let el = document.getElementById("mtTokenBanner");
-    const show = a && a.mtTokenMissing && me && me.role === "admin";
-    if (!show) { if (el) el.remove(); return; }
-    if (el) return;
-    el = document.createElement("div");
-    el.id = "mtTokenBanner";
-    const span = document.createElement("span");
-    span.textContent = "This instance has no subscription token — agents can't start.";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "Provide token";
-    btn.addEventListener("click", openMtTokenCard);
-    el.append(span, btn);
-    document.body.insertBefore(el, document.body.firstChild);
-  }
   // Backdrop click closes a dismissable (voluntary) card; the panel itself does not.
   $("authOverlay").addEventListener("click", (e) => { if (e.target === $("authOverlay")) closeAuthCard(); });
 
@@ -14019,7 +15462,16 @@
     t.nameEl.textContent = "tweak";
     t.profile = "Shadok-Tweak";
     markTweakTab(t);
-    launchTab(t, { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" });
+    // The tweak agent must run as the COMMONS user: `/tweak/prepare` put the
+    // self-clone in that user's home and gave it to them, and its worktree is
+    // created by them. With no `group` a multi-tenant server files the agent in
+    // the caller's Personal instead (see `commonsOnServer`), whose OS user can
+    // neither be written to by the clone's owner nor reach the clone — the
+    // worktree then died on "could not create leading directories … Permission
+    // denied". Mono-tenant has no commons row: the message is unchanged there.
+    const tweakStart = { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" };
+    if (commonsOnServer) tweakStart.group = COMMONS_GROUP_ID;
+    launchTab(t, tweakStart);
   });
   // ── Create-group form ─────────────────────────────────────────
   // "Public" is nature "public"; "Private" is the server's "restricted".
@@ -14315,6 +15767,10 @@
       for (let i = 0; i < pending.length; i++) {
         if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
       }
+      // 3) Paint every row's "xxx ago" + context % NOW, from one cheap read of
+      //    the transcripts' tails — not from N resumes, each of which spawns
+      //    `claude` and replays a whole history before its row says anything.
+      paintGlance(pending.map((p) => p.t));
     } else {
       // Nothing to restore: the invitation — unless the server said it is
       // starting this instance's lead agent (read above, before this first

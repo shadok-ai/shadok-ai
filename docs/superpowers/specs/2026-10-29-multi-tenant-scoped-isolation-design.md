@@ -339,6 +339,20 @@ install must degrade **honestly**, not half-way.
   actually provision an OS user (root, or the needed sudo rights) rather than
   guessing from "am I root", so it is wrong in neither direction. One source of
   truth for the mode.
+- **[DECIDED] A group's SSH public key is served, not logged.** One key per OS
+  user was already the decision (commons reuses the historical key, each walled
+  group gets its own). What was missing is the half that makes it an identity: the
+  keypair is now minted when the group is **provisioned** (not at its first
+  agent's spawn) and the public line is served by `GET /groups/ssh`, filtered by
+  the same `listableGroups` as `GET /groups`. Before this, the key appeared at
+  first spawn and only in the boot log, so an operator had to read a log to learn
+  what to paste on the forge — and a group with no agent yet had no key at all.
+  The HOME copy is also wired at boot, not only at spawn: `/home` is not on the
+  volume, so a recreate wipes the copies while the keypairs survive, and a
+  RESUMED agent never runs the spawn path. What this does NOT claim: separate keys
+  are only separate authority if the remote treats them as separate accounts — if
+  every public key is pasted into one forge account, the isolation is bookkeeping,
+  which is the "reads as protection, gives none" failure invariant 51 names.
 - **[DECIDED] The commons chown stops at the server's own credentials.** Step 2
   (`migChownTreeToCommons`) hands all of `~/.shadok-ai` to `main` on purpose, but
   the credential stores are the server's, not the commons agent's: the SSH

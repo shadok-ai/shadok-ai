@@ -374,6 +374,8 @@ a Node test — which is why the client has a test suite at all:
 | Module | Pure function | Tested by |
 |---|---|---|
 | `public/live-text.js` | `extractLiveText(screen)` | `test/live-text.test.ts` |
+| `public/shadok-soul.js` | `pumpLine`, `gabuzomeu`, `pickMaxim`, `mascotSay` | `test/shadok-soul.test.ts` |
+| `public/spawn-steps.js` (+ `src/spawn-steps.ts`) | `spawnStepStates`, `spawnLoaderTitle`, `SPAWN_HINT`; server `SPAWN_STEP_KEYS`, `isSpawnStep` | `test/spawn-loader.test.ts` |
 | `public/notify.js` | `notifyState(channels, view)` | `test/notify.test.ts` |
 | `public/profile-card.js` | `profileBlurb`, `profileBadges` | `test/profile-card.test.ts` |
 
@@ -525,6 +527,20 @@ group already bound before this change stays bound.
   doesn't linger in chat history (needs *Delete messages* admin rights).
 
 ## Profiles & secrets
+
+**Instance context** (`src/instance-context.ts`, design
+`docs/superpowers/specs/2026-11-09-instance-context-design.md`). One short text
+per launch directory (`config.instanceContext[cwd]`, ≤ 2,000 chars, never
+truncated) that every agent receives at spawn, BEFORE its role (general before specific), as a `## This
+instance` section — nothing at all when empty. It shows in the pre-prompt panel
+but is left out of `prepromptFingerprint`, so one Save does not mark the fleet
+stale. Writes: `PUT /instance-context` (browser + admin, like `PUT /profiles`:
+every agent is told this text), and `PUT /instance-context/first` — the lead's
+ONLY door, `x-shadok-session-key`, home channel (`isHomeChannel`), and only while
+empty (`firstWriteVerdict`); clearing it re-arms that door. The lead uses it from
+the `shadok-instance-context` skill (stdin only), prompted by the first-run
+greeting (`instanceContextInterviewBrief`, two or three questions, language
+deduced from the answer) or by `POST /instance-context/draft` from the editor.
 
 - **Secret vault** (`src/secrets.ts`, `~/.shadok-ai/secrets.json`, mode 600) —
   central, name→value. Values live outside any repo.
@@ -731,6 +747,21 @@ would race for the same keychain entry. The upside is free: the web card
 (`#authOverlay`) and Telegram's `/login` + `/code` share the same URL, and a
 code pasted from either finishes the other's flow.
 
+**Which credential is checked is the agent's own** (`src/connect-gate.ts`,
+`connectVerdict`, pure): the root sign-in only for an agent that runs as the
+server's user (mono-tenant, or a commons not yet migrated); a privilege-dropped
+multi-tenant agent needs the token (token mode) or its own space's login (login
+mode), never the root sign-in. Before this, every spawn also required the root
+login, so a fresh hosted instance demanded TWO OAuth round-trips, and a
+login-mode agent was refused for a token it never uses. `/auth` reports the
+commons' state as `connect`, which the cockpit's single **Connect Claude** card
+reads (`public/connect-card.js`: choose 1 month / 1 year on multi-tenant, then
+authorise behind an "Open claude.ai" button — never the raw URL — or paste a
+`setup-token` token via `POST /mt-token/paste`; a member gets "ask an admin").
+A successful `/mt-token/code`, `/mt-token/paste` or commons `/agent-login/code`
+starts the first agent exactly as `/auth/code` does. Design:
+`docs/superpowers/specs/2026-11-09-onboarding-connect-claude-design.md`.
+
 The `start` WS handler refuses to spawn while signed out, with `code:
 "logged-out"` — following the `code: "busy"` precedent so a machine client
 classifies the refusal without matching message text. That refusal, not the
@@ -848,6 +879,41 @@ promise), the `!plan.spawn` branch before the socket is even opened, and
 Announcing is authoritative rather than sticky in the other direction too:
 called with channels present it clears the flag, since an instance that has
 agents has nothing pending by definition.
+
+The status also carries the **step** the lead's spawn has reached (`step`, from
+the `starting` messages its loopback socket receives — `noteFirstAgentStep`), so
+`#startingState` shows the same real progress as any tab's birth loader. A step
+is recorded only while `pending` and is cleared by `settleFirstAgent`, so a late
+message cannot put a step back on a settled status.
+
+The wait then **outlives the spawn** by the lead's first turn: `greetHomeAgent`
+hands it to the greeting (`greetFirstAgent`, step `hello`, `greeting` = the
+session id), the spawn's own exit no longer settles it (`settleAfterSpawn`), and
+it ends when the lead's first TEXT block is broadcast (`endFirstAgentGreeting`
+beside the `stream-text` broadcast) — not when the delivery resolves, whose
+`turn-done` was measured arriving ~3s after the prompt while the lead thought
+for 28s more. A failed delivery ends it too, and `GREETING_WAIT_MAX_MS` (3 min)
+is the guard. On the page the lead's tab is born in **birth mode**
+(`startBirth`): the loader, with *Saying hello*, stays over its chat — the
+replayed history underneath hidden by `.transcript.birth` — until its first
+`stream-text` or the wait ending (`endBirth`). The page asks `/first-agent`
+before building tabs on its first pass, so a lead it discovers then is born
+that way too.
+
+### A birth is shown, not a black pane (`starting`)
+
+A fresh tab used to sit on an empty transcript from the click until `ready` —
+the `claude` install check, the sign-in probe (~850ms), the worktree, the spawn.
+Now the start handler announces `{type:"starting", step}` before each of those
+(`connect`, `workspace`, `claude` — `src/spawn-steps.ts`), and the page fills
+the empty transcript with the pumping Shadok, one sentence on what is happening
+and the steps (`public/spawn-steps.js`, `showSpawnLoader`). The steps are the
+server's, never a timer: a step not yet announced stays unticked. Every way out —
+`ready`, `error` (a refusal shows itself, not a spinner), `exited`, `gone` —
+removes it (`clearSpawnLoader`). A resume announces nothing: it has history to
+show, and the chat skeleton covers that wait. The loader is drawn in `launchTab`,
+BEFORE the socket opens: that open is a TLS round trip behind a proxy (about a
+second), and drawing it on `open` left exactly that second black.
 
 It is announced at boot **before** the deferred spawn, not inside it: the
 browser is opened first, so otherwise the very page this exists for loads inside
@@ -1554,9 +1620,14 @@ business — it is set from the agent, never from the skill.)
 - *Acceptance is per group.* Multi-tenant, an agent's releases must be accepted
   for its isolation group (`factoryAgentGroup` in `server.ts`); mono-tenant it is
   always `main`, since a channel's `group` there is a folder. A person accepts
-  for their own spawn group (or one they can see) — Save in the editor is how a
-  person of another group the skill is shared with accepts it for theirs.
-  `sharedWith` treats `main` in users/editors as everyone.
+  for their own spawn group (or one they can see). Save in the editor accepts
+  for EVERY group the skill reaches and the saver may act for
+  (`publishGroups`: shared with it, inside a `groups:` scope, `mayActForGroup`),
+  not only their spawn group — it used to accept for that one group, so on a
+  multi-tenant instance a skill shared with everyone ran in Main and in no other
+  group, with no screen to accept it there. A group the saver cannot see (another
+  person's private group) is never accepted for; a person of that group does it
+  by saving. `sharedWith` treats `main` in users/editors as everyone.
 - *Tenancy.* The `GET /factory/skills` agent list (and each skill's
   `attachedTo`, the agents that have it) and the publish reloads only touch
   agents the caller may drive (`mayDrive`, the `/diff` boundary), and a Save
@@ -1608,6 +1679,23 @@ at its current path. Verified: the same agent then answered with v3.
   `Skill` tool call, and every `<name>:<name>` call matching a factory skill
   appends one row to `usage.jsonl` (30 days, compacted on read). The list's
   "runs · 7 days" and the per-agent counts come from there.
+- **Scheduled use.** A row is tagged `via: "cron"` when the turn that made the
+  call was a cron fire (`Live.cronTurn`, set on `prompt` from origin `cron` AND
+  `isCronPrompt` — a parent notification takes the same hidden path without the
+  mark). `cronUsers` (`src/skill-usage.ts`, pure) joins that with the crons
+  whose prompt NAMES the skill (`cronMentionsSkill`: `/name`, `name:name`, the
+  whole word), because each half alone lies: a fresh cron has no run yet, and a
+  skill the agent picks itself appears in no prompt. Each skill in
+  `GET /factory/skills` carries `cronUsers` (over the channels the caller may
+  drive) and each `attachedTo` entry its `cronRuns`. The drawer lists them as
+  "Used by schedules"; the agent name opens that agent with its info panel.
+- **The agent info panel** (`#infopanel`, the chan bar's ▯ button,
+  `renderInfoPanel`): environment, the factory skills the agent has (runs, and
+  ⏰ how many came from a schedule), its crons with the skills each names, and
+  the skills scheduled runs called unprompted. Every skill is a button that
+  opens its card in the Skill Factory (`openSkillCard`). It is the per-agent
+  view of the same two reads (`/factory/skills`, `/crons`), no endpoint of its
+  own.
 
 **The page** (`public/index.html`, "Skill Factory"):
 - `body.factory-mode` hides `main` and shows `#factoryPage`, with a short
@@ -1628,6 +1716,148 @@ deleting is an admin act. A push needs the caller's session key AND a channel pr
 be every agent on the machine. The Skillsmith is a managed profile (prompt
 re-seeded from `context/skillsmith-prompt.md` at boot, `secrets: []` on
 creation) because it runs draft code nobody has reviewed yet.
+
+## Connected accounts (`src/connect-crypto.ts`, `src/connect-routes.ts`, `src/connected-accounts.ts`, `src/linkedin.ts`, `src/social-drafts.ts`, `src/account-expiry.ts`, `broker/`)
+
+An agent can publish on a LinkedIn account a person connected, without ever
+holding the credential. Design: `docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md`.
+
+### The broker (`broker/`)
+
+LinkedIn's token exchange needs the app's client secret, and nothing shipped in
+the npm package can be secret. So a small **stateless Cloudflare Worker**
+(`connect.shadok.ai`) holds it. It stores nothing: `GET /linkedin/start` mints
+a `state` carrying `{returnUrl, instance public key, nonce}` signed with an
+HMAC (`STATE_KEY`), so the callback cannot be fed a state the broker did not
+make. The return URL is validated (https, or http only on loopback/private
+addresses; the path is fixed to `/connect/linkedin/done`; no credentials, no
+query, no fragment — the broker appends its own `#n=…`), and `pub` / `nonce`
+must have the exact shapes the instance makes (87 and 22 base64url
+characters). A token exchange that throws or answers garbage still ends on a
+page with a way back (`error=token_exchange_failed`), never a bare Worker error.
+After the code exchange the token goes **back through the browser, in the URL
+fragment** (never sent to a server log), encrypted for the instance: ECDH P-256
+with the instance's ephemeral key, HKDF-SHA256, AES-256-GCM with the nonce as
+associated data (`connect-crypto.ts` on the instance, `broker/src/core.ts` on
+the Worker — WebCrypto and `node:crypto`, no dependency). Before redirecting
+back, an **anti-phishing interstitial** names the host the token is about to be
+handed to: a stranger's link made with the stranger's key would otherwise
+deliver the victim's token to the stranger after an ordinary consent screen.
+
+### The instance side
+
+`POST /connect/linkedin/start` (browser person only) makes the key pair and
+nonce and keeps them in memory (`PendingAttempts`, 10 min TTL, single-use). The
+return URL is the page's own `location.origin`, since behind a TLS proxy the
+server does not know its public name (invariant 20). `GET /connect/linkedin/done`
+serves a nonce'd page (`context/connect-done.html`, deliberately outside
+`public/` so `express.static` cannot serve it raw) that posts the fragment to
+`/connect/linkedin/complete`; that decrypts, asks LinkedIn `userinfo` for the
+member, and stores the account — only for the person who started the attempt.
+A restart inside the ten minutes loses the pending key; the person clicks
+Connect again.
+
+### Files
+
+Per instance (keyed like channels and crons, mode 600) under
+`~/.shadok-ai/connected-accounts/`: `<key>.json` (accounts: owner, share,
+policy, token, expiry), `<key>.drafts.json` (posts awaiting a decision),
+`<key>.media/` (directory 700: one snapshot per undecided draft's image,
+`<draftId>.<ext>`, deleted once the draft is decided or expires),
+`<key>.warned.json` (when each expiry DM last went out, rewritten only when it
+changes) and `<key>.log.jsonl` (the append-only publication log, read back
+through `GET /connected-accounts/:id/log` — `accountLog`, newest first, 50
+entries, each rebuilt field by field). No endpoint, skill output,
+log line or transcript carries the token; `publicView` is the only projection
+that leaves the store.
+
+### The publish gate
+
+Two principals, never mixed. An **agent** reaches `GET /social/accounts` and
+`POST /social/posts` through `x-shadok-session-key` (invariant 33) and is
+checked against `accountVisible`. With policy `approve` (the default) the
+post becomes a draft and the agent is answered `pending`; the card is
+broadcast as `social-draft` and merged into `history` on reload, and the
+channel counts as waiting for an answer. `POST /social/drafts/:id/publish|discard`
+and every account mutation require **a browser person** (`requestFromBrowser`),
+who must be able to use the account; an agent has no way to approve its own
+draft. **What the person approves is what goes out**: `POST /social/posts`
+reads the image ONCE, with the agent's rights (`readSessionFile`, invariant
+60), and for a draft writes a server-owned snapshot with its sha256 on the
+draft. The card's image (`/download`'s draft branch) and the publish both read
+that snapshot; re-reading the agent's path at publish would let it swap the
+file after the person looked. A missing or altered snapshot fails the publish
+("The draft's image is gone — ask the agent to draft again."). A request
+refused on an account the agent may use (expired, the text, the image) is
+logged as `refused`. Every LinkedIn call carries a 30 s deadline; a `createPost`
+that got no answer is `PostOutcomeUnknownError` and says *check LinkedIn
+before retrying, the post may have gone out* — unlike any earlier call, it may
+have succeeded. Publishing is **claimed before LinkedIn is called**: the draft is saved
+as `publishing` with `publishingAt`, so a double click or a retry cannot post
+twice. A process-local in-flight set keeps the hourly watcher from failing a
+publish that is genuinely under way; a draft left in `publishing` by a process
+that died is swept to `failed` once stale (`stalePublishing`), never
+re-attempted — a duplicate public post is worse than a failed one. Unapproved
+drafts expire after 7 days and the agent is told, so a cron does not assume the
+post went out. `account-expiry.ts` runs an hourly no-LLM check: a warning seven
+days before `expiresAt`, re-sent at most once a day (`REWARN_AFTER_MS`) — a
+Telegram DM to the owner when they are the DM owner, stamped in the warned
+sidecar only once the DM actually went out — then refusals worded as sentences
+the agent can relay. Every OTHER owner is reached by the page: `GET
+/connected-accounts` flags the viewer's own accounts (`ownerExpiryFlags`), and a
+header banner (`accountBanners`, `public/social-card.js`; checked at load and
+every 30 min, dismissal kept in `sessionStorage` per id + `expiresAt`) says it
+expires or has expired.
+
+### Visibility
+
+An account is private to its owner by default. `share` (`ShareScope`) is a
+UNION of tiers — `personal` (the owner's own Personal group), `groups` (named
+groups), `everyone` — any combination, then `profiles`: when not empty, only
+agents running one of those profiles pass. The profile is a filter on top of
+the tiers, never a way past them, and it holds even when `agentsUnwalled` (it
+is the owner's choice, not a wall the OS must build); `publishVerdict` re-runs
+`accountVisible` for the drafting agent as it is at click time (group, profile,
+peer box), so a share narrowed after a draft refuses it. A v1
+single-choice share (`{scope}`) is read through `normalizeShare`, which also
+folds the owner's own Personal group named in `groups` into `personal`, and a
+public group (Main included) into `everyone` — the commons is one tier, and the
+server and the client picker must agree on reach (`accountVisible` folds with
+the live group natures). `accountEditVerdict` checks only what an edit ADDS, so
+a group or profile deleted since never blocks the next edit. For a person: owner, or `everyone`, or a group they belong to (Main
+and public groups count as commons); profiles never filter people. For an
+agent the rule is stricter on purpose: `everyone` reaches agents in Main,
+in a public group, or in the owner's own private group — **not other people's
+private groups**, which the vault's commons rule would let through. A secret
+can be read by anything that can see it; an account is a standing ability to
+speak publicly as someone, so the default errs towards "no". A peer-driven
+agent never sees accounts in v1.
+
+On a **mono-tenant** instance none of that applies to agents: there are no
+private groups and every agent's group is null, so the walled rule made a
+freshly connected (`private`) account invisible to every agent, the one it was
+connected for included. The server passes `agentsUnwalled` (`DEPLOYMENT_MODE
+!== "multi-tenant"`) at every call site and an agent viewer then sees every
+account the instance holds — they already share the server's OS user, which is
+the soft layer below. Person visibility is unchanged, and a peer box still
+never sees. The share tiers there govern people; on a multi-tenant instance,
+people and agents alike. The profile filter applies on both.
+
+### Trade-offs
+
+- **The token never reaches an agent.** The agent names an account id and the
+  server calls LinkedIn. Handing the token over would have made every
+  prompt injection a credential theft, and made the approval card advisory.
+- **Mono-tenant is a soft layer.** There, agents share the server's OS user and
+  can read the store, and with no GUI password "a browser person" reduces to
+  "no agent key plus a same-origin `Origin`", which a `curl` can forge. No code
+  fixes that without separate OS users; the layer stops accidents and
+  injection, as profiles do (invariant 26), and the Connected accounts panel
+  says so in one sentence. Multi-tenant makes it real.
+- **LinkedIn versions are sunset.** `LINKEDIN_VERSION` (`src/linkedin.ts`) pins
+  the API version and must be bumped about yearly.
+- **Pages are a second app.** The Community Management API must stand alone on
+  its LinkedIn app, so Company Pages (v1.1) use app B; members use app A.
 
 ## Groups and isolation (`src/groups.ts`, `src/capability.ts`, `src/osusers.ts`, `src/talk.ts`, `src/migrate-groups.ts`)
 
@@ -1656,8 +1886,14 @@ the public ones. Every surface (agent list, files, secrets, ledger, spawn, drive
 talk) is that rule applied again.
 
 `channel.group` is a **server-owned** string id (`SERVER_OWNED` in `channels.ts`,
-like `profile`), resolved against a typed `Group` object; a browser `PUT
-/channels` cannot move an agent between groups.
+like `profile`), resolved against a typed `Group` object. A browser `PUT
+/channels` may move an agent only where the move changes nothing about the
+running process: between public groups and Main, which all share the commons
+user (`groupMoveRefusal`, passed to `mergeChannels` as `mayMove`). Into or out of
+a Private or Personal group is refused, since the agent's process, home and
+transcripts belong to the user it was born as. The drop says why at once
+(`public/group-nav.js`' twin of the rule) instead of letting the tab slide back
+on the next sync. Mono-tenant groups are cosmetic and always move.
 
 ### Capable or mono-tenant
 
@@ -1699,7 +1935,10 @@ Two deliberate crossings of the wall exist for infrastructure:
 ### The server-side ACL
 
 Policy is pure and lives in `groups.ts`; `server.ts` only plumbs it.
-`GET /channels` returns `visibleChannels`. A WS `start`/resume goes through
+`GET /channels` returns `visibleChannels`, and so does `GET /channels/glance` (each
+row's `lastAt` + `contextPct` from the transcript's last 256 KB, `src/glance.ts`,
+painted at boot by `paintGlance` before the WS resumes land and never over
+what they delivered). A WS `start`/resume goes through
 `canResumeAs` — **including for an already-live session**; attaching before
 authorising was a real leak (invariant 49). Each turn passes `mayDriveSession`,
 which does not exempt the bootstrap admin: admin reach is administrative
@@ -1718,6 +1957,23 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   to the caller's group; `PUT /secrets/profiles` and the panel's profile editor
   follow it; the profile editor is read-only for a group that does not own the
   profile. Values still travel only in the child's env (invariant 36).
+  A secret's `profiles` may hold `ANY_PROFILE` (`"*"`, the panel's *Any
+  profile* chip): it is then injected into EVERY agent it resolves for, with or
+  without a profile — the group resolution is still the only wall, the profile
+  list just stops narrowing it. On a commons secret (Main, a public group) that
+  is every agent on the instance, and the panel's confirm says so. Which
+  profiles receive a secret is a person's decision: `PUT /secrets/profiles` is
+  browser-only altogether (an agent binding a Main secret it wrote to other
+  profiles would inject values into every group's agents on them; an agent
+  attaches a secret it CREATED to its OWN profile via `PUT /profiles/secret`),
+  an agent may not overwrite a `*` secret (`agentOverwriteRefusal`), and `"*"`
+  is refused as a profile name.
+  The panel's group selector always offers **Public** first (Main and every public group are one commons), then Personal, then the restricted groups:
+  a caller the write gate would let into Main (`canWriteSecretGroup`, i.e. an
+  admin or a Main member) gets Main's secrets tagged `editable` with their
+  profiles, and edits them there; everyone else still sees them as the
+  read-only "Inherited from Main" tier. A commons-owned secret offers no
+  "Shared with" targets — it already resolves for every agent.
 - **Ledger** (`ledger.ts`, `context/ledger-skill/`): rows carry `group` and
   `scope`. The skill no longer writes the file; it calls `POST /ledger/record`,
   where the server stamps the caller's group from the session. Default is
@@ -1776,6 +2032,28 @@ dir surfaces as a visible `check-failed` rather than a silent repoint to nothing
 (twin of `rewriteSkillsBase`). Idempotent and best-effort; a no-op unless the HOME
 actually moved. New agents never hit this — their HOME is already `/home/main`.
 
+A second carry the one-shot migration can miss when **interrupted** — a container
+restart mid-run, where the `chown -R` is seconds long and the respawn kills and
+re-adopts panes — is an agent's **worktree** itself. The migration relocates each
+agent's checkout into the drop user's own home and respawns it there; cut short,
+some worktrees stay under `/root/.shadok-ai/worktrees/…`, which the drop user
+cannot even traverse (`/root` is 0700). That agent can then only run as **root**
+("stuck on root"), and the marker is already written, so the one-shot migration
+will not re-run to finish. `healStrandedWorktrees` (also in `ensureGroupsProvisioned`,
+marker-independent) finishes it: `strandedWorktreePlan` (pure, `worktree-relocate.ts`,
+tested) lists every channel whose drop user **cannot reach** its checkout and the
+canonical home it belongs in (`<drop-home>/.shadok-ai/worktrees/<name>`); a working,
+already-migrated agent (reachable checkout) is never touched. Each relocation stops
+the stale pane, **copies** the checkout to the canonical home (copy, never move, so
+a failure never loses work), `git worktree repair`s the admin link, chowns both the
+checkout and the external admin dir to the drop user (`chownAgentStateToDropUser`),
+carries the transcript across (best-effort — the work is already safe in the
+worktree, this only keeps history visible), repoints the channel's `cwd`, and only
+THEN removes the stale source. The agent resumes as its drop user on next resume.
+Idempotent (a relocated agent is reachable next boot → skipped) and fail-safe per
+agent. Companion to the ownership re-assert that completes a partial `chown` of the
+commons tree on the same boot.
+
 **Human-verify before release** (the privileged `cp`/`chown`/drop only exercise
 on a real migrated container; the tests inject the side effects): boot on a copy
 of a real migrated volume and confirm every cron guard fires. A script that
@@ -1832,6 +2110,13 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | File | Responsibility |
 |---|---|
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
+| `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
+| `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
+| `src/connected-accounts.ts` | The account store (`~/.shadok-ai/connected-accounts/<key>.json`), `publicView` (the only projection that leaves it), `accountVisible` (the `instance` scope does not reach other people's private groups), `accountEditVerdict`. |
+| `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
+| `src/social-drafts.ts` | Drafts (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
+| `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |
+| `broker/` | The stateless Cloudflare Worker holding the LinkedIn client secret. See `broker/README.md`. |
 | `src/live-handover.ts` | `supersedeSession(old, next)` — the ONE-`Live`-per-agent rule (invariant 55). When a resume can't attach (the old pilot `hasExited`) it makes a NEW `Live` and `sessions.set` replaces the entry; this hands the retired `Live`'s viewers to the new one and quiets the old (tail, timers, raw pipe) WITHOUT killing the pilot or clearing the shared tail position — the new `Live` may drive the same tmux pane. `HandoverLive` omits `pilot`/`cwd`/`id` on purpose, so the handover CANNOT kill the agent or reset the transcript. Pure, tested (`test/live-handover.test.ts`). |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |
 | `src/claude-bin.ts` | Makes sure a RUNNABLE `claude` is there before every spawn, and says which binary that is. On a fresh machine the bare `pty.spawn("claude")` threw an opaque `posix_spawnp failed`; `resolveBin` looks it up on PATH and `ensureClaude` installs `@anthropic-ai/claude-code` ONCE on demand (`ensureClaudeOnce` in `server.ts`, single-flight), falling back to a clear "install it manually + sign in" message. The one-time Claude sign-in is the user's own — no install forces it. Since the split packaging, "a file named claude that is executable" is NOT "a claude that works": `classifyBin` recognises the npm placeholder, `findClaudeBin` falls back to the native binary behind it, and `claudeCommand` is the ONE answer to "which binary do we spawn" — the pilots, the auth probe, the sign-in and the version probe all go through it. See invariant 32. It also never installs over Claude Code's own self-update: `claudeInstallInProgress` spots npm's reify directory and `ensureClaude` waits for it (bounded), then looks again after a failed install before calling the CLI missing. Pure cores (`classifyBin`, `platformPkg`, `nativeBinCandidates`, `findClaudeBin`, `findClaudeBinWithRetry`, `rewriteInProgress`, `globalScopeDirs`) tested; the placeholder is also read off a real file on disk. |
@@ -1847,6 +2132,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/bang.ts` + `public/bang.js` | Running an agent's `!` command from the chat, on the HUMAN's behalf. Its own WS message (`run`), never the prompt path: shadok prepends `⟦web · time · who⟧` to every human prompt, so a `!` sent as a prompt reaches the MODEL as text — measured, the model then ran it through its own Bash tool, i.e. a model turn plus guardrails plus classifier between the click and the command. Shell mode is NOT the Bash tool, so **a profile's `deny` does not apply** — measured under `Shadok-Boss`, whose profile denies `Bash(git commit:*)`: a shell-mode `git commit` created the commit. That is the escape hatch wanted, and why `run` is accepted ONLY on a same-origin browser connection (`fromBrowser`, decided once at connect from the upgrade headers): pilotctl and the agents connect with no Origin (invariant 11) and must never reach it. `runRefusal` refuses empty, multi-line (shell mode reads ONE line; joining lines would run something nobody saw written) and oversized commands; the server types `!`, WAITS for `isShellMode` (column-0 `!` + NBSP — never a fixed delay, invariant 3), then reuses `submit`, and presses Escape on failure so no stray `!` turns the next prompt into a command. `parseBashMessage` reads the TUI's own `<bash-input>` / `<bash-stdout>` user messages, so the exchange is CONTENT from the transcript: streamed as `stream-bash`, replayed as a `bash` history turn — which also rescues a command typed by hand in the terminal view, previously dropped by `userPromptText`'s `<` guard. `bangCommands` (client, pure) offers a ▶ button only for `! cmd` in inline code or on its own line, never for prose with an exclamation mark. Found only in the browser: `parseLine` rejected every non-array `message.content`, and the TUI writes `<bash-input>` as a STRING — so the command ran, the reload showed it, and the live chat said nothing. Pinned by a tail test. |
 | `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. Also `idleStep`, one poll of the "is this turn over?" loop, pure and shared by BOTH pilots (it lived twice, and could only be exercised by spawning a process). A turn ends on an ABSENCE of change — no work marker plus a byte-identical screen for `stableMs` — which is conservative on purpose. `stableMs` is a parameter because the bar is not always the same: after an explicit interrupt the end state was REQUESTED, not inferred, so `finishTurn` lowers it to 400ms and the composer comes back in a fraction of the time. What no caller can shorten past is the work check, which sits above the window. Beside it, `settleStep`: the OTHER way a wait ends — the same dialog (the caller's key, `dialogKey`) held for `DIALOG_HOLD_MS`, however much the rest of the screen moves; same work check above it. See invariant 21. Also `inputText`; `typeIntoBox`, the paste-until-it-shows loop both pilots share, which compares the box with what it showed BEFORE the paste rather than with empty (an idle box can display an example prompt — invariant 23) and which takes a **`prelude`** — injected context pasted as its OWN paste(s) BEFORE the message, never concatenated into it (see the `src/ledger.ts` row for why that is correctness, not style). It may be a LIST, because the paste threshold is applied PER PASTE and decided as each one is made: N small pastes carry in the clear what one large one cannot (measured, eight chunks and a message = 1272 chars over nine lines, nothing wrapped). Each chunk must be WAITED for before the next, or they reach the pane as ONE paste event and the whole split is undone; a chunk that never lands does not fail the submit. Its success check is the trap, and every reading of it goes through **`boxText`** — the WHOLE composer (between the `❯` line and the bottom border, or the status line when a screen carries no frame; that line moves on its own as background shells come and go). `inputText` reads the `❯` line ALONE, which is everything there is until the box holds more than one line and nothing at all afterwards: a prelude filling that line, a prompt that wrapped, or a box that was already occupied all hide what is appended under it. That blind spot is invariant 36 — six attempts, six headers stacked in the box, "the text never appeared in the input box", hit on a live agent. A paste is accepted when the box DIFFERS from what it showed just before (never "is non-empty": an idle box can display an example) **and** when what it showed did not SURVIVE the paste. That second half is the ghost: at rest the box may offer a previous message as a greyed-out suggestion any paste wipes out, while after an interrupt it holds the real prompt the TUI put back — and a plain capture renders the two identically, so the code does not guess, it pastes and asks afterwards (`survives`, first line, 40 chars). Joined rather than replaced → the attempt is thrown away and the box emptied, which keeps the cost on the rare dirty box instead of charging every message a Ctrl-U to find out. `emptyBox` presses Ctrl-U until the box stops changing, because that key clears ONE line — judged on **`boxRaw`** (the untrimmed box: the middle press of a two-line clear only removes the blank line left behind, which `boxText` trims away) and read from `screen()` rather than through `waitFor`'s mirror, whose refresh is slower than the window the press gets. A box it cannot empty gets ONE Ctrl-C (`shouldHardClear`, `hardClearIfLeftover`), never two and never over a running turn. A prelude that never lands does NOT fail the submit — losing context is survivable, losing the message is not. `test/detect.test.ts` goes red on every wrong baseline, which is the only reason to trust it. And `describeStuckScreen`, which names a recognisable blocking state (first-run screen, masked field, pending question, a box still holding MULTI-LINE text — never the one-line suggestion, which would be a confident wrong answer) so a submit failure says WHY instead of accusing the input box. See invariants 23 and 36. Also `backgroundTasks` → `{shells, monitors}`: what the pane says is still running, read from the TUI's **own** footer and not from the turn line, which scrolls away. The two share ONE segment, comma-separated (`· 1 shell, 1 monitor ·`), which is why the rule matches the segment **whole** — split on `·`, accept a part only if it is entirely a comma-separated list of counts — rather than hunting a number before `shell`: anchored on a leading `·`, the monitor sitting after a comma is invisible. Matching whole is also what keeps prose out (invariant 2's family), and only the last few non-empty lines are read. Unlike the pre-invariant-24 context gauge, this string is native: verified with no `statusLine` configured, on 61 of 64 live panes. |
 | `src/backend.ts` | Which model backend an agent talks to: the subscription, or a CUSTOM one (a self-hosted open model, a gateway) reached through Claude Code's own `ANTHROPIC_BASE_URL`. `backendEnv` merges shadok's env (forwarded ONLY when it already points off Anthropic — a stray `ANTHROPIC_API_KEY` in a dev shell must never move a subscription instance onto API billing) with the profile's secrets (which win), and maps every unset model alias to `ANTHROPIC_MODEL` so the picker and Claude Code's background small-model calls reach the one model served. Passed explicitly in `makePilot` because a tmux pane does not reliably inherit shadok's env. A custom agent skips the sign-in gate (`gateProfile` resolves the profile before the id), the pace guard (`Live.backend`) and, instance-wide, the lead agent's sign-in wait and the sign-in card (`/auth` → `backend: "custom"`); `SHADOK_CONTEXT_WINDOW` sets its gauge window. An unparseable or non-http(s) URL is NOT custom (`localhost:11434` parses with `localhost:` as its scheme). It can also be CHOSEN in the cockpit: the sign-in card's "Another model" side (and the version menu's **⚙ Model backend…**) stores `config.modelBackend[cwd]`, which `instanceEnv` makes the instance source in place of the env — **wholesale, never merged**, or a shell's `ANTHROPIC_API_KEY` would reach the third-party server just configured. Presets list only Anthropic-compatible servers (an OpenAI-only API needs a proxy); Save waits for `POST /backend/test`, one real `/v1/messages` sent with a bearer exactly as Claude Code sends it, so a pass predicts a working agent. Pure, tested. Spec: `docs/superpowers/specs/2026-10-28-custom-model-backend-design.md`. |
+| `src/glance.ts` | A channel row's at-a-glance data (`lastAt`, last assistant `usage`) from the END of its transcript (`TAIL_BYTES`, async) — what `GET /channels/glance` serves so the boot paints every row in one call instead of waiting for N resumes (each a spawn + full history replay). Pure `glanceFromTail`, tested. |
 | `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. Pure, tested against a real message whose CLI footer read 41%. See invariant 22. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. The checkout base is `<stateHome>/.shadok-ai/worktrees`; `worktreeDir` is the ONE pure definition shared by create/prune/list, PARAMETERISED on the state home (defaults to `os.homedir()`, so mono-tenant is byte-for-byte unchanged). `stateHome` must be the DROP USER's home for a privilege-dropped agent — the server runs as root and `/root` is 0700, un-traversable by `main`/`sk-*`, so a worktree there stranded every Tweak agent on Claude Code's invalid-settings screen (invariant 54). |
 | `src/selfrepo.ts` | The working copy of shadok-ai's OWN source (`<stateHome>/.shadok-ai/self/shadok-ai`) behind the "Tweak Shadok-AI" CTA: anonymous clone (no auth needed to start), `main` hard-reset to the remote on each use, never the launch directory. `selfRepoDir`/`ensureSelfRepo` take the same `stateHome` as worktrees (default `os.homedir()`), so the tweak clone lands in the drop user's reachable home, not `/root` (invariant 54). Only the base clone is refreshed — a live tweak session's worktree is a separate checkout and is never touched. Pure cores (`selfRepoPlan`, `gitFailReason`) tested. |
@@ -1933,6 +2219,7 @@ editor. The editor's prompt panel mirrors a background Skillsmith tab through
 | `public/env-ask.js` | Pure `envVarAsks(text)` / `isEnvAsk(name)` — the env var names an agent's message asks the human to provide, feeding the **+** beside them (`decorateEnvAsks` → `openSecretFor`, which opens the vault on that name with the asking agent's profile pre-ticked; the ordinary submit then writes it and offers the reload). Deliberately narrow, like `bang.js`: a name counts only inside inline code or a fenced block, must carry a credential/connection segment (`TOKEN`, `KEY`, `SECRET`, `URL`, `ID`…), and never a name the cockpit itself sets (`SHADOK_*`, `CLAUDE_*`…). ESM: bridged (stub returns `[]`) AND imported by `test/env-ask.test.ts`. |
 | `public/echo-author.js` | Pure `echoAuthor(msg)` — the author label above a prompt that came from ANOTHER client: the sender's name when the emitting client knows it (Telegram does), else its origin, else the generic wording. ESM: loaded by the browser AND imported by `test/echo-author.test.ts`. |
 | `public/channel-store.js` | Pure `pickChannelSource` / `dirKey` — how the client's boot restore chooses its channel list. `pickChannelSource` makes a fulfilled `/channels` (even `[]`) AUTHORITATIVE, so only a FAILED fetch consults the origin-scoped localStorage cache; `dirKey` namespaces that cache key by launch dir. Together they close the cross-dir channel leak (invariant 34). `serverSwapped(pageKey, serverKey)` — did the instance answering this origin change under the tab (a port taken over after a stop)? — drives the "cockpit replaced, reload" banner (invariant 35). ESM: loaded by the browser (bridged, with boot-critical stubs that mirror the real logic — see invariant 10) AND imported by `test/channel-store.test.ts`. |
+| `public/shadok-soul.js` | The Shadok's voice, pure: `MAXIMS` (original lines in the Shadoks' spirit, English like the UI), `PUMP_LINES` + `pumpLine(elapsedMs)` (the thinking indicator opens on the classic "Shadok is pumping" and rotates every `PUMP_LINE_MS`; text, not motion, so it runs under reduced motion too), `gabuzomeu(n)` (base 4: GA BU ZO MEU), `pickMaxim(rand, prev)` (never the same twice in a row) and `mascotSay(count, rand, prev)` (the header mark's click: a maxim, or one draw in five a head count of the agents in Shadok numerals). `index.html` wires it through the ESM bridge (read at click / tick / empty-state time, never at parse — invariant 10) and draws the big empty-state Shadoks with `shadokInner`. ESM: loaded by the browser AND imported by `test/shadok-soul.test.ts`. |
 | `public/notify.js` | Pure `notifyState(channels, {hidden, phase})` → `{color, badge, blink}` — the favicon/title/blink decision. The badge only blinks when the browser tab is hidden AND an **unmuted** channel is waiting for an answer; both phases stay visible (a browser-throttled timer must never make the page look calm). The instance-wide mute (`cockpitMuted`, from `GET /mute`) needs no change here: `attentionInput` in `index.html` folds it into every channel's `muted`, so a fully-muted instance resolves to the idle state — favicon frozen, no badge, no blink — and `ding` honours it too. ESM: loaded by the browser AND imported by `test/notify.test.ts`. |
 | `public/auth-expiry.js` | Pure `fmtExpiry(ts, now)` (a deadline as "in 22 days" / "in 6 h" / "expired") and `expiryWarning(auth, now)` — the re-login reminder decision over a `/auth` payload: nag only when the account is KNOWN signed in (never `unknown`, never `signed-out` — the sign-in card owns that), only with a numeric `tokenExpiresAt` (the refresh-token deadline, see `src/claude-creds.ts`), within **48h INCLUDING already past it** (a tab left open across the deadline must still nag). Drives both the version-menu Token row and the top reminder banner; the client only does DOM, the threshold and wording are here so the edge cases are tested (`test/auth-expiry.test.ts`). The **re-login** action itself reuses the existing sign-in card (`openAuthCard` → `POST /auth/login`), not a new path. ESM: bridged onto `window` (invariant 10) AND imported by the test. |
 | `public/profile-card.js` | Pure `profileBlurb` / `profileBadges` — the labels a profile card shows, derived from `systemPrompt` / `deny` / `model` / `secrets` (nothing added to `Profile`) — plus `defaultAgentName(profile, cwd)`, the name proposed for a new agent (profile → directory → `"agent"`), and `isManagedProfile` — the server-owned roles (`Shadok-Tweak`) that must never appear in a list where one PICKS a profile, since their prompt is rewritten at every boot. ESM: loaded by the browser AND imported by `test/profile-card.test.ts`. |
@@ -1944,7 +2231,7 @@ editor. The editor's prompt panel mirrors a background Skillsmith tab through
 | `public/ledger-view.js` | Pure `filterLedger` / `ledgerFacets` / `ledgerAge` / `ldgNorm` + the `LEDGER_AGES` / `LEDGER_SORTS` option lists — how the read-only ledger viewer narrows a table that is 144 rows here and 498 on a sibling instance one day later. Client-side over rows already in hand (`GET /ledger` sends the table whole), so no endpoint and no round trip per keystroke. Four rules carry it. Search is accent-INSENSITIVE, because a sibling instance's rows are written in French and `hopital` has to find `hôpital` — a box that fails exactly the people whose rows need it is worse than none. The haystack includes the **id**, since that is the handle the pushed block and the CLI both print, so pasting `a1b2` back must land on the row it names (the viewer also SHOWS it now, and it was the one place that did not). An age window reads `verifiedAt ?? updatedAt` like everything else that judges staleness, and **never drops an undated row** — hiding what we know nothing about is how it stops existing. And the chips are counted from the data, never from a fixed list: `status` is free text, so a hardcoded set would silently hide whatever word no one predicted. ESM: loaded by the browser AND imported by `test/ledger-view.test.ts`. |
 | `public/upload.js` | Pure `uploadFailure(status, contentType)` — should `attachFile` refuse to parse a `/paste` response, and with what message? A proxy rejects an oversized body with its OWN `413 text/html` page that never reaches our JSON route, so `r.json()` on it threw `Unexpected token '<'` and the composer showed that instead of "too large". Returns null for a JSON response (the caller parses it), else a plain string (413 → "too large", else the status). The server accepts 50 MB (`PASTE_LIMIT`), so a `<html>` here is always the proxy — see the README "Upload size" note. ESM: bridged to `window.uploadFailure` AND imported by `test/upload.test.ts`. |
 | `public/update-ready.js` | Pure `claudeUpdateState(screen)` → `"restart"` / `"failed"` / `null` — reads Claude Code's OWN update footer from the agent's TUI screen (which the client already has as `t.screenText`): `Update installed · Restart to apply` → the binary is in, reload to apply; `Auto-update failed · … npm i -g …` → the auto-update failed, the cockpit installs it (`POST /claude-update`) then reloads. Scanned only in the **tail** of the screen (last lines) so an agent that merely PRINTS the phrase up-screen doesn't trip the badge — the invariant-2 false-positive class. Surfaced as a per-agent ↻/⚠ badge on the tab + a chanBar button. ESM: bridged to `window.claudeUpdateState` AND imported by `test/update-ready.test.ts`. |
-| `context/pilot-prompt.md` | System prompt appended to **every piloted session** via `--append-system-prompt` (wired in `makePilot`, server.ts). Tells the agent it runs under the cockpit (chat rendering, sibling sessions, worktree discipline). `SHADOK_PILOT_PROMPT=0` disables. |
+| `context/pilot-prompt.md` | System prompt appended to **every piloted session** via `--append-system-prompt` (wired in `makePilot`, server.ts). **One flag, never several:** Claude Code's `--append-system-prompt <prompt>` takes a single value and keeps only the LAST when repeated (measured on 2.1.319: three flags, the model saw only the third). The role, the env note, this prompt and the ledger reflex were four flags, so with the ledger on an agent silently kept the ledger reflex alone. `mergeAppendedPrompts` (`src/prompt-args.ts`) joins them, in order, into one value; a `claude -p` probe with the merged form returns all three codewords. Tells the agent it runs under the cockpit (chat rendering, sibling sessions, worktree discipline). `SHADOK_PILOT_PROMPT=0` disables. |
 | `context/agents-skill/` (`pilotctl.mjs`) | The `shadok-ai-agents` skill: a thin client that lets an agent spawn/pilot other agents through the server. **Seeded globally at boot** (`seedAgentsSkill`, twin of secrets/scheduler) so an agent in ANY repo has it — it used to live only in the repo's `.claude/skills`, a project skill invisible to agents working elsewhere (e.g. a lead in another repo told to delegate). SKILL.md invokes it by its seeded path (`~/.claude/skills/shadok-ai-agents/pilotctl.mjs`); `REPO_ROOT` (the in-repo server auto-start) is guarded so a globally-seeded copy never `npm build`s `$HOME`. It uses Node's **built-in `WebSocket`** (a tiny `makeWS` shim adds the `ws`-style `.on`/`.once`), NOT the `ws` package: seeded outside a repo there is no `node_modules` to resolve `ws` from, and the missing module broke every out-of-repo pilot with `ERR_MODULE_NOT_FOUND`. |
 
 
@@ -1979,7 +2266,7 @@ a spawn arg, so it ALWAYS respawns. An unknown level is refused OUT LOUD, becaus
 the CLI itself would only warn and silently run at the default), `stop`
 (`sessionId?` — kills a specific channel, so the UI can remove a zombie).
 
-**server → client:** `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
+**server → client:** `starting` (a FRESH spawn's progress, `step` = `connect` / `workspace` / `claude`, each sent just BEFORE the work it names — `src/spawn-steps.ts`; the page's birth loader, `public/spawn-steps.js`, ticks them off and gives way on `ready` or the refusal; a resume sends none, it has history to show), `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
 `stream-tool` (carries `files` — `{path,name,image,video}[]` — when it's a `SendUserFile`, so the client renders a download / inline-image / inline-video card instead of a folded tool line, and Telegram uploads them), `stream-result`, `stream-bash` (`command` then `output`/`isError` — a shell-mode exchange read from the transcript), `history` (whose turns may be `role:"file"` for a delivered file, or `role:"bash"` for a shell-mode exchange), `dialog` (question, options, `multi`, optional `body` — the box's own text, invariant 43 — and optional `preface`), `screen`, `tokens`,
 `context`, `background` (`shells` + `monitors` — what the pane reports still running; live only, never stored, like the context percentage), `parent` (the parent channel changed — broadcast, so every tab follows),
 `profile` (the `{profile, applied}` pair — desired vs the one the running process
@@ -1992,7 +2279,9 @@ a link to it; `stream-text` carries its own `msgId`, a `history` turn `ids`),
 `auto-retry-*`, `version`, `server-reload`, `gone`, `error`, `exited`,
 `stopped`. `error` carries an optional `code` — `"busy"` (prompt refused
 mid-turn), `"link-refused"` (a `set-parent` the server will not accept) or
-`"logged-out"` (a spawn refused because the instance is not signed in to Claude) or
+`"logged-out"` (a spawn refused because the instance is not signed in to Claude),
+`"space-not-connected"` (a multi-tenant spawn whose OS user has no credential of
+its own — the token in token mode, its login in login mode; carries `user`) or
 `"resume-refused"` (a `resume` whose shortened id matches no agent, or several)
 — so a machine client can classify a refusal without matching on the message
 text.
@@ -2020,7 +2309,8 @@ existing name with 409 unless `overwrite: true`. `PUT /profiles` writes the
 GUARDRAILS and is **browser-only** (cf. the profile-guardrail invariant);
 agents get exactly two profile writes, and neither can reach a guardrail:
 `/profiles/prompt` (PUT) — a `systemPrompt`, its own or, under the lead profile,
-any — and `/profiles/secret` (PUT) — attach to ITS OWN profile a vault secret
+any; refused outright in multi-tenant, where profiles are shared by every group
+(`promptWriteRefusal`, invariant 63) — and `/profiles/secret` (PUT) — attach to ITS OWN profile a vault secret
 IT created (provenance from `secret-origin.json`; no exception for the lead,
 cf. invariant 37). `GET /profiles`
 adds a **derived** `origin` per profile (`stock` / `edited` / `custom`, never

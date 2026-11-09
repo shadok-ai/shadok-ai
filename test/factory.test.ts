@@ -26,6 +26,7 @@ import {
   findSkill,
   prepareWorkspace,
   MAIN_GROUP,
+  publishGroups,
 } from "../src/factory.js";
 
 const SECRET = { name: "HUBSPOT_TOKEN", value: "hs-pat-9f8e7d6c5b4a" };
@@ -276,6 +277,24 @@ test("availableAttachments: an agent runs what is shared with it, at its group's
   assert.equal(resolveAttachments(skills, availableAttachments(skills, { group: "g-hr" }, "g-hr"), "g-hr").ok.length, 1);
 });
 
+test("publishGroups: Save accepts for every group the skill reaches that the saver may act for", () => {
+  const base = { description: "", createdBy: "a", createdAt: 0, releases: [], acceptances: [] };
+  const groups = ["main", "1", "2", "priv-other"];
+  const mayAct = (g: string) => g !== "priv-other"; // another person's private group: never
+  // Shared with everyone: Main's agents AND every group's (the multi-tenant bug:
+  // Save accepted for one group, so agents outside Main ran nothing).
+  const all = { ...base, id: "all", name: "all", owner: "main", editors: ["main"], users: ["main"] };
+  assert.deepEqual(publishGroups(all, "mine", groups, mayAct), ["mine", "main", "1", "2"]);
+  // A `groups:` scope reaches those groups only.
+  const two = { ...base, id: "two", name: "two", owner: "groups:2", editors: ["2"], users: ["2"] };
+  assert.deepEqual(publishGroups(two, "2", groups, mayAct), ["2"]);
+  // Not shared with a group: not accepted there, whatever the scope says.
+  const narrow = { ...base, id: "n", name: "n", owner: "main", editors: ["1"], users: [] };
+  assert.deepEqual(publishGroups(narrow, "1", groups, mayAct), ["1"]);
+  // Mono-tenant: the saver acts for Main only, so nothing changes there.
+  assert.deepEqual(publishGroups(all, "main", groups, (g) => g === "main"), ["main"]);
+});
+
 // ── What the use cases needed (2026-10-31) ───────────────────────────────────
 
 import { adoptable, adoptSkill, addFeedback, closeFeedback, duplicateSkill, grantedSecrets, loadRegistry } from "../src/factory.js";
@@ -426,6 +445,18 @@ test("runs: a Skill(name:name) call counts for that factory skill, per agent, ov
   assert.equal(st.byAgent.s.a1, 2);
   assert.equal(st.byAgent.s.a2, undefined);
   assert.ok(st.last.s >= now - 1000);
+});
+
+test("runs: a run made during a cron fire is counted apart, and still counts as a run", (t) => {
+  const root = scratch(t);
+  const now = Date.now();
+  recordRun(root, { skill: "s", agent: "a1", at: now - 1000, via: "cron" });
+  recordRun(root, { skill: "s", agent: "a1", at: now - 2000 });
+  recordRun(root, { skill: "s", agent: "a2", at: now - 3000 });
+  const st = runStats(root, now - 7 * 86_400_000, now);
+  assert.equal(st.byAgent.s.a1, 2);
+  assert.equal(st.cronByAgent.s.a1, 1);
+  assert.equal(st.cronByAgent.s.a2, undefined);
 });
 
 test("updateMeta: share, tag, archive", (t) => {
