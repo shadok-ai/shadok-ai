@@ -53,3 +53,25 @@ test("config: per launch dir, independent, empty removes", () => {
   assert.equal(instanceContextForCwd(cfg, "/a"), "");
   assert.ok(!("/a" in cfg.instanceContext));
 });
+
+test("instanceContextArgs: nothing when empty; a hostile text survives byte-for-byte", async () => {
+  const { instanceContextArgs } = await import("../src/instance-context.js");
+  assert.deepEqual(instanceContextArgs(""), []);
+  const hostile = "Quotes \" ' `ticks` $HOME $(rm -rf /)\nnew line\n# Markdown *bold*";
+  const a = instanceContextArgs(hostile);
+  assert.equal(a[0], "--append-system-prompt");
+  assert.ok(a[1].endsWith(hostile));
+});
+
+test("pre-prompt panel shows it right after the role, and the staleness fingerprint ignores it", async () => {
+  const { prepromptParts, prepromptFingerprint } = await import("../src/preprompt.js");
+  const base = { profileName: "Shadok-dev", role: "You build.", pilotPrompt: "pilot" };
+  const without = prepromptParts(base);
+  const withCtx = prepromptParts({ ...base, instanceContext: "Side projects with friends." });
+  const i = withCtx.findIndex((p) => p.label === "Instance context");
+  assert.ok(i > 0, "the part exists");
+  assert.equal(withCtx[i - 1].label.startsWith("Role"), true);
+  assert.ok(withCtx[i].text.includes("Side projects with friends."));
+  assert.equal(prepromptFingerprint(withCtx), prepromptFingerprint(without));
+  assert.equal(prepromptParts({ ...base, instanceContext: "  " }).some((p) => p.label === "Instance context"), false);
+});

@@ -51,6 +51,7 @@ import { ensureClaudeHome, ensureProjectTrusted,
   type ClaudeSettings,
 } from "./claude-home.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
+import { instanceContextArgs, normalizeInstanceContext, firstWriteVerdict, INSTANCE_CONTEXT_MAX } from "./instance-context.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
 import {
   startAgentLogin,
@@ -283,6 +284,8 @@ import {
   applyTelegramPatch,
   titleForCwd,
   setTitleForCwd,
+  instanceContextForCwd,
+  setInstanceContextForCwd,
   themeForCwd,
   setThemeForCwd,
   mutedForCwd,
@@ -6369,6 +6372,7 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null, se
   return prepromptParts({
     profileName: profileName ?? null,
     role: resolved?.systemPrompt,
+    instanceContext: instanceContextForCwd(loadConfig(), process.cwd()),
     model: resolved?.model,
     deny: resolved?.deny,
     allow: resolved?.allow,
@@ -6776,6 +6780,9 @@ function makePilot(
     // after `--mcp-config`'s variadic JSON as a bare word.
     ...factory.args,
     ...profileArgs(resolvedProfile, spawnModel, effort),
+    // The instance context: right after the role (which stays first), before
+    // the cockpit's own notes. Nothing at all when it is empty.
+    ...instanceContextArgs(instanceContextForCwd(loadConfig(), process.cwd())),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
