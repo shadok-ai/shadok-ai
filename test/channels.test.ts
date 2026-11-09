@@ -17,6 +17,7 @@ import {
   normalizeGroups,
   normalizeChannelGroups,
   ensureMainGroup,
+  mainGroupHeal,
   type Channel,
 } from "../src/channels.js";
 
@@ -505,4 +506,17 @@ test("normalizeChannelGroups: a legacy numeric group comes back as the equivalen
   assert.strictEqual(out[1].group, "g1");
   assert.strictEqual(out[2].group, null);
   assert.ok(!("group" in out[3]));
+});
+
+test("mainGroupHeal: never writes on an empty read — it may be an unreadable file, not an absent one", () => {
+  assert.equal(mainGroupHeal([]), null);
+});
+
+test("mainGroupHeal: restores main into an observed list missing it, keeping every row", () => {
+  const stored = [
+    { id: "2", name: "Tech", nature: "public", members: [], osUser: null, createdAt: 0 },
+    { id: "p1", name: "Personal", nature: "private", members: ["a"], osUser: "sk-p1", createdAt: 0 },
+  ] as Group[];
+  assert.deepEqual(mainGroupHeal(stored)?.map((g) => g.id), ["main", "2", "p1"]);
+  assert.equal(mainGroupHeal(ensureMainGroup(stored)), null);
 });

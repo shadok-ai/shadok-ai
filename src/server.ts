@@ -108,6 +108,7 @@ import {
   saveGroups,
   normalizeGroups,
   ensureMainGroup,
+  mainGroupHeal,
   upsertChannel,
   removeChannel,
   mergeClientChannels,
@@ -3785,10 +3786,10 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // Personal group, as its private OS user — whose worktree creation then died
   // on "Permission denied" (the launch repo belongs to the commons user). The
   // migration's own `migLabelExistingPublic` is behind the marker and never
-  // re-runs, so heal it here, on every capable boot. Idempotent.
-  const stored = loadGroups();
-  const withMain = ensureMainGroup(stored);
-  if (withMain !== stored) {
+  // re-runs, so heal it here, on every capable boot. Idempotent, and never on an
+  // empty read (see `mainGroupHeal`: empty may mean "could not read").
+  const withMain = mainGroupHeal(loadGroups());
+  if (withMain) {
     saveGroups(withMain);
     console.log("groups: the commons group (main) was missing — restored");
   }

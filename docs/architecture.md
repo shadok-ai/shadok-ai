@@ -2002,7 +2002,9 @@ migration that never completes is never silent. The lead agent is scoped to Main
 The first boot heal is the plainest: `ensureGroupsProvisioned` re-asserts the
 commons row (`main`, `ensureMainGroup`) before anything else. The migration adds
 it (`migLabelExistingPublic`), but behind the marker, so an instance found
-without it never got it back. Its absence is silent and costly: the web client
+without it never got it back. The heal writes only over a NON-EMPTY list
+(`mainGroupHeal`): an empty read may be an unreadable file, and `[main]` written
+over it would erase every walled group's row. Its absence is silent and costly: the web client
 files a Main-view agent into `main` by name only when the row exists
 (`commonsOnServer`); otherwise it omits the group, the server resolves "no
 choice" to the caller's single Personal group (`spawnGroupFor`), and the agent
