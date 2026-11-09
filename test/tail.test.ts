@@ -171,7 +171,7 @@ test("isNothingToShow: the phrase inside a real sentence is NOT the sentinel", (
   // An agent that EXPLAINS the convention must not get muzzled (see invariant
   // 2: an over-broad heuristic has already cost dearly here).
   assert.equal(isNothingToShow("I replied NOTHING TO SHOW because the cron was quiet."), false);
-  assert.equal(isNothingToShow("NOTHING TO SHOW yet — still running."), false);
+  assert.equal(isNothingToShow("Nothing to show yet — still running."), false);
   assert.equal(isNothingToShow("nothing"), false);
   assert.equal(isNothingToShow(""), false);
 });
@@ -346,4 +346,15 @@ test("an ordinary block still streams, and signals nothing", () => {
     out.filter((e) => e.kind === "text").map((e: any) => e.text),
     ["Voici le rapport."],
   );
+});
+
+test("isNothingToShow: the upper-case sentinel used as a PREFACE drops the whole block", () => {
+  // Observed: an agent decided to stay silent, then justified it in the same block.
+  assert.equal(isNothingToShow("NOTHING TO SHOW for the home page: it is panel ergonomics.\n\nI also re-read the docs."), true);
+  assert.equal(isNothingToShow("**NOTHING TO SHOW** — the docs still hold."), true);
+  assert.equal(isNothingToShow("NOTHING TO SHOW: quiet run."), true);
+  // Not a preface: lower/mixed case prose, the phrase later in the text, a longer word.
+  assert.equal(isNothingToShow("Nothing to show for now, the build is running."), false);
+  assert.equal(isNothingToShow("The cron said NOTHING TO SHOW twice."), false);
+  assert.equal(isNothingToShow("NOTHING TO SHOWCASE here"), false);
 });
