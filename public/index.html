@@ -5429,6 +5429,16 @@
   // real group, because Main HAS its own vault).
   const COMMONS_GROUP_ID = "main";
   const foldCommons = (id) => (id != null && String(id) === COMMONS_GROUP_ID ? null : id);
+  // Does the server carry that commons row (multi-tenant)? Then the "Main" view is
+  // a REAL group a new agent must be filed into by name: a start with no `group`
+  // is read by the server as "no choice made" and lands in the caller's own single
+  // private group — the admin's Personal — so an agent created on the Main view
+  // jumped to Personal on the next sync. Mono-tenant has no such row and keeps
+  // omitting the key (its start message stays byte-for-byte what it was).
+  let commonsOnServer = false;
+  const noteCommons = (list) => {
+    if (Array.isArray(list)) commonsOnServer = list.some((g) => g && String(g.id) === COMMONS_GROUP_ID);
+  };
 
   // Group nature (server-owned): public / restricted / private. A walled group
   // (restricted or private) carries a padlock. The operator never sees the
@@ -6262,6 +6272,7 @@
     // A group created on another device must exist here before an agent can be
     // filed into it. Additive only: a group missing from the server may be one
     // this tab just made and has not pushed yet.
+    noteCommons(srvGroups);
     if (Array.isArray(srvGroups)) {
       for (const sg of srvGroups) {
         if (sg == null || sg.id == null) continue;
@@ -8713,6 +8724,9 @@
     if (mode === "new") {
       const tg = viewGroupId();
       if (tg) msg.group = tg;
+      // The Main view on screen is a choice too (see `commonsOnServer`). Only when
+      // the rail shows it: a phone has no view, and keeps the server's default.
+      else if (commonsOnServer && setupGroup == null && railShown()) msg.group = COMMONS_GROUP_ID;
     }
     $("startBtn").disabled = true;
     closeSetup();
@@ -14689,6 +14703,7 @@
     // empty. Only a failed fetch falls back to the (now dir-scoped) cache.
     let savedGroups = pickChannelSource(groupsR, JSON.parse(localStorage.getItem(dirKey("cp.groups", instanceKey)) || "[]"));
     // The commons group ("main") is the "Main" view, never a rail group (see foldCommons).
+    if (groupsR.status === "fulfilled") noteCommons(groupsR.value);
     for (const g of savedGroups) if (String(g.id) !== COMMONS_GROUP_ID) createGroup(g);
 
     let saved = pickChannelSource(channelsR, JSON.parse(localStorage.getItem(dirKey("cp.channels", instanceKey)) || "[]"));

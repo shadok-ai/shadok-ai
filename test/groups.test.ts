@@ -335,6 +335,14 @@ import { readFileSync } from "node:fs";
     assert.equal(spawnGroupForRequest(zoe, all, "a")?.id, MAIN_GROUP_ID);
     assert.equal(spawnGroupForRequest(zoe, all, "nope")?.id, MAIN_GROUP_ID);
   });
+  test("spawnGroupForRequest: an explicit commons request beats the caller's Personal", () => {
+    // The Main view's spawn: with no request, an account with exactly ONE private
+    // group is filed there — which is why the client now names "main" outright.
+    const personal: Group = { id: "p", name: "admin", nature: "private", members: ["admin"], createdAt: 0 };
+    const admin = { name: "admin", role: "admin" as const };
+    assert.equal(spawnGroupForRequest(admin, [mainG, personal], null)?.id, "p");
+    assert.equal(spawnGroupForRequest(admin, [mainG, personal], MAIN_GROUP_ID)?.id, MAIN_GROUP_ID);
+  });
   test("spawnGroupForRequest: no request equals spawnGroupFor", () => {
     assert.equal(spawnGroupForRequest(ada, all, null)?.id, spawnGroupFor(ada, all)?.id);
   });
