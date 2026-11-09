@@ -9,6 +9,7 @@ import {
   commonsGroupIds,
   normalizeShare,
   profileAllowed,
+  defaultShare,
   loadAccountsStore,
   publicView,
   resolveAccountId,
@@ -58,9 +59,11 @@ const matrix: Record<string, Record<string, boolean>> = {
     owner: true, memberG1: true, nonMember: false, admin: false,
     agentOwnerPrivate: false, agentG1: true, agentMain: false, agentCommons: false, agentOtherPrivate: false, agentG2: false,
   },
+  // Main named as a group IS the Public tier (a public group folds into it),
+  // so it reaches the owner's own Personal group too — exactly like `instance`.
   main: {
     owner: true, memberG1: true, nonMember: true, admin: true,
-    agentOwnerPrivate: false, agentG1: false, agentMain: true, agentCommons: true, agentOtherPrivate: false, agentG2: false,
+    agentOwnerPrivate: true, agentG1: false, agentMain: true, agentCommons: true, agentOtherPrivate: false, agentG2: false,
   },
   instance: {
     owner: true, memberG1: true, nonMember: true, admin: true,
@@ -134,6 +137,28 @@ test("a v1 share in the store loads as the current shape", () => {
   fs.writeFileSync(file, JSON.stringify([{ ...acct(sh({})), share: { scope: "instance" } }]));
   assert.deepEqual(loadAccountsStore(file)[0].share, sh({ everyone: true }));
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a public group named in a share IS the Public tier (server and client agree)", () => {
+  const withPub = [...groups, g("pub", "public", [])];
+  assert.deepEqual(normalizeShare({ scope: "groups", groups: ["pub", "g1"] }, null, new Set(["main", "pub"])), sh({ everyone: true, groups: ["g1"] }));
+  assert.deepEqual(normalizeShare({ scope: "groups", groups: ["main"] }), sh({ everyone: true }));
+  // Stored unfolded, read folded: a Main agent sees it, exactly as the Public chip says.
+  const a = acct(sh({ groups: ["pub"] }));
+  assert.equal(accountVisible(a, viewers.agentMain, withPub, noPeer), true);
+  assert.equal(accountVisible(a, viewers.agentG2, withPub, noPeer), false);
+});
+
+test("edit verdict checks only what the edit ADDS: a deleted profile or group does not block later edits", () => {
+  const a = acct(sh({ groups: ["gone"], profiles: ["Ghost"] }));
+  assert.equal(accountEditVerdict(a, viewers.owner, "share", { share: sh({ groups: ["gone"], profiles: ["Ghost"], personal: true }) }, groups, ["Writer"]).ok, true);
+  assert.equal(accountEditVerdict(a, viewers.owner, "share", { share: sh({ groups: ["gone"], profiles: ["Ghost", "Nope"] }) }, groups, ["Writer"]).ok, false);
+});
+
+test("defaultShare: each call is a fresh object", () => {
+  const x = defaultShare();
+  x.groups.push("g1");
+  assert.deepEqual(defaultShare().groups, []);
 });
 
 test("tiers are a union: Personal + g1 reaches both, and nothing else", () => {

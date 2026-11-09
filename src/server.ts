@@ -327,6 +327,7 @@ import {
   recordOrigin,
   originProfile,
   ANY_PROFILE,
+  agentOverwriteRefusal,
 } from "./secrets.js";
 import {
   recordSecretAudit,
@@ -1621,6 +1622,11 @@ export function agentPrincipal(req: Caller): AgentPrincipal | null {
   if (typeof key !== "string" || !key) return null;
   const id = localSessionForKey(req, key);
   if (!id) return null;
+  return principalForSession(id);
+}
+
+/** The principal of a KNOWN session id (already authenticated, or not a caller at all). */
+function principalForSession(id: string): AgentPrincipal {
   return resolveAgentPrincipal(
     id,
     loadChannels(),
@@ -4316,6 +4322,12 @@ app.put("/secrets", (req, res) => {
   const ownerGroup = target.ownerGroup;
   const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
+  if (verdict === "updated") {
+    const slice = loadVault()[ownerGroup];
+    const entry = slice && Object.hasOwn(slice, key) ? slice[key] : undefined;
+    const r = agentOverwriteRefusal(entry, agentPrincipal(req) !== null);
+    if (r) return res.status(403).json({ error: r });
+  }
   // Mono-tenant has one commons and no group gate: anyone may ADD a secret,
   // but replacing one every agent may depend on is an admin act.
   if (verdict === "updated" && DEPLOYMENT_MODE !== "multi-tenant") {
@@ -4353,11 +4365,14 @@ app.put("/secrets/profiles", (req, res) => {
   const name = String(req.body?.name ?? "").trim();
   const profiles = Array.isArray(req.body?.profiles) ? req.body.profiles.map(String) : [];
   if (!name) return res.status(400).json({ error: "name required" });
-  // "Any profile" hands the credential to every agent that can resolve it —
-  // a person's decision, never an agent's (invariant 58). Removing it is not
-  // gated: narrowing is always safe.
-  if (profiles.includes(ANY_PROFILE) && !requestFromBrowser(req))
-    return res.status(403).json({ error: "Only a person, from the web UI, can give a secret to every profile." });
+  // Which profiles receive a secret is a person's decision, never an agent's
+  // (invariants 37, 58): an agent able to bind a secret it wrote to OTHER
+  // profiles — in Main, every agent of every group on them — would be injecting
+  // values into agents it does not own, and "Any profile" would widen that to
+  // all. An agent attaches a secret it created to its OWN profile through
+  // `PUT /profiles/secret`; this route is the web UI's alone.
+  if (!requestFromBrowser(req))
+    return res.status(403).json({ error: "Only a person, from the web UI, can choose which profiles receive a secret." });
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
   if (!setSecretProfiles(name, target.ownerGroup, profiles))
@@ -4575,7 +4590,7 @@ app.put("/connected-accounts/:id", (req, res) => {
   if (share === undefined && policy === undefined) return res.status(400).json({ error: "share or policy required" });
   const groups = loadGroups();
   // The owner's own Personal group named as a group IS `personal` (normalizeShare).
-  const nextShare = share === undefined ? undefined : normalizeShare(share, privateGroupFor(found.account.owner, groups)?.id ?? null);
+  const nextShare = share === undefined ? undefined : normalizeShare(share, privateGroupFor(found.account.owner, groups)?.id ?? null, commonsGroupIdsOf(groups));
   if (share !== undefined && !nextShare) return res.status(400).json({ error: "invalid share" });
   if (policy !== undefined && policy !== "approve" && policy !== "autonomous") return res.status(400).json({ error: "invalid policy" });
   const viewer = viewerFor(currentAccount(req));
@@ -4895,12 +4910,16 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   // A draft is its agent's content: the same session boundary as /download.
   const sessionVisible = mayActFor(req, hit.sessionId);
 
-  // The drafting agent's profile AS OF NOW: a profile filter added since the
-  // draft refuses it, the same way an unshare does.
-  const agentProfile = sessions.get(hit.sessionId)?.profile ?? loadChannels().find((c) => c.sessionId === hit.sessionId)?.profile ?? null;
+  // The drafting agent AS IT IS NOW (group, profile, peer box): a share
+  // narrowed since the draft — fewer groups, a profile filter — refuses it.
+  const drafter = principalForSession(hit.sessionId);
   const v =
     action === "publish"
-      ? publishVerdict(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED, agentProfile)
+      ? publishVerdict(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED, {
+          viewer: viewerFor(agentAccount(drafter)),
+          peerBox: drafter.peer,
+          profile: drafter.profile,
+        })
       : discardVerdict(hit, account, viewer, groups, now, sessionVisible, AGENTS_UNWALLED);
   if (!v.ok) {
     // A pending draft the account no longer allows (unshared, disconnected,

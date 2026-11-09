@@ -6,7 +6,7 @@
  * Design: docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §2.
  */
 import type { TokenPayload } from "./connect-crypto.js";
-import { DEFAULT_SHARE, type IncomingAccount } from "./connected-accounts.js";
+import { defaultShare, type IncomingAccount } from "./connected-accounts.js";
 
 export const DEFAULT_CONNECT_BROKER = "https://connect.shadok.ai";
 export const RETURN_PATH = "/connect/linkedin/done";
@@ -126,7 +126,7 @@ export function connectedMember(
     externalId: `urn:li:person:${member.sub}`,
     owner: person,
     connectedVia: person,
-    share: { ...DEFAULT_SHARE },
+    share: defaultShare(),
     policy: "approve",
     token: payload.access_token,
     expiresAt: now + payload.expires_in * 1000,

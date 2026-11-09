@@ -11527,7 +11527,7 @@
     actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
     if (!ro) {
       actions.append(
-        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k)),
+        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () => startEditSecret(k, grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : null)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
           // The row's OWNER group, not the panel's write target (see secretControls).
           const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
@@ -11591,8 +11591,12 @@
     const inject = field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
       profs.length ? [{ value: "*", label: "Any profile" }, ...profs.map((n) => ({ value: n, label: n }))] : [], sec.profiles);
     if (inject) {
+      const commons = String(sec.ownerGroup) === "main" || vaultGroups.some((g) => String(g.id) === String(sec.ownerGroup) && g.nature === "public");
       for (const cb of inject.cbs) cb.addEventListener("change", () => {
         if (!cb.checked) return;
+        if (cb.value === "*" && !confirm(commons
+          ? `Give ${sec.name} to EVERY agent on this instance — every group, Personal ones included, whatever its profile?`
+          : `Give ${sec.name} to every agent that can read it, whatever its profile?`)) { cb.checked = false; return; }
         for (const o of inject.cbs) if (o !== cb && (cb.value === "*" || o.value === "*")) o.checked = false;
       });
     }
@@ -11689,6 +11693,7 @@
   // and the profiles it already feeds, so you can rotate the value or change
   // which profiles get it in one place.
   let editingSecret = null;
+  let editingSecretGroup = null; // the edited row's owner group (grouped mode)
   /** Paint a checkbox per (non-managed) profile; `checked` is the set to tick. */
   function renderSecretProfiles(checked) {
     const box = $("secretProfiles");
@@ -11713,14 +11718,19 @@
   }
   function resetSecretForm() {
     editingSecret = null;
+    editingSecretGroup = null;
     $("secretKey").value = ""; $("secretKey").readOnly = false;
     $("secretVal").value = ""; $("secretVal").placeholder = "value";
     $("secretSubmit").textContent = "Add";
     $("secretEditCancel").hidden = true;
     renderSecretProfiles(new Set());
   }
-  function startEditSecret(name) {
+  function startEditSecret(name, ownerGroup = null) {
     editingSecret = name;
+    // An update goes to the group that HOLDS the secret — not the panel's write
+    // target: in "Public" that is the first public group, and editing a Main
+    // secret there would write a second copy beside it instead.
+    editingSecretGroup = ownerGroup;
     $("secretKey").value = name; $("secretKey").readOnly = true;
     $("secretVal").value = ""; $("secretVal").placeholder = "new value (blank = keep)";
     $("secretSubmit").textContent = "Update";
@@ -13304,7 +13314,8 @@
     // AGENT replacing a credential silently).
     const keepValue = editingSecret && value === "";
     if (!keepValue) {
-      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(withSecretGroup({ name, value, overwrite: true })) });
+      const body = editingSecret && editingSecretGroup ? { name, value, overwrite: true, group: editingSecretGroup } : withSecretGroup({ name, value, overwrite: true });
+      const r = await fetch("/secrets", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const err = await vaultError(r);
       // Refused: say so and keep the form filled, rather than clearing it as if saved.
       if (err) { showVaultError("Could not save " + name + ": " + err); return; }

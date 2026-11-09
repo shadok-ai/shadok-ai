@@ -36,8 +36,11 @@ export interface ShareScope {
   profiles: string[];
 }
 
-/** What a new account starts with: its owner's Personal group, any profile. */
-export const DEFAULT_SHARE: ShareScope = Object.freeze({ personal: true, groups: [], everyone: false, profiles: [] }) as ShareScope;
+/** What a new account starts with: its owner's Personal group, any profile. A
+ *  factory, not a shared object: a spread would share the arrays. */
+export function defaultShare(): ShareScope {
+  return { personal: true, groups: [], everyone: false, profiles: [] };
+}
 
 const strList = (v: unknown): string[] =>
   Array.isArray(v) ? [...new Set(v.filter((x): x is string => typeof x === "string" && x.trim() !== "").map((x) => x.trim()))] : [];
@@ -47,15 +50,21 @@ const strList = (v: unknown): string[] =>
  * form (`{scope:"private"|"groups"|"instance"}`) too, so an account saved
  * before the multi-choice picker keeps exactly its reach. The owner's own
  * Personal group named in `groups` folds into `personal` (the two meant the
- * same thing — the duplicate the v1 picker offered). Null for a shape that is
- * neither.
+ * same thing — the duplicate the v1 picker offered), and a PUBLIC group (Main
+ * included) folds into `everyone`: the commons is one tier, and the client's
+ * picker reads it the same way, so the two can never disagree on reach. Null
+ * for a shape that is neither.
  */
-export function normalizeShare(raw: unknown, ownerPersonalId: string | null = null): ShareScope | null {
+export function normalizeShare(
+  raw: unknown,
+  ownerPersonalId: string | null = null,
+  publicIds: ReadonlySet<string> = new Set([MAIN_GROUP_ID]),
+): ShareScope | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   let out: ShareScope;
   if (typeof r.scope === "string") {
-    if (r.scope === "private") out = { ...DEFAULT_SHARE };
+    if (r.scope === "private") out = defaultShare();
     else if (r.scope === "instance") out = { personal: false, groups: [], everyone: true, profiles: [] };
     else if (r.scope === "groups" && Array.isArray(r.groups)) out = { personal: false, groups: strList(r.groups), everyone: false, profiles: [] };
     else return null;
@@ -66,6 +75,9 @@ export function normalizeShare(raw: unknown, ownerPersonalId: string | null = nu
   }
   if (ownerPersonalId && out.groups.includes(ownerPersonalId)) {
     out = { ...out, personal: true, groups: out.groups.filter((g) => g !== ownerPersonalId) };
+  }
+  if (out.groups.some((g) => publicIds.has(g))) {
+    out = { ...out, everyone: true, groups: out.groups.filter((g) => !publicIds.has(g)) };
   }
   return out;
 }
@@ -119,7 +131,7 @@ export function loadAccountsStore(file: string): ConnectedAccount[] {
     // A v1 share is read as the current shape (`normalizeShare`), so every
     // rule below only ever sees one form.
     return Array.isArray(parsed)
-      ? (parsed as ConnectedAccount[]).map((a) => ({ ...a, share: normalizeShare(a?.share) ?? { ...DEFAULT_SHARE } }))
+      ? (parsed as ConnectedAccount[]).map((a) => ({ ...a, share: normalizeShare(a?.share) ?? defaultShare() }))
       : [];
   } catch {
     return [];
@@ -175,7 +187,7 @@ export function upsertAccount(
   const account: ConnectedAccount = {
     ...incoming,
     id: newAccountId(list),
-    share: incoming.share ?? { ...DEFAULT_SHARE },
+    share: incoming.share ?? defaultShare(),
     policy: incoming.policy ?? "approve",
     createdAt: now,
     updatedAt: now,
@@ -235,7 +247,7 @@ export function accountVisible(
   if (!viewer || opts.peerBox) return false;
   // Normalised here too, not only at load: an account built in memory (a
   // test, a future caller) must not slip past the rules in the v1 shape.
-  const share = normalizeShare(a.share) ?? DEFAULT_SHARE;
+  const share = normalizeShare(a.share, privateGroupFor(a.owner, groups)?.id ?? null, commonsGroupIds(groups)) ?? defaultShare();
   if (isAgentViewer(viewer) && !profileAllowed(share, opts.agentProfile)) return false;
   if (opts.agentsUnwalled && isAgentViewer(viewer)) return true;
   const commons = commonsGroupIds(groups);
@@ -291,14 +303,19 @@ export function accountEditVerdict(
     return no("Only the owner can let an account publish without approval.");
   }
   if (change === "share" && next?.share) {
-    for (const id of next.share.groups) {
+    // Only what this edit ADDS is checked: the client re-sends the whole share,
+    // and a group or profile deleted since must not block every later edit.
+    const cur = normalizeShare(a.share) ?? defaultShare();
+    for (const id of next.share.groups.filter((g) => !cur.groups.includes(g))) {
       const g = groups.find((x) => x.id === id);
       if (!g) return no(`Group "${id}" does not exist.`);
       if (g.nature === "private") return no(`"${g.name}" is someone's Personal group; it cannot be shared into.`);
       if (!commonsGroupIds(groups).has(id) && !memberOf(g, a.owner)) return no(`You are not a member of "${g.name}", so you cannot share into it.`);
     }
     if (profileNames) {
-      for (const p of next.share.profiles) if (!profileNames.includes(p)) return no(`There is no profile named "${p}".`);
+      for (const p of next.share.profiles.filter((x) => !cur.profiles.includes(x))) {
+        if (!profileNames.includes(p)) return no(`There is no profile named "${p}".`);
+      }
     }
   }
   return { ok: true };

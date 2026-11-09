@@ -1811,12 +1811,15 @@ UNION of tiers — `personal` (the owner's own Personal group), `groups` (named
 groups), `everyone` — any combination, then `profiles`: when not empty, only
 agents running one of those profiles pass. The profile is a filter on top of
 the tiers, never a way past them, and it holds even when `agentsUnwalled` (it
-is the owner's choice, not a wall the OS must build); `publishVerdict` re-reads
-the drafting agent's profile at click time, so a filter added after a draft
-refuses it like an unshare. A v1 single-choice share (`{scope}`) is read
-through `normalizeShare`, which also folds the owner's own Personal group named
-in `groups` into `personal` — the v1 picker offered both, and they meant the
-same thing. For a person: owner, or `everyone`, or a group they belong to (Main
+is the owner's choice, not a wall the OS must build); `publishVerdict` re-runs
+`accountVisible` for the drafting agent as it is at click time (group, profile,
+peer box), so a share narrowed after a draft refuses it. A v1
+single-choice share (`{scope}`) is read through `normalizeShare`, which also
+folds the owner's own Personal group named in `groups` into `personal`, and a
+public group (Main included) into `everyone` — the commons is one tier, and the
+server and the client picker must agree on reach (`accountVisible` folds with
+the live group natures). `accountEditVerdict` checks only what an edit ADDS, so
+a group or profile deleted since never blocks the next edit. For a person: owner, or `everyone`, or a group they belong to (Main
 and public groups count as commons); profiles never filter people. For an
 agent the rule is stricter on purpose: `everyone` reaches agents in Main,
 in a public group, or in the owner's own private group — **not other people's
@@ -1946,9 +1949,14 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   A secret's `profiles` may hold `ANY_PROFILE` (`"*"`, the panel's *Any
   profile* chip): it is then injected into EVERY agent it resolves for, with or
   without a profile — the group resolution is still the only wall, the profile
-  list just stops narrowing it. Only a browser person can set it (the route
-  refuses an agent key: widening a credential to agents nobody picked is a
-  person's call, invariant 58), and `"*"` is refused as a profile name.
+  list just stops narrowing it. On a commons secret (Main, a public group) that
+  is every agent on the instance, and the panel's confirm says so. Which
+  profiles receive a secret is a person's decision: `PUT /secrets/profiles` is
+  browser-only altogether (an agent binding a Main secret it wrote to other
+  profiles would inject values into every group's agents on them; an agent
+  attaches a secret it CREATED to its OWN profile via `PUT /profiles/secret`),
+  an agent may not overwrite a `*` secret (`agentOverwriteRefusal`), and `"*"`
+  is refused as a profile name.
   The panel's group selector always offers **Public** first (Main and every public group are one commons), then Personal, then the restricted groups:
   a caller the write gate would let into Main (`canWriteSecretGroup`, i.e. an
   admin or a Main member) gets Main's secrets tagged `editable` with their

@@ -7,7 +7,7 @@ import {
   DRAFT_TTL_MS,
   DISCONNECTED_SENTENCE,
   BEING_PUBLISHED_SENTENCE,
-  PROFILE_NOT_ALLOWED,
+  DRAFTER_NOT_ALLOWED,
   NOT_SHARED_WITH_APPROVER,
   NOT_SHARED_WITH_AGENT,
   PUBLISH_FAILED_SENTENCE,
@@ -401,14 +401,19 @@ test("postRequestVerdict: a refusal after the account resolved carries it (for t
   assert.equal(!hidden.ok && hidden.account, undefined);
 });
 
-test("profile filter: the drafting agent's profile is checked at draft time AND at click time", () => {
+test("the drafting agent is re-checked at click time: group AND profile", () => {
   const writersOnly = acct({}, { personal: false, groups: [], everyone: true, profiles: ["Writer"] });
-  // Click: the agent's profile as it is NOW.
-  assert.deepEqual(publishVerdict(draft(), writersOnly, paul, groups, NOW, true, false, "Writer"), { ok: true });
-  const r = publishVerdict(draft(), writersOnly, paul, groups, NOW, true, false, "Dev");
-  assert.deepEqual(r, { ok: false, status: 403, reason: PROFILE_NOT_ALLOWED });
-  assert.equal(refusalLogOutcome(draft(), PROFILE_NOT_ALLOWED, NOW), "refused");
-  // Draft: an agent on another profile does not see the account at all.
+  const drafter = (profile: string | null, agentGroup: string | null = null) => ({ viewer: { name: "agent:x", role: "member" as const, agentGroup }, peerBox: null, profile });
+  assert.deepEqual(publishVerdict(draft(), writersOnly, paul, groups, NOW, true, false, drafter("Writer")), { ok: true });
+  const r = publishVerdict(draft(), writersOnly, paul, groups, NOW, true, false, drafter("Dev"));
+  assert.deepEqual(r, { ok: false, status: 403, reason: DRAFTER_NOT_ALLOWED });
+  assert.equal(refusalLogOutcome(draft(), DRAFTER_NOT_ALLOWED, NOW), "refused");
+  // A share narrowed from Public to Personal since the draft refuses a Main agent's draft.
+  const narrowed = acct({}, { personal: true, groups: [], everyone: false, profiles: [] });
+  assert.equal(publishVerdict(draft(), narrowed, paul, groups, NOW, true, false, drafter(null, null)).ok, false);
+  // A peer-boxed drafter never passes.
+  assert.equal(publishVerdict(draft(), acct({}, { scope: "instance" } as never), paul, groups, NOW, true, false, { ...drafter(null), peerBox: "box" }).ok, false);
+  // Draft time: an agent on another profile does not see the account at all.
   assert.equal(postRequestVerdict([writersOnly], "abcd", "Hi", agentViewer, groups, null, NOW, false, "Dev").ok, false);
   assert.equal(postRequestVerdict([writersOnly], "abcd", "Hi", agentViewer, groups, null, NOW, false, "Writer").ok, true);
 });

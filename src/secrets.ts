@@ -21,6 +21,16 @@ import { MAIN_GROUP_ID, canWriteSecretGroup, spawnGroupFor, type Group, type Vie
  */
 export const ANY_PROFILE = "*";
 
+/**
+ * May an AGENT overwrite this existing entry? Not one bound to `ANY_PROFILE`:
+ * its value reaches every agent that resolves it (for a commons secret, every
+ * agent on the instance), so replacing it is a person's act. Null = allowed.
+ */
+export function agentOverwriteRefusal(entry: Pick<SecretEntry, "profiles"> | undefined, isAgent: boolean): string | null {
+  if (!isAgent || !entry || !entry.profiles.includes(ANY_PROFILE)) return null;
+  return "This secret is given to every profile; only a person can change its value, from the web UI.";
+}
+
 export interface SecretEntry {
   value: string;
   ownerGroup: string;

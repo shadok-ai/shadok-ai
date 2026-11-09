@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, agentOverwriteRefusal, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
@@ -154,4 +154,11 @@ test("visibleSecrets: a Main secret carries its profiles only for a caller who m
   assert.equal(w.editable, true);
   assert.equal(w.ownerGroup, "main");
   assert.deepEqual(w.profiles, ["Dev"]);
+});
+
+test("agentOverwriteRefusal: an agent may not replace an Any-profile secret; a person may, and other secrets stay as before", () => {
+  assert.equal(typeof agentOverwriteRefusal({ profiles: [ANY_PROFILE] }, true), "string");
+  assert.equal(agentOverwriteRefusal({ profiles: [ANY_PROFILE] }, false), null);
+  assert.equal(agentOverwriteRefusal({ profiles: ["Dev"] }, true), null);
+  assert.equal(agentOverwriteRefusal(undefined, true), null);
 });
