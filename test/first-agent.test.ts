@@ -64,3 +64,18 @@ test("a brand-new private group with zero channels triggers nothing", () => {
   const chans = [{ group: "main" }];
   assert.equal(firstAgentPlan({ mainChannelCount: countMainChannels(chans), connected: "yes" }).spawn, false);
 });
+
+test("the first agent is born in Main, never in its creator's private group", async () => {
+  // PR #428 fixed the browser's Main view; the lead agent is spawned by the
+  // SERVER over its loopback as the bootstrap admin, and without an explicit
+  // group the isolation policy filed it into the admin's Personal (reproduced
+  // on a fresh multi-tenant instance, 2026-11-09).
+  const { firstAgentStartMessage } = await import("../src/first-agent.js");
+  const { MAIN_GROUP_ID } = await import("../src/groups.js");
+  const m = firstAgentStartMessage("/workspace", "Shadok-Boss");
+  assert.equal(m.type, "start");
+  assert.equal(m.group, MAIN_GROUP_ID);
+  assert.equal(m.cwd, "/workspace");
+  assert.equal(m.profile, "Shadok-Boss");
+  assert.equal(m.origin, "boot");
+});

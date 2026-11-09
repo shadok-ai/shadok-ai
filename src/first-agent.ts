@@ -26,6 +26,18 @@ export function countMainChannels(channels: ReadonlyArray<{ group?: string | nul
 
 export const FIRST_AGENT_NAME = "general";
 
+/**
+ * Pure: the `start` the lead agent is spawned with. The launch directory and no
+ * worktree — this is the main channel, not one of the isolated agents it will go
+ * on to spawn. And an EXPLICIT `group: Main`: the spawn is made over the
+ * loopback as the bootstrap admin, and on a multi-tenant instance a spawn with no
+ * group lands in its creator's private group — the lead agent then lived in the
+ * admin's Personal, where nobody else could see it. Mono-tenant ignores the field.
+ */
+export function firstAgentStartMessage(cwd: string, profile: string | undefined) {
+  return { type: "start" as const, cwd, profile, origin: "boot", group: MAIN_GROUP_ID };
+}
+
 export interface FirstAgentPlan {
   spawn: boolean;
   reason: "first-boot" | "channels-exist" | "not-signed-in";
@@ -179,14 +191,7 @@ export async function ensureFirstAgent(deps: {
       guard.unref?.();
       ws.on("open", () =>
         ws.send(
-          JSON.stringify({
-            type: "start",
-            // The launch directory, and no worktree: this is the main channel,
-            // not one of the isolated agents it will go on to spawn.
-            cwd: deps.cwd,
-            profile: plan.profile,
-            origin: "boot",
-          }),
+          JSON.stringify(firstAgentStartMessage(deps.cwd, plan.profile)),
         ),
       );
       ws.on("message", (raw) => {
