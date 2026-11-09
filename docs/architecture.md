@@ -1638,6 +1638,23 @@ at its current path. Verified: the same agent then answered with v3.
   `Skill` tool call, and every `<name>:<name>` call matching a factory skill
   appends one row to `usage.jsonl` (30 days, compacted on read). The list's
   "runs · 7 days" and the per-agent counts come from there.
+- **Scheduled use.** A row is tagged `via: "cron"` when the turn that made the
+  call was a cron fire (`Live.cronTurn`, set on `prompt` from origin `cron` AND
+  `isCronPrompt` — a parent notification takes the same hidden path without the
+  mark). `cronUsers` (`src/skill-usage.ts`, pure) joins that with the crons
+  whose prompt NAMES the skill (`cronMentionsSkill`: `/name`, `name:name`, the
+  whole word), because each half alone lies: a fresh cron has no run yet, and a
+  skill the agent picks itself appears in no prompt. Each skill in
+  `GET /factory/skills` carries `cronUsers` (over the channels the caller may
+  drive) and each `attachedTo` entry its `cronRuns`. The drawer lists them as
+  "Used by schedules"; the agent name opens that agent with its info panel.
+- **The agent info panel** (`#infopanel`, the chan bar's ▯ button,
+  `renderInfoPanel`): environment, the factory skills the agent has (runs, and
+  ⏰ how many came from a schedule), its crons with the skills each names, and
+  the skills scheduled runs called unprompted. Every skill is a button that
+  opens its card in the Skill Factory (`openSkillCard`). It is the per-agent
+  view of the same two reads (`/factory/skills`, `/crons`), no endpoint of its
+  own.
 
 **The page** (`public/index.html`, "Skill Factory"):
 - `body.factory-mode` hides `main` and shows `#factoryPage`, with a short
