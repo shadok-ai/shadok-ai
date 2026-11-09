@@ -38,16 +38,22 @@ export const FORCED_CLAUDE_ENV: Record<string, string> = {
  * name must not shadow it — hence the forced layer, applied LAST by both pilots.
  * Gated on BOTH a drop `user` and a non-empty token: mono-tenant gets no key.
  */
-export function forcedEnv(opts: { user?: string | null; oauthToken?: string }): Record<string, string> {
+export function forcedEnv(opts: { user?: string | null; oauthToken?: string; ghToken?: string }): Record<string, string> {
   return {
     ...FORCED_CLAUDE_ENV,
     ...(opts.user && opts.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: opts.oauthToken } : {}),
+    // A dropped agent cannot read the server's gh config (its GH_CONFIG_DIR is
+    // overridden to the drop user's own writable dir in `dropEnv`), so it auths
+    // via GH_TOKEN instead — the server's own gh token, shared like the
+    // subscription token. Gated on a drop user; mono-tenant/root reads the config
+    // dir directly and needs nothing.
+    ...(opts.user && opts.ghToken ? { GH_TOKEN: opts.ghToken } : {}),
   };
 }
 
 /** The full spawn env of a PTY pilot, pure so it is testable without a PTY. */
 export function spawnEnv(
-  opts: { user?: string | null; home?: string | null; env?: Record<string, string>; oauthToken?: string },
+  opts: { user?: string | null; home?: string | null; env?: Record<string, string>; oauthToken?: string; ghToken?: string },
   baseEnv: Record<string, string>,
 ): Record<string, string> {
   // The credential strip goes on the RESULT, so neither the inherited env nor
@@ -93,6 +99,12 @@ export interface PilotOptions {
    * forced-last layer. Honoured only together with `user` (see `forcedEnv`).
    */
   oauthToken?: string;
+  /**
+   * The server's gh token, injected as GH_TOKEN for a DROPPED agent (whose
+   * `GH_CONFIG_DIR` is pointed at its own writable dir, away from the server's
+   * unreachable `/root/.claude/gh`). Honoured only together with `user`.
+   */
+  ghToken?: string;
 }
 
 export interface WaitOptions {
