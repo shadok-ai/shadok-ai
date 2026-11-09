@@ -118,6 +118,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/bang.ts` + `public/bang.js` | Running an agent's `!` command from the chat, on the HUMAN's behalf. |
 | `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. |
 | `src/backend.ts` | Which model backend an agent talks to: the subscription, or a CUSTOM one (a self-hosted open model, a gateway) reached through Claude Code's own `ANTHROPIC_BASE_URL`. |
+| `src/glance.ts` | A row's "xxx ago" + context % from the transcript's TAIL — `GET /channels/glance`, so the list fills at boot before the agents resume. |
 | `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. |
 | `src/git-exec.ts` | `gitIn` — the server running git in a checkout ANOTHER user owns. Under multi-tenant the server is root and the Tweak self-clone / an agent's worktree belong to a drop user, which git refuses as "detected dubious ownership" (the second *Tweak Shadok-AI* click died on it, and `isGitRepo` silently read the refusal as "not a repo"). On that refusal ONLY, the command is re-run as the directory's owner (`setpriv` to its uid/gid, its HOME) — never whitelisted with `safe.directory`, because the repo's `.git/config` is agent-writable and can name `core.fsmonitor`, a filter or a hook that git EXECUTES: whitelisting it would run an agent's command as root. Every invocation that works today runs unchanged. `createWorktree` hands the parent dirs it creates to that owner, or `worktree add` (now running as them) cannot write there. Pure cores tested; the root-vs-owner path is exercised for real when the suite runs as root. |
@@ -260,7 +261,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 **HTTP** (everything but `/login` sits behind the optional password gate):
 
 - usage/sessions: `/usage`, `/live`, `/sessions`, `/recover`, `/diff`
-- per-dir cockpit: `/channels`, `/groups`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
+- per-dir cockpit: `/channels` (+ `/glance`), `/groups`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
 - agents & roles: `/tweak/prepare`, `/profiles` (+ `/prompt`, `/secret`, `/restore`), `/secrets`, `/reload`, `/restart-all`, `/models`, `/backend`
 - accounts & 2FA: `/users`, `/users/role`, `/peers`, `/invite/:token`, `/me`, `/login*`, `/2fa*`
 - media & voice: `/paste`, `/media/:name`, `/files`, `/download`, `/transcribe`

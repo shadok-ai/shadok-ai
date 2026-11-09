@@ -615,6 +615,15 @@
      without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
+  /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
+     glance lands (paintGlance) — a quick cascade top to bottom instead of one
+     late burst. --gi is the row's rank, capped so the tail never drags. */
+  .tab.glance-in .tab-row2, .tab.glance-in .ctxbar {
+    animation: glance-in 0.28s ease-out both;
+    animation-delay: calc(var(--gi, 0) * 35ms);
+  }
+  @keyframes glance-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .tab.glance-in .tab-row2, .tab.glance-in .ctxbar { animation: none; } }
   .tab .name {
     flex: 1;
     min-width: 0;
@@ -7524,6 +7533,48 @@
     tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
     tab.lastAtEl.style.opacity = String(ageOpacity(Date.now() - tab.lastMsgAt));
     tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
+  }
+  /**
+   * Fills the rows' "xxx ago" + context % from `GET /channels/glance` (the end
+   * of each transcript, no resume needed), cascading them in top to bottom.
+   * Never overwrites what a tab's own WebSocket already delivered: `history`
+   * and `context` are the authority, the glance only fills the wait.
+   */
+  async function paintGlance(list) {
+    let rows;
+    try {
+      const r = await fetch("/channels/glance");
+      if (!r.ok) return;
+      rows = await r.json();
+    } catch { return; }
+    if (!Array.isArray(rows)) return;
+    const byId = new Map(rows.map((g) => [g.sessionId, g]));
+    // Rank by on-screen order so the cascade runs down the column.
+    const ordered = list
+      .filter((t) => t.btnEl?.isConnected)
+      .sort((a, b) => (a.btnEl.compareDocumentPosition(b.btnEl) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    let rank = 0;
+    for (const t of ordered) {
+      const g = byId.get(t.sessionId);
+      if (!g) continue;
+      let painted = false;
+      if (!Number.isFinite(t.lastMsgAt) && Number.isFinite(g.lastAt)) {
+        t.lastMsgAt = g.lastAt;
+        renderLastAt(t);
+        painted = true;
+      }
+      if (t.contextPct == null && Number.isFinite(g.contextPct)) {
+        t.contextPct = g.contextPct;
+        renderContext(t);
+        painted = true;
+      }
+      // Only rows on screen take a rank: a hidden group's rows must not push
+      // the visible ones further down the cascade.
+      if (!painted || t.btnEl.offsetParent === null) continue;
+      t.btnEl.style.setProperty("--gi", Math.min(rank++, 12));
+      t.btnEl.classList.add("glance-in");
+      setTimeout(() => t.btnEl.classList.remove("glance-in"), 800);
+    }
   }
   // The relative time ages on its own: refresh every tab periodically.
   setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
@@ -14969,6 +15020,10 @@
       for (let i = 0; i < pending.length; i++) {
         if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
       }
+      // 3) Paint every row's "xxx ago" + context % NOW, from one cheap read of
+      //    the transcripts' tails — not from N resumes, each of which spawns
+      //    `claude` and replays a whole history before its row says anything.
+      paintGlance(pending.map((p) => p.t));
     } else {
       // Nothing to restore: the invitation — unless the server said it is
       // starting this instance's lead agent (read above, before this first
