@@ -33,3 +33,17 @@ test("PUT /instance-context/first: session key, home channel, empty only", () =>
   assert.match(r, /firstWriteVerdict\(/);
   assert.doesNotMatch(r, /res\.json\([^)]*key/i, "never echoes the key");
 });
+
+test("POST /instance-context/draft: browser admin, home agent, empty context, hidden interview prompt", () => {
+  const r = route('app.post("/instance-context/draft"');
+  assert.match(r, /accountAdmin\(req, res, true,/);
+  assert.match(r, /isHomeChannel\(/);
+  assert.match(r, /instanceContextInterviewBrief\(\)/);
+  assert.match(r, /markAgentPrompt\(/);
+});
+
+test("the first-run greeting asks when the context is empty", () => {
+  const i = SRC.indexOf("function greetHomeAgent(");
+  const body = SRC.slice(i, SRC.indexOf("\n}\n", i));
+  assert.match(body, /instanceContextEmpty:\s*!instanceContextForCwd\(/);
+});
