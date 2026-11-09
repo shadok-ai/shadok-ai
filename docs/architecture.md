@@ -529,7 +529,7 @@ group already bound before this change stays bound.
 **Instance context** (`src/instance-context.ts`, design
 `docs/superpowers/specs/2026-11-09-instance-context-design.md`). One short text
 per launch directory (`config.instanceContext[cwd]`, ≤ 2,000 chars, never
-truncated) that every agent receives at spawn, after its role, as a `## This
+truncated) that every agent receives at spawn, BEFORE its role (general before specific), as a `## This
 instance` section — nothing at all when empty. It shows in the pre-prompt panel
 but is left out of `prepromptFingerprint`, so one Save does not mark the fleet
 stale. Writes: `PUT /instance-context` (browser + admin, like `PUT /profiles`:

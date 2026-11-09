@@ -105,7 +105,7 @@ Enter to skip; you can add it later from the web UI).
   on/off switch: current models always think, and the settings that used to
   disable it are ignored by them — a toggle would change nothing.
 - **Instance context** — a handful of lines every agent on this cockpit
-  receives at spawn, on top of its role: what the instance is for, who works on
+  receives at spawn, ahead of its role: what the instance is for, who works on
   it, its language. On a new instance the lead agent asks two or three questions
   in its first message and writes it once; after that only a human edits it
   (version menu → **🧭 Instance context…**). Running agents see a change at their
