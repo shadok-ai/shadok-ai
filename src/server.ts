@@ -51,6 +51,7 @@ import { ensureClaudeHome, ensureProjectTrusted,
   type ClaudeSettings,
 } from "./claude-home.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
+import { connectVerdict, connectedState, type ConnectFacts } from "./connect-gate.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
 import {
   startAgentLogin,
@@ -452,8 +453,6 @@ import {
   resolveBin,
   sampleBin,
   type EnsureClaudeResult,
-  mtCredentialMessage,
-  mtTokenNeeded,
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
@@ -689,6 +688,7 @@ async function startFirstAgent(): Promise<void> {
       cookie: tgCookie(),
       cwd: process.cwd(),
       customBackend: instanceBackend().kind === "custom",
+      connected: async () => connectedState(await commonsConnectFacts()),
       // `start` carries no name, so the channel is named once the server has
       // told us its session id.
       onReady: (sessionId, name) => {
@@ -2368,15 +2368,17 @@ app.get("/version", (_req, res) => res.json(versionState()));
 // (src/backend.ts): the page then never opens the sign-in card, since no agent
 // here needs the subscription. The probe still runs — a mixed setup's
 // subscription agents still need to know.
-app.get("/auth", async (_req, res) =>
+app.get("/auth", async (_req, res) => {
+  const expiry = readTokenExpiry();
   res.json({
     ...(await authStatus()),
-    ...readTokenExpiry(),
+    ...expiry,
     ...longLivedTokenInfo(loadVault(), DEPLOYMENT_MODE),
     ...customBackendFields(),
     ...mtTokenFields(),
-  }),
-);
+    ...(await connectFields(expiry)),
+  });
+});
 
 /**
  * Whether this is a multi-tenant instance and, if so, whether its group agents'
@@ -2388,6 +2390,44 @@ function mtTokenFields(): { multiTenant: boolean; mtTokenMissing: boolean } {
   const multiTenant = DEPLOYMENT_MODE === "multi-tenant";
   const present = !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME];
   return { multiTenant, mtTokenMissing: multiTenant && !present };
+}
+
+/**
+ * The connect facts for the COMMONS' agents — where the first agent is born —
+ * read by the first-agent plan and by `/auth` (the cockpit's "Connect Claude"
+ * card). Same inputs as the spawn gate's `connectRefusal`, for the commons user.
+ */
+async function commonsConnectFacts(): Promise<ConnectFacts> {
+  const user = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }) ?? null;
+  const agentAuth = agentAuthForCwd(loadConfig(), process.cwd());
+  const customBackend = instanceBackend().kind === "custom";
+  return {
+    multiTenant: DEPLOYMENT_MODE === "multi-tenant",
+    customBackend,
+    dropUser: user,
+    agentAuth,
+    hasToken: !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
+    rootAuth: user === null && !customBackend ? (await authStatus()).state : "unknown",
+    userLoggedIn: user !== null && agentAuth === "login" ? agentLoginInfo(agentStateHome(user)).loggedIn : null,
+  };
+}
+
+/**
+ * What the cockpit's "Connect Claude" card reads (`/auth` → `connect`): is the
+ * commons connected, which mode, which OS user a "1 month" login targets, and
+ * until when the credential in use lasts (null when unknown).
+ */
+async function connectFields(auth: { tokenExpiresAt: number | null }): Promise<{
+  connect: { state: "yes" | "no" | "unknown"; multiTenant: boolean; agentAuth: "token" | "login"; user: string | null; expiresAt: number | null };
+}> {
+  const f = await commonsConnectFacts();
+  let expiresAt: number | null = null;
+  if (f.dropUser === null) expiresAt = auth.tokenExpiresAt;
+  else if (f.agentAuth === "login") expiresAt = agentLoginInfo(agentStateHome(f.dropUser)).expiresAt;
+  else expiresAt = longLivedTokenInfo(loadVault(), DEPLOYMENT_MODE).longLivedExpiresAt;
+  return {
+    connect: { state: connectedState(f), multiTenant: f.multiTenant, agentAuth: f.agentAuth, user: f.dropUser, expiresAt },
+  };
 }
 
 function customBackendFields(): { backend?: "custom"; backendModel?: string | null } {
@@ -8173,7 +8213,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // `code` is optional and purely additive: it lets a machine client (the cron
   // driver) tell "the session is busy" — a transient miss worth replaying —
   // apart from any other refusal, without matching on the message text.
-  const fail = (message: string, code?: string) => send({ type: "error", message, ...(code ? { code } : {}) });
+  const fail = (message: string, code?: string, user?: string | null) =>
+    send({ type: "error", message, ...(code ? { code } : {}), ...(user ? { user } : {}) });
 
   // ACL backstop on every per-turn DRIVE action (prompt, dialog answers, keys,
   // restart, set-*, stop): may THIS caller see/drive the session's group? The
@@ -8262,23 +8303,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // never touches the subscription, so the instance's sign-in is not
           // its business. The profile is resolved early (and cheaply) for this
           // alone; a resume we cannot match falls back to the probe as before.
-          if (sessionBackend(gateProfile(msg)).kind === "custom") {
-            console.log(`auth: custom model backend, sign-in not required`);
-          } else {
-            const auth = await authStatus();
-            if (auth.state === "unknown")
-              console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
-            if (auth.state === "signed-out") {
-              // Telling the user is the whole point: a cron refused at 4am must
-              // not be discovered a day later. Deduplicated inside, so a
-              // five-minute cron does not turn one sign-out into a flood.
-              announceLoggedOut();
-              return fail(
-                "this shadok-ai instance is not signed in to Claude — sign in from the cockpit",
-                "logged-out",
-              );
-            }
-          }
+          // WHICH credential this agent needs is only known once its OS user is
+          // resolved below, so the refusal itself lives in `connectRefusal`
+          // (src/connect-gate.ts): a dropped multi-tenant agent no longer needs the
+          // instance's root sign-in, only the token or its own space's login.
           origin = connectionOrigin(
             {
               systemDrive: isSystemDrive,
@@ -8362,16 +8390,36 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // worktree/branch behind (a token-less retry loop would otherwise pile up
           // empty checkouts). Keyed on the same `dropUser` the spawn will use; the
           // late call below re-checks the (resume / live-attach) paths unchanged.
-          const mtRefusal = (dropUser: string | null | undefined): string | null => {
-            const m = mtCredentialMessage(
-              mtTokenNeeded(!!dropUser, sessionBackend(gateProfile(msg)).kind === "custom"),
-              !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
-            );
-            if (m && !mtTokenWarned) {
+          const connectRefusal = async (
+            dropUser: string | null | undefined,
+          ): Promise<{ message: string; code: "logged-out" | "space-not-connected"; user: string | null } | null> => {
+            const customBackend = sessionBackend(gateProfile(msg)).kind === "custom";
+            const user = dropUser ?? null;
+            const agentAuth = agentAuthForCwd(loadConfig(), process.cwd());
+            // Probe only what decides: the root sign-in is a ~850ms process spawn,
+            // and a dropped agent never runs on it.
+            const rootAuth = !customBackend && user === null ? (await authStatus()).state : "unknown";
+            if (rootAuth === "unknown" && user === null && !customBackend)
+              console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
+            const v = connectVerdict({
+              multiTenant: DEPLOYMENT_MODE === "multi-tenant",
+              customBackend,
+              dropUser: user,
+              agentAuth,
+              hasToken: !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
+              rootAuth,
+              userLoggedIn: user !== null && agentAuth === "login" ? agentLoginInfo(agentStateHome(user)).loggedIn : null,
+            });
+            if (v.ok) return null;
+            if (v.code === "logged-out") {
+              // Telling the user is the whole point: a cron refused at 4am must
+              // not be discovered a day later. Deduplicated inside.
+              announceLoggedOut();
+            } else if (!mtTokenWarned) {
               mtTokenWarned = true;
-              console.error(`mt: ${m}`);
+              console.error(`connect: ${v.user} — ${v.message}`);
             }
-            return m ?? null;
+            return { message: v.message, code: v.code, user: v.user };
           };
           // The drop user a NEW spawn will run as — same inputs as the isolation
           // resolution further down. Hoisted out of the MT-token guard because the
@@ -8400,8 +8448,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               parentGroupId,
             });
             earlyUser = earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
-            const earlyMsg = mtRefusal(earlyUser);
-            if (earlyMsg) return fail(earlyMsg);
+            const early = await connectRefusal(earlyUser);
+            if (early) return fail(early.message, early.code, early.user);
           }
           if (msg.worktree && !resumed && isGitRepo(cwd)) {
             try {
@@ -8614,8 +8662,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // handed to makePilot — and skipped for a custom backend, which uses its
           // own key and never the subscription. Without the token, say so plainly
           // instead of letting the spawn die on a bare auth error.
-          const mtMsg = mtRefusal(dropUser);
-          if (mtMsg) return fail(mtMsg);
+          const refused = await connectRefusal(dropUser);
+          if (refused) return fail(refused.message, refused.code, refused.user);
           // Who this new agent belongs to, for factory skill scopes: the person
           // spawning it (an agent's spawn inherits its parent's creator, so a
           // lead's ticket agents stay "yours"), and the cockpit group the client
