@@ -1938,7 +1938,19 @@ Policy is pure and lives in `groups.ts`; `server.ts` only plumbs it.
 `GET /channels` returns `visibleChannels`, and so does `GET /channels/glance` (each
 row's `lastAt` + `contextPct` from the transcript's last 256 KB, `src/glance.ts`,
 painted at boot by `paintGlance` before the WS resumes land and never over
-what they delivered). A WS `start`/resume goes through
+what they delivered). `GET /channels/stats` (per-session ACL like `/crons`) backs
+the menu's **📊 Stats** view: rolling token windows (1h/24h/7d/30d) and a
+**notional** cost — shadok runs on the subscription, so no money is billed per
+token; the figure prices the tokens at API list rates (`MODEL_PRICING` in
+`src/token-stats.ts`) only to compare agents. The windowing/pricing is pure
+(`windowStats`, `messageCostUSD`); the samples come from the live session's
+`usageSamples` (seeded once by `scanUsageSamples`, updated per `usage` event — no
+per-request file read) or, for a dormant agent, one scan of its current transcript.
+Scope is the **current** session file, which is why it cannot drag (no
+cross-session sweep). It also returns `upSince` (the transcript's first timestamp —
+session age, stable across restarts) and `lastRespawn` (the running process's
+start: a tmux pane's `session_created`, which survives a server restart, else the
+`Live`'s build time for node-pty). A WS `start`/resume goes through
 `canResumeAs` — **including for an already-live session**; attaching before
 authorising was a real leak (invariant 49). Each turn passes `mayDriveSession`,
 which does not exempt the bootstrap admin: admin reach is administrative

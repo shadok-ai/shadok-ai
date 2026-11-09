@@ -2457,6 +2457,11 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
+  .stats-uptime { font-size: 13px; opacity: .85; margin: 2px 0 14px; }
+  .stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .stats-table th, .stats-table td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  .stats-table th { font-weight: 600; opacity: .6; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+  .stats-table td.num, .stats-table th:nth-child(2), .stats-table th:nth-child(3) { text-align: right; font-variant-numeric: tabular-nums; }
   .ic-panel textarea {
     width: 100%; box-sizing: border-box; resize: vertical; min-height: 140px;
     background: var(--bg-inset); color: var(--text); border: 1px solid var(--line);
@@ -3529,6 +3534,23 @@
       <span class="foot-note" id="cronErr" style="color:#ff9a9a"></span>
       <button type="button" id="cronCancelEdit" hidden>Cancel</button>
       <button type="submit" form="cronAdd" class="primary" id="cronSubmit">Add schedule</button>
+    </div>
+  </div>
+</div>
+
+<div id="statsOverlay" class="overlay" hidden>
+  <div id="statsPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>📊 Stats — <span class="obj" id="statsChanName">this agent</span></strong>
+      <button id="statsClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="statsUptime" class="stats-uptime"></div>
+      <table id="statsTable" class="stats-table">
+        <thead><tr><th>Window</th><th>Tokens</th><th>Cost*</th></tr></thead>
+        <tbody id="statsRows"></tbody>
+      </table>
+      <p class="sec-note" id="statsNote">* Notional — shadok runs on the Claude subscription, not the API, so nothing is billed per token. The cost is what these tokens would cost at Anthropic API list prices: a way to compare agents, not an invoice. Scope: the current session.</p>
     </div>
   </div>
 </div>
@@ -5644,6 +5666,8 @@
     if (tab.sessionId) items.push(["👤 Change profile…", () => openProfileSwitcher(tab)]);
     if (tab.sessionId) items.push(["🧠 Change model…", () => openModelSubmenu(tab)]);
     if (tab.sessionId) items.push(["🤔 Thinking effort…", () => openEffortSubmenu(tab)]);
+    // Token + notional-cost stats over rolling windows, plus up-since / last respawn.
+    if (tab.sessionId) items.push(["📊 Stats", () => openStatsPanel(tab)]);
     // Scheduled prompts (crons) for this agent — the panel targets the active
     // channel, so switch to it first (this menu can be opened on any tab).
     if (tab.sessionId) items.push(["⏰ Schedule…", () => { activate(tab); $("cronOverlay").hidden = false; renderCrons(); }]);
@@ -11540,6 +11564,7 @@
     if (!$("groupCreateOverlay").hidden) { closeGroupCreate(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
     if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("statsOverlay").hidden) { $("statsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("telegramOverlay").hidden) { $("telegramOverlay").hidden = true; e.preventDefault(); return; }
     // Only a voluntary (dismissable) re-login card; the signed-out funnel ignores Escape.
     if (!$("authOverlay").hidden && authDismissable) { closeAuthCard(); e.preventDefault(); return; }
@@ -13721,6 +13746,74 @@
   });
   $("cronClose").addEventListener("click", () => { $("cronOverlay").hidden = true; resetCronEditMode(); });
   $("cronOverlay").addEventListener("click", (e) => { if (e.target === $("cronOverlay")) { $("cronOverlay").hidden = true; resetCronEditMode(); } });
+
+  // ── Per-agent stats panel (📊 in the agent menu) ──────────────────────────
+  // Compact token counts — abbreviated so a 17M total reads at a glance.
+  function fmtTokens(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + "B";
+    if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+    return String(n);
+  }
+  function fmtCost(usd, partial) {
+    const s = "$" + (usd >= 100 ? usd.toFixed(0) : usd.toFixed(2));
+    return partial ? "≥" + s : s; // ≥ when a message in the window had no known price
+  }
+  // A DURATION ("up 3d 4h"), not a "… ago" — uptime reads as a length, not a point.
+  function fmtDur(ms) {
+    const s = Math.max(0, ms / 1000);
+    const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+    if (d > 0) return d + "d " + h + "h";
+    if (h > 0) return h + "h " + m + "m";
+    if (m > 0) return m + "m";
+    return "just now";
+  }
+  function openStatsPanel(tab) {
+    if (!tab.sessionId) return;
+    $("statsChanName").textContent = tab.name || "this agent";
+    $("statsUptime").textContent = "Loading…";
+    $("statsRows").replaceChildren();
+    $("statsOverlay").hidden = false;
+    renderStats(tab);
+  }
+  async function renderStats(tab) {
+    let data;
+    try {
+      const r = await fetch("/channels/stats?id=" + encodeURIComponent(tab.sessionId));
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      data = await r.json();
+    } catch (e) {
+      $("statsUptime").textContent = "Stats unavailable (" + (e && e.message || "error") + ").";
+      return;
+    }
+    const now = Date.now();
+    const parts = [];
+    if (data.upSince) parts.push("⏱ Up " + fmtDur(now - data.upSince));
+    if (data.lastRespawn) parts.push("↻ respawn " + relTime(data.lastRespawn));
+    if (data.model) parts.push("🧠 " + modelLabel(data.model));
+    $("statsUptime").textContent = parts.join("  ·  ") || "No activity yet.";
+    const rows = [
+      ["Last hour", data.windows.h1],
+      ["Last 24h", data.windows.h24],
+      ["Last 7d", data.windows.d7],
+      ["Last 30d", data.windows.d30],
+    ];
+    const frag = document.createDocumentFragment();
+    for (const [label, w] of rows) {
+      const tr = document.createElement("tr");
+      const td1 = document.createElement("td"); td1.textContent = label;
+      const td2 = document.createElement("td"); td2.className = "num"; td2.textContent = fmtTokens(w.tokens);
+      // Cache split in a tooltip: input / output / cache-write / cache-read.
+      td2.title = "input " + fmtTokens(w.input) + " · output " + fmtTokens(w.output)
+        + " · cache-write " + fmtTokens(w.cacheCreation) + " · cache-read " + fmtTokens(w.cacheRead);
+      const td3 = document.createElement("td"); td3.className = "num"; td3.textContent = fmtCost(w.costUSD, w.costPartial);
+      tr.append(td1, td2, td3);
+      frag.appendChild(tr);
+    }
+    $("statsRows").replaceChildren(frag);
+  }
+  $("statsClose").addEventListener("click", () => { $("statsOverlay").hidden = true; });
+  $("statsOverlay").addEventListener("click", (e) => { if (e.target === $("statsOverlay")) $("statsOverlay").hidden = true; });
   $("cronCancelEdit").addEventListener("click", () => { $("cronPrompt").value = ""; $("cronCheck").value = ""; resetCronEditMode(); });
   $("cronAdd").addEventListener("submit", async (e) => {
     e.preventDefault();

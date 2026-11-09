@@ -180,6 +180,24 @@ export function tmuxPaneCwd(name: string): string | null {
 }
 
 /**
+ * Epoch MS when this agent's tmux session (and the claude process in it) was
+ * created — i.e. its last respawn. tmux reports `#{session_created}` in SECONDS;
+ * we return ms. This survives a SERVER restart, because the pane does and
+ * `TmuxPilot.start()` adopts it (invariant 25) — so it is the true age of the
+ * running process, not of the `Live` wrapping it. A restart/reload kills and
+ * recreates the session (invariant 23), which is exactly when the value should
+ * move. Null when the session is gone or tmux cannot say.
+ */
+export function tmuxSessionCreated(name: string): number | null {
+  try {
+    const s = tmux(["display-message", "-p", "-t", name, "#{session_created}"]).trim();
+    return /^\d+$/.test(s) ? Number(s) * 1000 : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The username the pane's foreground process actually runs as, or `null` when it
  * cannot be determined. Used to decide whether a live pane may be ADOPTED when a
  * privilege drop is required: `TmuxPilot.start()` adopts an existing pane by

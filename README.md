@@ -185,6 +185,15 @@ Enter to skip; you can add it later from the web UI).
   nothing most of the day. The guard runs with the target agent's profile
   secrets, so an agent may put one only on itself (a person may guard any agent
   they can drive).
+- **Per-agent stats** — the agent's ⋯ menu has a **📊 Stats** view: token usage
+  over the last hour / 24 h / 7 days / 30 days, split in a tooltip into input,
+  output, cache-write and cache-read, with a **notional cost** beside each window.
+  That cost is *notional* — shadok runs on your Claude **subscription**, not the
+  API, so nothing is billed per token; the figure is what those tokens would cost
+  at Anthropic API list prices, a way to compare agents rather than an invoice. It
+  also shows how long the agent has been **up** (session age, which survives
+  restarts) and when it **last respawned** (the running process's start). Scope is
+  the current session's transcript, read once, so opening it never drags.
 - **Agents that report back** — an agent that launches other agents is told when
   each one finishes, blocks on a question, or dies. It hears about **its own**
   children and nothing else, so a busy channel never wakes it. What arrives is

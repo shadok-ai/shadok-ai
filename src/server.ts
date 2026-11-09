@@ -96,8 +96,9 @@ import {
   LEGACY_FINGERPRINT, type PrepromptPart, type StaleReason,
 } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
-import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd } from "./tmux.js";
-import { scanUsage, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
+import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd, tmuxSessionCreated } from "./tmux.js";
+import { scanUsageSamples, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
+import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
@@ -3026,6 +3027,44 @@ app.get("/channels/glance", async (req, res) => {
     }),
   );
   res.json(rows);
+});
+
+// ── Per-agent token + notional cost stats (the menu's "stats" view) ──────────
+// Rolling windows (1h/24h/7d/30d) of token usage and a NOTIONAL cost (API list
+// prices — shadok runs on the subscription, so nothing is billed per token; the
+// UI says so), plus "up since" (session age) and "last respawn" (the running
+// process's start). Served from the live `usageSamples` (no file read) when the
+// agent is loaded; otherwise scanned once from its transcript — scope stays the
+// CURRENT session file either way, which is why it cannot drag (no cross-session
+// sweep). Same per-session ACL as /crons.
+app.get("/channels/stats", (req, res) => {
+  const id = String(req.query.id ?? "");
+  if (!id) return res.status(400).json({ error: "id required" });
+  if (!mayActFor(req, id)) return res.status(403).json({ error: "forbidden" });
+  const live = sessions.get(id);
+  let samples: Iterable<MsgSample>;
+  let upSince: number | null;
+  let model: string;
+  let lastRespawn: number | null;
+  if (live) {
+    samples = live.usageSamples.values();
+    upSince = live.firstMessageAt;
+    model = live.model ?? "";
+    // A tmux pane's own creation time survives a server restart (true process
+    // age); node-pty dies with the server, so the Live's build time is right.
+    lastRespawn =
+      live.pilot instanceof TmuxPilot ? (tmuxSessionCreated("sk-" + id) ?? live.spawnedAt) : live.spawnedAt;
+  } else {
+    const ch = loadChannels().find((c) => c.sessionId === id);
+    if (!ch) return res.status(404).json({ error: "unknown session" });
+    const scan = scanUsageSamples(sessionFilePath(ch.cwd, id, channelStateHome(ch)));
+    samples = scan.samples.values();
+    upSince = scan.firstAt;
+    model = ch.model ?? "";
+    lastRespawn = null; // not running — there is no live process to date
+  }
+  const windows: TokenStats = windowStats(samples, Date.now());
+  res.json({ windows, upSince, lastRespawn, model });
 });
 
 // ── Crons (scheduled channel prompts) ───────────────────────────────────────
@@ -8137,6 +8176,17 @@ interface Live {
   idleTimer: ReturnType<typeof setTimeout> | null;
   /** Token usage per assistant message id (final counts win), from the .jsonl. */
   usage: Map<string, TokenUsage>;
+  /** Per-message samples (usage + model + when) for the "stats" view's rolling
+   *  windows — richer than `usage` (carries time + model), same last-wins keying.
+   *  Scope: the current session file (invariant: session courante). */
+  usageSamples: Map<string, MsgSample>;
+  /** Earliest transcript timestamp of this session — "up since" (survives
+   *  restarts; re-read from the file on every Live rebuild). Null if none. */
+  firstMessageAt: number | null;
+  /** When THIS Live was built — the node-pty respawn time. For a tmux agent the
+   *  real respawn is the pane's `session_created` (older than this after an
+   *  adoption), read live; this is the fallback. */
+  spawnedAt: number;
   /** Pending auto-retry of a turn that died on a transient API error. */
   retryTimer: ReturnType<typeof setTimeout> | null;
   /** Auto-retry attempts consumed for the current error streak (0–3). */
@@ -8702,8 +8752,13 @@ async function createSession(
   // server's — so the content tail / history must read from there (invariant:
   // all content comes from the .jsonl). `agentStateHome` is the one answer.
   const transcriptHome = agentStateHome(user);
-  // Resumed sessions start with what the transcript already consumed.
-  const seededUsage = scanUsage(sessionFilePath(cwd, id, transcriptHome));
+  // Resumed sessions start with what the transcript already consumed. One scan
+  // feeds both the context gauge (last message's usage) and the stats windows
+  // (every message's usage + time + model), so a huge file is read once here.
+  const { samples: seededSamples, firstAt: seededFirstAt } = scanUsageSamples(
+    sessionFilePath(cwd, id, transcriptHome),
+  );
+  const seededUsage = new Map([...seededSamples].map(([mid, s]) => [mid, s.usage] as const));
   const backend = sessionBackend(profile, group);
   const contextWindow = assumedContextWindow(profile, model, group);
   const s: Live = {
@@ -8738,6 +8793,9 @@ async function createSession(
     worktree,
     idleTimer: null,
     usage: seededUsage,
+    usageSamples: seededSamples,
+    firstMessageAt: seededFirstAt,
+    spawnedAt: Date.now(),
     retryTimer: null,
     retryCount: 0,
     errorsAtTurnStart: [],
@@ -8825,6 +8883,15 @@ function startContentTail(s: Live): void {
       });
     else if (e.kind === "usage") {
       s.usage.set(e.messageId, e.usage);
+      // Same message, richer record for the stats windows. The live `usage`
+      // event carries no timestamp (unlike a seeded line), so a message seen for
+      // the FIRST time is stamped "now" — it was just written; a growing partial
+      // keeps that first instant and only refreshes its counts/model.
+      s.usageSamples.set(e.messageId, {
+        at: s.usageSamples.get(e.messageId)?.at ?? Date.now(),
+        model: s.model ?? "",
+        usage: e.usage,
+      });
       broadcast(s, { type: "tokens", tokens: tokenTotals(s) });
       // Context fill comes from THIS message, not from the running totals: the
       // window holds one request's prompt, while the totals accumulate the whole
