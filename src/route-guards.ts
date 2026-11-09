@@ -36,6 +36,29 @@ export function profileWriteRefusal(i: { mode: DeploymentMode; fromBrowser: bool
 }
 
 /**
+ * `PUT /profiles/prompt` — the agent-side prompt write (invariant 26).
+ *
+ * In multi-tenant it is refused outright. Profiles are GLOBAL and any agent may
+ * be spawned on any of them, so "its own profile" is a role every group can
+ * carry: an agent rewriting it — or, under the lead profile, rewriting ANY role
+ * — plants instructions that other groups' agents (private ones included) load
+ * through `--append-system-prompt` at their next spawn, as their OS user, with
+ * their secrets. That is the exact write `profileWriteRefusal` reserves to an
+ * admin person; this route was the side door around it. Scoping the edit to
+ * "profiles only my group uses" does not close it: the next spawn elsewhere can
+ * still pick the role. Mono-tenant keeps the rule — there is no wall to cross.
+ */
+export function promptWriteRefusal(i: { mode: DeploymentMode }): Refusal {
+  if (i.mode === "multi-tenant")
+    return {
+      status: 403,
+      error:
+        "profiles are shared by every group on a multi-tenant instance — an admin edits their prompts from the web UI",
+    };
+  return null;
+}
+
+/**
  * `DELETE /profiles`. It had no check at all: a read-only agent could delete
  * its own profile, `POST /reload`, and come back with no deny list — invariant
  * 26 undone in two calls. Deleting a role strips the guardrails of every agent

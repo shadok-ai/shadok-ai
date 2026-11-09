@@ -288,6 +288,40 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     and never deletes a user file; on any doubt it leaves `~/.ssh` alone and falls
     back to `GIT_SSH_COMMAND`. The whole thing is swallowed on error — an SSH-setup
     failure must never take down the boot path.
+    **And living on the volume means the multi-tenant chown can reach it:**
+    `migChownTreeToCommons` gives the whole of `~/.shadok-ai` to the commons user
+    `main`, deliberately and unboundedly, so the commons agent keeps working on
+    what it worked on. That sweeps `~/.shadok-ai/ssh` too — and **OpenSSH checks
+    the OWNER of a key and of a config, not only their mode**, so every root-side
+    `ssh` then dies on `Bad owner or permissions on /root/.ssh/config`. Measured
+    on the dogfood cockpit: `git` over SSH and every `ssh` to the host were dead
+    while looking perfectly configured, and no merge noticed because `gh` speaks
+    HTTPS. Nothing LEAKED (the server's HOME stays 0700, so `main` cannot traverse
+    it) — ownership and readability are different questions, and this one is about
+    the server losing the use of its own identity. `healServerOwnedState`
+    (`server.ts`, from `SERVER_OWNED_STATE` in `migrate-groups.ts`) re-asserts the
+    server's ownership of its credential set — the SSH dir, the vault, the accounts
+    with their session-signing key, the guardrails — on **every** capable boot, not
+    only after a migration, so an instance already migrated by an older build heals
+    on its next update. It costs a few `lstat`s and no privileged spawn once
+    everything is the server's again. A directory is judged on itself **and** its
+    immediate entries, because a hand repair usually re-owns the directory and
+    leaves the key inside it foreign — the one state where `ssh` still refuses and
+    a top-level check alone would call it healed.
+    **Multi-tenant has one identity per OS user, and the OS user is the boundary
+    that matters** — not the group, because the user is the only thing the kernel
+    enforces. The commons (`main`, i.e. every public group) reuses the historical
+    key; each walled group gets its own under `<store>/groups/<os-user>/`;
+    `volumeKeyPaths` is the single place that decides which, so the provisioner
+    and `GET /groups/ssh` can never read a directory the other never wrote. Two
+    consequences learned here. The HOME copy is wired at BOOT as well as at spawn
+    (`preseedGroupHomes`): `/home` is not on the volume, so a recreate wipes every
+    copy while the keypairs survive, and an agent that is merely RESUMED never
+    runs the spawn path — it stayed without an identity until someone reloaded it.
+    And the keypair is minted when a group is PROVISIONED rather than at its first
+    agent's spawn, because a key the operator cannot read is not an identity: it
+    used to appear only in the boot log, so registering it on the forge meant
+    going to read a log.
 
 <a id="inv-20"></a>
 
@@ -1903,3 +1937,28 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     service for whoever reached the cockpit. It now requires a callback-shaped
     query, refuses the shadok port walk and well-known local services, and
     returns the status alone.
+
+<a id="inv-67"></a>
+
+63. **A GLOBAL object an agent may write is a cross-group write — so in
+    multi-tenant the agent's prompt write is closed.** Invariant 26 gave agents
+    `PUT /profiles/prompt` (their own `systemPrompt`, or ANY role's under the
+    lead profile) on the premise that it is not a sandbox: an agent could
+    rewrite `profiles.json` directly anyway. That premise holds in mono-tenant
+    only. In multi-tenant an agent is dropped to its group's OS user and cannot
+    touch the file, so the HTTP route became the one path across the wall — and
+    profiles are GLOBAL. A security review (2026-11-06) traced it end to end: a
+    member spawns an agent on `Shadok-Boss` (or on any role another group also
+    uses — `start` takes any profile name), the agent PUTs a new prompt for that
+    role with its `SHADOK_SESSION_KEY`, and every other group's agent on that
+    role, private groups included, loads the attacker's instructions through
+    `--append-system-prompt` at its next spawn, as its own OS user, with its own
+    group's secrets. That is exactly the write invariant 58 already reserves to
+    an admin person (`profileWriteRefusal`); this route was the side door.
+    `promptWriteRefusal` (`src/route-guards.ts`) now refuses it outright in
+    multi-tenant, before `promptEditVerdict` runs. Rejected alternative: allow
+    the edit when only the caller's group uses the role — the NEXT spawn in
+    another group can still pick it, so "own group" is not a property a global
+    role can have. Choosing a profile at `start` stays open: without the write,
+    a role only lends its guardrails, and its secrets are resolved against the
+    spawning agent's group. Mono-tenant is unchanged.

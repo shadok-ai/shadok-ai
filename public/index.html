@@ -385,20 +385,6 @@
   }
   #migrationBanner.pending { background: var(--amber); color: var(--on-accent); }
   #migrationBanner.failed { background: #b91c1c; color: #fff; }
-  /* Blocking: a multi-tenant instance with no subscription token can start no
-     agent. Same strip as the re-login reminder, red because it blocks. */
-  #mtTokenBanner {
-    flex: 0 0 auto; width: 100%; z-index: 1000;
-    background: #b91c1c; color: #fff;
-    font-family: var(--sans); font-size: 12px;
-    padding: 6px 12px;
-    display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
-  }
-  #mtTokenBanner button {
-    font: inherit; cursor: pointer; padding: 2px 10px;
-    border: 1px solid currentColor; border-radius: 4px;
-    background: transparent; color: inherit;
-  }
   .gauge { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .gauge .value {
     font-family: var(--sans);
@@ -629,6 +615,15 @@
      without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
+  /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
+     glance lands (paintGlance) — a quick cascade top to bottom instead of one
+     late burst. --gi is the row's rank, capped so the tail never drags. */
+  .tab.glance-in .tab-row2, .tab.glance-in .ctxbar {
+    animation: glance-in 0.28s ease-out both;
+    animation-delay: calc(var(--gi, 0) * 35ms);
+  }
+  @keyframes glance-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .tab.glance-in .tab-row2, .tab.glance-in .ctxbar { animation: none; } }
   .tab .name {
     flex: 1;
     min-width: 0;
@@ -2040,6 +2035,8 @@
   @media (pointer: coarse) {
     textarea, select,
     input[type="text"], input[type="password"], input[type="number"], input[type="search"],
+    .ic-panel textarea,
+    .cx-row input,
     #composer textarea { font-size: 16px; }
   }
   #xtermHost { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
@@ -2058,6 +2055,27 @@
     font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text);
   }
   #emptyState .es-hint, #startingState .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  /* An agent being born (public/spawn-steps.js): the pumping Shadok, what is
+     happening, and the REAL steps the server announces — in a fresh tab's
+     transcript and in #startingState alike. It fills the empty transcript and
+     leaves on \`ready\` or on the refusal that replaces it. */
+  .spawn-loader {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 24px 12px; text-align: center; animation: fade-in .3s ease;
+  }
+  .spawn-loader .es-title { font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text); }
+  .spawn-loader .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  /* The lead's first turn (startBirth): the loader stays over the chat until it
+     has answered, so the history underneath and the pump line stay hidden. */
+  .transcript.birth > :not(.spawn-loader) { display: none; }
+  #transcripts:has(> .transcript.birth:not([hidden])) ~ #thinking { display: none !important; }
+  .spawn-steps { list-style: none; margin: 4px 0 0; padding: 0; text-align: left; font-size: 13px; color: var(--text-dim); }
+  .spawn-steps li { padding: 2px 0; transition: color .3s; }
+  .spawn-steps li::before { content: "○"; display: inline-block; width: 1.4em; }
+  .spawn-steps li.on { color: var(--text); }
+  .spawn-steps li.on::before { content: "◐"; color: var(--amber); animation: breathe 1.2s ease-in-out infinite; }
+  .spawn-steps li.done::before { content: "●"; color: var(--ok); }
+  @media (prefers-reduced-motion: reduce) { .spawn-loader, .spawn-steps li.on::before { animation: none; } }
   .keys {
     display: flex;
     gap: 6px;
@@ -2133,6 +2151,41 @@
     border-bottom: 1px solid var(--line);
   }
   #diffpanel .mhead button { margin-left: 6px; }
+  /* Agent info panel: what this agent is and what it uses (skills, schedules),
+     the per-agent twin of the Skill Factory's "agents that have it". */
+  #infopanel {
+    width: 340px; max-width: 46%;
+    border-left: 1px solid var(--line);
+    background: var(--bg-inset);
+    display: none; flex-direction: column; min-width: 0;
+  }
+  #infopanel.open { display: flex; }
+  #infopanel .mhead { display: flex; align-items: center; justify-content: space-between; padding: 8px 14px; border-bottom: 1px solid var(--line); }
+  #infopanel .mhead button { margin-left: 6px; }
+  #infoBody { flex: 1; overflow: auto; padding: 6px 16px 18px; font-size: 13px; }
+  #infoBody h3 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; display: flex; justify-content: space-between; align-items: baseline; }
+  #infoBody h3 .ip-count { font-weight: 400; color: var(--text-dim); font-size: 12px; }
+  #infoBody .ip-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 5px 0; }
+  #infoBody .ip-row .ip-k { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+  #infoBody .ip-row .ip-v { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+  #infoBody .ip-sep { height: 1px; background: var(--line); margin: 12px 0 0; }
+  #infoBody .ip-skill {
+    display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 10px;
+    text-align: left; background: none; border: 0; border-radius: 8px; padding: 6px 8px; margin: 0 -8px; color: var(--text); cursor: pointer;
+  }
+  #infoBody .ip-skill:hover { background: var(--amber-soft); }
+  #infoBody .ip-skill .ip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #infoBody .ip-skill .ip-meta { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
+  #infoBody .ip-cron { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; background: var(--bg); }
+  #infoBody .ip-cron .ip-prompt { color: var(--text-dim); font-size: 12px; margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  #infoBody .ip-chip {
+    display: inline-block; margin: 6px 6px 0 0; padding: 2px 9px; border-radius: 999px; font-size: 12px; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); color: var(--text);
+  }
+  #infoBody .ip-chip:hover { border-color: var(--amber); }
+  #infoBody .ip-empty { color: var(--text-dim); font-size: 12px; font-style: italic; padding: 4px 0; }
+  #infoBody .ip-link { background: none; border: 0; padding: 0; color: var(--amber); cursor: pointer; font-size: 12px; }
+  .fp-agent-link { background: none; border: 0; padding: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline dotted; }
   #diffStatus {
     font-family: var(--mono);
     font-size: 11.5px;
@@ -2162,7 +2215,7 @@
   #diffBody .meta { color: var(--text-dim); }
 
   @media (max-width: 900px) {
-    #machine, #diffpanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
+    #machine, #diffpanel, #infopanel { position: fixed; inset: 0; width: auto; max-width: none; z-index: 10; border-left: none; }
   }
   /* ── Popins ───────────────────────────────────────────────
      ONE CLASS, not a list of ids. The rule used to name
@@ -2231,25 +2284,69 @@
     transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
   }
   #tourOverlay:not(.spotlight) #tourHole { display: none; }
-  /* A real OAuth URL is ~400 chars. Shown in full on purpose — a headless
-     server's operator often has to carry it to another device by hand — so it
-     has to wrap instead of pushing the panel off screen. The page sets no <a>
-     colour anywhere else (this is its first link), so without this the browser
-     default blue lands on a near-black panel and is unreadable. */
-  #authLink {
-    display: block;
-    word-break: break-all;
-    font-family: var(--mono);
-    font-size: 11px;
-    line-height: 1.5;
-    color: var(--amber);
-    text-decoration: none;
-    border: 1px solid var(--line);
-    background: var(--bg-inset);
-    border-radius: 6px;
-    padding: 8px 10px;
+  /* The Connect Claude card (public/connect-card.js decides the step). The
+     OAuth URL is ~350 characters: it was shown raw, as a block of underlined
+     blue text that even overflowed one panel. It now sits behind a real
+     button, with a quiet "copy the link" for the person who must carry it to
+     another device. */
+  .cx-panel { width: min(600px, 100%); padding: 20px 22px; }
+  .cx-tag { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-dim); }
+  .cx-tag.ok { color: var(--ok); }
+  .cx-title { margin: 2px 0 6px; font-size: 17px; font-weight: 600; }
+  .cx-lead { color: var(--text-dim); line-height: 1.55; margin: 0 0 16px; font-size: 13px; }
+  .cx-tiles { display: flex; gap: 12px; align-items: stretch; }
+  .cx-tile {
+    flex: 1; display: flex; flex-direction: column; gap: 6px; text-align: left; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px;
+    background: var(--bg-inset); color: var(--text); font: inherit; font-size: 13px;
   }
-  #authLink:hover { border-color: var(--amber); text-decoration: underline; }
+  .cx-tile.active { border-color: var(--amber); background: var(--amber-soft); }
+  .cx-tile-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 2px; }
+  .cx-rec { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--amber); }
+  .cx-li { color: var(--text-dim); line-height: 1.45; padding-left: 12px; position: relative; }
+  .cx-li::before { content: "•"; position: absolute; left: 0; }
+  .cx-foot {
+    display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap;
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);
+  }
+  .cx-links { display: flex; gap: 14px; flex-wrap: wrap; }
+  .cx-link { color: var(--text-dim); font-size: 12px; text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
+  .cx-link:hover { color: var(--text); }
+  .cx-hint { color: var(--text-dim); font-size: 12px; }
+  .cx-primary, .cx-open, #mtTokenLink, #agentLoginLink {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    border-radius: 6px; padding: 9px 16px; font-size: 13px; font-weight: 500; cursor: pointer;
+    border: 1px solid var(--line); background: var(--bg-inset); color: var(--text); text-decoration: none;
+  }
+  .cx-primary.primary, .cx-open.primary, #mtTokenLink[href], #agentLoginLink[href] {
+    background: var(--amber); border-color: var(--amber); color: var(--on-accent);
+  }
+  .cx-open[aria-disabled="true"] { opacity: .55; pointer-events: none; }
+  .cx-step { display: flex; gap: 12px; margin-top: 14px; }
+  .cx-num {
+    flex: none; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%;
+    border: 1px solid var(--amber); color: var(--amber);
+    display: flex; align-items: center; justify-content: center; font-size: 11px;
+  }
+  .cx-step-body { flex: 1; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; min-width: 0; }
+  .cx-form { flex-direction: column; align-items: stretch; gap: 6px; }
+  #cxPasteForm { display: flex; }
+  #cxPasteForm[hidden] { display: none; }
+  .cx-label { color: var(--text-dim); font-size: 12.5px; }
+  .cx-row { display: flex; gap: 8px; }
+  .cx-row input { flex: 1; min-width: 0; }
+  .cx-msg { font-size: 12.5px; margin: 12px 0 0; }
+  .cx-msg.bad { color: var(--err); }
+  @media (max-width: 640px) {
+    .cx-panel { padding: 16px; }
+    .cx-tiles { flex-direction: column; }
+    .cx-foot .cx-primary, .cx-open { width: 100%; }
+    .cx-foot { flex-direction: column-reverse; align-items: stretch; }
+    .cx-row { flex-direction: column; }
+    .cx-row button { width: 100%; padding: 10px; }
+    /* Safari zooms into a field under 16px (invariant 28). */
+    .cx-row input { font-size: 16px; }
+  }
   /* The panel was off-palette: #1b1d22 instead of --bg-raised, #e8e8ea instead
      of --text, rgba(255,255,255,.15) borders and a 10px radius where the whole
      cockpit uses 6 — i.e. a grey and a white that existed nowhere else. The amber
@@ -2357,14 +2454,16 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
-  /* Backend choice on the sign-in card (src/backend.ts). */
-  .auth-modes { display: flex; gap: 6px; margin: 4px 0 10px; }
-  .auth-modes button {
-    flex: 1; padding: 6px 10px; font-size: 12px; cursor: pointer;
-    border: 1px solid var(--line); border-radius: 6px;
-    background: var(--bg-inset); color: var(--text-dim);
+  .ic-panel textarea {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 140px;
+    background: var(--bg-inset); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px; font-family: var(--sans); line-height: 1.5;
   }
-  .auth-modes button.active { border-color: var(--amber); color: var(--amber); background: color-mix(in srgb, var(--amber) 12%, transparent); }
+  .ic-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .ic-row .spacer { flex: 1; }
+  .ic-count { font-size: 11.5px; color: var(--text-dim); }
+  .ic-count.over { color: var(--err); }
+  .ic-link { color: var(--text); text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
   .bk-form .field { margin: 10px 0; }
   .bk-form .bk-opt { opacity: .6; font-weight: normal; }
   .bk-form .bk-hint { font-size: 11px; color: var(--text-dim); min-height: 1em; }
@@ -2624,6 +2723,8 @@
     border-radius: 6px; color: inherit; font-family: inherit; padding: 5px 8px; }
   /* Same fine-pointer gate as the ledger's tools (invariant 28). */
   @media (pointer: fine) { #secAuditTools input, #secAuditTools select { font-size: 13px; } }
+  /* The instance-context editor: compact only for a mouse — on touch it would make Safari zoom (invariant 28). */
+  @media (pointer: fine) { .ic-panel textarea { font-size: 13px; } }
   #secAuditTools input { flex: 1 1 120px; min-width: 100px; }
   #secAuditTools .ldg-count { color: var(--text-dim); font-size: 11px; margin-top: 7px; }
   #secAuditList { list-style: none; margin: 0; padding: 0; }
@@ -2813,7 +2914,7 @@
     main { padding: 0; gap: 0; }
     /* Conversation */
     .chat-pane { border: 0; border-radius: 0; background: var(--pane-main); }
-    #machine, #diffpanel { border-radius: 0; border-top: 0; border-bottom: 0; border-right: 0; }
+    #machine, #diffpanel, #infopanel { border-radius: 0; border-top: 0; border-bottom: 0; border-right: 0; }
   }
 
   /* Channel header: avatar, name, status, then actions. */
@@ -2823,11 +2924,12 @@
   #chanBar .gauge .label { display: none; }
   #chanBar .gauge .value { color: var(--text-dim); font-size: 12px; }
   #chanBar .gauge:nth-of-type(3) { display: none; } /* the session id: in the tooltip of the menu */
-  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm {
+  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm, #chanBar .chan-actions #chanInfo {
     position: relative; align-self: stretch; display: inline-flex; align-items: center; gap: 6px;
     border: 0; border-radius: 0; background: none; padding: 0 10px; color: var(--text-dim); font-size: 14px;
   }
-  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover, #chanBar .chan-actions #chanInfo:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanInfo.on { color: var(--amber); }
   #chanBar .chan-actions #chanTerm.on { color: var(--text); font-weight: 600; background: none; border: 0; }
   #chanBar .chan-actions #chanTerm.on::after {
     content: ""; position: absolute; left: 10px; right: 10px; bottom: 0; height: 3px; border-radius: 3px 3px 0 0; background: var(--amber);
@@ -2919,6 +3021,198 @@
     .rail-pill { transition: none; }
     .skel { animation: none; }
   }
+
+  /* ══ Fluid layer ═════════════════════════════════════════════════════════
+     The cockpit read as austere: flat grey slabs cut apart by hairlines. This
+     layer keeps the layout and swaps LINES for DEPTH — surfaces are separated
+     by tint, radius and soft shadow, the accent colours the page itself, and
+     state changes glide instead of snapping. Few new details on purpose: the
+     main lever is the tokens (--line fades, --radius grows), so every older
+     rule that draws a border or a corner follows on its own. Placed last so it
+     wins at equal specificity; all motion is off under reduced motion. */
+  :root {
+    --radius: 14px;
+    /* Hairlines fade to a whisper: they stay where a field needs an edge, but
+       stop carving the screen into boxes. */
+    --line: color-mix(in srgb, var(--text) 7%, transparent);
+    --card-shadow: 0 18px 40px -22px rgba(0, 0, 0, .75), 0 2px 6px -2px rgba(0, 0, 0, .35);
+    --soft-shadow: 0 6px 18px -10px rgba(0, 0, 0, .6);
+    --ease-fluid: cubic-bezier(.22, 1, .36, 1);
+  }
+  :root[data-mode="light"] {
+    --radius: 14px;
+    --line: rgba(0, 0, 0, .07);
+    --card-shadow: 0 18px 40px -24px rgba(30, 30, 60, .28), 0 1px 3px rgba(30, 30, 60, .06);
+    --soft-shadow: 0 6px 16px -10px rgba(30, 30, 60, .25);
+  }
+
+  /* The page carries the accent as an ambient glow, so the instance's colour
+     is felt everywhere instead of only on buttons. */
+  body {
+    background:
+      radial-gradient(1100px 620px at -5% -10%, color-mix(in srgb, var(--amber) 22%, transparent), transparent 62%),
+      radial-gradient(900px 620px at 105% 110%, color-mix(in srgb, var(--phosphor) 14%, transparent), transparent 60%),
+      var(--page);
+  }
+  header { background: transparent; }
+
+  /* Everything that changes state glides. */
+  button, .tab, .rail-item, .group-head, .bubble, #composer textarea, .profile-card, .member-tile {
+    transition: background-color .22s var(--ease-fluid), color .22s var(--ease-fluid),
+      border-color .22s var(--ease-fluid), box-shadow .22s var(--ease-fluid), transform .22s var(--ease-fluid);
+  }
+  button { border-radius: 10px; }
+  button:active:not(:disabled) { transform: scale(.97); }
+  header button.icon { border-radius: 10px; }
+  button.primary {
+    border: 0;
+    background: linear-gradient(135deg, var(--amber), var(--phosphor));
+    box-shadow: 0 6px 16px -8px var(--amber);
+  }
+  button.primary:hover { background: linear-gradient(135deg, var(--amber), var(--phosphor)); box-shadow: 0 8px 22px -8px var(--amber); }
+
+  /* Columns become floating cards on the glow (desktop only: the phone keeps
+     its full-bleed sheet). */
+  @media (min-width: 641px) {
+    main { padding: 2px 12px 12px; gap: 12px; }
+    #tabbar { border: 0; box-shadow: var(--card-shadow); }
+    /* The rail and the agents column used to be two halves of one card; with
+       the gap back they are two cards, each fully rounded. */
+    body.has-groups #groupRail { border: 0; border-radius: var(--radius); box-shadow: var(--card-shadow); }
+    body.has-groups #tabbar { border-radius: var(--radius); }
+    .chat-pane {
+      border: 0; border-radius: calc(var(--radius) + 4px);
+      background: var(--pane-main); box-shadow: var(--card-shadow);
+    }
+    #machine, #diffpanel, #infopanel { border: 0; border-radius: calc(var(--radius) + 4px); box-shadow: var(--card-shadow); }
+  }
+
+  /* Lists: soft pills, no rings. The selected agent lifts off the list with a
+     glow in its own colour; the state fills (working / unread / waiting) stay
+     untouched so they keep their meaning. */
+  .tab, .group-head, .rail-item { border-radius: 12px; }
+  .tab:hover, .group-head:hover { background-color: color-mix(in srgb, var(--text) 5%, transparent); }
+  .tab.active,
+  :root:not([data-mode="light"]) .tab.active {
+    background-color: color-mix(in srgb, var(--text) 7%, transparent);
+    box-shadow: 0 8px 20px -14px var(--ac, var(--amber));
+  }
+  :root[data-mode="light"] .tab.active { background-color: var(--bg-raised); box-shadow: var(--soft-shadow); }
+  .tab.unread { border-radius: 12px; }
+  .tav { box-shadow: 0 4px 10px -4px var(--ac, var(--amber)); }
+  .rail-item.active { border-color: transparent; }
+  .rail-pill {
+    border: 0; border-radius: 12px;
+    background: color-mix(in srgb, var(--amber) 16%, var(--bg-raised));
+    box-shadow: var(--soft-shadow);
+  }
+  .group-head .gicon { border-radius: 10px; }
+
+  /* Channel header melts into the conversation instead of a ruled band. */
+  #chanBar { background: transparent; border-bottom: 0; }
+
+  /* Messages: rounder bubbles with a tail corner; yours carry the accent. */
+  .bubble { border-radius: 18px; }
+  .turn.user .bubble {
+    border-bottom-right-radius: 6px;
+    background: linear-gradient(135deg,
+      color-mix(in srgb, var(--amber) 30%, var(--bg-raised)),
+      color-mix(in srgb, var(--phosphor) 16%, var(--bg-raised)));
+  }
+  .turn.user.other .bubble { border-bottom-right-radius: 18px; border-bottom-left-radius: 6px; }
+  .turn.claude .bubble { border: 0; border-bottom-left-radius: 6px; box-shadow: var(--soft-shadow); }
+  .turn.dialog .bubble {
+    border-top: 0; border-radius: 18px;
+    background: linear-gradient(180deg, color-mix(in srgb, var(--amber) 16%, var(--bg-raised)), var(--bg-raised) 70px);
+    box-shadow: var(--soft-shadow);
+  }
+  .turn.dialog.spent .bubble { background: var(--bg-raised); }
+  .bubble.md pre { border: 0; border-radius: 12px; }
+  @keyframes turn-in { from { opacity: 0; transform: translateY(6px) scale(.99); } to { opacity: 1; transform: none; } }
+  /* Only a message that ARRIVES slides in. Replayed history (.hist) does not:
+     a hidden transcript restarts its animations each time it is shown, so
+     hundreds of old turns would replay at every channel switch — the
+     transcript's own `chat-in` already eases that view in as a whole. */
+  .turn:not(.hist) { animation: turn-in .32s var(--ease-fluid) both; }
+
+  /* Composer: a floating pill that glows on focus. */
+  #composer textarea,
+  #composer textarea:focus-visible {
+    border: 0; border-radius: 22px; padding: 11px 18px;
+    background: var(--bg-raised); box-shadow: var(--soft-shadow);
+  }
+  #composer textarea:focus-visible {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--amber) 45%, transparent), 0 10px 28px -12px var(--amber);
+  }
+  .cmp-attach { border-radius: 50%; }
+  #composer button.primary { border-radius: 22px; }
+
+  /* A narrow composer: the field gets the whole first row, the buttons a row of
+     their own beneath it. On one row, four buttons + Send left the textarea
+     ~110px wide — the placeholder wrapped mid-word and was clipped. Keyed on the
+     COMPOSER's width, not the viewport's: on desktop the chat pane is narrowed by
+     the rail, the agents column and the engine room, so a wide window can still
+     hold a narrow composer. */
+  #composer { container: composer / inline-size; }
+  @container composer (max-width: 560px) {
+    #composer .cmp-mic-msg { order: -3; }
+    #composer .cmp-atts { order: -2; }
+    #composer textarea { order: -1; flex-basis: 100%; }
+    #composer .cmp-mic { margin-left: auto; }
+    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 38px; }
+    #composer .cmp-attach { width: 38px; }
+  }
+
+  /* Floating menus: lifted, not outlined. */
+  #moreMenu, #tabMenu, #verMenu, .slash-menu {
+    border-color: transparent; border-radius: 14px;
+    box-shadow: 0 22px 50px -18px rgba(0, 0, 0, .6), 0 0 0 1px var(--line);
+  }
+
+  /* Scrollbars: thin and rounded, gone until needed. */
+  * { scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--text) 16%, transparent) transparent; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .turn:not(.hist) { animation: none; }
+    button:active:not(:disabled) { transform: none; }
+  }
+
+  /* ══ Shadok soul ═════════════════════════════════════════════════════════
+     The Shadok's voice (shadok-soul.js): the header mark answers a click with a
+     maxim in a speech bubble, the empty states carry a big Shadok and a thought,
+     and the thinking indicator rotates its pump lines. Few pixels, much logic. */
+  header .brand { position: relative; }
+  header .brand-logo { cursor: pointer; outline-offset: 3px; }
+  header .brand-logo.speaking svg { animation: sk-hop .6s var(--ease-fluid); }
+  .sk-say {
+    position: absolute; top: calc(100% + 10px); left: 0; z-index: 60;
+    width: max-content; max-width: 280px;
+    padding: 10px 14px; border-radius: 16px 16px 16px 4px;
+    background: var(--bg-raised); color: var(--text);
+    font-size: 13px; font-weight: 500; line-height: 1.4;
+    box-shadow: 0 18px 40px -16px rgba(0, 0, 0, .55), 0 0 0 1px var(--line);
+    opacity: 0; transform: translateY(-6px) scale(.96); transform-origin: 12px 0;
+    pointer-events: none;
+    transition: opacity .25s var(--ease-fluid), transform .3s var(--ease-fluid);
+  }
+  .sk-say::before {
+    content: ""; position: absolute; top: -6px; left: 12px; width: 12px; height: 12px;
+    background: inherit; transform: rotate(45deg); border-radius: 2px;
+  }
+  .sk-say.show { opacity: 1; transform: none; }
+
+  .es-shadok { display: inline-flex; color: var(--amber); filter: drop-shadow(0 12px 18px color-mix(in srgb, var(--amber) 35%, transparent)); }
+  .es-shadok svg { width: 84px; height: 84px; overflow: visible; }
+  #emptyState .es-shadok { animation: es-float 3.2s ease-in-out infinite; }
+  @keyframes es-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+  .es-maxim { margin-top: 6px; color: var(--text-dim); font-size: 13px; font-style: italic; max-width: 40ch; }
+  .es-maxim:empty { display: none; }
+  .es-maxim::before { content: "“"; } .es-maxim::after { content: "”"; }
+
+  @media (prefers-reduced-motion: reduce) {
+    #emptyState .es-shadok, header .brand-logo.speaking svg { animation: none; }
+    .sk-say { transition: none; }
+  }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a light-preferring viewer never sees a
@@ -2957,7 +3251,7 @@
 <body>
 
 <header>
-  <span class="brand"><span class="brand-logo" aria-hidden="true"><svg viewBox="0 0 32 32"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><g class="sk-leg sk-leg-l"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/></g><g class="sk-leg sk-leg-r"><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/></g><g class="sk-bob"><line class="sk-arm" x1="21.6" y1="17.2" x2="26" y2="20.4"/><g class="sk-ant sk-ant-l" stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/></g><g class="sk-ant sk-ant-r" stroke-width="0.9"><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><path d="M14.4 18.2 L17.6 18.2 L16 21.6 Z" stroke="none"/><g class="sk-eyes" stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><g class="sk-pupils"><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></g></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
+  <span class="brand"><span class="brand-logo" role="button" tabindex="0" aria-label="Ask the Shadok" title="Ask the Shadok"><svg viewBox="0 0 32 32"><g fill="currentColor" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"><g class="sk-leg sk-leg-l"><line x1="13" y1="23" x2="12.6" y2="30.6"/><line x1="11" y1="30.7" x2="14.1" y2="30.7"/></g><g class="sk-leg sk-leg-r"><line x1="18.6" y1="23" x2="19" y2="30.6"/><line x1="17.6" y1="30.7" x2="20.7" y2="30.7"/></g><g class="sk-bob"><line class="sk-arm" x1="21.6" y1="17.2" x2="26" y2="20.4"/><g class="sk-ant sk-ant-l" stroke-width="0.9"><line x1="13.8" y1="5.4" x2="11.8" y2="2.8"/><circle cx="11.8" cy="2.8" r="1" stroke="none"/></g><g class="sk-ant sk-ant-r" stroke-width="0.9"><line x1="18.2" y1="5.4" x2="20.2" y2="2.8"/><circle cx="20.2" cy="2.8" r="1" stroke="none"/></g><circle cx="16" cy="16.2" r="8.4" stroke="none"/><path d="M14.4 18.2 L17.6 18.2 L16 21.6 Z" stroke="none"/><g class="sk-eyes" stroke="none"><circle cx="13.1" cy="7.8" r="2.6" fill="#fff"/><circle cx="18.9" cy="7.8" r="2.6" fill="#fff"/><g class="sk-pupils"><circle cx="13.4" cy="8.1" r="1.3"/><circle cx="19.2" cy="8.1" r="1.3"/></g></g></g></g></svg></span><span class="brand-name" id="brandName" title="Rename this cockpit">shadok-ai</span><span class="brand-edit" id="brandEdit" title="Rename this cockpit" aria-hidden="true">✎</span> <span class="ver" id="verView" title="Running version"></span><span class="ver-chan" id="verChan" aria-hidden="true"></span></span>
   <span class="spacer"></span>
   <div class="quotas">
     <div class="quota" id="quota5h" data-window="5h" role="img" aria-label="5h rolling limit" title="5h rolling limit">
@@ -3048,6 +3342,8 @@
        Multi-tenant + admin only; shown by renderAuthRows. -->
   <button class="vm-btn" id="agentAuthBtn" type="button" hidden>🔌 Agent auth &amp; connectors…</button>
   <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
+  <!-- The instance context every agent receives at spawn (src/instance-context.ts). -->
+  <button class="vm-btn" id="instanceContextBtn" type="button">🧭 Instance context…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
   <div class="vm-row"><span class="vm-label">Channel</span>
@@ -3553,36 +3849,87 @@
      nothing to say. Deliberately has no close button — while signed out
      nothing works, so dismissing it would only hide the reason. -->
 <div id="authOverlay" class="overlay" hidden>
-  <div id="authPanel" class="sec-panel">
+  <div id="authPanel" class="sec-panel cx-panel">
     <div class="sec-head">
-      <strong id="authTitle">Sign in to Claude</strong>
-      <!-- Shown only for a VOLUNTARY re-login (opened from the panel / banner
-           while already signed in): that card is optional, so it must close.
-           The signed-OUT card has no ✕ on purpose — signing in is the only way
-           to make the instance usable, so it stays a funnel. -->
+      <span class="cx-tag" id="cxTag">Connect Claude</span>
+      <!-- Only a dismissable card (a re-login, a space to connect, the "ask an
+           admin" note) can be closed: the first-run funnel stays a funnel,
+           since nothing works until Claude is connected. -->
       <button id="authClose" type="button" title="Cancel" hidden aria-label="Cancel">✕</button>
     </div>
-    <!-- Where agents get their model: the Claude subscription, or any server
-         that speaks the Anthropic Messages API (src/backend.ts). -->
-    <div class="auth-modes" id="authModes" role="tablist">
-      <button type="button" role="tab" data-mode="claude" class="active">Claude subscription</button>
-      <button type="button" role="tab" data-mode="other">Another model</button>
-    </div>
-    <div id="authClaudeBox">
-      <p class="sec-note" id="authNote">This instance isn't signed in to Claude, so it can't start any agent.</p>
-      <div class="field">
-        <span class="label">1 — Open this link and authorise</span>
-        <a id="authLink" target="_blank" rel="noopener">starting…</a>
+
+    <!-- Step 1 (multi-tenant only): how long the permission lasts. -->
+    <div id="cxChoose" hidden>
+      <h2 class="cx-title">Connect your Claude subscription</h2>
+      <p class="cx-lead">Every agent here is a real Claude Code session, and it runs on <b>your</b> Claude plan — nothing is billed per call. Shadok needs your permission once to use it. Pick how long that permission lasts:</p>
+      <div class="cx-tiles" role="radiogroup">
+        <button type="button" class="cx-tile active" data-dur="token" role="radio" aria-checked="true">
+          <span class="cx-tile-head"><b>1 year</b><span class="cx-rec">recommended</span></span>
+          <span class="cx-li">Set it and forget it</span>
+          <span class="cx-li">Model access only — no connectors</span>
+        </button>
+        <button type="button" class="cx-tile" data-dur="login" role="radio" aria-checked="false">
+          <span class="cx-tile-head"><b>1 month</b></span>
+          <span class="cx-li">Your agents get your claude.ai connectors (Gmail, Drive, Slack…)</span>
+          <span class="cx-li">Shadok reminds you a few days before it expires</span>
+        </button>
       </div>
-      <div class="field">
-        <span class="label">2 — Paste the code you get back</span>
-        <form id="authCodeForm" style="display:flex;gap:8px">
-          <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false" style="flex:1">
-          <button type="submit">Sign in</button>
-        </form>
+      <div class="cx-foot">
+        <span class="cx-links"><a href="#" class="cx-link" id="cxPasteLink">I already have a token</a><a href="#" class="cx-link" id="cxOtherLink">Use another model</a></span>
+        <button type="button" class="primary cx-primary" id="cxContinue">Continue →</button>
       </div>
-      <p class="sec-note" id="authMsg" hidden></p>
     </div>
+
+    <!-- Step 2: authorise on claude.ai and bring the code back — or paste a
+         long-lived token minted elsewhere. Never the raw OAuth URL as text. -->
+    <div id="cxAuth" hidden>
+      <h2 class="cx-title" id="authTitle">Authorise Shadok on claude.ai</h2>
+      <p class="cx-lead" id="authNote">A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.</p>
+      <div id="cxOauth">
+        <div class="cx-step"><span class="cx-num">1</span>
+          <div class="cx-step-body">
+            <a id="authLink" class="cx-open primary" target="_blank" rel="noopener" aria-disabled="true">Preparing…</a>
+            <a href="#" class="cx-link" id="cxCopy" hidden>copy the link instead</a>
+          </div>
+        </div>
+        <div class="cx-step"><span class="cx-num">2</span>
+          <form id="authCodeForm" class="cx-step-body cx-form">
+            <label class="cx-label" for="authCode">Paste the code Claude gave you</label>
+            <span class="cx-row">
+              <input id="authCode" placeholder="paste the code…" autocomplete="off" spellcheck="false">
+              <button type="submit">Connect</button>
+            </span>
+          </form>
+        </div>
+      </div>
+      <form id="cxPasteForm" class="cx-form" hidden>
+        <label class="cx-label" for="cxToken">Paste the token <code>claude setup-token</code> printed</label>
+        <span class="cx-row">
+          <input id="cxToken" type="password" placeholder="paste the token…" autocomplete="off" spellcheck="false">
+          <button type="submit">Connect</button>
+        </span>
+      </form>
+      <p class="cx-msg" id="authMsg" hidden></p>
+      <div class="cx-foot">
+        <span class="cx-links"><a href="#" class="cx-link" id="cxBack" hidden>← change duration</a><a href="#" class="cx-link" id="cxOtherLink2" hidden>Use another model</a></span>
+        <span class="cx-hint" id="cxHint">The code expires after about 10 minutes.</span>
+      </div>
+    </div>
+
+    <!-- Step 3: connected. -->
+    <div id="cxDone" hidden>
+      <h2 class="cx-title">✓ Claude is connected</h2>
+      <p class="cx-lead" id="cxDoneText"></p>
+      <div class="cx-foot"><span></span><button type="button" class="primary cx-primary" id="cxGo">Let's go →</button></div>
+    </div>
+
+    <!-- A member on a space nobody connected yet: no OAuth flow, just say who can. -->
+    <div id="cxAsk" hidden>
+      <h2 class="cx-title">This space isn't connected to Claude yet</h2>
+      <p class="cx-lead">Agents here can't start until an admin connects this space to a Claude subscription. Ask an admin to do it from the cockpit.</p>
+      <div class="cx-foot"><span></span><button type="button" class="cx-primary" id="cxAskOk">OK</button></div>
+    </div>
+
     <form id="authOtherBox" class="bk-form" hidden autocomplete="off">
       <p class="sec-note">A model on this machine or a hosted provider. Agents on it need no Claude sign-in and spend none of your subscription.</p>
       <label class="field"><span class="label">Provider</span>
@@ -3598,6 +3945,7 @@
       <label class="field"><span class="label">Context window <span class="bk-opt">— optional, for the gauge</span></span>
         <input id="bkWindow" placeholder="64k" spellcheck="false"></label>
       <div class="bk-actions">
+        <a href="#" class="cx-link" id="cxOtherBack">← back</a>
         <button type="button" id="bkClear" hidden>Back to the Claude subscription</button>
         <span class="spacer"></span>
         <button type="button" id="bkTest">Test</button>
@@ -3663,6 +4011,24 @@
       </div>
     </div>
     <p class="sec-note" id="agentAuthMsg" hidden></p>
+  </div>
+</div>
+
+<!-- Instance context editor (src/instance-context.ts): the few lines every agent
+     on this cockpit receives at spawn, whatever its profile. -->
+<div id="icOverlay" class="overlay" hidden>
+  <div class="sec-panel ic-panel">
+    <div class="sec-head">
+      <strong>Instance context</strong>
+      <button id="icClose" type="button" title="Close" aria-label="Close">✕</button>
+    </div>
+    <p class="sec-note">What this cockpit is for, who works on it, its language — a handful of lines every agent here receives at spawn, on top of its role.</p>
+    <textarea id="icText" rows="8" spellcheck="true" placeholder="e.g. This instance runs side projects with a few friends, to try to get small businesses off the ground. Language: French in conversation; code and docs in English."></textarea>
+    <div class="ic-row"><span class="ic-count" id="icCount">0 / 2000</span><span class="spacer"></span>
+      <button type="button" id="icDraft" hidden>Ask general to draft it</button>
+      <button type="button" class="primary" id="icSave">Save</button></div>
+    <p class="sec-note" id="icMsg" hidden></p>
+    <p class="sec-note">Running agents see a change at their next reload. <a href="#" class="ic-link" id="icRestart">Restart all agents now</a></p>
   </div>
 </div>
 
@@ -3757,6 +4123,8 @@
         <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
         <button id="chanGallery" class="icon" title="Media gallery — every photo and video in this conversation" aria-label="Media gallery"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8.5" cy="9.5" r="1.4" fill="currentColor"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <!-- About this agent: its environment, the skills it uses, its schedules. -->
+        <button id="chanInfo" class="icon" title="About this agent — skills it uses, schedules" aria-label="About this agent" aria-pressed="false"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M14.5 4v16M17 8.5h0M17 12h0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 9h5M6.5 12.5h5M6.5 16h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <!-- No end-session icon here: "✕ Close agent" lives in the ⋯ menu below. -->
         <button id="chanTerm" class="icon" title="Terminal — the raw TUI for this agent" aria-label="Terminal"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M6 9.5l3 2.5-3 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 15h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
         <!-- The per-agent menu (rename, profile, mirror, report to, close). It's
@@ -3770,10 +4138,15 @@
     <!-- No agent: an invitation, not a pre-filled form. Creation happens in a
          popin (#setupOverlay) and only creates the channel on submit — opening it
          then backing out no longer leaves a stillborn tab. -->
+    <!-- .es-shadok is filled by the script (`shadokInner`, the favicon's drawing):
+         idle and bobbing here, pumping in #startingState. .es-maxim gets a fresh
+         maxim each time the empty state shows (shadok-soul.js). -->
     <div id="emptyState">
+      <span class="es-shadok" aria-hidden="true"></span>
       <span class="es-title">No agent open</span>
       <p class="es-hint">Every agent is a real Claude Code session with its own directory and its own branch. Start one and it takes the controls.</p>
       <button class="primary" id="emptyNewBtn">＋ new agent</button>
+      <p class="es-maxim"></p>
     </div>
 
     <!-- The same "nothing to show" moment, but one the server has told us is
@@ -3784,8 +4157,10 @@
          being born; the two are told apart by GET /first-agent, never guessed
          from the tab count. -->
     <div id="startingState">
-      <span class="es-title">Starting your first agent…</span>
+      <span class="es-shadok pumping" aria-hidden="true"></span>
+      <span class="es-title">Your first agent is waking up…</span>
       <p class="es-hint">This cockpit has no agent yet, so one is being started for you in the launch directory. It takes a few seconds, then it takes the controls and says hello.</p>
+      <ul class="spawn-steps" id="startingSteps"></ul>
     </div>
 
     <div id="transcripts"></div>
@@ -3866,6 +4241,17 @@
     </div>
     <div id="diffStatus"></div>
     <pre id="diffBody"></pre>
+  </aside>
+
+  <aside id="infopanel" aria-label="About this agent">
+    <div class="mhead">
+      <span class="label" id="infoTitle">Agent</span>
+      <span>
+        <button id="refreshInfo">Refresh</button>
+        <button id="closeInfo">Close</button>
+      </span>
+    </div>
+    <div id="infoBody"></div>
   </aside>
 </main>
 
@@ -3951,6 +4337,9 @@
   window.envVarAsks = envVarAsks;
   import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
   window.claudeUpdateState = claudeUpdateState;
+  import { connectCardPlan, sameConnectTarget } from "/connect-card.js?v=__ASSET_V__";
+  window.connectCardPlan = connectCardPlan;
+  window.sameConnectTarget = sameConnectTarget;
   import { buildMessageLink, parseMessageLink, samePrompt } from "/deep-link.js?v=__ASSET_V__";
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
@@ -3968,6 +4357,14 @@
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
+  import { pumpLine, mascotSay, pickMaxim } from "/shadok-soul.js?v=__ASSET_V__";
+  window.pumpLine = pumpLine;
+  window.mascotSay = mascotSay;
+  window.pickMaxim = pickMaxim;
+  import { spawnStepStates, spawnLoaderTitle, SPAWN_HINT } from "/spawn-steps.js?v=__ASSET_V__";
+  window.spawnStepStates = spawnStepStates;
+  window.spawnLoaderTitle = spawnLoaderTitle;
+  window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
   import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine } from "/social-card.js?v=__ASSET_V__";
@@ -4136,6 +4533,9 @@
     fmtExpiry: () => "—",
     expiryWarning: () => null,
     accountExpiryLine: () => null,
+    // Before the module lands, never open the Connect card on a guess.
+    connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
+    sameConnectTarget: () => false,
     // No module → no link button, and a link opened before it lands is read
     // again on `shadok-bridge-ready`.
     buildMessageLink: () => null,
@@ -4191,6 +4591,14 @@
     // No banner until the module lands: the check re-runs on bridge-ready.
     accountBanners: () => [],
     logEntryLine: (e) => String((e && e.outcome) || ""),
+    // The Shadok's voice (shadok-soul.js): before the module lands it says the
+    // classic line, one maxim, and the empty state's thought stays empty (hidden).
+    pumpLine: () => "Shadok is pumping",
+    mascotSay: () => "When in doubt, pump.",
+    pickMaxim: () => "",
+    // A birth loader before the module lands: a title, no steps — never a guess.
+    spawnStepStates: () => [],
+    spawnLoaderTitle: (n) => `${(typeof n === "string" && n.trim()) || "Your agent"} is waking up…`,
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -4356,6 +4764,80 @@
   function showChatSkeleton(t) {
     if (t.transcriptEl.childElementCount) return;
     t.transcriptEl.innerHTML = skeletonHTML("chat");
+  }
+  /** Fill a steps <ul> for the step the server last announced. Built with
+   *  textContent, never markup. Before the module bridge is up (invariant 10) it
+   *  leaves the list empty rather than guess. */
+  function renderSpawnSteps(ul, step, hello = false) {
+    if (!ul || !window.spawnStepStates) return;
+    ul.replaceChildren(...window.spawnStepStates(step, { hello }).map((s) => {
+      const li = document.createElement("li");
+      li.className = s.state;
+      li.textContent = s.label;
+      return li;
+    }));
+  }
+  /** A brand-new tab: the agent is being born — show it instead of a black pane.
+   *  Only on an EMPTY transcript; a reconnect keeps what is already there. The
+   *  title names the agent only when the person named it (an agent's name is
+   *  text it chose, so it goes in as textContent). */
+  function showSpawnLoader(t) {
+    if (t.transcriptEl.childElementCount) return;
+    t.transcriptEl.replaceChildren(buildSpawnLoader(t, null, false));
+  }
+  function buildSpawnLoader(t, step, hello) {
+    const box = document.createElement("div");
+    box.className = "spawn-loader";
+    box.setAttribute("aria-busy", "true");
+    box.setAttribute("aria-live", "polite");
+    const sk = document.createElement("span");
+    sk.className = "es-shadok pumping";
+    sk.setAttribute("aria-hidden", "true");
+    if (window.shadokPumpSvg) sk.innerHTML = window.shadokPumpSvg(0);
+    const title = document.createElement("span");
+    title.className = "es-title";
+    const name = t.customName ? t.nameEl.textContent : "";
+    title.textContent = window.spawnLoaderTitle ? window.spawnLoaderTitle(name) : "Your agent is waking up…";
+    box.append(sk, title);
+    if (window.SPAWN_HINT) {
+      const hint = document.createElement("p");
+      hint.className = "es-hint";
+      hint.textContent = window.SPAWN_HINT;
+      box.append(hint);
+    }
+    const ul = document.createElement("ul");
+    ul.className = "spawn-steps";
+    renderSpawnSteps(ul, step, hello);
+    box.append(ul);
+    return box;
+  }
+  function setSpawnStep(t, step) {
+    renderSpawnSteps(t.transcriptEl.querySelector(":scope > .spawn-loader .spawn-steps"), step, !!t.birth);
+  }
+  /** The LEAD's birth: it keeps the loader (with "Saying hello") over its chat
+   *  until it has answered — the history arriving underneath stays hidden. */
+  function startBirth(t, step = firstAgentStep) {
+    if (!t.birth) {
+      t.birth = true;
+      t.transcriptEl.classList.add("birth");
+      const old = t.transcriptEl.querySelector(":scope > .spawn-loader");
+      if (old) old.remove();
+      t.transcriptEl.prepend(buildSpawnLoader(t, step, true));
+    } else setSpawnStep(t, step);
+  }
+  /** It answered (or the wait ended): the conversation takes over. */
+  function endBirth(t) {
+    if (!t.birth) return;
+    t.birth = false;
+    t.transcriptEl.classList.remove("birth");
+    clearSpawnLoader(t);
+    t.transcriptEl._stickBottom = true;
+  }
+  /** Every way out of a birth — ready, refusal, exit, gone — ends the loader. */
+  function clearSpawnLoader(t) {
+    if (t.birth) { endBirth(t); return; }
+    const l = t.transcriptEl.querySelector(":scope > .spawn-loader");
+    if (l) l.remove();
   }
   function clearChatSkeleton(t) {
     const s = t.transcriptEl.querySelector(":scope > .skel-chat");
@@ -6371,6 +6853,7 @@
           nt.nameEl.textContent = c.name;
         }
         if (isMain(c)) markMainTab(nt);
+        if (isMain(c) && firstAgentPending) startBirth(nt);
         launchTab(nt, {
           cwd: c.cwd,
           resume: c.sessionId,
@@ -6402,10 +6885,19 @@
   // (invariant 18), and guessing would either tell a returning user their first
   // agent is starting forever, or invite a newcomer to create a second one.
   let firstAgentPending = false;
+  let firstAgentStep = null;
   async function syncFirstAgent() {
     let st;
     try { st = await (await fetch("/first-agent")).json(); } catch { return; }
     const now = !!(st && st.pending);
+    // The lead's spawn reports the same real steps as a tab (src/first-agent.ts),
+    // plus "Saying hello" while its greeting is under way.
+    firstAgentStep = now ? st.step || null : null;
+    if (now) renderSpawnSteps($("startingSteps"), firstAgentStep, true);
+    for (const t of tabs) {
+      if (now && st.greeting && t.sessionId === st.greeting) startBirth(t, firstAgentStep);
+      else if (!now) endBirth(t);
+    }
     if (now === firstAgentPending) return;
     firstAgentPending = now;
     // Only the no-agent panel changes; a cockpit with an active tab shows neither.
@@ -6421,12 +6913,18 @@
   // the poll up for everyone would be paying for it forever.
   const SYNC_IDLE_MS = 4000;
   const SYNC_STARTING_MS = 800;
+  let firstSyncPass = true;
   async function syncLoop() {
     try {
+      // Asked BEFORE the channels on the first pass: a lead discovered then must
+      // be born in birth mode (startBirth), and with a tab already restored the
+      // condition below would never ask at all.
+      if (firstSyncPass) await syncFirstAgent();
       await syncChannels();
       // Only asked while it can change anything: with no tab on screen, or to
       // see a pending wait end. Steady state stays exactly one /channels fetch.
-      if (!tabs.length || firstAgentPending) await syncFirstAgent();
+      if (!firstSyncPass && (!tabs.length || firstAgentPending)) await syncFirstAgent();
+      firstSyncPass = false;
     } catch {
       // One bad pass must never END the reconciliation. A setInterval could not
       // die; a self-rescheduling loop can, and losing it would silently stop
@@ -6455,6 +6953,8 @@
     // The gallery is per-agent; switching agents under it would show the old
     // one's media. Close it rather than silently mislabel the grid.
     if (switched) closeGallery();
+    // The info panel follows the agent instead (it is cheap and always right).
+    if (switched && $("infopanel").classList.contains("open")) renderInfoPanel();
     tabs.forEach((t) => {
       t.btnEl.classList.toggle("active", t === tab);
       t.transcriptEl.hidden = t !== tab;
@@ -6845,13 +7345,71 @@
       `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", { lever, bob })}</svg>`;
   }
   renderTw(0); // populate immediately so it isn't blank on first show
-  if (!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches)) {
-    let twPhase = 0;
-    setInterval(() => {
-      if (!thinkingEl || !thinkingEl.classList.contains("visible")) return;
-      twPhase = (twPhase + 1) % PUMP_FRAMES;
-      renderTw((Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2);
-    }, 95);
+  // The empty states get the same Shadok, big: idle in #emptyState (CSS bobs
+  // it), pumping in #startingState — the first agent is being pumped into being.
+  const esIdle = document.querySelector("#emptyState .es-shadok");
+  const esPump = document.querySelector("#startingState .es-shadok");
+  const startingEl = document.getElementById("startingState");
+  const shadokSvg = (pose) => `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", pose)}</svg>`;
+  if (esIdle) esIdle.innerHTML = shadokSvg({});
+  if (esPump) esPump.innerHTML = shadokSvg(pumpPose(0));
+  // A fresh tab's loader (showSpawnLoader) draws the same Shadok; exposed for it.
+  window.shadokPumpSvg = (p) => shadokSvg(pumpPose(p));
+  // The indicator's words rotate through the Shadok's pump lines (shadok-soul.js)
+  // from the moment a turn shows it; that is text, not motion, so it runs under
+  // reduced motion too — only the pumping frames are gated.
+  const twText = document.querySelector("#thinking .tw-text");
+  const pumpMotion = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  let twPhase = 0, twSince = 0;
+  setInterval(() => {
+    const thinkingOn = !!thinkingEl && thinkingEl.classList.contains("visible");
+    const startingOn = !!startingEl && startingEl.classList.contains("visible");
+    // The active tab's birth loader, if it has one — only the visible one pumps.
+    const tabPump = active ? active.transcriptEl.querySelector(":scope > .spawn-loader .es-shadok") : null;
+    if (!thinkingOn) twSince = 0;
+    if (!thinkingOn && !startingOn && !tabPump) return;
+    if (thinkingOn && twText && window.pumpLine) {
+      if (!twSince) twSince = Date.now();
+      const line = window.pumpLine(Date.now() - twSince);
+      if (twText.textContent !== line) twText.textContent = line;
+    }
+    if (!pumpMotion) return;
+    twPhase = (twPhase + 1) % PUMP_FRAMES;
+    const p = (Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2;
+    if (thinkingOn) renderTw(p);
+    if (startingOn && esPump) esPump.innerHTML = shadokSvg(pumpPose(p));
+    if (tabPump) tabPump.innerHTML = shadokSvg(pumpPose(p));
+  }, 95);
+
+  // Click the header mark and the Shadok says something: a maxim, or now and
+  // then a head count of the agents in Shadok numerals. One bubble, re-used; a
+  // second click while it is up just gives a new thought.
+  const brandLogo = document.querySelector("header .brand-logo");
+  let skSay = null, skSayTimer = 0, skLast = null;
+  function shadokSpeak() {
+    if (!brandLogo || !window.mascotSay) return;
+    if (!skSay) {
+      skSay = document.createElement("span");
+      skSay.className = "sk-say";
+      skSay.setAttribute("role", "status");
+      brandLogo.parentElement.appendChild(skSay);
+    }
+    skLast = window.mascotSay(tabs.length, Math.random, skLast);
+    skSay.textContent = skLast;
+    skSay.classList.remove("show");
+    void skSay.offsetWidth; // restart the pop-in on a repeat click
+    skSay.classList.add("show");
+    brandLogo.classList.remove("speaking");
+    void brandLogo.offsetWidth;
+    brandLogo.classList.add("speaking");
+    clearTimeout(skSayTimer);
+    skSayTimer = setTimeout(() => { skSay.classList.remove("show"); brandLogo.classList.remove("speaking"); }, 5200);
+  }
+  if (brandLogo) {
+    brandLogo.addEventListener("click", (e) => { e.stopPropagation(); shadokSpeak(); });
+    brandLogo.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); shadokSpeak(); }
+    });
   }
   // Coming back must stop the blink at once, not at the next tick. Both signals
   // matter: switching tabs fires visibilitychange, switching application only
@@ -6994,6 +7552,7 @@
       // about an agent that does not exist.
       $("chanCron").disabled = true;
       $("chanGallery").disabled = true;
+      $("chanInfo").disabled = true;
       closeGallery(); // no agent → its media grid is stale; don't leave it up
       paintChanUpdate();
       // Two different truths behind the same empty panel — the server tells us
@@ -7001,12 +7560,18 @@
       // second lead agent while theirs is being born.
       $("emptyState").classList.toggle("visible", !firstAgentPending);
       $("startingState").classList.toggle("visible", firstAgentPending);
+      // A fresh Shadok thought each time the empty panel shows. The bridge may
+      // not be up yet on the very first paint (invariant 10): then the line
+      // stays empty, which is harmless.
+      const esMaxim = document.querySelector("#emptyState .es-maxim");
+      if (esMaxim && window.pickMaxim) esMaxim.textContent = window.pickMaxim(Math.random, esMaxim.textContent);
       return;
     }
     $("emptyState").classList.remove("visible");
     $("startingState").classList.remove("visible");
     $("chanCron").disabled = !t.sessionId;
     $("chanGallery").disabled = !t.sessionId;
+    $("chanInfo").disabled = !t.sessionId;
     paintChanUpdate();
     $("led").className = "led " +
       ({ setup: "", connecting: "busy", ready: "on", busy: "busy", dead: "off" }[t.status]);
@@ -7159,6 +7724,48 @@
     tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
     tab.lastAtEl.style.opacity = String(ageOpacity(Date.now() - tab.lastMsgAt));
     tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
+  }
+  /**
+   * Fills the rows' "xxx ago" + context % from `GET /channels/glance` (the end
+   * of each transcript, no resume needed), cascading them in top to bottom.
+   * Never overwrites what a tab's own WebSocket already delivered: `history`
+   * and `context` are the authority, the glance only fills the wait.
+   */
+  async function paintGlance(list) {
+    let rows;
+    try {
+      const r = await fetch("/channels/glance");
+      if (!r.ok) return;
+      rows = await r.json();
+    } catch { return; }
+    if (!Array.isArray(rows)) return;
+    const byId = new Map(rows.map((g) => [g.sessionId, g]));
+    // Rank by on-screen order so the cascade runs down the column.
+    const ordered = list
+      .filter((t) => t.btnEl?.isConnected)
+      .sort((a, b) => (a.btnEl.compareDocumentPosition(b.btnEl) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    let rank = 0;
+    for (const t of ordered) {
+      const g = byId.get(t.sessionId);
+      if (!g) continue;
+      let painted = false;
+      if (!Number.isFinite(t.lastMsgAt) && Number.isFinite(g.lastAt)) {
+        t.lastMsgAt = g.lastAt;
+        renderLastAt(t);
+        painted = true;
+      }
+      if (t.contextPct == null && Number.isFinite(g.contextPct)) {
+        t.contextPct = g.contextPct;
+        renderContext(t);
+        painted = true;
+      }
+      // Only rows on screen take a rank: a hidden group's rows must not push
+      // the visible ones further down the cascade.
+      if (!painted || t.btnEl.offsetParent === null) continue;
+      t.btnEl.style.setProperty("--gi", Math.min(rank++, 12));
+      t.btnEl.classList.add("glance-in");
+      setTimeout(() => t.btnEl.classList.remove("glance-in"), 800);
+    }
   }
   // The relative time ages on its own: refresh every tab periodically.
   setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
@@ -8333,6 +8940,9 @@
     if (typeof msg.mirror === "boolean") setMirror(t, msg.mirror, false);
     t.closing = false;      // set when the user closes the tab (no reconnect then)
     t.reconnectAttempts = 0;
+    // A birth shows at ONCE: opening the socket costs a TLS round trip behind a
+    // proxy (about a second, measured), and that second was a black pane.
+    if (!t.sessionId) showSpawnLoader(t);
     openLink(t);
   }
 
@@ -8355,6 +8965,7 @@
       // starts fresh (no sessionId yet).
       const start = t.sessionId ? { ...t.launchMsg, resume: t.sessionId } : t.launchMsg;
       if (t.sessionId) showChatSkeleton(t); // a resume has history on its way
+      else showSpawnLoader(t); // a reconnect before `ready`: no-op if already shown
       ws.send(JSON.stringify({ type: "start", origin: "web", ...start }));
     });
     ws.addEventListener("close", () => {
@@ -8914,7 +9525,6 @@
     catch { lastAuth = null; }
     if (!verMenu.hidden) renderAuthRows();
     updateExpiryBanner();   // the banner must track the clock even menu-closed
-    updateMtTokenBanner(lastAuth);   // the blocking no-token banner (multi-tenant)
   }
 
   // ── Re-login reminder banner (sign-in within 48h / expired) ───────────────
@@ -9134,6 +9744,71 @@
   });
   // Change where agents get their model, any time — the same card, opened on
   // its "Another model" side, and dismissable since nothing is broken.
+  // ── Instance context editor ───────────────────────────────────────────────
+  // One text per instance, every agent gets it at spawn (src/instance-context.ts).
+  function icMsg(t) { $("icMsg").textContent = t || ""; $("icMsg").hidden = !t; }
+  function icCount() {
+    const n = $("icText").value.trim().length;
+    $("icCount").textContent = n + " / 2000";
+    // Over the cap is SHOWN, never silently cut: the server refuses it whole.
+    $("icCount").className = "ic-count" + (n > 2000 ? " over" : "");
+  }
+  async function openInstanceContext() {
+    verMenu.hidden = true;
+    icMsg("");
+    // Nothing editable until the stored text is here: a failed load must never
+    // look like an empty context that Save would then write back over it.
+    $("icText").value = "";
+    $("icText").disabled = true;
+    $("icSave").disabled = true;
+    $("icDraft").hidden = true;
+    $("icOverlay").hidden = false;
+    try {
+      const res = await fetch("/instance-context");
+      const r = res.ok ? await res.json() : null;
+      if (!r || typeof r.text !== "string") throw new Error("status " + res.status);
+      $("icText").value = r.text;
+      $("icDraft").hidden = !!r.text.trim();
+      $("icText").disabled = false;
+      $("icSave").disabled = false;
+      icCount();
+    } catch {
+      icMsg("✗ Could not load the instance context — close and try again.");
+    }
+  }
+  $("instanceContextBtn").addEventListener("click", openInstanceContext);
+  $("icClose").addEventListener("click", () => { $("icOverlay").hidden = true; });
+  $("icText").addEventListener("input", icCount);
+  $("icSave").addEventListener("click", async () => {
+    $("icSave").disabled = true;
+    try {
+      const res = await fetch("/instance-context", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("icText").value }) });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok) icMsg("✗ " + (r.error || "could not save"));
+      else {
+        $("icText").value = r.text || "";
+        $("icDraft").hidden = !!(r.text || "").trim();
+        icCount();
+        icMsg(r.text ? "✓ Saved. New agents get it; running ones at their next reload." : "✓ Cleared.");
+      }
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icSave").disabled = false; }
+  });
+  $("icDraft").addEventListener("click", async () => {
+    $("icDraft").disabled = true;
+    icMsg("Asking the lead agent…");
+    try {
+      const res = await fetch("/instance-context/draft", { method: "POST" });
+      const r = await res.json().catch(() => ({}));
+      if (res.ok) {
+        $("icDraft").hidden = true;   // asked once — a second click would send a second interview
+        icMsg("✓ " + (r.agent || "The lead agent") + " is asking you its questions — answer in its chat.");
+      } else icMsg("✗ " + (r.error || "could not ask"));
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icDraft").disabled = false; }
+  });
+  $("icRestart").addEventListener("click", (e) => { e.preventDefault(); $("icOverlay").hidden = true; restartAllBtn.click(); });
+
   document.getElementById("backendBtn").addEventListener("click", () => {
     toggleVerMenu(false);
     openAuthCard(true, "other");
@@ -9183,7 +9858,11 @@
         const el = t.transcriptEl;
         const wasStick = el._stickBottom !== false;
         const fromBottom = Math.max(0, el.scrollHeight - el.scrollTop - el.clientHeight);
+        // The lead's birth loader survives the wipe: it stays over the replayed
+        // history until the first answer (endBirth).
+        const birthLoader = t.birth ? el.querySelector(":scope > .spawn-loader") : null;
         el.innerHTML = "";
+        if (birthLoader) el.append(birthLoader);
         t.unreadSep = null; // the separator element went with the wipe
         // The draft cards went with it too; the replay re-renders them.
         t.drafts = new Map();
@@ -9233,7 +9912,14 @@
           : Math.max(0, el.scrollHeight - el.clientHeight - fromBottom);
         break;
       }
+      case "starting":
+        // A fresh spawn's progress (public/spawn-steps.js): tick the loader.
+        setSpawnStep(t, msg.step);
+        break;
       case "ready":
+        // Born: the loader gives way to the conversation — except the lead's,
+        // which waits for its first answer (endBirth).
+        if (!t.birth) clearSpawnLoader(t);
         // The server just named the instance it is. If it's not the one this
         // page was loaded from, the port was taken over — stop writing, prompt a
         // reload. (The write guard on the server refuses the PUT anyway; this is
@@ -9385,6 +10071,7 @@
         addBashCard(t, msg, msg.at ?? Date.now());
         break;
       case "stream-text":
+        endBirth(t); // the lead has answered: show it
         // A complete assistant text block, streamed from the transcript.
         // Text ends the current activity block: the next tool call opens a new
         // one, so the transcript keeps the real text/tools interleaving.
@@ -9515,6 +10202,7 @@
         if (term && termSession === t) term.write(b64ToBytes(msg.data));
         break;
       case "gone":
+        clearSpawnLoader(t);
         // Session's directory is gone (e.g. a removed worktree): stop trying
         // to restore it and forget it so it doesn't resurrect every reload.
         addTurn(t, "system", "", msg.message);
@@ -9525,9 +10213,10 @@
         setTabState(t, "dead", "directory gone");
         break;
       case "error":
+        clearSpawnLoader(t); // a refused birth shows the refusal, not a spinner
         // A refusal for lack of credentials is not this agent's problem: it is
         // the instance's. Surface the fix instead of a line in the transcript.
-        if (msg.code === "logged-out") { openAuthCard(); }
+        if (msg.code === "logged-out" || msg.code === "space-not-connected") checkAuth({ code: msg.code, user: msg.user || null });
         addTurn(t, "system", "", "Error: " + msg.message);
         // A turn died before it could flush what was queued behind it (a fast
         // double-send): hand those back to the box rather than strand them.
@@ -9544,6 +10233,7 @@
         }
         break;
       case "exited":
+        clearSpawnLoader(t);
         addTurn(t, "system", "", "The claude process exited (code " + msg.code + ").");
         drainQueueToBox(t);
         stopTurnTimer(t);
@@ -10712,6 +11402,7 @@
     if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("icOverlay").hidden) { $("icOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }
@@ -10722,6 +11413,7 @@
     // Only a voluntary (dismissable) re-login card; the signed-out funnel ignores Escape.
     if (!$("authOverlay").hidden && authDismissable) { closeAuthCard(); e.preventDefault(); return; }
     if ($("diffpanel").classList.contains("open")) { $("diffpanel").classList.remove("open"); e.preventDefault(); return; }
+    if ($("infopanel").classList.contains("open")) { setInfoOpen(false); e.preventDefault(); return; }
     // 2. A clickable dialog awaiting an answer → do nothing.
     if (active && active.dialogBubble) return;
     // 3. Session active (engine room ouvert inclus) → envoyer esc.
@@ -11828,7 +12520,7 @@
     $("factoryPage").hidden = !on;
     $("factoryBtn").setAttribute("aria-pressed", String(on));
     try { localStorage.setItem("cp.factoryMode", on ? "1" : ""); } catch {}
-    if (on) facRefresh();
+    if (on) return facRefresh();
     else if (was) {
       // Coming back: the cockpit slides in from the other side.
       const m = document.querySelector("main");
@@ -12098,6 +12790,21 @@
         ])),
       ]));
     }
+    // Who runs it ON A SCHEDULE: a cron that names it, or a run recorded during
+    // a cron fire (src/skill-usage.ts). Clicking an agent opens it.
+    const cu = s.cronUsers || [];
+    d.appendChild(facEl("h2", { text: `Used by schedules${cu.length ? " (" + cu.length + ")" : ""}` }));
+    if (!cu.length) d.appendChild(facEl("div", { class: "fp-sub", text: "No schedule uses it — none names it, and no scheduled run called it in the last 7 days." }));
+    for (const u of cu)
+      d.appendChild(facEl("div", { class: "fp-card" }, [
+        facEl("button", { class: "fp-agent-link", type: "button", title: "Open this agent", text: u.name, onclick: () => openAgentInfo(u.sessionId) }),
+        facEl("span", { class: "fp-sub", text: u.cronRuns ? ` · ${u.cronRuns} scheduled run${u.cronRuns === 1 ? "" : "s"}, 7 days` : " · not fired yet" }),
+        ...u.crons.map((c) => facEl("div", { style: "margin-top:4px" }, [
+          facEl("b", { text: "⏰ " + c.label }),
+          c.enabled ? null : facEl("span", { class: "fp-sub", text: " (paused)" }),
+          facEl("div", { class: "fp-sub", style: "white-space:pre-wrap;overflow-wrap:anywhere", text: c.prompt }),
+        ])),
+      ]));
     // What agents running it receive: shown, never a step to take.
     if (last && last.secrets.length) d.appendChild(facEl("div", { class: "fp-sub" }, ["Agents running it get: ", ...last.secrets.map((n) => {
       const bound = s.bindings.find((b) => b.name === n);
@@ -12649,6 +13356,96 @@
     await loadVault(); renderSecrets();
     $("secretKey").focus();
   });
+  // ── Agent info panel (the chan bar's ▯ button) ──────────────────────────
+  // What this agent is and what it USES: its factory skills (with runs, and how
+  // many came from a schedule) and its schedules (with the skills each names).
+  // A skill is a button: it opens that skill's card in the Skill Factory. Data
+  // only through textContent (facEl): skill titles and cron prompts can be
+  // written by an agent.
+  let infoSeq = 0;
+  async function renderInfoPanel() {
+    const body = $("infoBody");
+    const t = active;
+    const seq = ++infoSeq;
+    if (!t || !t.sessionId) { body.textContent = ""; body.appendChild(facEl("div", { class: "ip-empty", text: "Open an agent." })); return; }
+    $("infoTitle").textContent = t.nameEl ? t.nameEl.textContent : t.sessionId.slice(0, 8);
+    let skills = [], crons = [];
+    try { skills = (await facCall("GET", "/factory/skills")).skills || []; } catch { skills = []; }
+    try { crons = await (await fetch("/crons")).json(); } catch { crons = []; }
+    if (seq !== infoSeq || active !== t) return; // a newer render (or another agent) won
+    const sid = t.sessionId;
+    body.textContent = "";
+    // Environment
+    const row = (k, v, title) => facEl("div", { class: "ip-row" }, [facEl("span", { class: "ip-k", text: k }), facEl("span", { class: "ip-v", text: v, title: title || v })]);
+    body.appendChild(facEl("h3", { text: "Environment" }));
+    body.appendChild(row("Directory", t.cwd || "—"));
+    if (t.branch) body.appendChild(row("Branch", t.branch));
+    body.appendChild(row("Profile", t.profile || "none"));
+    body.appendChild(row("Session", sid.slice(0, 8), sid));
+    body.appendChild(facEl("div", { class: "ip-sep" }));
+    // Skills it has, most used first.
+    const mine = skills
+      .map((s) => ({ s, a: (s.attachedTo || []).find((a) => a.sessionId === sid) }))
+      .filter((x) => x.a)
+      .sort((x, y) => (y.a.runs || 0) - (x.a.runs || 0) || facTitle(x.s).localeCompare(facTitle(y.s)));
+    body.appendChild(facEl("h3", {}, ["Skills", facEl("span", { class: "ip-count", text: String(mine.length) })]));
+    if (!mine.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No Skill Factory skill is shared with this agent." }));
+    for (const { s, a } of mine) {
+      const runs = a.runs || 0, cr = a.cronRuns || 0;
+      const meta = runs ? `${runs} run${runs === 1 ? "" : "s"}${cr ? ` · ⏰ ${cr}` : ""}` : "not used yet";
+      body.appendChild(facEl("button", { class: "ip-skill", type: "button", title: `Open “${facTitle(s)}” in the Skill Factory — ${meta}, last 7 days`, onclick: () => openSkillCard(s.id) }, [
+        facEl("span", { class: "ip-name", text: facTitle(s) }),
+        facEl("span", { class: "ip-meta", text: meta }),
+      ]));
+    }
+    body.appendChild(facEl("div", { class: "ip-sep" }));
+    // Schedules, each with the skills it uses.
+    const list = (Array.isArray(crons) ? crons : []).filter((c) => c.sessionId === sid);
+    body.appendChild(facEl("h3", {}, ["Schedules", facEl("span", { class: "ip-count", text: String(list.length) })]));
+    if (!list.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No schedule." }));
+    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
+    const chip = (s) => facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory", text: "✦ " + facTitle(s),
+      onclick: () => openSkillCard(s.id), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSkillCard(s.id); } } });
+    for (const c of list) {
+      const uses = named(c.id);
+      body.appendChild(facEl("div", { class: "ip-cron" }, [
+        facEl("b", { text: "⏰ " + fmtSchedule(c.schedule) }),
+        c.enabled ? null : facEl("span", { class: "ip-k", text: " (paused)" }),
+        facEl("div", { class: "ip-prompt", text: c.prompt.length > 200 ? c.prompt.slice(0, 197) + "…" : c.prompt }),
+        uses.length ? facEl("div", {}, uses.map(chip)) : null,
+      ]));
+    }
+    // Skills a scheduled run CALLED without any prompt naming them: the agent
+    // picked them itself, so they belong to no cron in particular.
+    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
+    if (picked.length) body.appendChild(facEl("div", { style: "margin-top:8px" }, [facEl("span", { class: "ip-k", text: "Also called by scheduled runs:" }), facEl("div", {}, picked.map(chip))]));
+    body.appendChild(facEl("div", { style: "margin-top:10px" }, [facEl("button", { class: "ip-link", type: "button", text: "Manage schedules…", onclick: () => { $("cronOverlay").hidden = false; renderCrons(); } })]));
+  }
+  function setInfoOpen(on) {
+    $("infopanel").classList.toggle("open", on);
+    $("chanInfo").classList.toggle("on", on);
+    $("chanInfo").setAttribute("aria-pressed", String(on));
+    if (on) renderInfoPanel();
+  }
+  $("chanInfo").addEventListener("click", () => setInfoOpen(!$("infopanel").classList.contains("open")));
+  $("closeInfo").addEventListener("click", () => setInfoOpen(false));
+  $("refreshInfo").addEventListener("click", renderInfoPanel);
+  /** Open one skill's card in the Skill Factory (from the info panel). */
+  async function openSkillCard(id) {
+    fac.view = "list";
+    await facSetMode(true);
+    if (!facById(id)) return facMsg("That skill is no longer visible to you.", true);
+    facOpenDrawer(id);
+  }
+  /** From a skill's card: back to the cockpit, on that agent, its panel open. */
+  function openAgentInfo(sessionId) {
+    const t = tabs.find((x) => x.sessionId === sessionId);
+    if (!t) return facMsg("That agent is not open in this cockpit.", true);
+    facSetMode(false);
+    activate(t);
+    setInfoOpen(true);
+  }
+
   // ── Schedule panel (per-channel cron: monitoring / reporting) ───────────
   let cronZone = "";           // the zone the SERVER applies (see showCronTz)
   function fmtSchedule(s) {
@@ -12681,6 +13478,8 @@
     } catch { /* the popin works perfectly well without this note */ }
   }
   async function renderCrons() {
+    // A schedule added, edited or removed changes what the info panel lists.
+    if ($("infopanel").classList.contains("open")) renderInfoPanel();
     const ul = $("cronList"); ul.innerHTML = "";
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
@@ -13939,102 +14738,277 @@
     startTour(() => checkAuth());
   }
 
-  // --- Sign-in card -------------------------------------------------------
-  // Opened at exactly two moments: on load when /auth reports signed out, and
-  // on a `start` refused with code "logged-out". Never otherwise.
-  async function checkAuth() {
-    try {
-      const s = await (await fetch("/auth")).json();
-      // ONLY a signed-out state we actually observed opens the card. "unknown"
-      // means the probe failed, and treating that as signed out is what made
-      // the card pop — and a `claude auth login` child spawn — on instances
-      // that were signed in the whole time.
-      // A custom model backend (self-hosted model, gateway) needs no Claude
-      // sign-in at all, so a signed-out probe means nothing there.
-      if (s && s.state === "signed-out" && s.backend !== "custom") openAuthCard();
-      else $("authOverlay").hidden = true;
-    } catch {
-      // A failed check must not block a cockpit that is in fact working.
-    }
-  }
-
-  // `force` is a deliberate re-login from a SIGNED-IN instance (the version-menu
-  // button and the expiry banner). Without it the server short-circuits to
-  // {alreadySignedIn} and the card closes doing nothing — which is exactly the
-  // no-op the signed-in re-login affordances would otherwise be.
-  // A voluntary re-login (force) is dismissable; the signed-out funnel is not.
-  // Tracked so Escape and a backdrop click only close the card they should.
+  // --- Connect Claude card ------------------------------------------------
+  // ONE card for every way in: the first run, a spawn refused because its
+  // space is not connected, a voluntary re-login. Which step it shows is pure
+  // (window.connectCardPlan, public/connect-card.js); this is only the DOM and
+  // the three server flows behind it — the instance sign-in (/auth/*), the
+  // long-lived token (/mt-token/*) and a space's own login (/agent-login/*).
+  // The browser only ever sees {url} and {ok}: no credential reaches the page.
+  // `seq` identifies the current flow: closing the card or starting another
+  // bumps it, so a start whose POST resolves afterwards knows it is stale and
+  // cancels its own server child instead of leaving it waiting on stdin.
+  let cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: 0 };
   let authDismissable = false;
 
-  // Close a VOLUNTARY re-login card, cancelling the pending `claude auth login`
-  // child on the server so it is not left waiting on stdin (DELETE /auth/login
-  // → cancelLogin). Never the way out of the signed-out funnel.
+  const cxIsAdmin = () => !me || me.role === "admin";
+  function cxShow(step) {
+    for (const [id, st] of [["cxChoose", "choose"], ["cxAuth", "authorise"], ["cxDone", "done"], ["cxAsk", "ask-admin"]])
+      $(id).hidden = st !== step;
+    $("authOtherBox").hidden = step !== "other";
+    $("cxTag").textContent =
+      step === "choose" ? "Step 1 of 2 · Connect Claude"
+      : step === "authorise" ? (cx.fromChoose ? "Step 2 of 2 · Connect Claude · " + (cx.flow === "login" ? "1 month" : "1 year") : "Connect Claude")
+      : step === "done" ? "Connected"
+      : step === "other" ? "Another model"
+      : "Connect Claude";
+    $("cxTag").classList.toggle("ok", step === "done");
+  }
+
+  // Opened on load (after the tour) when /auth reports the commons cannot
+  // authenticate, and on a `start` refused with "logged-out" or
+  // "space-not-connected". "unknown" never opens it (invariant 27).
+  async function checkAuth(refusal = null, force = false) {
+    let s;
+    try { s = await (await fetch("/auth")).json(); } catch { return; }   // never block a working cockpit
+    lastAuth = s;
+    const plan = window.connectCardPlan({ connect: s && s.connect, backend: s && s.backend, isAdmin: cxIsAdmin(), refusal, force });
+    if (!plan.open) { if (!force && !authDismissable) $("authOverlay").hidden = true; return; }
+    openConnectCard(plan);
+  }
+
+  function openConnectCard(plan) {
+    if (!$("authOverlay").hidden && !authDismissable) return;   // the funnel is already on screen
+    // The same card again (several tabs restoring, a second refused spawn):
+    // restarting it would kill the child whose code the admin is typing.
+    if (!$("authOverlay").hidden && window.sameConnectTarget(cx.plan, plan)) return;
+    cxCancel();
+    cx = { plan, flow: plan.flow, user: plan.user, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+    authDismissable = plan.dismissable;
+    $("authClose").hidden = !plan.dismissable;
+    $("authMsg").hidden = true;
+    $("authOverlay").hidden = false;
+    if (plan.step === "choose") { cxPickDur("token"); cxShow("choose"); }
+    else if (plan.step === "ask-admin") cxShow("ask-admin");
+    else cxStartAuthorise(plan.flow, plan.user, false);
+  }
+
+  // Kept for the existing callers: the version menu's re-login, the expiry
+  // banner (force), and "Another model" (mode "other").
+  function openAuthCard(force = false, mode = "claude") {
+    if (mode === "other") {
+      // The backend form only: no sign-in child is started behind it.
+      cxCancel();
+      cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+      authDismissable = true;
+      $("authClose").hidden = false;
+      $("authMsg").hidden = true;
+      $("authOverlay").hidden = false;
+      cxShow("other");
+      loadBackendForm();
+      return;
+    }
+    checkAuth(null, force);
+  }
+
   function closeAuthCard() {
     if (!authDismissable) return;
-    fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    cxCancel();
     authDismissable = false;
     $("authClose").hidden = true;
     $("authOverlay").hidden = true;
   }
 
-  // The card has two sides: the Claude sign-in, and "Another model" (a
-  // self-hosted or hosted backend, src/backend.ts). The sign-in child is only
-  // started when its side is actually shown — choosing another model must not
-  // leave a `claude auth login` waiting on stdin.
-  let authForce = false;
-  let authLoginStarted = false;
-  function setAuthMode(mode) {
-    for (const b of $("authModes").querySelectorAll("button"))
-      b.classList.toggle("active", b.dataset.mode === mode);
-    $("authClaudeBox").hidden = mode !== "claude";
-    $("authOtherBox").hidden = mode !== "other";
-    if (mode === "claude") {
-      $("authTitle").textContent = authForce ? "Re-login to Claude" : "Sign in to Claude";
-      if (!authLoginStarted) { authLoginStarted = true; startClaudeLogin(authForce); }
-    } else {
-      $("authTitle").textContent = "Run agents on another model";
-      loadBackendForm();
+  // Cancel whatever OAuth child the server holds for this card, so none is left
+  // waiting on stdin.
+  function cxCancel() {
+    cx.seq++;   // any start still in flight is now stale
+    if (!cx.started) return;
+    cx.started = false;
+    cxCancelFlow(cx.flow, cx.user);
+  }
+  function cxCancelFlow(flow, user) {
+    const json = { "Content-Type": "application/json" };
+    if (flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    else if (flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
+    else if (flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user }) }).catch(() => {});
+  }
+
+  function cxPickDur(dur) {
+    cx.dur = dur;
+    for (const t of document.querySelectorAll("#cxChoose .cx-tile")) {
+      const on = t.dataset.dur === dur;
+      t.classList.toggle("active", on);
+      t.setAttribute("aria-checked", on ? "true" : "false");
     }
   }
-  $("authModes").addEventListener("click", (e) => {
-    const b = e.target.closest("button[data-mode]");
-    if (b) setAuthMode(b.dataset.mode);
+  for (const t of document.querySelectorAll("#cxChoose .cx-tile"))
+    t.addEventListener("click", () => cxPickDur(t.dataset.dur));
+
+  async function cxSetMode(mode) {
+    try {
+      await fetch("/agent-login/mode", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) });
+    } catch {}
+  }
+
+  $("cxContinue").addEventListener("click", async () => {
+    $("cxContinue").disabled = true;
+    await cxSetMode(cx.dur);
+    $("cxContinue").disabled = false;
+    cxStartAuthorise(cx.dur, cx.plan && cx.plan.user, true);
+  });
+  $("cxPasteLink").addEventListener("click", (e) => {
+    e.preventDefault();
+    cx.fromChoose = true;
+    cx.flow = "paste";
+    $("cxOauth").hidden = true;
+    $("cxPasteForm").hidden = false;
+    $("authTitle").textContent = "Use a token you already have";
+    $("authNote").textContent = "Paste a long-lived token minted with claude setup-token on any machine signed in to your Claude account. It lasts about a year; agents get model access, no connectors.";
+    $("cxBack").hidden = false;
+    $("cxHint").hidden = true;
+    $("authMsg").hidden = true;
+    cxShow("authorise");
+    $("cxTag").textContent = "Step 2 of 2 · Connect Claude · 1 year";
+    $("cxToken").focus();
+  });
+  for (const id of ["cxOtherLink", "cxOtherLink2"])
+    $(id).addEventListener("click", (e) => { e.preventDefault(); cxCancel(); cxShow("other"); loadBackendForm(); });
+  $("cxOtherBack").addEventListener("click", (e) => {
+    e.preventDefault();
+    if (!cx.plan) { authDismissable = true; closeAuthCard(); }   // opened from "Model backend…"
+    else if (cx.plan.step === "choose") cxShow("choose");
+    else cxStartAuthorise(cx.plan.flow, cx.plan.user, false);
+  });
+  $("cxBack").addEventListener("click", (e) => { e.preventDefault(); cxCancel(); $("authMsg").hidden = true; cxShow("choose"); });
+  $("cxAskOk").addEventListener("click", closeAuthCard);
+  $("cxGo").addEventListener("click", () => { authDismissable = true; closeAuthCard(); });
+
+  const CX_FLOWS = {
+    instance: { start: "/auth/login", code: "/auth/code" },
+    token: { start: "/mt-token/start", code: "/mt-token/code" },
+    login: { start: "/agent-login/start", code: "/agent-login/code" },
+  };
+
+  async function cxStartAuthorise(flow, user, fromChoose) {
+    cxCancel();   // never two children: the previous flow goes first
+    const seq = cx.seq;
+    cx.flow = flow;
+    cx.user = user || null;
+    cx.fromChoose = fromChoose;
+    $("cxOauth").hidden = false;
+    $("cxPasteForm").hidden = true;
+    $("cxBack").hidden = !fromChoose;
+    // The first-run sign-in of a mono instance has no choose step, so the
+    // "Another model" way out lives here.
+    $("cxOtherLink2").hidden = !(flow === "instance" && cx.plan && !cx.plan.dismissable);
+    $("cxHint").hidden = false;
+    $("authCode").value = "";
+    $("authTitle").textContent = flow === "instance" && lastAuth && lastAuth.state === "signed-in"
+      ? "Renew the Claude sign-in" : "Authorise Shadok on claude.ai";
+    $("authNote").textContent = flow === "login" && cx.user && cx.plan && cx.plan.step !== "choose" && !fromChoose
+      ? "Connect this space (" + cx.user + ") to your Claude account. A Claude page opens in a new tab; approve it, then paste the short code it shows."
+      : "A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.";
+    cxShow("authorise");
+    const link = $("authLink");
+    link.textContent = "Preparing…";
+    link.removeAttribute("href");
+    link.setAttribute("aria-disabled", "true");
+    $("cxCopy").hidden = true;
+    cx.url = "";
+    const body = flow === "login" ? { user: cx.user } : flow === "instance" ? { force: !!(lastAuth && lastAuth.state === "signed-in") } : {};
+    try {
+      const r = await (await fetch(CX_FLOWS[flow].start, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      })).json();
+      // Closed, or another flow started, while this POST was in flight: the
+      // child it created belongs to nobody — cancel it rather than orphan it.
+      if (seq !== cx.seq) { if (r && r.url) cxCancelFlow(flow, user || null); return; }
+      cx.started = true;
+      // The server has the last word: an instance that turns out to be signed
+      // in spawns nothing and says so.
+      if (r && r.alreadySignedIn) { authDismissable = true; closeAuthCard(); return; }
+      if (r && r.url) {
+        cx.url = r.url;
+        link.href = r.url;
+        link.textContent = "Open claude.ai ↗";
+        link.removeAttribute("aria-disabled");
+        $("cxCopy").hidden = false;
+      } else {
+        link.textContent = "Could not start";
+        cxMsg((r && r.error) || "could not start the sign-in", "bad");
+      }
+    } catch {
+      link.textContent = "Could not start";
+      cxMsg("the cockpit did not answer", "bad");
+    }
+  }
+
+  function cxMsg(text, kind) {
+    const m = $("authMsg");
+    m.textContent = text;
+    m.className = "cx-msg" + (kind ? " " + kind : "");
+    m.hidden = !text;
+  }
+
+  $("cxCopy").addEventListener("click", async (e) => {
+    e.preventDefault();
+    if (!cx.url) return;
+    try { await navigator.clipboard.writeText(cx.url); } catch { return cxMsg("copy failed — long-press the button to copy its link", "bad"); }
+    $("cxCopy").textContent = "copied";
+    setTimeout(() => { $("cxCopy").textContent = "copy the link instead"; }, 2000);
   });
 
-  async function openAuthCard(force = false, mode = "claude") {
-    if (!$("authOverlay").hidden) return;   // a flow is already on screen
-    authDismissable = force;
-    authForce = force;
-    authLoginStarted = false;
-    $("authClose").hidden = !force;
-    // A forced re-login comes from a SIGNED-IN instance, so the "not signed in"
-    // copy would be wrong there; say what the card actually does.
-    $("authNote").textContent = force
-      ? "Renew this instance's Claude sign-in. Your agents keep running in the meantime."
-      : "This instance isn't signed in to Claude, so it can't start any agent.";
-    $("authOverlay").hidden = false;
-    $("authMsg").hidden = true;
-    setAuthMode(mode);
+  async function cxPost(path, body) {
+    try {
+      const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      let j = {};
+      try { j = await r.json(); } catch {}
+      if (!r.ok && !j.error) j.error = "the cockpit answered " + r.status;
+      return j;
+    } catch { return { ok: false, error: "the cockpit did not answer" }; }
   }
 
-  async function startClaudeLogin(force) {
-    const link = $("authLink");
-    link.textContent = "starting…";
-    link.removeAttribute("href");
-    try {
-      const r = await (await fetch("/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force }),
-      })).json();
-      // The server has the last word: it re-checks, and if the instance turns
-      // out to be signed in it spawns nothing and says so.
-      if (r && r.alreadySignedIn) { $("authOverlay").hidden = true; return; }
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
-      else link.textContent = (r && r.error) || "could not start the sign-in";
-    } catch {
-      link.textContent = "could not start the sign-in";
-    }
+  $("authCodeForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const code = $("authCode").value.trim();
+    if (!code || !CX_FLOWS[cx.flow]) return;
+    cxMsg("");
+    const body = cx.flow === "login" ? { user: cx.user, code } : { code };
+    const r = await cxPost(CX_FLOWS[cx.flow].code, body);
+    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cxConnected(); }
+    else cxMsg((r && r.error) || "the code was refused", "bad");
+  });
+
+  $("cxPasteForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const token = $("cxToken").value;
+    if (!token.trim()) return;
+    cxMsg("");
+    const r = await cxPost("/mt-token/paste", { token });
+    $("cxToken").value = "";   // never leave a credential sitting in the DOM
+    if (r && r.ok) cxConnected();
+    else cxMsg((r && r.error) || "the token was refused", "bad");
+  });
+
+  // Success: say until when, and that the lead agent is on its way when it is.
+  async function cxConnected() {
+    // The login just wrote the credentials the usage gauges read: repaint them
+    // and the expiry rows now rather than on the next poll.
+    refreshUsage();
+    await refreshAuthRows();
+    const a = lastAuth || {};
+    let text = "Your agents run on your Claude subscription.";
+    const until = a.connect && typeof a.connect.expiresAt === "number" ? a.connect.expiresAt : null;
+    if (until) text += " This connection lasts until " + new Date(until).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) + " — Shadok reminds you a few days before, and you can renew it from the account menu.";
+    if (a.email) text = "Signed in as " + a.email + ". " + text;
+    let pending = false;
+    try { pending = !!((await (await fetch("/first-agent")).json()) || {}).pending; } catch {}
+    if (pending || !tabs.length) text += " Your first agent, general, is starting — it will introduce itself in a moment.";
+    $("cxDoneText").textContent = text;
+    authDismissable = true;
+    $("authClose").hidden = false;
+    cxShow("done");
   }
 
   // --- "Another model" (src/backend.ts) ---------------------------------
@@ -14169,7 +15143,7 @@
     if (!r.ok) return bkMsg("✗ " + (r.error || "could not save"), "bad");
     bkMsg("✓ Saved. New agents run on " + r.current.model + "; running ones keep their model until they are reloaded.", "ok");
     refreshAuthRows();
-    setTimeout(() => { authDismissable = false; $("authClose").hidden = true; $("authOverlay").hidden = true; }, 1800);
+    setTimeout(() => { authDismissable = true; closeAuthCard(); }, 1800);
   });
   $("bkClear").addEventListener("click", async () => {
     const r = await bkPost("/backend", { clear: true }, "PUT").catch(() => ({ error: "the cockpit did not answer" }));
@@ -14177,45 +15151,6 @@
     bkMsg("✓ New agents run on the Claude subscription again.", "ok");
     $("bkClear").hidden = true;
     refreshAuthRows();
-  });
-
-  $("authCodeForm").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const code = $("authCode").value.trim();
-    if (!code) return;
-    const msg = $("authMsg");
-    msg.hidden = true;
-    let r;
-    try {
-      r = await (await fetch("/auth/code", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code }),
-      })).json();
-    } catch {
-      r = { ok: false, error: "the server did not answer" };
-    }
-    if (r && r.ok) {
-      $("authCode").value = "";
-      // The login just wrote the OAuth credentials the usage gauges read from
-      // (src/usage.ts, live-first). Repaint them now — otherwise a freshly
-      // signed-in instance shows blank dials until the next 60s poll, which
-      // reads as "usage is broken" right after onboarding.
-      refreshUsage();
-      // The deadline just jumped ~22 days out: repaint so the reminder banner
-      // (and the version-menu Token row) clear at once instead of next poll.
-      refreshAuthRows();
-      // Name the account: a machine can serve several people, and "signed in"
-      // without saying as whom is the kind of detail that costs an hour later.
-      let who = "";
-      try { who = ((await (await fetch("/auth")).json()) || {}).email || ""; } catch {}
-      msg.textContent = "✅ Signed in" + (who ? " as " + who : "") + ".";
-      msg.hidden = false;
-      setTimeout(() => { $("authOverlay").hidden = true; }, 1500);
-    } else {
-      msg.textContent = (r && r.error) || "the code was refused";
-      msg.hidden = false;
-    }
   });
 
   $("authClose").addEventListener("click", closeAuthCard);
@@ -14247,7 +15182,7 @@
       const r = await (await fetch("/mt-token/start", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
       })).json();
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      if (r && r.url) { link.href = r.url; link.textContent = "Open claude.ai ↗"; }
       else link.textContent = (r && r.error) || "could not start";
     } catch {
       link.textContent = "could not start";
@@ -14344,7 +15279,7 @@
     link.textContent = "starting…"; link.removeAttribute("href");
     try {
       const r = await (await fetch("/agent-login/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ user }) })).json();
-      if (r && r.url) { link.href = r.url; link.textContent = r.url; }
+      if (r && r.url) { link.href = r.url; link.textContent = "Open claude.ai ↗"; }
       else link.textContent = (r && r.error) || "could not start";
     } catch { link.textContent = "could not start"; }
   }
@@ -14384,24 +15319,6 @@
     }
   });
 
-  // The blocking "no subscription token" banner (multi-tenant + admin), mirror
-  // of the re-login reminder; clears the instant a token is stored.
-  function updateMtTokenBanner(a) {
-    let el = document.getElementById("mtTokenBanner");
-    const show = a && a.mtTokenMissing && me && me.role === "admin";
-    if (!show) { if (el) el.remove(); return; }
-    if (el) return;
-    el = document.createElement("div");
-    el.id = "mtTokenBanner";
-    const span = document.createElement("span");
-    span.textContent = "This instance has no subscription token — agents can't start.";
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = "Provide token";
-    btn.addEventListener("click", openMtTokenCard);
-    el.append(span, btn);
-    document.body.insertBefore(el, document.body.firstChild);
-  }
   // Backdrop click closes a dismissable (voluntary) card; the panel itself does not.
   $("authOverlay").addEventListener("click", (e) => { if (e.target === $("authOverlay")) closeAuthCard(); });
 
@@ -14496,7 +15413,16 @@
     t.nameEl.textContent = "tweak";
     t.profile = "Shadok-Tweak";
     markTweakTab(t);
-    launchTab(t, { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" });
+    // The tweak agent must run as the COMMONS user: `/tweak/prepare` put the
+    // self-clone in that user's home and gave it to them, and its worktree is
+    // created by them. With no `group` a multi-tenant server files the agent in
+    // the caller's Personal instead (see `commonsOnServer`), whose OS user can
+    // neither be written to by the clone's owner nor reach the clone — the
+    // worktree then died on "could not create leading directories … Permission
+    // denied". Mono-tenant has no commons row: the message is unchanged there.
+    const tweakStart = { cwd: data.cwd, worktree: true, profile: "Shadok-Tweak" };
+    if (commonsOnServer) tweakStart.group = COMMONS_GROUP_ID;
+    launchTab(t, tweakStart);
   });
   // ── Create-group form ─────────────────────────────────────────
   // "Public" is nature "public"; "Private" is the server's "restricted".
@@ -14792,6 +15718,10 @@
       for (let i = 0; i < pending.length; i++) {
         if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
       }
+      // 3) Paint every row's "xxx ago" + context % NOW, from one cheap read of
+      //    the transcripts' tails — not from N resumes, each of which spawns
+      //    `claude` and replays a whole history before its row says anything.
+      paintGlance(pending.map((p) => p.t));
     } else {
       // Nothing to restore: the invitation — unless the server said it is
       // starting this instance's lead agent (read above, before this first

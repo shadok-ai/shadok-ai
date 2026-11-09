@@ -50,7 +50,11 @@ import { ensureClaudeHome, ensureProjectTrusted,
   type ClaudeHome,
   type ClaudeSettings,
 } from "./claude-home.js";
+import { mergeAppendedPrompts } from "./prompt-args.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
+import { instanceContextArgs, normalizeInstanceContext, firstWriteVerdict, INSTANCE_CONTEXT_MAX } from "./instance-context.js";
+import { connectVerdict, connectedState, type ConnectFacts } from "./connect-gate.js";
+import { normalizePastedToken } from "./token-paste.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
 import {
   startAgentLogin,
@@ -67,10 +71,12 @@ import {
   ensureFirstAgent,
   firstAgentStatus,
   settleFirstAgent,
+  greetFirstAgent,
+  endFirstAgentGreeting,
 } from "./first-agent.js";
 import { readGroundAt } from "./ground.js";
-import { homeGreetingBrief } from "./greeting.js";
-import { ensureSshIdentity } from "./ssh.js";
+import { homeGreetingBrief, instanceContextInterviewBrief } from "./greeting.js";
+import { ensureSshIdentity, groupKeyRows, volumeKeyPaths } from "./ssh.js";
 import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
 import {
   migrationPlan,
@@ -81,6 +87,7 @@ import {
   MIGRATION_MARKER_FILE,
   rewriteCronCheckHome,
   strandedCheckDirs,
+  serverOwnedStatePaths,
 } from "./migrate-groups.js";
 import { relayOAuthCallback } from "./oauth-relay.js";
 import { openBrowser } from "./open-browser.js";
@@ -264,6 +271,7 @@ import { rowKind } from "../context/ledger-skill/ledger-core.mjs";
 import {
   profileWriteRefusal,
   profileDeleteRefusal,
+  promptWriteRefusal,
   mayReadMcpValues,
   redactMcpServers,
   setProfileRefusal,
@@ -285,6 +293,8 @@ import {
   applyTelegramPatch,
   titleForCwd,
   setTitleForCwd,
+  instanceContextForCwd,
+  setInstanceContextForCwd,
   themeForCwd,
   setThemeForCwd,
   mutedForCwd,
@@ -421,6 +431,7 @@ import {
 } from "./worktree.js";
 import { latestVersion, update } from "./updater.js";
 import { resolveChannel, type UpdateChannel } from "./update-channel.js";
+import type { SpawnStep } from "./spawn-steps.js";
 import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
 import { acquireInstanceLock, releaseInstanceLock } from "./lock.js";
@@ -430,6 +441,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
 } from "./net.js";
 import { AttemptLimiter, LOGIN_LIMITS, loginKeys } from "./login-limit.js";
 import { pctFromUsage, windowForModel } from "./context.js";
+import { glanceFile } from "./glance.js";
 import {
   BACKEND_PRESETS,
   backendEnv,
@@ -457,8 +469,6 @@ import {
   resolveBin,
   sampleBin,
   type EnsureClaudeResult,
-  mtCredentialMessage,
-  mtTokenNeeded,
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
@@ -729,6 +739,8 @@ function adoptHomeChannel(): void {
  * a far smaller problem than one whose boot path threw. `SHADOK_GREETING=0`
  * turns it off, the way `SHADOK_PILOT_PROMPT=0` does for the pilot prompt.
  */
+/** The longest the first-agent loader waits for the lead's greeting. */
+const GREETING_WAIT_MAX_MS = 3 * 60_000;
 function greetHomeAgent(id: string): void {
   if (process.env.SHADOK_GREETING === "0") return;
   const tag = `first agent: greeting ${id.slice(0, 8)}`;
@@ -742,16 +754,27 @@ function greetHomeAgent(id: string): void {
         ground: readGroundAt(cwd),
         profiles: loadProfiles(),
         dirName: path.basename(cwd) || cwd,
+        instanceContextEmpty: !instanceContextForCwd(loadConfig(), cwd),
       }),
     );
   } catch (e) {
     console.log(`${tag} — not built (${e instanceof Error ? e.message : String(e)})`);
     return;
   }
+  // The page keeps its loader up until the lead has answered (the person sees
+  // the hello, not an empty chat filling in). Every way out ends the wait; the
+  // guard covers a turn that never reports back.
+  greetFirstAgent(id);
+  setTimeout(() => endFirstAgentGreeting(id), GREETING_WAIT_MAX_MS).unref?.();
   void deliverWithRetry(
     () => driveChannel(id, brief, resolveSessionTarget(loadChannels(), id, process.cwd())),
     () => sessions.has(id),
   ).then((res) => {
+    // Only a FAILED delivery ends the wait here. A delivered one ends it when
+    // the lead's first text lands (the stream-text broadcast): the turn-done
+    // that resolves the delivery can come early — measured ~3s after the
+    // prompt while the lead was still thinking for 28s.
+    if (!res.ok) endFirstAgentGreeting(id);
     if (res.ok) console.log(`${tag} — delivered (attempt ${res.attempts})`);
     else if (res.gone) console.log(`${tag} — session gone before it landed`);
     else console.log(`${tag} — gave up after ${res.attempts} tries (${res.reason})`);
@@ -768,6 +791,7 @@ async function startFirstAgent(): Promise<void> {
       cookie: tgCookie(),
       cwd: process.cwd(),
       customBackend: instanceBackend().kind === "custom",
+      connected: async () => connectedState(await commonsConnectFacts()),
       // `start` carries no name, so the channel is named once the server has
       // told us its session id.
       onReady: (sessionId, name) => {
@@ -2401,6 +2425,67 @@ app.put("/title", (req, res) => {
   setTitleForCwd(loadConfig(), process.cwd(), raw);
   res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
 });
+// The instance context (src/instance-context.ts): one short text per instance
+// that every agent receives at spawn. Humans edit it from the cockpit; the lead
+// agent writes it ONCE, while it is empty, at first run.
+app.get("/instance-context", (_req, res) => {
+  res.json({ text: instanceContextForCwd(loadConfig(), process.cwd()), max: INSTANCE_CONTEXT_MAX });
+});
+app.put("/instance-context", (req, res) => {
+  // Every agent is told this text, so only a human in the browser writes it
+  // (an agent's only door is the once-only route below) — like PUT /profiles.
+  if (!accountAdmin(req, res, true, "edit the instance context")) return;
+  const r = normalizeInstanceContext(req.body?.text);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  setInstanceContextForCwd(loadConfig(), process.cwd(), r.text);
+  res.json({ text: r.text });
+});
+app.put("/instance-context/first", (req, res) => {
+  const key = String(req.headers["x-shadok-session-key"] ?? "");
+  const id = localSessionForKey(req, key);
+  if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  const ch = loadChannels().find((c) => c.sessionId === id);
+  const refused = firstWriteVerdict({
+    isHome: !!ch && isHomeChannel(ch),
+    current: instanceContextForCwd(loadConfig(), process.cwd()),
+  });
+  if (refused) return res.status(409).json({ error: refused });
+  const r = normalizeInstanceContext(req.body?.text);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  if (!r.text) return res.status(400).json({ error: "the instance context is empty" });
+  setInstanceContextForCwd(loadConfig(), process.cwd(), r.text);
+  console.log(`instance context: written by the lead agent (${id.slice(0, 8)}, ${r.text.length} chars)`);
+  res.json({ ok: true });
+});
+// "Ask general to draft it" (the cockpit editor, context still empty): the lead
+// runs the same short interview the first-run greeting does, delivered as a
+// HIDDEN prompt over the loopback exactly like the greeting.
+app.post("/instance-context/draft", async (req, res) => {
+  if (!accountAdmin(req, res, true, "ask the lead agent to draft the instance context")) return;
+  if (instanceContextForCwd(loadConfig(), process.cwd()))
+    return res.status(409).json({ error: "the instance context is already set — edit it directly" });
+  const home = loadChannels().find((c) => isHomeChannel(c) && c.sessionId);
+  if (!home?.sessionId) return res.status(409).json({ error: "this cockpit has no lead agent to ask" });
+  const id = home.sessionId;
+  const brief = markAgentPrompt(
+    instanceContextInterviewBrief() +
+      "\n\nThe person just asked you, from the cockpit, to draft it now: ask your questions in one short message, " +
+      "then wait for their answer.",
+  );
+  // Answer only once it really landed: "asked" while the lead never heard it
+  // (busy for the whole retry window) would leave the person waiting in a chat
+  // that never asks anything.
+  const r = await deliverWithRetry(
+    () => driveChannel(id, brief, resolveSessionTarget(loadChannels(), id, process.cwd())),
+    // The lead may be dormant (no live process after a restart): driveChannel
+    // wakes it, so "still there" is the channel, not a live session.
+    () => loadChannels().some((c) => c.sessionId === id),
+  );
+  console.log(`instance context: draft request ${id.slice(0, 8)} — ${r.ok ? "delivered" : "not delivered"}`);
+  if (!r.ok) return res.status(503).json({ error: "the lead agent is busy or unreachable right now — try again in a moment" });
+  res.json({ ok: true, agent: home.name ?? null });
+});
+
 // Colour palette, per launch directory — an accent key ("emerald"…). The setter
 // validates against the known palettes; the default/unknown clears it.
 app.get("/theme", (_req, res) => {
@@ -2453,15 +2538,17 @@ app.get("/version", (_req, res) => res.json(versionState()));
 // (src/backend.ts): the page then never opens the sign-in card, since no agent
 // here needs the subscription. The probe still runs — a mixed setup's
 // subscription agents still need to know.
-app.get("/auth", async (_req, res) =>
+app.get("/auth", async (_req, res) => {
+  const expiry = readTokenExpiry();
   res.json({
     ...(await authStatus()),
-    ...readTokenExpiry(),
+    ...expiry,
     ...longLivedTokenInfo(loadVault(), DEPLOYMENT_MODE),
     ...customBackendFields(),
     ...mtTokenFields(),
-  }),
-);
+    ...(await connectFields(expiry)),
+  });
+});
 
 /**
  * Whether this is a multi-tenant instance and, if so, whether its group agents'
@@ -2473,6 +2560,44 @@ function mtTokenFields(): { multiTenant: boolean; mtTokenMissing: boolean } {
   const multiTenant = DEPLOYMENT_MODE === "multi-tenant";
   const present = !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME];
   return { multiTenant, mtTokenMissing: multiTenant && !present };
+}
+
+/**
+ * The connect facts for the COMMONS' agents — where the first agent is born —
+ * read by the first-agent plan and by `/auth` (the cockpit's "Connect Claude"
+ * card). Same inputs as the spawn gate's `connectRefusal`, for the commons user.
+ */
+async function commonsConnectFacts(): Promise<ConnectFacts> {
+  const user = commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }) ?? null;
+  const agentAuth = agentAuthForCwd(loadConfig(), process.cwd());
+  const customBackend = instanceBackend().kind === "custom";
+  return {
+    multiTenant: DEPLOYMENT_MODE === "multi-tenant",
+    customBackend,
+    dropUser: user,
+    agentAuth,
+    hasToken: !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
+    rootAuth: user === null && !customBackend ? (await authStatus()).state : "unknown",
+    userLoggedIn: user !== null && agentAuth === "login" ? agentLoginInfo(agentStateHome(user)).loggedIn : null,
+  };
+}
+
+/**
+ * What the cockpit's "Connect Claude" card reads (`/auth` → `connect`): is the
+ * commons connected, which mode, which OS user a "1 month" login targets, and
+ * until when the credential in use lasts (null when unknown).
+ */
+async function connectFields(auth: { tokenExpiresAt: number | null }): Promise<{
+  connect: { state: "yes" | "no" | "unknown"; multiTenant: boolean; agentAuth: "token" | "login"; user: string | null; expiresAt: number | null };
+}> {
+  const f = await commonsConnectFacts();
+  let expiresAt: number | null = null;
+  if (f.dropUser === null) expiresAt = auth.tokenExpiresAt;
+  else if (f.agentAuth === "login") expiresAt = agentLoginInfo(agentStateHome(f.dropUser)).expiresAt;
+  else expiresAt = longLivedTokenInfo(loadVault(), DEPLOYMENT_MODE).longLivedExpiresAt;
+  return {
+    connect: { state: connectedState(f), multiTenant: f.multiTenant, agentAuth: f.agentAuth, user: f.dropUser, expiresAt },
+  };
 }
 
 function customBackendFields(): { backend?: "custom"; backendModel?: string | null } {
@@ -2589,7 +2714,38 @@ app.post("/mt-token/code", async (req, res) => {
     invalidateAuthStatus(); // so /auth re-reports longLived immediately
   }
   res.status(r.ok ? 200 : 400).json(r); // {ok} — never the token
+  if (r.ok) afterConnected();
 });
+
+// "I already have a token": a long-lived token minted elsewhere with
+// `claude setup-token`, pasted on the Connect Claude card. Same gate and same
+// vault slot as the in-cockpit mint; choosing it also means "1 year", so the
+// auth mode follows (agents restart only if it actually changed).
+app.post("/mt-token/paste", (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const r = normalizePastedToken(req.body?.token);
+  if (!r.ok) return res.status(400).json({ ok: false, error: r.error });
+  setSecret(MT_CLAUDE_OAUTH_TOKEN_NAME, r.token, MAIN_GROUP_ID, "operator:paste");
+  mtTokenWarned = false;
+  invalidateAuthStatus();
+  const cfg = loadConfig();
+  if (agentAuthForCwd(cfg, process.cwd()) !== "token") {
+    setAgentAuthForCwd(cfg, process.cwd(), "token");
+    restartAllSessions();
+  }
+  res.json({ ok: true }); // never the token
+  afterConnected();
+});
+
+/**
+ * A connection just landed (token minted or pasted, commons login): this is
+ * where a fresh multi-tenant instance's lead agent is really born, exactly as
+ * `/auth/code` does for the root sign-in. Called AFTER answering the browser.
+ */
+function afterConnected(): void {
+  void startFirstAgent();
+  void maybeRunGroupsMigration("post-sign-in");
+}
 
 app.delete("/mt-token", (req, res) => {
   // Same gate as start/code: a cancel is still a write on a credential flow, so
@@ -2663,6 +2819,8 @@ app.post("/agent-login/code", async (req, res) => {
   if (!loginUsers().some((u) => u.user === user)) return res.status(400).json({ error: "unknown user" });
   const r = await submitAgentLoginCode(user, code);
   res.status(r.ok ? 200 : 400).json(r); // {ok} — never the credential
+  // Connecting the commons is how a "1 month" instance gets its lead agent.
+  if (r.ok && user === commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE })) afterConnected();
 });
 
 app.delete("/agent-login", (req, res) => {
@@ -2828,6 +2986,31 @@ app.get("/channels", (req, res) => {
       return mine.length ? { ...ch, crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : ch;
     }),
   );
+});
+
+// What each visible row shows before its agent is resumed: the last message's
+// time and the context fill, from the transcript's TAIL (src/glance.ts). The
+// boot paints every row from this one call instead of waiting for N resumes
+// (each a spawn + full history replay); the WS `history`/`context` that follow
+// overwrite it with the authoritative values. Same ACL as GET /channels.
+app.get("/channels/glance", async (req, res) => {
+  const box = restrictedBoxOf(req);
+  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))).filter(
+    (ch) => !box || ownedByPeer(ch, box),
+  );
+  const rows = await Promise.all(
+    visible.map(async (ch) => {
+      const live = sessions.get(ch.sessionId);
+      const home = live ? live.transcriptHome : channelStateHome(ch);
+      const g = await glanceFile(sessionFilePath(ch.cwd, ch.sessionId, home));
+      const pct =
+        live && !live.pilot.hasExited && live.contextPct !== null
+          ? live.contextPct
+          : pctFromUsage(g.usage ?? undefined, assumedContextWindow(ch.profile, ch.model, ch.group ?? null));
+      return { sessionId: ch.sessionId, lastAt: g.lastAt, contextPct: pct };
+    }),
+  );
+  res.json(rows);
 });
 
 // ── Crons (scheduled channel prompts) ───────────────────────────────────────
@@ -3012,6 +3195,39 @@ app.get("/groups", (req, res) => {
   // (a visible-but-not-member group is public, whose members are already empty).
   // Mono-tenant (only a public Main) keeps Main for everyone, unchanged.
   res.json(listableGroups(loadGroups(), viewerFor(currentAccount(req))));
+});
+/**
+ * The SSH public key to register for each group the caller can see.
+ *
+ * A public key is not a secret, but WHICH GROUPS EXIST is: the rows go through the
+ * very same `listableGroups` filter as `GET /groups`, so a private group stays
+ * invisible even to an admin (operator decision 2026-11-03) and a restricted
+ * group's existence is not leaked to a non-member. Never the private key, which
+ * no endpoint can reach by construction — `groupKeyRows` only ever reads `.pub`.
+ *
+ * `publicKey: null` is an honest "no keypair yet" (mono-tenant before any boot
+ * minted one, or a group provisioned by an older build), not an error.
+ */
+app.get("/groups/ssh", (req, res) => {
+  const groups = listableGroups(loadGroups(), viewerFor(currentAccount(req)));
+  res.json(
+    groupKeyRows(groups, {
+      serverHome: os.homedir(),
+      commonsUser: commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
+      // A walled group has an OS user of its OWN only under isolation. On a
+      // mono-tenant cockpit every agent runs as the server's user and shares the
+      // one identity, so naming `sk-<id>` here would point the operator at a key
+      // directory nothing will ever read — a plausible, complete and wrong answer.
+      osUserFor: (g) => (DEPLOYMENT_MODE === "multi-tenant" ? osUserFor(g) : null),
+      readPub: (p) => {
+        try {
+          return fs.readFileSync(p, "utf8");
+        } catch {
+          return null; // not minted yet (or unreadable): the row says so
+        }
+      },
+    }),
+  );
 });
 app.put("/groups", (req, res) => {
   // BROWSER-ONLY (T2/T6 carry): writing the group list is a person's act, and
@@ -3282,6 +3498,8 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
   ["social-skill", "shadok-social"],
+  // The lead's once-only write of the instance context (src/instance-context.ts).
+  ["instance-context-skill", "shadok-instance-context"],
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
   // group's own OS user reads only this tier.
   ["factory-skill", "shadok-factory"],
@@ -3519,6 +3737,10 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // invite-redeem hook nor the per-account migration loop ever fires for it.
   // Give it a Personal group here; idempotent (reuses an existing private group).
   await ensurePrivateGroupProvisioned(BOOTSTRAP_ADMIN);
+  // Each group's keypair on the volume, BEFORE any HOME is filled: that is what
+  // lets an operator register the public key (GET /groups/ssh) without waiting
+  // for the group's first agent to spawn.
+  ensureGroupVolumeKeys();
   // Before any agent comes back: fill every drop user's HOME with the full set
   // of trusted directories in one write each, so none strands on the trust
   // dialog when the resume storm rebuilds a wiped (ephemeral) group HOME.
@@ -3526,6 +3748,9 @@ async function ensureGroupsProvisioned(): Promise<void> {
   // And heal the commons agent's own helper scripts + cron guards, which the HOME
   // move off /root left stranded (see below).
   await healCommonsStrandedScripts();
+  // Then take back the ownership of the server's OWN credentials, which the
+  // commons chown swept (see below) — the SSH identity first of all.
+  await healServerOwnedState();
 }
 
 /**
@@ -3619,6 +3844,61 @@ async function healCommonsStrandedScripts(): Promise<void> {
     }
   } catch (e) {
     console.error(`heal: rewriting cron guard paths failed (best-effort): ${(e as Error)?.message ?? e}`);
+  }
+}
+
+/**
+ * Boot self-heal, twin of `healCommonsStrandedScripts`: give the SERVER back the
+ * ownership of its own credential and identity state, which the migration's
+ * unbounded `chown -R main:main ~/.shadok-ai` swept along with the working state
+ * (`SERVER_OWNED_STATE` carries the full reasoning and the measured symptom —
+ * every root-side `ssh` dying on `Bad owner or permissions on /root/.ssh/config`,
+ * because OpenSSH checks the OWNER of a key and a config, not only its mode).
+ *
+ * Runs on EVERY capable boot, independent of the migration marker, so an instance
+ * already migrated by an older build heals on its next update. Idempotent and
+ * cheap in the normal case: a few `lstat`s and NO privileged spawn once everything
+ * is ours again — which is what makes it safe to run unconditionally.
+ *
+ * A directory is judged on itself AND its immediate entries, because a hand repair
+ * typically re-owns the directory and leaves the key inside it foreign — the one
+ * state in which `ssh` still refuses and the top-level check alone would call it
+ * healed. Best-effort per path: a failure here must never take down the boot, and
+ * it is reported rather than swallowed (a silent chown is indistinguishable from
+ * one that never ran — the lesson of `src/claude-home.ts`).
+ */
+async function healServerOwnedState(): Promise<void> {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const uid = process.getuid?.() ?? 0;
+  const gid = process.getgid?.() ?? 0;
+  const owner = `${uid}:${gid}`;
+  // Is anything under `p` owned by someone else? One level deep is enough: the
+  // chown that causes this is `-R`, so a subtree moves as a whole, and a partial
+  // tree is a hand repair, whose usual shape is "dir re-owned, contents not".
+  const foreign = (p: string): boolean => {
+    try {
+      if (fs.lstatSync(p).uid !== uid) return true;
+      if (!fs.statSync(p).isDirectory()) return false;
+      for (const e of fs.readdirSync(p)) {
+        try {
+          if (fs.lstatSync(path.join(p, e)).uid !== uid) return true;
+        } catch {
+          /* raced away — nothing to re-own */
+        }
+      }
+      return false;
+    } catch {
+      return false; // unreadable or gone: not ours to repair
+    }
+  };
+  for (const p of serverOwnedStatePaths(os.homedir())) {
+    if (!fs.existsSync(p) || !foreign(p)) continue;
+    try {
+      await runPrivileged("chown", ["-R", owner, p], { timeoutMs: TREE_OP_TIMEOUT_MS });
+      console.log(`heal: ${p} was owned by another user; given back to the server (${owner})`);
+    } catch (e) {
+      console.error(`heal: could not re-own ${p} (best-effort): ${(e as Error)?.message ?? e}`);
+    }
   }
 }
 
@@ -5496,6 +5776,10 @@ app.put("/profiles/prompt", (req, res) => {
   const key = typeof b.key === "string" ? b.key : "";
   const id = localSessionForKey(req, key);
   if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  // Profiles are global: in multi-tenant this write crosses every group's wall
+  // (invariant 63) — refused before any per-profile rule is consulted.
+  const modeRefusal = promptWriteRefusal({ mode: DEPLOYMENT_MODE });
+  if (modeRefusal) return res.status(modeRefusal.status).json({ error: modeRefusal.error });
   const caller =
     sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
   const target = typeof b.name === "string" && b.name.trim() ? b.name.trim() : (caller ?? "");
@@ -6869,9 +7153,9 @@ function installedCapabilities(): { name: string; description: string }[] {
 const runningPlugins = new Map<string, string[]>();
 
 /** One `Skill(<name>:<name>)` call = one run of that factory skill (for the panel's counts). */
-function countFactoryRun(skillArg: string, agentId: string): void {
+function countFactoryRun(skillArg: string, agentId: string, viaCron: boolean): void {
   const name = skillOfCall(skillArg, loadRegistry(factoryRoot()).skills.map((x) => x.name));
-  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId });
+  if (name) recordRun(factoryRoot(), { skill: name, agent: agentId, ...(viaCron ? { via: "cron" as const } : {}) });
 }
 
 /** Remove the release directories no attachment and no running process uses. */
@@ -6982,6 +7266,7 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null, se
   return prepromptParts({
     profileName: profileName ?? null,
     role: resolved?.systemPrompt,
+    instanceContext: instanceContextForCwd(loadConfig(), process.cwd()),
     model: resolved?.model,
     deny: resolved?.deny,
     allow: resolved?.allow,
@@ -7050,43 +7335,92 @@ function writeAsUserAtomic(user: string, file: string, content: string): void {
 }
 
 /** The SSH key store on the shadok-data VOLUME (survives a docker recreate, which
- *  wipes `/home`). The container's historical identity lives here (`id_ed25519`);
- *  per-group keys go under `groups/<os-user>/`. `/root` is 0700, so a dropped
- *  agent cannot read this — the server (root) copies the material into the
- *  agent's own HOME at spawn. Mirrors `ensureSshIdentity` (src/ssh.ts). */
-const SHADOK_SSH_DIR = path.join(os.homedir(), ".shadok-ai", "ssh");
+ *  wipes `/home`). The container's historical identity lives there (`id_ed25519`);
+ *  per-group keys under `groups/<os-user>/`. `/root` is 0700, so a dropped agent
+ *  cannot read it — the server (root) copies the material into the agent's own
+ *  HOME, as that user. The paths themselves come from `volumeKeyPaths`
+ *  (src/ssh.ts), so the provisioner and `GET /groups/ssh` cannot disagree about
+ *  where a group's key lives. Mirrors `ensureSshIdentity`. */
 const SSH_AGENT_CONFIG =
   "# Managed by shadok-ai — SSH identity for this agent.\n" +
   "Host *\n  StrictHostKeyChecking accept-new\n  UserKnownHostsFile ~/.ssh/known_hosts\n  IdentityFile ~/.ssh/id_ed25519\n  IdentitiesOnly yes\n";
 
 /**
+ * Mint-or-find a drop user's keypair ON THE VOLUME (it must survive a recreate,
+ * which wipes `/home`). The COMMONS reuses the container's HISTORICAL key — the
+ * identity already registered on the forge (operator: "récupère la clef
+ * historique") — while each ISOLATED group gets its own under `groups/<os-user>/`
+ * (operator decision: one key per group); `volumeKeyPaths` is where that split
+ * lives, so this and `GET /groups/ssh` always look in the same directory.
+ * Idempotent: an existing keypair is returned untouched, which is what keeps a
+ * group's identity STABLE across recreates and respawns.
+ */
+function ensureVolumeKeypair(user: string): { key: string; pub: string; shared: boolean } {
+  const p = volumeKeyPaths(os.homedir(), user, COMMONS_USER);
+  if (!fs.existsSync(p.key)) {
+    // No historical key for the commons (a fresh instance), or a new group: mint
+    // one on the VOLUME, as root. `accept-new` means the remote is trusted on
+    // first use; registering the PUBLIC line on the forge is the operator's step,
+    // which is why it is served by `GET /groups/ssh` and logged here.
+    fs.mkdirSync(p.dir, { recursive: true, mode: 0o700 });
+    execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-q", "-f", p.key, "-C", `shadok-${user}`]);
+    const line = (() => {
+      try {
+        return fs.readFileSync(p.pub, "utf8").trim();
+      } catch {
+        return "(unreadable)";
+      }
+    })();
+    console.log(`ssh: minted a keypair for ${user} on the volume — register it where its agents must push: ${line}`);
+  }
+  return p;
+}
+
+/**
+ * Mint the VOLUME keypair of every group that has one, without touching a single
+ * agent HOME. Called from the boot provisioning reconciler so a public key exists
+ * to REGISTER before the group's first agent ever spawns — until this ran, the key
+ * appeared at first spawn and only in the log, so an operator had to go read a log
+ * to learn what to paste on the forge (the follow-up the isolation work left open).
+ * Idempotent and best-effort: a `ssh-keygen` failure must never take down a boot,
+ * and the spawn path still mints what is missing.
+ */
+function ensureGroupVolumeKeys(): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const users = new Set<string>([COMMONS_USER]);
+  for (const g of loadGroups()) {
+    const u = osUserFor(g);
+    if (u) users.add(u);
+  }
+  for (const user of users) {
+    try {
+      ensureVolumeKeypair(user);
+    } catch (e) {
+      console.log(`ssh: could not mint a keypair for ${user} (best-effort) — ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+}
+
+/**
  * Give a DROPPED agent a working `~/.ssh` (git-over-SSH, private clones).
  *
- * The source keypair lives on the VOLUME under `SHADOK_SSH_DIR` (persists a
- * recreate): the COMMONS (`main`) reuses the container's HISTORICAL key — the
- * identity already registered on the forge (operator: "récupère la clef
- * historique") — while each ISOLATED group has its OWN key under
- * `groups/<os-user>/` (operator decision: one key per group). A dropped user
- * cannot read the volume dir (it is under the 0700 `/root`), so the server
- * (root) reads/generates the keypair there and writes a COPY into the agent's
- * own HOME AS THE USER (never root writing through a 0700 HOME). Idempotent
- * (skips when the HOME key is already present — so a recreate re-copies the same
- * volume key, keeping the identity stable). Best-effort: SSH just stays
- * unavailable to that agent on failure, never a spawn failure.
+ * A dropped user cannot read the volume key store (it is under the 0700 `/root`),
+ * so the server (root) takes the keypair from `ensureVolumeKeypair` and writes a
+ * COPY into the agent's own HOME **as that user** — never root writing through a
+ * 0700 HOME it does not own, where an agent could have planted a symlink (the
+ * same rule as `writeAsUserAtomic` and the provisioning plans' root/user split).
+ * Idempotent (skips the moment the HOME key is present, so a recreate re-copies
+ * the same volume key and the identity stays stable). Best-effort: on failure SSH
+ * is simply unavailable to that agent, never a failed spawn.
+ *
+ * Called from the spawn path AND from `preseedGroupHomes` at boot — the second is
+ * what covers an agent that is merely RESUMED, and a HOME wiped by a recreate.
  */
 function ensureAgentSshKey(user: string, home: string): void {
   try {
     const ssh = `${home}/.ssh`;
     if (spawnAsUserSync(user, "test", ["-f", `${ssh}/id_ed25519`]).ok) return; // already wired
-    const isCommons = user === COMMONS_USER;
-    const srcDir = isCommons ? SHADOK_SSH_DIR : path.join(SHADOK_SSH_DIR, "groups", user);
-    const srcKey = path.join(srcDir, "id_ed25519");
-    if (!fs.existsSync(srcKey)) {
-      // No historical key for the commons (a fresh instance), or a new group:
-      // mint one on the VOLUME, as root. accept-new keys are registered later.
-      fs.mkdirSync(srcDir, { recursive: true, mode: 0o700 });
-      execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-q", "-f", srcKey, "-C", `shadok-${user}`]);
-    }
+    const { key: srcKey, shared: isCommons } = ensureVolumeKeypair(user);
     const priv = fs.readFileSync(srcKey, "utf8");
     const pub = fs.readFileSync(`${srcKey}.pub`, "utf8");
     spawnAsUserSync(user, "mkdir", ["-p", ssh]);
@@ -7284,6 +7618,12 @@ function preseedGroupHomes(): void {
     const home = homeForUser(user, GROUP_HOME_BASE);
     seedHomeTrust(user, home, [...cwds]);
     ensureTierStateDir(user, home);
+    // `~/.ssh` too, at BOOT and not only at the next spawn. `/home` is NOT on the
+    // volume (invariant 19's whole reason), so a docker recreate wipes every HOME
+    // copy while the keypair survives on the volume — and a dropped agent that is
+    // merely RESUMED never runs the spawn path, so it stayed without an identity
+    // until someone reloaded it. Idempotent: skipped the moment the key is there.
+    ensureAgentSshKey(user, home);
   }
   seedCommonsPeersOut();
 }
@@ -7382,17 +7722,25 @@ function makePilot(
     instanceDefault: user ? getDefaultModel() : null,
     dropped: !!user,
   });
-  const fullArgs = [
+  // ONE --append-system-prompt: Claude Code keeps only the last of several
+  // (src/prompt-args.ts), which silently dropped the role and the pilot prompt.
+  const fullArgs = mergeAppendedPrompts([
     ...args,
     ...permissionModeArgs(permissionMode),
     // A flag+value pair, before the profile's flags: nothing here can land
     // after `--mcp-config`'s variadic JSON as a bare word.
     ...factory.args,
+    // The instance context FIRST, then the role: general before specific — what
+    // this instance is for, then what this agent does in it. Nothing at all when
+    // it is empty. A flag+value pair, so it is safe before the profile's flags;
+    // mergeAppendedPrompts (PR #433) joins every --append-system-prompt into one,
+    // in this order, since Claude Code keeps only the last.
+    ...instanceContextArgs(instanceContextForCwd(loadConfig(), process.cwd())),
     ...profileArgs(resolvedProfile, spawnModel, effort),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
-  ];
+  ]);
   // NAMES only: the values are in `env`, and never travel to a client. Built
   // through the shared `buildPreprompt`, so this spawn snapshot is comparable
   // byte-for-byte with the one the staleness check recomputes later.
@@ -7505,6 +7853,13 @@ interface Live {
    *  (the loopback also carries parent notifications under `origin: "cron"`,
    *  told apart by the prompt's mark). Read by the publication log. */
   turnOrigin?: string;
+  /**
+   * The turn in flight was started by a cron fire (origin `cron` AND the cron
+   * mark — a parent notification rides the same hidden path without it). Tags
+   * the skill runs it makes, so a skill's card can list the agents that run it
+   * on a schedule.
+   */
+  cronTurn?: boolean;
   /** Stops the .jsonl tail loop (content streaming). */
   stopTail: (() => void) | null;
   /** The last text blocks ALREADY broadcast, so they are not offered again as
@@ -8071,6 +8426,16 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
   return p;
 }
 
+/** The context window an agent is metered against. A custom backend's window is
+ *  whatever its server was started with, which no model name can tell us:
+ *  SHADOK_CONTEXT_WINDOW says it, and without it the usual assumption stands
+ *  (and `effectiveWindow` still promotes on proof). Shared by the spawn and
+ *  `GET /channels/glance`, so a row's pre-resume % matches the live one. */
+function assumedContextWindow(profile?: string | null, model?: string | null, group?: string | null): number {
+  const backend = sessionBackend(profile, group);
+  return (backend.kind === "custom" ? backend.contextWindow : null) ?? windowForModel(sessionModelSetting(profile, model));
+}
+
 async function createSession(
   id: string,
   cwd: string,
@@ -8096,12 +8461,7 @@ async function createSession(
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id, transcriptHome));
   const backend = sessionBackend(profile, group);
-  // A custom backend's window is whatever its server was started with, which
-  // no model name can tell us: SHADOK_CONTEXT_WINDOW says it, and without it
-  // the usual assumption stands (and `effectiveWindow` still promotes on proof).
-  const contextWindow =
-    (backend.kind === "custom" ? backend.contextWindow : null) ??
-    windowForModel(sessionModelSetting(profile, model));
+  const contextWindow = assumedContextWindow(profile, model, group);
   const s: Live = {
     id,
     cwd,
@@ -8195,13 +8555,16 @@ function startContentTail(s: Live): void {
       // TailEvent): the client shows it as is instead of dating everything on
       // reception.
       broadcast(s, { type: "stream-text", text: e.text, at: e.at, afterInternal, ...(e.uuid ? { msgId: e.uuid } : {}) });
+      // The lead's greeting has a first answer: the first-agent loader may go
+      // (a no-op for every other session — src/first-agent.ts).
+      endFirstAgentGreeting(s.id);
     } else if (e.kind === "prompt") {
       // The echoed prompt bubble learns its transcript id (see TailEvent).
       broadcast(s, { type: "prompt-id", msgId: e.uuid, text: e.text });
     } else if (e.kind === "tool") {
       // A `Skill(<name>:<name>)` call is one run of a factory skill: counted
       // for the Skills page, then streamed like any other tool.
-      if (e.skill) countFactoryRun(e.skill, s.id);
+      if (e.skill) countFactoryRun(e.skill, s.id, !!s.cronTurn);
       broadcast(s, {
         type: "stream-tool", id: e.id, name: e.name, summary: e.summary,
         // Files a SendUserFile delivered → the client renders a download / inline
@@ -8849,7 +9212,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // `code` is optional and purely additive: it lets a machine client (the cron
   // driver) tell "the session is busy" — a transient miss worth replaying —
   // apart from any other refusal, without matching on the message text.
-  const fail = (message: string, code?: string) => send({ type: "error", message, ...(code ? { code } : {}) });
+  const fail = (message: string, code?: string, user?: string | null) =>
+    send({ type: "error", message, ...(code ? { code } : {}), ...(user ? { user } : {}) });
 
   // ACL backstop on every per-turn DRIVE action (prompt, dialog answers, keys,
   // restart, set-*, stop): may THIS caller see/drive the session's group? The
@@ -8932,29 +9296,25 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // Install the `claude` CLI first if it's missing: otherwise the auth
           // probe below (it runs `claude auth status`) can't run and reads as
           // "unknown", and the spawn itself would throw "posix_spawnp failed".
+          // A FRESH spawn tells its client where it is (public/spawn-steps.js
+          // draws the loader from it), each step just BEFORE the work it names.
+          // A resume shows its history instead, so it announces nothing.
+          const freshSpawn = !msg.resume && !msg.continue;
+          const announceStep = (step: SpawnStep) => {
+            if (!freshSpawn) return;
+            send({ type: "starting", step });
+          };
+          announceStep("connect");
           const claude = await ensureClaudeOnce();
           if (!claude.ok) return fail(claude.error);
           // An agent on a custom backend authenticates with its own token and
           // never touches the subscription, so the instance's sign-in is not
           // its business. The profile is resolved early (and cheaply) for this
           // alone; a resume we cannot match falls back to the probe as before.
-          if (sessionBackend(gateProfile(msg)).kind === "custom") {
-            console.log(`auth: custom model backend, sign-in not required`);
-          } else {
-            const auth = await authStatus();
-            if (auth.state === "unknown")
-              console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
-            if (auth.state === "signed-out") {
-              // Telling the user is the whole point: a cron refused at 4am must
-              // not be discovered a day later. Deduplicated inside, so a
-              // five-minute cron does not turn one sign-out into a flood.
-              announceLoggedOut();
-              return fail(
-                "this shadok-ai instance is not signed in to Claude — sign in from the cockpit",
-                "logged-out",
-              );
-            }
-          }
+          // WHICH credential this agent needs is only known once its OS user is
+          // resolved below, so the refusal itself lives in `connectRefusal`
+          // (src/connect-gate.ts): a dropped multi-tenant agent no longer needs the
+          // instance's root sign-in, only the token or its own space's login.
           origin = connectionOrigin(
             {
               systemDrive: isSystemDrive,
@@ -9038,16 +9398,36 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // worktree/branch behind (a token-less retry loop would otherwise pile up
           // empty checkouts). Keyed on the same `dropUser` the spawn will use; the
           // late call below re-checks the (resume / live-attach) paths unchanged.
-          const mtRefusal = (dropUser: string | null | undefined): string | null => {
-            const m = mtCredentialMessage(
-              mtTokenNeeded(!!dropUser, sessionBackend(gateProfile(msg)).kind === "custom"),
-              !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
-            );
-            if (m && !mtTokenWarned) {
+          const connectRefusal = async (
+            dropUser: string | null | undefined,
+          ): Promise<{ message: string; code: "logged-out" | "space-not-connected"; user: string | null } | null> => {
+            const customBackend = sessionBackend(gateProfile(msg)).kind === "custom";
+            const user = dropUser ?? null;
+            const agentAuth = agentAuthForCwd(loadConfig(), process.cwd());
+            // Probe only what decides: the root sign-in is a ~850ms process spawn,
+            // and a dropped agent never runs on it.
+            const rootAuth = !customBackend && user === null ? (await authStatus()).state : "unknown";
+            if (rootAuth === "unknown" && user === null && !customBackend)
+              console.log(`auth: could not verify sign-in state, allowing the spawn anyway`);
+            const v = connectVerdict({
+              multiTenant: DEPLOYMENT_MODE === "multi-tenant",
+              customBackend,
+              dropUser: user,
+              agentAuth,
+              hasToken: !!secretsFor([MT_CLAUDE_OAUTH_TOKEN_NAME], MAIN_GROUP_ID)[MT_CLAUDE_OAUTH_TOKEN_NAME],
+              rootAuth,
+              userLoggedIn: user !== null && agentAuth === "login" ? agentLoginInfo(agentStateHome(user)).loggedIn : null,
+            });
+            if (v.ok) return null;
+            if (v.code === "logged-out") {
+              // Telling the user is the whole point: a cron refused at 4am must
+              // not be discovered a day later. Deduplicated inside.
+              announceLoggedOut();
+            } else if (!mtTokenWarned) {
               mtTokenWarned = true;
-              console.error(`mt: ${m}`);
+              console.error(`connect: ${v.user} — ${v.message}`);
             }
-            return m ?? null;
+            return { message: v.message, code: v.code, user: v.user };
           };
           // The drop user a NEW spawn will run as — same inputs as the isolation
           // resolution further down. Hoisted out of the MT-token guard because the
@@ -9076,9 +9456,10 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               parentGroupId,
             });
             earlyUser = earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
-            const earlyMsg = mtRefusal(earlyUser);
-            if (earlyMsg) return fail(earlyMsg);
+            const early = await connectRefusal(earlyUser);
+            if (early) return fail(early.message, early.code, early.user);
           }
+          announceStep("workspace");
           if (msg.worktree && !resumed && isGitRepo(cwd)) {
             try {
               // Create the checkout under the DROP USER's own home (not the
@@ -9290,8 +9671,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // handed to makePilot — and skipped for a custom backend, which uses its
           // own key and never the subscription. Without the token, say so plainly
           // instead of letting the spawn die on a bare auth error.
-          const mtMsg = mtRefusal(dropUser);
-          if (mtMsg) return fail(mtMsg);
+          const refused = await connectRefusal(dropUser);
+          if (refused) return fail(refused.message, refused.code, refused.user);
           // Who this new agent belongs to, for factory skill scopes: the person
           // spawning it (an agent's spawn inherits its parent's creator, so a
           // lead's ticket agents stay "yours"), and the cockpit group the client
@@ -9308,6 +9689,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // assigned, else the one the client created it in.
             pendingCtx.set(id, { group: agentGroupId ?? requestedGroupId, createdBy: initialCreatedBy ?? null });
           }
+          announceStep("claude");
           session = await createSession(
             id, effectiveCwd, args, worktree, profile, model, effort,
             spawnActor({ account: me?.name, origin, peer: callerPeer, parent: parentAtStart, agent: callerAgent?.name }),
@@ -9464,6 +9846,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           clearRetry(session, true);
           session.retryCount = 0;
           session.lastPrompt = text;
+          session.cronTurn = origin === "cron" && isCronPrompt(text);
           // The session's other clients see the prompt arrive — except a cron:
           // that is not someone speaking, and its text (the prompt PLUS its
           // guard's dump) drowned the answer in both interfaces. The mark in
@@ -10110,6 +10493,23 @@ function seedSocialSkill(): void {
   }
 }
 if (SEED_SKILLS) seedSocialSkill();
+// The lead agent's once-only write of the instance context: seeded to the server
+// HOME like shadok-files (a root lead reads it there), and listed in
+// SKILL_SOURCES for the machine-wide tier a dropped lead reads.
+function seedInstanceContextSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "instance-context-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-instance-context");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "write.mjs"), path.join(dst, "scripts", "write.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "write.mjs"), 0o755);
+  } catch {
+    /* best effort — without it the lead says it cannot save, nothing breaks */
+  }
+}
+if (SEED_SKILLS) seedInstanceContextSkill();
 
 // The Skill Factory's agent side (pull / push / scan of a factory skill's clone).
 function seedFactorySkill(): void {

@@ -82,7 +82,9 @@ Enter to skip; you can add it later from the web UI).
   agent is a round avatar with a presence dot (green ready, red working, hollow
   offline). A group's icon opens the icon picker: choose from the grid, type any
   emoji, or **type a word** (`rocket`, `bug`, `money`…) to search for one; its
-  **＋** creates the new agent straight into that group. Dragging an agent onto a
+  **＋** creates the new agent straight into that group — while it is being
+  born its pane shows the pumping Shadok and the real startup steps ticking off
+  (access to Claude, workspace, Claude Code) rather than a black screen. Dragging an agent onto a
   group files it there, dragging groups reorders them, and double-clicking a name
   renames it — a group can also be renamed by clicking its name at the top of the
   agents column. A question the agent asks shows as an *Approval requested* card. The
@@ -104,6 +106,13 @@ Enter to skip; you can add it later from the web UI).
   stay collapsed, so the picker says so. There is deliberately no thinking
   on/off switch: current models always think, and the settings that used to
   disable it are ignored by them — a toggle would change nothing.
+- **Instance context** — a handful of lines every agent on this cockpit
+  receives at spawn, ahead of its role: what the instance is for, who works on
+  it, its language. On a new instance the lead agent asks two or three questions
+  in its first message and writes it once; after that only a human edits it
+  (version menu → **🧭 Instance context…**). Running agents see a change at their
+  next reload. If it is still empty, **Ask general to draft it** runs the same
+  short interview.
 - **Agent profiles** — a named bundle of role prompt, permission guardrails
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
   spawn, remembered across resume. A profile can also carry **MCP servers**
@@ -307,8 +316,13 @@ Enter to skip; you can add it later from the web UI).
     (draft changes, unused, feedback, archived). Ticked rows can be shared,
     tagged or archived in one go.
   - **The detail panel.** Its numbers, the agents that have it (group by group:
-    each agent and its runs), the secrets agents running it get, and its
-    feedback.
+    each agent and its runs), the agents that **run it on a schedule** (a cron
+    whose prompt names it, or a scheduled run that called it — click the agent
+    to open it), the secrets agents running it get, and its feedback.
+  - **From the agent's side.** The ▯ button in an agent's bar opens its info
+    panel: its directory and profile, the skills it has (runs this week, ⏰ how
+    many on a schedule), and its schedules with the skills each one uses. Click
+    a skill to open its card in the Skill Factory.
   - **Creating.** The new-skill form asks for a **name** (what people see) and
     a **technical name** (what agents call it, `/name:name`), proposed from the
     name until you type your own. Choose it then: it is the skill's repository
@@ -413,8 +427,10 @@ Enter to skip; you can add it later from the web UI).
   a brand-new instance (which is signed out at boot, so there is nothing to
   spawn yet). The condition is "no channel", which makes it idempotent: it never
   appears twice.
-  While it is being started the central panel says so — *starting your first
-  agent…* — instead of the *no agent open* invitation, which would ask you to
+  While it is being started the central panel says so — *your first agent is
+  waking up…*, with the real steps ticking off (access to Claude, workspace,
+  Claude Code, then *Saying hello* — the screen stays until it has actually
+  greeted you) — instead of the *no agent open* invitation, which would ask you to
   create a second one while the first is being born. It is a status, not a
   screen: nothing to click, nothing to dismiss, and it ends on its own whichever
   way the spawn goes (started, refused because the instance is signed out,
@@ -617,12 +633,16 @@ in to Claude, which happens after boot; the banner stays up until then and the
 migration **finishes on its own the moment you sign in** (no restart needed).
 **One-time provisioning:** isolated-group agents authenticate with a
 subscription token injected into their environment, not a shared credential
-file. Until it is set, group spawns are refused with a message naming this step,
-and the cockpit shows a red "no subscription token" banner. Provide it from the
-cockpit itself — **no shell needed**: as an admin, click **Provide token** on
-that banner (or **Replace subscription token…** in the version menu to rotate
-it), authorise on your Claude subscription in the browser, and paste the code
-back; the server mints and stores it. From Telegram, `/mttoken` then
+file. A fresh instance asks for it through the **Connect Claude** card that opens
+after the welcome tour — **no shell needed**: as an admin, pick **1 month** (an
+interactive login, the agents get your claude.ai connectors, one connection per
+isolated space) or **1 year** (this long-lived token, model access only), click
+**Open claude.ai**, authorise, and paste the code back; the server mints and
+stores it. **I already have a token** takes one minted elsewhere with
+`claude setup-token`. Rotate it later with **Replace subscription token…** in the
+version menu. Until a space is connected, its spawns are refused (`code:
+"space-not-connected"`): an admin gets the card for that space, a member is told
+to ask an admin. From Telegram, `/mttoken` then
 `/mtcode <code>` do the same. The token is captured and vaulted server-side and
 is never shown. It is valid for about a year; re-run the card (or `/mttoken`)
 before it expires. The shell path still works as a fallback: `claude setup-token`
@@ -641,6 +661,24 @@ user and reminds you to reconnect before each lapses. The default stays
 across OS users (Claude rewrites the credential single-owner on refresh), which
 is why each user logs in separately. Design:
 `docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
+
+**Git over SSH, per group.** Each group has its own SSH identity: the shared
+*commons* (every public group) reuses the cockpit's historical container key —
+the one already registered on your forge — and every **walled** group (restricted
+or private) gets a key of its own. The keypairs live on the `shadok-data` volume,
+so they survive a recreate even though the agent homes do not, and the private
+half never leaves the server's own 0700 home: a copy is written into each
+agent's `~/.ssh` as that OS user.
+
+A key is only an identity once a remote accepts it, so **read a group's public
+key and register it** where its agents must clone or push: `GET /groups/ssh`
+returns one row per group you can see — `{group, name, osUser, publicKey,
+shared}` — and `shared: true` marks the historical key, which you register once
+for every public group. The rows go through the same visibility filter as
+`GET /groups` (a private group stays invisible even to an admin), and only the
+`.pub` half is ever read. A `publicKey: null` means no keypair has been minted
+yet, not an error. Until a group's key is registered, its agents simply cannot
+reach that remote over SSH.
 
 **Persist the group homes (recommended in Docker).** Each dropped agent runs as
 its own OS user with HOME under `SHADOK_HOME_BASE` (default `/home`), which is
@@ -963,8 +1001,8 @@ are **never held by the quota guard** (they don't spend your subscription).
 
 Three ways to do it:
 
-- **From the cockpit — the easy one.** The sign-in card a fresh instance opens
-  has a second side, **Another model**: pick a provider (Ollama, a llama.cpp
+- **From the cockpit — the easy one.** The Connect Claude card a fresh instance
+  opens has a **Use another model** link: pick a provider (Ollama, a llama.cpp
   server, DeepSeek, Z.ai/GLM, Moonshot/Kimi, or any Anthropic-compatible
   server), the address and model are pre-filled, the models a local server
   serves are listed for you, and **Test** sends one real request before
@@ -1251,7 +1289,10 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
-`/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/title` (GET/PUT — the
+`/channels/glance` (GET — each visible row's last-message time and context %,
+read from the transcript's tail so the list fills before the agents resume),
+`/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
+register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
