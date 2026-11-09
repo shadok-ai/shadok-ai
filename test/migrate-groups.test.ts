@@ -13,6 +13,8 @@ import {
   strandedCheckDirs,
   SHADOK_INTERNAL_DIRS,
   CLAUDE_INTERNAL_DIRS,
+  SERVER_OWNED_STATE,
+  serverOwnedStatePaths,
   type MigrationPlan,
   type MigrationDeps,
 } from "../src/migrate-groups.js";
@@ -441,4 +443,58 @@ test("server: the commons stranded-script heal is wired into the boot reconciler
   assert.match(src, /strandedCheckDirs\(c\.check, oldHome\)/);
   // Half 3: rewrite the guards (the .claude base + the relocated script dirs).
   assert.match(src, /rewriteCronCheckHome\(c\.check, oldHome, newHome, scriptDirs\)/);
+});
+
+test("server-owned state: the paths are the server's credentials, under its own HOME", () => {
+  const paths = serverOwnedStatePaths("/root");
+  // The SSH identity is the load-bearing one: `~/.ssh` is a symlink to it, and
+  // OpenSSH refuses a key or a config owned by another user, mode notwithstanding.
+  assert.ok(paths.includes("/root/.shadok-ai/ssh"));
+  // The vault, the accounts (with the session-signing key) and the guardrails.
+  for (const rel of ["secrets.json", "users", "profiles.json", "config.json"]) {
+    assert.ok(paths.includes(`/root/.shadok-ai/${rel}`), `${rel} must stay the server's`);
+  }
+  // Every path sits under the given home: a chown is aimed at a machine, so a
+  // path escaping the home would be aimed at the wrong one.
+  for (const p of paths) assert.ok(p.startsWith("/root/.shadok-ai/"), p);
+  assert.equal(paths.length, SERVER_OWNED_STATE.length);
+  assert.equal(new Set(SERVER_OWNED_STATE).size, SERVER_OWNED_STATE.length, "no duplicate entry");
+});
+
+test("server-owned state: the commons agent's OWN working state is never reclaimed", () => {
+  // The chown exists so the commons agent keeps working on what it worked on.
+  // Reclaiming these would undo the migration itself, one directory at a time.
+  for (const rel of ["channels", "crons", "ledger", "media", "files", "tail", "worktrees", "pilotctl"]) {
+    assert.ok(!SERVER_OWNED_STATE.includes(rel), `${rel} belongs to the commons agent`);
+  }
+});
+
+test("server-owned state: a blank home yields nothing, never paths rooted at /", () => {
+  assert.deepEqual(serverOwnedStatePaths(""), []);
+});
+
+test("server-owned state: every store is ALSO denylisted from the stranded-script heal", () => {
+  // The two halves answer one question — who may reach a credential — by different
+  // means: ownership in place here, relocation there. Pinned together, because a
+  // store added to one list only would be half-protected in silence.
+  for (const rel of SERVER_OWNED_STATE) {
+    if (rel.includes(".")) continue; // a file, which the heal can never match (it copies <top>/<sub>/ dirs)
+    assert.ok(SHADOK_INTERNAL_DIRS.includes(rel), `~/.shadok-ai/${rel} must also be in SHADOK_INTERNAL_DIRS`);
+  }
+});
+
+test("server: the credential re-own heal is wired into the boot reconciler, after the script heal", () => {
+  const src = fs.readFileSync(
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "server.ts"),
+    "utf8",
+  );
+  assert.match(src, /await healCommonsStrandedScripts\(\);[\s\S]{0,200}await healServerOwnedState\(\);/);
+  // Multi-tenant only: nothing chowned anything on a mono-tenant instance.
+  assert.match(src, /async function healServerOwnedState[\s\S]{0,120}DEPLOYMENT_MODE !== "multi-tenant"\) return;/);
+  // The owner is the SERVER's own uid/gid, read at runtime — not a hardcoded root.
+  assert.match(src, /const owner = `\$\{uid\}:\$\{gid\}`;/);
+  // A directory is judged on itself AND its immediate entries (the hand-repair shape).
+  assert.match(src, /readdirSync\(p\)/);
+  // No privileged spawn when everything is already ours — this runs on every boot.
+  assert.match(src, /if \(!fs\.existsSync\(p\) \|\| !foreign\(p\)\) continue;/);
 });

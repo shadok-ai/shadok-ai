@@ -288,6 +288,26 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     and never deletes a user file; on any doubt it leaves `~/.ssh` alone and falls
     back to `GIT_SSH_COMMAND`. The whole thing is swallowed on error — an SSH-setup
     failure must never take down the boot path.
+    **And living on the volume means the multi-tenant chown can reach it:**
+    `migChownTreeToCommons` gives the whole of `~/.shadok-ai` to the commons user
+    `main`, deliberately and unboundedly, so the commons agent keeps working on
+    what it worked on. That sweeps `~/.shadok-ai/ssh` too — and **OpenSSH checks
+    the OWNER of a key and of a config, not only their mode**, so every root-side
+    `ssh` then dies on `Bad owner or permissions on /root/.ssh/config`. Measured
+    on the dogfood cockpit: `git` over SSH and every `ssh` to the host were dead
+    while looking perfectly configured, and no merge noticed because `gh` speaks
+    HTTPS. Nothing LEAKED (the server's HOME stays 0700, so `main` cannot traverse
+    it) — ownership and readability are different questions, and this one is about
+    the server losing the use of its own identity. `healServerOwnedState`
+    (`server.ts`, from `SERVER_OWNED_STATE` in `migrate-groups.ts`) re-asserts the
+    server's ownership of its credential set — the SSH dir, the vault, the accounts
+    with their session-signing key, the guardrails — on **every** capable boot, not
+    only after a migration, so an instance already migrated by an older build heals
+    on its next update. It costs a few `lstat`s and no privileged spawn once
+    everything is the server's again. A directory is judged on itself **and** its
+    immediate entries, because a hand repair usually re-owns the directory and
+    leaves the key inside it foreign — the one state where `ssh` still refuses and
+    a top-level check alone would call it healed.
 
 <a id="inv-20"></a>
 

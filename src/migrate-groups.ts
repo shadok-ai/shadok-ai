@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { DeploymentMode } from "./capability.js";
 import type { Group } from "./groups.js";
 
@@ -200,6 +201,63 @@ export const SHADOK_INTERNAL_DIRS: readonly string[] = [
   "worktrees",
   "wt",
 ];
+
+/**
+ * Shadok's OWN credential and identity state under `~/.shadok-ai`, which the
+ * SERVER must keep OWNING across the commons chown. `migChownTreeToCommons` runs
+ * an unbounded `chown -R main:main ~/.shadok-ai` on purpose — the commons agent
+ * has to keep working on what it already worked on — but that sweeps the
+ * credential stores along with the working state, and "who may read this" is not
+ * the same question as "who owns this".
+ *
+ * Nothing LEAKS from it: the server's HOME stays 0700, so `main` cannot even
+ * traverse `/root` (the same wall that stranded the cron guards #419-#421 healed).
+ * What breaks is the SERVER's own use of its files, and the SSH identity is where
+ * that bites first: `~/.ssh` is a symlink to `~/.shadok-ai/ssh` (invariant 19,
+ * the only path that survives a container recreate), so once the key and its
+ * config belonged to `main`, every root-side `ssh` refused to run at all —
+ * `Bad owner or permissions on /root/.ssh/config`, because OpenSSH checks the
+ * OWNER of those files, not just their mode. Measured on the dogfood instance:
+ * `git` over SSH and every `ssh` to the host were dead while looking configured,
+ * and no merge noticed because `gh` speaks HTTPS.
+ *
+ * So this is re-asserted at EVERY capable boot rather than only right after the
+ * migration — an instance already migrated by an older build heals on its next
+ * update instead of needing a hand repair. Twin of `healCommonsStrandedScripts`.
+ *
+ * Every DIRECTORY here is also in `SHADOK_INTERNAL_DIRS`, the list that keeps the
+ * heal from COPYING it into a group HOME. The two halves answer the same question
+ * by different means — ownership in place, and relocation — so a test pins the
+ * pairing: otherwise they drift apart one entry at a time, and a credential store
+ * added to one list only would be half-protected in silence.
+ */
+export const SERVER_OWNED_STATE: readonly string[] = [
+  // Stores (directories).
+  "ssh", // the persistent SSH identity; `~/.ssh` points here (invariant 19)
+  "users", // account hashes + the per-instance session-signing key (invariant 33)
+  "peers", // the inbound peer tokens this instance minted for other cockpits
+  "keys",
+  "secrets",
+  "tokens",
+  // Files.
+  "config.json", // the GUI password and the per-launch-dir Telegram tokens
+  "secrets.json", // the vault
+  "secret-origin.json",
+  "secret-audit.jsonl",
+  "profiles.json", // the GUARDRAILS, which an agent must never write (invariant 26)
+  "profiles-declined.json",
+];
+
+/**
+ * Absolute paths of `SERVER_OWNED_STATE` under `home`. PURE: whether a path
+ * exists is the caller's business, so this needs no filesystem to test. A blank
+ * home yields nothing rather than paths rooted at `/.shadok-ai` — a chown there
+ * would be aimed at the wrong machine entirely.
+ */
+export function serverOwnedStatePaths(home: string): string[] {
+  if (!home) return [];
+  return SERVER_OWNED_STATE.map((rel) => path.join(home, ".shadok-ai", rel));
+}
 
 /**
  * The `~/.claude/<dir>` subtrees NEVER carried by the heal. `.credentials` is a
