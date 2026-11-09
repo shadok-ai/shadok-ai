@@ -1,6 +1,6 @@
 ---
 name: shadok-ai-agents
-description: Create and drive isolated Claude Code agents through the shadok-ai server (git worktrees, prompts, dialogs, diff). Use when the user wants to delegate a task to a shadok-ai agent, launch agents in parallel, or inspect/drive existing shadok-ai sessions.
+description: Create and drive isolated Claude Code agents through the shadok-ai server (git worktrees, prompts, dialogs, diff). Use when the user wants to delegate a task to a shadok-ai agent, launch agents in parallel, or inspect/drive existing shadok-ai sessions — and on your own initiative whenever a task contains a long, independent piece of work (its own branch, PR or repo) that can run alongside yours instead of after it.
 ---
 
 # Driving shadok-ai agents
