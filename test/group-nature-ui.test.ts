@@ -315,3 +315,7 @@ test("a NEW agent created on the Main view names the commons group (multi-tenant
   assert.match(html, /if \(groupsR\.status === "fulfilled"\) noteCommons\(groupsR\.value\);/);
   assert.match(html, /noteCommons\(srvGroups\);/);
 });
+
+test("the tweak agent is started in the commons group, where /tweak/prepare put its clone", () => {
+  assert.match(html, /const tweakStart = \{ cwd: data\.cwd, worktree: true, profile: "Shadok-Tweak" \};\s*if \(commonsOnServer\) tweakStart\.group = COMMONS_GROUP_ID;\s*launchTab\(t, tweakStart\);/);
+});
