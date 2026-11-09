@@ -1937,3 +1937,28 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     service for whoever reached the cockpit. It now requires a callback-shaped
     query, refuses the shadok port walk and well-known local services, and
     returns the status alone.
+
+<a id="inv-67"></a>
+
+63. **A GLOBAL object an agent may write is a cross-group write — so in
+    multi-tenant the agent's prompt write is closed.** Invariant 26 gave agents
+    `PUT /profiles/prompt` (their own `systemPrompt`, or ANY role's under the
+    lead profile) on the premise that it is not a sandbox: an agent could
+    rewrite `profiles.json` directly anyway. That premise holds in mono-tenant
+    only. In multi-tenant an agent is dropped to its group's OS user and cannot
+    touch the file, so the HTTP route became the one path across the wall — and
+    profiles are GLOBAL. A security review (2026-11-06) traced it end to end: a
+    member spawns an agent on `Shadok-Boss` (or on any role another group also
+    uses — `start` takes any profile name), the agent PUTs a new prompt for that
+    role with its `SHADOK_SESSION_KEY`, and every other group's agent on that
+    role, private groups included, loads the attacker's instructions through
+    `--append-system-prompt` at its next spawn, as its own OS user, with its own
+    group's secrets. That is exactly the write invariant 58 already reserves to
+    an admin person (`profileWriteRefusal`); this route was the side door.
+    `promptWriteRefusal` (`src/route-guards.ts`) now refuses it outright in
+    multi-tenant, before `promptEditVerdict` runs. Rejected alternative: allow
+    the edit when only the caller's group uses the role — the NEXT spawn in
+    another group can still pick it, so "own group" is not a property a global
+    role can have. Choosing a profile at `start` stays open: without the write,
+    a role only lends its guardrails, and its secrets are resolved against the
+    spawning agent's group. Mono-tenant is unchanged.

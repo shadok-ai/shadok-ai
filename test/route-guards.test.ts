@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import {
   profileWriteRefusal,
   profileDeleteRefusal,
+  promptWriteRefusal,
   mayReadMcpValues,
   redactMcpServers,
   setProfileRefusal,
@@ -30,6 +31,11 @@ test("PUT /profiles: browser-only always; admin-only in multi-tenant; any person
   assert.equal(profileWriteRefusal({ mode: MT, fromBrowser: true, role: "member" })?.status, 403);
   assert.equal(profileWriteRefusal({ mode: MT, fromBrowser: true, role: "admin" }), null);
   assert.equal(profileWriteRefusal({ mode: MT, fromBrowser: true, role: null })?.status, 403);
+});
+
+test("PUT /profiles/prompt: refused in multi-tenant (profiles are global), open in mono-tenant", () => {
+  assert.equal(promptWriteRefusal({ mode: MT })?.status, 403);
+  assert.equal(promptWriteRefusal({ mode: MONO }), null);
 });
 
 test("DELETE /profiles: an agent (no browser) is refused even as the bootstrap admin; a member too", () => {
@@ -181,6 +187,13 @@ test("wiring: profile routes carry their verdicts", () => {
   const del = route("delete", "/profiles");
   assert.ok(del.indexOf("profileDeleteRefusal(") >= 0 && del.indexOf("profileDeleteRefusal(") < del.indexOf("removeProfile("));
   assert.ok(route("get", "/profiles").includes("redactMcpServers("));
+  // The agent-side prompt write is mode-gated BEFORE it consults the per-profile
+  // rule or writes: the lead's "any profile" branch must never run in multi-tenant.
+  const prompt = route("put", "/profiles/prompt");
+  const gate = prompt.indexOf("promptWriteRefusal({ mode: DEPLOYMENT_MODE })");
+  assert.ok(gate > 0, "PUT /profiles/prompt must call promptWriteRefusal");
+  assert.ok(gate < prompt.indexOf("promptEditVerdict("));
+  assert.ok(gate < prompt.indexOf("upsertProfile("));
 });
 
 test("wiring: restart-all, DELETE /channel and PUT /channels are group-gated", () => {
