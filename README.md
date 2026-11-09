@@ -82,7 +82,9 @@ Enter to skip; you can add it later from the web UI).
   agent is a round avatar with a presence dot (green ready, red working, hollow
   offline). A group's icon opens the icon picker: choose from the grid, type any
   emoji, or **type a word** (`rocket`, `bug`, `money`…) to search for one; its
-  **＋** creates the new agent straight into that group. Dragging an agent onto a
+  **＋** creates the new agent straight into that group — while it is being
+  born its pane shows the pumping Shadok and the real startup steps ticking off
+  (access to Claude, workspace, Claude Code) rather than a black screen. Dragging an agent onto a
   group files it there, dragging groups reorders them, and double-clicking a name
   renames it — a group can also be renamed by clicking its name at the top of the
   agents column. A question the agent asks shows as an *Approval requested* card. The
@@ -423,8 +425,9 @@ Enter to skip; you can add it later from the web UI).
   a brand-new instance (which is signed out at boot, so there is nothing to
   spawn yet). The condition is "no channel", which makes it idempotent: it never
   appears twice.
-  While it is being started the central panel says so — *starting your first
-  agent…* — instead of the *no agent open* invitation, which would ask you to
+  While it is being started the central panel says so — *your first agent is
+  waking up…*, with the real steps ticking off (access to Claude, workspace,
+  Claude Code) — instead of the *no agent open* invitation, which would ask you to
   create a second one while the first is being born. It is a status, not a
   screen: nothing to click, nothing to dismiss, and it ends on its own whichever
   way the spawn goes (started, refused because the instance is signed out,
@@ -1237,6 +1240,8 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
+`/channels/glance` (GET — each visible row's last-message time and context %,
+read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
 register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so

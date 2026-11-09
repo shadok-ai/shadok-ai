@@ -615,6 +615,15 @@
      without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
+  /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
+     glance lands (paintGlance) — a quick cascade top to bottom instead of one
+     late burst. --gi is the row's rank, capped so the tail never drags. */
+  .tab.glance-in .tab-row2, .tab.glance-in .ctxbar {
+    animation: glance-in 0.28s ease-out both;
+    animation-delay: calc(var(--gi, 0) * 35ms);
+  }
+  @keyframes glance-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { .tab.glance-in .tab-row2, .tab.glance-in .ctxbar { animation: none; } }
   .tab .name {
     flex: 1;
     min-width: 0;
@@ -2001,6 +2010,23 @@
     font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text);
   }
   #emptyState .es-hint, #startingState .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  /* An agent being born (public/spawn-steps.js): the pumping Shadok, what is
+     happening, and the REAL steps the server announces — in a fresh tab's
+     transcript and in #startingState alike. It fills the empty transcript and
+     leaves on \`ready\` or on the refusal that replaces it. */
+  .spawn-loader {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 24px 12px; text-align: center; animation: fade-in .3s ease;
+  }
+  .spawn-loader .es-title { font-family: var(--sans); font-size: 15px; font-weight: 600; color: var(--text); }
+  .spawn-loader .es-hint { color: var(--text-dim); font-size: 13px; line-height: 1.5; max-width: 44ch; }
+  .spawn-steps { list-style: none; margin: 4px 0 0; padding: 0; text-align: left; font-size: 13px; color: var(--text-dim); }
+  .spawn-steps li { padding: 2px 0; transition: color .3s; }
+  .spawn-steps li::before { content: "○"; display: inline-block; width: 1.4em; }
+  .spawn-steps li.on { color: var(--text); }
+  .spawn-steps li.on::before { content: "◐"; color: var(--amber); animation: breathe 1.2s ease-in-out infinite; }
+  .spawn-steps li.done::before { content: "●"; color: var(--ok); }
+  @media (prefers-reduced-motion: reduce) { .spawn-loader, .spawn-steps li.on::before { animation: none; } }
   .keys {
     display: flex;
     gap: 6px;
@@ -3072,6 +3098,22 @@
   .cmp-attach { border-radius: 50%; }
   #composer button.primary { border-radius: 22px; }
 
+  /* A narrow composer: the field gets the whole first row, the buttons a row of
+     their own beneath it. On one row, four buttons + Send left the textarea
+     ~110px wide — the placeholder wrapped mid-word and was clipped. Keyed on the
+     COMPOSER's width, not the viewport's: on desktop the chat pane is narrowed by
+     the rail, the agents column and the engine room, so a wide window can still
+     hold a narrow composer. */
+  #composer { container: composer / inline-size; }
+  @container composer (max-width: 560px) {
+    #composer .cmp-mic-msg { order: -3; }
+    #composer .cmp-atts { order: -2; }
+    #composer textarea { order: -1; flex-basis: 100%; }
+    #composer .cmp-mic { margin-left: auto; }
+    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 38px; }
+    #composer .cmp-attach { width: 38px; }
+  }
+
   /* Floating menus: lifted, not outlined. */
   #moreMenu, #tabMenu, #verMenu, .slash-menu {
     border-color: transparent; border-radius: 14px;
@@ -4055,8 +4097,9 @@
          from the tab count. -->
     <div id="startingState">
       <span class="es-shadok pumping" aria-hidden="true"></span>
-      <span class="es-title">Starting your first agent…</span>
+      <span class="es-title">Your first agent is waking up…</span>
       <p class="es-hint">This cockpit has no agent yet, so one is being started for you in the launch directory. It takes a few seconds, then it takes the controls and says hello.</p>
+      <ul class="spawn-steps" id="startingSteps"></ul>
     </div>
 
     <div id="transcripts"></div>
@@ -4257,6 +4300,10 @@
   window.pumpLine = pumpLine;
   window.mascotSay = mascotSay;
   window.pickMaxim = pickMaxim;
+  import { spawnStepStates, spawnLoaderTitle, SPAWN_HINT } from "/spawn-steps.js?v=__ASSET_V__";
+  window.spawnStepStates = spawnStepStates;
+  window.spawnLoaderTitle = spawnLoaderTitle;
+  window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
   import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
@@ -4454,6 +4501,9 @@
     pumpLine: () => "Shadok is pumping",
     mascotSay: () => "When in doubt, pump.",
     pickMaxim: () => "",
+    // A birth loader before the module lands: a title, no steps — never a guess.
+    spawnStepStates: () => [],
+    spawnLoaderTitle: (n) => `${(typeof n === "string" && n.trim()) || "Your agent"} is waking up…`,
   };
   for (const [name, stub] of Object.entries(BRIDGE_STUBS)) {
     if (typeof window[name] !== "function") { stub.__stub = true; window[name] = stub; }
@@ -4616,6 +4666,57 @@
   function showChatSkeleton(t) {
     if (t.transcriptEl.childElementCount) return;
     t.transcriptEl.innerHTML = skeletonHTML("chat");
+  }
+  /** Fill a steps <ul> for the step the server last announced. Built with
+   *  textContent, never markup. Before the module bridge is up (invariant 10) it
+   *  leaves the list empty rather than guess. */
+  function renderSpawnSteps(ul, step) {
+    if (!ul || !window.spawnStepStates) return;
+    ul.replaceChildren(...window.spawnStepStates(step).map((s) => {
+      const li = document.createElement("li");
+      li.className = s.state;
+      li.textContent = s.label;
+      return li;
+    }));
+  }
+  /** A brand-new tab: the agent is being born — show it instead of a black pane.
+   *  Only on an EMPTY transcript; a reconnect keeps what is already there. The
+   *  title names the agent only when the person named it (an agent's name is
+   *  text it chose, so it goes in as textContent). */
+  function showSpawnLoader(t) {
+    if (t.transcriptEl.childElementCount) return;
+    const box = document.createElement("div");
+    box.className = "spawn-loader";
+    box.setAttribute("aria-busy", "true");
+    box.setAttribute("aria-live", "polite");
+    const sk = document.createElement("span");
+    sk.className = "es-shadok pumping";
+    sk.setAttribute("aria-hidden", "true");
+    if (window.shadokPumpSvg) sk.innerHTML = window.shadokPumpSvg(0);
+    const title = document.createElement("span");
+    title.className = "es-title";
+    const name = t.customName ? t.nameEl.textContent : "";
+    title.textContent = window.spawnLoaderTitle ? window.spawnLoaderTitle(name) : "Your agent is waking up…";
+    box.append(sk, title);
+    if (window.SPAWN_HINT) {
+      const hint = document.createElement("p");
+      hint.className = "es-hint";
+      hint.textContent = window.SPAWN_HINT;
+      box.append(hint);
+    }
+    const ul = document.createElement("ul");
+    ul.className = "spawn-steps";
+    renderSpawnSteps(ul, null);
+    box.append(ul);
+    t.transcriptEl.replaceChildren(box);
+  }
+  function setSpawnStep(t, step) {
+    renderSpawnSteps(t.transcriptEl.querySelector(":scope > .spawn-loader .spawn-steps"), step);
+  }
+  /** Every way out of a birth — ready, refusal, exit, gone — ends the loader. */
+  function clearSpawnLoader(t) {
+    const l = t.transcriptEl.querySelector(":scope > .spawn-loader");
+    if (l) l.remove();
   }
   function clearChatSkeleton(t) {
     const s = t.transcriptEl.querySelector(":scope > .skel-chat");
@@ -6663,6 +6764,8 @@
     let st;
     try { st = await (await fetch("/first-agent")).json(); } catch { return; }
     const now = !!(st && st.pending);
+    // The lead's spawn reports the same real steps as a tab (src/first-agent.ts).
+    if (now) renderSpawnSteps($("startingSteps"), st.step || null);
     if (now === firstAgentPending) return;
     firstAgentPending = now;
     // Only the no-agent panel changes; a cockpit with an active tab shows neither.
@@ -7112,6 +7215,8 @@
   const shadokSvg = (pose) => `<svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">${shadokInner("currentColor", pose)}</svg>`;
   if (esIdle) esIdle.innerHTML = shadokSvg({});
   if (esPump) esPump.innerHTML = shadokSvg(pumpPose(0));
+  // A fresh tab's loader (showSpawnLoader) draws the same Shadok; exposed for it.
+  window.shadokPumpSvg = (p) => shadokSvg(pumpPose(p));
   // The indicator's words rotate through the Shadok's pump lines (shadok-soul.js)
   // from the moment a turn shows it; that is text, not motion, so it runs under
   // reduced motion too — only the pumping frames are gated.
@@ -7121,8 +7226,10 @@
   setInterval(() => {
     const thinkingOn = !!thinkingEl && thinkingEl.classList.contains("visible");
     const startingOn = !!startingEl && startingEl.classList.contains("visible");
+    // The active tab's birth loader, if it has one — only the visible one pumps.
+    const tabPump = active ? active.transcriptEl.querySelector(":scope > .spawn-loader .es-shadok") : null;
     if (!thinkingOn) twSince = 0;
-    if (!thinkingOn && !startingOn) return;
+    if (!thinkingOn && !startingOn && !tabPump) return;
     if (thinkingOn && twText && window.pumpLine) {
       if (!twSince) twSince = Date.now();
       const line = window.pumpLine(Date.now() - twSince);
@@ -7133,6 +7240,7 @@
     const p = (Math.sin((twPhase / PUMP_FRAMES) * 2 * Math.PI - Math.PI / 2) + 1) / 2;
     if (thinkingOn) renderTw(p);
     if (startingOn && esPump) esPump.innerHTML = shadokSvg(pumpPose(p));
+    if (tabPump) tabPump.innerHTML = shadokSvg(pumpPose(p));
   }, 95);
 
   // Click the header mark and the Shadok says something: a maxim, or now and
@@ -7478,6 +7586,48 @@
     tab.lastAtEl.textContent = relTime(tab.lastMsgAt);
     tab.lastAtEl.style.opacity = String(ageOpacity(Date.now() - tab.lastMsgAt));
     tab.lastAtEl.title = new Date(tab.lastMsgAt).toLocaleString();
+  }
+  /**
+   * Fills the rows' "xxx ago" + context % from `GET /channels/glance` (the end
+   * of each transcript, no resume needed), cascading them in top to bottom.
+   * Never overwrites what a tab's own WebSocket already delivered: `history`
+   * and `context` are the authority, the glance only fills the wait.
+   */
+  async function paintGlance(list) {
+    let rows;
+    try {
+      const r = await fetch("/channels/glance");
+      if (!r.ok) return;
+      rows = await r.json();
+    } catch { return; }
+    if (!Array.isArray(rows)) return;
+    const byId = new Map(rows.map((g) => [g.sessionId, g]));
+    // Rank by on-screen order so the cascade runs down the column.
+    const ordered = list
+      .filter((t) => t.btnEl?.isConnected)
+      .sort((a, b) => (a.btnEl.compareDocumentPosition(b.btnEl) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
+    let rank = 0;
+    for (const t of ordered) {
+      const g = byId.get(t.sessionId);
+      if (!g) continue;
+      let painted = false;
+      if (!Number.isFinite(t.lastMsgAt) && Number.isFinite(g.lastAt)) {
+        t.lastMsgAt = g.lastAt;
+        renderLastAt(t);
+        painted = true;
+      }
+      if (t.contextPct == null && Number.isFinite(g.contextPct)) {
+        t.contextPct = g.contextPct;
+        renderContext(t);
+        painted = true;
+      }
+      // Only rows on screen take a rank: a hidden group's rows must not push
+      // the visible ones further down the cascade.
+      if (!painted || t.btnEl.offsetParent === null) continue;
+      t.btnEl.style.setProperty("--gi", Math.min(rank++, 12));
+      t.btnEl.classList.add("glance-in");
+      setTimeout(() => t.btnEl.classList.remove("glance-in"), 800);
+    }
   }
   // The relative time ages on its own: refresh every tab periodically.
   setInterval(() => { for (const t of tabs) renderLastAt(t); }, 30000);
@@ -8548,6 +8698,7 @@
       // starts fresh (no sessionId yet).
       const start = t.sessionId ? { ...t.launchMsg, resume: t.sessionId } : t.launchMsg;
       if (t.sessionId) showChatSkeleton(t); // a resume has history on its way
+      else showSpawnLoader(t); // a birth: say what is happening, step by step
       ws.send(JSON.stringify({ type: "start", origin: "web", ...start }));
     });
     ws.addEventListener("close", () => {
@@ -9480,7 +9631,12 @@
           : Math.max(0, el.scrollHeight - el.clientHeight - fromBottom);
         break;
       }
+      case "starting":
+        // A fresh spawn's progress (public/spawn-steps.js): tick the loader.
+        setSpawnStep(t, msg.step);
+        break;
       case "ready":
+        clearSpawnLoader(t); // born: the loader gives way to the conversation
         // The server just named the instance it is. If it's not the one this
         // page was loaded from, the port was taken over — stop writing, prompt a
         // reload. (The write guard on the server refuses the PUT anyway; this is
@@ -9757,6 +9913,7 @@
         if (term && termSession === t) term.write(b64ToBytes(msg.data));
         break;
       case "gone":
+        clearSpawnLoader(t);
         // Session's directory is gone (e.g. a removed worktree): stop trying
         // to restore it and forget it so it doesn't resurrect every reload.
         addTurn(t, "system", "", msg.message);
@@ -9767,6 +9924,7 @@
         setTabState(t, "dead", "directory gone");
         break;
       case "error":
+        clearSpawnLoader(t); // a refused birth shows the refusal, not a spinner
         // A refusal for lack of credentials is not this agent's problem: it is
         // the instance's. Surface the fix instead of a line in the transcript.
         if (msg.code === "logged-out" || msg.code === "space-not-connected") checkAuth({ code: msg.code, user: msg.user || null });
@@ -9786,6 +9944,7 @@
         }
         break;
       case "exited":
+        clearSpawnLoader(t);
         addTurn(t, "system", "", "The claude process exited (code " + msg.code + ").");
         drainQueueToBox(t);
         stopTurnTimer(t);
@@ -15022,6 +15181,10 @@
       for (let i = 0; i < pending.length; i++) {
         if (i !== targetIdx) launchTab(pending[i].t, pending[i].msg);
       }
+      // 3) Paint every row's "xxx ago" + context % NOW, from one cheap read of
+      //    the transcripts' tails — not from N resumes, each of which spawns
+      //    `claude` and replays a whole history before its row says anything.
+      paintGlance(pending.map((p) => p.t));
     } else {
       // Nothing to restore: the invitation — unless the server said it is
       // starting this instance's lead agent (read above, before this first
