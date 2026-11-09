@@ -135,6 +135,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/update-channel.ts` | Which release stream an instance follows: `alpha` (every merge) or `beta` (promotions only, the default). |
 | `Dockerfile` | The official image (README "Running in Docker"): Claude Code + shadok-ai + a bundled headless browser (Playwright Chromium at `/opt/playwright-browsers`, `--with-deps` so the OS libs are present), plus `git`/`gh`/`tmux`/toolchain. |
 | `src/open-browser.ts` | Opens the cockpit on launch. Done by the SERVER, not the supervisor, because only it knows the port the walk landed on (`START_PORT` is where the walk BEGINS). |
+| `src/instance-context.ts` | The instance context: one short text per launch dir every agent gets at spawn after its role (`instanceContextArgs`). Humans edit it (`PUT /instance-context`, browser + admin); the lead writes it ONCE while empty (`firstWriteVerdict`, `PUT /instance-context/first`, skill `shadok-instance-context`). Excluded from the staleness fingerprint. |
 | `src/preprompt.ts` | Pure `prepromptParts` — what shadok adds to an agent's context, as labelled sections with their source. |
 | `src/auto-reload.ts` | Pure `autoReloadVerdict` — applies a pending "reload to apply" by itself, only when the respawn would cut nothing (idle, no dialog, empty input box, no background task/queued notification, quiet 2 min, 30-min backoff). |
 | `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). |
