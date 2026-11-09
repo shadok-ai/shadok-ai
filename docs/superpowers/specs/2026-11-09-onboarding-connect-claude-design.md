@@ -33,9 +33,10 @@ and after that we land on our feet.*
 2. **Connect Claude — choose** (step 1 of 2). One paragraph saying why: every
    agent is a real Claude Code session running on *your* Claude plan, nothing is
    billed per call, Shadok needs your permission once. Then two choice tiles:
-   - **1 month** (recommended): the agents get your claude.ai connectors (Gmail,
-     Drive, Slack…); Shadok reminds you a few days before it expires.
-   - **1 year**: set and forget; model access only, no connectors.
+   - **1 year** (recommended, first and preselected — operator's call after
+     trying it): set and forget; model access only, no connectors.
+   - **1 month**: the agents get your claude.ai connectors (Gmail, Drive,
+     Slack…); Shadok reminds you a few days before it expires.
    A quiet secondary link: **"I already have a token"** → a paste field for a
    `claude setup-token` token (equivalent to choosing 1 year).
    A third path stays reachable but secondary: **"Another model"** (today's

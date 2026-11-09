@@ -3533,15 +3533,15 @@
       <h2 class="cx-title">Connect your Claude subscription</h2>
       <p class="cx-lead">Every agent here is a real Claude Code session, and it runs on <b>your</b> Claude plan — nothing is billed per call. Shadok needs your permission once to use it. Pick how long that permission lasts:</p>
       <div class="cx-tiles" role="radiogroup">
-        <button type="button" class="cx-tile active" data-dur="login" role="radio" aria-checked="true">
-          <span class="cx-tile-head"><b>1 month</b><span class="cx-rec">recommended</span></span>
-          <span class="cx-li">Your agents get your claude.ai connectors (Gmail, Drive, Slack…)</span>
-          <span class="cx-li">Shadok reminds you a few days before it expires</span>
-        </button>
-        <button type="button" class="cx-tile" data-dur="token" role="radio" aria-checked="false">
-          <span class="cx-tile-head"><b>1 year</b></span>
+        <button type="button" class="cx-tile active" data-dur="token" role="radio" aria-checked="true">
+          <span class="cx-tile-head"><b>1 year</b><span class="cx-rec">recommended</span></span>
           <span class="cx-li">Set it and forget it</span>
           <span class="cx-li">Model access only — no connectors</span>
+        </button>
+        <button type="button" class="cx-tile" data-dur="login" role="radio" aria-checked="false">
+          <span class="cx-tile-head"><b>1 month</b></span>
+          <span class="cx-li">Your agents get your claude.ai connectors (Gmail, Drive, Slack…)</span>
+          <span class="cx-li">Shadok reminds you a few days before it expires</span>
         </button>
       </div>
       <div class="cx-foot">
@@ -13552,7 +13552,7 @@
   // `seq` identifies the current flow: closing the card or starting another
   // bumps it, so a start whose POST resolves afterwards knows it is stale and
   // cancels its own server child instead of leaving it waiting on stdin.
-  let cx = { plan: null, flow: null, user: null, dur: "login", fromChoose: false, url: "", started: false, seq: 0 };
+  let cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: 0 };
   let authDismissable = false;
 
   const cxIsAdmin = () => !me || me.role === "admin";
@@ -13587,12 +13587,12 @@
     // restarting it would kill the child whose code the admin is typing.
     if (!$("authOverlay").hidden && window.sameConnectTarget(cx.plan, plan)) return;
     cxCancel();
-    cx = { plan, flow: plan.flow, user: plan.user, dur: "login", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+    cx = { plan, flow: plan.flow, user: plan.user, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
     authDismissable = plan.dismissable;
     $("authClose").hidden = !plan.dismissable;
     $("authMsg").hidden = true;
     $("authOverlay").hidden = false;
-    if (plan.step === "choose") { cxPickDur("login"); cxShow("choose"); }
+    if (plan.step === "choose") { cxPickDur("token"); cxShow("choose"); }
     else if (plan.step === "ask-admin") cxShow("ask-admin");
     else cxStartAuthorise(plan.flow, plan.user, false);
   }
@@ -13603,7 +13603,7 @@
     if (mode === "other") {
       // The backend form only: no sign-in child is started behind it.
       cxCancel();
-      cx = { plan: null, flow: null, user: null, dur: "login", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+      cx = { plan: null, flow: null, user: null, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
       authDismissable = true;
       $("authClose").hidden = false;
       $("authMsg").hidden = true;

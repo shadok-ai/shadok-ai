@@ -73,3 +73,12 @@ test("sameConnectTarget: a second refusal for the card already open changes noth
   assert.equal(sameConnectTarget(a, { ...a, flow: "token" }), false);
   assert.equal(sameConnectTarget(null, a), false);
 });
+
+test("1 year is the recommended tile, first and preselected", async () => {
+  const { readFileSync } = await import("node:fs");
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const tiles = [...html.matchAll(/class="cx-tile[^"]*" data-dur="(\w+)"/g)].map((m) => m[1]);
+  assert.deepEqual(tiles, ["token", "login"]);
+  assert.match(html, /class="cx-tile active" data-dur="token"/);
+  assert.match(html, /if \(plan\.step === "choose"\) \{ cxPickDur\("token"\)/);
+});
