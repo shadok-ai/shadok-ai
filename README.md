@@ -1232,6 +1232,8 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
+`/channels/glance` (GET — each visible row's last-message time and context %,
+read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
 register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so

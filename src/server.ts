@@ -433,6 +433,7 @@ import { bindRefusal, originAllowed, parseOrigins, resolveHost,
 } from "./net.js";
 import { AttemptLimiter, LOGIN_LIMITS, loginKeys } from "./login-limit.js";
 import { pctFromUsage, windowForModel } from "./context.js";
+import { glanceFile } from "./glance.js";
 import {
   BACKEND_PRESETS,
   backendEnv,
@@ -2885,6 +2886,31 @@ app.get("/channels", (req, res) => {
       return mine.length ? { ...ch, crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : ch;
     }),
   );
+});
+
+// What each visible row shows before its agent is resumed: the last message's
+// time and the context fill, from the transcript's TAIL (src/glance.ts). The
+// boot paints every row from this one call instead of waiting for N resumes
+// (each a spawn + full history replay); the WS `history`/`context` that follow
+// overwrite it with the authoritative values. Same ACL as GET /channels.
+app.get("/channels/glance", async (req, res) => {
+  const box = restrictedBoxOf(req);
+  const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))).filter(
+    (ch) => !box || ownedByPeer(ch, box),
+  );
+  const rows = await Promise.all(
+    visible.map(async (ch) => {
+      const live = sessions.get(ch.sessionId);
+      const home = live ? live.transcriptHome : channelStateHome(ch);
+      const g = await glanceFile(sessionFilePath(ch.cwd, ch.sessionId, home));
+      const pct =
+        live && !live.pilot.hasExited && live.contextPct !== null
+          ? live.contextPct
+          : pctFromUsage(g.usage ?? undefined, assumedContextWindow(ch.profile, ch.model, ch.group ?? null));
+      return { sessionId: ch.sessionId, lastAt: g.lastAt, contextPct: pct };
+    }),
+  );
+  res.json(rows);
 });
 
 // ── Crons (scheduled channel prompts) ───────────────────────────────────────
@@ -7702,6 +7728,16 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
   return p;
 }
 
+/** The context window an agent is metered against. A custom backend's window is
+ *  whatever its server was started with, which no model name can tell us:
+ *  SHADOK_CONTEXT_WINDOW says it, and without it the usual assumption stands
+ *  (and `effectiveWindow` still promotes on proof). Shared by the spawn and
+ *  `GET /channels/glance`, so a row's pre-resume % matches the live one. */
+function assumedContextWindow(profile?: string | null, model?: string | null, group?: string | null): number {
+  const backend = sessionBackend(profile, group);
+  return (backend.kind === "custom" ? backend.contextWindow : null) ?? windowForModel(sessionModelSetting(profile, model));
+}
+
 async function createSession(
   id: string,
   cwd: string,
@@ -7727,12 +7763,7 @@ async function createSession(
   // Resumed sessions start with what the transcript already consumed.
   const seededUsage = scanUsage(sessionFilePath(cwd, id, transcriptHome));
   const backend = sessionBackend(profile, group);
-  // A custom backend's window is whatever its server was started with, which
-  // no model name can tell us: SHADOK_CONTEXT_WINDOW says it, and without it
-  // the usual assumption stands (and `effectiveWindow` still promotes on proof).
-  const contextWindow =
-    (backend.kind === "custom" ? backend.contextWindow : null) ??
-    windowForModel(sessionModelSetting(profile, model));
+  const contextWindow = assumedContextWindow(profile, model, group);
   const s: Live = {
     id,
     cwd,

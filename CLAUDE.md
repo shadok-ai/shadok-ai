@@ -118,6 +118,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/bang.ts` + `public/bang.js` | Running an agent's `!` command from the chat, on the HUMAN's behalf. |
 | `src/detect.ts` | `screenShowsWork(screen)` — the fragile "is Claude working" heuristic. |
 | `src/backend.ts` | Which model backend an agent talks to: the subscription, or a CUSTOM one (a self-hosted open model, a gateway) reached through Claude Code's own `ANTHROPIC_BASE_URL`. |
+| `src/glance.ts` | A row's "xxx ago" + context % from the transcript's TAIL — `GET /channels/glance`, so the list fills at boot before the agents resume. |
 | `src/context.ts` | How full the model's context window is, from the TRANSCRIPT's token usage — `contextTokens` (input + cache creation + cache read; output excluded), `windowForModel` (the `[1m]` SETTING, never the model name), `effectiveWindow` (an over-run PROVES the assumed window too small → promote), `pctFromUsage`. |
 | `src/worktree.ts` | Git worktree isolation: create, diff, list past sessions, recreate a reclaimed checkout. |
 | `src/selfrepo.ts` | The working copy of shadok-ai's OWN source (`<stateHome>/.shadok-ai/self/shadok-ai`) behind the "Tweak Shadok-AI" CTA: anonymous clone (no auth needed to start), `main` hard-reset to the remote on each use, never the launch directory. |
@@ -258,7 +259,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 **HTTP** (everything but `/login` sits behind the optional password gate):
 
 - usage/sessions: `/usage`, `/live`, `/sessions`, `/recover`, `/diff`
-- per-dir cockpit: `/channels`, `/groups`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
+- per-dir cockpit: `/channels` (+ `/glance`), `/groups`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
 - agents & roles: `/tweak/prepare`, `/profiles` (+ `/prompt`, `/secret`, `/restore`), `/secrets`, `/reload`, `/restart-all`, `/models`, `/backend`
 - accounts & 2FA: `/users`, `/users/role`, `/peers`, `/invite/:token`, `/me`, `/login*`, `/2fa*`
 - media & voice: `/paste`, `/media/:name`, `/files`, `/download`, `/transcribe`
