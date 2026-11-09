@@ -39,6 +39,10 @@ test("touch fields are 16px, so Safari never zooms on focus", () => {
   // (`#composer textarea`) outranks a bare `textarea` selector — so it has to be
   // named explicitly or the fix silently does nothing where it matters most.
   assert.match(block[1], /#composer textarea/);
+  // The Connect Claude card's code/token fields carry no `type`, so the
+  // attribute selectors above miss them — named explicitly, on any touch device
+  // (a tablet is coarse but wider than the 640px phone query).
+  assert.match(block[1], /\.cx-row input/);
 });
 
 test("a compact field size is gated on a FINE pointer, never merely overridden", () => {
