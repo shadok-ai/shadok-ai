@@ -555,6 +555,12 @@ shell.
 
 ### Running in Docker
 
+> Putting one instance online for someone else, on its own machine, behind a
+> domain? Follow
+> [`docs/deploying-an-instance.md`](docs/deploying-an-instance.md) instead — the
+> same thing in order, with a `docker-compose.yml` to copy, and it links back
+> here for the explanations.
+
 The repo ships an official `Dockerfile`:
 
 ```bash
@@ -1116,6 +1122,7 @@ wrong**, not in a catch-up pass afterwards:
 | `CLAUDE.md` | the file→responsibility map, the build/run recipe, the invariants | you add a module, or you lose an afternoon to something the next person would lose it to as well |
 | `docs/architecture.md` | how a subsystem actually works and why it was built that way | you add or reshape a subsystem, or you make a design trade-off worth remembering |
 | `docs/superpowers/specs/` | one design per feature, dated | before building anything non-trivial |
+| `docs/deploying-an-instance.md` | the order of operations to put ONE instance online on its own machine | a deployment step changes: the image, the volume list, the proxy requirements, the upgrade path |
 
 This is not bookkeeping. A doc that lags is worse than no doc: it is confidently
 wrong, and it is read as current. `docs/architecture.md` once went **48 commits**
