@@ -147,7 +147,7 @@ test("invite: an already redeemed link says so", () => {
   assert.match((v as { error: string }).error, /already/i);
 });
 
-test("newInvite: a random token and a one-week life", () => {
+test("newInvite: a random token and a 48-hour life", () => {
   const a = newInvite(0), b = newInvite(0);
   assert.notEqual(a.token, b.token);
   assert.ok(a.token.length >= 32);
@@ -166,6 +166,16 @@ test("author: the Telegram bridge keeps naming its own sender", () => {
   // It is a trusted bridge and it knows the sender; the server does not.
   assert.equal(promptAuthor("telegram", undefined, "Alexandre"), "Alexandre");
   assert.equal(promptAuthor("telegram", "admin", "Alexandre"), "Alexandre");
+  // An AGENT follows the WEB rule: the name is the one the server resolved from
+  // the session key that signed the socket, and a `from` in the frame is
+  // discarded. pilotctl writes its own frames — it is precisely the caller whose
+  // claim cannot be taken, and the label exists to tell it from the human.
+  assert.equal(promptAuthor("agent", "admin", undefined, "Shadok-Boss"), "Shadok-Boss");
+  assert.equal(promptAuthor("agent", "admin", "Alexandre", "Shadok-Boss"), "Shadok-Boss");
+  // No resolvable agent (an unknown or expired key) names NOBODY rather than
+  // falling back to the account — which is the bootstrap admin for every agent,
+  // i.e. the human. The display then says "agent" from the origin alone.
+  assert.equal(promptAuthor("agent", "admin", "Alexandre", undefined), undefined);
 });
 
 test("author: a web client with no session names nobody", () => {
@@ -173,8 +183,10 @@ test("author: a web client with no session names nobody", () => {
   assert.equal(promptAuthor("web", undefined, "root"), undefined);
 });
 
-test("author: other origins keep whatever they supplied", () => {
-  assert.equal(promptAuthor("cli", "admin", "script"), "script");
+test("author: a claimed name is honoured ONLY from the Telegram bridge", () => {
+  // `origin` is now derived from the connection, but a bare local client is
+  // still a client writing its own frames: its `from` names nobody.
+  assert.equal(promptAuthor("cli", "admin", "script"), undefined);
   assert.equal(promptAuthor("cron", "admin", undefined), undefined);
 });
 
@@ -217,4 +229,22 @@ test("a session key is refused when forged, truncated or from another instance",
   assert.equal(readSessionKey("", SECRET), null);
   assert.equal(readSessionKey("no-dot", SECRET), null);
   assert.equal(readSessionKey(".", SECRET), null);
+});
+
+import { sessionAlive, readSessionFull } from "../src/accounts.js";
+
+test("invite: 48 hours, not a week", () => {
+  assert.equal(INVITE_TTL_MS, 48 * 3600 * 1000);
+});
+
+test("session: the cookie says when it was issued", () => {
+  const t = signSession("ada", 1_000, SECRET, true);
+  assert.deepEqual(readSessionFull(t, SECRET, 2_000, WEEK), { user: "ada", mfa: true, issuedAt: 1_000 });
+});
+
+test("sessionAlive: a session opened before a reset is dead, one after it is fine", () => {
+  assert.equal(sessionAlive(1_000, {}), true);
+  assert.equal(sessionAlive(1_000, { sessionsAfter: 2_000 }), false);
+  assert.equal(sessionAlive(2_000, { sessionsAfter: 2_000 }), true); // re-issued in the same millisecond
+  assert.equal(sessionAlive(3_000, { sessionsAfter: 2_000 }), true);
 });

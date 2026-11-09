@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, startOffset } from "../src/tail.js";
+import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, stripTrailingNothingToShow, startOffset, sessionFilePath, newestTranscriptById } from "../src/tail.js";
 
 test("parseLine: assistant text block → one text event", () => {
   const ev = parseLine(
@@ -125,6 +125,41 @@ test("parseLine: a dropped NOTHING TO SHOW also flags the text that follows it",
   ]);
 });
 
+test("parseLine: a trailing sign-off sentinel is stripped, the content above it kept", () => {
+  // The real report that surfaced this: a monitoring agent answered, then tacked
+  // the sentinel on its own last line. isNothingToShow is whole-block, so it used
+  // to leak into the chat.
+  const ev = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "The change is fine, nothing to carry.\n\nNOTHING TO SHOW" }] },
+    }),
+  );
+  assert.deepEqual(ev, [{ kind: "text", text: "The change is fine, nothing to carry." }]);
+});
+
+test("parseLine: a sentinel in the MIDDLE of a message is kept", () => {
+  // Only a trailing sign-off is stripped — a mid-message occurrence is text the
+  // agent chose to show (invariant 2).
+  const ev = parseLine(
+    JSON.stringify({
+      type: "assistant",
+      message: { content: [{ type: "text", text: "I replied\n\nNOTHING TO SHOW\n\nbecause the cron was quiet." }] },
+    }),
+  );
+  assert.deepEqual(ev, [{ kind: "text", text: "I replied\n\nNOTHING TO SHOW\n\nbecause the cron was quiet." }]);
+});
+
+test("stripTrailingNothingToShow: trailing sign-off removed, prose and mid-message intact", () => {
+  assert.equal(stripTrailingNothingToShow("Done.\n\nNOTHING TO SHOW"), "Done.");
+  assert.equal(stripTrailingNothingToShow("Done.\nnothing to show."), "Done.");
+  assert.equal(stripTrailingNothingToShow("Done.\n**NOTHING TO SHOW**"), "Done.");
+  // Mid-message and inline prose stay untouched.
+  assert.equal(stripTrailingNothingToShow("A\n\nNOTHING TO SHOW\n\nB"), "A\n\nNOTHING TO SHOW\n\nB");
+  assert.equal(stripTrailingNothingToShow("There was nothing to show today."), "There was nothing to show today.");
+  assert.equal(stripTrailingNothingToShow("Just text, no marker."), "Just text, no marker.");
+});
+
 test("isNothingToShow: the sentinel alone, whatever its casing, emphasis or final dot", () => {
   assert.equal(isNothingToShow("NOTHING TO SHOW"), true);
   assert.equal(isNothingToShow("  nothing to show.\n"), true);
@@ -136,7 +171,7 @@ test("isNothingToShow: the phrase inside a real sentence is NOT the sentinel", (
   // An agent that EXPLAINS the convention must not get muzzled (see invariant
   // 2: an over-broad heuristic has already cost dearly here).
   assert.equal(isNothingToShow("I replied NOTHING TO SHOW because the cron was quiet."), false);
-  assert.equal(isNothingToShow("NOTHING TO SHOW yet — still running."), false);
+  assert.equal(isNothingToShow("Nothing to show yet — still running."), false);
   assert.equal(isNothingToShow("nothing"), false);
   assert.equal(isNothingToShow(""), false);
 });
@@ -264,6 +299,26 @@ test("scanUsage: last record per message id wins (streaming writes growing count
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test("sessionFilePath/newestTranscriptById read the given HOME, not only the server's", () => {
+  // A privilege-dropped group agent writes its transcript under ITS OWN home
+  // (/home/sk-<id>), so the content tail must search that home. Passing `home`
+  // must find the agent's .jsonl; the default (server home) must NOT see it.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
+  const cwd = "/some/worktree/path";
+  const id = "sess-abc123";
+  const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
+  const dir = path.join(home, ".claude", "projects", encoded);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, id + ".jsonl");
+  fs.writeFileSync(file, JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "hi" }] } }));
+
+  assert.equal(newestTranscriptById(id, home), file);
+  assert.equal(sessionFilePath(cwd, id, home), file);
+  // The server's own home has no such transcript → it must not resolve to the file.
+  assert.notEqual(newestTranscriptById(id), file);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 test("a silence placeholder is SIGNALLED, not swallowed", () => {
   // Dropping it without a trace is what made the parent guard unreachable: the
   // notification reads the last STREAMED block, and this one never became one —
@@ -291,4 +346,15 @@ test("an ordinary block still streams, and signals nothing", () => {
     out.filter((e) => e.kind === "text").map((e: any) => e.text),
     ["Voici le rapport."],
   );
+});
+
+test("isNothingToShow: the upper-case sentinel used as a PREFACE drops the whole block", () => {
+  // Observed: an agent decided to stay silent, then justified it in the same block.
+  assert.equal(isNothingToShow("NOTHING TO SHOW for the home page: it is panel ergonomics.\n\nI also re-read the docs."), true);
+  assert.equal(isNothingToShow("**NOTHING TO SHOW** — the docs still hold."), true);
+  assert.equal(isNothingToShow("NOTHING TO SHOW: quiet run."), true);
+  // Not a preface: lower/mixed case prose, the phrase later in the text, a longer word.
+  assert.equal(isNothingToShow("Nothing to show for now, the build is running."), false);
+  assert.equal(isNothingToShow("The cron said NOTHING TO SHOW twice."), false);
+  assert.equal(isNothingToShow("NOTHING TO SHOWCASE here"), false);
 });

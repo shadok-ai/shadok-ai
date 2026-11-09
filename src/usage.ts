@@ -106,19 +106,21 @@ const TTL_MS = 60_000;
  * Fetches the current 5-hour and 7-day usage. Cached for 60s and
  * de-duplicated across concurrent callers, so polling is cheap.
  * Returns null if no token is available or the request fails.
+ * `readToken` exists for tests only; production callers pass nothing.
  */
-export async function getUsage(): Promise<Usage | null> {
+export async function getUsage(readToken: () => string | null = readOAuthToken): Promise<Usage | null> {
   if (cache && Date.now() - cache.fetchedAt < TTL_MS) return cache;
   if (inflight) return inflight;
-  inflight = (async () => {
+  // The token is read BEFORE the promise exists, so a token-less call creates
+  // no in-flight entry at all. Reading it inside the async IIFE (the previous
+  // "fix") re-created the very latch it meant to remove: with no `await` on
+  // that path the IIFE settled synchronously, its `finally { inflight = null }`
+  // ran first, and only THEN did `inflight = (...)()` store the resolved-null
+  // promise — pinning every later call to null for the life of the process.
+  const token = readToken();
+  if (!token) return null;
+  const run = (async (): Promise<Usage | null> => {
     try {
-      // Inside the try so `finally` ALWAYS clears `inflight`. A bare
-      // `return null` before the try skipped the reset, so a single
-      // token-less read (e.g. at boot, before credentials are readable)
-      // left `inflight` stuck on a resolved promise — every later call
-      // returned it and usage stayed null until the process restarted.
-      const token = readOAuthToken();
-      if (!token) return null;
       const res = await fetch(USAGE_URL, {
         headers: {
           Authorization: `Bearer ${token}`,
@@ -141,9 +143,15 @@ export async function getUsage(): Promise<Usage | null> {
       return usage;
     } catch {
       return cache;
-    } finally {
-      inflight = null;
     }
   })();
-  return inflight;
+  inflight = run;
+  // Cleared from OUTSIDE, after the assignment: `.finally` always runs on a
+  // later microtask, so even a body that settles synchronously can no longer
+  // clear the guard before it is set. The identity check keeps it from
+  // clearing a newer in-flight request.
+  void run.finally(() => {
+    if (inflight === run) inflight = null;
+  });
+  return run;
 }

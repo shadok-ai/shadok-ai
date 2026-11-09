@@ -1,11 +1,10 @@
+import { parseBashMessage, userMessageText } from "./bang.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { newestTranscriptById, isNothingToShow, parseTimestamp } from "./tail.js";
-import { isCronPrompt } from "./crons.js";
-import { isAgentPrompt } from "./kinship.js";
-import { stripPromptMeta, parsePromptMeta } from "./promptmeta.js";
-import { stripLedgerBlock } from "./ledger.js";
+import { newestTranscriptById, isNothingToShow, stripTrailingNothingToShow, parseTimestamp } from "./tail.js";
+import { toolFiles, fileCard } from "./download.js";
+import { userPromptText, classifyUserLine } from "./prompt-kind.js";
 
 /**
  * Extracts the response: everything after the "❯ <prompt>" echo in the
@@ -67,6 +66,17 @@ export interface TuiDialog {
    * pressing the digit selects and validates directly.
    */
   multi: boolean;
+  /**
+   * The dialog box's own text above the question — a permission prompt's title,
+   * what it will do and to what ("Read file" / "This will read … (outside working
+   * directory) via a symlink" / "Read(…)"). It is what a person judges the
+   * request by, and the TUI shows it; without it a web or Telegram card asked
+   * "Do you want to proceed?" about nothing. One string, lines joined by "\n",
+   * hard-wrapped lines rejoined. Absent when the box has none (AskUserQuestion)
+   * or when its top border cannot be found. Deliberately NOT part of
+   * `dialogKey`: it is description, not identity.
+   */
+  body?: string;
 }
 
 /**
@@ -91,6 +101,23 @@ export function dialogKey(d: TuiDialog): string {
 export function isResumeSummaryDialog(d: TuiDialog): boolean {
   return d.options.some((o) => /full session/i.test(o.label)) && /resum|summary/i.test(d.question);
 }
+
+/**
+ * A line that is décor rather than question text: it STARTS (once trimmed) with
+ * a frame, rule or marker character.
+ *
+ * The dashes are the whole family, not one character: Claude Code 2.1.286
+ * began framing a permission prompt's command block with a rule of `╌`
+ * (U+254C) where earlier releases used the solid characters, and since that
+ * rule sits directly above "Do you want to proceed?" it was read as content —
+ * the question reached the web card and Telegram behind a full row of dashes.
+ * Which dash the TUI draws with is a styling choice it can change again, so
+ * listing only the one we saw would be caught out by the next release.
+ *
+ * Anchored on purpose: a sentence that merely CONTAINS a dash is prose, and
+ * must stay in the question.
+ */
+const FRAME_LINE = /^[─═╌╍┄┅┈┉╭╮╰╯│□⏺←→]/u;
 
 /**
  * Detects an interactive TUI dialog (multiple-choice question, permission
@@ -167,47 +194,112 @@ export function detectDialog(screen: string): TuiDialog | null {
   if (!chosen || chosen.options.length < 2) return null;
   const { options, multi, firstLine: firstOptionLine } = chosen;
 
+  // The dialog box starts below a full-width "────" rule. Bounding the walk
+  // there keeps a transcript line ABOVE the box ("● …") from being read as the
+  // question when the box holds no plain question line — the model-safeguards
+  // form, whose whole text sits behind a "│" gutter. No rule found → the old
+  // unbounded walk, and no body (we cannot tell the box from the transcript).
+  let boxTop = -1;
+  for (let i = firstOptionLine - 1; i >= 0; i--) {
+    if (/^─{10,}$/.test(lines[i].trim())) {
+      boxTop = i;
+      break;
+    }
+  }
+  const width = boxTop >= 0 ? [...lines[boxTop].trim()].length : 0;
+
   // The question: the text lines right above the first option (skipping
   // frames, separators and the "← ☐ … ✔ Submit →" tab bar).
   const questionLines: string[] = [];
-  for (let i = firstOptionLine - 1; i >= 0; i--) {
+  let questionStart = firstOptionLine;
+  for (let i = firstOptionLine - 1; i > boxTop; i--) {
     const t = lines[i].trim();
-    if (t === "" || /^[─═╭╮╰╯│□⏺←→]/.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
+    if (t === "" || FRAME_LINE.test(t) || /[☐☒]|✔\s*Submit/.test(t)) {
       if (questionLines.length) break;
       continue;
     }
     questionLines.unshift(t);
+    questionStart = i;
   }
-  return { question: questionLines.join(" "), options, multi };
+  // Nothing but a "│"-gutter block above the options: that block IS the
+  // question (the safeguards form ends it with "Switch to Opus 4.8 …?").
+  if (!questionLines.length && boxTop >= 0) {
+    for (let i = firstOptionLine - 1; i > boxTop; i--) {
+      const t = lines[i].trim();
+      if (t.startsWith("│")) {
+        questionLines.unshift(t.replace(/^│\s?/, "").trim());
+        questionStart = i;
+      } else if (questionLines.length) break;
+    }
+  }
+  const body = boxTop >= 0 ? dialogBody(lines.slice(boxTop + 1, questionStart), width) : "";
+  return { question: questionLines.join(" "), options, multi, ...(body ? { body } : {}) };
+}
+
+/** Box furniture that is never body text: `FRAME_LINE` minus the "│" gutter
+ *  (which, inside the box, PREFIXES content), the tab bar, and an
+ *  AskUserQuestion header chip ("☐ Layout"). */
+function isBodyChrome(t: string): boolean {
+  return (!t.startsWith("│") && FRAME_LINE.test(t)) || /[☐☒]|✔\s*Submit/.test(t);
 }
 
 /**
- * The text of a transcript line IF it is a real human prompt, else null.
- *
- * A `type: "user"` line is not necessarily someone speaking: Claude Code also
- * writes tool results, system reminders (`<…>`) and interruptions there. The
- * rule was copied verbatim into `loadHistory` and `sessionPreview`; it lives
- * here so a third caller cannot re-derive it slightly wrong (one of them counts
- * turns, the other dated turns).
+ * The box's text above the question, as the TUI meant it rather than as it was
+ * wrapped. Each line loses its padding and any "│" gutter; chrome and blanks
+ * only separate lines. A wrapped line is rejoined to the next one, the HOW
+ * read off the geometry, the way the TUI's wrapper decided it:
+ *  - the token across the break could not fit on ANY row (a long path) → it was
+ *    cut mid-token, glue with nothing — a path with a space in it is a lie;
+ *  - the next line's first word would not have fit after this one → word wrap,
+ *    join with a space;
+ *  - otherwise the TUI broke the line itself → keep the "\n".
+ * The worst a misjudged wrap does is a space or a line break in the wrong place.
  */
-export function userPromptText(e: any): string | null {
-  if (!e || e.isMeta || e.type !== "user" || !e.message) return null;
-  const c = e.message.content;
-  let text = "";
-  if (typeof c === "string") text = c;
-  else if (Array.isArray(c))
-    text = c
-      .filter((b: any) => b.type === "text")
-      .map((b: any) => b.text)
-      .join("\n");
-  text = text.trim();
-  if (!text || text.startsWith("<") || text.startsWith("[Request interrupted")) return null;
-  return text;
+function dialogBody(region: string[], width: number): string {
+  const out: string[] = [];
+  // The previous content line (raw, for its end column) when it may continue.
+  let prev: string | null = null;
+  for (const raw of region) {
+    const t = raw.trim();
+    if (t === "" || isBodyChrome(t)) {
+      prev = null;
+      continue;
+    }
+    const text = t.replace(/^│\s?/, "").trim();
+    if (!text) continue;
+    if (prev !== null && out.length) {
+      const end = [...prev].length;
+      const lastTok = prev.trim().split(/\s+/).pop() ?? "";
+      const firstTok = text.split(/\s+/)[0];
+      if ([...lastTok].length + [...firstTok].length > width - 4) {
+        out[out.length - 1] += text;
+      } else if (end + 1 + [...firstTok].length > width) {
+        out[out.length - 1] += " " + text;
+      } else {
+        out.push(text);
+      }
+    } else {
+      out.push(text);
+    }
+    prev = raw;
+  }
+  return out.join("\n");
 }
 
+export { userPromptText } from "./prompt-kind.js";
+
 export interface HistoryTurn {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "file" | "bash" | "social-draft";
+  /** A `social-draft` turn: the LinkedIn draft card (`draftView`, never the token). */
+  draft?: unknown;
+  /** A `bash` turn: a shell-mode command and, once it ran, its output. */
+  command?: string;
+  output?: string;
+  isError?: boolean;
   text: string;
+  /** A `file` turn: the files a SendUserFile delivered, so a reload still shows
+   *  the download / inline-image card (loadHistory drops other tool blocks). */
+  files?: { path: string; name: string; image: boolean }[];
   /**
    * When the turn was written (ms epoch), taken from the .jsonl line's
    * `timestamp`. Same source as `TailEvent.at`, so a replayed turn and the same
@@ -232,6 +324,32 @@ export interface HistoryTurn {
    */
   from?: string;
   origin?: string;
+  /**
+   * A compaction summary: the long "This session is being continued…" block
+   * Claude Code writes as a USER message when it compacts the conversation
+   * (`isCompactSummary` on the .jsonl line). It is real transcript content, so
+   * it must survive a reload — but it is huge and drowns the chat, so the client
+   * folds it into a collapsible box instead of a full-width bubble.
+   */
+  compaction?: true;
+  /**
+   * The transcript `uuid` of every line folded into this turn, first one first.
+   * A link to a message names ONE uuid; live, each text block is its own bubble,
+   * while the replay merges consecutive blocks — so the client looks a link up
+   * by membership (`[data-msg-ids~=…]`), which finds it whichever side made it.
+   */
+  ids?: string[];
+}
+
+/**
+ * The .jsonl a session was written to (`~/.claude/projects/<encoded cwd>/<id>`),
+ * preferring the newest <id>.jsonl anywhere so a moved/renamed worktree's history
+ * still resolves. Shared by loadHistory and GET /download (which reads the raw
+ * transcript to verify a requested file was actually sent).
+ */
+export function transcriptFilePath(cwd: string, sessionId: string, home: string = os.homedir()): string {
+  const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
+  return newestTranscriptById(sessionId, home) ?? path.join(home, ".claude", "projects", encoded, sessionId + ".jsonl");
 }
 
 /**
@@ -239,13 +357,8 @@ export interface HistoryTurn {
  * (~/.claude/projects/<encoded cwd>/<session-id>.jsonl) so the history can
  * be replayed when resuming the session.
  */
-export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
-  // Same drift-immunity as the tail: prefer the newest <id>.jsonl anywhere, so a
-  // moved/renamed worktree's history still resolves (see sessionFilePath).
-  const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  const file =
-    newestTranscriptById(sessionId) ??
-    path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+export function loadHistory(cwd: string, sessionId: string, home: string = os.homedir()): HistoryTurn[] {
+  const file = transcriptFilePath(cwd, sessionId, home);
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -269,42 +382,56 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
     if (e.isMeta || !e.message) continue;
     const at = parseTimestamp(e.timestamp);
     const when = at === null ? {} : { at };
+    const ids = typeof e.uuid === "string" ? { ids: [e.uuid] } : {};
     if (e.type === "user") {
-      const text = userPromptText(e);
-      if (text === null) continue; // tool result, system reminder, interruption
-      // A pushed ledger delta may ride ahead of ANY prompt — human, cron, or an
-      // agent notification — so strip it BEFORE classifying: otherwise a cron /
-      // agent prompt no longer starts with its hiding mark and would leak into
-      // the display.
-      const bare = stripLedgerBlock(text);
+      // A shell-mode exchange BEFORE the `<` guard below, which took it for an
+      // injected system block and dropped it — the command vanished on reload
+      // while the agent's comment on its output stayed.
+      const bash = parseBashMessage(userMessageText(e.message.content));
+      if (bash) {
+        const last = turns[turns.length - 1];
+        if ("output" in bash && last?.role === "bash" && last.output === undefined) {
+          last.output = bash.output;
+          if (bash.isError) last.isError = true;
+        } else {
+          turns.push({ role: "bash", text: "", ...bash, ...when });
+        }
+        pendingHiddenPrompt = false;
+        continue;
+      }
+      const line = classifyUserLine(e);
+      if (line.kind === "none") continue; // tool result, system reminder, interruption
       // Machine-written user messages: a scheduled prompt and a notification
       // about a child agent. Neither is shown live, so neither may come back on
       // a reload or a topic backfill — but a dropped one still BROKE the turn,
       // so remember it to keep the next answer from merging onto the last.
-      if (isCronPrompt(bare) || isAgentPrompt(bare)) {
+      if (line.kind === "hidden") {
         pendingHiddenPrompt = true;
         continue;
       }
-      // A human prompt may still open with a context header (⟦platform · time ·
-      // who⟧) the agent was given; strip it for display — leaving the message —
-      // but FIRST recover who spoke, so a replayed Telegram message shows its
-      // sender instead of the generic "pilot".
-      const meta = parsePromptMeta(bare);
-      turns.push({
-        role: "user",
-        text: stripPromptMeta(bare),
-        ...(meta?.who ? { from: meta.who } : {}),
-        ...(meta?.platform ? { origin: meta.platform } : {}),
-        ...when,
-      });
+      // A compaction summary is kept — it is real history — but flagged so the
+      // client can fold it away instead of flooding the chat.
+      if (line.kind === "compaction") turns.push({ role: "user", text: line.text, compaction: true, ...when });
+      else turns.push({ role: "user", text: line.text, ...(line.from ? { from: line.from } : {}), ...(line.origin ? { origin: line.origin } : {}), ...ids, ...when });
       pendingHiddenPrompt = false;
     } else if (e.type === "assistant" && Array.isArray(e.message.content)) {
+      // A SendUserFile delivered files → a `file` turn survives the reload (the
+      // rest of the tool blocks are dropped, but a sent file is content, not
+      // noise). Emitted before the text of the same message, which is usually the
+      // agent's "I sent you X" line just after.
+      for (const b of e.message.content) {
+        if (b?.type !== "tool_use") continue;
+        const files = toolFiles(b.name, b.input).map(fileCard);
+        if (files.length) { turns.push({ role: "file", text: "", files, ...when }); pendingHiddenPrompt = false; }
+      }
       const text = e.message.content
         .filter((b: any) => b.type === "text")
         .map((b: any) => b.text)
         // Same block-by-block filter as the tail, otherwise the sentinel
-        // reappears on a page reload though it was never streamed.
+        // reappears on a page reload though it was never streamed — the
+        // whole-block drop, then a trailing sign-off strip (invariant 2).
         .filter((t: any) => typeof t === "string" && !isNothingToShow(t))
+        .map((t: string) => stripTrailingNothingToShow(t))
         .join("\n")
         .trim();
       if (!text) continue;
@@ -313,8 +440,10 @@ export function loadHistory(cwd: string, sessionId: string): HistoryTurn[] {
       // which is when the speaking started (and that is where the client shows
       // the group label). But a hidden prompt in between makes this a NEW turn:
       // don't merge, and flag it so the client keeps its own label.
-      if (last && last.role === "assistant" && !pendingHiddenPrompt) last.text += "\n\n" + text;
-      else turns.push({ role: "assistant", text, ...(pendingHiddenPrompt ? { afterInternal: true } : {}), ...when });
+      if (last && last.role === "assistant" && !pendingHiddenPrompt) {
+        last.text += "\n\n" + text;
+        if (ids.ids) (last.ids ??= []).push(...ids.ids);
+      } else turns.push({ role: "assistant", text, ...(pendingHiddenPrompt ? { afterInternal: true } : {}), ...ids, ...when });
       pendingHiddenPrompt = false;
     }
   }
@@ -334,9 +463,9 @@ export interface SessionInfo {
  * first user prompt as a preview so a session can be recognized by more
  * than its id.
  */
-export function listSessions(cwd: string): SessionInfo[] {
+export function listSessions(cwd: string, home: string = os.homedir()): SessionInfo[] {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  const dir = path.join(os.homedir(), ".claude", "projects", encoded);
+  const dir = path.join(home, ".claude", "projects", encoded);
   let files: string[];
   try {
     files = fs.readdirSync(dir).filter((f) => f.endsWith(".jsonl"));
@@ -400,11 +529,11 @@ function firstUserPrompt(file: string): string {
  * ignore technical `user` lines — a tool result arrives MID-turn and would date
  * the origin a few seconds before now.
  */
-export function lastPromptAt(cwd: string, sessionId: string): number | null {
+export function lastPromptAt(cwd: string, sessionId: string, home: string = os.homedir()): number | null {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
   const file =
-    newestTranscriptById(sessionId) ??
-    path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+    newestTranscriptById(sessionId, home) ??
+    path.join(home, ".claude", "projects", encoded, sessionId + ".jsonl");
   let raw: string;
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -458,9 +587,9 @@ export function resumedTurnStart(
  * Finds the id of the most recent session of a directory: Claude Code
  * writes each session to ~/.claude/projects/<encoded cwd>/<session-id>.jsonl.
  */
-export function findSessionId(cwd: string): string | null {
+export function findSessionId(cwd: string, home: string = os.homedir()): string | null {
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  const dir = path.join(os.homedir(), ".claude", "projects", encoded);
+  const dir = path.join(home, ".claude", "projects", encoded);
   try {
     const newest = fs
       .readdirSync(dir)

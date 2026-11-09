@@ -28,7 +28,9 @@ test("spawn starts a session and writes the local state", async () => {
     assert.equal(r.sessionId, "abc-123");
     assert.equal(r.cwd, "/tmp/x");
     assert.equal(r.branch, "shadok-ai/abc123");
-    assert.deepEqual(mock.received[0], { type: "start", cwd: "/tmp/x", worktree: true });
+    // `origin: "cli"` because the suite deletes SHADOK_SESSION_ID above: no
+    // piloted session around us. Inside one it is "agent" — see turns.test.mjs.
+    assert.deepEqual(mock.received[0], { type: "start", origin: "cli", cwd: "/tmp/x", worktree: true });
     const st = readState("abc-123");
     assert.equal(st.cwd, "/tmp/x");
     assert.equal(st.branch, "shadok-ai/abc123");
@@ -48,9 +50,29 @@ test("spawn --profile passes the profile to the server", async () => {
     // no secrets — the profile is the heart of delegation.
     assert.deepEqual(mock.received[0], {
       type: "start",
+      origin: "cli",
       cwd: "/tmp/x",
       worktree: true,
       profile: "Shadok-dev",
+    });
+  } finally {
+    await mock.close();
+  }
+});
+
+test("spawn --name passes the tab name to the server", async () => {
+  const mock = await startMockServer({
+    start: [{ type: "ready", sessionId: "named-1", cwd: "/tmp/x", branch: "shadok-ai/named1" }],
+  });
+  process.env.SHADOK_PORT = String(mock.port);
+  try {
+    await run(["spawn", "--cwd", "/tmp/x", "--worktree", "--name", "release bot"]);
+    assert.deepEqual(mock.received[0], {
+      type: "start",
+      origin: "cli",
+      cwd: "/tmp/x",
+      worktree: true,
+      name: "release bot",
     });
   } finally {
     await mock.close();
@@ -114,4 +136,9 @@ test("buildStartMsg still forwards the other spawn flags", () => {
   assert.equal(m.cwd, "/w");
   assert.equal(m.worktree, true);
   assert.equal(m.profile, "Shadok-dev");
+});
+
+test("buildStartMsg forwards --name, and omits it when absent", () => {
+  assert.equal(buildStartMsg({ name: "release bot" }, {}).name, "release bot");
+  assert.equal("name" in buildStartMsg({ worktree: true }, {}), false);
 });

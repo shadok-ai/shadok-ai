@@ -126,12 +126,48 @@ test("detectFork: follows the fork, ignores the sibling, no-ops when quiet", () 
     const forkFile = path.join(dir, `${NEW}.jsonl`);
     assert.equal(detectFork(forkFile, NEW, ROOT), null);
 
-    // anti-flap: if the dead ROOT file were re-touched newer than NEW, we must
-    // NOT oscillate back onto it once it is in the `seen` set
-    writeTranscript(dir, ROOT, ROOT, 12_000_000); // ROOT bumped past NEW
-    assert.equal(detectFork(forkFile, NEW, ROOT), ROOT); // without the guard, it flaps
-    assert.equal(detectFork(forkFile, NEW, ROOT, new Set([ROOT])), null); // guarded
+    // anti-flap: if a dead file we already left were re-touched newer than the
+    // one we tail, we must NOT oscillate back onto it
+    writeTranscript(dir, SIBLING, ROOT, 12_000_000); // same lineage, visited, bumped
+    assert.equal(detectFork(forkFile, NEW, ROOT), SIBLING); // without the guard, it flaps
+    assert.equal(detectFork(forkFile, NEW, ROOT, new Set([SIBLING])), null); // guarded
+
+    // ...but the session's OWN transcript is never abandoned for good: a restart
+    // resumes `--resume <ownId>`, so Claude Code appends to it again and it
+    // becomes the live file. Visited or not, we must come home — otherwise the
+    // tail stays on a frozen fork for ever (nothing streams, every reload is
+    // fine, and no restart recovers it).
+    writeTranscript(dir, ROOT, ROOT, 15_000_000); // the own transcript, live again
+    const visited = new Set([ROOT, SIBLING]);
+    assert.equal(detectFork(forkFile, NEW, ROOT, visited), null); // the old rule: stuck
+    assert.equal(detectFork(forkFile, NEW, ROOT, visited, ROOT), ROOT); // comes home
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("detectFork: follows a fork that landed in ANOTHER project dir (cwd drift)", () => {
+  // The real failure: a session created in a worktree, later resumed at the repo
+  // root, overflows its context. Claude Code writes the continuation under the
+  // CURRENT cwd's project dir — a DIFFERENT directory from the frozen original.
+  // Scanning only the frozen file's own directory misses it; the chat freezes
+  // while the TUI is fine. The fix: scan every project dir for the lineage.
+  const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "forktrace-A-")); // worktree enc
+  const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "forktrace-B-")); // repo-root enc
+  try {
+    writeTranscript(dirA, ROOT, ROOT, 1_000_000); // frozen original, in dir A
+    const myFile = path.join(dirA, `${ROOT}.jsonl`);
+    writeTranscript(dirB, NEW, ROOT, 9_000_000); // the fork, same lineage, in dir B
+
+    // Default (own dir only) is blind to the cross-dir fork — the bug.
+    assert.equal(detectFork(myFile, ROOT, ROOT), null);
+    // Given both dirs to search, the fork is followed across the boundary.
+    assert.equal(detectFork(myFile, ROOT, ROOT, new Set(), undefined, [dirA, dirB]), NEW);
+    // A sibling in dir B (its own root) is still never adopted.
+    writeTranscript(dirB, SIBLING, SIBLING, 12_000_000);
+    assert.equal(detectFork(myFile, ROOT, ROOT, new Set(), undefined, [dirA, dirB]), NEW);
+  } finally {
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
   }
 });

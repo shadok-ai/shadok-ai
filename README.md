@@ -76,51 +76,299 @@ Enter to skip; you can add it later from the web UI).
 - **Channels** — one `claude` process each, running in parallel. Renaming,
   grouping, and closing all sync live between the browser and Telegram: it's
   one list, server-owned, not two copies.
+- **Groups** — on a desktop the groups live in their own **left column**: pick
+  one to narrow the agents pane to it, and the global tools (Profiles, Ledger,
+  Secrets, Users, Security, Telegram, Sound) stay in the header at the top. Each
+  agent is a round avatar with a presence dot (green ready, red working, hollow
+  offline). A group's icon opens the icon picker: choose from the grid, type any
+  emoji, or **type a word** (`rocket`, `bug`, `money`…) to search for one; its
+  **＋** creates the new agent straight into that group — while it is being
+  born its pane shows the pumping Shadok and the real startup steps ticking off
+  (access to Claude, workspace, Claude Code) rather than a black screen. Dragging an agent onto a
+  group files it there, dragging groups reorders them, and double-clicking a name
+  renames it — a group can also be renamed by clicking its name at the top of the
+  agents column. A question the agent asks shows as an *Approval requested* card. The
+  whole cockpit is skinned like Microsoft Teams (grey light mode / near-black dark
+  mode, the Shadok mark in the header). On a phone the tools sit in the ⋯ menu and
+  the agents sheet lists every group.
 - **Worktree isolation** — spawned agents get their own git worktree and branch
   by default, so parallel agents never collide. Work is never auto-discarded:
   an empty worktree is reclaimed on close, anything with changes or commits
   stays (and `Recover` reopens it).
 - **Interactive dialogs** — the TUI's permission prompts and multiple-choice
   questions become clickable buttons in the chat, and an inline keyboard in
-  Telegram.
+  Telegram. The card carries the prompt's own text too — what it will run or
+  read, and Claude Code's warnings such as a read leaving the working directory
+  through a symlink — so you approve what the terminal would have shown you.
+- **Thinking effort** — how hard an agent thinks before answering (`--effort`),
+  set on a role in the Profiles panel and overridable per agent from its menu.
+  Higher levels cost more tokens, and thinking tokens are billed even when they
+  stay collapsed, so the picker says so. There is deliberately no thinking
+  on/off switch: current models always think, and the settings that used to
+  disable it are ignored by them — a toggle would change nothing.
+- **Instance context** — a handful of lines every agent on this cockpit
+  receives at spawn, ahead of its role: what the instance is for, who works on
+  it, its language. On a new instance the lead agent asks two or three questions
+  in its first message and writes it once; after that only a human edits it
+  (version menu → **🧭 Instance context…**). Running agents see a change at their
+  next reload. If it is still empty, **Ask general to draft it** runs the same
+  short interview.
 - **Agent profiles** — a named bundle of role prompt, permission guardrails
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
-  spawn, remembered across resume. Eight roles ship with it: a lead that
+  spawn, remembered across resume. A profile can also carry **MCP servers**
+  (JSON, the CLI's `--mcp-config` shape): write a token as `${NAME}` and tick
+  `NAME` under its secrets — the CLI expands it from the agent's env, so the
+  value is never in the profile, in argv or in `~/.claude.json`. Put references
+  in `env` or `headers`, not `args`: an expanded arg shows in the MCP server's
+  own command line. Pasting a vault value instead of its name is refused.
+- **A model per agent** — the creation form picks the model this one agent runs
+  on, overriding its profile's, with a **long context (1M)** tick beside it.
+  Pick a family (Opus, Sonnet, Haiku, Fable) and it follows Claude Code's
+  releases, or fold out **Pin an exact version** — that list is read from the
+  installed `claude` binary, so a model Anthropic ships appears on its own at
+  the next Claude Code update, with nothing to maintain here. Leave it on
+  *profile default* and nothing changes: no flag is sent at all. The choice is
+  stored on the agent, so a resume or a restart keeps it, and the quota gauge
+  meters it against the window it actually asked for.
+- **A default model for the machine** — ⋯ → the version menu → *Default model*,
+  beside the permission mode. It writes Claude Code's own `settings.json`, which
+  is already the last step of the resolution chain (**agent → profile →
+  machine**), and applies at each agent's next spawn. Agents that carry no model
+  of their own simply follow Claude Code's default, which tracks the newest
+  model — so this is for **pinning** one, not for getting the latest. In
+  **multi-tenant**, where each agent runs as its own OS user with its own home,
+  the server passes this pin explicitly to those dropped agents (their home's
+  `settings.json` carries no default of its own), so one *Default model* choice
+  reaches every group — commons and private alike — not only root's own agents. Eight roles ship with it: a lead that
   delegates, a dev, a QA agent that writes the failing test and cannot fix the
   code it covers, a release agent that prepares a deployment and leaves the
   trigger to you, a product agent that writes the spec instead of the change,
   and three go-to-market roles (paid, organic, support). Each one is yours to
   edit, and a role you delete stays deleted.
+- **Which account, and when it expires — and re-login before it does** — the
+  version menu shows the Claude login this cockpit runs on (its email and
+  subscription) and when its sign-in **expires** — i.e. when a re-login will be
+  needed. The timestamp is read from Claude Code's own credentials store, never
+  the token itself; the short-lived access token refreshes on its own, so the
+  figure shown is the session deadline, not that rotation. A **↻ Re-login to
+  Claude** button right there signs you in again without waiting for the lapse,
+  and in the last **48 hours** (or once it has lapsed) a reminder **banner**
+  carries the same one-click re-login — so your agents never quietly start
+  hitting `401` because nobody renewed the session.
 - **Secret vault** — stored under `~/.shadok-ai`, never in your repo, injected
-  as env vars into the agents that need them. An agent that **obtains** a
-  credential (a CLI login, a key it just provisioned) can add it to the vault
-  itself so the next agent doesn't start from nothing — write-only, the value
-  piped in rather than typed as an argument, and never overwriting an existing
-  name without you saying so.
+  as env vars into the agents that need them. Add or **update** a secret from the
+  panel, tick the **profiles** it should feed right there, and reload the running
+  agents on those profiles in one click so a rotated value takes effect now. On
+  an instance with groups, **Any profile** feeds a secret to every agent that can
+  read it, whatever its profile (only a person can pick it, not an agent). An
+  agent that **obtains** a credential (a CLI login, a key it just provisioned)
+  can add it to the vault itself so the next agent doesn't start from nothing —
+  write-only, the value piped in rather than typed as an argument, and never
+  overwriting an existing name without you saying so. It can also **attach that
+  secret to its own profile** and reload itself to pick it up — but only a
+  secret it stored itself: a value you typed, or one another role stored, stays
+  yours to attach from the panel.
+- **OAuth sign-ins from another machine** — an MCP or CLI sign-in ends on
+  `http://localhost:PORT/…`, which your browser cannot reach when the agents run
+  in a container or on a remote box. Paste that failed address under *Finish a
+  sign-in* in the Secrets panel (`POST /oauth-relay`, web UI only): the cockpit
+  opens it on the agents' machine. Loopback http addresses with a port only,
+  and only a callback (`code=`, `state=` or `error=` in the query); the
+  cockpit's own ports and well-known local services (debuggers, Docker's API,
+  databases) are refused, and only the listener's HTTP status comes back.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
   daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
   model*: prints nothing → nothing to report, the agent is never woken and the
   run costs **zero tokens**; prints something → that output is prepended to the
   prompt and the agent runs. A watcher that is quiet most of the day costs
-  nothing most of the day.
+  nothing most of the day. The guard runs with the target agent's profile
+  secrets, so an agent may put one only on itself (a person may guard any agent
+  they can drive).
 - **Agents that report back** — an agent that launches other agents is told when
   each one finishes, blocks on a question, or dies. It hears about **its own**
   children and nothing else, so a busy channel never wakes it. What arrives is
   the child's own summary plus pointers (branch, diff link) — never the diff
   itself, which on a large session costs far more than it is worth. The link is
-  set automatically at spawn; you can also attach or detach an agent by hand
-  from its ⋯ menu.
+  set automatically at spawn; you can also change it by hand. A 🔗 on the tab
+  marks any agent that has a link, and its menu cuts it from **either** end — the
+  child's own "Detach from…", or, on the parent, "Children reporting here…" to
+  drop an agent whose reports you no longer want. An agent can do the same over
+  the CLI with `pilotctl set-parent <id> <parent|none>`.
 - **Quota gauges + pace guard** — 5h and 7d subscription usage, with an
   optional block when you're burning faster than the window elapses (any
   message can force through).
 - **Notifications** — favicon, title badge and an optional sound when an agent
   needs you. It only blinks when the tab is hidden *and* an unmuted channel is
-  actually waiting.
+  actually waiting. Mute a single agent from its menu, or **mute the whole
+  instance** from the version menu (*Mute this instance*): the favicon never
+  changes, no badge, no blink, no sound — for every agent and every tab, saved
+  per instance like the cockpit's name and palette.
 - **Engine room** — the raw TUI screen, live, with clickable keys, for anything
   the chat can't express. With tmux there is also an **experimental real
   terminal** (xterm.js over the pane's byte stream) when a snapshot isn't enough.
+- **Voice notes on Telegram** — send a voice message to an agent's topic and it
+  is transcribed locally, then acted on. What was understood is echoed back
+  first (`🎙 « … »`), so a misheard instruction is visible before it runs —
+  and the agent is told the words were **spoken**, so it asks about an odd
+  file name or branch instead of acting on a mishearing.
+  Transcription is installed **on first use** — a static ffmpeg, whisper.cpp and
+  a 181 MB model — and the topic says so rather than going quiet for minutes.
+  `SHADOK_WHISPER_MODEL` picks a bigger one if your recordings need it.
+  Every download is checked against a SHA-256 pinned in `src/whisper.ts`
+  (ffmpeg per platform, the whisper.cpp source, the model at a fixed Hugging
+  Face commit); a mismatch is refused and transcription stays off until the
+  next restart. Only `ggml-small-q5_1.bin` and `ggml-medium-q5_0.bin` have a
+  pinned hash — any other model needs `SHADOK_WHISPER_MODEL_SHA256=<hex>`, or it
+  is refused.
+  Set `SHADOK_WHISPER_DIR` to a directory shared between containers and one copy
+  serves them all.
+- **Dictate a prompt on the web** — a 🎙 button beside *Send* records your
+  microphone and transcribes it with the **same local whisper.cpp** the voice
+  notes use (nothing leaves the machine). The text drops into the composer
+  **editable**, never auto-sent, so a misheard word is fixed before it goes —
+  click to start, click to stop, a red timer runs while recording. Needs a
+  secure context (localhost or HTTPS) for the browser to grant the mic; the
+  first use pays the same one-time whisper install as the voice notes above.
+- **Videos on Telegram** — share a video (or a GIF, or a round video note) and
+  the agent actually sees it: shadok pulls a handful of stills out of the clip
+  for it to look at, and transcribes the sound when there is speech. Both run
+  on the same locally-installed toolchain as voice notes, so nothing leaves the
+  machine. Clips longer than two minutes keep their stills and the prompt says
+  the audio was left unheard — ask and the agent can listen. Telegram caps what
+  a bot may download at 20 MB; past that you get a clear notice instead of
+  silence.
+- **Link to a message** — every message (yours and the agent's) has a 🔗 link
+  button beside copy. It copies a URL like `…/#agent=<session>&msg=<id>`;
+  whoever opens it — someone who already has access to this cockpit, after the
+  usual sign-in — lands on that agent, scrolled to that message, highlighted.
+  The link lives in the URL's `#` part, so it never reaches the server or a
+  proxy log. A message older than the history shown (the last 100 turns), or an
+  agent that was closed, says so instead of opening somewhere else.
+- **Run the command an agent asks you to** — when an agent writes `! cmd` for
+  you to run (typically because it cannot), a ▶ run button sits right on that
+  command's code block, beside its copy button — so it runs where it was
+  written, not in a list below. On a line of its own the space is optional, so
+  `!/path/to/script.sh` gets the button just like `! /path/to/script.sh`. (An
+  inline `` `! cmd` `` with no block of its own still gets a button under the
+  message — there the space is required, so a stray `` `!important` `` in prose
+  is never mistaken for a command.) It runs in the agent's shell after
+  a confirmation showing the exact command, and is refused for anything but your
+  browser, since shell mode sits outside the agent's guardrails. The command and
+  its output stay in the chat, reload included — as does one you typed yourself
+  in the terminal view.
+- **Provide the variable an agent asks for** — when an agent names a missing
+  credential in code (`` `HUBSPOT_TOKEN missing from the environment` ``), a
+  **+** sits right after it: one click opens the secret vault with the name
+  filled in and the agent's profile ticked, so you only paste the value (then
+  reload the agent when offered — a value reaches a process at spawn). Only
+  names that look like a credential or a connection setting get one (`…_TOKEN`,
+  `…_KEY`, `…_URL`, `…_ID`…), never `NODE_ENV` nor shadok's own `SHADOK_*`.
+- **`/` commands** — type `/` in the composer and a menu lists the Skill
+  Factory skills the agent has (`/name:name`). ↑/↓ to move, Enter or
+  Tab to complete, Escape to close (`GET /commands?session=`). Any other
+  Claude Code command still works when typed in full. A message that starts
+  with a command goes to the agent bare, without shadok's context line or
+  ledger update ahead of it, since Claude Code reads a command only when `/`
+  comes first.
+  The ✦ button beside the paperclip opens the same menu without typing, like
+  an emoji picker: the chosen skill goes in **front** of what you already
+  wrote (which becomes its argument), replacing a command already there.
+- **Files you hand an agent** — paste or drop a file into the composer, or pick
+  one with the 📎 button beside it (an image, a PDF, a CSV…), and it becomes a **chip** above the text box: a
+  thumbnail for an image, a named tag for anything else, each with a ✕ to
+  remove it. On send, an image shows **inline in your own message bubble**;
+  under the hood the agent still receives it as an `[Attached …: path]` line,
+  the same format Telegram uses, so nothing about how the agent reads it
+  changes. If the agent is mirrored into Telegram, the file is **posted into its
+  topic too** — a photo as a photo, anything else as a document — so whoever is
+  reading there sees what you sent instead of a path. A message can be attachments alone, with no words. The files are
+  served back to the browser by `GET /media/<name>` from the same directory
+  Telegram attachments land in. On a multi-tenant instance each group has its own
+  media directory (`/media/g-<group>/<name>`), readable only by that group's
+  agents and served only to people who can see that group.
+- **Files an agent hands you** — when an agent's result IS a file (a report, an
+  export, a screenshot, an archive) it arrives as a download card in the chat,
+  inline if it is an image, and as an upload in the Telegram topic. It goes
+  through shadok's own `shadok-files` skill rather than depending on the
+  harness's file tool, which is **not on every agent**: a long-lived agent keeps
+  the Claude Code binary it started with, so one older than that tool would
+  otherwise just print a local path you cannot open. **Artifacts are denied**
+  cockpit-wide for the same reason — a page on claude.ai is not the file you
+  asked for (`SHADOK_ALLOW_ARTIFACTS=1` lifts it).
+- **Photos and videos, viewable** — an image or a **video** (mp4/webm/mov…) in
+  the chat renders inline (a video gets a real player), and clicking a photo
+  opens it full-size in a lightbox. The 🖼 button in an agent's bar opens a
+  **media gallery**: a grid of every photo and video in that conversation —
+  click a thumbnail to view or play it full-size, then back to the grid. Videos
+  are served with HTTP range requests so they seek and stream instead of
+  downloading whole.
+- **Compaction summaries, folded away** — when Claude Code runs out of context
+  it compacts the conversation and writes a long "This session is being
+  continued…" summary as the first message of what follows. Shown in full it
+  buried the chat, so the cockpit folds it into a collapsible **Context summary**
+  box: collapsed by default, one click to read it, capped and scrolling even when
+  open. It is still real history — just out of the way.
+- **Skill Factory**: the flask icon in the header switches the cockpit to the
+  **Skills** page, with a slide; click it again to come back. Write a Claude
+  Code skill together, people and agents alike, and share it with the people
+  and groups that need it.
+  - **The list.** Every skill with its tags, who it is shared with, whether it
+    is saved or carries draft changes, where it is used, and how many times it
+    ran this week. It can be filtered by tag, by "shared with" and by status
+    (draft changes, unused, feedback, archived). Ticked rows can be shared,
+    tagged or archived in one go.
+  - **The detail panel.** Its numbers, the agents that have it (group by group:
+    each agent and its runs), the agents that **run it on a schedule** (a cron
+    whose prompt names it, or a scheduled run that called it — click the agent
+    to open it), the secrets agents running it get, and its feedback.
+  - **From the agent's side.** The ▯ button in an agent's bar opens its info
+    panel: its directory and profile, the skills it has (runs this week, ⏰ how
+    many on a schedule), and its schedules with the skills each one uses. Click
+    a skill to open its card in the Skill Factory.
+  - **Creating.** The new-skill form asks for a **name** (what people see) and
+    a **technical name** (what agents call it, `/name:name`), proposed from the
+    name until you type your own. Choose it then: it is the skill's repository
+    and plugin name, so it cannot be changed afterwards. A name already taken
+    gets a number (`-2`, `-3`…), and the form says so before you create it.
+  - **Renaming.** Click a skill's name at the top of its editor to rename it
+    (Enter saves, Escape cancels). Only the displayed name changes: agents keep
+    calling it by its technical name, so attached agents are not disturbed.
+  - **Sharing.** A skill is shared with **only me**, with **one or more
+    groups**, or with **everyone**, and that is where it runs: every agent
+    of those groups has it (everyone: every agent; only me: only the agents you
+    created, and nobody else sees it). A skill is never given to an agent one
+    by one, and having it grants nothing beyond the existing rights: each
+    group's own acceptance and the secrets approved for it.
+  - **Editing**, on one screen. The skills are listed by name on the left. In
+    the middle, the skill reads as one document: *When to use it*,
+    *Instructions*, *Needs*, with the scripts folded away for developers. On the
+    right, **change it by prompt**: a `Shadok-Skillsmith` agent edits, tests and
+    pushes, and its changes show up in the document. Two buttons, no versions
+    to manage: **Save draft** keeps your edits while agents keep running the
+    last saved skill, and **Save** makes it what they run (`POST
+    …/publish`) in every group it is shared with that you belong to (a group
+    you cannot see accepts it when one of its people saves). Idle agents already running it reload onto it at once; the
+    others pick it up at their next reload.
+  - **Running.** A saved skill is loaded (with `--plugin-dir`, as
+    `<name>:<name>`) by every agent it is shared with. To run it on a schedule,
+    set the schedule from the agent (its cron), not from the skill. Agents
+    report problems with `factory.mjs feedback`.
+  - **Secrets travel by name, and only once you approve them.** A saved skill
+    asks for the secrets it declares, plus any vault name its code reads. Save
+    lists those names and asks you
+    to approve them; agents receive only the names you approved. A save or push
+    holding a vault value is refused, and so is a push carrying a symlink or a
+    submodule.
+  - **Also:** import from `~/.claude/skills`, make a variant, archive.
+  - Design: `docs/superpowers/specs/2026-10-29-skill-factory-design.md`.
 - **Diff panel** — what an agent actually changed, against its base.
+- **What an agent left running, on its tab** — a turning ⏳ for background
+  shells, a still 👁 for monitors, each with its count past one. Claude Code
+  knows about both and says so in its own footer; the cockpit passes it on, so a
+  script an agent left behind — the ones that wake it up later, and the ones
+  nobody will ever collect — is visible from the outside. Monitors matter most
+  here: a persistent one runs for the whole session and never ends on its own.
 - **Context sent** — a collapsed block at the head of every conversation showing
   what shadok added to that agent: its role, its guardrails and permission mode,
   the **names** of the variables injected (never the values), the cockpit prompt.
@@ -131,13 +379,31 @@ Enter to skip; you can add it later from the web UI).
   not a recomputation that would quietly show today's profile. Also on the ⋯
   menu of each channel. It says plainly that it is shadok's half: Claude Code
   adds its own context, which shadok never sees.
+- **Reload-to-apply indicator** — an agent's context is fixed **at spawn**, so a
+  long-lived one can drift behind the cockpit: the pilot prompt or its guardrails
+  changed, a new skill was seeded, its injected auth token aged past a week
+  (so its own calls start failing silently), or Claude Code itself updated. The
+  cockpit detects this by **comparing what the running process actually got
+  against what a fresh spawn would give it** — a content comparison, not a
+  version number, so a release that changed nothing relevant raises nothing, and
+  a profile edit that bumped no version still does. A `↻` lights up on the agent
+  (hover for the reasons) and the **version menu** shows *Reload N agents to
+  apply changes*; a reload respawns each one in place, keeping its history.
+  **You don't have to click it**: the cockpit applies it by itself as soon as the
+  agent has nothing to lose — no turn running, no question waiting, nothing in
+  its input box, no background shell or monitor, no child notification queued —
+  and has been quiet for two minutes (the ↻ tooltip then says so).
+  One agent at a time, no nudge afterwards, and at most once per 30 minutes per
+  agent so a change that does not stick cannot loop. A message you send while
+  the respawn runs waits a few seconds for it instead of being refused. Clicking
+  still reloads at once; `SHADOK_AUTO_RELOAD=0` turns the automatic part off.
 - **Phone layout** — the cockpit is a fixed chassis that never pans sideways,
   sized on the *visual* viewport so the composer stays clear of the browser's
   own bar and, when the keyboard opens, sits right above it (the instrument bar
   folds away while you type). Fields are 16px, which is what stops Safari from
   zooming in on focus. The agents column is replaced by a channel selector in
   the channel bar.
-- **Tweak Shadok-AI** — a card pinned at the bottom of the agents column. One
+- **Tweak Shadok-AI** — a card pinned at the bottom of the agents column, with the running version in grey beside its title (the code a tweak starts from). One
   click clones shadok-ai's own source into `~/.shadok-ai/self/shadok-ai` and
   starts an agent on it in its own worktree; that agent delivers its change as a
   **pull request** — a fork under your GitHub account, since you need no rights
@@ -150,7 +416,7 @@ Enter to skip; you can add it later from the web UI).
   card back. Desktop only: the agents column is hidden on phones.
 - **Guided tour** — on a browser's first visit, a welcome card explains what
   shadok-ai is, then a spotlight walks the real controls: the agents list, an
-  agent's ⋯ menu, scheduled prompts, the toolbar, the quota dials. Skip and
+  agent's ⋯ menu, scheduled prompts, the toolbar, the quota bars. Skip and
   Escape end it at any point; ⋯ → *Guided tour* replays it. A step whose target
   isn't on screen is **dropped rather than faked** — an empty cockpit has no
   agent menu, so it gets a shorter tour instead of a spotlight on nothing. The
@@ -165,8 +431,10 @@ Enter to skip; you can add it later from the web UI).
   a brand-new instance (which is signed out at boot, so there is nothing to
   spawn yet). The condition is "no channel", which makes it idempotent: it never
   appears twice.
-  While it is being started the central panel says so — *starting your first
-  agent…* — instead of the *no agent open* invitation, which would ask you to
+  While it is being started the central panel says so — *your first agent is
+  waking up…*, with the real steps ticking off (access to Claude, workspace,
+  Claude Code, then *Saying hello* — the screen stays until it has actually
+  greeted you) — instead of the *no agent open* invitation, which would ask you to
   create a second one while the first is being born. It is a status, not a
   screen: nothing to click, nothing to dismiss, and it ends on its own whichever
   way the spawn goes (started, refused because the instance is signed out,
@@ -190,16 +458,84 @@ Enter to skip; you can add it later from the web UI).
   you what it is?") rather than guessing a stack. It is an **offer, not a
   first-run screen**: ignore it entirely and the cockpit works exactly the same.
   `SHADOK_GREETING=0` turns it off.
+- **Connected accounts (LinkedIn)** — connect a LinkedIn account once, then ask
+  an agent to post ("write a post about the release and publish it on our
+  LinkedIn"). In *Secrets → Connected accounts* a person clicks **Connect
+  LinkedIn**, consents on LinkedIn, and the account appears. The agent uses the
+  seeded `shadok-social` skill (`social.mjs accounts` / `post --account <id>
+  --stdin`) and **never sees the token**: it names an account, the server holds
+  the credential. By default the post is a **draft**: an approval card shows
+  the account, the exact text and the image in the agent's chat, and nothing
+  goes out until a person clicks *Publish* (or *Discard*). The image published
+  is the one on the card: the server keeps its own copy from the moment the
+  agent drafts, so changing the file afterwards changes nothing. Each account has an
+  **owner**, a **share** setting — any combination of the owner's *Personal*
+  group (the default), chosen restricted groups and *Public* (Main and every public group, one commons),
+  optionally narrowed to agents running given **profiles** — and a **policy** (`approve`, the default, or `autonomous`,
+  which publishes at once — only the account's **owner** can switch it to
+  `autonomous`). Every attempt — published, refused, expired,
+  failed — is written to a **publication log** (who triggered it, who approved
+  it, the text, the post URL or LinkedIn's error), readable by anyone who can
+  use the account through the row's **Log** button (the last 50 entries). A pending draft counts as "waiting for an answer" like a
+  dialog (favicon badge, tab blink), and an unapproved draft expires after 7
+  days. LinkedIn tokens last about 60 days: seven days before expiry the owner
+  gets a dismissible banner at the top of the cockpit (and again once it has
+  expired) and, when they are the Telegram DM owner, a DM; an expired
+  account refuses to publish with a sentence the agent can relay. Posts to
+  Company Pages need a second LinkedIn app and are planned for v1.1.
+  On a mono-tenant instance (a laptop, any macOS cockpit) agents run as your own
+  OS user, so this is a **soft layer**: it stops accidents and prompt injection
+  (an agent posting because a web page told it to), not an agent determined to
+  read `~/.shadok-ai/connected-accounts/`. It also means **every agent on a
+  mono-tenant instance can use every connected account**: there is no wall
+  between agents to scope by, so the share setting decides which *people* see
+  an account (and, on a multi-tenant instance, which groups' agents may use it).
+  The profile filter applies on both kinds of instance.
+  Multi-tenant instances, where agents run as other OS users, make it a real
+  boundary.
+  **Operator setup** (once, for whoever runs the broker): a small stateless
+  Cloudflare Worker (`broker/`) holds the LinkedIn client secret so instances
+  never do; see [`broker/README.md`](broker/README.md). It needs two LinkedIn
+  apps — **A**: Sign in with LinkedIn (OIDC) + *Share on LinkedIn*, for member
+  posts; **B**: the Community Management API *alone* (LinkedIn requires that
+  product to stand by itself), for Pages, v1.1 — with the redirect URL
+  `https://connect.shadok.ai/linkedin/callback`. Instances reach the broker at
+  `SHADOK_CONNECT_BROKER` (default `https://connect.shadok.ai`). LinkedIn
+  sunsets API versions, so `LINKEDIN_VERSION` in `src/linkedin.ts` must be
+  bumped about once a year, or posting stops working.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)
+
+The Telegram panel (header icon) carries a folded *How to set it up, step by step*
+guide, open until a token is saved and a group is bound.
+
+**Pairing.** The bot answers nobody until it is paired from the cockpit. In the
+Telegram panel (admin only), click **Pair Telegram**: it shows an 8-digit code,
+valid 10 minutes, single-use, cancelled after 5 wrong tries. Send `/setup <code>`
+in the group to make it the board, or in a private chat with the bot to make its
+DMs yours — or use the panel's one-click links, which pass the code for you.
+Whoever enters the code becomes the owner of the bot's DMs. A group bound before
+pairing existed stays bound; to move to another group, unbind it in the panel
+and pair again.
+
+**Operators.** Being in the board group lets you talk to its agents, answer their
+dialogs and use the per-topic commands — not act on the host. The commands that
+reach the vault, the Claude account or the process (`/secret`, `/unsecret`,
+`/login`, `/code`, `/mttoken`, `/mtcode`, `/update`, and `/spawn` with an
+explicit profile) are reserved to **operators**: whoever typed a pairing code —
+`/setup <code>` in the board, or the DM pairing (the DM owner is always one).
+To make someone an operator (or yourself, on a board bound before operators
+existed and with no DM owner), click **Pair Telegram** again and have them send
+`/setup <code>` in the already-bound group. Anyone else gets a refusal saying
+exactly that. Unbinding the group in the panel clears its operators.
 
 Add your bot to a group with **Topics** enabled, make it an admin with *Manage
 topics* (and *Delete messages* so `/secret` can scrub values), then in the group:
 
 | Command | |
 |---|---|
-| `/setup` | bind this group as the board (one group per instance) |
+| `/setup <code>` | bind this group as the board (one group per instance), with the code from the panel's **Pair Telegram** — in an already-bound board, it makes the sender an operator |
 | `/spawn [profile] <name>` | new isolated agent in its own topic (also a web tab) |
 | `/stop` (alias `/esc`) | interrupt the current turn — does **not** end the session |
 | `/new` · `/end` | reset · kill the session |
@@ -208,7 +544,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
 | `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
-| `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault |
+| `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault; an existing name is never replaced unless you append `--overwrite` |
 | `/update` | fetch `@latest` and respawn |
 
 Creating a topic by hand also spawns an agent. Anything that isn't a command is
@@ -222,6 +558,12 @@ hands itself to whoever messages next — a bot username is public, and a DM is 
 shell.
 
 ### Running in Docker
+
+> Putting one instance online for someone else, on its own machine, behind a
+> domain? Follow
+> [`docs/deploying-an-instance.md`](docs/deploying-an-instance.md) instead — the
+> same thing in order, with a `docker-compose.yml` to copy, and it links back
+> here for the explanations.
 
 The repo ships an official `Dockerfile`:
 
@@ -245,6 +587,122 @@ are what survive `docker restart` **and** `docker rm`+recreate: `~/.shadok-ai`
 transcripts), `/workspace` (agents' files). A fresh container needs a one-time
 Claude login: `docker exec -it shadok-ai claude`.
 
+**pid 1 reaps.** The image enters through `tini`, and that is load-bearing in the
+long run: agents orphan processes all day (a backgrounded `sleep` loop, an
+abandoned `esbuild`, a killed `gh`), an orphan is re-parented to pid 1, and only
+pid 1 can reap it — which the cockpit's own supervisor never does, since Node
+only waits for the children it spawned itself. A zombie costs no memory and no
+CPU, just a pid slot, so nothing shows until the container's pid budget runs out
+and it can no longer fork anything at all: no new agent, no `git`, no shell.
+Measured on an instance running since August: 79,055 zombies against a 113,098
+pid budget. Two things follow for an existing deployment. If you run an image
+from before this (or any image whose pid 1 is the app), add `--init` and Docker
+supplies the reaper. And either way it is decided when the container is
+**created**: `docker restart` empties the table — pid 1 restarts, the kernel
+drops the lot — but the leak starts over, so a recreate is what makes it stop.
+
+### Groups and deployment modes
+
+An agent lives in a **group**, and a group is both what is isolated and who can
+see it:
+
+- **Private** — only you. One per person, sealed, invisible even to an admin.
+- **Restricted** — your team: a member list, any member can invite.
+- **Public** — everyone. `Main` is the default public group.
+
+You see and drive only your own groups plus the public ones; that covers the
+agent list, secrets, the shared ledger and messaging between agents. Private and
+restricted groups are real walls: each agent runs as its **own OS user** with its
+own home and secrets, never as root. Crossing a wall is always a deliberate act:
+drop a file in the shared `~/shared/` folder, record a ledger line with
+`--public`, push a branch, or message an agent (public groups freely, restricted
+ones only with a handle they gave you; private groups cannot be messaged).
+
+Real isolation needs two things, checked once at boot:
+
+1. the server can create OS users (it runs as root or has passwordless `sudo` —
+   the official Docker image or a VPS deploy), **and**
+2. a GUI password is set (`SHADOK_GUI_PASSWORD`), because accounts are who the
+   walls protect.
+
+Both → **multi-tenant**. Anything else — `npx shadok-ai` on your machine, Docker
+without the password — stays **single-tenant**, exactly as before: it says so and
+refuses to create a private or restricted group rather than drawing one that
+protects nothing. You don't configure this; it follows from how you run it. The
+boot log prints `deployment mode: …`.
+
+An existing single-tenant instance that comes up capable is migrated
+automatically: what you have becomes the public `Main` group, each account gets
+a private group, and agents restart one at a time. A banner shows progress. Once
+migration completes, private and restricted agents run as their own non-root
+user, and `Main` agents run as a shared non-root `main` user. Until migration
+completes (or if it fails), agents keep running as before, so the non-root
+guarantee does not yet hold for them. On a **brand-new** instance one migration
+step — seeding the shared Claude credential — can only run once you have signed
+in to Claude, which happens after boot; the banner stays up until then and the
+migration **finishes on its own the moment you sign in** (no restart needed).
+**One-time provisioning:** isolated-group agents authenticate with a
+subscription token injected into their environment, not a shared credential
+file. A fresh instance asks for it through the **Connect Claude** card that opens
+after the welcome tour — **no shell needed**: as an admin, pick **1 month** (an
+interactive login, the agents get your claude.ai connectors, one connection per
+isolated space) or **1 year** (this long-lived token, model access only), click
+**Open claude.ai**, authorise, and paste the code back; the server mints and
+stores it. **I already have a token** takes one minted elsewhere with
+`claude setup-token`. Rotate it later with **Replace subscription token…** in the
+version menu. Until a space is connected, its spawns are refused (`code:
+"space-not-connected"`): an admin gets the card for that space, a member is told
+to ask an admin. From Telegram, `/mttoken` then
+`/mtcode <code>` do the same. The token is captured and vaulted server-side and
+is never shown. It is valid for about a year; re-run the card (or `/mttoken`)
+before it expires. The shell path still works as a fallback: `claude setup-token`
+and store the result as the vault secret `MT_CLAUDE_OAUTH_TOKEN`.
+
+**Connectors: token vs login.** That token can only make model requests — it
+does **not** carry your claude.ai **Connectors** (Slack, Google Workspace,
+Microsoft 365, Atlassian, …). If you want agents to use your connectors, switch
+the instance's **agent auth mode** to **login**: instead of the token, each OS
+user (the shared *commons* user, plus each private group's user) does a one-time
+`claude auth login` from the cockpit, into its own home, and its agents then see
+the connectors. The trade-off is lifetime: a login lasts about a **month** (vs a
+year for the token) and is **per user**, so the cockpit shows a status row per
+user and reminds you to reconnect before each lapses. The default stays
+**token** — nothing changes until an admin switches. A login is never shared
+across OS users (Claude rewrites the credential single-owner on refresh), which
+is why each user logs in separately. Design:
+`docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md`.
+
+**Git over SSH, per group.** Each group has its own SSH identity: the shared
+*commons* (every public group) reuses the cockpit's historical container key —
+the one already registered on your forge — and every **walled** group (restricted
+or private) gets a key of its own. The keypairs live on the `shadok-data` volume,
+so they survive a recreate even though the agent homes do not, and the private
+half never leaves the server's own 0700 home: a copy is written into each
+agent's `~/.ssh` as that OS user.
+
+A key is only an identity once a remote accepts it, so **read a group's public
+key and register it** where its agents must clone or push: `GET /groups/ssh`
+returns one row per group you can see — `{group, name, osUser, publicKey,
+shared}` — and `shared: true` marks the historical key, which you register once
+for every public group. The rows go through the same visibility filter as
+`GET /groups` (a private group stays invisible even to an admin), and only the
+`.pub` half is ever read. A `publicKey: null` means no keypair has been minted
+yet, not an error. Until a group's key is registered, its agents simply cannot
+reach that remote over SSH.
+
+**Persist the group homes (recommended in Docker).** Each dropped agent runs as
+its own OS user with HOME under `SHADOK_HOME_BASE` (default `/home`), which is
+**not** on the `shadok-data` volume by default — so a `docker rm` + recreate
+wipes those homes, taking their Claude first-run/trust state (agents briefly land
+on the "trust this folder" dialog until it is re-seeded) and, in **login** mode,
+the per-user credentials (every user has to log in again). shadok re-seeds the
+trust robustly on boot, but to avoid the churn entirely mount the home base on a
+volume, the same move as the SSH key (below): e.g. add `-v shadok-homes:/home` to
+the `docker run`. A plain restart never needed this; only a recreate does.
+
+Telegram stays single-owner, and there are no
+disk quotas yet. Design: `docs/superpowers/specs/2026-10-29-multi-tenant-scoped-isolation-design.md`.
+
 ### Exposing it beyond this machine
 
 The cockpit runs arbitrary commands on the host by design, so it binds
@@ -257,13 +715,86 @@ know before opening it up:
 - **That password is the `admin` account.** With it set, the login page gains a
   user field — leave it blank to sign in as the admin. An admin can then invite
   other people from the **Users** panel: each invitation is a single-use link,
-  valid 7 days, on which the invitee chooses their own password, so the admin
+  valid 48 hours, on which the invitee chooses their own password, so the admin
   never learns it — and redeeming the link signs them in straight away. The ⋯
   menu names who you are and lets you sign out. Two roles: `admin` manages
   accounts, `member` does everything
   else you do. Accounts belong to **one instance** (one launch directory), like
   its channels and its scheduled prompts. With no password there are no
   accounts and no login screen — nothing changes for a machine you use alone.
+  When a signed-in session **expires** (the cookie lasts a week), the open tab
+  returns you to the login screen on its next request instead of failing in
+  place — a paste that would not send, an agent list that would not refresh.
+- **Two-factor sign-in (passkeys).** From the **Users** panel, anyone signed in
+  with a named account can register a passkey on their device — the
+  fingerprint / face / PIN unlock of the phone or laptop (WebAuthn, user
+  verification required). An admin can then turn **Two-factor sign-in** on for
+  this instance. From then on a correct password only opens a second step, and
+  the session exists once the passkey answers.
+  - Switching it on needs **at least 2 named admins, each with a passkey** —
+    recovery is "another admin resets you", so a lone admin who lost their phone
+    would lock the cockpit for good. The acting admin confirms with their
+    passkey.
+  - **Adding a device from another one**: on a signed-in device, *Add another
+    device (code)* shows an 8-character code valid 10 minutes, single use. On the
+    new device, sign in with the password, choose *use a code*, register. A
+    password alone never registers a passkey — that is what stops a stolen
+    password from enrolling the thief's phone.
+  - **Lost something**: another admin opens *recover access…* on your row and
+    picks what you lost (always confirming with their own passkey). Nobody can
+    recover themselves.
+    - *lost password* — one admin; you get a link (48 h), choose a new password,
+      then confirm with one of your passkeys, which are all kept;
+    - *lost passkey* — a **second admin approves** from their Security panel; you
+      then get a device code (48 h) to register a new device;
+    - *lost everything* — password and passkeys are wiped **24 hours** later, or
+      as soon as a second admin approves; you, the asker or any admin can cancel
+      it meanwhile.
+    Making or unmaking an admin also needs a second admin's approval. A device
+    code for someone who has no passkey yet is still one admin's act. Every
+    session opened before a recovery stops working — including one on the lost
+    device; removing a passkey or demoting an admin does the same.
+  - While it is on, inviting, deleting an account and changing a role also ask
+    the admin for their passkey.
+  - **Security panel** (🛡 in the header, a badge when something is new): what
+    was done to your account — invited, made admin, reset, a passkey added or
+    removed, a recovery asked about you — and, for admins, the whole log, the
+    requests waiting for their approval, and their own requests with the link or
+    code to hand over once done. On anything you don't recognise,
+    **This wasn't me** ends your other sessions, removes a passkey you did not
+    add, and flags it to every admin. There is no mail yet: this panel is the
+    channel, so keep an eye on its badge.
+  - While it is on, the instance password (`admin`) **cannot sign in to the
+    browser** — no one could reset it (and agents started before it was removed
+    from their environment still hold it); use a named account. Agents, Telegram and peers keep working (they never use
+    the login), but account and two-factor management is reserved to a signed-in
+    person: an agent's key can no longer create or reset accounts.
+  - Passkeys need a **secure context**: `https://` (see "Behind TLS") or
+    `localhost`. They are bound to the hostname — one made on
+    `cockpit.example.com` does not work on `localhost`.
+  - **Break-glass**, if every admin loses everything at once: on the machine,
+    remove the instance's entry under `twoFactor` in `~/.shadok-ai/config.json`
+    and restart. Whoever has that shell could read every secret anyway.
+  - What it protects against: a leaked password used over the network, and every
+    session issued before it was switched on (they stop working). What it does
+    not: anything already running as the machine's user — same soft isolation as
+    profiles.
+- **An agent is not the admin.** An agent authenticates to its own cockpit with
+  `SHADOK_SESSION_KEY`, and that key makes it **that agent**: a member of its own
+  channel's group, never an admin. It can drive its siblings (in multi-tenant:
+  the agents of its own group plus public ones), schedule prompts on its
+  channel, store a secret it obtained, record in the ledger, send you files,
+  reload itself — and is refused (`403`) on account, peer, Telegram, backend and
+  the other admin routes, and on every **browser-only** route (guardrails, shell
+  mode, uploads…), which now require a signed-in person's session rather than
+  an `Origin` header. Agents are no longer handed the admin's cookie
+  (`SHADOK_AUTH`) nor the instance password (`SHADOK_GUI_PASSWORD`). An agent
+  that a restricted peer spawned stays in that peer's box.
+  **Upgrading:** the first start of this version signs out whoever is signed in
+  with the instance password (once). Agents spawned before it still hold the
+  password in their environment — **change the password** (`--password` /
+  `SHADOK_GUI_PASSWORD`) and **reload those agents** (version menu → *Restart all
+  agents*) to take it away from them.
 - Once people are named, **a prompt carries its sender**: the agent sees who
   asked, and the other browsers show the name above the message instead of
   "pilot (elsewhere)". The server takes that name from the session, never from
@@ -278,6 +809,38 @@ Browsers may only talk to the cockpit from its own origin — a WebSocket ignore
 the same-origin policy, so without that check any page you happen to visit could
 drive your agents. Behind a reverse proxy that rewrites `Host`, list the public
 origin in `SHADOK_ORIGINS`.
+
+**Which host names it answers (DNS rebinding).** A page on `evil.com` can
+re-point its own name at `127.0.0.1`; its requests then carry `Origin` *and*
+`Host` `evil.com:3789` and look same-origin. So the server also checks the
+`Host` header, on every request and on the WebSocket upgrade:
+
+- **No password** (the local default): only `localhost` / `*.localhost`, any IP
+  address, and this machine's own name (`hostname`, `hostname.local`) are
+  answered, on any port. Anything else gets `403 host not allowed` and one log
+  line. If you really reach a password-less cockpit through another name (an
+  `/etc/hosts` alias, a same-host proxy), add it to `SHADOK_ALLOWED_HOSTS`.
+- **With a password**: every `Host` is answered, as before — a rebound page
+  holds no cookie for your cockpit, so it is a stranger at the login page. This
+  is what keeps a container behind nginx/Cloudflare on its own domain working
+  with no change. Setting `SHADOK_ALLOWED_HOSTS` tightens it to that list
+  (loopback names and IPs always stay allowed — agents call `127.0.0.1`).
+
+`SHADOK_ALLOWED_HOSTS` is comma-separated: names, `host:port` or whole origins
+(the port is ignored), `.example.com` for a domain and its subdomains, `*` to
+switch the check off. The hosts in `SHADOK_ORIGINS` are accepted too.
+
+**Sign-in attempts are limited.** A failed `POST /login` is counted against the
+caller's address (10 per 15 minutes) and against the account (20 per 15
+minutes, from all addresses together); past that the answer is `429` with a
+`Retry-After`, before any password is checked. Enrollment codes are counted the
+same way. An unknown user name costs the server exactly what a real one does,
+so the timing says nothing about which accounts exist. The counters live in
+memory: a restart clears them. Behind a proxy the address is the one the proxy
+appended last to `X-Forwarded-For` — trusted only when the proxy connects from
+this machine or a private range (the Docker bridge); a proxy that sends no
+`X-Forwarded-For` puts every visitor in one address bucket, so ten wrong
+passwords from anyone lock the login for everyone for 15 minutes.
 
 ### Behind TLS (nginx, Caddy…)
 
@@ -294,11 +857,39 @@ location / {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
     proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # see below
+    proxy_set_header X-Forwarded-Proto $scheme;                   # Secure cookies
+    client_max_body_size 50m;   # match the server's paste limit
 }
 ```
 
+**Forward the client address.** An agent authenticates to its own server with a
+session key that never expires, so the server accepts that key **only from this
+machine, directly** — never from the network, where a key leaked by a
+prompt-injected agent would otherwise be permanent admin. A proxy on the same
+host connects from `127.0.0.1` too; the `X-Forwarded-For` line is what tells the
+server the request was relayed. Without it, requests through a same-host proxy
+look local. (A proxy on another host, or nginx in front of a Docker container,
+is already seen as the network.)
+
+The same header is what the sign-in limiter keys on (see "Exposing it beyond
+this machine").
+
+**Secure cookies.** With `X-Forwarded-Proto: https` from a proxy on this machine
+or a private range (Docker bridge), the session cookies are set `Secure`, so a
+browser never sends them over plain http. Without that header they are set as
+before.
+
 The client picks `wss://` on its own when the page is HTTPS, so there is nothing
 to configure on that side.
+
+**Upload size.** The server accepts a pasted/dropped file up to 50 MB, but
+nginx's default `client_max_body_size` is **1 MB** — a full-page screenshot
+sails past that, and nginx answers its OWN `413` HTML page **before** the request
+reaches the cockpit. Raise the limit to match (`client_max_body_size 50m;`),
+or a paste larger than 1 MB fails at the proxy. The cockpit now shows a plain
+"too large" instead of a JSON parser error, but the file still won't go through
+until the proxy allows it.
 
 **Idle timeout.** A resting agent's `/ws` carries no traffic, and proxies
 idle-close a quiet socket (nginx `proxy_read_timeout`, 60s by default;
@@ -307,6 +898,66 @@ Cloudflare ~100s) — the symptom is a cockpit that keeps flashing
 every 25s (tunable with `SHADOK_WS_PING_MS`) to keep the connection warm, so no
 proxy change is normally needed; if your proxy still cuts it, raise
 `proxy_read_timeout` above the ping interval.
+
+**Sleep / wake / network blips.** When the machine comes back (an `online`
+event, the tab becoming visible, a back/forward-cache restore), the cockpit
+revives the links that actually **dropped** — resetting their backoff so a
+genuinely-closed socket reconnects promptly instead of waiting out a delay that
+climbed while you were away. A socket that still reports "open" is left alone:
+`online` fires on every network blip (wifi roam, VPN, interface change), and
+force-reconnecting healthy links on each one reconnected all your agents at
+once — tripping the upstream single-use-token OAuth refresh race so a batch
+stuck on "connecting…". A slept socket that looks "open" but is dead is
+terminated by the server heartbeat (~50s) and reconnects on the resulting
+`close` without that churn. Only a back/forward-cache restore force-replaces an
+"open" socket, because there the restored page's old sockets are dead yet fire
+no `close`.
+
+### Cross-instance peers
+
+Agents can spawn and drive agents on **another** instance — another of yours, or
+a teammate's. It is opt-in and gated like an account.
+
+On the instance being reached (call it **B**), an admin **invites an agent** —
+in the **Users** panel, exactly like inviting a person, except the invitee is a
+machine so it gets a **prompt to paste** instead of a login link. Give it a name
+and, optionally, a brief (what you want it to do); B mints a named, revocable
+credential and hands you a ready-to-paste block: the cockpit URL, the key, the
+brief, and the commands to join. Copy it into whatever agent you're inviting.
+
+(The same thing over the API: `POST /peers {name, brief}` returns
+`{ name, token, invitePrompt }` — the token is shown once.)
+
+On the calling instance **A**, the invited agent registers B and drives it with
+`pilotctl --peer` (the pasted prompt spells this out):
+
+```bash
+pilotctl peer add B https://B <token>
+pilotctl spawn --peer B --profile dev --name "migration bot" --cwd /workspace
+pilotctl prompt <id> "run the migration" --peer B
+pilotctl diff <id> --peer B
+```
+
+The credential is **non-expiring and revocable** (`DELETE /peers?name=instance-a`
+on B kills it immediately — future calls **and** the live link). Each invitation
+carries a **scope**, chosen when you invite:
+
+- **restricted** (the default) — only the agents it creates on B; it can never
+  see, resume, drive or diff B's other agents.
+- **member** — the invited agent acts **like a person you invite**: it sees,
+  drives and measures **every** agent on B, spawns more, reads its usage. It is
+  not an admin (no account or peer management).
+
+The narrow scope is what you get when you say nothing — including for a peer
+invited before scopes existed, which stays restricted until you re-invite it as a
+member. A credential already in someone else's hands never widens on its own.
+
+**This is remote code execution by a third party** — a peer that can `spawn` runs
+commands on B's machine, and a **member**-scope peer has a member's full reach. It
+is a deliberate admin grant (you trust an invited agent exactly as much as an
+invited person), and a container per instance stays the real boundary (see
+*Exposing it beyond this machine*). Even a member cannot read secret **values**
+(`/secrets` returns names only) — the vault's floor holds.
 
 ### Signing in to Claude
 
@@ -350,6 +1001,55 @@ file *before* starting the container (`docker create` → `docker cp` →
 `docker start`). That ordering is no longer necessary: shadok writes the file
 itself, before any session spawns.
 
+### Running on a self-hosted model
+
+shadok drives Claude Code, and Claude Code can talk to any server that speaks
+the Anthropic Messages API: Ollama, llama.cpp's `llama-server`, vLLM, or a
+LiteLLM proxy in front of anything else. Point it there with
+`ANTHROPIC_BASE_URL`, and agents on that backend need **no Claude sign-in** and
+are **never held by the quota guard** (they don't spend your subscription).
+
+Three ways to do it:
+
+- **From the cockpit — the easy one.** The Connect Claude card a fresh instance
+  opens has a **Use another model** link: pick a provider (Ollama, a llama.cpp
+  server, DeepSeek, Z.ai/GLM, Moonshot/Kimi, or any Anthropic-compatible
+  server), the address and model are pre-filled, the models a local server
+  serves are listed for you, and **Test** sends one real request before
+  anything is saved. The lead agent starts as soon as you save. Change it later
+  from the version menu, **⚙ Model backend…** (which also offers to go back to
+  the subscription). The choice is stored per launch directory in
+  `~/.shadok-ai/config.json` and takes precedence over the environment; running
+  agents keep the model they were started with until they are reloaded.
+- **The whole instance, from the environment.** Launch shadok with the variables:
+
+  ```bash
+  ANTHROPIC_BASE_URL=http://localhost:11434 ANTHROPIC_AUTH_TOKEN=ollama ANTHROPIC_MODEL=qwen3-coder:30b SHADOK_CONTEXT_WINDOW=64k npx shadok-ai
+  ```
+
+- **One role.** Store the same names as vault secrets and attach them to a
+  profile: agents on that profile use the local model, the rest stay on the
+  subscription. A profile's secrets win over the instance's environment.
+
+| Variable | Meaning |
+|---|---|
+| `ANTHROPIC_BASE_URL` | The server. Anything that is not `*.anthropic.com` counts as a custom backend. |
+| `ANTHROPIC_AUTH_TOKEN` | Sent as a bearer token. Any value when the server checks none. Prefer it to `ANTHROPIC_API_KEY`, which makes Claude Code ask for confirmation. |
+| `ANTHROPIC_MODEL` | The model to run. Also fills every unset `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` and `ANTHROPIC_SMALL_FAST_MODEL`, so the model picker and Claude Code's background calls reach it too. |
+| `SHADOK_CONTEXT_WINDOW` | The window the context gauge measures against (`64000`, `64k`, `1m`). Without it the gauge assumes Claude's 200k. |
+
+Hugging Face Inference, Together, Groq and the other **OpenAI-only** APIs are
+not in the list on purpose: Claude Code speaks only the Anthropic format, so
+they need a translating proxy (LiteLLM, claude-code-router) in front — then
+point *Another Anthropic-compatible server* at the proxy. The Test button tells
+the two cases apart and says so.
+
+Two things are on you. The model needs **reliable tool calling and a long
+context**: Claude Code's own prompt and tool list take ~15–20k tokens before
+your first word. And the server must actually *serve* that context: Ollama's
+default is a few thousand tokens, so set `OLLAMA_CONTEXT_LENGTH` (64k is a sane
+floor) or the agent will lose its instructions without any error.
+
 ### SSH identity in Docker
 
 When shadok-ai runs **in a container** it gives itself an SSH key on first boot
@@ -375,7 +1075,11 @@ On a normal (non-Docker) host this is a **no-op** — shadok never touches your
 ### Configuration
 
 Config lives in `~/.shadok-ai/config.json` (mode 600) and is **authoritative
-over the environment once set** from the GUI. The Telegram token, allowed
+over the environment once set** from the GUI — with two exceptions where the
+environment wins: `SHADOK_GUI_PASSWORD` (a saved `--password` is used only when
+that variable is unset, and nothing in the cockpit can change it — on Docker,
+the password is the one the container was created with) and
+`TELEGRAM_BOT_TOKEN`. The Telegram token, allowed
 chats, and the bridge on/off switch are **per launch directory** — running the
 server from another repo gives you a different cockpit and a different bot. So
 are the channel list and the scheduled prompts.
@@ -388,15 +1092,19 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 |---|---|
 | `PORT` | HTTP/WS port |
 | `SHADOK_HOST` | interface to bind (default `127.0.0.1`, this machine only) |
-| `SHADOK_GUI_PASSWORD` | require a password for the GUI |
-| `SHADOK_ORIGINS` | extra browser origins allowed, comma-separated (reverse proxy) |
+| `SHADOK_GUI_PASSWORD` | require a password for the GUI — overrides a password saved by `--password` |
+| `SHADOK_ORIGINS` | extra browser origins allowed, comma-separated (reverse proxy); their hosts also pass the Host check |
+| `SHADOK_ALLOWED_HOSTS` | host names the cockpit answers besides its own (DNS-rebinding guard); with a password, setting it makes the check strict. `*` disables it |
 | `SHADOK_TMUX=0` | force the node-pty transport instead of tmux |
 | `SHADOK_IDLE_MIN` | minutes with no client before a session is reclaimed (60) |
+| `SHADOK_AUTO_RELOAD=0` | don't apply a pending "reload to apply" by itself — leave it to the ↻ click |
+| `SHADOK_AUTO_RELOAD_IDLE_SEC` | how long an agent must be quiet before that automatic reload (120) |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
 | `SHADOK_GREETING=0` | the lead agent starts silent — no first-message greeting |
-| `SHADOK_LEDGER=1` | opt into the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (OFF by default; the GUI/config setting wins once used) |
+| `SHADOK_LEDGER=0` | turn OFF the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (**ON by default**; `SHADOK_LEDGER=0` or the GUI/config setting turns it off) |
+| `SHADOK_SEED_SKILLS=0` | don't rewrite the machine-wide skill scripts at boot — for a build run side by side with another instance, so it doesn't hand that instance's agents scripts newer than the server they call |
 | `SHADOK_RESUME_SUMMARY=1` | don't auto-answer the resume-from-summary prompt |
 | `SHADOK_SSH_IDENTITY=0` · `SHADOK_FORCE_SSH_IDENTITY=1` | disable / force the Docker SSH identity |
 | `TELEGRAM_BOT_TOKEN` · `TELEGRAM_ALLOWED_CHATS` | override the stored config |
@@ -418,6 +1126,7 @@ wrong**, not in a catch-up pass afterwards:
 | `CLAUDE.md` | the file→responsibility map, the build/run recipe, the invariants | you add a module, or you lose an afternoon to something the next person would lose it to as well |
 | `docs/architecture.md` | how a subsystem actually works and why it was built that way | you add or reshape a subsystem, or you make a design trade-off worth remembering |
 | `docs/superpowers/specs/` | one design per feature, dated | before building anything non-trivial |
+| `docs/deploying-an-instance.md` | the order of operations to put ONE instance online on its own machine | a deployment step changes: the image, the volume list, the proxy requirements, the upgrade path |
 
 This is not bookkeeping. A doc that lags is worse than no doc: it is confidently
 wrong, and it is read as current. `docs/architecture.md` once went **48 commits**
@@ -493,6 +1202,13 @@ The numbers tell you which channel a version came from. An alpha carries the
 commit count (`0.3.78`); a promotion is a round `0.4.0`. The auto-update switch
 and the reload behaviour are identical on both.
 
+An update installs with npm's lifecycle scripts **off** (`--ignore-scripts`):
+only node-pty's native build is run, explicitly, through `npm rebuild node-pty`.
+Each release ships its tested lockfile as `npm-shrinkwrap.json`, so every
+transitive dependency lands at the exact version and integrity hash CI ran.
+The install happens in a staging copy of `~/.shadok-ai/app` and replaces it only
+once complete, so a failed native build leaves the running version in place.
+
 ```bash
 ```
 
@@ -548,7 +1264,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 
 | Message | Purpose |
 |---|---|
-| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"cli"`…) travels with `prompt-echo` so other clients can say who spoke. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
+| `{type:"start", cwd?, resume?, continue?, worktree?, branch?, repo?, profile?, parent?, origin?}` | starts or attaches to the session (once per connection). `origin` (`"web"`, `"cron"`, `"telegram"`, `"agent"`, `"peer"`, `"cli"`) travels with `prompt-echo` so other clients can say who spoke. It is DERIVED by the server from what the connection proved (system-drive secret, Telegram-bridge secret, agent session key, peer token, same-origin browser); the frame's own `origin` is only honoured to narrow an unauthenticated local client to `"cli"`/`"boot"`. A line of the prompt text shaped like a header, ledger block or cron/agent mark is prefixed with `\` so it stays text — and a prompt from someone (web/telegram/cli/agent) also reaches the TUI under a `⟦platform · time · sender⟧` header, so the agent knows whether the human or a sibling agent is talking to it. An `agent` header ends with the sender's short session id — its reply address, since a tab name is not unique — and that id is stripped back out of the name before display, so it never appears in the chat. `parent` records who launched this agent — a refused link is dropped and logged, never fatal to the spawn |
 | `{type:"prompt", text, force?}` | sends a prompt (`force` bypasses the pace guard) |
 | `{type:"choose", n}` | single-select dialog: picks and validates option n |
 | `{type:"toggle", n}` / `{type:"confirm"}` | multi-select: toggles option n / submits |
@@ -570,8 +1286,9 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"stream-text", text, at?}` | a complete assistant text block, from the transcript. `at` is when it was **written**, not when we read it |
 | `{type:"stream-tool", id, name, summary}` / `{type:"stream-result", …}` | tool call / tool result |
 | `{type:"tokens", tokens}` / `{type:"context", pct}` | token usage / context fill |
+| `{type:"social-draft", draft}` | a post waiting for approval, or its new state (published with URL, discarded, expired, failed) — the approval card. Also replayed inside `history` on reload. Never carries a token |
 | `{type:"parent", parent}` | the channel's parent changed (broadcast, so every tab follows) |
-| `{type:"prompt-echo", text}` | prompt sent by another client of the session |
+| `{type:"prompt-echo", text, origin?, from?}` | prompt sent by another client of the session. `from` is resolved SERVER-side for a web, agent or peer prompt (the signed-in account / the calling agent's tab name / the peer's name); a frame's `from` is believed only from the Telegram bridge |
 | `{type:"dialog", question, options:[{n,label,hint,checked?}], multi}` | choice pending |
 | `{type:"history", turns:[…]}` | transcript replayed when resuming/attaching |
 | `{type:"screen", text, working}` | rendered TUI screen (whenever it changes) |
@@ -579,22 +1296,64 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"auto-retry"}` / `-cancelled` / `-gave-up` | transient API error being retried |
 | `{type:"version", …}` / `{type:"server-reload", version}` | update available / server updated, reload |
 | `{type:"term-data", data}` | **experimental** — raw pane output (base64) for a client-side terminal emulator |
-| `{type:"gone"}` / `{type:"error", message, code?}` / `{type:"exited", code}` / `{type:"stopped"}` | session lost, errors, termination. `error.code` is `"busy"` for a prompt refused mid-turn and `"logged-out"` for a spawn refused because the instance isn't signed in — so a machine client needn't match on the message text |
+| `{type:"gone"}` / `{type:"error", message, code?}` / `{type:"exited", code}` / `{type:"stopped"}` | session lost, errors, termination. `error.code` is `"busy"` for a prompt refused mid-turn and `"logged-out"` for a spawn refused because the instance isn't signed in, `"resume-refused"` for a `resume` whose shortened id matches no agent or several — so a machine client needn't match on the message text |
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
-`/channel` (DELETE), `/groups`, `/crons`, `/timezone`, `/title` (GET/PUT — the
+`/channels/glance` (GET — each visible row's last-message time and context %,
+read from the transcript's tail so the list fills before the agents resume),
+`/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
+register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
-key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default),
-`/profiles`, `/secrets`, `/telegram`, `/defaults`, `/first-agent` (GET —
+key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default.
+The default palette (stored key `amber`, labelled *Shadok*) is the Teams purple in
+light mode and an indigo in dark mode; light mode follows Microsoft Teams, dark
+mode a neutral near-black.
+Light/dark **mode** is an orthogonal, **per-browser** choice in the same menu
+(default dark; stored in `localStorage`, applied before first paint) and needs no
+endpoint — the accent is the instance's shared identity, the mode is personal),
+`/profiles`, `/secrets`, `/secrets/audit` (GET, **admin only** — the secret
+audit log: who created/updated/deleted a secret, which profile it was attached
+to, and which agent **received** it at spawn or in a cron guard, with the person
+or door that caused it; names only, never a value; filters `secret`, `action`,
+`actor`, `agent`, `since`, `limit`. Also in the vault panel → *Audit log*, and
+🕘 on each secret), `/telegram`, `/defaults`, `/first-agent` (GET —
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
+`/connect/status` (GET — `{available}`: is the broker reachable/configured),
+`/connect/linkedin/start` · `/connect/linkedin/complete` (POST, browser person
+only — the OAuth hand-back; `/connect/linkedin/done` (GET) is the page the
+broker returns the browser to), `/connected-accounts` (GET — the accounts
+you may use, never a token, plus `softLayer`; your own accounts also carry
+`expiringSoon` / `expired`, for the banner; `GET /:id/log` — that account's
+last 50 publication-log entries, newest first; `PUT /:id` changes share/policy,
+`DELETE /:id` disconnects — owner or admin, browser only),
+`/social/accounts` (GET) and `/social/posts` (POST) — the **agent** side,
+authenticated by `x-shadok-session-key` —, and `/social/drafts/:id/publish` ·
+`/social/drafts/:id/discard` (POST, browser person only),
 `/update-channel` (POST `{channel}` — `alpha` or `beta`), `/permission-mode`, `/tweak/prepare` (POST — clone/refresh shadok-ai's own source,
-returns the cwd to start the tweak agent in), and the sign-in group: `/auth` (GET
-— `{loggedIn, email?, subscriptionType?}`), `/auth/login` (POST — start a flow,
-returns `{url}`; DELETE — cancel it), `/auth/code` (POST `{code}`).
+returns the cwd to start the tweak agent in). The instance-wide writes —
+`/autoupdate`, `/update-channel`, `/permission-mode`, `POST /ledger`, a bare
+`POST /restart-all`, the Claude sign-in (`POST /auth/login`, `/auth/code`,
+`DELETE /auth/login`), `PUT /title`, `PUT /theme`, `/tweak/prepare` and
+`DELETE /profiles` — are **admin only, from the browser**; a member sees those
+controls disabled. `PUT /profiles` is admin only on a multi-tenant instance
+(profiles are global there), and `POST /restart-all {sessions:[…]}` stays open,
+narrowed to the agents the caller may drive. Also `/media/<name>` and
+`/media/g-<group>/<name>` (GET — serves a pasted/dropped or Telegram attachment
+back for inline display; sandboxed, never a symlink, a group's directory only to
+someone who can see that group), and the sign-in group: `/auth` (GET
+— `{loggedIn, email?, subscriptionType?, tokenExpiresAt?, accessExpiresAt?, backend?, backendModel?}`;
+the expiries come from the credentials store, never a token value; `backend:
+"custom"` when the instance runs on another model), `/auth/login`
+(POST — start a flow, returns `{url}`; DELETE — cancel it), `/auth/code`
+(POST `{code}`); and the model-backend group (admin, browser only for writes):
+`/backend` (GET — the backend in use without its key, plus the presets; PUT —
+`{baseUrl, model, authToken?, contextWindow?}` or `{clear: true}`),
+`/backend/test` (POST — one real `/v1/messages` round trip) and
+`/backend/models` (POST — the models a server offers).
 
 ## Library
 
@@ -623,7 +1382,7 @@ Main API:
 | `submit(text)` | types a prompt + Enter, with verification and retries |
 | `write(text)` / `press(key)` | low-level keystrokes (`enter`, `escape`, `up`, `tab`, `ctrl-c`…) |
 | `screen()` / `fullBuffer()` | rendered screen / full buffer |
-| `waitForIdle({stableMs, timeoutMs})` | waits for the end of a turn |
+| `waitForIdle({stableMs, timeoutMs, settleOn?})` | waits for the end of a turn; `settleOn(screen)` names a dialog (or `null`) so a dialog that never holds still — a ticking countdown — still ends the wait |
 | `waitFor(predicate)` | waits for an arbitrary screen condition (dialogs, permissions…) |
 | `isWorking()` | true while Claude is working |
 | `onData(cb)` / `onExit(cb)` | raw ANSI stream (mirror mode) / process exit |

@@ -1,6 +1,6 @@
 ---
 name: shadok-ai-agents
-description: Create and drive isolated Claude Code agents through the shadok-ai server (git worktrees, prompts, dialogs, diff). Use when the user wants to delegate a task to a shadok-ai agent, launch agents in parallel, or inspect/drive existing shadok-ai sessions.
+description: Create and drive isolated Claude Code agents through the shadok-ai server (git worktrees, prompts, dialogs, diff). Use when the user wants to delegate a task to a shadok-ai agent, launch agents in parallel, or inspect/drive existing shadok-ai sessions — and on your own initiative whenever a task contains a long, independent piece of work (its own branch, PR or repo) that can run alongside yours instead of after it.
 ---
 
 # Driving shadok-ai agents
@@ -20,17 +20,20 @@ and automatically starts the shadok-ai server when it is not running (port
 
 | Command | Effect |
 |---|---|
-| `spawn [--cwd DIR] [--worktree] [--profile NAME] [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`). `--profile` gives it a role + its guardrails + its secrets (see below) |
+| `spawn [--cwd DIR] [--worktree] [--profile NAME] [--name LABEL] [--resume ID] [--continue]` | creates an agent → `{sessionId, cwd, branch}`. Skill Factory skills are not passed here: the agent runs every factory skill shared with its group (or with everyone, or private to its creator), at the latest release accepted for that group. `--worktree` isolates the agent in a git worktree (`~/.shadok-ai/worktrees/`, branch `shadok-ai/<tag>`). `--profile` gives it a role + its guardrails + its secrets (see below). `--name` sets the agent's tab name in the cockpit (spawn only; a later rename in the UI is kept) — without it the name is derived from the profile/directory, so several agents look alike |
 | `prompt <id> "text" [--timeout s]` | sends a prompt, waits for the end of the turn → `{status:"answer", text, tools}` or `{status:"dialog", question, options, multi}` or `{status:"timeout", screen}` or `{status:"pace-blocked", reason}` |
 | `dialog <id>` | queries the state → `{status:"idle"}` or the pending dialog |
 | `choose <id> <n>` | single-select dialog: picks and commits option n |
 | `toggle <id> <n>` then `confirm <id>` | multi-select dialog: check/uncheck then submit |
 | `freetext <id> <n> "text"` | the "Type something" option: a free answer |
-| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions |
+| `list [--cwd DIR]` | driven agents (local state + alive/dead) and resumable sessions. With `--peer X`: the agents running ON X (from X itself, tagged `peer`), plus X's resumable sessions only for a `--cwd` you name — a path on X |
 | `diff <id>` | the agent's changes (git status + diff against the worktree's base) |
 | `stop <id>` | ends the session (for ALL its clients) |
+| `set-parent <id> <parent-id\|none>` | re-link an agent to a parent, or **detach** it with `none` (it then reports to nobody). The link is what makes the parent hear when the agent finishes, blocks or dies — set automatically at spawn, flipped here when a side task is done and you want it off a lead's back |
 | `screen <id>` | raw TUI screen (debug) |
 | `profile-prompt "<text>" [--name NAME] [--readonly]` | rewrites a profile's **system prompt**: your own by default; any of them (and creation with `--name`) under the lead profile |
+| `talk-handle` | prints **your own** handle — the "here is a handle to me" you share so another agent can send you a letter → `{handle}` |
+| `talk <handle> "message"` | sends a one-way **letter** to the agent that handle points to → `{ok, delivered}`. A letter, NOT a drive: it is read in the recipient's own context and you get no transcript back (see below) |
 
 ## Choosing a profile (`--profile`)
 
@@ -111,12 +114,100 @@ Practical consequence: **do not loop to watch an agent any more.** Launch the
 time, and the information comes to you.
 
 `--parent none` spawns an agent deliberately unattached; `--parent <id>`
-attaches it elsewhere.
+attaches it elsewhere. To change the link on an agent that is **already
+running** — detach one whose notifications you no longer want, or move it under
+a different lead — use `set-parent <id> <parent-id|none>`. In the cockpit the
+same thing is a click: an agent's tab menu offers "Detach from…" (child side)
+and, on the parent, "Children reporting here…", and a 🔗 on the tab marks any
+agent that has a link.
+
+## Talking across groups: a letter, not a remote control (`talk`)
+
+When agents belong to different **groups** (teams sharing one cockpit), you
+cannot `prompt`/`drive` another group's agent — see/drive stay to your own group
+and to public ones. `talk` is the one narrow, consensual exception: you send a
+one-way **letter** the recipient handles in ITS OWN context, under its own
+guardrails. You never receive its transcript, stream or files back — `talk`
+returns only that the letter was accepted and delivered.
+
+The ACL, enforced server-side:
+
+- an agent in a **public** group — messageable freely, no handle needed;
+- an agent in another **restricted** group — ONLY if you hold its **handle** (an
+  opaque token it shared with you). There is no roster to browse: you can only
+  write to an agent whose handle reached you out of band;
+- an agent in a **private** group — **sealed inbound**: no letter gets in, even
+  with a handle. (But a private-group agent may still send OUTWARD.)
+
+To let someone write to you, give them your handle:
+
+```bash
+node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs talk-handle      # → {"handle":"…"}
+# share that string (a human or a prompt relays it), then they run:
+node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs talk <handle> "please review PR 42"
+```
+
+There is no automatic reply channel — if you want an answer, include YOUR handle
+inside the message. (In mono-tenant / single-team cockpits everything is one
+public commons, so `talk` is simply unrestricted.)
+
+## Being prompted BY another agent
+
+The other direction: a prompt from an agent arrives under a context header
+naming it and ending with its short session id — its reply address:
+
+```
+⟦agent · 2026-11-02 15:40 · Shadok-Boss · b1c347bc⟧
+```
+
+**To answer the turn you need nothing.** `prompt` blocks until your turn ends
+and hands your answer back to the caller — the conversation is already a round
+trip. The address is for reaching them LATER, on your own initiative:
+`pilotctl prompt b1c347bc "…"`.
+
+Two things not to assume. A name is **not** an address: nothing makes tab names
+unique, which is why the id is in the header at all. And the automatic reports
+above go to whoever **spawned** you, which is not necessarily whoever just
+prompted you — if a sibling you did not come from asks you something, its
+address is the only way back to it.
+
+## Driving agents on ANOTHER instance (`--peer`)
+
+You can spawn and drive agents on a **different** shadok instance — another one
+of your own, or a teammate's — over an authenticated link. Add `--peer <alias>`
+**after the command** (like `--profile`/`--cwd`) and it runs against that
+instance instead of this one:
+
+```
+pilotctl peer add brasdroit1 https://brasdroit1.example.com <token>   # once
+pilotctl spawn --peer brasdroit1 --profile dev --cwd /workspace       # spawn there
+pilotctl prompt <id> "run the migration" --peer brasdroit1            # drive it
+pilotctl diff <id> --peer brasdroit1                                  # read its work
+pilotctl stop <id> --peer brasdroit1
+```
+
+- The **token** is minted by the REMOTE instance's admin (a human, in its
+  cockpit — `POST /peers`). Paste it in once with `peer add`; it is kept in a
+  600 file, `peer list` never prints it. You cannot mint your own — that is the
+  point: the other instance decides who may reach it.
+- What you may touch on X depends on the **scope** its admin gave you when they
+  invited you:
+  - **restricted** (the default) — only the agents YOU spawned on X; `--peer X
+    list` and a diff of someone else's agent come back refused (`peer-scope` /
+    `403`). Assume this one unless you were told otherwise.
+  - **member** — you act like an invited user: `list`, `diff`, resume/drive/stop
+    **any** agent on X, spawn more, read its usage. You are not an admin (no
+    account or peer management).
+  Track the ids you `spawn` either way and drive them by id. `list --peer X`
+  answers with X's agents and says so (`peer: <url>`); a refusal comes back as
+  an explicit `peer-scope` error, never as your own machine's list.
 
 ## Guardrails
 
 - NEVER `stop` a session this conversation did not create: it may belong to the
-  user in the web UI. `stop` ends the session for all its clients.
+  user in the web UI. `stop` ends the session for all its clients. (Over `--peer`
+  a **restricted** scope enforces this for you; a **member** scope does not — you
+  have a member's reach on that cockpit, so mind whose agent you stop.)
 - Every agent consumes the Claude quota like an ordinary session. Do not
   multiply agents without an explicit request from the user.
 - `prompt` on a session whose turn is already running → the error "a response is
@@ -146,8 +237,11 @@ curl -sS -H "x-shadok-session-key: $SHADOK_SESSION_KEY" \
   "http://127.0.0.1:$SHADOK_PORT/channels"
 ```
 
-`$SHADOK_AUTH` (a cookie) is still accepted, but it was frozen into your
-environment at spawn and expires after a week, so never rely on it alone. A
+That key is your ONLY credential, and it does not expire. You are no longer
+handed a cookie or the cockpit password, and a call made with the key is made
+as YOU — an agent of your own group, never an admin: account, backend and
+other cockpit-admin routes answer `403`, and so do the person-only (browser)
+ones. That is by design; ask the human when you need one of those. A
 `401` means that header is missing — or that you were started before this
 existed, in which case nothing you hold can authenticate any more and only a
 human can fix it: ask them for *Reload agent* on your ⋯ menu.

@@ -1,13 +1,13 @@
 {
   "name": "shadok-ai",
-  "version": "0.11.0",
+  "version": "0.17.0",
   "main": "dist/session.js",
   "scripts": {
-    "test": "node --import tsx --test test/*.ts context/*/test/*.test.mjs",
+    "test": "node --import tsx --test --test-timeout=120000 test/*.ts context/*/test/*.test.mjs",
     "build": "tsc",
     "dev": "tsx src/cli.ts",
     "postinstall": "chmod +x node_modules/node-pty/prebuilds/*/spawn-helper 2>/dev/null || true",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run build && node -e \"const fs=require('fs');fs.copyFileSync('package-lock.json','npm-shrinkwrap.json');fs.accessSync('npm-shrinkwrap.json')\"",
     "web": "node dist/server.js"
   },
   "keywords": [
@@ -36,9 +36,12 @@
   "files": [
     "dist",
     "public",
-    "context"
+    "context",
+    "npm-shrinkwrap.json"
   ],
   "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
+    "@simplewebauthn/server": "^14.0.3",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/headless": "^6.0.0",
     "@xterm/xterm": "^6.0.0",

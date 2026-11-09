@@ -4,9 +4,11 @@ import test from "node:test";
 import {
   normEntity,
   upsertEntry,
-  findEntries,
+  searchEntries,
   ageDays,
   resolveId,
+  rowKind,
+  normKind,
 } from "../context/ledger-skill/ledger-core.mjs";
 
 test("upsert SUPERSEDES by normalised entity — never a twin", () => {
@@ -62,23 +64,84 @@ test("resolveId: exact, unique prefix, else null (empty / ambiguous / none)", ()
   assert.equal(resolveId(rows, "zzzz"), null); // no match
 });
 
-test("find matches entity OR note, most-recent first", () => {
-  const rows = [
-    { entity: "landing page rework", status: "paused", updatedAt: 10 },
-    { entity: "nightly import", status: "fixed", note: "restarted the job", updatedAt: 30 },
-    { entity: "staging budget", status: "learned", updatedAt: 20 },
-  ];
-  assert.deepEqual(findEntries(rows, "import").map((e: any) => e.entity), ["nightly import"]);
-  assert.deepEqual(findEntries(rows, "restarted").map((e: any) => e.entity), ["nightly import"]); // note match
+// A table big enough for the IDF and the table-derived stopwords to mean
+// something — the scoring is relative to the corpus, so a 3-row fixture would
+// exercise none of it.
+const TABLE = [
+  { id: "aa01", entity: "claude-launcher-stub-breaks-spawns", status: "resolved", note: "the npm placeholder", updatedAt: 10 },
+  { id: "aa02", entity: "onboarding: home agent greets and reads the project", status: "decided", updatedAt: 20 },
+  { id: "aa03", entity: "fork-follow (transcript context overflow)", status: "in-progress", note: "the Apple Ads chat froze on it", updatedAt: 30 },
+  { id: "aa04", entity: "vps1 disk space", status: "resolved", note: "pruned the old images", updatedAt: 40 },
+  { id: "aa05", entity: "nightly import", status: "fixed", note: "restarted the job de la nuit", updatedAt: 50 },
+  { id: "aa06", entity: "landing page rework", status: "paused", note: "on hold de facto", updatedAt: 60 },
+  { id: "aa07", entity: "staging budget", status: "learned", note: "capped it de nouveau", updatedAt: 70 },
+  { id: "aa08", entity: "web accounts (named logins)", status: "resolved", note: "invitations de bienvenue", updatedAt: 80 },
+  { id: "aa09", entity: "pr-merge cron guard", status: "resolved", note: "bounded every call de bout en bout", updatedAt: 90 },
+  { id: "aa10", entity: "ledger viewer dates", status: "resolved", note: "real date de mise a jour", updatedAt: 100 },
+  { id: "aa11", entity: "restart-all thundering herd", status: "resolved", note: "sequential respawn de tous", updatedAt: 110 },
+  { id: "aa12", entity: "public repo leaks private project name", status: "resolved", note: "scrubbed de partout", updatedAt: 120 },
+];
+const ids = (list: any[]) => list.map((e: any) => e.id);
+
+test("search finds a row by WORD OVERLAP when no substring matches", () => {
+  // The reported bug: the caller has to know the exact wording, i.e. it only
+  // answers when you do not need it. Not one word of this query is a substring
+  // of the row, yet it is plainly the row being asked about.
+  const { strong } = searchEntries(TABLE, "claude launcher stub spawn failure");
+  assert.equal(strong[0].id, "aa01");
+  // "spawn" reaches "…-spawns": a trailing plural must not lose the match
+  assert.ok(ids(searchEntries(TABLE, "stub spawn").strong).includes("aa01"));
+});
+
+test("a verbatim substring still wins outright — the old behaviour is a subset", () => {
+  const { strong } = searchEntries(TABLE, "disk space");
+  assert.equal(strong[0].id, "aa04");
+  assert.deepEqual(ids(searchEntries(TABLE, "aa07").strong), ["aa07"]); // id lookup
+});
+
+test("a match living only in the NOTE can still be strong", () => {
+  // The field weight BOOSTS the entity, it must not cap the note: a query fully
+  // covered by a note is still an answer.
+  const { strong } = searchEntries(TABLE, "apple ads chat froze");
+  assert.equal(strong[0].id, "aa03");
+});
+
+test("a query whose SUBJECT is absent gets no strong match, however many filler words it shares", () => {
+  // This is the whole reason `check` has two tiers. Half this table carries the
+  // French "de"; scoring the overlap alone made "recette de cuisine au chocolat"
+  // a PERFECT match on a cooking question. "Nothing recorded is UNKNOWN, not
+  // 'not done'" only survives if an absent subject can still come back empty.
+  assert.deepEqual(searchEntries(TABLE, "recette de cuisine au chocolat").strong, []);
+  assert.deepEqual(searchEntries(TABLE, "kubernetes helm chart rollout").strong, []);
+  assert.deepEqual(searchEntries(TABLE, "kubernetes helm chart rollout").weak, []);
+});
+
+test("stopwords are DERIVED from the table, never a hand-written list", () => {
+  // "de" is ubiquitous HERE and carries nothing; "ledger" is rare here and
+  // carries a lot. No list of English/French stopwords would know either.
+  assert.deepEqual(searchEntries(TABLE, "de").strong, []);
+  assert.equal(searchEntries(TABLE, "ledger viewer").strong[0].id, "aa10");
+});
+
+test("a partial overlap lands in WEAK, offered as a lead and not as an answer", () => {
+  // Two topics in one question, each only half-covered by a row: there is no
+  // answer here, only leads. The caller prints these under a heading that says
+  // so, and keeps the UNKNOWN sentence above them.
+  const { strong, weak } = searchEntries(TABLE, "budget for the ledger dashboard");
+  assert.deepEqual(strong, []);
+  assert.deepEqual(ids(weak), ["aa10", "aa07"]);
+});
+
+test("results are ranked, best first", () => {
+  const { strong } = searchEntries(TABLE, "public repo private project name leak");
+  assert.equal(strong[0].id, "aa12");
 });
 
 test("empty query lists the whole table, recent-first", () => {
-  const rows = [
-    { entity: "a", status: "x", updatedAt: 10 },
-    { entity: "b", status: "y", updatedAt: 30 },
-    { entity: "c", status: "z", updatedAt: 20 },
-  ];
-  assert.deepEqual(findEntries(rows, "").map((e: any) => e.entity), ["b", "c", "a"]);
+  const { strong, weak } = searchEntries(TABLE, "");
+  assert.equal(strong.length, TABLE.length);
+  assert.equal(strong[0].id, "aa12"); // updatedAt 120, the newest
+  assert.deepEqual(weak, []);
 });
 
 test("normEntity collapses case and whitespace", () => {
@@ -88,4 +151,319 @@ test("normEntity collapses case and whitespace", () => {
 test("ageDays is whole days since updatedAt", () => {
   assert.equal(ageDays({ updatedAt: 0 }, 3 * 86_400_000 + 5), 3);
   assert.equal(ageDays({ updatedAt: 100 }, 100), 0);
+});
+
+/* ---------------------------------------------------------------- *
+ * kind: a task, a fact, or a decision — and the two clocks that go with it.
+ * Spec: docs/superpowers/specs/2026-10-13-ledger-kind-and-headline.md
+ * ---------------------------------------------------------------- */
+
+test("kind is READ off an old row, never written back into it", () => {
+  // The rows recorded before kinds existed carry none. `decided` was always a
+  // kind wearing a status's clothes, so that is what it reads as; everything
+  // else is a task. Nothing is rewritten — 138 rows keep their bytes.
+  assert.equal(rowKind({ entity: "x", status: "decided" }), "decision");
+  assert.equal(rowKind({ entity: "x", status: "resolved" }), "task");
+  assert.equal(rowKind({ entity: "x", status: "open" }), "task");
+  assert.equal(rowKind({ entity: "x", status: "resolved", kind: "fact" }), "fact");
+  // an unparseable stored kind must not invent a fourth one
+  assert.equal(rowKind({ entity: "x", status: "open", kind: "nonsense" }), "task");
+});
+
+test("an unknown kind is REFUSED, not stored", () => {
+  // A typo that silently became a fourth kind would be invisible for exactly as
+  // long as nobody went looking.
+  assert.throws(() => normKind("fakt"));
+  assert.throws(() => upsertEntry([], { entity: "x", status: "open", kind: "fakt" }, 1, "aa"));
+  assert.equal(normKind(""), null); // absent is fine — the inference covers it
+  assert.equal(normKind("  FACT "), "fact");
+});
+
+test("a lifecycle-less kind supplies its own status, so none has to be invented", () => {
+  const f = upsertEntry([], { entity: "nightly window", kind: "fact", note: "03:00 Paris" }, 1000, "bb");
+  assert.equal(f[0].status, "current"); // not "" — every reader still sees a status
+  assert.equal(f[0].kind, "fact");
+  const d = upsertEntry([], { entity: "supersede, not append", kind: "decision" }, 1000, "cc");
+  assert.equal(d[0].status, "decided");
+  // an explicit status still wins
+  const e = upsertEntry([], { entity: "z", kind: "fact", status: "stale" }, 1000, "dd");
+  assert.equal(e[0].status, "stale");
+});
+
+test("kind belongs to the ENTITY: a supersede keeps it, like the id", () => {
+  let rows: any[] = upsertEntry([], { entity: "nightly window", kind: "fact" }, 1000, "bb");
+  rows = upsertEntry(rows, { entity: "nightly window", status: "stale" }, 2000, "zz");
+  assert.equal(rows[0].kind, "fact"); // not silently demoted to a task
+  assert.equal(rows[0].status, "stale");
+});
+
+test("promoting a row by id to a lifecycle-less kind drops its stale lifecycle word", () => {
+  // `--id X --kind fact` must not leave "resolved" sitting on a fact.
+  let rows: any[] = upsertEntry([], { entity: "nightly window", status: "resolved" }, 1000, "bb");
+  rows = upsertEntry(rows, { id: "bb", kind: "fact" }, 2000);
+  assert.equal(rows[0].kind, "fact");
+  assert.equal(rows[0].status, "current");
+});
+
+test("an EDIT moves updatedAt; only an OBSERVATION moves verifiedAt", () => {
+  // The defect this fixes: `ageDays` read `updatedAt`, so rewording a note
+  // rejuvenated a row nobody had re-checked in a month — which silently
+  // switched off the reflex's "a stale record → confirm before acting" hedge.
+  let rows: any[] = upsertEntry([], { entity: "x", status: "open" }, 1000, "aa");
+  assert.equal(rows[0].verifiedAt, 1000);
+
+  rows = upsertEntry(rows, { id: "aa", note: "reworded, nothing re-checked" }, 9000);
+  assert.equal(rows[0].updatedAt, 9000);
+  assert.equal(rows[0].verifiedAt, 1000); // NOT rejuvenated
+
+  // re-asserting a status IS confirming it, even when the value is unchanged
+  rows = upsertEntry(rows, { id: "aa", status: "open" }, 20_000);
+  assert.equal(rows[0].updatedAt, 20_000);
+  assert.equal(rows[0].verifiedAt, 20_000);
+});
+
+test("--verified alone moves verifiedAt and leaves updatedAt put — so it stays OUT of the delta", () => {
+  // Deliberate: the pushed delta selects on `updatedAt`, and "I re-checked,
+  // nothing changed" is not news. Pushing it to every sibling agent is exactly
+  // the noise a state table exists to avoid.
+  let rows: any[] = upsertEntry([], { entity: "x", status: "current", kind: "fact" }, 1000, "aa");
+  rows = upsertEntry(rows, { id: "aa", verified: true }, 50_000);
+  assert.equal(rows[0].updatedAt, 1000); // unmoved → not in anyone's delta
+  assert.equal(rows[0].verifiedAt, 50_000);
+  assert.equal(rows[0].status, "current"); // nothing else touched
+});
+
+test("a row that predates verifiedAt inherits its old updatedAt as the last observation", () => {
+  // The migration, lazy and per row: the row WAS last observed when it was last
+  // written, so that is the truth to freeze — never `now`, which would claim a
+  // check that never happened.
+  const legacy = [{ id: "aa", entity: "x", status: "open", updatedAt: 1000 }];
+  const rows: any[] = upsertEntry(legacy, { id: "aa", note: "reworded" }, 9000);
+  assert.equal(rows[0].verifiedAt, 1000);
+});
+
+test("ageDays is days since the claim was CONFIRMED, not since it was written", () => {
+  const day = 86_400_000;
+  assert.equal(ageDays({ updatedAt: 9 * day, verifiedAt: 2 * day }, 10 * day), 8);
+  // no verifiedAt → fall back to updatedAt, so older rows are unaffected
+  assert.equal(ageDays({ updatedAt: 7 * day }, 10 * day), 3);
+});
+
+/* ---- Task 13 (PIVOT): one table, per-row authoring group, server-mediated ----
+ *
+ * The first attempt used a FILE PER GROUP with a `--public` mirror into Main.
+ * That broke on the OS-user wall (a privilege-dropped `sk-<id>` agent cannot
+ * write the server's 0600 ledger → EACCES + a half-published row), let a bare
+ * record DELETE another group's public row, and leaked Main-private rows through
+ * `GET /ledger`. The model is now ONE table per instance; each row carries its
+ * AUTHORING `group`; reads/writes are scoped SERVER-SIDE. `upsertEntry`'s
+ * `scope` threading is unchanged and still covered just above; these pin the new
+ * one-table cores. */
+import { spawnSync, spawn } from "node:child_process";
+import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { deltaSince, scopeVisible, recordIntoTable } from "../src/ledger.ts";
+
+test("upsertEntry carries scope; absent scope is NOT written (reads as group)", () => {
+  const pub: any[] = upsertEntry([], { entity: "A", status: "open", scope: "public" }, 1, "a1");
+  assert.equal(pub[0].scope, "public");
+  const bare: any[] = upsertEntry([], { entity: "B", status: "open" }, 1, "b1");
+  assert.equal(bare[0].scope, "group"); // the SAFE default, stored explicitly
+  const upd: any[] = upsertEntry(pub, { id: "a1", note: "n" }, 2);
+  assert.equal(upd[0].scope, "public"); // an edit that omits scope keeps it
+  const demote: any[] = upsertEntry(pub, { id: "a1", scope: "group" }, 3);
+  assert.equal(demote[0].scope, "group");
+});
+
+test("deltaSince with a visibleScope drops another group's private rows, keeps public", () => {
+  const rows: any[] = [
+    { id: "1", entity: "mine", status: "open", updatedAt: 10, group: "g1", scope: "group" },
+    { id: "2", entity: "theirs", status: "open", updatedAt: 11, group: "g2", scope: "group" },
+    { id: "3", entity: "shared", status: "open", updatedAt: 12, group: "g2", scope: "public" },
+    { id: "4", entity: "legacy", status: "open", updatedAt: 13, group: "g2" }, // no scope = group
+  ];
+  const d = deltaSince(rows, 0, 10, { groupId: "g1", includePublic: true });
+  assert.deepEqual(d.rows.map((r) => r.id).sort(), ["1", "3"]);
+  assert.equal(d.total, 2);
+  const noPub = deltaSince(rows, 0, 10, { groupId: "g1", includePublic: false });
+  assert.deepEqual(noPub.rows.map((r) => r.id), ["1"]);
+  assert.equal(deltaSince(rows, 0, 10).total, 4); // unscoped call unchanged
+});
+
+test("deltaSince: a commons row (group null) normalises to Main — a mono-tenant push still sees it", () => {
+  // In mono-tenant every row's authoring group is null; the push asks with
+  // groupId "main". Without the null→Main normalisation the delta came back
+  // empty, which is the whole-feature-off failure.
+  const rows: any[] = [
+    { id: "x", entity: "legacy commons row", status: "open", updatedAt: 10 }, // no group, no scope
+    { id: "y", entity: "explicit main row", status: "open", updatedAt: 11, group: "main" },
+  ];
+  const d = deltaSince(rows, 0, 10, { groupId: "main", includePublic: true });
+  assert.deepEqual(d.rows.map((r) => r.id).sort(), ["x", "y"]);
+});
+
+test("scopeVisible: own-group rows ∪ public; another group's group-scoped rows are dropped", () => {
+  const rows: any[] = [
+    { id: "a", entity: "a-private", status: "open", group: "A", scope: "group" },
+    { id: "b", entity: "b-private", status: "open", group: "B", scope: "group" },
+    { id: "p", entity: "b-public", status: "open", group: "B", scope: "public" },
+    { id: "m", entity: "main-private", status: "open", scope: "group" }, // group null → Main
+  ];
+  // Group A: its own rows + every public row; never B's private one.
+  assert.deepEqual(scopeVisible(rows, new Set(["A"]), true).map((r) => r.id).sort(), ["a", "p"]);
+  // Group B: its own private AND public rows.
+  assert.deepEqual(scopeVisible(rows, new Set(["B"]), true).map((r) => r.id).sort(), ["b", "p"]);
+  // A member who can see Main sees the Main-private row and public, not A/B.
+  assert.deepEqual(scopeVisible(rows, new Set(["main"]), true).map((r) => r.id).sort(), ["m", "p"]);
+  // includePublic false → strictly own group (the push's "no public" variant).
+  assert.deepEqual(scopeVisible(rows, new Set(["A"]), false).map((r) => r.id), ["a"]);
+});
+
+test("recordIntoTable: stamps the authoring group, scopes the upsert to it", () => {
+  let rows: any[] = [];
+  ({ rows } = recordIntoTable(rows, "A", { entity: "thing", status: "open" }, 100, "a1"));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].group, "A"); // stamped from the caller, not the patch
+  assert.equal(rows[0].scope, "group"); // group-private by default
+  // --public flips scope, group unchanged
+  ({ rows } = recordIntoTable(rows, "A", { id: "a1", public: true }, 200, "zz"));
+  assert.equal(rows[0].scope, "public");
+  assert.equal(rows[0].group, "A");
+});
+
+test("recordIntoTable: a bare record by group A never supersedes OR deletes group B's row with the same entity", () => {
+  // The per-group-file demotion bug: A recording the entity B also tracks wiped
+  // B's public row. One table, scoped upsert → A gets its OWN row, B's is untouched.
+  let rows: any[] = [
+    { id: "b1", entity: "shared topic", status: "resolved", group: "B", scope: "public", updatedAt: 1 },
+  ];
+  const out = recordIntoTable(rows, "A", { entity: "shared topic", status: "open" }, 100, "a1");
+  rows = out.rows;
+  assert.equal(rows.length, 2); // a NEW row for A, B's still there
+  const b = rows.find((r) => r.group === "B");
+  assert.equal(b.scope, "public"); // B's public row survives, unchanged
+  assert.equal(b.status, "resolved");
+  const a = rows.find((r) => r.group === "A");
+  assert.equal(a.entity, "shared topic");
+  assert.equal(a.scope, "group");
+});
+
+test("recordIntoTable: an --id edit cannot touch a row authored by another group", () => {
+  const rows: any[] = [
+    { id: "b1", entity: "theirs", status: "open", group: "B", scope: "group", updatedAt: 1 },
+  ];
+  // A tries to edit B's row by its (quotable) id → refused, never a cross-group overwrite.
+  assert.throws(() => recordIntoTable(rows, "A", { id: "b1", status: "resolved" }, 100, "a1"));
+  // B editing its own row is fine.
+  const ok = recordIntoTable(rows, "B", { id: "b1", status: "resolved" }, 100, "zz");
+  assert.equal(ok.row.status, "resolved");
+  assert.equal(ok.row.group, "B");
+});
+
+test("CLI off-server fallback: one file, --public stored as scope (no mirror file)", () => {
+  // With no SHADOK_PORT/SHADOK_SESSION_KEY the CLI writes the local file directly
+  // (hand-run / mono-tenant). This is the path that must behave exactly as before
+  // the scope work, minus the removed per-group mirror.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ledcli-"));
+  const file = path.join(dir, "ledger.json");
+  const run = (...a: string[]) =>
+    spawnSync(process.execPath, ["context/ledger-skill/ledger.mjs", ...a], {
+      encoding: "utf8",
+      // No PORT/KEY → fallback. Strip any inherited ones so the test is hermetic.
+      env: { ...process.env, SHADOK_LEDGER_FILE: file, SHADOK_PORT: "", SHADOK_SESSION_KEY: "" },
+    });
+  assert.equal(run("record", "--entity", "secret thing", "--status", "open").status, 0);
+  assert.equal(run("record", "--public", "--entity", "shared thing", "--status", "open").status, 0);
+  const rows = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(rows.find((r: any) => r.entity === "secret thing").scope, "group");
+  assert.equal(rows.find((r: any) => r.entity === "shared thing").scope, "public");
+  assert.equal(rows.length, 2); // ONE file, both rows in it — no separate commons file
+  assert.ok(!fs.existsSync(path.join(dir, "commons.json")));
+  // list shows both; the public one is marked
+  const ls = run("list");
+  assert.match(ls.stdout, /shared thing/);
+  assert.match(ls.stdout, /secret thing/);
+  assert.match(ls.stdout, /· public/);
+});
+
+/** A stand-in cockpit that answers every request with one status, so the CLI
+ *  meets a server that does NOT know its routes — exactly what a side-by-side
+ *  build leaves behind when it re-seeds the machine-wide skills over a running
+ *  older server (invariant 57). */
+async function runCli(args: string[], env: Record<string, string>): Promise<{ status: number; stdout: string; stderr: string }> {
+  // ASYNC on purpose: `spawnSync` blocks this process's event loop, so the
+  // in-process fake cockpit below would never accept the connection and the
+  // CLI would time out instead of meeting the status under test.
+  return await new Promise((resolve) => {
+    const ch = spawn(process.execPath, ["context/ledger-skill/ledger.mjs", ...args], {
+      env: { ...process.env, ...env },
+    });
+    let stdout = "";
+    let stderr = "";
+    ch.stdout.on("data", (d) => (stdout += d));
+    ch.stderr.on("data", (d) => (stderr += d));
+    ch.on("close", (code) => resolve({ status: code ?? 0, stdout, stderr }));
+  });
+}
+
+async function fakeCockpit(status: number): Promise<{ port: number; close: () => Promise<void> }> {
+  const srv = http.createServer((_req, res) => {
+    res.writeHead(status, { "content-type": "text/html" });
+    res.end("<html><body><pre>Cannot POST /ledger/record</pre></body></html>");
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  const port = (srv.address() as { port: number }).port;
+  return { port, close: () => new Promise<void>((r) => srv.close(() => r())) };
+}
+
+test("CLI: a 404 from the cockpit degrades to the local table (skill newer than the server)", async () => {
+  // The measured failure: the seeded skill posted /ledger/record, the RUNNING
+  // build did not serve it, so `record` answered 404 for every agent on the
+  // host while `check` kept working — a half-broken ledger. The write must land
+  // in the local table instead, and SAY that it did.
+  const { port, close } = await fakeCockpit(404);
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "led404-"));
+    const file = path.join(dir, "ledger.json");
+    // A port AND a key → the CLI goes through the server… which 404s.
+    const env = { SHADOK_LEDGER_FILE: file, SHADOK_PORT: String(port), SHADOK_SESSION_KEY: "k" };
+    const rec = await runCli(["record", "--entity", "a thing", "--status", "open", "--note", "n"], env);
+    assert.equal(rec.status, 0, rec.stderr);
+    assert.match(rec.stdout, /recorded: a thing — open/);
+    // The degradation is announced, never silent: the row is not where the
+    // agent's siblings read it from on a NEWER server.
+    assert.match(rec.stderr, /does not serve POST \/ledger\/record/);
+    const rows = JSON.parse(fs.readFileSync(file, "utf8"));
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].entity, "a thing");
+    // Reads degrade the same way (GET /ledger 404s here too).
+    const chk = await runCli(["check", "a thing"], env);
+    assert.equal(chk.status, 0, chk.stderr);
+    assert.match(chk.stdout, /a thing — open/);
+  } finally {
+    await close();
+  }
+});
+
+test("CLI: a 401 stays LOUD — it is not a version skew but a human action", async () => {
+  // An expired cookie / unrecognised key (invariant 33) needs a reload by a
+  // human. Degrading to the file there would hide it, and on a multi-tenant
+  // instance the file is not even writable by a dropped agent.
+  const { port, close } = await fakeCockpit(401);
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "led401-"));
+    const file = path.join(dir, "ledger.json");
+    const rec = await runCli(["record", "--entity", "x", "--status", "open"], {
+      SHADOK_LEDGER_FILE: file,
+      SHADOK_PORT: String(port),
+      SHADOK_SESSION_KEY: "k",
+    });
+    assert.equal(rec.status, 1);
+    assert.match(rec.stderr, /ledger API error 401/);
+    assert.ok(!fs.existsSync(file), "a 401 must not quietly write the local table");
+  } finally {
+    await close();
+  }
 });

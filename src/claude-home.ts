@@ -29,6 +29,8 @@ export interface ClaudeHome {
   /** The auto-mode environment screen's state. `denials` is the CLI's own
    *  counter; `dismissed`/`dismissedAt` are the user's answer. */
   autoModeEnvSetup?: Record<string, unknown>;
+  /** The resume quota dialog's "don't warn me" flag. GLOBAL, never per project. */
+  resumeReturnDismissed?: boolean;
   projects?: Record<string, Record<string, unknown>>;
   [k: string]: unknown;
 }
@@ -67,6 +69,45 @@ export function seedPlan(
   // seeding one would be cargo cult that also implies we control the theme.
   add("hasCompletedOnboarding", true);
   add("lastOnboardingVersion", opts.version);
+
+  // `resumeReturnDismissed` gates THREE separate resume-time asks, not one
+  // screen — all three read it and bail out when it is true (2.1.304 bundle).
+  // Do not delete it the day one of them goes away.
+  //
+  // a) "Resume this conversation? … will use about N% of your 5-hour usage
+  //    limit." — a BLOCKING single-select (Resume / Start a new conversation)
+  //    on a Pro/Max plan. Gate: the statsig config `tengu_amber_tally` must
+  //    parse (no config, no dialog), the account must not already be
+  //    rate-limited, and the resume must cost >= `minPercent` (default 5) of
+  //    the 5-hour limit. Two triggers, `resume` and `idle`.
+  // b) A compact-or-continue ask. Gate: flags `tengu_gleaming_fair` /
+  //    `tengu_gleaming_fair_reuse`, idle >= CLAUDE_CODE_RESUME_THRESHOLD_MINUTES
+  //    (default 70) and size >= CLAUDE_CODE_RESUME_TOKEN_THRESHOLD (default
+  //    100000). Outcomes: compact / continue / dismiss / never — and `compact`
+  //    RUNS a compaction. This is the one that matters most to shadok: every
+  //    weeks-old agent clears 70 minutes and 100k tokens trivially.
+  // c) A model-family announcement, gated on the statsig config
+  //    `tengu_hidden_volcano` ({enabled, form: "line"|"dialog", families,
+  //    maxAsks, minHoursBetween}).
+  // The on-screen wording of (b) and (c) was NOT recovered — the bundle keeps
+  // their UI copy away from the component — so they are described by gate and
+  // action only. Both are identical in 2.1.303 and 2.1.304, i.e. pre-existing;
+  // only (a)'s `offersLookUp` branch is new in 2.1.304.
+  //
+  // Unseeded, a fresh instance stalls on EVERY resume path until a human
+  // answers: `reconcileOnBoot` after an auto-update, Reload agent, `/reload`,
+  // restart-all, `spawn --resume`. A cron-driven cockpit has nobody to answer.
+  //
+  // The trade-off: dismissing them drops a quota signal. shadok already
+  // surfaces that signal itself (`/usage`, the pace guard in `src/pace.ts`),
+  // and the alternative is a dialog on every reload of every large agent.
+  //
+  // TOP-LEVEL, not per project: that is where the CLI writes it. ADDITIVE,
+  // unlike `hasTrustDialogAccepted` below, and the reason is verified: the
+  // CLI's only write site sets it to `true`, reached only when the human picks
+  // "never". The CLI never writes `false`, so a `false` can only be a
+  // deliberate hand edit by someone who wants the asks back — respect it.
+  add("resumeReturnDismissed", true);
 
   // "Teach auto mode about your environment?" — a BLOCKING form offering to
   // scan the user's shell history (PRE-TICKED) and their other repositories.
@@ -124,6 +165,39 @@ export function seedPlan(
   }
 
   return changed ? out : null;
+}
+
+/**
+ * Pure: the object to write after trusting EVERY cwd in `cwds` (plus the
+ * globals), or null when nothing is missing.
+ *
+ * This is `seedPlan` folded over many directories so a shared group HOME is
+ * seeded in ONE atomic write instead of one racy write per spawn. The
+ * motivating bug: N agents share a single `~/.claude.json`, and rebuilding it
+ * one cwd at a time during a boot respawn storm let a sibling `claude`'s stale
+ * write clobber a trust entry before that agent's own process read it —
+ * stranding it on the "trust this folder" dialog. Seeding the complete set up
+ * front (before any such process starts) removes the window entirely. Each
+ * `cwd` keeps `seedPlan`'s additive, never-overwrite discipline.
+ */
+export function seedPlanForCwds(
+  existing: ClaudeHome,
+  opts: { version: string; cwds: readonly string[] },
+): ClaudeHome | null {
+  let current = existing;
+  let changed = false;
+  // Globals first (no cwd), then each directory — threading the running object
+  // so every change lands in one result. seedPlan returns null for "nothing to
+  // add", in which case we keep the object we already have.
+  const steps: Array<string | undefined> = [undefined, ...opts.cwds];
+  for (const cwd of steps) {
+    const next = seedPlan(current, { version: opts.version, cwd });
+    if (next) {
+      current = next;
+      changed = true;
+    }
+  }
+  return changed ? current : null;
 }
 
 export interface ClaudeSettings {
@@ -254,4 +328,55 @@ function seedSettings(): void {
  */
 export function ensureProjectTrusted(cwd: string): void {
   seed(cwd);
+}
+
+/**
+ * The machine-wide default model, read from and written to the SAME
+ * `~/.claude/settings.json` this module already owns.
+ *
+ * Deliberately here and not in a module of its own: `seedSettings` already
+ * writes that file, and two writers on one JSON file is how a `tui` seeded at
+ * boot and a model written from the GUI would eventually erase each other. One
+ * owner, one atomic write.
+ *
+ * Verified 2026-09-25 against claude 2.1.282, because the whole feature rests
+ * on it: with `model` in that file and NO `--model` flag, the run used
+ * `claude-haiku-4-5-20251001`; and it is still honoured when shadok also passes
+ * `--settings` for a profile's guardrails, so the flag MERGES rather than
+ * replacing the file. Without that second check the setting would have been
+ * silently inert for every agent that carries a profile.
+ */
+export function getDefaultModel(): string | null {
+  try {
+    const raw = fs.readFileSync(settingsFile(), "utf8");
+    const m = JSON.parse(raw)?.model;
+    return typeof m === "string" && m.trim() ? m.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Write (or clear, with null) that default. Returns false if it could not. */
+export function setDefaultModel(model: string | null): boolean {
+  try {
+    const file = settingsFile();
+    let existing: ClaudeSettings = {};
+    if (fs.existsSync(file)) {
+      const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+      // Hand-edited into invalid JSON, or not an object: leave it ALONE rather
+      // than "repair" it — same rule as `seed`, and for the same reason.
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      existing = parsed;
+    }
+    const next: ClaudeSettings = { ...existing };
+    if (model?.trim()) next.model = model.trim();
+    else delete next.model;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.shadok-${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(next, null, 2));
+    fs.renameSync(tmp, file);
+    return true;
+  } catch {
+    return false;
+  }
 }

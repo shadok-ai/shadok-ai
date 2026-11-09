@@ -3,6 +3,8 @@ import test from "node:test";
 import {
   profileArgs,
   READONLY_DENY,
+  COCKPIT_DENY,
+  CROSS_SESSION_DENY,
   envVarsNote,
   DEFAULT_PROFILES,
   seedMissingPlan,
@@ -20,9 +22,79 @@ import {
 } from "../src/profiles.js";
 import { normalizeVault, secretsFor, secretWriteVerdict } from "../src/secrets.js";
 
+/**
+ * The args a PROFILE contributes, with the cockpit's own baseline removed.
+ *
+ * Every agent now carries `--settings` whether or not it has a profile, because
+ * the cockpit's own baselines are denied cockpit-wide rather than per role — a
+ * per-role rule would miss `Shadok-dev`, which has no deny list, and an agent
+ * spawned with no profile at all. That baseline is `COCKPIT_DENY` (artifacts)
+ * plus `CROSS_SESSION_DENY` (ListAgents/SendMessage). These assertions are about
+ * the profile's own contribution, so they strip the baseline instead of
+ * restating it in every case.
+ */
+const BASELINE_DENY = new Set<string>([...COCKPIT_DENY, ...CROSS_SESSION_DENY]);
+function profileOnly(...args: Parameters<typeof profileArgs>): string[] {
+  const out = profileArgs(...args);
+  const i = out.indexOf("--settings");
+  if (i < 0) return out;
+  const settings = JSON.parse(out[i + 1]);
+  const deny = (settings.permissions?.deny ?? []).filter((d: string) => !BASELINE_DENY.has(d));
+  const allow = settings.permissions?.allow ?? [];
+  const rest = [...out.slice(0, i), ...out.slice(i + 2)];
+  return deny.length || allow.length
+    ? [...rest.slice(0, i), "--settings", JSON.stringify({ permissions: { deny, allow } }), ...rest.slice(i)]
+    : rest;
+}
+
+test("the cockpit denies artifacts for EVERY agent, profile or not", () => {
+  // The policy the user asked for, and the reason it does not live in a role:
+  // `Shadok-dev` carries no deny list and a bare spawn carries no profile, so
+  // a per-role rule would miss exactly the common cases. An artifact is a page
+  // on claude.ai; the person asked for a file.
+  for (const p of [null, { name: "x" }, { name: "dev", systemPrompt: "code" }]) {
+    const args = profileArgs(p as never);
+    const i = args.indexOf("--settings");
+    assert.ok(i >= 0, "every spawn must carry the cockpit settings");
+    assert.ok(JSON.parse(args[i + 1]).permissions.deny.includes("Artifact"));
+  }
+  // A profile's own rules survive beside it rather than replacing it.
+  const ro = profileArgs({ name: "ro", deny: ["Bash(git push:*)"] });
+  const deny = JSON.parse(ro[ro.indexOf("--settings") + 1]).permissions.deny;
+  assert.ok(deny.includes("Artifact") && deny.includes("Bash(git push:*)"));
+});
+
+test("the cockpit denies cross-session messaging for EVERY agent, ungated", () => {
+  // Claude Code's ListAgents/SendMessage reach every other session on the
+  // machine (and, via Remote Control, the account's sessions elsewhere); shadok
+  // drives agent-to-agent work through its own server, so this is off by
+  // default. Like the artifact deny, it lands on `Shadok-dev` and bare spawns.
+  const denyOf = (args: string[]): string[] =>
+    JSON.parse(args[args.indexOf("--settings") + 1]).permissions.deny;
+  for (const p of [null, { name: "x" }, { name: "dev", systemPrompt: "code" }]) {
+    const deny = denyOf(profileArgs(p as never));
+    assert.ok(deny.includes("SendMessage") && deny.includes("ListAgents"));
+  }
+  // Unlike COCKPIT_DENY, SHADOK_ALLOW_ARTIFACTS must NOT lift it: the artifact
+  // gate has nothing to do with messaging.
+  const prev = process.env.SHADOK_ALLOW_ARTIFACTS;
+  process.env.SHADOK_ALLOW_ARTIFACTS = "1";
+  try {
+    const deny = denyOf(profileArgs(null));
+    assert.ok(!deny.includes("Artifact"), "the artifact gate should lift COCKPIT_DENY");
+    assert.ok(
+      deny.includes("SendMessage") && deny.includes("ListAgents"),
+      "but never the cross-session baseline",
+    );
+  } finally {
+    if (prev === undefined) delete process.env.SHADOK_ALLOW_ARTIFACTS;
+    else process.env.SHADOK_ALLOW_ARTIFACTS = prev;
+  }
+});
+
 test("profileArgs: empty/undefined profile → no extra args", () => {
-  assert.deepEqual(profileArgs(null), []);
-  assert.deepEqual(profileArgs({ name: "x" }), []);
+  assert.deepEqual(profileOnly(null), []);
+  assert.deepEqual(profileOnly({ name: "x" }), []);
 });
 
 test("permissionModeArgs: a real mode → --permission-mode flag", () => {
@@ -48,14 +120,14 @@ test("isPermissionMode: recognizes the real claude modes + the default sentinel"
 });
 
 test("profileArgs: role → --append-system-prompt", () => {
-  assert.deepEqual(profileArgs({ name: "m", systemPrompt: "You are marketing." }), [
+  assert.deepEqual(profileOnly({ name: "m", systemPrompt: "You are marketing." }), [
     "--append-system-prompt",
     "You are marketing.",
   ]);
 });
 
 test("profileArgs: deny/allow → valid inline --settings JSON", () => {
-  const args = profileArgs({ name: "ro", deny: ["Bash(git commit:*)"], allow: ["Bash(git log:*)"] });
+  const args = profileOnly({ name: "ro", deny: ["Bash(git commit:*)"], allow: ["Bash(git log:*)"] });
   assert.equal(args[0], "--settings");
   assert.deepEqual(JSON.parse(args[1]), {
     permissions: { deny: ["Bash(git commit:*)"], allow: ["Bash(git log:*)"] },
@@ -77,17 +149,20 @@ test("profileArgs: model → --model, and order role→settings→model", () => 
 
 test("profileArgs: profile.secrets are references (names), not CLI args", () => {
   // secrets never leak into the argv — they're resolved to env elsewhere.
-  const args = profileArgs({ name: "p", secrets: ["META_TOKEN", "DB_URL"] });
+  const args = profileOnly({ name: "p", secrets: ["META_TOKEN", "DB_URL"] });
   assert.deepEqual(args, []);
 });
 
 test("normalizeVault: flattens the old per-repo shape into one map", () => {
   const old = { "/repo/a": { A: "1", B: "2" }, "/repo/b": { C: "3" } };
-  assert.deepEqual(normalizeVault(old), { A: "1", B: "2", C: "3" });
+  const v = normalizeVault(old);
+  assert.deepEqual(Object.keys(v), ["main"]);
+  assert.deepEqual(Object.fromEntries(Object.entries(v.main).map(([k, e]) => [k, e.value])), { A: "1", B: "2", C: "3" });
 });
 
 test("normalizeVault: a flat vault is kept as-is; junk → {}", () => {
-  assert.deepEqual(normalizeVault({ A: "1", B: "2" }), { A: "1", B: "2" });
+  const v = normalizeVault({ A: "1", B: "2" });
+  assert.deepEqual(Object.fromEntries(Object.entries(v.main).map(([k, e]) => [k, e.value])), { A: "1", B: "2" });
   assert.deepEqual(normalizeVault(null), {});
   assert.deepEqual(normalizeVault([1, 2]), {});
 });
@@ -408,4 +483,74 @@ test("declineList: seuls les rôles LIVRÉS méritent une inscription", () => {
   // Un rôle maison supprimé n'a rien à refuser : rien ne le re-sèmera.
   assert.deepEqual(declineList([], "SonRole", "remove", ["A", "B"]), []);
   assert.deepEqual(declineList([], "A", "remove", ["A", "B"]), ["A"]);
+});
+
+test("Shadok-Boss: what he may do himself is a CLOSED list, not a judgement call", () => {
+  // "Every piece of actual work goes to an agent" was too vague to bind: what
+  // counts as work is exactly what a busy lead negotiates with himself.
+  const boss = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Boss")!.systemPrompt!;
+  assert.match(boss, /YOURSELF, AND NOTHING ELSE/);
+  assert.match(boss, /EVERYTHING ELSE GOES TO AN AGENT/);
+  // The small task is the trap, so it must be named.
+  assert.match(boss, /two minutes/i);
+});
+
+test("Shadok-Boss: a stated check before anything that changes something", () => {
+  const boss = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Boss")!.systemPrompt!;
+  assert.match(boss, /BEFORE ANY ACTION THAT CHANGES SOMETHING/);
+  assert.match(boss, /out loud/i);
+});
+
+test("Shadok-Boss: no claim about permissions he may not have", () => {
+  // His deny list is the user's to set, and on a real instance it was empty
+  // while the prompt asserted "git writes are blocked". Telling an agent about a
+  // barrier that is not there teaches it that its instructions are unreliable.
+  const boss = DEFAULT_PROFILES.find((p) => p.name === "Shadok-Boss")!.systemPrompt!;
+  assert.doesNotMatch(boss, /git writes are blocked/);
+  assert.match(boss, /You do not commit/);
+});
+
+test("profileArgs: an agent's own model beats its profile's", () => {
+  // The point of the picker. A profile's model is the DEFAULT for every agent
+  // of that role; one agent asking for something else must not be quietly
+  // overruled by the role it was started under.
+  const withModel = { name: "r", model: "sonnet" };
+  assert.deepEqual(profileOnly(withModel, "opus"), ["--model", "opus"]);
+  assert.deepEqual(profileOnly(withModel, "opus[1m]"), ["--model", "opus[1m]"]);
+});
+
+test("profileArgs: no override falls back to the profile, and emits ONE flag", () => {
+  // Two --model flags would leave the CLI to arbitrate a conflict we created,
+  // so exactly one place may emit it — that is why the override is a parameter
+  // rather than a second append at the call site.
+  const args = profileOnly({ name: "r", model: "sonnet" });
+  assert.deepEqual(args, ["--model", "sonnet"]);
+  assert.equal(args.filter((a) => a === "--model").length, 1);
+  assert.equal(profileOnly({ name: "r", model: "sonnet" }, "opus")
+    .filter((a) => a === "--model").length, 1);
+});
+
+test("profileArgs: the default choice sends nothing at all", () => {
+  // What keeps this invisible to anyone who ignores the picker: an untouched
+  // choice must leave the spawn byte-for-byte as it was before it existed.
+  assert.deepEqual(profileOnly({ name: "r" }, ""), []);
+  assert.deepEqual(profileOnly({ name: "r" }, null), []);
+  assert.deepEqual(profileOnly({ name: "r" }, "   "), []);
+});
+
+test("profileArgs: an agent can carry a model with NO profile", () => {
+  // The early `if (!profile) return []` used to swallow this case. A spawn
+  // without a profile is ordinary — it is what the ＋ new agent form does when
+  // no role is picked — so the model would have vanished for exactly the
+  // simplest way of using the feature.
+  assert.deepEqual(profileOnly(null, "haiku"), ["--model", "haiku"]);
+  assert.deepEqual(profileOnly(undefined, "haiku[1m]"), ["--model", "haiku[1m]"]);
+});
+
+test("profileArgs: the override does not disturb role or guardrails", () => {
+  const p = { name: "r", systemPrompt: "be terse", deny: ["Bash(git commit:*)"] };
+  const args = profileOnly(p, "opus");
+  assert.ok(args.includes("--append-system-prompt"));
+  assert.ok(args.some((a) => a.includes("git commit")));
+  assert.deepEqual(args.slice(-2), ["--model", "opus"]);
 });

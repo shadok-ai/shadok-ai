@@ -1,5 +1,5 @@
 import type { Ground } from "./ground.js";
-import { BOSS_PROFILE_NAME, TWEAK_PROFILE_NAME, effectiveProfile, type Profile } from "./profiles.js";
+import { BOSS_PROFILE_NAME, MANAGED_PROFILE_NAMES, effectiveProfile, type Profile } from "./profiles.js";
 
 /**
  * What the home agent says the first time a cockpit opens.
@@ -128,7 +128,7 @@ export interface ProfileBrief {
  * imports both and asserts they agree, so the copy cannot drift in silence.
  */
 export function greetingProfiles(stored: readonly Profile[]): ProfileBrief[] {
-  const excluded = new Set([TWEAK_PROFILE_NAME, BOSS_PROFILE_NAME]);
+  const excluded = new Set([...MANAGED_PROFILE_NAMES, BOSS_PROFILE_NAME]);
   return stored
     .filter((p) => !excluded.has(String(p.name ?? "").trim()))
     .map((p) => ({ name: p.name, role: roleLine(effectiveProfile(p)?.systemPrompt ?? "") }));
@@ -186,6 +186,26 @@ export interface GreetingBriefInput {
   profiles: readonly Profile[];
   /** The launch directory's own name — what the person calls this place. */
   dirName: string;
+  /** No instance context yet (src/instance-context.ts): ask about it first. */
+  instanceContextEmpty?: boolean;
+}
+
+/**
+ * The few questions that give birth to the instance context — what the cockpit
+ * is for, who works on it — with the language deduced from the answer. Shared by
+ * the first-run greeting and the cockpit's "Ask general to draft it", so both
+ * ask the same way. Optional by construction: nothing waits on the answer.
+ */
+export function instanceContextInterviewBrief(): string {
+  return (
+    "INSTANCE CONTEXT. This cockpit has no instance context yet: the few lines every agent here receives about what " +
+    "the instance is for. In the SAME message, before the offer, ask two or three short questions — what this " +
+    "cockpit will be used for, and who will work on it (by first name or role). Not a form: one message, and the " +
+    "person may ignore it. Deduce the working language from the language they answer in; ask only if you cannot " +
+    "tell. When they answer, write it ONCE with the shadok-instance-context skill (a handful of lines: purpose, " +
+    "people, language — and the deliverables' language if it differs from the conversation's), show them what you " +
+    "saved in a few lines, and say they can edit it from the cockpit menu (Instance context…)."
+  );
 }
 
 /**
@@ -209,6 +229,8 @@ export function homeGreetingBrief(input: GreetingBriefInput): string {
       "Then stop and wait. This is an offer, not a form — if they ignore it entirely, the cockpit must still be " +
       "perfectly usable, so never ask a question they have to answer before anything works.",
   );
+
+  if (input.instanceContextEmpty) parts.push(instanceContextInterviewBrief());
 
   parts.push(
     "WHAT I ALREADY READ FOR YOU. This came from a deterministic pass over the directory (no model, no guessing). " +

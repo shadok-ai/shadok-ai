@@ -1,6 +1,9 @@
+import { parseBashMessage, userMessageText } from "./bang.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toolFiles } from "./download.js";
+import { classifyUserLine } from "./prompt-kind.js";
 
 /** Token counts of one assistant API message (`message.usage` in the .jsonl). */
 export interface TokenUsage {
@@ -27,11 +30,13 @@ export type TailEvent =
   // of gluing it to the block before: without it, "text · <think> · text"
   // renders as two bubbles under one label and reads as a single message, with
   // no sign the agent paused to reason in between (the reported confusion).
-  | { kind: "text"; text: string; at?: number; afterInternal?: true }
+  // `uuid` is the transcript line's own id — what a link to a message names
+  // (`msgId` on the wire). The same line replays with it in `HistoryTurn.ids`.
+  | { kind: "text"; text: string; at?: number; afterInternal?: true; uuid?: string }
   // `id`/`toolUseId` let a consumer pair an output with the call that produced
   // it. Necessary because one assistant message may carry several tool_use
   // blocks (parallel calls) whose results come back batched and out of order.
-  | { kind: "tool"; id: string; name: string; summary: string; at?: number }
+  | { kind: "tool"; id: string; name: string; summary: string; files?: string[]; at?: number; skill?: string }
   | { kind: "result"; toolUseId: string; text: string; isError: boolean; at?: number }
   | { kind: "usage"; messageId: string; usage: TokenUsage }
   /** The turn's answer was ONLY the silence placeholder. Emitted where the text
@@ -39,7 +44,17 @@ export type TailEvent =
    *  honours the silence unreachable: the parent notification reads the last
    *  STREAMED block, and this one never became one — so a quiet agent still woke
    *  its parent, with an empty message or with a stray earlier thought. */
-  | { kind: "silent"; at?: number };
+  | { kind: "silent"; at?: number }
+  /** A shell-mode exchange (`!` in the pane): the command, then its output.
+   *  User messages the TUI writes itself — see `parseBashMessage`. */
+  | { kind: "bash"; command?: string; output?: string; isError?: boolean; at?: number }
+  /** A VISIBLE human prompt reached the transcript. Its text is NOT carried: the
+   *  server echoed it before it was written. It carries its `uuid` so the client
+   *  can stamp that echoed bubble and offer a link to it, and its display `text`
+   *  so the client stamps it only on the bubble that shows the SAME words — a
+   *  prompt typed in the terminal view has no bubble, and must not lend its id
+   *  to the next one. Same filter as the replay (`classifyUserLine`). */
+  | { kind: "prompt"; uuid: string; text: string; at?: number };
 
 /** Max characters of a tool result to stream (long outputs are truncated). */
 const MAX_RESULT = 4000;
@@ -56,16 +71,23 @@ const MAX_RESULT = 4000;
  * file being actively appended is always the newest. Falls back to the
  * cwd-derived path for a brand-new session whose file doesn't exist yet.
  */
-export function sessionFilePath(cwd: string, sessionId: string): string {
-  const newest = newestTranscriptById(sessionId);
+export function sessionFilePath(cwd: string, sessionId: string, home: string = os.homedir()): string {
+  const newest = newestTranscriptById(sessionId, home);
   if (newest) return newest;
   const encoded = path.resolve(cwd).replace(/[^a-zA-Z0-9]/g, "-");
-  return path.join(os.homedir(), ".claude", "projects", encoded, sessionId + ".jsonl");
+  return path.join(home, ".claude", "projects", encoded, sessionId + ".jsonl");
 }
 
-/** The most-recently-modified `<id>.jsonl` across all project dirs, or null. */
-export function newestTranscriptById(sessionId: string): string | null {
-  const root = path.join(os.homedir(), ".claude", "projects");
+/**
+ * The most-recently-modified `<id>.jsonl` across all project dirs, or null.
+ *
+ * `home` is the HOME whose `.claude/projects` to search — the SERVER's by
+ * default, but a privilege-dropped group agent (multi-tenant) writes its
+ * transcript under ITS OWN home (`/home/sk-<id>`), so the caller must pass that
+ * home or the content tail follows an empty path and the reply never streams.
+ */
+export function newestTranscriptById(sessionId: string, home: string = os.homedir()): string | null {
+  const root = path.join(home, ".claude", "projects");
   let best: string | null = null;
   let bestMtime = -1;
   let dirs: string[];
@@ -76,17 +98,74 @@ export function newestTranscriptById(sessionId: string): string | null {
   }
   for (const d of dirs) {
     const f = path.join(root, d, sessionId + ".jsonl");
+    // `throwIfNoEntry: false`, not try/catch: the file is ABSENT from almost
+    // every directory — it lives in exactly one — so the miss is the common
+    // case, and a thrown-and-caught exception per miss was most of the cost.
+    // Measured on an instance with 224 project dirs: 3.94 ms per search with
+    // exceptions, 1.11 ms without. Other errors (EACCES…) still throw, and are
+    // still ignored, exactly as before.
+    let m: number | undefined;
     try {
-      const m = fs.statSync(f).mtimeMs;
-      if (m > bestMtime) {
-        bestMtime = m;
-        best = f;
-      }
+      m = fs.statSync(f, { throwIfNoEntry: false })?.mtimeMs;
     } catch {
-      /* no such file in this dir */
+      /* unreadable entry — not a candidate */
+    }
+    if (m !== undefined && m > bestMtime) {
+      bestMtime = m;
+      best = f;
     }
   }
   return best;
+}
+
+/** Tail ticks between two path re-resolutions: ~1s at the default 250ms. */
+export const RESOLVE_MIN_TICKS = 4;
+/** Longest gap for a SILENT transcript: ~10s at the default 250ms. */
+export const RESOLVE_MAX_TICKS = 40;
+
+export type TranscriptSeen = "missing" | "grew" | "silent";
+export interface ResolveCadence {
+  /** Current gap, in ticks, between two re-resolutions of a silent file. */
+  gap: number;
+  /** First tick at which the next re-resolution is due. */
+  next: number;
+}
+
+/**
+ * On this tail tick, should the transcript path be re-resolved?
+ *
+ * Re-resolving follows a transcript that MOVED — an agent switching worktree
+ * changes its cwd, and Claude Code re-homes the `.jsonl` under another project
+ * directory. It used to run on every 4th tick for every agent, and it is not
+ * cheap: `newestTranscriptById` lists `~/.claude/projects` and stats the
+ * session's file in each directory. Its cost is therefore AGENTS × DIRECTORIES,
+ * and both only grow on a long-lived instance — every worktree adds a
+ * directory. On the instance that develops shadok (61 agents, 224 directories)
+ * that one search was ~24% of a CPU core, half of the whole server's use.
+ *
+ * But a move can only be observed as the current file going QUIET: a file that
+ * is still being appended to has not moved. So:
+ * - `grew` — the file is live; never re-resolve, and re-arm the fast cadence so
+ *   a move right after activity is still caught within ~1s, as before;
+ * - `missing` — the file is not there yet (a new session): keep the old fast
+ *   cadence, since finding where it lands is the point;
+ * - `silent` — back off exponentially, capped at `RESOLVE_MAX_TICKS`. An agent
+ *   that sits idle and THEN moves shows its first new message up to ~10s late:
+ *   the one visible cost, accepted for a ~7.5× cut on idle agents.
+ *
+ * `seen` is what the PREVIOUS tick observed — the decision is taken before this
+ * tick's stat. Pure, so the cadence is testable without timers.
+ */
+export function resolveStep(
+  c: ResolveCadence,
+  tick: number,
+  seen: TranscriptSeen,
+): { resolve: boolean; cadence: ResolveCadence } {
+  if (seen === "grew") return { resolve: false, cadence: { gap: RESOLVE_MIN_TICKS, next: tick + RESOLVE_MIN_TICKS } };
+  if (tick < c.next) return { resolve: false, cadence: c };
+  if (seen === "missing") return { resolve: true, cadence: { gap: RESOLVE_MIN_TICKS, next: tick + RESOLVE_MIN_TICKS } };
+  const gap = Math.min(c.gap * 2, RESOLVE_MAX_TICKS);
+  return { resolve: true, cadence: { gap, next: tick + gap } };
 }
 
 /** One-line summary of a tool_use block (e.g. `Read auth.ts`, `Bash: npm test`). */
@@ -179,32 +258,43 @@ export function tailSession(
   resolve?: () => string,
 ): () => void {
   let pos = 0;
+  let seen: TranscriptSeen = "silent";
   try {
     pos = startOffset(fs.statSync(file).size, readPos(file));
   } catch {
     pos = 0; // file not written yet (new session) — stream from the start
+    seen = "missing";
   }
   let buf = "";
   let stopped = false;
   let tick = 0;
+  // `next: 0` — resolve on the very first tick, as the old `tick % 4` did.
+  let cadence: ResolveCadence = { gap: RESOLVE_MIN_TICKS, next: 0 };
 
   const read = () => {
     if (stopped) return;
-    // Follow the transcript across a cwd change (~every 1s). The moved file is
-    // the same transcript, longer — bytes up to `pos` are identical — so we keep
-    // the offset and just keep reading appended lines from the new path.
-    if (resolve && tick++ % 4 === 0) {
-      try {
-        const latest = resolve();
-        if (latest && latest !== file) file = latest;
-      } catch {
-        /* transient — retry next tick */
+    // Follow the transcript across a cwd change. The moved file is the same
+    // transcript, longer — bytes up to `pos` are identical — so we keep the
+    // offset and just keep reading appended lines from the new path. HOW OFTEN
+    // is decided by `resolveStep`, from what the last tick saw.
+    if (resolve) {
+      const step = resolveStep(cadence, tick, seen);
+      cadence = step.cadence;
+      if (step.resolve) {
+        try {
+          const latest = resolve();
+          if (latest && latest !== file) file = latest;
+        } catch {
+          /* transient — retry next time it is due */
+        }
       }
     }
+    tick++;
     let size: number;
     try {
       size = fs.statSync(file).size;
     } catch {
+      seen = "missing";
       return; // file not there yet
     }
     if (size < pos) {
@@ -212,7 +302,11 @@ export function tailSession(
       pos = 0;
       buf = "";
     }
-    if (size === pos) return;
+    if (size === pos) {
+      seen = "silent";
+      return;
+    }
+    seen = "grew";
     let chunk = "";
     try {
       const fd = fs.openSync(file, "r");
@@ -257,13 +351,45 @@ function emitLine(line: string, onEvent: (e: TailEvent) => void) {
  * web or in Telegram. Documented in `context/pilot-prompt.md`.
  *
  * Deliberately STRICT: the sentinel must be the WHOLE block (emphasis and a
- * trailing period tolerated). An agent explaining the convention in a sentence
+ * trailing period tolerated) — or, upper-case, the block's opening words (see
+ * `LEADING_NOTHING_TO_SHOW`). An agent explaining the convention in a sentence
  * does not get muzzled — invariant 2 is the reminder of what an over-broad
  * heuristic has already cost here.
  */
 const NOTHING_TO_SHOW = /^[*_`\s]*nothing to show[*_`\s.!]*$/i;
+/**
+ * The sentinel used as a PREFACE — "NOTHING TO SHOW for the home page: <why>".
+ * Observed on a docs agent woken by a PR: it decided to stay silent, then
+ * justified the decision in the same block, and the whole justification landed in
+ * the chat. Opening a block with the sentinel IS the decision to be silent, so the
+ * block is dropped whole. Kept narrow on purpose (invariant 2): the literal
+ * UPPER-CASE sentinel only, as the block's first words — "Nothing to show yet,
+ * the build is still running" is prose and stays.
+ */
+const LEADING_NOTHING_TO_SHOW = /^[*_`\s]*NOTHING TO SHOW(?![A-Za-z0-9])/;
 export function isNothingToShow(text: string): boolean {
-  return NOTHING_TO_SHOW.test(text);
+  return NOTHING_TO_SHOW.test(text) || LEADING_NOTHING_TO_SHOW.test(text);
+}
+
+/**
+ * A block that is REAL content followed by the sentinel as a sign-off — the
+ * agent answered, then tacked `NOTHING TO SHOW` on its own line at the end
+ * (observed in a monitoring agent). `isNothingToShow` is whole-block only, so
+ * that block is neither dropped nor stripped and the sentinel leaks into the
+ * chat. Remove it, but KEEP the content above it: the block has something to
+ * show, so it is not silent.
+ *
+ * Only at the END. A sentinel in the MIDDLE of a message is text the agent
+ * chose to show (explaining the convention, quoting a sibling) and must stay —
+ * the same over-broad-heuristic caution as `isNothingToShow`'s own strictness
+ * (invariant 2). The marker must be its OWN trailing line (same emphasis / dot
+ * tolerance), so `…nothing to show.` inside a sentence is untouched.
+ *
+ * Twin mirrored in `index.html`'s live preview (no bundler, hence duplicated).
+ */
+const TRAILING_NOTHING_TO_SHOW = /\n[ \t*_`]*nothing to show[ \t*_`.!]*\s*$/i;
+export function stripTrailingNothingToShow(text: string): string {
+  return text.replace(TRAILING_NOTHING_TO_SHOW, "").replace(/\s+$/, "");
 }
 
 /**
@@ -279,7 +405,13 @@ export function parseLine(line: string): TailEvent[] {
   } catch {
     return [];
   }
-  if (e.isMeta || !Array.isArray(e.message?.content)) return [];
+  // A USER message may carry plain-string content: that is how the TUI writes a
+  // shell-mode exchange (`<bash-input>…`). Rejecting every non-array here made
+  // the bash branch below unreachable — the command ran, the history showed it
+  // on reload, and the LIVE stream said nothing. An assistant message is always
+  // an array of blocks.
+  const content = e.message?.content;
+  if (e.isMeta || !(Array.isArray(content) || (e.type === "user" && typeof content === "string"))) return [];
   const out: TailEvent[] = [];
   // Spread: the key stays ABSENT when the line has no timestamp, rather than
   // present as `undefined` (a consumer cannot confuse the two).
@@ -301,14 +433,29 @@ export function parseLine(line: string): TailEvent[] {
           pendingInternal = true;
           continue;
         }
-        out.push({ kind: "text", text: block.text, ...(pendingInternal ? { afterInternal: true } : {}), ...when });
+        out.push({
+          kind: "text",
+          // Strip a trailing sign-off sentinel (the block is not whole-sentinel
+          // — that was dropped above — so this cannot empty it).
+          text: stripTrailingNothingToShow(block.text),
+          ...(pendingInternal ? { afterInternal: true } : {}),
+          ...(typeof e.uuid === "string" ? { uuid: e.uuid } : {}),
+          ...when,
+        });
         pendingInternal = false;
       } else if (block?.type === "tool_use" && typeof block.name === "string") {
+        // A SendUserFile delivers files to the user; carry their paths so the
+        // client can show a download / inline-image card and Telegram can upload.
+        const files = toolFiles(block.name, block.input);
         out.push({
           kind: "tool",
           id: typeof block.id === "string" ? block.id : "",
           name: block.name,
           summary: toolSummary(block.input),
+          ...(files.length ? { files } : {}),
+          // Which skill a `Skill` call loaded (`{"skill":"name:name"}`): what the
+          // Skill Factory counts as one RUN of a skill.
+          ...(block.name === "Skill" && typeof block.input?.skill === "string" ? { skill: block.input.skill } : {}),
           ...when,
         });
         // A tool renders as an activity block, which already breaks the group.
@@ -320,9 +467,23 @@ export function parseLine(line: string): TailEvent[] {
       }
     }
   } else if (e.type === "user") {
+    // A shell-mode exchange is written by the TUI as two USER messages. It is
+    // content, not a prompt the server already echoed, so it is streamed — the
+    // same way whether it came from the cockpit's button or was typed by hand
+    // in the terminal view.
+    const bash = parseBashMessage(userMessageText(e.message.content));
+    if (bash) {
+      out.push({ kind: "bash", ...bash, ...when });
+      return out;
+    }
+    const line = typeof e.uuid === "string" ? classifyUserLine(e) : null;
+    if (line?.kind === "prompt") {
+      out.push({ kind: "prompt", uuid: e.uuid, text: line.text, ...when });
+      return out;
+    }
     // User events carry tool results (command output, file reads…). The real
-    // user prompt is echoed by the server itself, so only results are emitted.
-    for (const block of e.message.content) {
+    // user prompt is echoed by the server itself, so only its id is emitted.
+    for (const block of Array.isArray(e.message.content) ? e.message.content : []) {
       if (block?.type !== "tool_result") continue;
       const text = resultText(block.content);
       if (text) {

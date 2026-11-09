@@ -37,7 +37,20 @@ omit the check — the prompt runs every time.
 
 A check does **not** run inside this agent's process. The server runs it with
 `sh -c`, in the CHANNEL's directory, with the secrets of the channel's
-**profile** injected as environment variables.
+**profile** injected as environment variables. On a multi-tenant instance it
+runs as this agent's own OS user, exactly like the agent.
+
+Its environment is otherwise SMALL on purpose: `PATH`, the locale and time
+zone, proxy/CA settings, and `SHADOK_SESSION_ID` / `SHADOK_PORT` /
+`SHADOK_SESSION_KEY` (send the key as `x-shadok-session-key` to call the local
+API). Nothing else from the server's environment reaches it — no token, no
+password, no cookie. A credential the check needs goes in the profile.
+
+You can only schedule on an agent you may drive: on a multi-tenant instance,
+yourself, a sibling of your own group, or a shared (public) agent.
+A cron with a `check`, though, may only target YOURSELF (the check runs with the
+target's secrets, so a guard on a sibling would hand you its credentials): the
+server answers 403. A check-less cron on a sibling is fine.
 
 So reference a secret by name (`$MY_API_KEY`) and trust it: never hardcode a
 value into a check script, and never try to source a shell profile to get one.
@@ -137,8 +150,11 @@ curl -sS -H "x-shadok-session-key: $SHADOK_SESSION_KEY" \
   "http://127.0.0.1:$SHADOK_PORT/channels"
 ```
 
-`$SHADOK_AUTH` (a cookie) is still accepted, but it was frozen into your
-environment at spawn and expires after a week, so never rely on it alone. A
+That key is your ONLY credential, and it does not expire. You are no longer
+handed a cookie or the cockpit password, and a call made with the key is made
+as YOU — an agent of your own group, never an admin: account, backend and
+other cockpit-admin routes answer `403`, and so do the person-only (browser)
+ones. That is by design; ask the human when you need one of those. A
 `401` means that header is missing — or that you were started before this
 existed, in which case nothing you hold can authenticate any more and only a
 human can fix it: ask them for *Reload agent* on your ⋯ menu.

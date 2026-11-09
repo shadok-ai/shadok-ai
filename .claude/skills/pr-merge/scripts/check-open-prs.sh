@@ -25,15 +25,26 @@
 #           merge it, so print it EVERY time: repeated wakes are self-limiting,
 #           the PR disappears once merged.
 #
-#   TELL  — a fork (a "Tweak Shadok-AI" delivery is one, and on a public repo
-#           anyone can open one) or a conflicted PR. The loop never merges these;
-#           the human decides. Print them only when their state CHANGED, or a
-#           single stuck PR wakes the agent every minute forever to answer "not
-#           mine" — which is exactly what happened at a one-minute cadence.
+#   TELL  — a PR the loop is not allowed to merge on its own: a fork (a "Tweak
+#           Shadok-AI" delivery is one, and on a public repo anyone can open
+#           one), a conflicted PR, or an AUTHOR OUTSIDE THE MERGE WHITELIST.
+#           The human decides on these; the loop can only report them. Print
+#           them only when their REASON changed (never on a mergeStateStatus
+#           recomputation, see the awk below), or a single stuck PR wakes the
+#           agent every minute forever to answer "not mine" — which is exactly
+#           what happened at a one-minute cadence.
+#
+# The whitelist arm is the newest, and it was paid for the same way: #296 was
+# opened by a human outside the whitelist, so the entry filter stopped the loop
+# every single slot. The guard still read it as actionable, so for an hour and a
+# half it woke the LLM every five minutes to re-derive the same refusal and
+# print NOTHING TO SHOW. The guard must apply the SAME entry filter as the
+# skill, or it wakes the agent for work the agent is forbidden to do.
 #
 # Filtering forks out entirely was the first fix, and it went too far: it removed
 # the noise by removing the signal, so a Tweak delivery sat unseen. Change
-# detection keeps both.
+# detection keeps both: such a PR is announced ONCE, then stays quiet until
+# something about it actually moves.
 #
 # Silence discipline (invariant 16): a transient gh/network failure exits 0
 # without printing. Only real news wakes the agent. Note that "no open PRs" is
@@ -49,6 +60,30 @@ repo=shadok-ai/shadok-ai
 # and /root/.shadok-ai survive a container recreate. The scripts themselves lived
 # under /Users once and were wiped on 2026-08-10, taking every guard down at once.
 state_file="$HOME/.shadok-ai/checks/pr-open.state"
+# How many consecutive `gh` failures we absorb before saying so out loud.
+# Swallowing the FIRST one is deliberate (a stalled TCP connect must not wake
+# the agent, see the header); swallowing them FOREVER is the bug this counter
+# closes. A guard that cannot reach GitHub looks exactly like a calm repository,
+# and that is how this one stayed silent for days with mergeable PRs open: it
+# ran dropped as the agent's OS user, whose gh config dir is its own and empty,
+# so every call failed with no credential and no trace. On the 2nd failure in a
+# row we write to STDERR, which is what invariant 16 reads as "broken guard" —
+# it wakes the agent, which costs tokens each slot until someone repairs it.
+# That is the intended price: a monitoring job that dies quietly is worse.
+fail_state="$HOME/.shadok-ai/checks/pr-open.ghfail"
+gh_fail_threshold=2
+
+# Record one failed `gh` call and complain once the run of failures reaches the
+# threshold. Always exits 0: the caller decides to stop, not this.
+note_gh_failure() {
+  n=$(cat "$fail_state" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  n=$((n + 1))
+  printf '%s' "$n" > "$fail_state" 2>/dev/null
+  [ "$n" -ge "$gh_fail_threshold" ] && \
+    echo "pr-open guard: \`gh\` has failed $n times in a row (no PR data). Check the guard's GitHub credential — it runs as the agent's own OS user, not the server's." >&2
+  return 0
+}
 
 # A `hold` label means a human is deciding: the PR is deliberately parked, so
 # waking the agent for it every minute is the noise this guard exists to avoid.
@@ -56,20 +91,39 @@ state_file="$HOME/.shadok-ai/checks/pr-open.state"
 # which Go templates only reach through an assignment loop — the five TAB-
 # separated fields the awk below expects are unchanged.
 rows=$(timeout 25 gh pr list --repo "$repo" --state open --limit 50 \
-    --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository,labels \
+    --json number,title,mergeStateStatus,isDraft,baseRefName,isCrossRepository,labels,author \
     --jq '.[]
           | select(.isDraft | not)
           | select(.baseRefName == "main")
           | select([.labels[].name] | index("hold") | not)
-          | [ (if (.isCrossRepository | not) and .mergeStateStatus != "DIRTY" then "ACT" else "TELL" end),
-              "#\(.number)", .mergeStateStatus,
-              (if .isCrossRepository then "fork" else "" end), .title ]
-          | @tsv' 2>/dev/null) || exit 0
+          | (if .isCrossRepository then "fork"
+             elif .mergeStateStatus == "DIRTY" then "conflict"
+             elif (.author.login != "shadok-ai-dev" and (.author.is_bot | not)) then "author"
+             else "" end) as $why
+          | [ (if $why == "" then "ACT" else "TELL" end),
+              "#\(.number)", .mergeStateStatus, $why, (.author.login // "?"), .title ]
+          | @tsv' 2>/dev/null) || { note_gh_failure; exit 0; }
+# The call came back: forget any run of failures, so the next one starts over
+# and a single hiccup every other day never accumulates into a false alarm.
+: > "$fail_state" 2>/dev/null
 
 printf '%s\n' "$rows" | awk -F'\t' -v state="$state_file" '
-  $1 == "ACT"  { act = act sprintf("%s %s — %s\n", $2, $3, $5) }
-  $1 == "TELL" { tell[$2] = sprintf("%s %s (%s, awaiting a human) — %s", $2, $3, ($4 == "fork" ? "fork" : "conflict"), $5)
-                 seen = seen sprintf("%s=%s%s\n", $2, $3, $4) }
+  $1 == "ACT"  { act = act sprintf("%s %s — %s\n", $2, $3, $6) }
+  $1 == "TELL" { why = ($4 == "fork" ? "fork" \
+                        : ($4 == "conflict" ? "conflict" \
+                           : "@" $5 " is not in the merge whitelist"))
+                 tell[$2] = sprintf("%s %s (%s, awaiting a human) — %s", $2, $3, why, $6)
+                 # The key is the PR and its REASON — deliberately NOT its
+                 # mergeStateStatus. GitHub recomputes that field on its own and
+                 # serves `UNKNOWN` while it does, so a status in the key made
+                 # the same fork alternate UNKNOWN/UNSTABLE and re-announce
+                 # itself every few minutes: four wake-ups for #315 in one
+                 # evening, each one re-deriving the same "awaiting a human".
+                 # Nothing is lost by dropping it, because the loop may not act
+                 # on ANY of these whatever their status — the reason is the
+                 # whole news, and a reason that really changes (a fork that
+                 # starts conflicting) still changes $4.
+                 seen = seen sprintf("%s=%s\n", $2, $4) }
   END {
     # A watched PR is news the first time it is seen and whenever its state
     # moves; unchanged, it stays silent.

@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { claudeCommand } from "./claude-bin.js";
+import { claudeCommand, startWithBusyRetry } from "./claude-bin.js";
 
 /**
  * Claude Code authentication: status, and the interactive login.
@@ -100,12 +100,51 @@ export function invalidateAuthStatus(): void {
   cached = null;
 }
 
-const probe = (): Promise<AuthStatus> =>
+/**
+ * One `claude auth status --json`, resolving whatever the CLI printed.
+ *
+ * It REJECTS when the spawn could not happen at all, and that is not a
+ * hypothetical branch: `execFile` throws SYNCHRONOUSLY for the errnos Node does
+ * not route through the callback, and a promise executor turns that throw into
+ * a rejection. ETXTBSY is one of those errnos — the kernel refusing to execute
+ * a binary that is being written, which every claude-code upgrade does for
+ * seconds at a time (`isBinaryBusyError`).
+ */
+const runStatus = (): Promise<string> =>
   new Promise((resolve) => {
     execFile(claudeCommand(), ["auth", "status", "--json"], { timeout: 15_000 }, (_err, stdout) =>
-      resolve(parseAuthStatus(stdout ?? "")),
+      resolve(stdout ?? ""),
     );
   });
+
+/**
+ * The probe, taken as a function of HOW the CLI is run, so the failure below
+ * can be tested without a binary that is genuinely mid-upgrade.
+ *
+ * Two rules, and the second one is the fix. A busy binary is waited out,
+ * because that condition resolves on its own. Anything else that stops us from
+ * looking is `unknown` — "I could not look" — and NEVER a thrown error.
+ *
+ * That distinction is the whole point. This probe runs inside the `start`
+ * handler, which treats `unknown` as "allow the spawn anyway" (it says so, ten
+ * lines down) — but a throw never reaches that decision: it leaves the handler
+ * and the spawn is cancelled outright. So the one state meant to be harmless
+ * was, in its thrown form, the harshest of the three. A user on Telegram got
+ * `⚠️ spawn ETXTBSY` and no agent, during a window that had closed before they
+ * finished reading it.
+ */
+export async function probeWith(
+  run: () => Promise<string>,
+  opts: { sleep?: (ms: number) => Promise<void> } = {},
+): Promise<AuthStatus> {
+  try {
+    return parseAuthStatus(await startWithBusyRetry(run, { sleep: opts.sleep }));
+  } catch {
+    return { loggedIn: false, state: "unknown" };
+  }
+}
+
+const probe = (): Promise<AuthStatus> => probeWith(runStatus);
 
 export async function authStatus(force = false): Promise<AuthStatus> {
   if (!force && cached && Date.now() - cached.at < STATUS_TTL_MS) return cached.status;
@@ -154,7 +193,7 @@ export function cancelLogin(): void {
   flow = null;
 }
 
-export async function startLogin(): Promise<
+export async function startLogin(force = false): Promise<
   { url: string } | { alreadySignedIn: true } | { error: string }
 > {
   // Reuse a flow that already printed its URL instead of replacing it. Each
@@ -162,10 +201,15 @@ export async function startLogin(): Promise<
   // link the user is already looking at — which a plain page reload, or a
   // second tab, would otherwise do.
   if (flow && !flow.ended && flow.url) return { url: flow.url };
-  // Never spawn a sign-in on an instance that is already signed in. This is the
-  // backstop for the whole class of "it launched for nothing": whatever led the
-  // caller here, a forced re-check has the last word.
-  if ((await authStatus(true)).state === "signed-in") return { alreadySignedIn: true };
+  // Never spawn a sign-in on an instance that is already signed in — UNLESS the
+  // caller explicitly forces it. This is the backstop for the whole class of
+  // "it launched for nothing" (an auto card on a signed-in instance), but a
+  // deliberate "re-login now" IS the signed-in case: the user wants to renew
+  // the session BEFORE its refresh token lapses. Verified against the real CLI:
+  // `claude auth login --claudeai` while signed in prints a fresh URL and a
+  // code prompt — a working re-login, writing new credentials only on a code
+  // exchange — so forcing is both necessary and sufficient here.
+  if (!force && (await authStatus(true)).state === "signed-in") return { alreadySignedIn: true };
   cancelLogin();
   const child = spawn(claudeCommand(), ["auth", "login", "--claudeai"], {
     // BROWSER is neutralised: on a desktop host the CLI would otherwise open a

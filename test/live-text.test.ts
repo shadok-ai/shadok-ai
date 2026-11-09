@@ -243,3 +243,28 @@ test("livePreviewDecision: the new↔old oscillation never flips back to the old
   // frame — no oscillation.
   assert.ok(!seen.slice(seen.indexOf("show") + 1).includes("clear"));
 });
+
+// Claude Code draws its own system notices with the same bullet as prose (the
+// transcript records them as type:"system", which the cockpit never shows), so
+// the preview picked up "Remote Control disconnected — /login" mid-turn.
+test("a Remote Control system notice is never previewed", () => {
+  const screen = ["● Remote Control disconnected — /login", "✻ Crunching…", FOOTER].join("\n");
+  assert.equal(extractLiveText(screen), "");
+});
+
+test("a Remote Control notice below a real block: the block is previewed, not the notice", () => {
+  const screen = [
+    "● Here is what I found in the logs, across",
+    "  two wrapped lines.",
+    "",
+    "● Remote Control disconnected — OAuth token unavailable — run /login to restore Remote Control",
+    "✻ Crunching…",
+    FOOTER,
+  ].join("\n");
+  assert.equal(extractLiveText(screen), "Here is what I found in the logs, across two wrapped lines.");
+});
+
+test("prose that merely mentions Remote Control mid-sentence still previews", () => {
+  const screen = ["● You can turn Remote Control off in settings.", FOOTER].join("\n");
+  assert.equal(extractLiveText(screen), "You can turn Remote Control off in settings.");
+});

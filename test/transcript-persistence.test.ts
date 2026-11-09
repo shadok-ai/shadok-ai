@@ -12,7 +12,8 @@ test("the transcript is forced on: a cockpit without one has no content at all",
 
 test("both transports apply it — a fix in one only is how they drift", () => {
   for (const [name, src] of [["session.ts", session], ["tmux.ts", tmux]] as const) {
-    assert.ok(src.includes("FORCED_CLAUDE_ENV"), `${name} never applies FORCED_CLAUDE_ENV`);
+    // tmux reaches it through `forcedEnv`, which spreads FORCED_CLAUDE_ENV.
+    assert.ok(src.includes("FORCED_CLAUDE_ENV") || src.includes("forcedEnv"), `${name} never applies FORCED_CLAUDE_ENV`);
   }
 });
 
@@ -25,19 +26,28 @@ test("the parent's markers are still stripped — the assertion ADDS to that, it
 });
 
 test("it is applied LAST, so no profile secret can switch the transcript off", () => {
-  // PtyPilot: the object spread that wins is the rightmost one.
-  const spawnEnv = session.match(/env: \{ \.\.\.env,[^}]*\}/)?.[0];
+  // PtyPilot: the object spread that wins is the rightmost (last) one.
+  const spawnEnv = session.match(/export function spawnEnv[\s\S]*?\n}\n/)?.[0];
   assert.ok(spawnEnv, "could not find PtyPilot's spawn env");
   assert.ok(
-    spawnEnv.lastIndexOf("FORCED_CLAUDE_ENV") > spawnEnv.lastIndexOf("this.opts.env"),
-    "FORCED_CLAUDE_ENV must come after ...this.opts.env, or a profile can override it",
+    spawnEnv.lastIndexOf("forcedEnv") > spawnEnv.lastIndexOf("opts.env"),
+    "forcedEnv must come after ...this.opts.env, or a profile can override it",
+  );
+  // The HOME drop (dropEnv) must also sit after ...this.opts.env, so the drop
+  // user's HOME overrides the inherited server HOME rather than a profile/env.
+  assert.ok(
+    spawnEnv.lastIndexOf("dropEnv") > spawnEnv.lastIndexOf("opts.env"),
+    "dropEnv must come after ...this.opts.env, or the inherited HOME=/root wins",
   );
 
-  // TmuxPilot: `env` applies KEY=VALUE assignments left to right, last wins.
-  const cmd = tmux.match(/const cmd = \["env",[^\]]*\]/)?.[0];
-  assert.ok(cmd, "could not find TmuxPilot's env command");
+  // TmuxPilot: the launcher script exports in order and the shell keeps the
+  // LAST assignment, so the forced vars must be exported after the profile's.
+  // This scan guards the source; test/tmux-launcher.test.ts proves the same
+  // thing by RUNNING the script, which is the stronger of the two.
+  const body = tmux.match(/export function launcherScript[\s\S]*?\n}\n/)?.[0];
+  assert.ok(body, "could not find TmuxPilot's launcherScript");
   assert.ok(
-    cmd.lastIndexOf("...forced") > cmd.lastIndexOf("...secretEnv"),
-    "...forced must come after ...secretEnv, or a profile can override it",
+    body.indexOf("Object.entries(o.forced)") > body.indexOf("Object.entries(o.env)"),
+    "the forced vars must be exported after the profile env, or a profile can override them",
   );
 });

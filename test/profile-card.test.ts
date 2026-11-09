@@ -67,10 +67,19 @@ test("badges: a source-write guardrail is not a git guardrail", () => {
   // it may commit, and its whole point is that it writes tests. The badge used
   // to light up "read-only — git writes blocked" on any deny at all, which
   // would have described that card with two falsehoods at once.
-  const qa = profileBadges({ name: "x", deny: ["Write(src/**)", "Edit(src/**)"] });
+  const qa = profileBadges({ name: "x", deny: ["Edit(src/**)", "Edit(**/src/**)"] });
   assert.notEqual(qa[0].label, "read-only");
   assert.match(qa[0].label, /source/i);
   assert.doesNotMatch(qa[0].title, /git writes blocked/i);
+});
+
+test("badges: an older stored profile still carrying Write(...) entries badges the same", () => {
+  // The shipped list dropped its inert `Write(<glob>)` entries, but seeding
+  // only fills an empty vault: a user's profiles.json may still hold the old
+  // mixed list, and its card must not change because of it.
+  const old = profileBadges({ name: "x", deny: ["Write(src/**)", "Edit(src/**)"] });
+  const now = profileBadges({ name: "x", deny: ["Edit(src/**)"] });
+  assert.deepEqual(old[0], now[0]);
 });
 
 test("badges: blocking both the files and git reads as read-only, and says so", () => {
@@ -87,7 +96,7 @@ test("badges: blocking the SOURCE and git is not blocking everything", () => {
   // document IS the deliverable, so a card reading "changes nothing" would
   // describe the one thing this role exists to produce as impossible — the
   // same wording trap Shadok-Content's prompt documents.
-  const prod = profileBadges({ name: "x", deny: ["Bash(git commit:*)", "Write(src/**)", "Edit(src/**)"] });
+  const prod = profileBadges({ name: "x", deny: ["Bash(git commit:*)", "Edit(src/**)"] });
   assert.notEqual(prod[0].label, "read-only");
   assert.match(prod[0].title, /write/i);
   assert.match(prod[0].title, /commit/i, "the other half of its guardrails must still be said");

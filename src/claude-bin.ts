@@ -253,6 +253,88 @@ export async function findClaudeBinWithRetry(
   return last;
 }
 
+/**
+ * Is this the kernel refusing to run a binary that is being rewritten?
+ *
+ * ETXTBSY — "text file busy", where "text" is the old Unix word for a
+ * program's CODE segment, nothing to do with text files. The kernel refuses
+ * both directions: writing a file that is executing, and executing a file that
+ * is being written. It is the second that reaches us.
+ *
+ * Every `@anthropic-ai/claude-code` upgrade rewrites a ~214 MB native binary in
+ * place, so the window is SECONDS wide rather than microseconds, and a machine
+ * that follows releases hits it repeatedly — three times in one day here, each
+ * time killing an agent spawn and reporting it as a death.
+ *
+ * This is a DIFFERENT failure from invariant 32, and the difference decides the
+ * cure. There the file is the wrong thing (the npm placeholder) and reinstalling
+ * makes it worse, so we say what is wrong and stop. Here the file is exactly
+ * right and merely busy — the condition is transient by construction, resolves
+ * on its own, and the only possible mistake is concluding too early.
+ *
+ * `findClaudeBinWithRetry` cannot help: it retries a STAT, and a busy binary
+ * stats perfectly. You only learn at `execve`.
+ */
+export function isBinaryBusyError(e: unknown): boolean {
+  if (!e) return false;
+  const code = (e as { code?: unknown }).code;
+  if (code === "ETXTBSY") return true;
+  // node-pty surfaces the errno inside a message rather than as `code`, and a
+  // shell in between may too. Matching the token is what actually catches it.
+  const msg = e instanceof Error ? e.message : String(e);
+  return /\bETXTBSY\b|text file busy/i.test(msg);
+}
+
+/** Marks a spawn that failed because the pane's command never got to run. */
+export function binaryBusyError(what: string): Error {
+  const e = new Error(`${what} could not be executed (ETXTBSY: the binary is being rewritten)`);
+  (e as { code?: string }).code = "ETXTBSY";
+  return e;
+}
+
+export const BINARY_BUSY_TRIES = 6;
+export const BINARY_BUSY_DELAY_MS = 500;
+
+/**
+ * Runs a call that SPAWNS `claude`, waiting out a binary that is mid-upgrade.
+ *
+ * The retry lives HERE and not inside a pilot's `start()` because both pilots'
+ * `start()` are synchronous: waiting there would block the event loop for every
+ * other agent. `attachPilot` is already async, so this is the first place that
+ * can afford to wait at all.
+ *
+ * It takes a sync call OR an async one, and hands back what that call returned.
+ * The pilots' `start()` is the sync case; the auth probe is the async one, and
+ * it is not a second-class caller — EVERY spawn of the binary meets the same
+ * window, so every one of them has to be able to sit it out.
+ *
+ * Only a busy binary is retried. Any other failure is rethrown at once — a
+ * missing binary or a bad path does not get better by being asked six times,
+ * and burying it under three seconds of retries would hide the real message.
+ */
+export async function startWithBusyRetry<T>(
+  start: () => T | Promise<T>,
+  opts: {
+    tries?: number;
+    delayMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+    onRetry?: (attempt: number, tries: number) => void;
+  } = {},
+): Promise<T> {
+  const tries = Math.max(1, opts.tries ?? BINARY_BUSY_TRIES);
+  const delayMs = opts.delayMs ?? BINARY_BUSY_DELAY_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (let i = 1; ; i++) {
+    try {
+      return await start();
+    } catch (e) {
+      if (!isBinaryBusyError(e) || i >= tries) throw e;
+      opts.onRetry?.(i, tries);
+      await sleep(delayMs);
+    }
+  }
+}
+
 /** Live deps for {@link findClaudeBin}, reading the real filesystem. */
 export function liveClaudeDeps(): FindClaudeDeps {
   return {
@@ -330,6 +412,31 @@ export function claudeStubMessage(): string {
   );
 }
 
+/**
+ * Why a multi-tenant instance cannot start isolated-group agents: they run as
+ * non-root OS users with no keychain, so they authenticate from the injected
+ * subscription token. Absent, every group spawn would die on a bare auth error.
+ * `null` when fine (not capable, or the token is present).
+ */
+/**
+ * Does THIS spawn need the injected subscription token? Exactly when it drops
+ * to a non-root OS user (the condition under which `makePilot` injects it) AND
+ * uses the subscription — a custom backend authenticates with its own key.
+ */
+export function mtTokenNeeded(dropsToUser: boolean, backendIsCustom: boolean): boolean {
+  return dropsToUser && !backendIsCustom;
+}
+
+export function mtCredentialMessage(capable: boolean, hasToken: boolean): string | null {
+  if (!capable || hasToken) return null;
+  return (
+    `This multi-tenant instance has no subscription token for its group agents: ` +
+    `the vault secret MT_CLAUDE_OAUTH_TOKEN is missing. ` +
+    `Run 'claude setup-token' once (as the signed-in operator) and store the result ` +
+    `as the vault secret MT_CLAUDE_OAUTH_TOKEN, then retry.`
+  );
+}
+
 export interface EnsureClaudeDeps {
   /** Locate a RUNNABLE claude now. Called again after an install. */
   find: () => Promise<ClaudeBin>;
@@ -337,6 +444,74 @@ export interface EnsureClaudeDeps {
   install: () => Promise<void>;
   /** Surface progress (server log / a line to the client). */
   notify: (line: string) => void;
+  /**
+   * Is ANOTHER install of the package rewriting it right now? Claude Code's own
+   * auto-updater is the one that actually does (see `ensureClaude`). Optional:
+   * without it we cannot avoid the race, only recover from it.
+   */
+  installInProgress?: () => boolean;
+  /** How long to wait for that other install before starting ours (default 90s). */
+  waitForOtherInstallMs?: number;
+  /** Poll interval while waiting (default 1s). */
+  pollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
+
+/**
+ * Has an npm install of claude-code left its reify directory in the global
+ * scope RECENTLY? While npm replaces a package it moves the old tree aside as a
+ * hidden sibling — `@anthropic-ai/.claude-code-<hash>` — and the name is derived
+ * from the path, so a second install collides on exactly that directory:
+ * `ENOTEMPTY: rename '…/claude-code' -> '…/.claude-code-1devilah'`. Its presence
+ * is therefore the observable sign that someone else is mid-install.
+ *
+ * Only a RECENT entry counts. An install that crashed leaves the directory
+ * behind forever, and treating that as "in progress" would make every future
+ * missing-CLI install wait out the full bound for nothing.
+ */
+export function rewriteInProgress(
+  entries: { name: string; mtimeMs: number }[],
+  now: number,
+  maxAgeMs = 10 * 60_000,
+): boolean {
+  return entries.some((e) => /^\.claude-code-[A-Za-z0-9]+$/.test(e.name) && now - e.mtimeMs <= maxAgeMs);
+}
+
+/**
+ * Where the global `@anthropic-ai` scope lives for the node running us. POSIX
+ * prefixes (a system install, nvm, volta's node) keep global modules in
+ * `<prefix>/lib/node_modules`, with node at `<prefix>/bin/node`; Windows keeps
+ * them next to node.exe. Pure, so both layouts are testable from anywhere.
+ */
+export function globalScopeDirs(execPath: string, platform: NodeJS.Platform): string[] {
+  const p = platform === "win32" ? path.win32 : path.posix;
+  const scope = "@anthropic-ai";
+  if (platform === "win32") return [p.join(p.dirname(execPath), "node_modules", scope)];
+  return [p.join(p.dirname(p.dirname(execPath)), "lib", "node_modules", scope)];
+}
+
+/** Live half of {@link rewriteInProgress}: reads the real global scope. */
+export function claudeInstallInProgress(): boolean {
+  const now = Date.now();
+  for (const dir of globalScopeDirs(process.execPath, process.platform)) {
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue; // no such scope — nothing installed there, nothing in progress
+    }
+    const entries: { name: string; mtimeMs: number }[] = [];
+    for (const name of names) {
+      try {
+        entries.push({ name, mtimeMs: fs.statSync(path.join(dir, name)).mtimeMs });
+      } catch {
+        // vanished between readdir and stat — which is itself a sign of churn,
+        // but not one we can date, so it does not count
+      }
+    }
+    if (rewriteInProgress(entries, now)) return true;
+  }
+  return false;
 }
 
 export type EnsureClaudeResult = { ok: true; path: string } | { ok: false; error: string };
@@ -353,14 +528,46 @@ export type EnsureClaudeResult = { ok: true; path: string } | { ok: false; error
  * someone else's postinstall is mid-rewrite. We say what is wrong instead.
  */
 export async function ensureClaude(deps: EnsureClaudeDeps): Promise<EnsureClaudeResult> {
-  const found = await deps.find();
+  let found = await deps.find();
   if (found.ok) return { ok: true, path: found.path };
   if (found.reason === "stub") return { ok: false, error: claudeStubMessage() };
+
+  // "Missing" can be a lie told by a rewrite in progress. Claude Code updates
+  // ITSELF with `npm install --global @anthropic-ai/claude-code@<version>`, and
+  // while npm reifies it the package directory is moved aside — so for a few
+  // seconds there is no launcher at all. Measured on a fresh instance: the
+  // auto-updater's install started at :28 and succeeded, ours started at :30
+  // (after the short `find` retry had given up) and died on ENOTEMPTY against
+  // the very directory the first one was using, which the user saw as "installing
+  // claude failed (npm exited with code 217)" — 217 being 256 − 39, ENOTEMPTY.
+  // Starting a second install into someone else's reify can only lose, so WAIT
+  // for it, bounded: a crashed leftover must not stall forever (and
+  // `rewriteInProgress` already ignores an old one).
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  if (deps.installInProgress?.()) {
+    deps.notify(`Claude Code is being updated right now — waiting for that to finish instead of installing over it…`);
+    const pollMs = deps.pollMs ?? 1000;
+    const deadline = (deps.waitForOtherInstallMs ?? 90_000);
+    for (let waited = 0; waited < deadline; waited += pollMs) {
+      await sleep(pollMs);
+      found = await deps.find();
+      if (found.ok) return { ok: true, path: found.path };
+      if (!deps.installInProgress()) break;
+    }
+    found = await deps.find();
+    if (found.ok) return { ok: true, path: found.path };
+    if (found.reason === "stub") return { ok: false, error: claudeStubMessage() };
+  }
 
   deps.notify(`Claude Code CLI not found — installing ${CLAUDE_PKG} (one-time, this can take a minute)…`);
   try {
     await deps.install();
   } catch (e) {
+    // Our install losing a race does not mean there is no claude: the install we
+    // collided with may just have finished. Look again before reporting failure,
+    // or a perfectly healthy CLI gets announced as uninstallable.
+    const raced = await deps.find();
+    if (raced.ok) return { ok: true, path: raced.path };
     return { ok: false, error: claudeMissingMessage(`installing it failed (${e instanceof Error ? e.message : String(e)})`) };
   }
 

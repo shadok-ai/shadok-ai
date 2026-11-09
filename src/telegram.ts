@@ -11,6 +11,8 @@ import {
   saveTgGroup,
   loadTgOwner,
   saveTgOwner,
+  loadTgOperators,
+  saveTgOperators,
   isMirrored,
   loadTgTopics,
   saveTgTopics,
@@ -18,7 +20,13 @@ import {
   tgToolsEnabled,
   setTgTools,
 } from "./channels.js";
-import { secretNames, setSecret, deleteSecret } from "./secrets.js";
+import { secretNames, setSecret, deleteSecret, secretWriteVerdict, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
+import { MAIN_GROUP_ID } from "./groups.js";
+import { startSetupToken, submitSetupTokenCode } from "./setup-token.js";
+import { recordSecretAudit } from "./secret-audit.js";
+import { telegramPhotoable } from "./download.js";
+import { transcribe, heardNotice } from "./whisper.js";
+import { clock, lookAtVideo, MAX_FRAMES, ALBUM_FRAMES } from "./video.js";
 import { authStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { getProfile, profileNames } from "./profiles.js";
 import { tmuxHasSession } from "./tmux.js";
@@ -39,6 +47,17 @@ import {
 import { SHADOK_DIR, loadConfig, telegramConfig } from "./config.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
+import { pairingRefusal, redeemPairingCode } from "./tg-pairing.js";
+import {
+  callbackChatAllowed,
+  commandRequiresOperator,
+  cronsInScope,
+  isOperator,
+  operatorRefusal,
+  parseSecretArg,
+  spawnArgs,
+  withOperator,
+} from "./tg-operators.js";
 
 /**
  * Telegram control bridge. Runs inside the server process (only when
@@ -59,9 +78,42 @@ const MSG_LIMIT = 4000; // Telegram hard limit is 4096; leave headroom.
 
 // Downloaded Telegram attachments live OUTSIDE any repo/worktree (never in a
 // diff, never committed by accident). Claude reads them by absolute path.
-// Exported: the web cockpit drops pasted images there too, so both surfaces
-// share a single folder (and a single purge).
-export const MEDIA_DIR = path.join(SHADOK_DIR, "media");
+// The web cockpit drops pasted images there too, so both surfaces share a
+// single folder (and a single purge).
+//
+// It is a FUNCTION, not a const, because the directory is RESOLVED at runtime:
+// a multi-tenant server points `SHADOK_MEDIA_DIR` at a group-readable location
+// under the shared pot (`/var/lib/shadok-ai/shared/media`) so a privilege-
+// dropped agent can actually open the file — `~/.shadok-ai/media` is `/root/…`,
+// which `/root` (mode 700) makes un-reachable by the `main`/`sk-*` drop users
+// (invariant 54's family). Mono-tenant leaves the env unset and keeps
+// `~/.shadok-ai/media`, byte-for-byte unchanged.
+export function mediaDir(): string {
+  return process.env.SHADOK_MEDIA_DIR?.trim() || path.join(SHADOK_DIR, "media");
+}
+/**
+ * Delete attachments older than `cutoff`, in the media root and one level of
+ * group subdirectories (`g-*`, invariant 60). `lstat` throughout: a symlink is
+ * removed as a link, never followed, and a directory is never unlinked.
+ */
+export function purgeMedia(root: string, cutoff: number): void {
+  const sweep = (dir: string, depth: number) => {
+    let names: string[];
+    try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      const p = path.join(dir, name);
+      try {
+        const st = fs.lstatSync(p);
+        if (st.isDirectory()) {
+          if (depth === 0 && /^g-/.test(name)) sweep(p, 1);
+        } else if (st.mtimeMs < cutoff) fs.unlinkSync(p);
+      } catch {
+        /* one odd entry must not stop the purge */
+      }
+    }
+  };
+  sweep(root, 0);
+}
 const TG_FILE_LIMIT = 20 * 1024 * 1024; // Bot API getFile hard limit
 const MEDIA_MAX_AGE_MS = 30 * 24 * 3600 * 1000; // purge after 30 days
 
@@ -176,35 +228,121 @@ export function nextToolsState(arg: string, current: boolean): boolean {
 /**
  * Who may write to the bot in private?
  *
- * A group is already bounded to the bound group; a DM was not: with no
- * allowlist configured, anyone who found the bot got a Claude session on the
- * machine. So the first to write claims DMs, and everyone else is refused.
+ * With no allowlist configured, anyone who found the bot would get a Claude
+ * session on the machine. DMs therefore belong to ONE owner, and with no owner
+ * yet the sender must `pair` — present the code the web cockpit shows
+ * (`src/tg-pairing.ts`). It used to be "the first to write claims DMs", which
+ * handed the machine to whichever stranger got there first.
  *
- * A sender with no id is refused even when nobody has claimed yet: there is
- * nothing to store, hence nothing that would keep the next one out.
+ * A sender with no id is refused outright: there is nothing to store as owner.
  * Pure — unit tested.
  */
-export function dmGate(owner: number | null, from: number | undefined): "claim" | "allow" | "deny" {
+export function dmGate(owner: number | null, from: number | undefined): "pair" | "allow" | "deny" {
   if (typeof from !== "number") return "deny";
-  if (owner === null) return "claim";
+  if (owner === null) return "pair";
   return owner === from ? "allow" : "deny";
 }
 
-/** The known origins and their mark. An unknown origin keeps its name: better
- *  "someone spoke" than a message that looks like it came from the agent. */
-const ORIGIN_MARKS: Record<string, string> = { web: "👤 web", cron: "⏰ cron", cli: "⌨️ cli", telegram: "👤 telegram" };
+/**
+ * The code a message presents to pair the bot, or null. `/setup <code>` is the
+ * typed form; `/start <code>` is what Telegram sends by itself when the bot is
+ * reached through a `?start=` / `?startgroup=` deep link. Pure — unit tested.
+ */
+export function pairingCodeOf(text: unknown): string | null {
+  if (typeof text !== "string") return null;
+  const cmd = parseCommand(text);
+  if (!cmd || (cmd.cmd !== "setup" && cmd.cmd !== "start") || !cmd.arg) return null;
+  return cmd.arg;
+}
+
+/** How much of a quoted message rides along. It is prepended to EVERY reply, so
+ *  unbounded it would crowd out the message it exists to contextualise. */
+const QUOTE_MAX = 300;
+
+/**
+ * The line that tells the agent WHICH message a Telegram reply answers.
+ *
+ * Replying to something from ten minutes ago is ordinary in a chat, and until
+ * now the agent received "fix that" with no trace of the thing being fixed —
+ * `reply_to_message` was read only to recover a topic's name.
+ *
+ * Three decisions worth keeping:
+ *
+ * The forum trap. In a topic EVERY message carries `reply_to_message`, pointing
+ * at the topic's own creation service message. Quoting that would staple a
+ * useless line onto every message in every topic, so it is explicitly not a
+ * reply.
+ *
+ * A highlighted fragment wins. Telegram lets the user select part of a message
+ * when replying (`quote`, Bot API 7.0). That selection IS them pointing at
+ * something; honouring the whole message instead would discard the aim.
+ *
+ * A bot is "the agent". A bot has a `first_name` too, and quoting the agent's
+ * own words under that name reads as a third participant in the conversation.
+ *
+ * Pure — unit tested.
+ */
+export function replyContext(msg: {
+  quote?: { text?: string };
+  reply_to_message?: Record<string, unknown> & { from?: { is_bot?: boolean; first_name?: string; last_name?: string; username?: string } };
+}): string | undefined {
+  const r = msg.reply_to_message;
+  if (!r) return undefined;
+  // The topic's own creation message: carried by every message in the topic.
+  if (r.forum_topic_created) return undefined;
+
+  const who = r.from?.is_bot ? "the agent" : (senderName(r.from) ?? "someone");
+  const picked = (msg.quote?.text ?? (r.text as string | undefined) ?? (r.caption as string | undefined) ?? "").trim();
+  if (picked) {
+    // One line: the quote sits above the message, and a multi-line one would
+    // read as part of what the human wrote.
+    const flat = picked.replace(/\s+/g, " ");
+    const cut = flat.length > QUOTE_MAX ? flat.slice(0, QUOTE_MAX) + "…" : flat;
+    return `⟦replying to ${who}⟧ "${cut}"`;
+  }
+  // Nothing quotable: name the medium rather than print an empty quote, which
+  // reads as a rendering bug.
+  const medium = r.photo ? "a photo" : r.document ? "a file" : r.voice ? "a voice message" : r.video ? "a video" : r.sticker ? "a sticker" : "a message";
+  return `⟦replying to ${who}⟧ [${medium}]`;
+}
+
+/** The known origins: the icon that stands for them, and the word they print.
+ *  An unknown origin keeps its own name: better "someone spoke" than a message
+ *  that looks like it came from the agent. */
+const ORIGIN_MARKS: Record<string, { icon: string; word: string }> = {
+  web: { icon: "👤", word: "web" },
+  cron: { icon: "⏰", word: "cron" },
+  cli: { icon: "⌨️", word: "cli" },
+  telegram: { icon: "👤", word: "telegram" },
+};
 
 /**
  * The header of a prompt coming from ELSEWHERE — the web, a cron, the CLI.
  * Without it a Telegram channel only saw the answers: the agent looked like it
  * was talking to itself, and a cron firing was indistinguishable from a human
- * message. Pure — unit tested.
+ * message.
+ *
+ * `from` is the sender's name when the server knows it — for the web that is the
+ * account behind the session (`promptAuthor`), and it was already riding on the
+ * echo; this label simply dropped it, so a colleague writing from the cockpit
+ * arrived in Telegram as a bare "web". The web side names its authors the same
+ * way (`echoAuthor`), and the shape is deliberately identical: name first,
+ * because who spoke matters more than which surface they used.
+ *
+ * Pure — unit tested.
  */
-export function promptEchoLabel(origin: string | undefined, auto = false): string {
-  // The pace guard's resume is not someone: it comes from the server.
+export function promptEchoLabel(origin: string | undefined, auto = false, from?: string): string {
+  // The pace guard's resume is not someone: it comes from the server — whatever
+  // name happened to ride along on the prompt it is resuming.
   if (auto) return "⚙️ auto-resumed";
-  if (!origin) return "👤";
-  return ORIGIN_MARKS[origin] ?? "👤 " + origin;
+  const name = (from ?? "").trim();
+  const mark = origin ? ORIGIN_MARKS[origin] : undefined;
+  const icon = mark?.icon ?? "👤";
+  const word = mark?.word ?? origin ?? "";
+  // A blank name must never leave a dangling separator ("👤  · web" reads as a
+  // rendering bug), and a name with nowhere to attach stands on its own.
+  if (!name) return word ? `${icon} ${word}` : icon;
+  return word ? `${icon} ${name} · ${word}` : `${icon} ${name}`;
 }
 
 /**
@@ -223,27 +361,96 @@ export function migratedGroupId(msg: any, currentBound: number | null): number |
 export interface TgAttachment {
   fileId: string;
   fileUniqueId: string;
-  kind: "image" | "file";
-  fileName?: string; // original name (documents only)
+  /** `voice` is spoken input, not a file to hand the agent: it is transcribed
+   *  and the TEXT becomes the prompt. Keeping it a separate kind is what stops
+   *  an .ogg being dropped on an agent that cannot read audio. `video` is the
+   *  same idea one step further: an mp4 is unreadable too, so the bridge turns
+   *  it into stills (and, when there is speech, a transcript). */
+  kind: "image" | "file" | "voice" | "video";
+  fileName?: string; // original name (documents, audio)
   fileSize?: number; // bytes, when Telegram provides it
+  mimeType?: string; // Telegram's own, when it sends one
+  durationSec?: number; // video/audio length, straight from Telegram
 }
 
-/** Extract the attachment of a message: a photo (largest size — Telegram
- *  sorts sizes small → large) or any document (PDF, zip, image sent as
- *  file…). Text-only messages → null. */
+/**
+ * Extract the attachment of a message — and the list of fields this looks at IS
+ * the list of messages the bot can receive at all: `handleMessage` drops
+ * anything with neither text nor attachment, so a shape missing here is a
+ * message swallowed in silence.
+ *
+ * That is exactly how a shared VIDEO disappeared: it carries `msg.video`, its
+ * caption in `msg.caption`, and no `msg.text` whatsoever. The voice note had
+ * been the same bug one shape earlier. So the order below is: spoken input, the
+ * moving pictures, then the still ones, then anything else as a file.
+ *
+ * A `sticker` is deliberately NOT here. It is a reaction, not content, and
+ * waking a whole agent turn for an emoji-equivalent costs more than it tells
+ * anyone — a decision, not an oversight.
+ */
 export function attachmentOf(msg: any): TgAttachment | null {
+  // Voice FIRST: a voice note also carries no photo and no document, and used
+  // to fall through to `null` — so the message was dropped in silence, which is
+  // exactly the failure this codebase keeps paying for.
+  const v = msg.voice;
+  if (v?.file_id) {
+    return {
+      fileId: v.file_id,
+      fileUniqueId: v.file_unique_id,
+      kind: "voice",
+      ...(v.file_size != null ? { fileSize: v.file_size } : {}),
+      ...(v.duration != null ? { durationSec: v.duration } : {}),
+    };
+  }
+  // A video, a GIF (`animation` — Telegram stores it as a soundless mp4) or a
+  // round "telescope" clip (`video_note`). `animation` comes BEFORE `document`
+  // on purpose: Telegram sends both fields for a GIF, and as a document it
+  // would lose its duration and its stills.
+  const mov = msg.video ?? msg.animation ?? msg.video_note;
+  if (mov?.file_id) {
+    return {
+      fileId: mov.file_id,
+      fileUniqueId: mov.file_unique_id,
+      kind: "video",
+      ...(mov.file_name ? { fileName: mov.file_name } : {}),
+      ...(mov.file_size != null ? { fileSize: mov.file_size } : {}),
+      ...(mov.mime_type ? { mimeType: mov.mime_type } : {}),
+      ...(mov.duration != null ? { durationSec: mov.duration } : {}),
+    };
+  }
   if (Array.isArray(msg.photo) && msg.photo.length) {
     const p = msg.photo[msg.photo.length - 1];
     return { fileId: p.file_id, fileUniqueId: p.file_unique_id, kind: "image", fileSize: p.file_size };
+  }
+  // An audio FILE (a music track, a forwarded memo) — handed over as a file
+  // rather than transcribed: a 40-minute track would hold a turn hostage for
+  // the best part of an hour, and nobody shares an album for its lyrics. The
+  // point here is that it stops vanishing.
+  const a = msg.audio;
+  if (a?.file_id) {
+    return {
+      fileId: a.file_id,
+      fileUniqueId: a.file_unique_id,
+      kind: "file",
+      ...(a.file_name ? { fileName: a.file_name } : {}),
+      ...(a.file_size != null ? { fileSize: a.file_size } : {}),
+      ...(a.mime_type ? { mimeType: a.mime_type } : {}),
+      ...(a.duration != null ? { durationSec: a.duration } : {}),
+    };
   }
   const d = msg.document;
   if (d?.file_id) {
     return {
       fileId: d.file_id,
       fileUniqueId: d.file_unique_id,
-      kind: typeof d.mime_type === "string" && d.mime_type.startsWith("image/") ? "image" : "file",
+      kind: typeof d.mime_type === "string" && d.mime_type.startsWith("video/")
+        ? "video"
+        : typeof d.mime_type === "string" && d.mime_type.startsWith("image/")
+          ? "image"
+          : "file",
       ...(d.file_name ? { fileName: d.file_name } : {}),
       ...(d.file_size != null ? { fileSize: d.file_size } : {}),
+      ...(d.mime_type ? { mimeType: d.mime_type } : {}),
     };
   }
   return null;
@@ -295,21 +502,206 @@ export function pasteFileName(id: string, name: string, contentType: string): st
   return base ? `paste-${id}-${base}.${ext}` : `paste-${id}.${ext}`;
 }
 
+/**
+ * A WHITELIST from Telegram's mime type to an extension, for the media that
+ * arrives without a file name — a camera video has none.
+ *
+ * Same rule as `pasteExtension`: never split on "/", since the result lands in
+ * a filename. Unknown → null, and the caller decides what is honest.
+ */
+const MEDIA_EXT: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/x-matroska": "mkv",
+  "video/mpeg": "mpeg",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/ogg": "ogg",
+  "audio/x-wav": "wav",
+  "audio/wav": "wav",
+};
+
+/** The extension a downloaded attachment should carry, or null when unknown.
+ *  ffmpeg sniffs the container anyway, so this is for the humans and for the
+ *  agent reading the path — being truthful matters more than being clever. */
+export function mediaExtension(att: TgAttachment): string | null {
+  const fromMime = att.mimeType ? MEDIA_EXT[att.mimeType.split(";")[0].trim().toLowerCase()] : undefined;
+  if (fromMime) return fromMime;
+  if (att.kind === "image") return "jpg";
+  // A video Telegram transcoded itself is always mp4; saying nothing would
+  // leave the file extension-less, which reads as "unknown binary".
+  if (att.kind === "video") return "mp4";
+  return null;
+}
+
 /** Storage name under ~/.shadok-ai/media: keep the original name so Claude
  *  has context, prefix with file_unique_id to avoid collisions, and strip
  *  anything path-ish or shell-hostile. */
 export function mediaFileName(att: TgAttachment): string {
   const base = att.fileName ? path.basename(att.fileName).replace(/[^\w.\- ]+/g, "_") : "";
   if (base) return `${att.fileUniqueId}-${base}`;
-  return att.kind === "image" ? `${att.fileUniqueId}.jpg` : att.fileUniqueId;
+  const ext = mediaExtension(att);
+  return ext ? `${att.fileUniqueId}.${ext}` : att.fileUniqueId;
 }
 
-/** The prompt sent to the session for downloaded attachments: one absolute
- *  path per line (Claude reads them itself — Read for images/PDF/text,
- *  Bash for the rest), then the user's caption if any. */
-export function attachmentPrompt(items: { path: string; kind: "image" | "file" }[], caption?: string): string {
-  const lines = items.map((i) => (i.kind === "image" ? `[Attached image: ${i.path}]` : `[Attached file: ${i.path}]`));
+/** One downloaded attachment, as the prompt describes it. */
+export interface PromptItem {
+  path: string;
+  kind: "image" | "file" | "video";
+  /** Video only: its length, and the stills pulled out of it. */
+  durationSec?: number;
+  frames?: { path: string; atSec: number }[];
+  /** Video only: the speech heard in the audio track. */
+  transcript?: string;
+  /** Video only: why there is no transcript, when that is worth saying — an
+   *  agent that is told nothing about the audio assumes there was none. */
+  audioNote?: string;
+}
+
+/**
+ * The prompt sent to the session for downloaded attachments: one absolute path
+ * per line (Claude reads them itself — Read for images/PDF/text, Bash for the
+ * rest), then the user's caption if any.
+ *
+ * A video is the one that needs words around it. The path alone is a dead end
+ * (nothing in `Read` opens an mp4), so it comes with its stills — and with the
+ * sentence that says to READ them: a model told about a video and handed images
+ * next to it still answers "I can't watch videos" unless the link between the
+ * two is spelled out. Verified on exactly that failure.
+ */
+export function attachmentPrompt(items: PromptItem[], caption?: string): string {
+  const lines: string[] = [];
+  for (const i of items) {
+    if (i.kind === "video") {
+      const len = i.durationSec ? ` (${clock(i.durationSec)})` : "";
+      lines.push(`[Attached video: ${i.path}${len}]`);
+      if (i.frames?.length) {
+        lines.push("Stills from it — read these images to see the video:");
+        i.frames.forEach((f, n) =>
+          lines.push(`[Attached image: ${f.path}] frame ${n + 1}/${i.frames!.length} at ${clock(f.atSec)}`),
+        );
+      }
+      if (i.transcript?.trim()) lines.push(`⟦heard in the video⟧ "${i.transcript.trim()}"`);
+      else if (i.audioNote) lines.push(`⟦video audio⟧ ${i.audioNote}`);
+      continue;
+    }
+    lines.push(i.kind === "image" ? `[Attached image: ${i.path}]` : `[Attached file: ${i.path}]`);
+  }
   return caption?.trim() ? lines.join("\n") + "\n" + caption : lines.join("\n");
+}
+
+/** One file an echoed prompt points at, ready for `sendUserFile`. */
+export interface EchoedFile {
+  path: string;
+  name: string;
+  kind: "image" | "file" | "video";
+}
+
+/** How many files one echoed prompt may upload. A paste carries one or two;
+ *  this only ever bounds a crafted message, and the excess is REPORTED rather
+ *  than dropped in silence. */
+export const ECHO_FILE_CAP = 10;
+
+const ATTACHMENT_MARKER = /\[Attached (image|file|video): ([^\]]+)\]/g;
+/** What follows a still's marker — `[Attached image: …] frame 1/2 at 0:02`. */
+const FRAME_TAIL = /^\s*frame \d+\/\d+ at \d+:\d{2}/;
+/** The lines `attachmentPrompt` writes AROUND a video, for the agent's benefit. */
+const VIDEO_SCAFFOLD = /^(Stills from it|⟦heard in the video⟧|⟦video audio⟧)/;
+
+/**
+ * The reader for what `attachmentPrompt` writes — the other half of the pair.
+ *
+ * A file pasted into the WEB composer goes through `/paste`, which deliberately
+ * describes it with this very marker ("the very wording Telegram already uses,
+ * so an agent sees one format"). The web renders those markers as thumbnails;
+ * Telegram printed the absolute path instead, so a file posted from the cockpit
+ * reached the agent but was invisible to the person reading the topic.
+ *
+ * Three decisions worth keeping.
+ *
+ * **The path is never trusted.** Anyone can type `[Attached file: /etc/shadow]`
+ * into the composer, and the echo arrives here as ordinary text — so a marker
+ * counts only when it names a file DIRECTLY inside `mediaDir`, which is the same
+ * rule (and the same reason) as the `/media/:name` route's basename scoping. A
+ * refused marker is left in the prose rather than removed: Telegram then shows
+ * exactly what it shows today, and nothing is silently swallowed.
+ *
+ * **A video's stills stay behind.** They exist so a model can SEE a clip it
+ * cannot open; a human on Telegram is about to watch the clip itself, and eight
+ * frames would bury it. Same for the sentence introducing them and the
+ * transcript line.
+ *
+ * **Pure, and the directory is a parameter**, so the rule is testable without a
+ * filesystem — like `spawnHelperPaths` and `classifyBin`.
+ */
+export function attachmentsInPrompt(
+  text: string,
+  mediaDir: string,
+): { files: EchoedFile[]; prose: string; dropped: number } {
+  const files: EchoedFile[] = [];
+  const kept: string[] = [];
+  let dropped = 0;
+  for (const line of String(text ?? "").split("\n")) {
+    if (VIDEO_SCAFFOLD.test(line.trim())) continue;
+    let rest = "";
+    let last = 0;
+    let still = false;
+    let m: RegExpExecArray | null;
+    ATTACHMENT_MARKER.lastIndex = 0;
+    while ((m = ATTACHMENT_MARKER.exec(line))) {
+      if (m[1] === "image" && FRAME_TAIL.test(line.slice(m.index + m[0].length))) {
+        still = true;
+        break;
+      }
+      rest += line.slice(last, m.index);
+      last = m.index + m[0].length;
+      const f = echoedFile(m[1] as EchoedFile["kind"], m[2], mediaDir);
+      if (!f) {
+        rest += m[0]; // not ours: keep the marker as text, upload nothing
+        continue;
+      }
+      if (files.length >= ECHO_FILE_CAP) {
+        dropped++;
+        continue;
+      }
+      files.push(f);
+    }
+    if (still) continue;
+    kept.push(rest + line.slice(last));
+  }
+  // Same collapse the web client applies once its markers are lifted out: a
+  // line that was ONLY a marker must not leave a blank behind.
+  const prose = kept.join("\n").replace(/\n{2,}/g, "\n").trim();
+  return { files, prose, dropped };
+}
+
+/** A marker's path → the file to upload, or null when it is not ours to send. */
+function echoedFile(kind: EchoedFile["kind"], raw: string, mediaDir: string): EchoedFile | null {
+  // A video carries its length INSIDE the bracket: `/m/v.mp4 (0:07)`.
+  const p = raw.trim().replace(/\s+\(\d+:\d{2}\)$/, "");
+  const name = path.basename(p);
+  // Equality, not a prefix test: `<mediaDir>/../../.ssh/id_ed25519` has the
+  // right prefix and is not in the directory.
+  if (!name || path.join(mediaDir, name) !== p) return null;
+  return { path: p, name, kind };
+}
+
+/** What a bot simply cannot fetch: the Bot API caps `getFile` at 20 MB, and no
+ *  code on our side lifts it — so the notice names both sizes and the two
+ *  things that do work. */
+export function tooLargeNotice(att: TgAttachment): string {
+  const mb = att.fileSize ? `${(att.fileSize / 1_000_000).toFixed(1)} MB` : "this file";
+  const what = att.kind === "video" ? "video" : att.kind === "image" ? "image" : "file";
+  return `⚠️ Telegram only lets a bot download up to 20 MB, and this ${what} is ${mb}. Send a shorter clip, or compress it — a link to the file works too.`;
+}
+
+/** Was this download refused by the 20 MB ceiling rather than broken? The size
+ *  we were told is the honest signal; Telegram's own wording is the fallback
+ *  for a file it never sized. */
+export function tooBigFor(att: TgAttachment, err: any): boolean {
+  if (att.fileSize && att.fileSize > TG_FILE_LIMIT) return true;
+  return /too (big|large)/i.test(String(err?.message ?? err ?? ""));
 }
 
 const htmlEscape = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -391,6 +783,125 @@ export function makeAlbumBuffer<T>(
       groups.set(groupId, { items, timer });
     },
   };
+}
+
+/** The `prompt` frame a Telegram message becomes on the wire to our own server. */
+export type PromptFrame = { type: "prompt"; text: string; from?: string; voice?: true };
+
+/**
+ * Built ONCE, so the queued path and the live path cannot drift apart.
+ *
+ * They had: `pending` held the bare text, so a message that arrived before the
+ * WS was ready — the FIRST message of any new DM or topic, by construction —
+ * reached the server without `from` and without `voice`. Those two are not
+ * decoration: the server turns them into the `⟦telegram · <date> · <who>⟧`
+ * header the agent actually reads (`promptAuthor`, and `telegram vocal` for a
+ * transcription). So the one message where identity matters most, "hello" from
+ * someone the agent has never heard from, was the one delivered anonymous — and
+ * a first voice note looked like typed text.
+ */
+export function promptFrame(text: string, from?: string, voice = false): PromptFrame {
+  return { type: "prompt", text, ...(from ? { from } : {}), ...(voice ? { voice: true as const } : {}) };
+}
+
+/** How long any one Bot API call may take. Generous — the point is not speed,
+ *  it is that no call may wait for ever. */
+const API_TIMEOUT_MS = 60_000;
+
+/** The same, for a file transfer either way: megabytes over someone else's link. */
+const TRANSFER_TIMEOUT_MS = 5 * 60_000;
+
+/**
+ * How long the long-poll may go unanswered before we abandon that request and
+ * open a new one. It asks Telegram for `timeout: 30`, so a healthy call comes
+ * back inside 30 s and this only ever fires on a request that is not coming
+ * back at all.
+ */
+const POLL_DEADLINE_MS = 45_000;
+
+/**
+ * The long-poll's signal: the loop's own abort OR a deadline, whichever comes
+ * first. Both halves are load-bearing. The abort is what `stop()` pulls to free
+ * an in-flight request, without which a restart meets Telegram's 409 (two
+ * getUpdates on one bot); the deadline is what stops a request that never
+ * settles from wedging the loop for ever. There is no watchdog behind it: the
+ * loop reschedules itself from the END of each call, so one unanswered request
+ * made a bridge permanently DEAF — incoming messages stop, nothing is logged,
+ * and only a server restart brings it back. That is the exact mirror of the
+ * send-side failure that bounded every write, and it was left unbounded.
+ */
+export function pollSignal(abort: AbortSignal, ms: number): AbortSignal {
+  return AbortSignal.any([abort, AbortSignal.timeout(ms)]);
+}
+
+/**
+ * Why a Bot API answer is not a delivery, in one phrase fit for a log line.
+ *
+ * `null` (what `tg` returns when the call itself failed) is a DIFFERENT fact
+ * from Telegram answering "no", and the two have to read differently: one says
+ * we could not reach it, the other says it refused and why.
+ */
+export function refusalReason(res: unknown): string {
+  const r = res as { ok?: boolean; error_code?: number; description?: unknown } | null | undefined;
+  if (!r) return "no answer from the Bot API (timed out, or unreachable)";
+  if (r.ok) return "no refusal";
+  const why = typeof r.description === "string" && r.description ? r.description : "refused with no reason given";
+  return r.error_code ? `${r.error_code} ${why}` : why;
+}
+
+/** Grace added to the delay Telegram asks for: `retry_after` is a floor, and
+ *  coming back one millisecond early buys a second refusal. */
+const FLOOD_MARGIN_MS = 250;
+
+/** Total time ONE message may spend waiting out flood control. Past it we give
+ *  up and say so: an answer held for ten minutes is no longer an answer. */
+export const FLOOD_BUDGET_MS = 3 * 60_000;
+
+/**
+ * Telegram's "you are going too fast", as the delay it asked for in ms — or
+ * null when the answer is anything else.
+ *
+ * This is the one refusal that must never be read as a failure: it says the
+ * message is fine and the moment is wrong. A bot trips it on its own, by
+ * sending a burst (a handful of videos is enough), so the busiest moment in a
+ * channel is exactly the moment its answers would disappear.
+ *
+ * A network failure (`null` here) is NOT flood control: retrying it in place
+ * would hold the queue on something that has no stated delay to wait for.
+ */
+export function floodWaitMs(res: unknown): number | null {
+  const r = res as { ok?: boolean; error_code?: number; parameters?: { retry_after?: unknown } } | null | undefined;
+  if (!r || r.ok || r.error_code !== 429) return null;
+  const asked = r.parameters?.retry_after;
+  // In practice a 429 always carries `retry_after`; if one ever does not, a
+  // short wait is still the right answer. What must not happen is reading
+  // "too fast" as "undeliverable".
+  const sec = typeof asked === "number" && Number.isFinite(asked) && asked > 0 ? asked : 1;
+  return Math.ceil(sec * 1000) + FLOOD_MARGIN_MS;
+}
+
+/**
+ * Run a Bot API call, waiting out flood control within a budget.
+ *
+ * Waiting in place is right BECAUSE the queue is serial: the message keeps its
+ * turn, so nothing arrives out of order. Pure over `sleep`, so the budget is
+ * tested without spending it.
+ */
+export async function withFloodControl<T>(
+  call: () => Promise<T>,
+  opts: { sleep: (ms: number) => Promise<void>; budgetMs?: number; onWait?: (ms: number) => void },
+): Promise<T> {
+  let left = opts.budgetMs ?? FLOOD_BUDGET_MS;
+  for (;;) {
+    const res = await call();
+    const wait = floodWaitMs(res);
+    // Past the budget the LAST answer is returned, refusal and all, so the
+    // caller reports a refused send rather than an unexplained silence.
+    if (wait === null || wait > left) return res;
+    left -= wait;
+    opts.onWait?.(wait);
+    await opts.sleep(wait);
+  }
 }
 
 /**
@@ -501,6 +1012,31 @@ interface Dialog {
   question: string;
   options: DialogOption[];
   multi: boolean;
+  /** The dialog box's own text (`TuiDialog.body`): what a permission prompt
+   *  will do and to what — e.g. Claude Code's "(outside working directory) via
+   *  a symlink" disclosure. */
+  body?: string;
+}
+
+/**
+ * The text of the message that carries a dialog's keyboard: the box's body,
+ * then the question — the order the TUI draws them in. Without the body a
+ * permission prompt read "Do you want to proceed?" about nothing, while the
+ * same person at the terminal could see the read escaped the working directory.
+ *
+ * Bounded because this message does not go through `chunk()` (the keyboard
+ * cannot be cut in two) and past Telegram's limit the send fails — no keyboard
+ * at all. When something must go it is the BODY's tail: the question is what
+ * the buttons answer.
+ */
+export function dialogText(d: Pick<Dialog, "question" | "body">, limit = MSG_LIMIT): string {
+  const q = (d.question || "Choose:").slice(0, limit);
+  const body = d.body?.trim();
+  if (!body) return q;
+  const room = limit - q.length - 2;
+  if (room < 20) return q;
+  const b = body.length > room ? body.slice(0, room - 1) + "…" : body;
+  return b + "\n\n" + q;
 }
 
 /** Inline keyboard for a TUI dialog. Single-select → one button per option
@@ -549,7 +1085,7 @@ interface Bridge {
   ws: WebSocket;
   sessionId: string | null;
   ready: boolean;
-  pending: string[]; // prompts queued until the WS is ready
+  pending: PromptFrame[]; // prompts queued until the WS is ready, whole (see promptFrame)
   pendingActions: object[]; // dialog actions (choose/toggle/confirm) queued until ready
   dialogMsgId?: number; // Telegram message showing the current dialog keyboard
   // A "free text" option was chosen: we wait for the channel's next message to
@@ -560,6 +1096,10 @@ interface Bridge {
   // qu'on a soumis, celui qu'on rejouera après l'échap, et celui pour lequel on
   // a DÉJÀ interrompu une fois — la borne qui empêche la boucle.
   lastSent?: string;
+  /** Who wrote `lastSent`. Kept because a preempted message is RESENT, and
+   *  resending it without its author made it arrive anonymous — the cockpit
+   *  showed a nameless sender for a message whose author we knew all along. */
+  lastSentFrom?: string;
   preempting?: string;
   lastRetried?: string;
   preemptTimer?: ReturnType<typeof setTimeout>;
@@ -648,15 +1188,46 @@ export interface TelegramHandle {
   stop(): void;
   running(): boolean;
   status(): { username: string | null; tokenError: string | null };
+  /** DM the paired owner, plain text. False when there is no bot, no owner or the send failed; never throws. */
+  notifyOwner(text: string): Promise<boolean>;
 }
 
 const NOOP_HANDLE: TelegramHandle = {
   stop() {},
   running: () => false,
   status: () => ({ username: null, tokenError: null }),
+  notifyOwner: async () => false,
 };
 
-export function startTelegram(port: number, authCookie?: string): TelegramHandle {
+// Whether this instance runs multi-tenant, so `/mttoken` (which provisions the
+// group-agents' subscription token) is inert on a single-tenant box — mirroring
+// the web /mt-token/start "not applicable" gate. Set by startTelegram.
+let tgMultiTenant = false;
+
+export function startTelegram(
+  port: number,
+  authCookie?: string,
+  multiTenant = false,
+  opts: {
+    /** Where an attachment for this session is written (invariant 60): the
+     *  agent's GROUP media directory in multi-tenant, created and locked down by
+     *  the server. Throws while the agent is not known yet. Default: the one
+     *  flat `mediaDir()`, as before. */
+    mediaDirFor?: (sessionId: string | null) => string;
+    /** Read a file an AGENT sent (SendUserFile / ShadokFile) — with that
+     *  agent's rights in multi-tenant, never root's (invariant 60): the path
+     *  comes from the agent, and its transcript is in a HOME it can write.
+     *  Default: a plain read, as before. */
+    readAgentFile?: (sessionId: string | null, p: string) => Promise<Buffer<ArrayBuffer>>;
+    /** The server's per-process proof that a connection IS this bridge, sent
+     *  as `x-shadok-bridge`. It is what makes the server read the bridge's
+     *  prompts as `telegram` and believe their `from` / `voice` — the `start`
+     *  frame's own `origin` is no longer trusted (`connectionOrigin`). */
+    bridgeSecret?: string;
+  } = {},
+): TelegramHandle {
+  tgMultiTenant = multiTenant;
+  const bridgeSecret = opts.bridgeSecret;
   // Config is the source of truth (env still overrides, resolved by telegramConfig).
   const cfg = telegramConfig(loadConfig(), process.cwd());
   if (!cfg.enabled || !cfg.token) return NOOP_HANDLE; // off or no token → nothing polling
@@ -681,7 +1252,14 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(params),
-        signal,
+        // A call with no deadline is how a bridge goes permanently mute. The
+        // writes are SERIAL (`makeSendQueue`), so a single request that never
+        // settles holds every later message behind it — for ever, with nothing
+        // logged, while the channel keeps RECEIVING perfectly: measured on a
+        // live instance, a topic whose last send was a burst of uploads 50
+        // minutes earlier, its agent still answering into a void.
+        // The long-poll brings its own signal and keeps it: it waits on purpose.
+        signal: signal ?? AbortSignal.timeout(API_TIMEOUT_MS),
       });
       return await r.json();
     } catch {
@@ -689,29 +1267,72 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     }
   };
 
+  /** A bridge's address, for a log line that says WHICH topic went quiet. */
+  const chatLabel = (b: Bridge): string => `${b.chatId}${b.threadId ? `/${b.threadId}` : ""}`;
+
+  /** `tg`, but a flood-control refusal is waited out rather than dropped. */
+  const noFlood = <T>(b: Bridge, call: () => Promise<T>): Promise<T> =>
+    withFloodControl(call, {
+      sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+      onWait: (ms) =>
+        console.log(`telegram: ${chatLabel(b)} rate-limited by Telegram, holding ${Math.round(ms / 1000)}s`),
+    });
+
   // Purge old attachments at startup — media/ only grows otherwise.
-  try {
-    const cutoff = Date.now() - MEDIA_MAX_AGE_MS;
-    for (const name of fs.readdirSync(MEDIA_DIR)) {
-      const p = path.join(MEDIA_DIR, name);
-      if (fs.statSync(p).mtimeMs < cutoff) fs.unlinkSync(p);
+  purgeMedia(mediaDir(), Date.now() - MEDIA_MAX_AGE_MS);
+
+  const mediaDirFor =
+    opts.mediaDirFor ??
+    (() => {
+      const d = mediaDir();
+      fs.mkdirSync(d, { recursive: true });
+      return d;
+    });
+  /** The bridge's media directory. In multi-tenant it is its agent's GROUP
+   *  directory, so the first message of a new topic — which by construction
+   *  finds no session yet — waits for the agent rather than landing anywhere
+   *  shared. Bounded: past it the attachment is refused, said, never misfiled. */
+  const mediaDirForBridge = async (b: Bridge): Promise<string> => {
+    const deadline = Date.now() + (multiTenant ? 60_000 : 0);
+    for (;;) {
+      try {
+        return mediaDirFor(b.sessionId);
+      } catch (e) {
+        if (Date.now() >= deadline) throw e;
+        await new Promise<void>((r) => setTimeout(r, 300));
+      }
     }
-  } catch {
-    // folder missing: nothing to purge
-  }
+  };
 
   /** Download one attachment to MEDIA_DIR; returns the absolute path.
    *  Throws with a user-facing reason on any failure. */
-  const downloadAttachment = async (att: TgAttachment): Promise<string> => {
+  const downloadAttachment = async (att: TgAttachment, b: Bridge): Promise<string> => {
     if (att.fileSize && att.fileSize > TG_FILE_LIMIT)
       throw new Error("file too large (Telegram bot limit: 20 MB)");
     const f = await tg("getFile", { file_id: att.fileId });
     if (!f?.ok) throw new Error(f?.description ?? "getFile failed");
-    const r = await fetch(`https://api.telegram.org/file/bot${token}/${f.result.file_path}`);
+    // Bounded for the same reason as the upload: this is the other direction of
+    // the same transfer, and a download that never settles leaves the user's
+    // attachment in limbo with no reason given. It does not hold the poll (the
+    // loop never awaits `handleUpdate`), so the loss is one message, not the
+    // channel — still a loss, and still silent until now.
+    const r = await fetch(`https://api.telegram.org/file/bot${token}/${f.result.file_path}`, {
+      signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
+    });
     if (!r.ok) throw new Error(`download HTTP ${r.status}`);
-    fs.mkdirSync(MEDIA_DIR, { recursive: true });
-    const dest = path.join(MEDIA_DIR, mediaFileName(att));
-    fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer()));
+    const dir = await mediaDirForBridge(b);
+    const dest = path.join(dir, mediaFileName(att));
+    const data = Buffer.from(await r.arrayBuffer());
+    try {
+      // `wx`: never through an existing name or a symlink; never world-readable.
+      fs.writeFileSync(dest, data, { flag: "wx", mode: multiTenant ? 0o640 : 0o600 });
+    } catch (e) {
+      // The name is Telegram's file_unique_id: the same file sent again. Reuse
+      // it — but only if it is a plain file, never something planted there.
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      const st = fs.lstatSync(dest);
+      if (!st.isFile() || st.isSymbolicLink()) throw new Error("an unexpected entry sits where the attachment goes");
+    }
     return dest;
   };
 
@@ -730,15 +1351,23 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     const to = { chat_id: b.chatId, ...(b.threadId ? { message_thread_id: b.threadId } : {}) };
     // Render the agent's Markdown as Telegram HTML; if Telegram rejects it
     // (malformed after a mid-chunk split), resend the raw text as-is.
-    const r = await tg("sendMessage", {
-      ...to,
-      text: mdToTelegramHtml(part),
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-    });
+    const r = await noFlood(b, () =>
+      tg("sendMessage", {
+        ...to,
+        text: mdToTelegramHtml(part),
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+      }),
+    );
     if (r?.ok) return r.result.message_id;
-    const raw = await tg("sendMessage", { ...to, text: part, disable_web_page_preview: true });
-    return raw?.ok ? raw.result.message_id : null;
+    const raw = await noFlood(b, () => tg("sendMessage", { ...to, text: part, disable_web_page_preview: true }));
+    if (raw?.ok) return raw.result.message_id;
+    // SAY it. This returned null in silence, which made a refused send
+    // indistinguishable from a delivered one — for the user, who is simply
+    // never answered, and for anyone reading the log afterwards, where the
+    // whole incident leaves no trace at all.
+    console.log(`telegram: ${chatLabel(b)} — message NOT delivered: ${refusalReason(raw ?? r)}`);
+    return null;
   };
 
   /** Send a text (split if needed). Goes through the bridge's queue: two
@@ -752,6 +1381,40 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         if (first === null) first = id;
       }
       return first;
+    });
+
+  /** Deliver a file the AGENT sent (SendUserFile) into the topic: a PHOTO when
+   *  Telegram previews it inline, a DOCUMENT otherwise. A multipart upload of the
+   *  bytes — no public URL needed, so it works for a loopback / proxied instance.
+   *  Serialised through b.send like every other post so it keeps ordering. */
+  const readAgentFile = opts.readAgentFile ?? ((_sid: string | null, p: string) => fs.promises.readFile(p));
+  const sendUserFile = (b: Bridge, f: { path: string; name: string }, fromAgent = false): Promise<unknown> =>
+    b.send(async () => {
+      try {
+        // An echoed attachment is the server's own media file; a file the agent
+        // sent is read with the agent's rights.
+        const buf = fromAgent ? await readAgentFile(b.sessionId, f.path) : await fs.promises.readFile(f.path);
+        const photo = telegramPhotoable(f.name);
+        const form = new FormData();
+        form.append("chat_id", String(b.chatId));
+        if (b.threadId) form.append("message_thread_id", String(b.threadId));
+        form.append(photo ? "photo" : "document", new Blob([buf]), f.name);
+        // This upload used to be fire-and-forget: the response was never read,
+        // so a refusal looked exactly like a delivery, and it had no deadline
+        // at all — on a queue that is serial, the one call most likely to stall
+        // (megabytes, uploaded) was also the only one able to stall for ever.
+        const r = await noFlood(b, () =>
+          fetch(`${api}/${photo ? "sendPhoto" : "sendDocument"}`, {
+            method: "POST",
+            body: form,
+            signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
+          }).then((x) => x.json() as Promise<{ ok?: boolean; description?: string } | null>),
+        );
+        if (!r?.ok) throw new Error(refusalReason(r));
+      } catch (e: any) {
+        console.log(`telegram: ${chatLabel(b)} — upload of ${f.name} failed: ${e?.message ?? e}`);
+        send(b, "⚠️ couldn't send " + f.name + " (" + (e?.message ?? e) + ")");
+      }
     });
 
   /** Replace the content of an already sent message (the preface → the real
@@ -807,7 +1470,12 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     threadId: number | undefined,
     opts: { resumeId?: string; worktree?: boolean; name?: string; profile?: string; backfill?: boolean } = {},
   ): Bridge => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, authCookie ? { headers: { cookie: authCookie } } : {});
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: {
+        ...(authCookie ? { cookie: authCookie } : {}),
+        ...(bridgeSecret ? { "x-shadok-bridge": bridgeSecret } : {}),
+      },
+    });
     const b: Bridge = {
       key,
       chatId,
@@ -867,7 +1535,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           b.sessionId = m.sessionId;
           b.ready = true;
           persist();
-          for (const p of b.pending.splice(0)) ws.send(JSON.stringify({ type: "prompt", text: p }));
+          for (const p of b.pending.splice(0)) ws.send(JSON.stringify(p));
           for (const a of b.pendingActions.splice(0)) ws.send(JSON.stringify(a));
           break;
         case "working":
@@ -891,13 +1559,39 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           send(b, m.text);
           break;
         }
-        case "prompt-echo":
+        case "prompt-echo": {
           // The server already excludes the sender: what arrives here
           // necessarily comes from ANOTHER client. We show it, marked — a bot
           // cannot post under the user's name.
-          if (m.text?.trim()) send(b, promptEchoLabel(m.origin, m.auto) + "\n" + m.text);
+          if (!m.text?.trim()) break;
+          const label = promptEchoLabel(m.origin, m.auto, m.from);
+          // A file pasted into the web composer is a MEDIA, not a path. The web
+          // renders its marker as a thumbnail; printing the marker here left the
+          // person reading the topic with an absolute path and nothing to look
+          // at. Upload it instead, so both surfaces show the same thing.
+          // Only the bridge's OWN media directory counts (invariant 60): a
+          // marker naming another group's file is left as text, never uploaded.
+          let ownDir = mediaDir();
+          try { ownDir = mediaDirFor(b.sessionId); } catch { /* not known yet: the flat dir, which holds no group's file */ }
+          const att = attachmentsInPrompt(m.text, ownDir);
+          if (!att.files.length) {
+            send(b, label + "\n" + m.text);
+            break;
+          }
+          const extra = att.dropped ? `\n(+${att.dropped} more not sent)` : "";
+          // The caption first, then its files: the bridge's queue is serial, so
+          // this order is the order they arrive in.
+          send(b, att.prose ? `${label}\n${att.prose}${extra}` : label + extra);
+          for (const f of att.files) sendUserFile(b, f);
           break;
+        }
         case "stream-tool":
+          // A SendUserFile is a delivered file, not tool noise: upload it (photo
+          // or document) regardless of /tools.
+          if ((m.name === "SendUserFile" || m.name === "ShadokFile") && Array.isArray(m.files) && m.files.length) {
+            for (const f of m.files) sendUserFile(b, f, true);
+            break;
+          }
           // Hidden by default: on a slightly long turn the agent's answer
           // drowns under "→ Read …" lines. /tools turns them back on per
           // channel.
@@ -934,11 +1628,12 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
               tg("sendMessage", {
                 chat_id: b.chatId,
                 ...(b.threadId ? { message_thread_id: b.threadId } : {}),
-                // Truncated: this message does not go through `chunk()` (it
-                // carries the keyboard, which cannot be cut in two). Past
-                // Telegram's limit the send failed — so NO keyboard at all, and
-                // the turn stayed suspended on an unreachable question.
-                text: (m.question || "Choose:").slice(0, MSG_LIMIT),
+                // Body + question, bounded: this message does not go through
+                // `chunk()` (it carries the keyboard, which cannot be cut in
+                // two). Past Telegram's limit the send failed — so NO keyboard
+                // at all, and the turn stayed suspended on an unreachable
+                // question. See `dialogText`.
+                text: dialogText(m),
                 reply_markup: dialogKeyboard(m),
               }).then((r) => {
                 if (r?.ok) b.dialogMsgId = r.result.message_id;
@@ -966,7 +1661,7 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             const text = b.preempting;
             b.preempting = undefined;
             clearTimeout(b.preemptTimer);
-            promptTo(b, text, undefined, true);
+            promptTo(b, text, b.lastSentFrom, true);
             break;
           }
           b.typing.stop();
@@ -988,7 +1683,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             b.lastRetried = text;
             b.preempting = text;
             b.ws.send(JSON.stringify({ type: "key", key: "escape" }));
-            send(b, "⏹ interrupted — sending your message instead.");
+            // Nothing to announce when it works: the answer to the new message
+            // IS the confirmation, and one more line on every send is just
+            // noise. What stays spoken is the FAILURE, just below — there,
+            // silence would let someone believe their message went out.
             // Filet : si l'échap ne fait pas retomber le tour (agent coincé),
             // le message resterait en attente pour toujours, sans un mot.
             clearTimeout(b.preemptTimer);
@@ -1040,14 +1738,16 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
 
   // `from`: who typed it, carried so the OTHER clients (the web cockpit) can
   // name the author instead of showing an anonymous "pilot (elsewhere)".
-  const promptTo = (b: Bridge, text: string, from?: string, resend = false) => {
+  const promptTo = (b: Bridge, text: string, from?: string, resend = false, voice = false) => {
     b.lastSent = text;
+    // A resend must keep the original author; only a NEW message sets one.
+    if (!resend) b.lastSentFrom = from;
     // Un message NEUF rouvre le droit d'interrompre ; un renvoi, non — sinon
     // deux clients qui se disputent la session se relancent indéfiniment.
     if (!resend) b.lastRetried = undefined;
-    if (b.ready && b.ws.readyState === WebSocket.OPEN)
-      b.ws.send(JSON.stringify({ type: "prompt", text, ...(from ? { from } : {}) }));
-    else b.pending.push(text);
+    const frame = promptFrame(text, from, voice);
+    if (b.ready && b.ws.readyState === WebSocket.OPEN) b.ws.send(JSON.stringify(frame));
+    else b.pending.push(frame);
   };
 
   const reply = (chatId: number, threadId: number | undefined, text: string, extra: object = {}) =>
@@ -1077,13 +1777,39 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
   const albums = makeAlbumBuffer<{ b: Bridge; att: TgAttachment; caption?: string; from?: string }>(async (_gid, items) => {
     const b = items[0].b;
     const caption = items.find((i) => i.caption)?.caption;
-    const ok: { path: string; kind: "image" | "file" }[] = [];
+    const ok: PromptItem[] = [];
     const failed: string[] = [];
     for (const i of items) {
       try {
-        ok.push({ path: await downloadAttachment(i.att), kind: i.att.kind });
+        // Telegram does not put a voice note in a media group, so this cannot
+        // happen — but the album prompt hands PATHS to an agent that cannot
+        // read audio, and a defensive skip is cheaper than finding out.
+        if (i.att.kind === "voice") continue;
+        const p = await downloadAttachment(i.att, b);
+        const item: PromptItem = { path: p, kind: i.att.kind };
+        if (i.att.kind === "video") {
+          // Two stills per clip and no transcription: ten videos in one album
+          // would otherwise mean sixty images and several minutes of whisper
+          // before the agent is even woken.
+          const look = await lookAtVideo(p, {
+            durationSec: i.att.durationSec,
+            maxFrames: ALBUM_FRAMES,
+            transcribe: false,
+            notify: (line) => void reply(b.chatId, b.threadId, line),
+          });
+          Object.assign(item, {
+            ...(look.durationSec ? { durationSec: look.durationSec } : {}),
+            ...(look.frames ? { frames: look.frames } : {}),
+            ...(look.audioNote ? { audioNote: look.audioNote } : {}),
+          });
+        }
+        ok.push(item);
       } catch (e: any) {
-        failed.push(`${i.att.fileName ?? i.att.fileUniqueId} (${e?.message ?? e})`);
+        failed.push(
+          tooBigFor(i.att, e)
+            ? `${i.att.fileName ?? i.att.fileUniqueId} (over the 20 MB Telegram ceiling)`
+            : `${i.att.fileName ?? i.att.fileUniqueId} (${e?.message ?? e})`,
+        );
       }
     }
     if (failed.length) reply(b.chatId, b.threadId, "⚠️ download failed: " + failed.join(", "));
@@ -1109,10 +1835,20 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     const from = msg.from?.id as number | undefined;
     const verdict = dmGate(loadTgOwner(), from);
     if (verdict === "allow") return true;
-    if (verdict === "claim") {
-      saveTgOwner(from!);
-      console.log(`telegram: DM claimed by user ${from} — others will be refused`);
-      return true;
+    if (verdict === "pair") {
+      // No owner yet: the only message that gets anywhere is a valid code, and
+      // it is consumed — it is a pairing, not a prompt for an agent.
+      const code = pairingCodeOf(msg.text);
+      const v = code ? redeemPairingCode(code) : "none";
+      if (v === "ok") {
+        saveTgOwner(from!);
+        console.log(`telegram: DM paired with user ${from} — others will be refused`);
+        await reply(msg.chat.id, undefined, "✅ Paired — this bot's DMs are now yours. Send a message to talk to your agent.");
+      } else {
+        if (code) console.log(`telegram: DM pairing refused for user ${from} (${v})`);
+        await reply(msg.chat.id, undefined, pairingRefusal(v));
+      }
+      return false;
     }
     console.log(`telegram: refused DM from user ${from ?? "?"} (not the owner)`);
     await reply(msg.chat.id, undefined, "⛔ This bot is private.");
@@ -1127,9 +1863,9 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       await reply(chat.id, msg.message_thread_id, "⛔ this bot is restricted.");
       return;
     }
-    // DMs belong to whoever wrote first. An explicit allowlist still wins (it
-    // has already filtered above): this is the default guard, for an install
-    // that configures none.
+    // DMs belong to ONE owner, paired with the cockpit's code. An explicit
+    // allowlist still wins (it has already filtered above): this is the
+    // default guard, for an install that configures none.
     if (chat.type === "private" && !(await guardDm(msg))) return;
     const threadId = msg.message_thread_id as number | undefined;
     const isGroup = chat.type === "group" || chat.type === "supergroup";
@@ -1140,11 +1876,28 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     if (isGroup) {
       const bound = loadTgGroup();
       if (bound === null) {
-        if (cmd?.cmd === "setup") {
-          saveTgGroup(chat.id);
-          await reply(chat.id, threadId, "✅ This group is now shadok-ai's board. Use /spawn <name> to create an agent (a forum topic). Enable Topics + make me admin if /spawn fails.");
+        // Binding the board needs the pairing code from the web cockpit: a
+        // bare /setup used to bind ANY group that sent it, so anyone who found
+        // the bot could add it to their own group and drive agents.
+        const code = pairingCodeOf(msg.text);
+        if (code) {
+          const v = redeemPairingCode(code);
+          if (v === "ok") {
+            saveTgGroup(chat.id);
+            // Whoever typed a code only the cockpit's admin can see is the
+            // legitimate owner; DMs follow them unless someone already owns them.
+            const from = msg.from?.id;
+            if (loadTgOwner() === null && typeof from === "number" && !msg.from?.is_bot) saveTgOwner(from);
+            // …and they are this board's first operator (src/tg-operators.ts).
+            if (typeof from === "number" && !msg.from?.is_bot) saveTgOperators(withOperator(loadTgOperators(), from));
+            console.log(`telegram: board group ${chat.id} paired by user ${from ?? "?"}`);
+            await reply(chat.id, threadId, "✅ This group is now shadok-ai's board. Use /spawn <name> to create an agent (a forum topic). Enable Topics + make me admin if /spawn fails.");
+          } else {
+            console.log(`telegram: board pairing refused in chat ${chat.id} (${v})`);
+            await reply(chat.id, threadId, pairingRefusal(v));
+          }
         } else {
-          await reply(chat.id, threadId, "Run /setup here to bind this group as shadok-ai's board (one group per instance).");
+          await reply(chat.id, threadId, "To bind this group as shadok-ai's board, send /setup <code> here. Get the code from the cockpit's Telegram panel (“Pair Telegram”).");
         }
         return;
       }
@@ -1156,14 +1909,52 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
 
     const key = bindKey(chat, threadId);
 
+    // A code in an ALREADY-bound board makes the sender an operator. This is
+    // how a group bound before operators existed (or a second person) gets
+    // one: pair again from the cockpit's panel, type the code here.
+    if (isGroup && cmd && (cmd.cmd === "setup" || cmd.cmd === "start")) {
+      const code = pairingCodeOf(msg.text);
+      if (code) {
+        const from = msg.from?.id as number | undefined;
+        // Never leave a live code lying in the group history.
+        await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+        if (typeof from !== "number" || msg.from?.is_bot) {
+          await reply(chat.id, threadId, "⛔ Only a person can become an operator.");
+          return;
+        }
+        const v = redeemPairingCode(code);
+        if (v === "ok") {
+          saveTgOperators(withOperator(loadTgOperators(), from));
+          console.log(`telegram: user ${from} is now an operator of board ${chat.id}`);
+          await reply(chat.id, threadId, `✅ ${senderName(msg.from) ?? "You"} can now run the operator commands (/secret, /login, /update, /spawn <profile>…).`);
+        } else {
+          console.log(`telegram: operator pairing refused for user ${from} in ${chat.id} (${v})`);
+          await reply(chat.id, threadId, pairingRefusal(v));
+        }
+        return;
+      }
+    }
+
+    if (cmd && commandRequiresOperator(cmd.cmd, cmd.arg, (n) => !!getProfile(n))) {
+      if (!isOperator(msg.from?.id, loadTgOperators(), loadTgOwner(), !!msg.from?.is_bot)) {
+        // A refused /secret or /code still carried its value: don't leave it.
+        if (cmd.cmd === "secret" || cmd.cmd === "code" || cmd.cmd === "mtcode") {
+          await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+        }
+        console.log(`telegram: /${cmd.cmd} refused for user ${msg.from?.id ?? "?"} in ${chat.id} (not an operator)`);
+        await reply(chat.id, threadId, operatorRefusal(cmd.cmd));
+        return;
+      }
+    }
+
     if (cmd) {
       switch (cmd.cmd) {
         case "start":
         case "help":
-          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in");
+          await reply(chat.id, threadId, "shadok-ai — talk to your agent by sending a message.\n/spawn <name> — new agent in a topic (groups)\n/stop — interrupt the current turn (esc)\n/new — reset · /end — kill the session · /list — bindings\n/tools [on|off] — show or hide tool calls in this agent\n/secrets — list · /secret KEY value [--overwrite] — set · /unsecret KEY\n/cron — schedule prompts (monitoring/reporting)\n/login — sign this instance in to Claude · /code <code> — finish the sign-in\n/mttoken — provision the group-agent subscription token · /mtcode <code> — finish it\n/setup <code> — pair the bot, or become an operator (code from the cockpit's Telegram panel)\nOperator-only: /secret /unsecret /login /code /mttoken /mtcode /update, and /spawn <profile>");
           return;
         case "setup":
-          if (isGroup) await reply(chat.id, threadId, "✅ already this instance's board.");
+          if (isGroup) await reply(chat.id, threadId, "✅ already this instance's board. To become an operator, send /setup <code> with a code from the cockpit's Telegram panel.");
           return;
         case "spawn": {
           if (!isGroup) {
@@ -1172,14 +1963,8 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           }
           // `/spawn <profile> <name>`: if the first word is a known profile,
           // apply it; otherwise the whole arg is the agent name (no profile).
-          let profile: string | undefined;
-          let name = cmd.arg || "agent";
-          const sp = name.indexOf(" ");
-          const first = sp === -1 ? name : name.slice(0, sp);
-          if (getProfile(first)) {
-            profile = first;
-            name = sp === -1 ? first : name.slice(sp + 1).trim() || first;
-          }
+          // Choosing a profile is operator-only (checked above, same parser).
+          const { profile, name } = spawnArgs(cmd.arg, (n) => !!getProfile(n));
           const t = await tg("createForumTopic", { chat_id: chat.id, name: name.slice(0, 128) });
           if (!t?.ok) {
             const why = t?.description ? ` (Telegram: ${t.description})` : "";
@@ -1253,12 +2038,15 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           const ch = channelForTelegram(chat.id, threadId);
           const parts = cmd.arg.trim().split(/\s+/);
           const sub = (parts.shift() || "list").toLowerCase();
-          const mineOf = (sid: string) => loadCrons().filter((c) => c.sessionId === sid);
+          const mineOf = (sid: string) => cronsInScope(loadCrons(), sid);
           // Resolution shared with the HTTP API: an empty prefix no longer
           // matches "the first one" (a bare `/cron del` deleted a cron at
           // random), and an ambiguous prefix is refused rather than guessed.
+          // Scoped to THIS topic's channel, like `list`: a prefix used to be
+          // resolved against every cron of the instance, so any topic could
+          // pause or delete another agent's schedule.
           const findById = (pfx: string): Cron | { miss: string } => {
-            const list = loadCrons();
+            const list = cronsInScope(loadCrons(), ch?.sessionId);
             const r = resolveCronId(list, pfx);
             if (r.ok) return list.find((c) => c.id === r.id)!;
             if (r.error === "ambiguous") return { miss: `'${pfx}' matches ${r.matches} crons — use more characters.` };
@@ -1334,9 +2122,8 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           return;
         }
         case "update": {
-          // Powerful (npm install + respawn), but instance-wide and non-
-          // destructive: allowed from a DM (the operator) or the board group.
-          // The allowlist, if set, was already enforced at the top.
+          // Powerful (npm install + respawn) and repeatable: operator-only
+          // (checked above), from a DM or the board group.
           await reply(chat.id, threadId, "🔄 updating… I'll be back in a moment.");
           // Ask the supervisor to fetch @latest and respawn us.
           process.exit(UPDATE_EXIT_CODE);
@@ -1351,10 +2138,8 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           return;
         }
         case "login": {
-          // An OAuth code grants access to the account, so this needs the same
-          // gate as /secret. Reaching here IS the gate: guardDm has already run
-          // for a private chat, and a group that is not the bound board was
-          // turned away above.
+          // An OAuth code grants access to the account: operator-only, like
+          // /secret (checked above, after guardDm and the bound-board check).
           const r = await startLogin();
           if ("error" in r) {
             await reply(chat.id, threadId, `⚠️ Couldn't start the sign-in: ${r.error}`);
@@ -1392,22 +2177,74 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
           }
           return;
         }
-        case "secret": {
-          // /secret NAME value — store in the vault, then DELETE the message so
-          // the value doesn't linger in the chat history.
-          const sp = cmd.arg.indexOf(" ");
-          const skey = sp === -1 ? cmd.arg : cmd.arg.slice(0, sp);
-          const sval = sp === -1 ? "" : cmd.arg.slice(sp + 1);
-          if (!skey || !sval) {
-            await reply(chat.id, threadId, "Usage: /secret NAME value");
+        case "mttoken": {
+          // Provision/rotate the long-lived subscription token group agents use
+          // on a multi-tenant instance. Same gate as /login (reaching here IS
+          // the gate); same two-step URL→code shape. Inert on a single-tenant
+          // instance (it needs no token), mirroring the web /mt-token gate.
+          if (!tgMultiTenant) {
+            await reply(chat.id, threadId, "ℹ️ Not applicable: this instance is single-tenant and needs no subscription token.");
             return;
           }
-          setSecret(skey.trim(), sval);
+          const r = await startSetupToken();
+          if ("error" in r) {
+            await reply(chat.id, threadId, `⚠️ Couldn't start: ${r.error}`);
+            return;
+          }
+          await reply(
+            chat.id,
+            threadId,
+            `🔑 Open this link, authorise on your Claude subscription, then send the code with /mtcode <the-code>:\n\n${r.url}`,
+          );
+          return;
+        }
+        case "mtcode": {
+          const r = await submitSetupTokenCode(cmd.arg, (token) =>
+            setSecret(MT_CLAUDE_OAUTH_TOKEN_NAME, token, MAIN_GROUP_ID, "operator:setup-token"),
+          );
+          if (r.ok) {
+            // The code has no business lingering in the chat, same as /code.
+            await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(chat.id, threadId, "✅ Subscription token stored. Group agents can start now.");
+          } else {
+            await reply(chat.id, threadId, `⚠️ ${r.error}`);
+          }
+          return;
+        }
+        case "secret": {
+          // /secret NAME value [--overwrite] — store in the vault, then DELETE
+          // the message so the value doesn't linger in the chat history.
+          const parsed = parseSecretArg(cmd.arg);
+          if (!parsed) {
+            await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(chat.id, threadId, "Usage: /secret NAME value  (add --overwrite to replace an existing one)");
+            return;
+          }
+          const skey = parsed.name;
+          // No silent overwrite, the rule `PUT /secrets` already follows.
+          const verdict = secretWriteVerdict(secretNames().includes(skey), parsed.overwrite);
+          if (verdict === "refused") {
+            const d = await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(
+              chat.id,
+              threadId,
+              `🔐 ${skey} already exists — nothing changed. To replace it: /secret ${skey} <value> --overwrite${d?.ok ? "" : "\n⚠️ I couldn't delete your message — remove it manually."}`,
+            );
+            return;
+          }
+          setSecret(skey, parsed.value);
+          recordSecretAudit({
+            action: verdict,
+            secrets: [skey],
+            actor: `telegram ${senderName(msg.from) ?? "?"}`,
+            via: "telegram",
+            instance: process.cwd(),
+          });
           const del = await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
           await reply(
             chat.id,
             threadId,
-            `🔐 ${skey.trim()} saved to the vault.${del?.ok ? " (your message was deleted)" : "\n⚠️ I couldn't delete your message — remove it manually; the value is exposed in history."} Add it to a profile to inject it.`,
+            `🔐 ${skey} saved to the vault.${del?.ok ? " (your message was deleted)" : "\n⚠️ I couldn't delete your message — remove it manually; the value is exposed in history."} Add it to a profile to inject it.`,
           );
           return;
         }
@@ -1417,7 +2254,16 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
             await reply(chat.id, threadId, "Usage: /unsecret NAME");
             return;
           }
-          deleteSecret(skey);
+          if (secretNames().includes(skey)) {
+            deleteSecret(skey);
+            recordSecretAudit({
+              action: "deleted",
+              secrets: [skey],
+              actor: `telegram ${senderName(msg.from) ?? "?"}`,
+              via: "telegram",
+              instance: process.cwd(),
+            });
+          }
           await reply(chat.id, threadId, `🔐 ${skey} removed from the vault.`);
           return;
         }
@@ -1456,14 +2302,60 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         return;
       }
       try {
-        const p = await downloadAttachment(att);
-        promptTo(b, attachmentPrompt([{ path: p, kind: att.kind }], caption), senderName(msg.from));
+        const p = await downloadAttachment(att, b);
+        if (att.kind === "voice") {
+          // Transcribe, ECHO WHAT WAS UNDERSTOOD, then act on it. The echo is
+          // load-bearing: a transcription can be wrong, and an instruction that
+          // was misheard and then acted on in silence is far worse than a voice
+          // message that was ignored. The user sees what the agent received
+          // while there is still time to correct it.
+          const out = await transcribe(p, (line) => { void reply(chat.id, threadId, line); });
+          if (!out.ok) {
+            b.typing.stop();
+            await reply(chat.id, threadId, out.notice);
+            return;
+          }
+          await reply(chat.id, threadId, heardNotice(out.text));
+          // `voice` travels with the prompt so the agent's context header says
+          // the words were SPOKEN. A transcription can mishear a homophone, a
+          // proper noun or a command, and an agent that knows it is reading
+          // speech asks about an odd word instead of executing it.
+          promptTo(b, caption ? `${out.text}\n\n${caption}` : out.text, senderName(msg.from), false, true);
+          return;
+        }
+        const attQuote = replyContext(msg);
+        // A video is not readable as a file: it is looked AT (stills) and
+        // listened to (its audio track), both over the ffmpeg the voice
+        // pipeline already provisions. Without this the agent received a path
+        // to an mp4 and answered that it cannot watch videos.
+        const item: PromptItem = { path: p, kind: att.kind };
+        if (att.kind === "video") {
+          const look = await lookAtVideo(p, {
+            durationSec: att.durationSec,
+            maxFrames: MAX_FRAMES,
+            notify: (line) => void reply(chat.id, threadId, line),
+          });
+          if (look.trouble) await reply(chat.id, threadId, look.trouble);
+          Object.assign(item, {
+            ...(look.durationSec ? { durationSec: look.durationSec } : {}),
+            ...(look.frames ? { frames: look.frames } : {}),
+            ...(look.transcript ? { transcript: look.transcript } : {}),
+            ...(look.audioNote ? { audioNote: look.audioNote } : {}),
+          });
+        }
+        const attText = attachmentPrompt([item], caption);
+        promptTo(b, attQuote ? attQuote + "\n" + attText : attText, senderName(msg.from));
       } catch (e: any) {
         b.typing.stop();
+        // The 20 MB ceiling is the common case for a phone video, and it is not
+        // an error on anyone's side — so it gets its own actionable wording
+        // instead of a raw message the user can do nothing with.
         await reply(
           chat.id,
           threadId,
-          `⚠️ could not download ${att.fileName ?? "the attachment"} (${e?.message ?? e})`,
+          tooBigFor(att, e)
+            ? tooLargeNotice(att)
+            : `⚠️ could not download ${att.fileName ?? "the attachment"} (${e?.message ?? e})`,
         );
       }
       return;
@@ -1479,7 +2371,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
       else b.pendingActions.push(wsMsg);
       return;
     }
-    promptTo(b, msg.text, senderName(msg.from));
+    // A reply carries the message it answers: without it the agent reads
+    // "fix that" with no trace of what "that" is.
+    const quoted = replyContext(msg);
+    promptTo(b, quoted ? quoted + "\n" + msg.text : msg.text, senderName(msg.from));
   };
 
   const handleCallback = async (cq: any) => {
@@ -1488,10 +2383,18 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     if (!action || !msg) return;
     // A keyboard can only appear after an accepted message, so in principle a
     // stranger cannot reach this path — we close it anyway rather than depend
-    // on that assumption. Never a "claim" here: DMs are claimed by writing, not
-    // by clicking.
+    // on that assumption. Never a pairing here: DMs are paired by a typed code,
+    // not by clicking.
     if (msg.chat?.type === "private" && dmGate(loadTgOwner(), cq.from?.id) !== "allow") {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ This bot is private." });
+      return;
+    }
+    // Same chat gate as a message: the allowlist, and in a group only the bound
+    // board. Without it a click in any group reached `bridgeFor` and opened a
+    // bridge there. Answering dialogs stays open to every board member — it
+    // is driving the conversation, like sending a message.
+    if (!msg.chat || !callbackChatAllowed(msg.chat, allowed, loadTgGroup())) {
+      await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ this bot is restricted." });
       return;
     }
     await tg("answerCallbackQuery", { callback_query_id: cq.id }); // stop the client spinner
@@ -1583,12 +2486,21 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
   const poll = async () => {
     if (stopped) return;
     pollAbort = new AbortController();
+    const startedAt = Date.now();
     const res = await tg(
       "getUpdates",
       { offset, timeout: 30, allowed_updates: ["message", "callback_query"] },
-      pollAbort.signal,
+      pollSignal(pollAbort.signal, POLL_DEADLINE_MS),
     );
     if (stopped) return; // aborted mid-flight during stop(); do not reschedule
+    // SAY it. A request that never came back used to end the loop in silence,
+    // which is indistinguishable from a quiet chat — so the bridge looked
+    // healthy while being deaf. A plain network error settles in milliseconds
+    // and is already handled by the back-off below; only the hang gets a line.
+    if (!res && Date.now() - startedAt >= POLL_DEADLINE_MS)
+      console.log(
+        `telegram: the long-poll went unanswered for ${Math.round(POLL_DEADLINE_MS / 1000)}s — opening a new one`,
+      );
     if (res?.ok && Array.isArray(res.result)) {
       for (const u of res.result) {
         offset = u.update_id + 1;
@@ -1753,20 +2665,10 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
         return;
       }
     }
-    // No DM binding — the case of an installation driven only from the group.
-    // The bound group's CREATOR is whoever set that board up: they are the
-    // legitimate owner. Without this, the first stranger to write to the bot
-    // after the update would claim DMs in their place.
-    const group = loadTgGroup();
-    if (group === null) return;
-    const admins = await tg("getChatAdministrators", { chat_id: group });
-    const creator = admins?.ok && Array.isArray(admins.result)
-      ? admins.result.find((a: any) => a.status === "creator" && !a.user?.is_bot)
-      : null;
-    if (creator?.user?.id) {
-      saveTgOwner(creator.user.id);
-      console.log(`telegram: DM owner adopted from the board group's creator (user ${creator.user.id})`);
-    }
+    // No DM binding: DMs stay unowned until someone pairs with the cockpit's
+    // code. Adopting the bound group's CREATOR used to fill this gap, but
+    // nothing proved who had bound that group — with a bare /setup it could be
+    // a stranger, who was then handed the DMs on top.
   };
 
   const reconcileOnBoot = async () => {
@@ -1863,6 +2765,16 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
     },
     running: () => polling,
     status: () => ({ username: botUsername, tokenError }),
+    async notifyOwner(text: string) {
+      try {
+        const owner = loadTgOwner();
+        if (stopped || owner === null) return false;
+        const r = await tg("sendMessage", { chat_id: owner, text, disable_web_page_preview: true });
+        return r?.ok === true;
+      } catch {
+        return false;
+      }
+    },
   };
 }
 
@@ -1870,7 +2782,11 @@ export function startTelegram(port: number, authCookie?: string): TelegramHandle
 export async function probeToken(token: string | null): Promise<{ username: string | null; error: string | null }> {
   if (!token) return { username: null, error: null };
   try {
-    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    // The GUI waits on this answer, so it needs one: unbounded, a token typed
+    // against an unreachable Telegram left the status view spinning for ever.
+    const r = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
     const j = await r.json();
     if (j?.ok) return { username: `@${j.result.username}`, error: null };
     return { username: null, error: j?.description ?? `HTTP ${r.status}` };

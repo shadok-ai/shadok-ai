@@ -39,6 +39,28 @@ test("touch fields are 16px, so Safari never zooms on focus", () => {
   // (`#composer textarea`) outranks a bare `textarea` selector — so it has to be
   // named explicitly or the fix silently does nothing where it matters most.
   assert.match(block[1], /#composer textarea/);
+  // The Connect Claude card's code/token fields carry no `type`, so the
+  // attribute selectors above miss them — named explicitly, on any touch device
+  // (a tablet is coarse but wider than the 640px phone query).
+  assert.match(block[1], /\.cx-row input/);
+});
+
+test("a compact field size is gated on a FINE pointer, never merely overridden", () => {
+  // The ledger filter bar styles its fields through `#ledgerTools input`
+  // (0,1,0,1). Naming that same selector inside the (pointer: coarse) block
+  // ties on specificity and LOSES on source order — measured in a real phone
+  // viewport, the field stayed 13px with the "fix" in place. So anything under
+  // 16px has to live inside a (pointer: fine) query: the small size must not
+  // exist on touch rather than be corrected there.
+  const fine = INDEX.match(/@media \(pointer: fine\) \{([\s\S]*?)\n  \}/);
+  assert.ok(fine, "no (pointer: fine) block — a sub-16px field would zoom Safari in");
+  assert.match(fine[1], /#ledgerTools input[\s\S]*font-size:\s*13px/);
+  // and the un-gated rule must NOT carry one
+  const base = INDEX.match(/\n  #ledgerTools input, #ledgerTools select \{([\s\S]*?)\}/);
+  assert.ok(base && !/font-size/.test(base[1]), "the base rule must leave the size to the pointer query");
+  // `font: inherit` is the same bug spelled differently: the shorthand sets the
+  // SIZE as well, to the body's 15px, and wins the same tie just as quietly.
+  assert.ok(base && !/\bfont:\s/.test(base[1]), "use font-family: the `font` shorthand carries a size");
 });
 
 test("the chassis height follows the browser chrome and the keyboard", () => {

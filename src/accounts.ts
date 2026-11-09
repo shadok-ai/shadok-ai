@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, scrypt, scryptSync, timingSafeEqual } from "node:crypto";
 import { instanceKey } from "./paths.js";
 
 /**
@@ -20,8 +20,32 @@ export interface Account {
   /** Absent until an invitation is redeemed. */
   passwordHash?: string;
   createdAt: number;
-  /** Present only while the invitation is outstanding. */
-  invite?: { token: string; expiresAt: number };
+  /** Present only while the invitation is outstanding. `reason: "password"`
+   *  marks a level-1 reset: the passkeys were kept, so redeeming the link sets
+   *  a password and then asks for one of them. */
+  invite?: { token: string; expiresAt: number; reason?: "password" };
+  /** Registered passkeys — the second factor (see `src/twofactor.ts`). */
+  passkeys?: Passkey[];
+  /** An outstanding enrollment code: what lets a device register a passkey
+   *  while two-factor is on. Single use, short-lived. */
+  enroll?: { code: string; expiresAt: number; by: string };
+  /** A session cookie issued before this instant is refused. Set when access
+   *  is reset, a passkey removed or an admin demoted: without it a session
+   *  opened before the reset (a stolen one, a lost phone's) outlived it. */
+  sessionsAfter?: number;
+}
+
+export interface Passkey {
+  /** Credential id, base64url. */
+  id: string;
+  /** COSE public key, base64url. */
+  publicKey: string;
+  counter: number;
+  transports?: string[];
+  /** Named by the user at enrollment ("iPhone", "MacBook"). */
+  label: string;
+  createdAt: number;
+  lastUsedAt?: number;
 }
 
 /** The account that lives in SHADOK_GUI_PASSWORD, never in the file. */
@@ -69,6 +93,49 @@ export function verifyPassword(plain: string, hash: string): boolean {
   }
 }
 
+function scryptAsync(plain: string, salt: Buffer, len: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => scrypt(plain, salt, len, (err, key) => (err ? reject(err) : resolve(key))));
+}
+
+/**
+ * The async twins, for the request path. `scryptSync` runs ON the event loop:
+ * every sign-in attempt froze every agent's I/O for the length of a hash, and a
+ * guesser could hold the server down that way. `scrypt` runs on the libuv pool.
+ */
+export async function hashPasswordAsync(plain: string): Promise<string> {
+  const salt = randomBytes(16);
+  const key = await scryptAsync(plain, salt, 64);
+  return `scrypt$${salt.toString("hex")}$${key.toString("hex")}`;
+}
+
+export async function verifyPasswordAsync(plain: string, hash: string): Promise<boolean> {
+  const parts = String(hash ?? "").split("$");
+  if (parts.length !== 3 || parts[0] !== "scrypt") return false;
+  try {
+    const salt = Buffer.from(parts[1], "hex");
+    const want = Buffer.from(parts[2], "hex");
+    if (!salt.length || !want.length) return false;
+    const got = await scryptAsync(plain, salt, want.length);
+    return got.length === want.length && timingSafeEqual(got, want);
+  } catch {
+    return false;
+  }
+}
+
+/** A hash no password matches (the derived half is all zeros), same shape and
+ *  cost as a real one. */
+const DUMMY_HASH = `scrypt$${"5a".repeat(16)}$${"00".repeat(64)}`;
+
+/**
+ * The check an UNKNOWN account (or an invitation not yet redeemed) gets: the
+ * same scrypt as a real one, always false. Answering such a name at once while
+ * a real one took a hash's time told a guesser which accounts exist.
+ */
+export async function burnPasswordCheck(plain: string): Promise<false> {
+  await verifyPasswordAsync(plain, DUMMY_HASH);
+  return false;
+}
+
 /**
  * Who may change which account. Pure, so the whole policy is one testable
  * place rather than a condition repeated at three endpoints.
@@ -85,6 +152,11 @@ export function userWriteVerdict(o: {
   if (o.action === "create") {
     if (name === BOOTSTRAP_ADMIN)
       return { ok: false, error: `"${BOOTSTRAP_ADMIN}" is reserved for the instance password` };
+    // `agent:<sessionId>` is how an AGENT is named as a principal
+    // (src/agent-principal.ts). Authorization never trusts the name — it reads
+    // the principal's own `agent` field — but a person wearing an agent's name
+    // would be one more thing for a reader of the logs to get wrong.
+    if (name.startsWith("agent:")) return { ok: false, error: `"agent:" names are reserved for agents` };
     return o.exists ? { ok: false, error: `${name} already exists` } : { ok: true };
   }
   return o.exists ? { ok: true } : { ok: false, error: `no such account: ${name}` };
@@ -113,41 +185,90 @@ export function sessionSecret(): Buffer {
   return secret;
 }
 
-/** `<user base64url>.<issuedAt>.<hmac>` — the name is encoded so a dot in it
- *  cannot shift the fields. The ROLE is deliberately absent: it is re-read from
- *  the account file at use time, so a demotion takes effect immediately instead
- *  of riding in a stale cookie. */
-export function signSession(user: string, issuedAt: number, secret: Buffer): string {
+/**
+ * Bootstrap-admin cookies issued BEFORE this instant are dead.
+ *
+ * Until agents stopped being handed one, every agent carried `SHADOK_AUTH` — a
+ * bootstrap-admin cookie valid for a week, from the network too. Those cookies
+ * are indistinguishable from a person's bootstrap login, so the only way to
+ * retire them is by date: the first boot of a server that no longer issues them
+ * records "now", once, and from then on an older bootstrap cookie is refused.
+ * Cost: whoever is signed in with the instance password signs in again, once.
+ * Named accounts are untouched (their cookies were never given to agents).
+ * Best-effort: a write that fails returns 0, i.e. today's behaviour.
+ */
+export function bootstrapSessionsAfter(now: number): number {
+  const f = path.join(os.homedir(), ".shadok-ai", "users", instanceKey() + ".bootstrap-after");
+  try {
+    const n = Number(fs.readFileSync(f, "utf8").trim());
+    if (Number.isFinite(n) && n > 0) return n;
+  } catch {
+    /* first boot of this version: record it below */
+  }
+  try {
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, String(now), { mode: 0o600 });
+    return now;
+  } catch {
+    return 0;
+  }
+}
+
+/** `<user base64url>.<issuedAt>.<mfa>.<hmac>` — the name is encoded so a dot in
+ *  it cannot shift the fields. The ROLE is deliberately absent: it is re-read
+ *  from the account file at use time, so a demotion takes effect immediately
+ *  instead of riding in a stale cookie. `mfa` says the second factor was
+ *  presented when the cookie was issued: once two-factor is switched on, a
+ *  cookie without it is refused, which kills every session issued before. */
+export function signSession(user: string, issuedAt: number, secret: Buffer, mfa = false): string {
   const u = Buffer.from(user, "utf8").toString("base64url");
-  const body = `${u}.${issuedAt}`;
+  const body = `${u}.${issuedAt}.${mfa ? 1 : 0}`;
   return `${body}.${createHmac("sha256", secret).update(body).digest("hex")}`;
 }
 
-export function readSession(
+/**
+ * The user and second-factor flag a session cookie carries, or null. Reads the
+ * pre-2FA three-field shape too — as `mfa: false`, which is what it was.
+ */
+export function readSessionFull(
   token: string,
   secret: Buffer,
   now: number,
   maxAgeMs: number,
-): string | null {
+): { user: string; mfa: boolean; issuedAt: number } | null {
   const parts = String(token ?? "").split(".");
-  if (parts.length !== 3) return null;
-  const [u, at, mac] = parts;
+  if (parts.length !== 3 && parts.length !== 4) return null;
+  const mac = parts[parts.length - 1];
+  const body = parts.slice(0, -1).join(".");
+  const [u, at] = parts;
+  const mfa = parts.length === 4 ? parts[2] : "0";
+  if (mfa !== "0" && mfa !== "1") return null;
   const issuedAt = Number(at);
   if (!at || !Number.isFinite(issuedAt)) return null;
-  const want = createHmac("sha256", secret).update(`${u}.${at}`).digest("hex");
+  const want = createHmac("sha256", secret).update(body).digest("hex");
   if (mac.length !== want.length) return null;
   if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
   if (now - issuedAt > maxAgeMs) return null;
   try {
-    return Buffer.from(u, "base64url").toString("utf8") || null;
+    const user = Buffer.from(u, "base64url").toString("utf8");
+    return user ? { user, mfa: mfa === "1", issuedAt } : null;
   } catch {
     return null;
   }
 }
 
-/** A week: long enough to hand the link over by another channel, short enough
- *  that a forgotten one stops working. */
-export const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
+export function readSession(token: string, secret: Buffer, now: number, maxAgeMs: number): string | null {
+  return readSessionFull(token, secret, now, maxAgeMs)?.user ?? null;
+}
+
+/** Is a session issued at `issuedAt` still good for this account? */
+export function sessionAlive(issuedAt: number, acct: Pick<Account, "sessionsAfter">): boolean {
+  return !acct.sessionsAfter || issuedAt >= acct.sessionsAfter;
+}
+
+/** 48 hours: enough to hand the link over by another channel, short enough
+ *  that a link left lying in a chat stops working. Was a week. */
+export const INVITE_TTL_MS = 48 * 3600 * 1000;
 
 export function newInvite(now: number): { token: string; expiresAt: number } {
   return { token: randomBytes(24).toString("base64url"), expiresAt: now + INVITE_TTL_MS };
@@ -184,15 +305,33 @@ export function inviteVerdict(
  * The security property of the accounts feature, in one place: for a WEB client
  * the session decides and the frame's claim is discarded, because a browser can
  * put anything in `from`. The Telegram bridge is a trusted bridge that knows its
- * sender, so it keeps naming them; other origins (cli, cron) are the server's
- * own callers and keep whatever they supplied.
+ * sender, so it keeps naming them — and only it: `origin` is derived from
+ * the CONNECTION (`connectionOrigin`, src/promptmeta.ts), so "telegram" means
+ * the bridge proved itself with its per-process secret. Other origins (cli,
+ * cron, boot) name nobody: a `from` they carry is a claim nobody verified.
+ *
+ * An AGENT prompt (pilotctl, `origin: "agent"`) follows the WEB rule, not the
+ * bridge one: the name comes from the session key that signed the socket, and a
+ * `from` in the frame is discarded. An agent is exactly the caller a claimed
+ * name cannot be taken from — it writes its own frames, and the whole point of
+ * the label is to tell its message apart from the human's.
  */
 export function promptAuthor(
   origin: string | undefined,
   sessionName: string | undefined,
   claimed: string | undefined,
+  callerAgent?: string | undefined,
+  callerPeer?: string | undefined,
 ): string | undefined {
-  return origin === "web" ? sessionName : claimed;
+  if (origin === "web") return sessionName;
+  if (origin === "agent") return callerAgent;
+  if (origin === "peer") return callerPeer;
+  // The bridge is the ONE caller whose claim is believed — and `origin` is
+  // "telegram" only when the connection proved it is the bridge
+  // (`connectionOrigin`), never because a frame said so. Anything else (cli,
+  // cron, boot) names nobody: it writes its own frames.
+  if (origin === "telegram") return claimed;
+  return undefined;
 }
 
 /**
@@ -227,6 +366,42 @@ export function readSessionKey(key: string, secret: Buffer): string | null {
   const want = createHmac("sha256", secret).update(`session:${id}`).digest("hex");
   // Length first: timingSafeEqual THROWS on a mismatch rather than returning
   // false, so a short key would be a 500 instead of a refusal.
+  if (mac.length !== want.length) return null;
+  if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
+  try {
+    return Buffer.from(id, "base64url").toString("utf8") || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A shareable TALK HANDLE for a session — an opaque token that lets ANOTHER
+ * agent address a one-way LETTER to this one (cross-group talk, `src/talk.ts`),
+ * and nothing more.
+ *
+ * It is DELIBERATELY NOT a session key. `signSessionKey` authenticates AS the
+ * agent and can DRIVE it; a handle must only ever resolve to "who to deliver a
+ * letter to", leaving the talk ACL to decide if the letter may pass. They share
+ * the id-inside-the-token shape but are DOMAIN-SEPARATED (`talk:` vs `session:`
+ * in the HMAC input), so a handle can never be replayed as a session key and a
+ * leaked session key is not a valid handle — a handle shared freely grants no
+ * drive capability.
+ */
+export function signTalkHandle(sessionId: string, secret: Buffer): string {
+  const id = Buffer.from(sessionId, "utf8").toString("base64url");
+  return `${id}.${createHmac("sha256", secret).update(`talk:${id}`).digest("hex")}`;
+}
+
+/** Pure: the session id a talk handle points to, or null if it does not verify. */
+export function readTalkHandle(handle: string, secret: Buffer): string | null {
+  const parts = String(handle ?? "").split(".");
+  if (parts.length !== 2) return null;
+  const [id, mac] = parts;
+  if (!id || !mac) return null;
+  const want = createHmac("sha256", secret).update(`talk:${id}`).digest("hex");
+  // Length first: timingSafeEqual THROWS on a mismatch rather than returning
+  // false, so a short handle would be a 500 instead of a refusal.
   if (mac.length !== want.length) return null;
   if (!timingSafeEqual(Buffer.from(mac), Buffer.from(want))) return null;
   try {

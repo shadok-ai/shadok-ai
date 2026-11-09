@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { type Group, type Nature, MAIN_GROUP_ID } from "./groups.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -17,8 +18,11 @@ export interface Channel {
   branch?: string | null;
   /** Repo the worktree belongs to, to recreate a reclaimed checkout. */
   repo?: string;
-  /** Tab group id (client-owned metadata). */
-  group?: number | null;
+  /** Id of the `Group` this agent lives in. Server-owned: a client PUT changes
+   *  it only through `mergeChannels`' `mayMove` — freely in mono-tenant, and
+   *  under multi-tenant only between groups that share an OS user (public ↔
+   *  public/Main, `groupMoveRefusal`), never across an isolation wall. */
+  group?: string | null;
   /** The environment's home base: pinned, never closable. Server-owned, so a
    *  stale client's PUT cannot clear it. See `isHomeChannel`. */
   home?: boolean;
@@ -32,6 +36,17 @@ export interface Channel {
   /** Agent profile applied at spawn (role/guardrails/secrets) — re-applied on
    *  resume/restart so the guardrails aren't lost. */
   profile?: string | null;
+  /** The model THIS agent runs on, overriding its profile's — an alias, with an
+   *  optional `[1m]` suffix for the long window. Stored for the same reason
+   *  `profile` is: it is applied at spawn, so a resume or a restart that forgot
+   *  it would silently move a running agent to another model. Absent means the
+   *  profile decides, which is the default and emits no flag at all. */
+  model?: string | null;
+  /** How hard THIS agent thinks, overriding its profile's effort. Stored for
+   *  the same reason `model` is: it is a spawn flag, so a resume or a restart
+   *  that forgot it would silently drop a running agent back to the default
+   *  effort. Absent means the profile decides, and emits no flag at all. */
+  effort?: string | null;
   /** The channel that spawned this one, or one attached to it by hand. Only
    *  this parent is told when the agent finishes, blocks on a question or dies
    *  — without that scoping a chatty channel would wake a boss on every turn,
@@ -43,6 +58,39 @@ export interface Channel {
    *  blink, chime). Client-owned like `name`/`group`, stored here so the mute
    *  survives a reload and follows the user's other devices. */
   muted?: boolean;
+  /** The PEER (another instance/harness) that spawned this agent, when a remote
+   *  party created it via `x-shadok-peer`. A peer is scoped to agents it created,
+   *  so this is the ownership key: only that peer may resume/drive/diff it, and
+   *  this instance's admin sees who is driving what. Server-owned; absent for a
+   *  locally-spawned agent. See `src/peers.ts`. */
+  createdByPeer?: string;
+  /** Fingerprint of what shadok injected into the RUNNING process at its last
+   *  real spawn (a hash of the preprompt: role, guardrails, skills, secret
+   *  names, permission mode, pilot prompt, ledger reflex). Compared to the
+   *  current fingerprint to tell whether a long-lived agent is running a stale
+   *  prompt/guardrails/skill set — the thing a server auto-update changes while
+   *  a tmux agent survives it. `"legacy"` marks an agent adopted with no stored
+   *  fingerprint, i.e. one that predates this field: it reads as stale until
+   *  reloaded. Durable (on disk, survives restart) BECAUSE the in-memory
+   *  snapshot is reset to "current" when a surviving pane is re-adopted, which
+   *  would hide exactly the drift this detects. Server-owned, write-once per
+   *  real spawn (never on adoption of an existing pane). See `stalenessReasons`. */
+  spawnFp?: string;
+  /** When that real spawn happened (ms). Lets the cockpit flag an agent whose
+   *  injected auth cookie is past its one-week validity (invariant 33). */
+  spawnAt?: number;
+  /** The `claude` binary version at that real spawn, to flag an agent still on
+   *  an older binary than the one now installed. Null when it couldn't be read. */
+  spawnClaudeVer?: string | null;
+  /** LEGACY, no longer read: the per-agent factory attachments of before
+   *  skills ran by sharing (`availableAttachments`, src/factory.ts). Nothing
+   *  writes it any more; kept in the type so old rows still parse, and still
+   *  server-owned so a browser PUT cannot reintroduce it. */
+  skills?: { skill: string; release: number }[];
+  /** The account that created this agent (at its first spawn). Server-owned,
+   *  assert-only: what a "just me" factory skill is scoped by. Absent on agents
+   *  that predate it, which then count as the bootstrap admin's. */
+  createdBy?: string;
 }
 
 /**
@@ -58,8 +106,14 @@ export function isMirrored(c: Channel): boolean {
   return c.mirror ?? !!c.telegram;
 }
 
-/** Fields the server owns; a browser PUT must never overwrite or drop them. */
-const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "parent", "home"] as const;
+/** Fields the server owns; a browser PUT must never overwrite or drop them.
+ * `createdByPeer` is the peer-ownership key (invariant 24): the browser never
+ * carries it, so leaving it out here let every `PUT /channels` STRIP it, and the
+ * next resume by the peer failed `ownedByPeer` on its own agent — "a peer may
+ * only resume its own agents" — which broke any multi-step remote exchange
+ * (the holder's first resume ran; the browser's next sync wiped the owner). Same
+ * loss as `profile`/`parent` before they were listed here. */
+const SERVER_OWNED = ["cwd", "branch", "repo", "telegram", "profile", "model", "effort", "parent", "home", "group", "createdByPeer", "spawnFp", "spawnAt", "spawnClaudeVer", "skills", "createdBy"] as const;
 
 /**
  * Pure: is this channel the environment's home base — pinned and never closable?
@@ -158,12 +212,21 @@ export function dedupById(list: Channel[]): Channel[] {
   }
   return out;
 }
+/** A legacy file holds numeric `group` ids; the type says `string | null`, and
+ *  the client compares with `===`, so coerce on read. Absent stays absent. */
+export function normalizeChannelGroups(list: Channel[]): Channel[] {
+  return list.map((c) => {
+    const g = (c as any).group;
+    if (g === undefined || g === null || typeof g === "string") return c;
+    return { ...c, group: String(g) };
+  });
+}
 export function loadChannels(): Channel[] {
   // dropForeignHomes on READ too: a file poisoned by an older build (a stale tab
   // that PUT another instance's home before the write guard existed) is cleaned
   // the moment it is read, so /channels never surfaces a foreign "general".
   return dropForeignHomes(
-    dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string")),
+    normalizeChannelGroups(dedupById(readJson("channels").filter((c) => c && typeof c.sessionId === "string"))),
     process.cwd(),
   );
 }
@@ -183,6 +246,21 @@ export function saveChannels(list: Channel[]): void {
  */
 export function channelWriteAllowed(serverKey: string, clientKey: string | undefined | null): boolean {
   return !clientKey || clientKey === serverKey;
+}
+
+/**
+ * `profile` is SERVER_OWNED and ASSERT-only, like `branch`/`repo`/`model`
+ * (invariant 1). A start carries no profile on a resume — the browser never
+ * sends a server-owned field — so `msg.profile ?? null` resolves to null there,
+ * and writing that null ERASES the role the channel already holds. This returns
+ * the `{ profile }` to spread into the upsert: the resolved profile when there
+ * is one; `{ profile: null }` only when the client EXPLICITLY asked for no
+ * profile; and `{}` (omit, keep the stored value) for a null that is merely an
+ * omission. Nine agents lost their role this way during the 2026-09-24 restart
+ * churn.
+ */
+export function profilePatch(profile: string | null, clientSentProfile: boolean): { profile?: string | null } {
+  return profile != null || clientSentProfile ? { profile } : {};
 }
 
 /**
@@ -242,27 +320,78 @@ export function channelForTelegram(chatId: number, threadId?: number): Channel |
  * sessionId, and any stored channel the client omitted is kept when its session
  * is live or it has a Telegram binding — so persistence never drops a
  * live/Telegram session (invariant #6).
+ *
+ * `group` is sent only by the tab that CHANGED it. Every open tab PUTs its whole
+ * list on unrelated events (an agent's `ready`, a rename, a mute), so a tab that
+ * had not seen a move made elsewhere used to write its old group back and the
+ * agent jumped home. An omitted key therefore keeps the stored value — omit,
+ * never null-by-omission (invariant 1); an explicit null still ungroups.
  */
-export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds: Set<string>): Channel[] {
+export function mergeChannels(
+  stored: Channel[],
+  clientList: Channel[],
+  liveIds: Set<string>,
+  /**
+   * Can the CALLER see this stored row? `GET /channels` filters by group, so a
+   * member's tab never holds another group's rows — and its routine PUT used to
+   * ERASE every one of them that was dormant (not live, not Telegram-bound):
+   * their keys died with the row and the group binding was lost. A row the
+   * caller cannot see is now preserved untouched, and a client row naming it is
+   * ignored, so a caller can neither drop nor rename what it cannot see.
+   * Omitted → every row is visible (mono-tenant, internal callers).
+   */
+  canSee: (c: Channel) => boolean = () => true,
+  /**
+   * May the caller move this stored row to group `to`? `group` is SERVER_OWNED,
+   * so with no predicate a client can never change it (the safe default, and
+   * what every internal caller gets). `PUT /channels` passes one: anything in
+   * mono-tenant, where groups are cosmetic, and `groupMoveRefusal` under
+   * multi-tenant, where a group decides the OS user an agent runs as.
+   */
+  mayMove?: (prev: Channel, to: string | null) => boolean,
+): Channel[] {
   const byId = new Map(stored.map((c) => [c.sessionId, c]));
   const result: Channel[] = [];
   const seen = new Set<string>();
   for (const c of Array.isArray(clientList) ? clientList : []) {
     if (!c || typeof c.sessionId !== "string") continue;
     if (seen.has(c.sessionId)) continue; // the client sent the same agent twice → write it once
-    seen.add(c.sessionId);
     const prev = byId.get(c.sessionId);
+    if (prev && !canSee(prev)) continue; // not theirs to write: kept below, untouched
+    seen.add(c.sessionId);
     if (!prev) {
-      result.push(c); // a new channel the client just created
+      // A brand-new row the client just created. `group` is SERVER_OWNED and
+      // drives a privilege drop to that group's OS user on resume, so a client
+      // must NOT be able to plant one at birth — otherwise a member could PUT a
+      // row `{sessionId:"Z", group:"comex"}` (reusing a transcript id they can
+      // read) and then resume it to come up under comex's Unix user. Only the
+      // server's start-path upsert sets a group, from the caller's identity.
+      // The existing-row guard below (SERVER_OWNED) already protects births that
+      // are UPDATES; this extends the same wall to genuinely new rows.
+      const born = { ...c };
+      delete born.group;
+      result.push(born);
       continue;
     }
     const merged: Channel = { ...c };
     for (const k of SERVER_OWNED) if (prev[k] !== undefined) (merged as any)[k] = prev[k];
+    // Legacy factory attachments (no longer read, see `Channel.skills`): a
+    // browser PUT can neither change them (above) nor introduce them.
+    if (prev.skills === undefined) delete merged.skills;
+    if (prev.createdBy === undefined) delete merged.createdBy;
+    if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;
+    // A move the caller is entitled to: the only way a client changes `group`.
+    if (mayMove && "group" in c) {
+      const to = c.group ?? null;
+      if (to !== (prev.group ?? null) && mayMove(prev, to)) merged.group = to;
+      else if (prev.group === undefined) delete merged.group;
+    }
     result.push(merged);
   }
   for (const c of stored) {
     if (seen.has(c.sessionId)) continue;
-    if (liveIds.has(c.sessionId) || c.telegram) result.push(c); // never erase live/Telegram
+    // never erase live/Telegram, nor a row the caller cannot even see
+    if (liveIds.has(c.sessionId) || c.telegram || !canSee(c)) result.push(c);
   }
   // The main channel — a GROUP's General topic (no threadId) — is always named
   // "general", server-authoritative so a stale client can't rename it. A DM
@@ -278,18 +407,75 @@ export function mergeChannels(stored: Channel[], clientList: Channel[], liveIds:
   return result;
 }
 
-export function mergeClientChannels(clientList: Channel[], liveIds: Set<string>): Channel[] {
-  const result = mergeChannels(loadChannels(), clientList, liveIds);
+export function mergeClientChannels(
+  clientList: Channel[],
+  liveIds: Set<string>,
+  canSee?: (c: Channel) => boolean,
+  mayMove?: (prev: Channel, to: string | null) => boolean,
+): Channel[] {
+  const result = mergeChannels(loadChannels(), clientList, liveIds, canSee, mayMove);
   saveChannels(result);
   return result;
 }
 
-/** Tab groups (id, name, collapsed, order), persisted the same way as channels. */
-export function loadGroups(): any[] {
-  return readJson("groups");
+/**
+ * Coerce whatever is on disk (or in a PUT body) into typed Groups. Legacy rows
+ * were cosmetic tab groups (`{id:number, name, collapsed, order}`); they become
+ * PUBLIC groups with no members, so nobody loses sight of an existing tab.
+ * Display extras (icon, collapsed, order) are kept. Rows with no usable id are
+ * dropped rather than invented.
+ */
+export function normalizeGroups(raw: unknown): Group[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Group[] = [];
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const row = r as Record<string, any>;
+    const idOk = (typeof row.id === "string" && row.id !== "") || (typeof row.id === "number" && Number.isFinite(row.id));
+    if (!idOk) continue;
+    const nature: Nature = row.nature === "private" || row.nature === "restricted" || row.nature === "public" ? row.nature : "public";
+    const g: Group = {
+      ...row,
+      id: String(row.id),
+      name: typeof row.name === "string" ? row.name : "",
+      nature,
+      members: Array.isArray(row.members) ? row.members.filter((m: unknown) => typeof m === "string") : [],
+      osUser: typeof row.osUser === "string" ? row.osUser : null,
+      createdAt: typeof row.createdAt === "number" ? row.createdAt : 0, // stable: Date.now() made repeated loads differ
+    };
+    if (typeof row.owner !== "string") delete g.owner;
+    out.push(g);
+  }
+  return out;
 }
-export function saveGroups(list: any[]): void {
-  writeJson("groups", list);
+
+/** Guarantee the shared public group exists. Idempotent: never adds a second. */
+export function ensureMainGroup(list: Group[]): Group[] {
+  if (list.some((g) => g.id === MAIN_GROUP_ID)) return list;
+  return [{ id: MAIN_GROUP_ID, name: "main", nature: "public", members: [], osUser: null, createdAt: Date.now() }, ...list];
+}
+
+/**
+ * The boot heal's decision: the list to save so a migrated instance gets its
+ * commons row back, or null to write nothing. Only a NON-EMPTY list missing
+ * `main` is an observed state worth healing. An empty one is ambiguous —
+ * `loadGroups` returns [] for an absent file AND for one it could not read — and
+ * writing `[main]` over an unreadable file would erase every private/restricted
+ * row, and with them the osUser that walls those agents (invariants 6 and 27).
+ * The empty case is the migration's job (`migLabelExistingPublic`).
+ */
+export function mainGroupHeal(stored: Group[]): Group[] | null {
+  if (stored.length === 0) return null;
+  const healed = ensureMainGroup(stored);
+  return healed === stored ? null : healed;
+}
+
+/** Groups, persisted per launch dir like channels. */
+export function loadGroups(): Group[] {
+  return normalizeGroups(readJson("groups"));
+}
+export function saveGroups(list: Group[]): void {
+  writeJson("groups", normalizeGroups(list));
 }
 
 /** The single group this instance is bound to (one board per instance), or null.
@@ -341,6 +527,18 @@ export function loadTgOwner(): number | null {
 }
 export function saveTgOwner(userId: number | null): void {
   writeJson("telegram-owner", userId == null ? [] : [userId]);
+}
+
+/**
+ * Telegram OPERATORS: the user ids that redeemed a pairing code in the board
+ * group (`src/tg-operators.ts`). Only they may run the host-wide commands
+ * (`/secret`, `/login`, `/update`…). Beside the owner file, same shape.
+ */
+export function loadTgOperators(): number[] {
+  return readJson("telegram-operators").filter((v): v is number => typeof v === "number");
+}
+export function saveTgOperators(ids: number[]): void {
+  writeJson("telegram-operators", ids);
 }
 
 /**
@@ -410,6 +608,9 @@ export interface SessionTarget {
   /** Worktree branch + origin repo, to recreate a reclaimed checkout. */
   branch: string | null;
   repo: string | null;
+  /** The isolation group the agent belongs to (null = commons / mono-tenant),
+   *  so a cron guard resolves this agent's secrets by its REAL group, not Main. */
+  group: string | null;
   /** False when no channel carries this sessionId: `cwd` is the fallback. */
   known: boolean;
 }
@@ -440,6 +641,7 @@ export function resolveSessionTarget(
     profile: ch?.profile ?? null,
     branch: ch?.branch ?? null,
     repo: ch?.repo ?? null,
+    group: ch?.group ?? null,
     known: !!ch,
   };
 }
@@ -469,4 +671,35 @@ export function resumeTarget(
     branch: t.branch ?? sent.branch?.trim() ?? null,
     repo: t.repo ?? sent.repo?.trim() ?? null,
   };
+}
+
+const FULL_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export type ResumeLookup =
+  | { ok: true; id: string }
+  | { ok: false; error: "empty" | "not-found" | "ambiguous"; matches: number };
+
+/**
+ * The full session id a `resume` names — or an explicit refusal.
+ *
+ * Ids are displayed 8 characters long everywhere (pilotctl, the tab menu,
+ * Telegram), so that is what comes back from whoever read one. Passed through
+ * verbatim, `claude --resume 113f3745` does not resume anything: it opens Claude
+ * Code's "Resume session" PICKER, a screen with no prompt, in a pane named after
+ * the truncated id — an agent that never becomes ready and that no channel
+ * points at. Same family as `resolveCronId` (invariant 17): a short handle is
+ * resolved to exactly one id, and an empty or ambiguous one is refused rather
+ * than settled at random.
+ *
+ * A complete id is returned as it is even when the registry does not know it:
+ * `/recover` resumes sessions whose channel is long gone.
+ */
+export function resolveResumeId(known: string[], given: string): ResumeLookup {
+  const n = (given ?? "").trim();
+  if (!n) return { ok: false, error: "empty", matches: 0 };
+  if (known.includes(n) || FULL_SESSION_ID.test(n)) return { ok: true, id: n };
+  const hits = [...new Set(known.filter((id) => id.startsWith(n)))];
+  if (hits.length === 0) return { ok: false, error: "not-found", matches: 0 };
+  if (hits.length > 1) return { ok: false, error: "ambiguous", matches: hits.length };
+  return { ok: true, id: hits[0] };
 }

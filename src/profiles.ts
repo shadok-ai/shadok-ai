@@ -31,13 +31,88 @@ export interface Profile {
   allow?: string[];
   /** Names of vault secrets to inject as env (references, not values). */
   secrets?: string[];
+  /** MCP servers handed to every agent of this role (`--mcp-config`). A secret
+   *  is written `${NAME}` and expanded by the CLI from the env `secrets` puts
+   *  there — so the value is never in this file, in argv, or in ~/.claude.json. */
+  mcpServers?: Record<string, McpServerConfig>;
   model?: string;
+  /** How hard agents of this role think before answering (`--effort`). One of
+   *  `EFFORT_LEVELS`; absent means pass no flag and take the CLI's default. */
+  effort?: string;
   /** May this agent answer a dialog pending on one of ITS OWN children?
    *  Opt-in on purpose: answering a child's permission prompt lets a
    *  READONLY_DENY agent authorise a child to do what it cannot do itself, so
    *  as an ambient right it would make the guardrail that forces delegation
    *  bypassable BY delegating. */
   canAnswerChildren?: boolean;
+}
+
+/** One MCP server, in the CLI's own `--mcp-config` shape (stdio, http or sse). */
+export interface McpServerConfig {
+  type?: "stdio" | "http" | "sse";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+}
+
+export type McpVerdict =
+  | { ok: true; servers: Record<string, McpServerConfig> | undefined }
+  | { ok: false; error: string };
+
+const MCP_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const MCP_TYPES = ["stdio", "http", "sse"];
+
+function stringMap(v: unknown): v is Record<string, string> {
+  return !!v && typeof v === "object" && !Array.isArray(v) &&
+    Object.values(v).every((x) => typeof x === "string");
+}
+
+/**
+ * Validate a profile's `mcpServers` as typed in the panel. Empty → none.
+ *
+ * `vaultValues` closes the one way the feature could undo its own point: a
+ * token PASTED into the config instead of referenced as `${NAME}` would sit in
+ * profiles.json and in every agent's argv. Refused, with the fix in the error.
+ * Values under 8 chars are skipped — too short to match on without false hits.
+ */
+export function mcpServersVerdict(raw: unknown, vaultValues: string[] = []): McpVerdict {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, servers: undefined };
+  if (typeof raw !== "object" || Array.isArray(raw))
+    return { ok: false, error: "mcpServers must be an object: { \"name\": { … } }" };
+  const out: Record<string, McpServerConfig> = {};
+  for (const [name, s] of Object.entries(raw as Record<string, unknown>)) {
+    if (!MCP_NAME.test(name)) return { ok: false, error: `invalid MCP server name: ${name}` };
+    if (!s || typeof s !== "object" || Array.isArray(s))
+      return { ok: false, error: `${name}: must be an object` };
+    const c = s as Record<string, unknown>;
+    const type = c.type === undefined ? "stdio" : c.type;
+    if (typeof type !== "string" || !MCP_TYPES.includes(type))
+      return { ok: false, error: `${name}: type must be stdio, http or sse` };
+    if (type === "stdio" && (typeof c.command !== "string" || !c.command.trim()))
+      return { ok: false, error: `${name}: a stdio server needs a command` };
+    if (type !== "stdio" && (typeof c.url !== "string" || !c.url.trim()))
+      return { ok: false, error: `${name}: an ${type} server needs a url` };
+    if (c.args !== undefined && !(Array.isArray(c.args) && c.args.every((x) => typeof x === "string")))
+      return { ok: false, error: `${name}: args must be a list of strings` };
+    if (c.env !== undefined && !stringMap(c.env)) return { ok: false, error: `${name}: env values must be strings` };
+    if (c.headers !== undefined && !stringMap(c.headers))
+      return { ok: false, error: `${name}: header values must be strings` };
+    out[name] = {
+      ...(c.type !== undefined ? { type: type as McpServerConfig["type"] } : {}),
+      ...(typeof c.command === "string" ? { command: c.command } : {}),
+      ...(c.args !== undefined ? { args: c.args as string[] } : {}),
+      ...(c.env !== undefined ? { env: c.env as Record<string, string> } : {}),
+      ...(typeof c.url === "string" ? { url: c.url } : {}),
+      ...(c.headers !== undefined ? { headers: c.headers as Record<string, string> } : {}),
+    };
+  }
+  if (!Object.keys(out).length) return { ok: true, servers: undefined };
+  const text = JSON.stringify(out);
+  if (vaultValues.some((v) => v.length >= 8 && text.includes(v)))
+    return { ok: false, error: "a vault secret's value is pasted in — write ${NAME} instead and tick NAME under Secrets" };
+  return { ok: true, servers: out };
 }
 
 /** Deny patterns that keep an agent from writing to git — the read-only preset. */
@@ -64,19 +139,24 @@ export const READONLY_DENY = [
  * The rule that actually governs is the one in the role's prompt. Each name is
  * anchored twice because a monorepo keeps its source at `packages/<x>/src` as
  * readily as at `src`.
+ *
+ * `Edit(...)` only, and not for style: a path-scoped `Write(<glob>)` deny
+ * never matches anything. Claude Code keys its file-write permission check on
+ * the `Edit` matcher, which covers the Write tool too. Measured on 2.1.311
+ * (which now prints "Deny rule Write(src/**) never matches · use Edit(src/**)"
+ * at startup, one row per such entry): with only `Write(src/**)` denied, a
+ * Write to `src/newfile.ts` succeeded; with only `Edit(src/**)` denied, both
+ * Write and Edit were refused, relative and absolute paths alike. Do not
+ * "restore symmetry" by adding `Write(...)` back — it only brings the warning
+ * rows back. (The bare `Write` / `Edit` that `Shadok-Release` carries are a
+ * different rule shape and are fine.)
  */
 export const SOURCE_WRITE_DENY = [
-  "Write(src/**)",
   "Edit(src/**)",
-  "Write(**/src/**)",
   "Edit(**/src/**)",
-  "Write(lib/**)",
   "Edit(lib/**)",
-  "Write(**/lib/**)",
   "Edit(**/lib/**)",
-  "Write(app/**)",
   "Edit(app/**)",
-  "Write(**/app/**)",
   "Edit(**/app/**)",
 ];
 
@@ -129,7 +209,13 @@ export const DEFAULT_PROFILES: Profile[] = [
       "KNOW. Before you answer, read the ground. " +
       READ_THE_GROUND +
       " When the user asks a question, answer it yourself: conclusion first, compact. Never make someone wait behind a spawned agent when a read would do.\n\n" +
-      "DELEGATE. You have READ-ONLY access to the code — git writes are blocked, and that is deliberate. Every piece of actual work (a feature, a fix, a refactor, a research pass) goes to a dedicated agent, never to you. Use the `shadok-ai-agents` skill: `pilotctl.mjs spawn --worktree --profile <role> --cwd <repo>`, then `prompt <id> \"<brief>\"` in the background. Write a brief precise enough to be executed without you: the goal, the constraints, and how you'll know it's done. Then follow up, read `diff <id>`, and report it to the user.\n\n" +
+      "DELEGATE. You are meant to be READ-ONLY on the work itself, and the rest of this paragraph is what that means in practice.\n\n" +
+      "YOU DO THESE THINGS YOURSELF, AND NOTHING ELSE: read (the ground, a diff, a log); run commands that only LOOK; answer a question; schedule a recurring prompt on this channel; and spawn, brief, follow up and report on agents.\n\n" +
+      "EVERYTHING ELSE GOES TO AN AGENT. Writing a file, fixing a typo, editing a doc, running a migration, opening a pull request — all of it, including the pieces that would take you two minutes. Those are the trap: two-minute tasks are how a lead ends up doing the work of five while five agents wait for a brief.\n\n" +
+      "BEFORE ANY ACTION THAT CHANGES SOMETHING, say who should do it — out loud, in the chat, so the user can stop you. If the answer is not one line of the list above, spawn instead of acting.\n\n" +
+      "WHY, so you can apply this where no rule reaches: you are the largest context in this tree. Work you do yourself is work nobody can parallelise, and it fills the one context that cannot be replaced — until you are too full to lead.\n\n" +
+      "You do not commit, push, merge or land anything. That is a rule about YOU, not a claim about your permissions: whatever your guardrails happen to allow, landing stays a human-reviewed step.\n\n" +
+      "HOW TO DELEGATE. Use the `shadok-ai-agents` skill: `pilotctl.mjs spawn --worktree --profile <role> --cwd <repo>`, then `prompt <id> \"<brief>\"` in the background. Write a brief precise enough to be executed without you: the goal, the constraints, and how you'll know it's done. Then follow up, read `diff <id>`, and report it to the user.\n\n" +
       "Pick the role deliberately: Shadok-dev for code, Shadok-QA to reproduce a bug and pin it with a failing test, Shadok-Release to prepare a deployment (it never ships on its own — that stays with a human), Shadok-Product to turn a rough want into a written spec, Shadok-Marketing for paid acquisition and ad copy, Shadok-Content for articles and organic/SEO work, Shadok-Support for user-facing answers. Spawn without --profile only when none of them fits.\n\n" +
       "SHAPE THE ROLES. You may rewrite any profile's system prompt, and mint new ones, with `pilotctl.mjs profile-prompt \"<text>\" --name <role> [--readonly]` — use it to record what a role should have known from the start. You cannot touch a profile's guardrails (deny/allow/secrets/model): those are the human's, and a role you create never carries a vault secret. A prompt change takes effect at that agent's next restart.\n\n" +
       "Say what you are about to spawn and why BEFORE you spawn it — each agent burns the same quota as a normal session, so delegate on purpose, not by reflex. Never land anything yourself: merging is a human-reviewed step. Never stop a session you did not create — it may be the user's own.",
@@ -356,16 +442,119 @@ export function removeProfile(name: string): void {
  * (role), inline permission settings (deny/allow), and a model. Returns [] for
  * an undefined/empty profile so a no-profile spawn is unchanged.
  */
-export function profileArgs(profile?: Profile | null): string[] {
-  if (!profile) return [];
+/**
+ * Denied for EVERY agent, whatever its role — a cockpit policy, not a guardrail.
+ *
+ * An artifact is a page on claude.ai. The person driving this cockpit asked for
+ * a file, and gets a link to something else; they said so plainly ("j'en ai
+ * marre qu'il utilise les artefacts"). The `shadok-files` skill is the answer,
+ * and a capability that is merely discouraged loses to one that is available.
+ *
+ * Here rather than in the shipped roles' `deny`, for two reasons that are both
+ * load-bearing. `Shadok-dev` — the most used role — carries NO deny list at
+ * all, and neither does an agent spawned without a profile, so a per-role rule
+ * would miss exactly the common cases. And `profileBadges` derives a role's
+ * access badge from its deny list, so adding this there would label a
+ * full-access role as restricted over something that has nothing to do with
+ * files or git.
+ *
+ * `SHADOK_ALLOW_ARTIFACTS=1` lifts it, for whoever decides otherwise.
+ */
+export const COCKPIT_DENY = ["Artifact"] as const;
+
+/**
+ * Denied for EVERY agent, whatever its role, and — unlike `COCKPIT_DENY` — NOT
+ * lifted by any gate. A cockpit policy, not a guardrail, and deliberately a
+ * SEPARATE constant: `SHADOK_ALLOW_ARTIFACTS` is about the Artifact tool and
+ * must never, as a side effect, reopen cross-session messaging.
+ *
+ * Claude Code's cross-session messaging (`ListAgents` / `SendMessage`) lets any
+ * agent DISCOVER and MESSAGE every other Claude session on this machine and,
+ * when Remote Control is connected, the account's sessions on other machines and
+ * in the cloud. shadok already drives agent-to-agent work through its OWN server
+ * (pilotctl, over the WebSocket — which these denies do NOT touch), so the
+ * capability is redundant here and off by default.
+ *
+ * Two consequences, both accepted: denying `SendMessage` also removes an agent's
+ * messaging to its own subagents / team teammates (same tool), and `ListAgents`
+ * removes discovery. Here rather than in the roles' `deny` for the same reasons
+ * as `COCKPIT_DENY`: `Shadok-dev` and a profile-less spawn carry no deny list,
+ * and `profileBadges` would otherwise mislabel a full-access role as restricted.
+ */
+export const CROSS_SESSION_DENY = ["SendMessage", "ListAgents"] as const;
+
+/**
+ * The model to pass as `--model` at spawn, with the right precedence:
+ * the agent's explicit choice, then the profile's pinned model, then — ONLY for
+ * a privilege-DROPPED agent — the instance default.
+ *
+ * Why the instance default is dropped-only: a mono-tenant / root agent reads the
+ * server's `~/.claude/settings.json` itself, so the default already reaches it
+ * with no flag; forcing one would change today's behaviour. A dropped agent has
+ * its OWN HOME whose settings.json carries no model (shadok seeds only `tui`),
+ * so without this it silently falls back to the CLI's built-in default (Sonnet)
+ * instead of the instance default the cockpit's model picker set — which is
+ * exactly what stranded a brand-new private group on Sonnet. Returning null
+ * means "emit no --model" (keep the CLI/own-settings default).
+ */
+export function resolveSpawnModel(input: {
+  requested?: string | null;
+  profileModel?: string | null;
+  instanceDefault?: string | null;
+  dropped: boolean;
+}): string | null {
+  const requested = input.requested?.trim();
+  if (requested) return requested;
+  const pinned = input.profileModel?.trim();
+  if (pinned) return pinned;
+  if (input.dropped) {
+    const def = input.instanceDefault?.trim();
+    if (def) return def;
+  }
+  return null;
+}
+
+export function profileArgs(
+  profile?: Profile | null,
+  modelOverride?: string | null,
+  effortOverride?: string | null,
+): string[] {
   const args: string[] = [];
-  if (profile.systemPrompt?.trim()) args.push("--append-system-prompt", profile.systemPrompt.trim());
-  const deny = profile.deny ?? [];
-  const allow = profile.allow ?? [];
+  if (profile?.systemPrompt?.trim()) args.push("--append-system-prompt", profile.systemPrompt.trim());
+  const deny = [
+    ...CROSS_SESSION_DENY,
+    ...(process.env.SHADOK_ALLOW_ARTIFACTS === "1" ? [] : COCKPIT_DENY),
+    ...(profile?.deny ?? []),
+  ];
+  const allow = profile?.allow ?? [];
+  // Before --settings on purpose: --mcp-config is VARIADIC and swallows every
+  // following non-flag word, and --settings is always emitted (CROSS_SESSION_DENY).
+  if (profile?.mcpServers && Object.keys(profile.mcpServers).length)
+    args.push("--mcp-config", JSON.stringify({ mcpServers: profile.mcpServers }));
   if (deny.length || allow.length) {
     args.push("--settings", JSON.stringify({ permissions: { deny, allow } }));
   }
-  if (profile.model?.trim()) args.push("--model", profile.model.trim());
+  // ONE place emits --model, and the agent's own choice wins over the role's.
+  //
+  // Both halves matter. A per-agent model is useless if the profile's silently
+  // beats it, and appending a second --model instead would leave the CLI to
+  // arbitrate a conflict we created. The profile keeps its meaning: it is the
+  // DEFAULT for every agent of that role, which is exactly what the picker's
+  // "profile default" choice selects by sending nothing.
+  //
+  // Note the early return is gone: an agent can now carry a model with NO
+  // profile at all, and returning [] on a null profile would have dropped it.
+  const model = modelOverride?.trim() || profile?.model?.trim();
+  if (model) args.push("--model", model);
+  // ONE place emits --effort, and the agent's own choice wins over the role's —
+  // the same split as --model just above, for the same reasons.
+  //
+  // Validated HERE and not only at the edges, because this is the last gate
+  // before the CLI and the CLI has none: it ignores an unknown level with a
+  // warning. A bad value is dropped rather than replaced by the role's, since
+  // falling back would run the agent at an effort nobody picked.
+  const wanted = effortOverride?.trim() || profile?.effort?.trim();
+  if (wanted && isEffortLevel(wanted)) args.push("--effort", wanted);
   return args;
 }
 
@@ -386,6 +575,30 @@ export const PERMISSION_MODES = [
 ] as const;
 export type PermissionMode = (typeof PERMISSION_MODES)[number];
 
+/**
+ * How much the model thinks before answering (`claude --effort`), in increasing
+ * order. This exact set is what the CLI prints as valid (verified on 2.1.300).
+ *
+ * There is deliberately NO on/off here, because there is no longer one to
+ * offer: on current models thinking is always on, and the old switches
+ * (`alwaysThinkingEnabled: false`, `MAX_THINKING_TOKENS=0`) are ignored by
+ * them. Effort is the whole dial, so a "thinking" toggle in the cockpit would
+ * be a control that changes nothing.
+ */
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/**
+ * Whether `e` is an effort level we recognize.
+ *
+ * This is a whitelist rather than a passthrough because the CLI does not refuse
+ * an unknown value — it warns and uses the default. So an unvalidated typo runs
+ * the agent at an effort nobody chose, with the UI showing the one they picked.
+ */
+export function isEffortLevel(e: unknown): e is EffortLevel {
+  return typeof e === "string" && (EFFORT_LEVELS as readonly string[]).includes(e);
+}
+
 /** Whether `m` is a permission mode we recognize. */
 export function isPermissionMode(m: string): m is PermissionMode {
   return (PERMISSION_MODES as readonly string[]).includes(m);
@@ -404,6 +617,10 @@ export function permissionModeArgs(raw: string | undefined): string[] {
 
 /** The managed profile behind the "Tweak Shadok-AI" CTA. */
 export const TWEAK_PROFILE_NAME = "Shadok-Tweak";
+/** The managed profile behind the Skill Factory's "Work on it" (context/skillsmith-prompt.md). */
+export const SKILLSMITH_PROFILE_NAME = "Shadok-Skillsmith";
+/** Roles whose prompt the server rewrites at every boot: never edited, never picked by hand. */
+export const MANAGED_PROFILE_NAMES = [TWEAK_PROFILE_NAME, SKILLSMITH_PROFILE_NAME];
 
 /**
  * Pure: the profile after refreshing ONLY its system prompt. The prompt is
@@ -436,6 +653,16 @@ export function migrateToTracking(): string[] {
 /** Install/refresh the tweak profile from the repo's prompt file. Idempotent. */
 export function seedTweakProfile(systemPrompt: string): void {
   upsertProfile(withManagedPrompt(getProfile(TWEAK_PROFILE_NAME), TWEAK_PROFILE_NAME, systemPrompt));
+}
+
+/**
+ * Install/refresh the Skillsmith from its prompt file. Unlike the tweak role it
+ * also pins `secrets: []` on first creation: it runs draft code another group
+ * may have pushed, unreviewed, so it starts with no credential to leak.
+ */
+export function seedSkillsmithProfile(systemPrompt: string): void {
+  const existing = getProfile(SKILLSMITH_PROFILE_NAME);
+  upsertProfile(withManagedPrompt(existing ?? { name: SKILLSMITH_PROFILE_NAME, secrets: [] }, SKILLSMITH_PROFILE_NAME, systemPrompt));
 }
 
 /** The lead profile: the only one allowed to shape OTHER profiles (see below). */
@@ -482,6 +709,47 @@ export function promptEditVerdict(opts: {
   return { ok: true, create: false };
 }
 
+export type AttachVerdict = { ok: boolean; error?: string };
+
+/**
+ * May this agent attach this vault secret to its own profile?
+ *
+ * The vault is GLOBAL — one file for every profile and every instance — so
+ * "an agent attaches a secret" sits one rule away from "any agent grants itself
+ * every credential in the house". The rule that keeps it honest: it may attach
+ * only a secret IT created (via the shadok-secrets skill, holding a credential
+ * it obtained itself). That grants no new access — it already has the value —
+ * it only makes it survive into its next sessions.
+ *
+ * Note the deliberate asymmetry with `promptEditVerdict`: the lead profile gets
+ * NO exception here. Editing any prompt gives it nothing it lacks (it can
+ * already spawn a full-access agent); handing out vault secrets would.
+ */
+export function secretAttachVerdict(opts: {
+  /** Profile of the calling session, null when it spawned bare. */
+  caller: string | null;
+  /** Secret name being attached. */
+  name: string;
+  inVault: boolean;
+  /** Profile that CREATED the secret; null when a human put it there. */
+  origin: string | null;
+}): AttachVerdict {
+  const name = opts.name.trim();
+  if (!name) return { ok: false, error: "secret name required" };
+  if (!opts.caller)
+    return { ok: false, error: "this agent has no profile, so it has nothing to attach a secret to" };
+  if (!opts.inVault) return { ok: false, error: `no secret named ${name} in the vault` };
+  if (opts.origin !== opts.caller)
+    return {
+      ok: false,
+      error:
+        `${name} was not created by ${opts.caller}, so it cannot be attached from here — ` +
+        `an agent may only attach a secret it stored itself. Any other secret is attached ` +
+        `by a human, from the web Profiles panel.`,
+    };
+  return { ok: true };
+}
+
 /** Where a profile's prompt comes from, seen from THIS build. */
 export type PromptOrigin = "tracked" | "edited" | "outdated" | "custom";
 
@@ -507,7 +775,7 @@ export function promptOrigin(stored: Profile, shipped: Profile | undefined): Pro
   // context/tweak-prompt.md and rewritten at every boot — so `shipped` is
   // undefined for it. Reporting the one role that is ALWAYS current as "custom"
   // would be exactly backwards.
-  if (stored.name === TWEAK_PROFILE_NAME) return "tracked";
+  if (MANAGED_PROFILE_NAMES.includes(stored.name)) return "tracked";
   if (!shipped) return "custom";
   if (stored.systemPrompt === undefined) return "tracked";
   const mine = (stored.systemPrompt ?? "").trim();

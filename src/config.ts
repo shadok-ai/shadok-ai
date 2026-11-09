@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { ConfiguredBackend } from "./backend.js";
 
 /**
  * Global CLI config at ~/.shadok-ai/config.json (mode 600). The Telegram bot
@@ -65,12 +66,51 @@ export interface Config {
    * stay distinguishable. Absent = the default "shadok-ai".
    */
   cockpitTitle?: Record<string, string>;
+  /** Per launch dir: the instance context every agent gets (src/instance-context.ts). */
+  instanceContext?: Record<string, string>;
   /**
    * Per launch-directory colour palette (an accent key like "emerald"), keyed by
    * absolute cwd. Absent = the default "amber". Like the name, it re-themes only
    * this instance and survives a reload.
    */
   cockpitTheme?: Record<string, string>;
+  /**
+   * Per launch-directory "mute the whole instance", keyed by absolute cwd.
+   * `true` = every agent on this instance raises NO web attention signal: the
+   * favicon never changes, no title badge, no blink, no chime. Absent/false =
+   * the normal per-agent behaviour. It is the instance-wide twin of the
+   * per-channel `Channel.muted`, shared across every tab and device like the
+   * name and palette.
+   */
+  cockpitMuted?: Record<string, boolean>;
+  /**
+   * Per launch-directory agent auth mode (multi-tenant only), keyed by absolute
+   * cwd. `"token"` (default, absent) = the ~1-year `setup-token`
+   * (`MT_CLAUDE_OAUTH_TOKEN`) injected into every dropped agent — no claude.ai
+   * connectors. `"login"` = no token injection; each OS user (commons `main` +
+   * each private group's `sk-*`) does its own interactive `claude auth login`
+   * once into its OWN home, so agents get the account's connectors (~1 month,
+   * per-user reconnect). Cross-user credential sharing is never used (the refresh
+   * rewrite is single-owner, see the design doc); only same-user agents share a
+   * login, which they do natively. Takes effect at an agent's next (re)spawn.
+   * Design: docs/superpowers/specs/2026-11-04-connectors-via-global-login-design.md
+   */
+  agentAuth?: Record<string, "token" | "login">;
+  /**
+   * Per launch-directory two-factor sign-in (a passkey after the password),
+   * keyed by absolute cwd. Absent = off. Turned on from the Users panel, under
+   * the rules of `twoFactorEnableVerdict`; removing the key by hand IS the
+   * break-glass when every admin has lost their device (README).
+   */
+  twoFactor?: Record<string, true>;
+  /**
+   * Per launch-directory model backend chosen at onboarding (or from the
+   * version menu), keyed by absolute cwd. Absent = the Claude subscription, or
+   * whatever ANTHROPIC_BASE_URL shadok was launched with. When present it is
+   * authoritative and REPLACES the environment wholesale — see src/backend.ts.
+   * May hold an API key, which is one more reason this file is 600.
+   */
+  modelBackend?: Record<string, ConfiguredBackend>;
 }
 
 export const SHADOK_DIR = path.join(os.homedir(), ".shadok-ai");
@@ -118,6 +158,25 @@ export function titleForCwd(cfg: Config, cwd: string): string | null {
   return t && t.trim() ? t.trim() : null;
 }
 
+/** This directory's instance context, "" when unset (src/instance-context.ts). */
+export function instanceContextForCwd(cfg: Config, cwd: string): string {
+  return cfg.instanceContext?.[cwd]?.trim() ?? "";
+}
+
+/** Pure: set (or, with "", remove) this directory's instance context on `cfg`. */
+export function applyInstanceContext(cfg: Config, cwd: string, text: string): Config {
+  const t = text.trim();
+  cfg.instanceContext ??= {};
+  if (t) cfg.instanceContext[cwd] = t;
+  else delete cfg.instanceContext[cwd];
+  return cfg;
+}
+
+/** Set (or clear) this directory's instance context and persist. */
+export function setInstanceContextForCwd(cfg: Config, cwd: string, text: string): void {
+  saveConfig(applyInstanceContext(cfg, cwd, text));
+}
+
 /**
  * Set (or clear) this directory's cockpit name and persist. An empty/blank
  * title removes the entry so the cockpit falls back to the default brand.
@@ -148,6 +207,67 @@ export function setThemeForCwd(cfg: Config, cwd: string, theme: string): void {
   cfg.cockpitTheme ??= {};
   if (t && t !== "amber" && (COCKPIT_THEMES as readonly string[]).includes(t)) cfg.cockpitTheme[cwd] = t;
   else delete cfg.cockpitTheme[cwd];
+  saveConfig(cfg);
+}
+
+/** Is this whole instance muted (no web attention signal for any agent)? */
+export function mutedForCwd(cfg: Config, cwd: string): boolean {
+  return cfg.cockpitMuted?.[cwd] === true;
+}
+
+/**
+ * Set (or clear) this directory's instance-wide mute and persist. `false`
+ * removes the entry — the default is "not muted", stored as absent.
+ */
+export function setMutedForCwd(cfg: Config, cwd: string, on: boolean): void {
+  cfg.cockpitMuted ??= {};
+  if (on) cfg.cockpitMuted[cwd] = true;
+  else delete cfg.cockpitMuted[cwd];
+  saveConfig(cfg);
+}
+
+/**
+ * This instance's agent auth mode: `"login"` only when explicitly set, else
+ * `"token"` (the default and today's behaviour). Any unknown value reads as
+ * `"token"` — a malformed config never silently switches auth.
+ */
+export function agentAuthForCwd(cfg: Config, cwd: string): "token" | "login" {
+  return cfg.agentAuth?.[cwd] === "login" ? "login" : "token";
+}
+
+/**
+ * Set (or clear) this directory's agent auth mode and persist. `"token"` (the
+ * default) removes the entry, so the instance falls back to it.
+ */
+export function setAgentAuthForCwd(cfg: Config, cwd: string, mode: "token" | "login"): void {
+  cfg.agentAuth ??= {};
+  if (mode === "login") cfg.agentAuth[cwd] = "login";
+  else delete cfg.agentAuth[cwd];
+  saveConfig(cfg);
+}
+
+/** The model backend chosen for the instance launched in `cwd`, or null. */
+export function backendForCwd(cfg: Config, cwd: string): ConfiguredBackend | null {
+  return cfg.modelBackend?.[cwd] ?? null;
+}
+
+/** Set (or clear, with null) that backend and persist. */
+export function setBackendForCwd(cfg: Config, cwd: string, b: ConfiguredBackend | null): void {
+  cfg.modelBackend ??= {};
+  if (b) cfg.modelBackend[cwd] = b;
+  else delete cfg.modelBackend[cwd];
+  saveConfig(cfg);
+}
+
+/** Is two-factor sign-in on for the instance launched in `cwd`? */
+export function twoFactorForCwd(cfg: Config, cwd: string): boolean {
+  return cfg.twoFactor?.[cwd] === true;
+}
+
+export function setTwoFactorForCwd(cfg: Config, cwd: string, on: boolean): void {
+  cfg.twoFactor ??= {};
+  if (on) cfg.twoFactor[cwd] = true;
+  else delete cfg.twoFactor[cwd];
   saveConfig(cfg);
 }
 

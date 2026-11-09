@@ -1,9 +1,13 @@
+import { AGENT_CREDENTIAL_VARS, isAgentCredentialVar } from "./agent-principal.js";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { idleStep, screenShowsWork, inputText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
-import { windowMs, FORCED_CLAUDE_ENV } from "./session.js";
+import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
+import { windowMs, forcedEnv } from "./session.js";
+import { dropArgv, dropEnv } from "./osusers.js";
+import { binaryBusyError } from "./claude-bin.js";
+import { SHADOK_DIR } from "./config.js";
 import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 
 /**
@@ -20,16 +24,126 @@ import type { PilotOptions, WaitIdleOptions, WaitOptions } from "./session.js";
 export interface TmuxPilotOptions extends PilotOptions {
   /** tmux session name (stable across restarts — derive from the session id). */
   tmuxName: string;
+  /** Where the one-shot launcher script is written (default `~/.shadok-ai/run`). */
+  launcherDir?: string;
+  /** OS user to drop to before exec (multi-tenant isolation) — see PilotOptions. */
+  user?: string | null;
+  /** HOME of the drop `user` — see PilotOptions. Exported in the launcher so the
+   *  dropped agent reaches its per-group `~/.claude`, not the server's /root. */
+  home?: string | null;
 }
 
 function tmux(args: string[], input?: string): string {
-  return execFileSync("tmux", args, {
-    encoding: "utf8",
-    input,
-    timeout: 10_000,
-    maxBuffer: 8 * 1024 * 1024,
-    stdio: ["pipe", "pipe", "ignore"],
-  });
+  try {
+    return execFileSync("tmux", args, {
+      encoding: "utf8",
+      input,
+      timeout: 10_000,
+      maxBuffer: 8 * 1024 * 1024,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+  } catch (e) {
+    throw new Error(tmuxErrorMessage(args, (e as { stderr?: unknown }).stderr));
+  }
+}
+
+/**
+ * What a failed tmux call is allowed to say: the subcommand and tmux's own
+ * complaint, NEVER the rest of the argument vector.
+ *
+ * `execFileSync` builds its error message as "Command failed: <every argument>",
+ * and that message travelled to the browser untouched. When the arguments are a
+ * spawn command, they are every secret the profile injects — so a spawn that
+ * failed for an unrelated reason displayed forty-six credentials in the web UI.
+ * `send-keys` carries the user's own prompt text, which has no business in an
+ * error either.
+ */
+export function tmuxErrorMessage(args: string[], stderr: unknown): string {
+  const why = typeof stderr === "string" ? stderr.trim() : Buffer.isBuffer(stderr) ? stderr.toString("utf8").trim() : "";
+  return `tmux ${args[0] ?? "command"} failed${why ? `: ${why}` : ""}`;
+}
+
+/** Single-quote a string for POSIX sh; safe for any content, newlines included. */
+export function shellQuote(s: string): string {
+  return `'${String(s).replace(/'/g, "'\\''")}'`;
+}
+
+/** A name `export` accepts. The vault does not restrict names, the shell does. */
+export function isEnvName(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+}
+
+/**
+ * The one-shot script a tmux pane runs to start an agent.
+ *
+ * The spawn used to be a single `env KEY=VALUE … claude <args>` string handed to
+ * `tmux new-session`. Two things were wrong with carrying it that way. tmux
+ * refuses a command over ~16 KB ("command too long", measured: 16000 bytes
+ * pass, 17000 fail), and that string holds every secret VALUE of the profile
+ * plus every system prompt — so a lead role with a long prompt on a large vault
+ * simply could not be launched, while a shorter role on the same vault could.
+ * And those values were arguments of a process, which `ps` shows to anyone on
+ * the machine.
+ *
+ * Writing them to a file makes the tmux command a few dozen bytes whatever the
+ * vault holds, and `export` is a shell builtin, so no value is ever the argument
+ * of any process. The order is the old one and is load-bearing: strip the
+ * inherited CLAUDE* markers, then the secrets, then `FORCED_CLAUDE_ENV` LAST so
+ * a profile can never switch transcript writing off (invariant 29). The script
+ * removes itself first thing — `sh` already holds it open, so unlinking the name
+ * loses nothing — which bounds the file's life to the moment before `exec`.
+ */
+export function launcherScript(o: {
+  unset: string[];
+  env: Record<string, string>;
+  forced: Record<string, string>;
+  bin: string;
+  args: string[];
+  /**
+   * OS user to drop to (multi-tenant isolation). When set, the `exec` line is
+   * wrapped in `setpriv` (`dropArgv`), so the drop happens AFTER the exports —
+   * the env is set in the root shell and setpriv preserves it across the exec,
+   * which is the whole reason setpriv is used over a PAM path. Unset = today's
+   * exec line, byte-for-byte. The multi-tenant gate lives in `makePilot`.
+   */
+  user?: string | null;
+  /**
+   * HOME of the drop `user`. Exported (via `dropEnv`) so the dropped agent's
+   * `$HOME` points at its own per-group directory rather than the server's
+   * inherited `HOME=/root` — setpriv changes the uid but not $HOME, so without
+   * this the agent can never reach its `~/.claude` (auth + skills break). Only
+   * set alongside `user`; `{}` otherwise, so the mono-tenant script is unchanged.
+   */
+  home?: string | null;
+}): { script: string; skipped: string[] } {
+  const skipped: string[] = [];
+  const exports: string[] = [];
+  const add = (k: string, v: string) => {
+    if (!isEnvName(k)) return skipped.push(k);
+    exports.push(`export ${k}=${shellQuote(v)}`);
+  };
+  add("TERM", "xterm-256color");
+  for (const [k, v] of Object.entries(o.env)) if (!isAgentCredentialVar(k)) add(k, v);
+  // HOME/USER/LOGNAME of the drop user, AFTER the profile env (so the server's
+  // inherited HOME, which the tmux pane also inherits, is overridden) and before
+  // the forced vars. `{}` when no user is dropped → byte-for-byte today's script.
+  for (const [k, v] of Object.entries(dropEnv(o.user, o.home))) add(k, v);
+  for (const [k, v] of Object.entries(o.forced)) add(k, v);
+  const drop = o.user ? dropArgv(o.user, o.bin, o.args) : null;
+  const execArgv = drop ? [drop.cmd, ...drop.argv] : [o.bin, ...o.args];
+  const script = [
+    "#!/bin/sh",
+    'rm -f -- "$0"',
+    // The credential vars are unset UNCONDITIONALLY, not only when this
+    // process has them: a pane inherits the tmux SERVER's global environment,
+    // captured when that server first started — possibly by an older shadok
+    // that still carried the instance password (src/agent-principal.ts).
+    ...[...new Set([...o.unset, ...AGENT_CREDENTIAL_VARS])].filter(isEnvName).map((k) => `unset ${k}`),
+    ...exports,
+    `exec ${execArgv.map(shellQuote).join(" ")}`,
+    "",
+  ].join("\n");
+  return { script, skipped };
 }
 
 function tmuxOk(args: string[]): boolean {
@@ -65,6 +179,63 @@ export function tmuxPaneCwd(name: string): string | null {
   }
 }
 
+/**
+ * The username the pane's foreground process actually runs as, or `null` when it
+ * cannot be determined. Used to decide whether a live pane may be ADOPTED when a
+ * privilege drop is required: `TmuxPilot.start()` adopts an existing pane by
+ * design (invariant 25 — that is what lets an agent survive a server restart),
+ * and a pane first spawned as root KEEPS root across restarts, ignoring the drop
+ * `user` a reload now asks for. So before trusting a live pane we confirm its uid.
+ *
+ * We read `/proc/<pane_pid>` owner via `stat -c %U` (not `ps -o user`, which
+ * truncates a long `sk-<id>` name to 8 chars + `+`): after the launcher `exec`s
+ * `setpriv … claude`, the pane's top process runs as the drop user, so its /proc
+ * owner is the answer. Anything unexpected (no pid, UNKNOWN uid, a throw) → null,
+ * which the decision below treats as "cannot confirm" → never adopt.
+ */
+export function tmuxPaneUser(name: string): string | null {
+  try {
+    const pid = tmux(["display-message", "-p", "-t", name, "#{pane_pid}"]).trim();
+    if (!/^\d+$/.test(pid)) return null;
+    const user = execFileSync("stat", ["-c", "%U", `/proc/${pid}`], {
+      encoding: "utf8",
+      timeout: 5_000,
+    }).trim();
+    return user && user !== "UNKNOWN" ? user : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether `TmuxPilot.start()` may ADOPT a pre-existing pane, must SPAWN a fresh
+ * one, or must RESPAWN (hard-kill the stale pane, then spawn fresh). Pure, so the
+ * whole policy is unit-tested without tmux.
+ *
+ * - No live session → `spawn` (nothing to adopt).
+ * - A live session and NO drop user required → `adopt`: today's behaviour, the
+ *   reattach that makes an agent survive a server restart.
+ * - A live session and a drop user IS required (multi-tenant, a private group or
+ *   the migrated commons): adopt ONLY when the pane is CONFIRMED to already run
+ *   as that exact user. Anything else — a different user, or a uid we could not
+ *   read (`paneUser === null`) — is `respawn`: a re-adopted pane keeps whatever
+ *   uid it was first spawned as, so a pre-migration ROOT pane would silently stay
+ *   root (invariant 23/25). The safe move is to kill it and spawn fresh under the
+ *   drop user.
+ */
+export type AdoptDecision = "adopt" | "spawn" | "respawn";
+
+export function adoptPaneDecision(input: {
+  hasSession: boolean;
+  requiredUser: string | null | undefined;
+  paneUser: string | null;
+}): AdoptDecision {
+  if (!input.hasSession) return "spawn";
+  if (!input.requiredUser) return "adopt";
+  if (input.paneUser && input.paneUser === input.requiredUser) return "adopt";
+  return "respawn";
+}
+
 export class TmuxPilot {
   private readonly opts: Required<Pick<TmuxPilotOptions, "cols" | "rows">> & TmuxPilotOptions;
   private readonly name: string;
@@ -89,35 +260,93 @@ export class TmuxPilot {
   }
 
   start(): void {
-    if (this.hasSession()) {
+    const required = this.opts.user ?? null;
+    // Decide adopt vs spawn vs respawn. A re-adopted pane keeps the uid it was
+    // first spawned as, so when a drop user is required we adopt ONLY a pane we
+    // can CONFIRM already runs as that user — otherwise (a root pane from before
+    // migration, or a uid we can't read) we hard-kill it and spawn fresh, so the
+    // new process actually runs as the drop user (invariant 23/25, Task 15).
+    const decision = adoptPaneDecision({
+      hasSession: this.hasSession(),
+      requiredUser: required,
+      // Only pay for the probe when a drop is required (the only case it gates).
+      paneUser: required && this.hasSession() ? tmuxPaneUser(this.name) : null,
+    });
+    if (decision === "adopt") {
       // Reattach to a session that outlived a previous server: claude is
       // already past the trust dialog and holding its state.
+      // A pane adopted after a restart keeps the token it was spawned with; a
+      // rotated token reaches it only on `restart-all`.
       this.attached = true;
     } else {
+      if (decision === "respawn") {
+        // The live pane cannot be confirmed to run as the required drop user —
+        // refuse to adopt it and ENFORCE its removal (mirroring restartSession)
+        // before spawning fresh, so no client ever drives a pane left running as
+        // the wrong (root) user. kill-session is synchronous; re-check once.
+        console.error(
+          `[${this.name}] refusing to adopt a pane that is not confirmed as ${required} — killing it before a fresh spawn`,
+        );
+        tmuxKillSession(this.name);
+        if (this.hasSession()) tmuxKillSession(this.name);
+      }
       // Strip a parent Claude Code session's vars (a nested claude that sees
       // them may disable interactive mode), like PtyPilot does.
-      const unset = Object.keys(process.env)
-        .filter((k) => /^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k))
-        .flatMap((k) => ["-u", k]);
+      const unset = Object.keys(process.env).filter((k) => /^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k));
       const bin = this.opts.claudePath ?? "claude";
-      // Repo secrets → KEY=VALUE assignments for the `env` prefix (each token is
-      // single-quoted below, so values with spaces/specials are safe).
-      const secretEnv = Object.entries(this.opts.env ?? {}).map(([k, v]) => `${k}=${v}`);
-      // After secretEnv on purpose — `env` applies assignments left to right, so
-      // the last one wins and a profile cannot switch off transcript writing.
-      const forced = Object.entries(FORCED_CLAUDE_ENV).map(([k, v]) => `${k}=${v}`);
-      const cmd = ["env", ...unset, "TERM=xterm-256color", ...secretEnv, ...forced, bin, ...(this.opts.args ?? [])]
-        .map((a) => `'${String(a).replace(/'/g, "'\\''")}'`)
-        .join(" ");
-      tmux([
-        "new-session",
-        "-d",
-        "-s", this.name,
-        "-x", String(this.opts.cols),
-        "-y", String(this.opts.rows),
-        "-c", this.opts.cwd ?? process.cwd(),
-        cmd,
-      ]);
+      // Secrets and prompts go into a private one-shot script, never onto the
+      // tmux command line: see `launcherScript` for why both halves matter.
+      const { script, skipped } = launcherScript({
+        unset,
+        env: this.opts.env ?? {},
+        forced: forcedEnv(this.opts),
+        bin,
+        args: this.opts.args ?? [],
+        // Multi-tenant isolation: drop to the group's OS user. Only ever set in
+        // multi-tenant (the gate is in makePilot), so this is a no-op otherwise.
+        user: this.opts.user,
+        // …and point its HOME at that user's own directory (see launcherScript /
+        // dropEnv), or it would inherit the server's HOME=/root and run with no
+        // ~/.claude. `{}` without a user, so the mono-tenant script is unchanged.
+        home: this.opts.home,
+      });
+      for (const name of skipped)
+        console.error(`[${this.name}] secret "${name}" not exported — not a valid environment variable name`);
+      const dir = this.opts.launcherDir ?? path.join(SHADOK_DIR, "run");
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o700);
+      const launcher = path.join(dir, `${this.name}.sh`);
+      // `wx` after a forced remove: a stale file from an earlier failed spawn must
+      // not keep whatever mode it had — the new one is created 0600 or not at all.
+      fs.rmSync(launcher, { force: true });
+      fs.writeFileSync(launcher, script, { mode: 0o600, flag: "wx" });
+      try {
+        tmux([
+          "new-session",
+          "-d",
+          "-s", this.name,
+          "-x", String(this.opts.cols),
+          "-y", String(this.opts.rows),
+          "-c", this.opts.cwd ?? process.cwd(),
+          `sh ${shellQuote(launcher)}`,
+        ]);
+      } catch (e) {
+        // The pane never ran, so the script never removed itself: it holds the
+        // profile's secrets and must not outlive the failure.
+        fs.rmSync(launcher, { force: true });
+        throw e;
+      }
+      // `tmux new-session` returns as soon as the pane exists, so a pane that is
+      // ALREADY gone means its command never got to run — ETXTBSY being the
+      // reason that actually happens here, when a claude-code upgrade is
+      // rewriting the binary. Without this the pane simply vanishes, `tick()`
+      // reads it as an ordinary exit, and a spawn killed by a transient reports
+      // as a dead agent. A pane tmux has not torn down yet reads as alive and we
+      // fall through to the old behaviour — no worse than before, never worse.
+      if (!this.hasSession()) {
+        fs.rmSync(launcher, { force: true });
+        throw binaryBusyError(bin);
+      }
     }
     this.capture();
     // Self-rescheduling rather than a flat interval: the capture is synchronous,
@@ -345,8 +574,22 @@ export class TmuxPilot {
     }
   }
 
+  /**
+   * The screen captured right now rather than the poller's mirror, for the one
+   * read that has no predicate to wait on: `typeIntoBox`'s baseline. A mirror
+   * that lags a change by one poll would hand it a box that is no longer there.
+   */
+  private freshScreen(): string {
+    this.capture();
+    return this._screen;
+  }
+
   /** Pastes text with bracketed-paste framing (reliable for the TUI input). */
   private paste(text: string): void {
+    // Like every write to the pane: an idle pane's poller has backed off to
+    // SCREEN_SLOW_MS, as long as the whole window typeIntoBox gives a paste
+    // to show up in.
+    this.wake();
     tmux(["load-buffer", "-b", "cp", "-"], text);
     tmux(["paste-buffer", "-t", this.name, "-b", "cp", "-p", "-d"]);
   }
@@ -375,14 +618,17 @@ export class TmuxPilot {
    * bracketed paste with retry until the text shows, then Enter with retry
    * until the turn is actually sent.
    */
-  async submit(text: string): Promise<void> {
+  async submit(text: string, prelude?: string | string[]): Promise<void> {
     const typed = await typeIntoBox(
       {
+        screen: () => this.freshScreen(),
         paste: (t) => this.paste(t),
         clearInput: () => this.write("\x15"), // Ctrl-U
+        hardClear: () => this.press("ctrl-c"),
         waitFor: (p, o) => this.waitFor(p, o),
       },
       text,
+      { prelude },
     );
     if (!typed) {
       throw this.submitError("the text never appeared in the input box");
@@ -391,7 +637,11 @@ export class TmuxPilot {
     // Sent once the input box is empty again (or the spinner is up). Requiring
     // it to be truly empty makes the Enter retry robust to the bracketed-paste
     // race, and works for collapsed pastes (whose text is never on screen).
-    const submitted = (s: string) => screenShowsWork(s) || inputText(s) === "";
+    // The WHOLE box, not its first line: a prompt that wrapped leaves its tail
+    // on continuation lines, and `inputText` would read the emptied first line
+    // as a box that is gone while the rest of the message is still sitting
+    // there, unsent.
+    const submitted = (s: string) => screenShowsWork(s) || boxText(s) === "";
     for (let attempt = 0; attempt < 3; attempt++) {
       this.press("enter");
       try {
@@ -431,15 +681,25 @@ export class TmuxPilot {
   async waitForIdle({
     stableMs = 1_500,
     timeoutMs = 600_000,
+    settleOn,
   }: WaitIdleOptions = {}): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     let lastScreen = "";
     let stableSince = 0;
+    let lastKey: string | null = null;
+    let keySince = 0;
     while (Date.now() < deadline) {
       if (this.exited) throw new Error("The claude process has exited.");
       const s = this.screen();
-      const step = idleStep(s, lastScreen, stableSince, Date.now(), windowMs(stableMs));
+      const now = Date.now();
+      const step = idleStep(s, lastScreen, stableSince, now, windowMs(stableMs));
       if (step.done) return s;
+      if (settleOn) {
+        const settle = settleStep(s, settleOn(s), lastKey, keySince, now, DIALOG_HOLD_MS);
+        if (settle.done) return s;
+        lastKey = settle.lastKey;
+        keySince = settle.since;
+      }
       stableSince = step.stableSince;
       lastScreen = step.lastScreen;
       await sleep(160);
@@ -475,6 +735,28 @@ export class TmuxPilot {
       }
     }
     this.kill(); // idempotent: killing an absent session is a no-op
+  }
+
+  /**
+   * Let go of a pane that never became usable, without leaving a watcher behind.
+   *
+   * `start()` arms the poller before anyone knows whether the TUI will come up.
+   * When it does not, the caller's readiness wait throws — and nothing used to
+   * stop the poller, so every failed attempt left one capturing a dead screen
+   * for the life of the server. Two panes wedged on Claude Code's "Resume
+   * session" picker gathered enough of them to take nine captures in ten: the
+   * event loop was saturated, every request took seconds, and prompts to every
+   * OTHER agent were garbled or lost for nine days (2026-10-12).
+   *
+   * A pane we CREATED is killed: nobody will ever use it. One we ADOPTED is left
+   * alone — it may be a live agent on a server too slow to see it in time, and
+   * killing that on a timeout would turn a slow moment into lost work.
+   */
+  abandon(): void {
+    if (!this.attached) return this.kill();
+    if (this.poller) clearTimeout(this.poller);
+    this.poller = null;
+    this.exited = true;
   }
 
   /** Kills the tmux session (ends the agent). */

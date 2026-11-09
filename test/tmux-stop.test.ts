@@ -51,3 +51,33 @@ test("tmuxKillSession on a name that does not exist is a no-op", () => {
   // The server calls this defensively before respawning; it must never throw.
   assert.doesNotThrow(() => tmuxKillSession("sk-definitely-not-a-session-" + process.pid));
 });
+
+// A start whose TUI never comes up must not leave a watcher behind — see
+// `TmuxPilot.abandon`. `sleep` stands in for the wedged screen again.
+test("abandon() kills a pane this pilot created", { skip: !HAVE_TMUX }, () => {
+  const pilot = new TmuxPilot({ tmuxName: NAME, cwd: process.cwd(), args: ["300"], claudePath: "sleep" });
+  try {
+    pilot.start();
+    pilot.abandon();
+    assert.equal(tmuxHasSession(NAME), false);
+    assert.equal(pilot.hasExited, true);
+  } finally {
+    tmuxKillSession(NAME);
+  }
+});
+
+test("abandon() stops watching an ADOPTED pane but leaves it running", { skip: !HAVE_TMUX }, () => {
+  const owner = new TmuxPilot({ tmuxName: NAME, cwd: process.cwd(), args: ["300"], claudePath: "sleep" });
+  const adopter = new TmuxPilot({ tmuxName: NAME, cwd: process.cwd(), args: ["300"], claudePath: "sleep" });
+  try {
+    owner.start();
+    adopter.start();
+    assert.equal(adopter.attached, true);
+    adopter.abandon();
+    assert.equal(tmuxHasSession(NAME), true, "an adopted pane may be a live agent — never killed on a timeout");
+    assert.equal(adopter.hasExited, true, "but this pilot no longer polls it");
+  } finally {
+    owner.kill();
+    tmuxKillSession(NAME);
+  }
+});

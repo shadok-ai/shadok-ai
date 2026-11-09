@@ -1,6 +1,8 @@
+import { isAgentCredentialVar, withoutAgentCredentials } from "./agent-principal.js";
 import pty from "node-pty";
 import xterm from "@xterm/headless";
-import { idleStep, screenShowsWork, inputText, describeStuckScreen, typeIntoBox } from "./detect.js";
+import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, typeIntoBox } from "./detect.js";
+import { dropArgv, dropEnv } from "./osusers.js";
 
 const { Terminal } = xterm;
 
@@ -29,6 +31,43 @@ export const FORCED_CLAUDE_ENV: Record<string, string> = {
   CLAUDE_CODE_FORCE_SESSION_PERSISTENCE: "1",
 };
 
+/**
+ * The forced layer: `FORCED_CLAUDE_ENV` plus, for an isolated group's agent, the
+ * shared subscription token. `CLAUDE_CODE_OAUTH_TOKEN` begins with `CLAUDE`, so
+ * any layer before the strip would lose it, and a profile secret of the same
+ * name must not shadow it — hence the forced layer, applied LAST by both pilots.
+ * Gated on BOTH a drop `user` and a non-empty token: mono-tenant gets no key.
+ */
+export function forcedEnv(opts: { user?: string | null; oauthToken?: string; ghToken?: string }): Record<string, string> {
+  return {
+    ...FORCED_CLAUDE_ENV,
+    ...(opts.user && opts.oauthToken ? { CLAUDE_CODE_OAUTH_TOKEN: opts.oauthToken } : {}),
+    // A dropped agent cannot read the server's gh config (its GH_CONFIG_DIR is
+    // overridden to the drop user's own writable dir in `dropEnv`), so it auths
+    // via GH_TOKEN instead — the server's own gh token, shared like the
+    // subscription token. Gated on a drop user; mono-tenant/root reads the config
+    // dir directly and needs nothing.
+    ...(opts.user && opts.ghToken ? { GH_TOKEN: opts.ghToken } : {}),
+  };
+}
+
+/** The full spawn env of a PTY pilot, pure so it is testable without a PTY. */
+export function spawnEnv(
+  opts: { user?: string | null; home?: string | null; env?: Record<string, string>; oauthToken?: string; ghToken?: string },
+  baseEnv: Record<string, string>,
+): Record<string, string> {
+  // The credential strip goes on the RESULT, so neither the inherited env nor
+  // anything a caller passes can hand an agent the admin's cookie or the
+  // instance password (src/agent-principal.ts).
+  return withoutAgentCredentials({
+    ...baseEnv,
+    TERM: "xterm-256color",
+    ...opts.env,
+    ...dropEnv(opts.user, opts.home),
+    ...forcedEnv(opts),
+  });
+}
+
 export interface PilotOptions {
   /** Path to the claude executable (default: "claude" from PATH). */
   claudePath?: string;
@@ -39,6 +78,33 @@ export interface PilotOptions {
   cols?: number;
   rows?: number;
   env?: Record<string, string>;
+  /**
+   * The OS user to drop to before exec (multi-tenant isolation). When set, the
+   * spawn is wrapped in `setpriv` (`src/osusers.ts`); unset = today's behaviour,
+   * running as the server's own user. The multi-tenant gate lives in the caller
+   * (`makePilot`), so an unset `user` is the only thing a mono-tenant spawn ever
+   * sees — the spawn path then stays byte-for-byte what it was.
+   */
+  user?: string | null;
+  /**
+   * The HOME directory of the drop `user`. `setpriv` changes the uid but not
+   * `$HOME`, so without this a dropped agent keeps the server's `HOME=/root` and
+   * never reaches its per-group `~/.claude` (auth + skills break). Only ever set
+   * alongside `user`; when `user` is unset this is ignored and HOME is left as
+   * today. See `dropEnv` (`src/osusers.ts`).
+   */
+  home?: string | null;
+  /**
+   * The shared subscription token, injected as CLAUDE_CODE_OAUTH_TOKEN in the
+   * forced-last layer. Honoured only together with `user` (see `forcedEnv`).
+   */
+  oauthToken?: string;
+  /**
+   * The server's gh token, injected as GH_TOKEN for a DROPPED agent (whose
+   * `GH_CONFIG_DIR` is pointed at its own writable dir, away from the server's
+   * unreachable `/root/.claude/gh`). Honoured only together with `user`.
+   */
+  ghToken?: string;
 }
 
 export interface WaitOptions {
@@ -61,6 +127,14 @@ export interface WaitIdleOptions extends WaitOptions {
    * effect on the next one instead of at the next turn.
    */
   stableMs?: number | (() => number);
+  /**
+   * Names the dialog on a screen (`null` = none). When given, the wait ALSO
+   * ends once the same dialog has held for `DIALOG_HOLD_MS`, even if the screen
+   * never stops moving — a dialog can carry a per-second countdown, and then
+   * `stableMs` is never met (see `settleStep`). The pilots stay ignorant of what
+   * a dialog is; the caller, which owns that policy, supplies the reading.
+   */
+  settleOn?: (screen: string) => string | null;
 }
 
 
@@ -100,17 +174,31 @@ export class PtyPilot {
     for (const [k, v] of Object.entries(process.env)) {
       if (v === undefined) continue;
       if (/^(CLAUDE|CLAUDECODE|AI_AGENT)/.test(k)) continue;
+      if (isAgentCredentialVar(k)) continue;
       env[k] = v;
     }
-    this.proc = pty.spawn(this.opts.claudePath ?? "claude", this.opts.args ?? [], {
+    // Drop to the target group's OS user when one is set (node-pty has no uid
+    // option, so we wrap the command in setpriv). `user` is only ever set in
+    // multi-tenant — the gate lives in `makePilot` — so this branch is dead in
+    // mono-tenant and the spawn below is unchanged.
+    const bin0 = this.opts.claudePath ?? "claude";
+    const args0 = this.opts.args ?? [];
+    const drop = this.opts.user ? dropArgv(this.opts.user, bin0, args0) : null;
+    this.proc = pty.spawn(drop ? drop.cmd : bin0, drop ? drop.argv : args0, {
       name: "xterm-256color",
       cols: this.opts.cols,
       rows: this.opts.rows,
       cwd: this.opts.cwd ?? process.cwd(),
+      // `dropEnv` sets HOME/USER/LOGNAME to the drop user's own when we are
+      // dropping privilege: setpriv changes the uid but not $HOME, so without
+      // this the agent keeps the server's HOME=/root and never reaches its
+      // per-group ~/.claude (auth + skills break). It goes AFTER `...env` (the
+      // inherited process env, which carries the server's HOME) so it overrides
+      // it, and is `{}` when no user is set, so the mono-tenant env is unchanged.
       // FORCED_CLAUDE_ENV goes LAST, after the profile's secrets: a transcript
       // is what the cockpit is made of, so nothing a profile carries may switch
       // it off, even by accident of naming.
-      env: { ...env, TERM: "xterm-256color", ...this.opts.env, ...FORCED_CLAUDE_ENV },
+      env: spawnEnv(this.opts, env),
     });
     this.proc.onData((chunk) => {
       this.lastDataAt = Date.now();
@@ -181,22 +269,30 @@ export class PtyPilot {
    * verify the message actually went through (spinner visible or "❯ …"
    * echo in the transcript), with retries.
    */
-  async submit(text: string): Promise<void> {
+  async submit(text: string, prelude?: string | string[]): Promise<void> {
     const typed = await typeIntoBox(
       {
+        screen: () => this.screen(),
         paste: (t) => this.write(`\x1b[200~${t}\x1b[201~`),
         clearInput: () => this.write("\x15"), // Ctrl-U
+        hardClear: () => this.press("ctrl-c"),
         waitFor: (p, o) => this.waitFor(p, o),
       },
       text,
+      { prelude },
     );
     if (!typed) {
       throw this.submitError("the text never appeared in the input box");
     }
     await sleep(200);
-    // Sent once the input box is empty again (or the spinner is up) — robust to
-    // the bracketed-paste race and to collapsed pastes.
-    const submitted = (s: string) => screenShowsWork(s) || inputText(s) === "";
+    // Sent once the input box is empty again (or the spinner is up). Requiring
+    // it to be truly empty makes the Enter retry robust to the bracketed-paste
+    // race, and works for collapsed pastes (whose text is never on screen).
+    // The WHOLE box, not its first line: a prompt that wrapped leaves its tail
+    // on continuation lines, and `inputText` would read the emptied first line
+    // as a box that is gone while the rest of the message is still sitting
+    // there, unsent.
+    const submitted = (s: string) => screenShowsWork(s) || boxText(s) === "";
     for (let attempt = 0; attempt < 3; attempt++) {
       this.press("enter");
       try {
@@ -262,15 +358,25 @@ export class PtyPilot {
   async waitForIdle({
     stableMs = 1_500,
     timeoutMs = 600_000,
+    settleOn,
   }: WaitIdleOptions = {}): Promise<string> {
     const deadline = Date.now() + timeoutMs;
     let lastScreen = "";
     let stableSince = 0;
+    let lastKey: string | null = null;
+    let keySince = 0;
     while (Date.now() < deadline) {
       if (this.exited) throw new Error("The claude process has exited.");
       const s = this.screen();
-      const step = idleStep(s, lastScreen, stableSince, Date.now(), windowMs(stableMs));
+      const now = Date.now();
+      const step = idleStep(s, lastScreen, stableSince, now, windowMs(stableMs));
       if (step.done) return s;
+      if (settleOn) {
+        const settle = settleStep(s, settleOn(s), lastKey, keySince, now, DIALOG_HOLD_MS);
+        if (settle.done) return s;
+        lastKey = settle.lastKey;
+        keySince = settle.since;
+      }
       stableSince = step.stableSince;
       lastScreen = step.lastScreen;
       await sleep(150);
@@ -308,6 +414,12 @@ export class PtyPilot {
 
   kill(): void {
     this.proc?.kill();
+  }
+
+  /** Twin of `TmuxPilot.abandon`. A PTY dies with us and can never be adopted
+   *  again, so there is nothing to spare. */
+  abandon(): void {
+    this.kill();
   }
 }
 

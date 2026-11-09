@@ -34,7 +34,7 @@ export function profileBlurb(profile) {
 /**
  * The access badge: what this profile may change, read off what its deny
  * blocks. A file deny is read for its SCOPE as well as its presence — a
- * blanket `Write` stops everything, `Write(src/**)` stops the source and
+ * blanket `Write` stops everything, `Edit(src/**)` stops the source and
  * leaves the deliverable (a test, a spec, a draft) writable.
  */
 function access(deny, gitBlocked, files) {
@@ -176,7 +176,7 @@ export function applyReadonlyPreset(deny, on, preset) {
  * every boot and has its own CTA: offering it as an ordinary role promises a
  * customisation the next restart will erase.
  */
-export const MANAGED_PROFILES = ["Shadok-Tweak"];
+export const MANAGED_PROFILES = ["Shadok-Tweak", "Shadok-Skillsmith"];
 
 export function isManagedProfile(name) {
   return MANAGED_PROFILES.includes(String(name ?? "").trim());
@@ -200,7 +200,13 @@ export function profileSaveBody(form, state) {
     name: form.name,
     deny: form.deny ?? [],
     model: form.model ?? "",
+    // "" is the sentinel for "no --effort flag"; the server refuses anything
+    // that is neither that nor a known level.
+    effort: form.effort ?? "",
     secrets: form.secrets ?? [],
+    // Always sent: PUT /profiles rebuilds the profile from the body, so an
+    // absent field would silently drop the role's MCP servers.
+    mcpServers: form.mcpServers,
   };
   if (!state.tracked || state.forked) body.systemPrompt = form.prompt ?? "";
   return body;

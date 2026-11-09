@@ -59,3 +59,35 @@ hold for every consumer at once (the web and Telegram go through the same
 - Making the sentinel configurable: a hardcoded string is enough and documents
   itself in the pilot prompt.
 - Reporting "this turn said nothing" in the UI: the silence is the point.
+
+## Refinement — the trailing sign-off (*2026-11-04*)
+
+A monitoring agent produced a real answer and then put the sentinel on its own
+**last line** (a single block: `"…nothing it should carry.\n\nNOTHING TO SHOW"`).
+`isNothingToShow` is whole-block, so the block was neither dropped nor cleaned —
+and the marker leaked into the chat. Reported from the live cockpit, screenshot
+in hand.
+
+The rule the admin asked for is the safe one: **strip the sentinel only when it
+is at the END of the message; keep it if it is in the middle.** A trailing marker
+is an accidental sign-off; a mid-message one is text the agent chose to show
+(explaining the convention, quoting a sibling) — the same invariant-2 line the
+whole-block predicate already walks.
+
+```ts
+const TRAILING_NOTHING_TO_SHOW = /\n[ \t*_`]*nothing to show[ \t*_`.!]*\s*$/i;
+export function stripTrailingNothingToShow(text: string): string; // src/tail.ts
+```
+
+The marker must be its **own trailing line** (same emphasis / dot tolerance), so
+`…so there was nothing to show.` inside a sentence is untouched. The block is
+reached only after `isNothingToShow` has already handled the whole-block case, so
+the strip can never empty it — the content above the marker is real, the turn is
+**not** silent, and a parent is still notified (the `src/server.ts` notify guard
+keeps using whole-block `isNothingToShow`, deliberately: a child that *did* work
+should wake its parent). Applied on the same three paths as the whole-block drop;
+the `index.html` live-preview copy mirrors the regex (no bundler).
+
+New tests: `test/tail.test.ts` (trailing stripped / mid-message kept / inline
+prose kept, plus the pure helper) and `test/extract.test.ts` (a replayed history
+turn ends with the answer, not the marker).
