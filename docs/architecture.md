@@ -1881,8 +1881,14 @@ the public ones. Every surface (agent list, files, secrets, ledger, spawn, drive
 talk) is that rule applied again.
 
 `channel.group` is a **server-owned** string id (`SERVER_OWNED` in `channels.ts`,
-like `profile`), resolved against a typed `Group` object; a browser `PUT
-/channels` cannot move an agent between groups.
+like `profile`), resolved against a typed `Group` object. A browser `PUT
+/channels` may move an agent only where the move changes nothing about the
+running process: between public groups and Main, which all share the commons
+user (`groupMoveRefusal`, passed to `mergeChannels` as `mayMove`). Into or out of
+a Private or Personal group is refused, since the agent's process, home and
+transcripts belong to the user it was born as. The drop says why at once
+(`public/group-nav.js`' twin of the rule) instead of letting the tab slide back
+on the next sync. Mono-tenant groups are cosmetic and always move.
 
 ### Capable or mono-tenant
 

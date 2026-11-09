@@ -201,7 +201,8 @@ test("wiring: restart-all, DELETE /channel and PUT /channels are group-gated", (
   const del = route("delete", "/channel");
   assert.ok(del.indexOf("httpMayDrive(req, id)") > 0 && del.indexOf("httpMayDrive(req, id)") < del.indexOf("endChannel("));
   const put = route("put", "/channels");
-  assert.ok(put.includes("mergeClientChannels(body, live, canSee)"));
+  assert.ok(put.includes("mergeClientChannels(body, live, canSee, mayMove)"));
+  assert.ok(put.includes("groupMoveRefusal(prev.group ?? null, to, groupsNow, viewer)"), "a move is gated by the wall rule");
   assert.ok(put.includes("res.json(merged.filter(canSee))"), "the reply must not list rows the caller cannot see");
   assert.ok(!put.includes("channels: loadChannels()"), "nor the 409 reply");
 });

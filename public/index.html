@@ -3213,6 +3213,14 @@
     #emptyState .es-shadok, header .brand-logo.speaking svg { animation: none; }
     .sk-say { transition: none; }
   }
+  /* The "this agent can't move there" notice (see moveNotice). */
+  .move-notice {
+    position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%);
+    max-width: min(520px, 92vw); z-index: 200; padding: 10px 14px; border-radius: 10px;
+    background: var(--panel, #1b1d22); color: var(--text, #e8e8ea);
+    border: 1px solid var(--amber, #d9a441); box-shadow: 0 8px 30px rgba(0,0,0,.35);
+    font-size: 13px; line-height: 1.4; cursor: pointer;
+  }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a light-preferring viewer never sees a
@@ -4344,7 +4352,7 @@
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
   window.samePrompt = samePrompt;
-  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget } from "/group-nav.js?v=__ASSET_V__";
+  import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget, groupMoveRefusal } from "/group-nav.js?v=__ASSET_V__";
   window.GROUP_ICONS = GROUP_ICONS;
   window.UNGROUPED = UNGROUPED;
   window.randomGroupIcon = randomGroupIcon;
@@ -4354,6 +4362,7 @@
   window.reconcileTabGroup = reconcileTabGroup;
   window.groupIsDirty = groupIsDirty;
   window.focusTarget = focusTarget;
+  window.groupMoveRefusal = groupMoveRefusal;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
@@ -4556,6 +4565,9 @@
       return { move: true, synced: srv };
     },
     groupIsDirty: (local, synced) => synced === undefined || (local ?? null) !== synced,
+    // A drop is a user gesture, long after the module lands; allowing it here
+    // costs nothing — the server enforces the same rule (src/groups.ts).
+    groupMoveRefusal: () => null,
     // A group switch is a user click, long after the module lands; the stub
     // mirrors the real "remembered-or-first" so even a race keeps today's
     // top-agent fallback.
@@ -6111,12 +6123,30 @@
   let dragTabEl = null;
   let dragTabHome = null;
   let dragGroupEl = null;
-  // On a capable (multi-tenant) instance `channel.group` is SERVER_OWNED, set at
-  // spawn from identity: a cross-group drop would only LIE (the server ignores
-  // it, and a private agent would look like it sits in the commons). Reordering
-  // inside its own group stays free; mono-tenant groups are cosmetic and move.
+  // On a capable (multi-tenant) instance a group's nature decides the OS user an
+  // agent runs as, so a move is allowed only where it changes nothing about the
+  // running agent: between public groups and Main (all the commons user), never
+  // into or out of a Private/Personal one (`groupMoveRefusal`, enforced again by
+  // the server). Mono-tenant groups are cosmetic and always move.
+  const zoneGroup = (zone) => (zone && zone._group) || groups.find((g) => g.bodyEl === zone) || null;
+  function tabMoveRefusal(zone) {
+    if (groupCapable !== true || !dragTabHome || zone === dragTabHome) return null;
+    return window.groupMoveRefusal(zoneGroup(dragTabHome), zoneGroup(zone));
+  }
   function tabMoveAllowed(zone) {
-    return groupCapable !== true || !dragTabHome || zone === dragTabHome;
+    return tabMoveRefusal(zone) === null;
+  }
+  // The refusal is SAID, on the drop: a drag that simply does not move reads as
+  // a broken UI. One notice at a time, gone after a few seconds or on click.
+  function moveNotice(text) {
+    document.querySelectorAll(".move-notice").forEach((n) => n.remove());
+    const n = document.createElement("div");
+    n.className = "move-notice";
+    n.setAttribute("role", "status");
+    n.textContent = text;
+    n.addEventListener("click", () => n.remove());
+    document.body.appendChild(n);
+    setTimeout(() => n.remove(), 7000);
   }
 
   function endDrag() {
@@ -6172,6 +6202,11 @@
   });
   tabbar.addEventListener("drop", (e) => {
     if (dragTabEl || dragGroupEl) e.preventDefault();
+    if (!dragTabEl) return;
+    const head = e.target.closest(".group-head");
+    const zone = head ? head.parentNode._group.bodyEl : e.target.closest(".tab")?.parentNode || e.target.closest("#ungrouped, .group-body");
+    const why = zone && tabMoveRefusal(zone);
+    if (why) moveNotice(why);
   });
 
   // ── Groups column (two-column navigation) ──────────────
@@ -6432,7 +6467,9 @@
       e.preventDefault();
       if (!dragTabEl) return;
       const body = group ? group.bodyEl : ungroupedEl;
-      if (dragTabEl.parentNode !== body && tabMoveAllowed(body)) body.appendChild(dragTabEl);
+      const why = dragTabEl.parentNode !== body ? tabMoveRefusal(body) : null;
+      if (why) moveNotice(why);
+      else if (dragTabEl.parentNode !== body) body.appendChild(dragTabEl);
       endDrag();
     });
     return item;

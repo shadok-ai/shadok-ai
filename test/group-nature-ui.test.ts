@@ -180,12 +180,15 @@ function fnBlock(name: string): string {
   return html.slice(i, i + 1500);
 }
 
-test("cross-group tab drops are no-ops on a capable instance", () => {
-  const g = fnBlock("function tabMoveAllowed(zone)");
-  assert.match(g, /groupCapable !== true/);
+test("cross-group tab drops follow groupMoveRefusal on a capable instance, and a refusal is said", () => {
+  const g = fnBlock("function tabMoveRefusal(zone)");
+  assert.match(g, /groupCapable !== true/); // mono-tenant: cosmetic groups always move
+  assert.match(g, /window\.groupMoveRefusal\(/);
+  assert.match(fnBlock("function tabMoveAllowed(zone)"), /tabMoveRefusal\(zone\) === null/);
   const dnd = html.slice(html.indexOf('tabbar.addEventListener("dragover"'), html.indexOf("// ── Groups column"));
-  assert.equal((dnd.match(/tabMoveAllowed\(/g) || []).length, 3);
-  assert.match(html, /dragTabEl\.parentNode !== body && tabMoveAllowed\(body\)/);
+  assert.equal((dnd.match(/tabMoveAllowed\(/g) || []).length, 3); // every dragover target is checked
+  assert.match(dnd, /if \(why\) moveNotice\(why\);/); // the column's drop says why
+  assert.match(html, /const why = dragTabEl\.parentNode !== body \? tabMoveRefusal\(body\) : null;\s*if \(why\) moveNotice\(why\);/);
 });
 
 test("walled group x routes to DELETE /groups; public keeps dissolveGroup", () => {
