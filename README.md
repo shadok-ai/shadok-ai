@@ -344,7 +344,8 @@ Enter to skip; you can add it later from the web UI).
     pushes, and its changes show up in the document. Two buttons, no versions
     to manage: **Save draft** keeps your edits while agents keep running the
     last saved skill, and **Save** makes it what they run (`POST
-    …/publish`). Idle agents already running it reload onto it at once; the
+    …/publish`) in every group it is shared with that you belong to (a group
+    you cannot see accepts it when one of its people saves). Idle agents already running it reload onto it at once; the
     others pick it up at their next reload.
   - **Running.** A saved skill is loaded (with `--plugin-dir`, as
     `<name>:<name>`) by every agent it is shared with. To run it on a schedule,

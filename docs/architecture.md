@@ -1620,9 +1620,14 @@ business — it is set from the agent, never from the skill.)
 - *Acceptance is per group.* Multi-tenant, an agent's releases must be accepted
   for its isolation group (`factoryAgentGroup` in `server.ts`); mono-tenant it is
   always `main`, since a channel's `group` there is a folder. A person accepts
-  for their own spawn group (or one they can see) — Save in the editor is how a
-  person of another group the skill is shared with accepts it for theirs.
-  `sharedWith` treats `main` in users/editors as everyone.
+  for their own spawn group (or one they can see). Save in the editor accepts
+  for EVERY group the skill reaches and the saver may act for
+  (`publishGroups`: shared with it, inside a `groups:` scope, `mayActForGroup`),
+  not only their spawn group — it used to accept for that one group, so on a
+  multi-tenant instance a skill shared with everyone ran in Main and in no other
+  group, with no screen to accept it there. A group the saver cannot see (another
+  person's private group) is never accepted for; a person of that group does it
+  by saving. `sharedWith` treats `main` in users/editors as everyone.
 - *Tenancy.* The `GET /factory/skills` agent list (and each skill's
   `attachedTo`, the agents that have it) and the publish reloads only touch
   agents the caller may drive (`mayDrive`, the `/diff` boundary), and a Save
