@@ -11,7 +11,9 @@
 const TOKEN_RE = /^sk-ant-oat01-[A-Za-z0-9_-]{20,}$/;
 
 export function normalizePastedToken(raw: unknown): { ok: true; token: string } | { ok: false; error: string } {
-  const token = typeof raw === "string" ? raw.trim() : "";
+  // ALL whitespace, not just the ends: a terminal wraps a ~110-char token, and
+  // copying it back drags a newline into the middle. The shape has none.
+  const token = typeof raw === "string" ? raw.replace(/\s+/g, "") : "";
   if (!token) return { ok: false, error: "paste the token first" };
   if (TOKEN_RE.test(token)) return { ok: true, token };
   return {

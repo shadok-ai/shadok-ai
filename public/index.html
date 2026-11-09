@@ -3969,8 +3969,9 @@
   window.envVarAsks = envVarAsks;
   import { claudeUpdateState } from "/update-ready.js?v=__ASSET_V__";
   window.claudeUpdateState = claudeUpdateState;
-  import { connectCardPlan } from "/connect-card.js?v=__ASSET_V__";
+  import { connectCardPlan, sameConnectTarget } from "/connect-card.js?v=__ASSET_V__";
   window.connectCardPlan = connectCardPlan;
+  window.sameConnectTarget = sameConnectTarget;
   import { buildMessageLink, parseMessageLink, samePrompt } from "/deep-link.js?v=__ASSET_V__";
   window.buildMessageLink = buildMessageLink;
   window.parseMessageLink = parseMessageLink;
@@ -4147,6 +4148,7 @@
     accountExpiryLine: () => null,
     // Before the module lands, never open the Connect card on a guess.
     connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
+    sameConnectTarget: () => false,
     // No module → no link button, and a link opened before it lands is read
     // again on `shadok-bridge-ready`.
     buildMessageLink: () => null,
@@ -13533,7 +13535,10 @@
   // the three server flows behind it — the instance sign-in (/auth/*), the
   // long-lived token (/mt-token/*) and a space's own login (/agent-login/*).
   // The browser only ever sees {url} and {ok}: no credential reaches the page.
-  let cx = { plan: null, flow: null, user: null, dur: "login", fromChoose: false, url: "", started: false };
+  // `seq` identifies the current flow: closing the card or starting another
+  // bumps it, so a start whose POST resolves afterwards knows it is stale and
+  // cancels its own server child instead of leaving it waiting on stdin.
+  let cx = { plan: null, flow: null, user: null, dur: "login", fromChoose: false, url: "", started: false, seq: 0 };
   let authDismissable = false;
 
   const cxIsAdmin = () => !me || me.role === "admin";
@@ -13564,8 +13569,11 @@
 
   function openConnectCard(plan) {
     if (!$("authOverlay").hidden && !authDismissable) return;   // the funnel is already on screen
+    // The same card again (several tabs restoring, a second refused spawn):
+    // restarting it would kill the child whose code the admin is typing.
+    if (!$("authOverlay").hidden && window.sameConnectTarget(cx.plan, plan)) return;
     cxCancel();
-    cx = { plan, flow: plan.flow, user: plan.user, dur: "login", fromChoose: false, url: "", started: false };
+    cx = { plan, flow: plan.flow, user: plan.user, dur: "login", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
     authDismissable = plan.dismissable;
     $("authClose").hidden = !plan.dismissable;
     $("authMsg").hidden = true;
@@ -13579,8 +13587,13 @@
   // banner (force), and "Another model" (mode "other").
   function openAuthCard(force = false, mode = "claude") {
     if (mode === "other") {
-      openConnectCard({ open: true, step: "authorise", flow: "instance", user: null, dismissable: true });
+      // The backend form only: no sign-in child is started behind it.
       cxCancel();
+      cx = { plan: null, flow: null, user: null, dur: "login", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+      authDismissable = true;
+      $("authClose").hidden = false;
+      $("authMsg").hidden = true;
+      $("authOverlay").hidden = false;
       cxShow("other");
       loadBackendForm();
       return;
@@ -13599,12 +13612,16 @@
   // Cancel whatever OAuth child the server holds for this card, so none is left
   // waiting on stdin.
   function cxCancel() {
+    cx.seq++;   // any start still in flight is now stale
     if (!cx.started) return;
     cx.started = false;
+    cxCancelFlow(cx.flow, cx.user);
+  }
+  function cxCancelFlow(flow, user) {
     const json = { "Content-Type": "application/json" };
-    if (cx.flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
-    else if (cx.flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
-    else if (cx.flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user: cx.user }) }).catch(() => {});
+    if (flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    else if (flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
+    else if (flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user }) }).catch(() => {});
   }
 
   function cxPickDur(dur) {
@@ -13649,8 +13666,9 @@
     $(id).addEventListener("click", (e) => { e.preventDefault(); cxCancel(); cxShow("other"); loadBackendForm(); });
   $("cxOtherBack").addEventListener("click", (e) => {
     e.preventDefault();
-    if (cx.plan && cx.plan.step === "choose") cxShow("choose");
-    else cxStartAuthorise(cx.plan ? cx.plan.flow : "instance", cx.user, false);
+    if (!cx.plan) { authDismissable = true; closeAuthCard(); }   // opened from "Model backend…"
+    else if (cx.plan.step === "choose") cxShow("choose");
+    else cxStartAuthorise(cx.plan.flow, cx.plan.user, false);
   });
   $("cxBack").addEventListener("click", (e) => { e.preventDefault(); cxCancel(); $("authMsg").hidden = true; cxShow("choose"); });
   $("cxAskOk").addEventListener("click", closeAuthCard);
@@ -13663,6 +13681,8 @@
   };
 
   async function cxStartAuthorise(flow, user, fromChoose) {
+    cxCancel();   // never two children: the previous flow goes first
+    const seq = cx.seq;
     cx.flow = flow;
     cx.user = user || null;
     cx.fromChoose = fromChoose;
@@ -13691,6 +13711,9 @@
       const r = await (await fetch(CX_FLOWS[flow].start, {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
       })).json();
+      // Closed, or another flow started, while this POST was in flight: the
+      // child it created belongs to nobody — cancel it rather than orphan it.
+      if (seq !== cx.seq) { if (r && r.url) cxCancelFlow(flow, user || null); return; }
       cx.started = true;
       // The server has the last word: an instance that turns out to be signed
       // in spawns nothing and says so.

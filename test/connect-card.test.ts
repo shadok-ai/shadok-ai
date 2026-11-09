@@ -64,3 +64,12 @@ test("a logged-out refusal on mono opens the instance sign-in", () => {
 test("no connect field at all (old server) stays closed", () => {
   assert.deepEqual(connectCardPlan({ connect: undefined, isAdmin: true }), closed);
 });
+
+test("sameConnectTarget: a second refusal for the card already open changes nothing", async () => {
+  const { sameConnectTarget } = await import("../public/connect-card.js");
+  const a = { open: true, step: "authorise", flow: "login", user: "sk-abc", dismissable: true };
+  assert.equal(sameConnectTarget(a, { ...a }), true);
+  assert.equal(sameConnectTarget(a, { ...a, user: "sk-other" }), false);
+  assert.equal(sameConnectTarget(a, { ...a, flow: "token" }), false);
+  assert.equal(sameConnectTarget(null, a), false);
+});

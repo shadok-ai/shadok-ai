@@ -24,3 +24,8 @@ test("the refusal never echoes what was pasted", () => {
     assert.ok(!r.error.includes(raw));
   }
 });
+
+test("a token wrapped across lines by a terminal is joined back", () => {
+  const half = good.length >> 1;
+  assert.deepEqual(normalizePastedToken(good.slice(0, half) + "\n  " + good.slice(half)), { ok: true, token: good });
+});

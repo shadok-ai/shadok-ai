@@ -39,8 +39,9 @@ test("closing is gated on dismissable AND cancels the server flow", () => {
   assert.match(body, /if\s*\(\s*!authDismissable\s*\)\s*return/, "must no-op when the card is the signed-out funnel");
   assert.match(body, /cxCancel\(\)/, "must cancel the pending flow");
   // …and the cancel reaches every server flow the card can run.
-  const c = HTML.match(/function cxCancel\(\)\s*\{([\s\S]*?)\n\s{2}\}/);
-  assert.ok(c, "expected a cxCancel() function");
+  // cxCancel delegates to cxCancelFlow, which a stale in-flight start also uses.
+  const c = HTML.match(/function cxCancelFlow\([^)]*\)\s*\{([\s\S]*?)\n\s{2}\}/);
+  assert.ok(c, "expected a cxCancelFlow() function");
   assert.match(c![1], /fetch\(\s*["']\/auth\/login["']\s*,\s*\{\s*method:\s*["']DELETE["']/, "cancels the instance sign-in child");
   assert.match(c![1], /fetch\(\s*["']\/mt-token["']\s*,\s*\{\s*method:\s*["']DELETE["']/, "cancels the token mint");
   assert.match(c![1], /fetch\(\s*["']\/agent-login["']\s*,\s*\{\s*method:\s*["']DELETE["']/, "cancels a space login");
@@ -53,4 +54,19 @@ test("Escape only closes a dismissable auth card", () => {
     /authOverlay"\)\.hidden\s*&&\s*authDismissable\s*\)\s*\{\s*closeAuthCard\(\)/,
     "the Escape cascade must gate the auth card on authDismissable",
   );
+});
+
+test("the Model backend entry opens the form without starting any OAuth child", () => {
+  const m = HTML.match(/function openAuthCard\([^)]*\)\s*\{([\s\S]*?)\n\s{2}\}/);
+  assert.ok(m, "expected openAuthCard()");
+  const other = m![1].slice(0, m![1].indexOf("checkAuth("));
+  assert.doesNotMatch(other, /openConnectCard\(|cxStartAuthorise\(/, "mode \"other\" must not start a sign-in");
+});
+
+test("a start superseded while in flight cancels its own child", () => {
+  const m = HTML.match(/async function cxStartAuthorise\([^)]*\)\s*\{([\s\S]*?)\n\s{2}\}/);
+  assert.ok(m, "expected cxStartAuthorise()");
+  assert.match(m![1], /cxCancel\(\)/, "a new start cancels the previous flow first");
+  assert.match(m![1], /seq\s*!==\s*cx\.seq/, "a start resolved after close/supersede is detected");
+  assert.match(m![1], /cxCancelFlow\(/, "…and its child is cancelled");
 });

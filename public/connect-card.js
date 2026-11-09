@@ -43,3 +43,9 @@ export function connectCardPlan({ connect, backend, isAdmin, refusal = null, for
   }
   return CLOSED;
 }
+
+/** Is `next` the card already on screen (same step, flow and space)? A second
+ *  refusal for it must not restart the flow under an admin typing the code. */
+export function sameConnectTarget(cur, next) {
+  return !!cur && !!next && cur.step === next.step && cur.flow === next.flow && (cur.user ?? null) === (next.user ?? null);
+}
