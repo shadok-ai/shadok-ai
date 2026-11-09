@@ -68,12 +68,13 @@ test("panelGroupOptions: restricted/private listed individually, public groups c
     { id: "comex", name: "COMEX", nature: "restricted" },
     { id: "ada", name: "Ada", nature: "private" },
   ];
+  // Public first, then Personal, then the restricted groups.
   assert.deepEqual(panelGroupOptions(groups), [
-    { value: "comex", label: "COMEX" },
+    { value: PUBLIC_BUCKET, label: "Public" },
     // A private group is labelled "Personal", not its raw name — so it never
     // collides with a same-named restricted group and stays selectable.
     { value: "ada", label: "Personal" },
-    { value: PUBLIC_BUCKET, label: "Public groups" },
+    { value: "comex", label: "COMEX" },
   ]);
   // A private group named the same as a restricted one gets a DISTINCT label.
   assert.deepEqual(
@@ -82,13 +83,13 @@ test("panelGroupOptions: restricted/private listed individually, public groups c
       { id: "t2", name: "test", nature: "private" },
     ]),
     [
-      { value: "t1", label: "test" },
+      { value: PUBLIC_BUCKET, label: "Public" },
       { value: "t2", label: "Personal" },
-      { value: PUBLIC_BUCKET, label: "Public groups" },
+      { value: "t1", label: "test" },
     ],
   );
   // Main alone is public: the bucket is always there (it holds Main's secrets).
-  assert.deepEqual(panelGroupOptions([main, comex]), [{ value: "comex", label: "COMEX" }, { value: PUBLIC_BUCKET, label: "Public groups" }]);
+  assert.deepEqual(panelGroupOptions([main, comex]), [{ value: PUBLIC_BUCKET, label: "Public" }, { value: "comex", label: "COMEX" }]);
   assert.deepEqual(panelGroupOptions(null), []);
 });
 

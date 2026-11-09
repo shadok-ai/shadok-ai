@@ -117,21 +117,25 @@ test("autonomous confirm: the exact copy for each scope", () => {
     "Agents in your Personal group will be able to post as Ada Lovelace without asking anyone.",
   );
   assert.equal(scopeText(sh({ groups: ["g1", "g2"] }), groups), "Marketing, Sales");
-  assert.equal(scopeText(sh({ everyone: true }), groups), "every shared group");
+  assert.equal(scopeText(sh({ everyone: true }), groups), "the public groups");
   assert.equal(scopeText(sh({ personal: true, groups: ["g1"], profiles: ["Writer"] }), groups), "your Personal group, Marketing (profile Writer only)");
   assert.equal(scopeText(sh({}), groups), "no group");
-  assert.equal(scopeText({ scope: "instance" }, groups), "every shared group", "a v1 share still reads");
+  assert.equal(scopeText({ scope: "instance" }, groups), "the public groups", "a v1 share still reads");
 });
 
-test("share boxes: Personal, the groups (not Main, not Personal groups), Everyone — combinable", () => {
+test("share chips: Public, Personal, then restricted groups — combinable", () => {
   const groups = [
     { id: "main", name: "Main", nature: "public" },
     { id: "g1", name: "Marketing", nature: "restricted" },
     { id: "p-ada", name: "Ada", nature: "private" },
   ];
   const c = shareChoices(groups, sh({ personal: true }));
-  assert.deepEqual(c.map((o: { label: string }) => o.label), ["Personal", "Marketing", "Everyone"]);
-  assert.deepEqual(c.map((o: { checked: boolean }) => o.checked), [true, false, false]);
+  assert.deepEqual(c.map((o: { label: string }) => o.label), ["Public", "Personal", "Marketing"]);
+  assert.deepEqual(c.map((o: { checked: boolean }) => o.checked), [false, true, false]);
+  // A public group is not a chip of its own: it IS the Public chip.
+  const withPub = [...groups, { id: "pub", name: "Open", nature: "public" }];
+  assert.deepEqual(shareChoices(withPub, sh({})).map((o: { label: string }) => o.label), ["Public", "Personal", "Marketing"]);
+  assert.deepEqual(normalizeShare(sh({ groups: ["pub", "g1"] }), withPub), sh({ everyone: true, groups: ["g1"] }));
   let s = toggleShare(sh({ personal: true }), "group:g1", true, groups);
   s = toggleShare(s, "everyone", true, groups);
   assert.deepEqual(s, sh({ personal: true, groups: ["g1"], everyone: true }));

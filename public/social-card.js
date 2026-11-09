@@ -75,10 +75,18 @@ export function normalizeShare(share, groups = []) {
   } else {
     out = { personal: s.personal === true, groups: list(s.groups), everyone: s.everyone === true, profiles: list(s.profiles) };
   }
-  const personalIds = new Set((Array.isArray(groups) ? groups : []).filter((g) => g && g.nature === "private").map((g) => String(g.id)));
+  const gl = Array.isArray(groups) ? groups : [];
+  const personalIds = new Set(gl.filter((g) => g && g.nature === "private").map((g) => String(g.id)));
   if (out.groups.some((id) => personalIds.has(id))) {
     out.personal = true;
     out.groups = out.groups.filter((id) => !personalIds.has(id));
+  }
+  // Every public group (Main included) is the same commons: one named in
+  // `groups` reads — and is saved back — as the Public chip.
+  const publicIds = new Set(["main", ...gl.filter((g) => g && g.nature === "public").map((g) => String(g.id))]);
+  if (out.groups.some((id) => publicIds.has(id))) {
+    out.everyone = true;
+    out.groups = out.groups.filter((id) => !publicIds.has(id));
   }
   return out;
 }
@@ -89,7 +97,7 @@ export function scopeText(share, groups) {
   const parts = [];
   if (s.personal) parts.push("your Personal group");
   for (const id of s.groups) parts.push(groupName(groups, id));
-  if (s.everyone) parts.push("every shared group");
+  if (s.everyone) parts.push("the public groups");
   if (!parts.length) return "no group";
   const where = parts.join(", ");
   return s.profiles.length ? `${where} (profile ${s.profiles.join(", ")} only)` : where;
@@ -102,23 +110,24 @@ export function autonomousConfirmText(account, groups) {
 }
 
 /**
- * The "Share with" checkboxes: Personal, each group the person can share into,
- * Everyone — any combination. `groups` is what GET /groups returned; Main is
- * left out (Everyone covers it) and so are Personal groups (the Personal box
- * is the owner's own). A stored group the list no longer carries keeps its box,
+ * The "Shared with" chips, in order: Public (Main and every public group — one
+ * commons), Personal (the owner's own), then each restricted group the person
+ * can share into — any combination. `groups` is what GET /groups returned. A stored group the list no longer carries keeps its box,
  * so the picker never silently drops it.
  */
 export function shareChoices(groups, share) {
   const s = normalizeShare(share, groups);
-  const list = (Array.isArray(groups) ? groups : []).filter((g) => g && g.id != null && String(g.id) !== "main" && g.nature !== "private");
-  const out = [{ key: "personal", label: "Personal", checked: s.personal }];
+  const list = (Array.isArray(groups) ? groups : []).filter((g) => g && g.id != null && g.nature === "restricted");
+  const out = [
+    { key: "everyone", label: "Public", checked: s.everyone },
+    { key: "personal", label: "Personal", checked: s.personal },
+  ];
   const seen = new Set();
   for (const g of list) {
     seen.add(String(g.id));
     out.push({ key: "group:" + g.id, label: g.name, checked: s.groups.includes(String(g.id)) });
   }
   for (const id of s.groups) if (!seen.has(id)) out.push({ key: "group:" + id, label: groupName(groups, id), checked: true });
-  out.push({ key: "everyone", label: "Everyone", checked: s.everyone });
   return out;
 }
 

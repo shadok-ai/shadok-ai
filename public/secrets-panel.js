@@ -29,18 +29,22 @@ function publicGroupIds(groups) {
  * Returns `{ value, label }[]`.
  */
 export function panelGroupOptions(groups) {
-  const out = [];
-  for (const g of Array.isArray(groups) ? groups : []) {
+  // Order: Public (all public groups, Main included, are one), Personal, then
+  // each restricted group — the same order as a connected account's chips.
+  if (!Array.isArray(groups) || !groups.length) return [];
+  const personal = [];
+  const restricted = [];
+  for (const g of groups) {
     if (!g || g.id == null) continue;
     const id = String(g.id);
     if (id === MAIN_ID || g.nature === "public") continue; // public → the bucket; main → the commons
     // A private group is the owner's sealed "Personal" space — label it that way
     // (as the rail does), never its raw name, which otherwise collides with a
     // same-named restricted group and makes the private one unselectable.
-    out.push({ value: id, label: g.nature === "private" ? "Personal" : g.name });
+    if (g.nature === "private") personal.push({ value: id, label: "Personal" });
+    else restricted.push({ value: id, label: g.name });
   }
-  if (Array.isArray(groups) && groups.length) out.push({ value: PUBLIC_BUCKET, label: "Public groups" });
-  return out;
+  return [{ value: PUBLIC_BUCKET, label: "Public" }, ...personal, ...restricted];
 }
 
 /** The concrete group a WRITE under "Public groups" lands in: the first public

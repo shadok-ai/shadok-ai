@@ -1863,7 +1863,7 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   list just stops narrowing it. Only a browser person can set it (the route
   refuses an agent key: widening a credential to agents nobody picked is a
   person's call, invariant 58), and `"*"` is refused as a profile name.
-  The panel's group selector always offers **Public groups** (Main is public):
+  The panel's group selector always offers **Public** first (Main and every public group are one commons), then Personal, then the restricted groups:
   a caller the write gate would let into Main (`canWriteSecretGroup`, i.e. an
   admin or a Main member) gets Main's secrets tagged `editable` with their
   profiles, and edits them there; everyone else still sees them as the

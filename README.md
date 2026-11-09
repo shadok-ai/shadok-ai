@@ -450,7 +450,7 @@ Enter to skip; you can add it later from the web UI).
   is the one on the card: the server keeps its own copy from the moment the
   agent drafts, so changing the file afterwards changes nothing. Each account has an
   **owner**, a **share** setting — any combination of the owner's *Personal*
-  group (the default), chosen groups and *Everyone* (Main and the public groups),
+  group (the default), chosen restricted groups and *Public* (Main and every public group, one commons),
   optionally narrowed to agents running given **profiles** — and a **policy** (`approve`, the default, or `autonomous`,
   which publishes at once — only the account's **owner** can switch it to
   `autonomous`). Every attempt — published, refused, expired,

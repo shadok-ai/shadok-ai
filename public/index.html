@@ -10767,7 +10767,7 @@
   // window value being loaded).
   const PUBLIC_BUCKET = "__public__";
   function groupName(id) {
-    if (String(id) === PUBLIC_BUCKET) return "Public groups";
+    if (String(id) === PUBLIC_BUCKET) return "Public";
     const g = vaultGroups.find((x) => String(x.id) === String(id));
     if (!g) return String(id);
     // Match the rail + the selector: a private group is the sealed "Personal"
