@@ -52,6 +52,7 @@ import { ensureClaudeHome, ensureProjectTrusted,
 } from "./claude-home.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
 import { connectVerdict, connectedState, type ConnectFacts } from "./connect-gate.js";
+import { normalizePastedToken } from "./token-paste.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
 import {
   startAgentLogin,
@@ -2544,7 +2545,38 @@ app.post("/mt-token/code", async (req, res) => {
     invalidateAuthStatus(); // so /auth re-reports longLived immediately
   }
   res.status(r.ok ? 200 : 400).json(r); // {ok} — never the token
+  if (r.ok) afterConnected();
 });
+
+// "I already have a token": a long-lived token minted elsewhere with
+// `claude setup-token`, pasted on the Connect Claude card. Same gate and same
+// vault slot as the in-cockpit mint; choosing it also means "1 year", so the
+// auth mode follows (agents restart only if it actually changed).
+app.post("/mt-token/paste", (req, res) => {
+  if (!mtTokenGate(req, res)) return;
+  const r = normalizePastedToken(req.body?.token);
+  if (!r.ok) return res.status(400).json({ ok: false, error: r.error });
+  setSecret(MT_CLAUDE_OAUTH_TOKEN_NAME, r.token, MAIN_GROUP_ID, "operator:paste");
+  mtTokenWarned = false;
+  invalidateAuthStatus();
+  const cfg = loadConfig();
+  if (agentAuthForCwd(cfg, process.cwd()) !== "token") {
+    setAgentAuthForCwd(cfg, process.cwd(), "token");
+    restartAllSessions();
+  }
+  res.json({ ok: true }); // never the token
+  afterConnected();
+});
+
+/**
+ * A connection just landed (token minted or pasted, commons login): this is
+ * where a fresh multi-tenant instance's lead agent is really born, exactly as
+ * `/auth/code` does for the root sign-in. Called AFTER answering the browser.
+ */
+function afterConnected(): void {
+  void startFirstAgent();
+  void maybeRunGroupsMigration("post-sign-in");
+}
 
 app.delete("/mt-token", (req, res) => {
   // Same gate as start/code: a cancel is still a write on a credential flow, so
@@ -2618,6 +2650,8 @@ app.post("/agent-login/code", async (req, res) => {
   if (!loginUsers().some((u) => u.user === user)) return res.status(400).json({ error: "unknown user" });
   const r = await submitAgentLoginCode(user, code);
   res.status(r.ok ? 200 : 400).json(r); // {ok} — never the credential
+  // Connecting the commons is how a "1 month" instance gets its lead agent.
+  if (r.ok && user === commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE })) afterConnected();
 });
 
 app.delete("/agent-login", (req, res) => {
