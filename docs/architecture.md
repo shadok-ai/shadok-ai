@@ -526,6 +526,20 @@ group already bound before this change stays bound.
 
 ## Profiles & secrets
 
+**Instance context** (`src/instance-context.ts`, design
+`docs/superpowers/specs/2026-11-09-instance-context-design.md`). One short text
+per launch directory (`config.instanceContext[cwd]`, ≤ 2,000 chars, never
+truncated) that every agent receives at spawn, after its role, as a `## This
+instance` section — nothing at all when empty. It shows in the pre-prompt panel
+but is left out of `prepromptFingerprint`, so one Save does not mark the fleet
+stale. Writes: `PUT /instance-context` (browser + admin, like `PUT /profiles`:
+every agent is told this text), and `PUT /instance-context/first` — the lead's
+ONLY door, `x-shadok-session-key`, home channel (`isHomeChannel`), and only while
+empty (`firstWriteVerdict`); clearing it re-arms that door. The lead uses it from
+the `shadok-instance-context` skill (stdin only), prompted by the first-run
+greeting (`instanceContextInterviewBrief`, two or three questions, language
+deduced from the answer) or by `POST /instance-context/draft` from the editor.
+
 - **Secret vault** (`src/secrets.ts`, `~/.shadok-ai/secrets.json`, mode 600) —
   central, name→value. Values live outside any repo.
 - **Secret audit log** (`src/secret-audit.ts`, `~/.shadok-ai/secret-audit.jsonl`,

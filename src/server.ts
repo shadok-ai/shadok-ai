@@ -52,6 +52,7 @@ import { ensureClaudeHome, ensureProjectTrusted,
 } from "./claude-home.js";
 import { mergeAppendedPrompts } from "./prompt-args.js";
 import { authStatus, cancelLogin, invalidateAuthStatus, startLogin, submitLoginCode } from "./claude-auth.js";
+import { instanceContextArgs, normalizeInstanceContext, firstWriteVerdict, INSTANCE_CONTEXT_MAX } from "./instance-context.js";
 import { connectVerdict, connectedState, type ConnectFacts } from "./connect-gate.js";
 import { normalizePastedToken } from "./token-paste.js";
 import { startSetupToken, submitSetupTokenCode, cancelSetupToken } from "./setup-token.js";
@@ -72,7 +73,7 @@ import {
   settleFirstAgent,
 } from "./first-agent.js";
 import { readGroundAt } from "./ground.js";
-import { homeGreetingBrief } from "./greeting.js";
+import { homeGreetingBrief, instanceContextInterviewBrief } from "./greeting.js";
 import { ensureSshIdentity, groupKeyRows, volumeKeyPaths } from "./ssh.js";
 import { accountsEnabled, deploymentMode, probeCanProvision } from "./capability.js";
 import {
@@ -286,6 +287,8 @@ import {
   applyTelegramPatch,
   titleForCwd,
   setTitleForCwd,
+  instanceContextForCwd,
+  setInstanceContextForCwd,
   themeForCwd,
   setThemeForCwd,
   mutedForCwd,
@@ -665,6 +668,7 @@ function greetHomeAgent(id: string): void {
         ground: readGroundAt(cwd),
         profiles: loadProfiles(),
         dirName: path.basename(cwd) || cwd,
+        instanceContextEmpty: !instanceContextForCwd(loadConfig(), cwd),
       }),
     );
   } catch (e) {
@@ -2319,6 +2323,67 @@ app.put("/title", (req, res) => {
   setTitleForCwd(loadConfig(), process.cwd(), raw);
   res.json({ title: titleForCwd(loadConfig(), process.cwd()) });
 });
+// The instance context (src/instance-context.ts): one short text per instance
+// that every agent receives at spawn. Humans edit it from the cockpit; the lead
+// agent writes it ONCE, while it is empty, at first run.
+app.get("/instance-context", (_req, res) => {
+  res.json({ text: instanceContextForCwd(loadConfig(), process.cwd()), max: INSTANCE_CONTEXT_MAX });
+});
+app.put("/instance-context", (req, res) => {
+  // Every agent is told this text, so only a human in the browser writes it
+  // (an agent's only door is the once-only route below) — like PUT /profiles.
+  if (!accountAdmin(req, res, true, "edit the instance context")) return;
+  const r = normalizeInstanceContext(req.body?.text);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  setInstanceContextForCwd(loadConfig(), process.cwd(), r.text);
+  res.json({ text: r.text });
+});
+app.put("/instance-context/first", (req, res) => {
+  const key = String(req.headers["x-shadok-session-key"] ?? "");
+  const id = localSessionForKey(req, key);
+  if (!id) return res.status(403).json({ error: "unknown or missing session key" });
+  const ch = loadChannels().find((c) => c.sessionId === id);
+  const refused = firstWriteVerdict({
+    isHome: !!ch && isHomeChannel(ch),
+    current: instanceContextForCwd(loadConfig(), process.cwd()),
+  });
+  if (refused) return res.status(409).json({ error: refused });
+  const r = normalizeInstanceContext(req.body?.text);
+  if (!r.ok) return res.status(400).json({ error: r.error });
+  if (!r.text) return res.status(400).json({ error: "the instance context is empty" });
+  setInstanceContextForCwd(loadConfig(), process.cwd(), r.text);
+  console.log(`instance context: written by the lead agent (${id.slice(0, 8)}, ${r.text.length} chars)`);
+  res.json({ ok: true });
+});
+// "Ask general to draft it" (the cockpit editor, context still empty): the lead
+// runs the same short interview the first-run greeting does, delivered as a
+// HIDDEN prompt over the loopback exactly like the greeting.
+app.post("/instance-context/draft", async (req, res) => {
+  if (!accountAdmin(req, res, true, "ask the lead agent to draft the instance context")) return;
+  if (instanceContextForCwd(loadConfig(), process.cwd()))
+    return res.status(409).json({ error: "the instance context is already set — edit it directly" });
+  const home = loadChannels().find((c) => isHomeChannel(c) && c.sessionId);
+  if (!home?.sessionId) return res.status(409).json({ error: "this cockpit has no lead agent to ask" });
+  const id = home.sessionId;
+  const brief = markAgentPrompt(
+    instanceContextInterviewBrief() +
+      "\n\nThe person just asked you, from the cockpit, to draft it now: ask your questions in one short message, " +
+      "then wait for their answer.",
+  );
+  // Answer only once it really landed: "asked" while the lead never heard it
+  // (busy for the whole retry window) would leave the person waiting in a chat
+  // that never asks anything.
+  const r = await deliverWithRetry(
+    () => driveChannel(id, brief, resolveSessionTarget(loadChannels(), id, process.cwd())),
+    // The lead may be dormant (no live process after a restart): driveChannel
+    // wakes it, so "still there" is the channel, not a live session.
+    () => loadChannels().some((c) => c.sessionId === id),
+  );
+  console.log(`instance context: draft request ${id.slice(0, 8)} — ${r.ok ? "delivered" : "not delivered"}`);
+  if (!r.ok) return res.status(503).json({ error: "the lead agent is busy or unreachable right now — try again in a moment" });
+  res.json({ ok: true, agent: home.name ?? null });
+});
+
 // Colour palette, per launch directory — an accent key ("emerald"…). The setter
 // validates against the known palettes; the default/unknown clears it.
 app.get("/theme", (_req, res) => {
@@ -3306,6 +3371,8 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // exactly what bit a migrated instance. test/system-skills.test.ts pins that
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
+  // The lead's once-only write of the instance context (src/instance-context.ts).
+  ["instance-context-skill", "shadok-instance-context"],
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
   // group's own OS user reads only this tier.
   ["factory-skill", "shadok-factory"],
@@ -6481,6 +6548,7 @@ function buildPreprompt(profileName?: string | null, groupId?: string | null, se
   return prepromptParts({
     profileName: profileName ?? null,
     role: resolved?.systemPrompt,
+    instanceContext: instanceContextForCwd(loadConfig(), process.cwd()),
     model: resolved?.model,
     deny: resolved?.deny,
     allow: resolved?.allow,
@@ -6945,6 +7013,11 @@ function makePilot(
     // after `--mcp-config`'s variadic JSON as a bare word.
     ...factory.args,
     ...profileArgs(resolvedProfile, spawnModel, effort),
+    // The instance context: right after the role (which stays first), before
+    // the cockpit's own notes. Nothing at all when it is empty. One more
+    // --append-system-prompt flag: it relies on the spawn merging them into ONE
+    // (mergeAppendedPrompts, PR #433), since Claude Code keeps only the last.
+    ...instanceContextArgs(instanceContextForCwd(loadConfig(), process.cwd())),
     ...(note ? ["--append-system-prompt", note] : []),
     ...(sp ? ["--append-system-prompt", sp] : []),
     ...(lr ? ["--append-system-prompt", lr] : []),
@@ -9653,6 +9726,24 @@ function seedFilesSkill(): void {
   }
 }
 if (SEED_SKILLS) seedFilesSkill();
+
+// The lead agent's once-only write of the instance context: seeded to the server
+// HOME like shadok-files (a root lead reads it there), and listed in
+// SKILL_SOURCES for the machine-wide tier a dropped lead reads.
+function seedInstanceContextSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "instance-context-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-instance-context");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "write.mjs"), path.join(dst, "scripts", "write.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "write.mjs"), 0o755);
+  } catch {
+    /* best effort — without it the lead says it cannot save, nothing breaks */
+  }
+}
+if (SEED_SKILLS) seedInstanceContextSkill();
 
 // The Skill Factory's agent side (pull / push / scan of a factory skill's clone).
 function seedFactorySkill(): void {

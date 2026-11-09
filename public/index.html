@@ -1981,6 +1981,7 @@
   @media (pointer: coarse) {
     textarea, select,
     input[type="text"], input[type="password"], input[type="number"], input[type="search"],
+    .ic-panel textarea,
     .cx-row input,
     #composer textarea { font-size: 16px; }
   }
@@ -2343,6 +2344,16 @@
   #secretsPanel .sec-head, .sec-panel .sec-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
   #secretsPanel .sec-head button, .sec-panel .sec-head button { background: none; border: none; color: inherit; font-size: 16px; cursor: pointer; }
   .sec-panel .sec-note { font-size: 12px; opacity: .65; margin: 6px 0 12px; }
+  .ic-panel textarea {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 140px;
+    background: var(--bg-inset); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 10px; font-family: var(--sans); line-height: 1.5;
+  }
+  .ic-row { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+  .ic-row .spacer { flex: 1; }
+  .ic-count { font-size: 11.5px; color: var(--text-dim); }
+  .ic-count.over { color: var(--err); }
+  .ic-link { color: var(--text); text-decoration: underline; text-decoration-color: var(--line); cursor: pointer; }
   .bk-form .field { margin: 10px 0; }
   .bk-form .bk-opt { opacity: .6; font-weight: normal; }
   .bk-form .bk-hint { font-size: 11px; color: var(--text-dim); min-height: 1em; }
@@ -2602,6 +2613,8 @@
     border-radius: 6px; color: inherit; font-family: inherit; padding: 5px 8px; }
   /* Same fine-pointer gate as the ledger's tools (invariant 28). */
   @media (pointer: fine) { #secAuditTools input, #secAuditTools select { font-size: 13px; } }
+  /* The instance-context editor: compact only for a mouse — on touch it would make Safari zoom (invariant 28). */
+  @media (pointer: fine) { .ic-panel textarea { font-size: 13px; } }
   #secAuditTools input { flex: 1 1 120px; min-width: 100px; }
   #secAuditTools .ldg-count { color: var(--text-dim); font-size: 11px; margin-top: 7px; }
   #secAuditList { list-style: none; margin: 0; padding: 0; }
@@ -3026,6 +3039,8 @@
        Multi-tenant + admin only; shown by renderAuthRows. -->
   <button class="vm-btn" id="agentAuthBtn" type="button" hidden>🔌 Agent auth &amp; connectors…</button>
   <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
+  <!-- The instance context every agent receives at spawn (src/instance-context.ts). -->
+  <button class="vm-btn" id="instanceContextBtn" type="button">🧭 Instance context…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
   <div class="vm-row"><span class="vm-label">Channel</span>
@@ -3681,6 +3696,24 @@
       </div>
     </div>
     <p class="sec-note" id="agentAuthMsg" hidden></p>
+  </div>
+</div>
+
+<!-- Instance context editor (src/instance-context.ts): the few lines every agent
+     on this cockpit receives at spawn, whatever its profile. -->
+<div id="icOverlay" class="overlay" hidden>
+  <div class="sec-panel ic-panel">
+    <div class="sec-head">
+      <strong>Instance context</strong>
+      <button id="icClose" type="button" title="Close" aria-label="Close">✕</button>
+    </div>
+    <p class="sec-note">What this cockpit is for, who works on it, its language — a handful of lines every agent here receives at spawn, on top of its role.</p>
+    <textarea id="icText" rows="8" spellcheck="true" placeholder="e.g. This instance runs side projects with a few friends, to try to get small businesses off the ground. Language: French in conversation; code and docs in English."></textarea>
+    <div class="ic-row"><span class="ic-count" id="icCount">0 / 2000</span><span class="spacer"></span>
+      <button type="button" id="icDraft" hidden>Ask general to draft it</button>
+      <button type="button" class="primary" id="icSave">Save</button></div>
+    <p class="sec-note" id="icMsg" hidden></p>
+    <p class="sec-note">Running agents see a change at their next reload. <a href="#" class="ic-link" id="icRestart">Restart all agents now</a></p>
   </div>
 </div>
 
@@ -8991,6 +9024,71 @@
   });
   // Change where agents get their model, any time — the same card, opened on
   // its "Another model" side, and dismissable since nothing is broken.
+  // ── Instance context editor ───────────────────────────────────────────────
+  // One text per instance, every agent gets it at spawn (src/instance-context.ts).
+  function icMsg(t) { $("icMsg").textContent = t || ""; $("icMsg").hidden = !t; }
+  function icCount() {
+    const n = $("icText").value.trim().length;
+    $("icCount").textContent = n + " / 2000";
+    // Over the cap is SHOWN, never silently cut: the server refuses it whole.
+    $("icCount").className = "ic-count" + (n > 2000 ? " over" : "");
+  }
+  async function openInstanceContext() {
+    verMenu.hidden = true;
+    icMsg("");
+    // Nothing editable until the stored text is here: a failed load must never
+    // look like an empty context that Save would then write back over it.
+    $("icText").value = "";
+    $("icText").disabled = true;
+    $("icSave").disabled = true;
+    $("icDraft").hidden = true;
+    $("icOverlay").hidden = false;
+    try {
+      const res = await fetch("/instance-context");
+      const r = res.ok ? await res.json() : null;
+      if (!r || typeof r.text !== "string") throw new Error("status " + res.status);
+      $("icText").value = r.text;
+      $("icDraft").hidden = !!r.text.trim();
+      $("icText").disabled = false;
+      $("icSave").disabled = false;
+      icCount();
+    } catch {
+      icMsg("✗ Could not load the instance context — close and try again.");
+    }
+  }
+  $("instanceContextBtn").addEventListener("click", openInstanceContext);
+  $("icClose").addEventListener("click", () => { $("icOverlay").hidden = true; });
+  $("icText").addEventListener("input", icCount);
+  $("icSave").addEventListener("click", async () => {
+    $("icSave").disabled = true;
+    try {
+      const res = await fetch("/instance-context", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: $("icText").value }) });
+      const r = await res.json().catch(() => ({}));
+      if (!res.ok) icMsg("✗ " + (r.error || "could not save"));
+      else {
+        $("icText").value = r.text || "";
+        $("icDraft").hidden = !!(r.text || "").trim();
+        icCount();
+        icMsg(r.text ? "✓ Saved. New agents get it; running ones at their next reload." : "✓ Cleared.");
+      }
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icSave").disabled = false; }
+  });
+  $("icDraft").addEventListener("click", async () => {
+    $("icDraft").disabled = true;
+    icMsg("Asking the lead agent…");
+    try {
+      const res = await fetch("/instance-context/draft", { method: "POST" });
+      const r = await res.json().catch(() => ({}));
+      if (res.ok) {
+        $("icDraft").hidden = true;   // asked once — a second click would send a second interview
+        icMsg("✓ " + (r.agent || "The lead agent") + " is asking you its questions — answer in its chat.");
+      } else icMsg("✗ " + (r.error || "could not ask"));
+    } catch { icMsg("✗ the cockpit did not answer"); }
+    finally { $("icDraft").disabled = false; }
+  });
+  $("icRestart").addEventListener("click", (e) => { e.preventDefault(); $("icOverlay").hidden = true; restartAllBtn.click(); });
+
   document.getElementById("backendBtn").addEventListener("click", () => {
     toggleVerMenu(false);
     openAuthCard(true, "other");
@@ -10554,6 +10652,7 @@
     if (!$("groupPanelOverlay").hidden) { $("groupPanelOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secretsOverlay").hidden) { $("secretsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("secAuditOverlay").hidden) { $("secAuditOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("icOverlay").hidden) { $("icOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("ledgerOverlay").hidden) { $("ledgerOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("usersOverlay").hidden) { $("usersOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("profilesOverlay").hidden) { closeProfilesPanel(); e.preventDefault(); return; }

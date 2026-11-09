@@ -104,6 +104,13 @@ Enter to skip; you can add it later from the web UI).
   stay collapsed, so the picker says so. There is deliberately no thinking
   on/off switch: current models always think, and the settings that used to
   disable it are ignored by them — a toggle would change nothing.
+- **Instance context** — a handful of lines every agent on this cockpit
+  receives at spawn, on top of its role: what the instance is for, who works on
+  it, its language. On a new instance the lead agent asks two or three questions
+  in its first message and writes it once; after that only a human edits it
+  (version menu → **🧭 Instance context…**). Running agents see a change at their
+  next reload. If it is still empty, **Ask general to draft it** runs the same
+  short interview.
 - **Agent profiles** — a named bundle of role prompt, permission guardrails
   (e.g. forbid `git commit`), model, and which secrets to inject. Applied at
   spawn, remembered across resume. A profile can also carry **MCP servers**
