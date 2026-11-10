@@ -170,3 +170,13 @@ test("label reads a one-shot instant in the cron's timezone", () => {
   assert.equal(label({ kind: "once", at }, "Europe/Paris"), "once 2026-08-25 08:42 (Europe/Paris)");
   assert.equal(label({ kind: "once", at }, "UTC"), "once 2026-08-25 06:42 (UTC)");
 });
+
+test("parseSchedule: a daily restricted to some days sends the list as written", () => {
+  assert.deepEqual(parseSchedule("daily:09:00@mon-fri"), { kind: "daily", hour: 9, minute: 0, days: "mon-fri" });
+  assert.deepEqual(parseSchedule("daily:08:30@Mon,Wed"), { kind: "daily", hour: 8, minute: 30, days: "mon,wed" });
+  assert.throws(() => parseSchedule("daily:09:00@"));
+});
+
+test("label: a restricted daily names its days", () => {
+  assert.equal(label({ kind: "daily", hour: 9, minute: 0, days: [1, 3] }, "Europe/Paris"), "mon,wed 09:00 (Europe/Paris)");
+});

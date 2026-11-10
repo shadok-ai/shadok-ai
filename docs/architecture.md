@@ -1391,7 +1391,7 @@ broadcast so the UI can show what's happening rather than looking hung.
 A cron is a prompt fired at a channel on a timer: `{sessionId, prompt, schedule,
 enabled, check?, tz?}`, persisted per launch directory in
 `~/.shadok-ai/crons/<encoded cwd>.json`. Three schedules: `interval` (every N
-minutes), `daily` (HH:MM) and `once` (a single absolute instant). The server
+minutes), `daily` (HH:MM, optionally restricted to weekdays by `days`, 0 = Sunday — absent means every day, and `normalizeSchedule` folds an empty or seven-day list back to absent so there is one spelling; `parseDays` reads `mon-fri` / `mon,wed` / `weekend`, French names too, for Telegram and the skill) and `once` (a single absolute instant). The server
 resumes the channel and prompts it, so
 nothing has to stay alive between runs — which is why there is no duration cap
 here, unlike an agent scheduling itself.
