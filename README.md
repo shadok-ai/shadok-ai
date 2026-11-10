@@ -326,6 +326,15 @@ Enter to skip; you can add it later from the web UI).
   otherwise just print a local path you cannot open. **Artifacts are denied**
   cockpit-wide for the same reason — a page on claude.ai is not the file you
   asked for (`SHADOK_ALLOW_ARTIFACTS=1` lifts it).
+- **Agents can ask an admin for help** — an agent stuck on something only a
+  human can fix (a Linear token that expired, no access to the Slack token it
+  needs, a Claude API key answering 401, a bug) files a report through the
+  `shadok-report` skill instead of failing silently. Every admin gets a badge
+  and a sound on the **Reports** button (🚩 in the header), and the Telegram
+  owner gets a DM. The panel shows each report with what the agent was doing,
+  merges a repeated failure into one card (`×3`), opens the vault on the
+  credential named (`--secret LINEAR_API_KEY`) and lets you mark it resolved.
+  Agents never put a secret's value in a report, only its name.
 - **Photos and videos, viewable** — an image or a **video** (mp4/webm/mov…) in
   the chat renders inline (a video gets a real player), and clicking a photo
   opens it full-size in a lightbox. The 🖼 button in an agent's bar opens a
