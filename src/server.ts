@@ -102,7 +102,7 @@ import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
-import { getUsage, type Window } from "./usage.js";
+import { getUsage, chooseUsageToken, readOAuthToken, type Window } from "./usage.js";
 import {
   loadChannels,
   loadGroups,
@@ -612,6 +612,24 @@ const DEPLOYMENT_MODE = deploymentMode({
   accountsEnabled: accountsEnabled(GUI_PASSWORD),
 });
 console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
+
+// The long-lived token this instance's AGENTS run on (multi-tenant only): the
+// vault's `MT_CLAUDE_OAUTH_TOKEN`, the very token injected into each agent at
+// spawn. Null when it does not apply, so the usage gauge falls back to the live
+// store / env. Read live (not frozen), so re-pasting the token updates the gauge.
+function instanceLongLivedToken(): string | null {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return null;
+  const vault = loadVault();
+  if (!longLivedTokenInfo(vault, "multi-tenant").longLived) return null;
+  const t = vault[MAIN_GROUP_ID]?.[MT_CLAUDE_OAUTH_TOKEN_NAME]?.value;
+  return typeof t === "string" && t.trim() ? t.trim() : null;
+}
+
+// The token the usage gauge authenticates with: the account the agents actually
+// run on (the vault long-lived token) first, else the CLI's live store / env.
+// Shared by the /usage endpoint and both pace-guard checks so all three measure
+// the same account.
+const usageToken = (): string | null => chooseUsageToken(instanceLongLivedToken(), readOAuthToken);
 
 // The server drives channels it manages over its OWN loopback WS (cron fires,
 // parent notifications, the reload nudge — all through `driveChannel`). Those
@@ -2353,7 +2371,7 @@ app.get("/live", (req, res) => {
 // Current 5-hour and 7-day subscription usage, each window enriched with how it
 // compares to the time already elapsed (for the quota gauges and the send guard).
 app.get("/usage", async (_req, res) => {
-  const u = await getUsage();
+  const u = await getUsage(usageToken);
   const now = Date.now();
   // The pace is derived per request, not per fetch: getUsage() caches for 60 s
   // and a frozen pace would drift away from the clock.
@@ -9504,7 +9522,7 @@ function maybeScheduleRetry(s: Live) {
     const verdict =
       s.backend === "custom"
         ? paceBlock(null, Date.now())
-        : paceBlock(await getUsage().catch(() => null), Date.now());
+        : paceBlock(await getUsage(usageToken).catch(() => null), Date.now());
     // A takeover (or teardown) replaced or cleared our timer while we were
     // fetching: this chain is no longer the live one, so stand down — and
     // leave s.retryTimer alone, it now belongs to whoever replaced us.
@@ -10228,7 +10246,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // goes through — including the pilotctl thin client.
           // A custom backend spends no subscription quota: nothing to pace.
           if (!msg.force && session.backend !== "custom") {
-            const verdict = paceBlock(await getUsage(), Date.now());
+            const verdict = paceBlock(await getUsage(usageToken), Date.now());
             if (verdict.blocked) return send({ type: "pace-blocked", reason: verdict.reason, text });
             // The busy test above is now stale: a parked fire() (or another
             // client's prompt) can have claimed the session while we awaited

@@ -1,6 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getUsage, parseWindow } from "../src/usage.js";
+import { getUsage, parseWindow, chooseUsageToken } from "../src/usage.js";
+
+test("chooseUsageToken: the vault long-lived token wins over the fallback", () => {
+  let fellBack = false;
+  const fallback = () => {
+    fellBack = true;
+    return "env-token";
+  };
+  assert.equal(chooseUsageToken("vault-token", fallback), "vault-token");
+  assert.equal(fellBack, false); // the fallback is not even consulted
+});
+
+test("chooseUsageToken: no vault token → the fallback (live store / env)", () => {
+  assert.equal(chooseUsageToken(null, () => "env-token"), "env-token");
+  assert.equal(chooseUsageToken(undefined, () => "env-token"), "env-token");
+  assert.equal(chooseUsageToken("   ", () => "env-token"), "env-token"); // blank is absent
+  assert.equal(chooseUsageToken("", () => null), null); // nothing anywhere
+});
+
+test("chooseUsageToken: a padded vault token is trimmed, never sent as-is", () => {
+  assert.equal(chooseUsageToken("  sk-ant-oat01-abc  ", () => "env"), "sk-ant-oat01-abc");
+});
 
 test("parseWindow reads `utilization` (the real endpoint shape) + ISO resets_at", () => {
   const w = parseWindow({ utilization: 42, resets_at: "2026-07-24T13:59:59.893779+00:00" });
