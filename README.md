@@ -342,7 +342,8 @@ Enter to skip; you can add it later from the web UI).
   - **From the agent's side.** The ▯ button in an agent's bar opens its info
     panel: its directory and profile, the skills it has (runs this week, ⏰ how
     many on a schedule), and its schedules with the skills each one uses. Click
-    a skill to open its card in the Skill Factory.
+    a skill to open its card in the Skill Factory. The ⏰ Schedule panel shows
+    the same thing under each schedule ("Uses ✦ skill"), one click from editing it.
   - **Creating.** The new-skill form asks for a **name** (what people see) and
     a **technical name** (what agents call it, `/name:name`), proposed from the
     name until you type your own. Choose it then: it is the skill's repository

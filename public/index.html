@@ -2187,11 +2187,13 @@
   #infoBody .ip-skill .ip-meta { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
   #infoBody .ip-cron { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; background: var(--bg); }
   #infoBody .ip-cron .ip-prompt { color: var(--text-dim); font-size: 12px; margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #infoBody .ip-chip {
+  #infoBody .ip-chip, #cronList .ip-chip {
     display: inline-block; margin: 6px 6px 0 0; padding: 2px 9px; border-radius: 999px; font-size: 12px; cursor: pointer;
     border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); color: var(--text);
   }
-  #infoBody .ip-chip:hover { border-color: var(--amber); }
+  #infoBody .ip-chip:hover, #cronList .ip-chip:hover { border-color: var(--amber); }
+  #cronList .cron-skills { margin: -6px 0 10px; font-size: 12px; }
+  #cronList .cron-skills .ip-chip { margin-top: 4px; }
   #infoBody .ip-empty { color: var(--text-dim); font-size: 12px; font-style: italic; padding: 4px 0; }
   #infoBody .ip-link { background: none; border: 0; padding: 0; color: var(--amber); cursor: pointer; font-size: 12px; }
   .fp-agent-link { background: none; border: 0; padding: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline dotted; }
@@ -13620,6 +13622,21 @@
   // only through textContent (facEl): skill titles and cron prompts can be
   // written by an agent.
   let infoSeq = 0;
+  /** A skill as a chip that opens its card in the Skill Factory. `before` runs
+   *  first (the schedule panel closes its overlay so the card is visible). */
+  function skillChip(s, before) {
+    const go = () => { if (before) before(); openSkillCard(s.id); };
+    return facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory to edit it", text: "✦ " + facTitle(s),
+      onclick: go, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } } });
+  }
+  /** Which factory skills an agent's schedules use (src/skill-usage.ts):
+   *  `named(cronId)` — the skills that cron's prompt names; `picked` — skills a
+   *  scheduled run CALLED without any prompt naming them (no cron in particular). */
+  function cronSkillUse(skills, sid) {
+    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
+    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
+    return { named, picked };
+  }
   async function renderInfoPanel() {
     const body = $("infoBody");
     const t = active;
@@ -13660,9 +13677,8 @@
     const list = (Array.isArray(crons) ? crons : []).filter((c) => c.sessionId === sid);
     body.appendChild(facEl("h3", {}, ["Schedules", facEl("span", { class: "ip-count", text: String(list.length) })]));
     if (!list.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No schedule." }));
-    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
-    const chip = (s) => facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory", text: "✦ " + facTitle(s),
-      onclick: () => openSkillCard(s.id), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSkillCard(s.id); } } });
+    const { named, picked } = cronSkillUse(skills, sid);
+    const chip = (s) => skillChip(s);
     for (const c of list) {
       const uses = named(c.id);
       body.appendChild(facEl("div", { class: "ip-cron" }, [
@@ -13674,7 +13690,6 @@
     }
     // Skills a scheduled run CALLED without any prompt naming them: the agent
     // picked them itself, so they belong to no cron in particular.
-    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
     if (picked.length) body.appendChild(facEl("div", { style: "margin-top:8px" }, [facEl("span", { class: "ip-k", text: "Also called by scheduled runs:" }), facEl("div", {}, picked.map(chip))]));
     body.appendChild(facEl("div", { style: "margin-top:10px" }, [facEl("button", { class: "ip-link", type: "button", text: "Manage schedules…", onclick: () => { $("cronOverlay").hidden = false; renderCrons(); } })]));
   }
@@ -13741,10 +13756,20 @@
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
     if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
-    let all = [];
-    try { all = await (await fetch("/crons")).json(); } catch { all = []; }
-    const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === active.sessionId);
+    const sid = active.sessionId;
+    // The skills each schedule uses, so a cron that runs a factory skill links
+    // straight to it (same join as the info panel). Skills failing to load only
+    // costs the chips, never the schedule list.
+    const [all, skills] = await Promise.all([
+      fetch("/crons").then((r) => r.json()).catch(() => []),
+      facCall("GET", "/factory/skills").then((o) => (o && o.skills) || []).catch(() => []),
+    ]);
+    if (!active || active.sessionId !== sid) return; // switched agent meanwhile
+    ul.innerHTML = "";
+    const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === sid);
     if (!list.length) { ul.innerHTML = '<li><span style="opacity:.6">no schedule yet</span></li>'; return; }
+    const { named, picked } = cronSkillUse(skills, sid);
+    const closeCron = () => { $("cronOverlay").hidden = true; };
     for (const c of list) {
       const li = document.createElement("li"); li.style.display = "block";
       const line = document.createElement("div");
@@ -13774,6 +13799,13 @@
       p.textContent = c.prompt;
       p.style.cssText = "opacity:.75;font-size:12px;margin:3px 0 10px;white-space:pre-wrap";
       li.append(line, p);
+      const uses = named(c.id);
+      if (uses.length) li.appendChild(facEl("div", { class: "cron-skills" }, [facEl("span", { style: "opacity:.6", text: "Uses " }), ...uses.map((s) => skillChip(s, closeCron))]));
+      ul.appendChild(li);
+    }
+    if (picked.length) {
+      const li = document.createElement("li"); li.style.display = "block";
+      li.appendChild(facEl("div", { class: "cron-skills", style: "margin:0" }, [facEl("span", { style: "opacity:.6", text: "Also called by scheduled runs: " }), ...picked.map((s) => skillChip(s, closeCron))]));
       ul.appendChild(li);
     }
   }
