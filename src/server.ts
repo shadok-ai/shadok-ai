@@ -102,7 +102,8 @@ import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
-import { getUsage, readOAuthToken, type Window } from "./usage.js";
+import { getUsage, readOAuthToken, resetUsageCache, type Window } from "./usage.js";
+import { createGauge, usageCandidates } from "./gauge-login.js";
 import {
   loadChannels,
   loadGroups,
@@ -631,7 +632,13 @@ function instanceLongLivedToken(): string | null {
 // so a long-lived `setup-token` (which authenticates agents but reports no usage)
 // falls through to the env token instead of blanking the gauge. Shared by the
 // /usage endpoint and both pace-guard checks so all three measure one account.
-const usageToken = (): Array<string | null> => [instanceLongLivedToken(), readOAuthToken()];
+// The optional dedicated gauge login (src/gauge-login.ts) goes FIRST when it
+// holds a usable token: it is the only credential guaranteed to carry the
+// `user:profile` scope the endpoint needs. Absent or lapsed, it is null and the
+// list is what it always was.
+const gauge = createGauge({ onChange: resetUsageCache });
+const usageToken = (): Array<string | null> =>
+  usageCandidates({ gauge: gauge.token(), longLived: instanceLongLivedToken(), live: readOAuthToken() });
 
 // The server drives channels it manages over its OWN loopback WS (cron fires,
 // parent notifications, the reload nudge — all through `driveChannel`). Those
@@ -2583,6 +2590,7 @@ app.get("/auth", async (_req, res) => {
     ...customBackendFields(),
     ...mtTokenFields(),
     ...(await connectFields(expiry)),
+    gauge: gauge.view(),
   });
 });
 
@@ -2678,6 +2686,43 @@ app.delete("/auth/login", (req, res) => {
   if (!accountAdmin(req, res, true, "cancel this instance's Claude sign-in")) return;
   cancelLogin();
   res.json({ ok: true });
+});
+
+// --- Usage-gauge login (src/gauge-login.ts) ---------------------------------
+// An OPTIONAL second claude.ai sign-in, in a config dir of its own, used only to
+// read the 5h/7d gauge. Same shape as /auth/*: the instance's subscription is one
+// account, so signing the gauge in is an admin act, browser-origin for writes.
+// Responses never carry a token — only the view (state, expiries, email).
+app.get("/usage-gauge", (req, res) => {
+  if (!accountAdmin(req, res, false, "read the usage-gauge login")) return;
+  res.json(gauge.view());
+});
+
+app.post("/usage-gauge/login", async (req, res) => {
+  if (!accountAdmin(req, res, true, "sign in the usage gauge")) return;
+  // Always forced: re-login while signed in is the normal renewal.
+  const r = await gauge.login.start(true);
+  if ("error" in r) return res.status(502).json(r);
+  res.json(r);
+});
+
+app.post("/usage-gauge/code", async (req, res) => {
+  if (!accountAdmin(req, res, true, "sign in the usage gauge")) return;
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  const r = await gauge.login.submit(code);
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
+app.delete("/usage-gauge/login", (req, res) => {
+  if (!accountAdmin(req, res, true, "cancel the usage-gauge sign-in")) return;
+  gauge.login.cancel();
+  res.json({ ok: true });
+});
+
+// Opt out: forget the dedicated login entirely (the gauge falls back to today's).
+app.delete("/usage-gauge", (req, res) => {
+  if (!accountAdmin(req, res, true, "remove the usage-gauge login")) return;
+  res.json({ ok: gauge.forget() });
 });
 
 // --- Subscription-token provisioning (src/setup-token.ts) -----------------
@@ -11112,6 +11157,7 @@ server.listen(port, HOST, () => {
   cronTimer.unref();
   // Connected accounts: expiry warnings, lapsed drafts — hourly, plus once soon after boot.
   const expiryTimer = setInterval(watchConnectedAccounts, 3_600_000);
+  gauge.startKeeper((l) => console.log(l));
   expiryTimer.unref();
   setTimeout(watchConnectedAccounts, 30_000).unref();
   // Reload indicator: re-evaluate every live agent's staleness once a minute and

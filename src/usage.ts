@@ -102,6 +102,13 @@ let cache: Usage | null = null;
 let inflight: Promise<Usage | null> | null = null;
 const TTL_MS = 60_000;
 
+/** Drop the cached snapshot, so the next read goes to the network. Used when the
+ *  token the gauge reads with just changed (a fresh gauge login), so the number
+ *  on screen follows at once instead of lingering up to TTL_MS. */
+export function resetUsageCache(): void {
+  cache = null;
+}
+
 /** One usage fetch with a given Bearer. `null` on a failed request (non-2xx or a
  *  thrown fetch) — kept DISTINCT from a 200 whose windows are simply empty, so
  *  the caller can tell "this token errored" from "this token reports nothing". */
