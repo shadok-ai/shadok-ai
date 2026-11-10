@@ -2446,6 +2446,13 @@
   #cronList { list-style: none; padding: 0; margin: 0 0 14px; }
   #cronList li { padding: 6px 8px; border-radius: 6px; }
   #cronList li:nth-child(odd) { background: rgba(255, 255, 255, 0.04); }
+  #hookList { list-style: none; padding: 0; margin: 0 0 10px; }
+  #hookList li { padding: 6px 8px; border-radius: 6px; }
+  #hookList li:nth-child(odd) { background: rgba(255, 255, 255, 0.04); }
+  .hook-title { margin: 18px 0 4px; font-size: 14px; }
+  .hook-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+  .hook-reveal { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; font-size: 12px; }
+  .hook-reveal pre { white-space: pre-wrap; word-break: break-all; margin: 6px 0; user-select: all; }
   .cron-form { border-top: 1px solid var(--line); padding-top: 12px; }
   .cron-form .field { margin: 12px 0; }
   .cron-form .field:last-child { margin-bottom: 0; }
@@ -3540,6 +3547,24 @@
           <span id="cronOnceFields" hidden>
             <input id="cronAt" type="datetime-local" aria-label="Date and time">
           </span>
+        </div>
+      </form>
+      <h3 class="hook-title">⚡ Webhooks</h3>
+      <p class="sec-note">Let an outside system (CI, a form, a monitoring tool…) wake this agent with an HTTP <code>POST</code>. The request body is handed to the agent as untrusted data, after your prompt. Each webhook has its own secret token, shown only once.</p>
+      <ul id="hookList"></ul>
+      <div id="hookReveal" class="hook-reveal" hidden></div>
+      <form id="hookAdd" class="cron-form">
+        <div class="field">
+          <span class="label">Name</span>
+          <input id="hookName" placeholder="e.g. CI failed" autocomplete="off" maxlength="80" />
+        </div>
+        <div class="field">
+          <span class="label">Prompt to run when called</span>
+          <textarea id="hookPrompt" rows="2" placeholder="e.g. A build failed: read the payload, find the cause and tell me"></textarea>
+        </div>
+        <div class="hook-actions">
+          <span class="foot-note" id="hookErr" style="color:#ff9a9a"></span>
+          <button type="submit" id="hookSubmit">Add webhook</button>
         </div>
       </form>
     </div>
@@ -13740,6 +13765,8 @@
     const ul = $("cronList"); ul.innerHTML = "";
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
+    $("hookReveal").hidden = true; $("hookReveal").replaceChildren();
+    renderHooks();
     if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
     let all = [];
     try { all = await (await fetch("/crons")).json(); } catch { all = []; }
@@ -13777,6 +13804,93 @@
       ul.appendChild(li);
     }
   }
+  // ── Webhooks (same popin as the schedules: both wake the agent from outside
+  // a conversation). The token comes back from the server ONCE, at creation or
+  // rotation, and is shown with a ready-to-run curl; it is never listed again.
+  function hookUrl(h) { return location.origin + "/hooks/" + h.id; }
+  function revealHookToken(h) {
+    const box = $("hookReveal");
+    box.replaceChildren();
+    const msg = document.createElement("div");
+    msg.textContent = "Token for “" + h.name + "” — copy it now, it will not be shown again:";
+    const curl = document.createElement("pre");
+    curl.textContent =
+      "curl -X POST " + hookUrl(h) + " \\\n" +
+      "  -H 'Authorization: Bearer " + h.token + "' \\\n" +
+      "  -H 'Content-Type: application/json' -d '{\"hello\":\"world\"}'";
+    const hint = document.createElement("div");
+    hint.style.opacity = ".7";
+    hint.textContent = "A sender that only takes a URL can use " + hookUrl(h) + "?token=… (the header is better: it stays out of logs).";
+    const ok = document.createElement("button");
+    ok.type = "button"; ok.textContent = "Done";
+    ok.addEventListener("click", () => { box.hidden = true; box.replaceChildren(); });
+    box.append(msg, curl, hint, ok);
+    box.hidden = false;
+  }
+  async function renderHooks() {
+    const ul = $("hookList"); ul.replaceChildren();
+    if (!active || !active.sessionId) return;
+    let all = [];
+    try { all = await (await fetch("/webhooks")).json(); } catch { all = []; }
+    const list = (Array.isArray(all) ? all : []).filter((h) => h.sessionId === active.sessionId);
+    if (!list.length) { const li = document.createElement("li"); li.style.opacity = ".6"; li.textContent = "no webhook yet"; ul.appendChild(li); return; }
+    for (const h of list) {
+      const li = document.createElement("li"); li.style.display = "block";
+      const line = document.createElement("div");
+      line.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:space-between";
+      const label = document.createElement("span");
+      const b = document.createElement("b"); b.textContent = h.name;
+      label.append(b);
+      const meta = document.createElement("span");
+      meta.style.opacity = ".55";
+      meta.textContent = (h.enabled ? "" : " (paused)") + (h.lastRun ? " · last call " + new Date(h.lastRun).toLocaleString() + " → " + (h.lastOutcome || "?") : " · never called");
+      label.append(meta);
+      const btns = document.createElement("span");
+      const mk = (text, title, fn) => { const x = document.createElement("button"); x.type = "button"; x.textContent = text; x.title = title; x.addEventListener("click", fn); return x; };
+      const call = (method, path, body) => fetch(path, { method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      btns.append(
+        mk("⧉", "Copy the webhook URL", () => navigator.clipboard && navigator.clipboard.writeText(hookUrl(h))),
+        mk(h.enabled ? "Pause" : "Resume", h.enabled ? "Calls are refused while paused" : "Accept calls again", async () => { await call("PATCH", "/webhooks/" + h.id, { enabled: !h.enabled }); renderHooks(); }),
+        mk("↻", "New token (the old one stops working at once)", async () => {
+          if (!confirm("Generate a new token for “" + h.name + "”? The current one stops working immediately.")) return;
+          const r = await call("POST", "/webhooks/" + h.id + "/rotate");
+          if (r.ok) revealHookToken(await r.json());
+          renderHooks();
+        }),
+        mk("✕", "Delete webhook", async () => {
+          if (!confirm("Delete the webhook “" + h.name + "”?")) return;
+          await call("DELETE", "/webhooks/" + h.id); renderHooks();
+        }),
+      );
+      line.append(label, btns);
+      const p = document.createElement("div");
+      p.textContent = h.prompt;
+      p.style.cssText = "opacity:.75;font-size:12px;margin:3px 0 4px;white-space:pre-wrap";
+      const u = document.createElement("div");
+      u.textContent = "POST " + hookUrl(h);
+      u.style.cssText = "opacity:.5;font-size:11px;margin-bottom:8px;word-break:break-all";
+      li.append(line, p, u);
+      ul.appendChild(li);
+    }
+  }
+  $("hookAdd").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("hookErr").textContent = "";
+    const prompt = $("hookPrompt").value.trim();
+    const name = $("hookName").value.trim();
+    if (!active || !active.sessionId) return;
+    if (!prompt) { $("hookErr").textContent = "a prompt is required"; return; }
+    let r;
+    try {
+      r = await fetch("/webhooks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: active.sessionId, name, prompt }) });
+    } catch { $("hookErr").textContent = "server unreachable"; return; }
+    let j = null;
+    try { j = await r.json(); } catch { /* non-JSON body */ }
+    if (!r.ok) { $("hookErr").textContent = (j && j.error) || "could not create (" + r.status + ")"; return; }
+    $("hookName").value = ""; $("hookPrompt").value = "";
+    revealHookToken(j);
+    renderHooks();
+  });
   // Editing an existing schedule: its id, or null when the form creates a new
   // one. POST /crons upserts on `id` (preserving lastRun and recomputing
   // nextRun), so editing is the same submit with the id attached.

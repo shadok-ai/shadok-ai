@@ -1,4 +1,5 @@
 import { isCronPrompt } from "./crons.js";
+import { isWebhookPrompt } from "./webhooks.js";
 import { isAgentPrompt } from "./kinship.js";
 import { stripPromptMeta, parsePromptMeta, hasPromptMeta, markPromptMeta } from "./promptmeta.js";
 import { stripLedgerBlock, hasLedgerBlock } from "./ledger.js";
@@ -12,7 +13,7 @@ export const FORGED_ESCAPE = "\\";
  *  header, a ledger block, a cron fire, a parent notification? */
 function looksServerWritten(line: string): boolean {
   const l = line.trimStart();
-  return hasPromptMeta(l) || hasLedgerBlock(l) || isCronPrompt(l) || isAgentPrompt(l);
+  return hasPromptMeta(l) || hasLedgerBlock(l) || isCronPrompt(l) || isWebhookPrompt(l) || isAgentPrompt(l);
 }
 
 /**
@@ -106,7 +107,7 @@ export function classifyUserLine(e: any): UserLine {
   // agent prompt no longer starts with its hiding mark and would leak into
   // the display.
   const bare = stripLedgerBlock(text);
-  if (isCronPrompt(bare) || isAgentPrompt(bare)) return { kind: "hidden" };
+  if (isCronPrompt(bare) || isWebhookPrompt(bare) || isAgentPrompt(bare)) return { kind: "hidden" };
   // A human prompt may still open with a context header (⟦platform · time ·
   // who⟧) the agent was given; strip it for display — leaving the message —
   // but FIRST recover who spoke, so a replayed Telegram message shows its

@@ -185,6 +185,25 @@ Enter to skip; you can add it later from the web UI).
   nothing most of the day. The guard runs with the target agent's profile
   secrets, so an agent may put one only on itself (a person may guard any agent
   they can drive).
+- **Webhooks** — let an outside system (CI, a form, a monitoring tool, Zapier…)
+  wake an agent with an HTTP call, the event-driven twin of a schedule. Create
+  one in the agent's **⏰ Schedule** popin (name + the prompt to run); you get a
+  URL and a secret token, shown **once**:
+
+  ```bash
+  curl -X POST https://<your-cockpit>/hooks/<id> \
+    -H 'Authorization: Bearer whk_…' \
+    -H 'Content-Type: application/json' -d '{"status":"failed"}'
+  ```
+
+  The call answers `202` at once and the agent runs in the background with your
+  prompt, followed by the request body (≤16 kB, labelled as **untrusted** data —
+  it never speaks for you). Calls to the same webhook are queued and run one
+  after the other; a busy agent is retried for ~10 min. A sender that can only
+  take a URL may pass `?token=…` instead of the header. Pause, rotate the token
+  (↻) or delete it from the same popin. Only a person in the browser can create
+  or change a webhook — never an agent. An unknown id, a paused webhook and a
+  wrong token all answer the same `404`.
 - **Per-agent stats** — the agent's ⋯ menu has a **📊 Stats** view: token usage
   over the last hour / 24 h / 7 days / 30 days, split in a tooltip into input,
   output, cache-write and cache-read, with a **notional cost** beside each window.
@@ -1320,7 +1339,7 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/channels/glance` (GET — each visible row's last-message time and context %,
 read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
-register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
+register per group, filtered like `/groups`), `/crons`, `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
