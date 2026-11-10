@@ -566,6 +566,16 @@ export function scanUsage(file: string): Map<string, TokenUsage> {
  * skipped (it cannot be placed in a window); `firstAt` still scans EVERY line
  * with a timestamp, so it is the first prompt, not the first assistant turn.
  */
+/**
+ * Where a session's SUBAGENT transcripts live. Claude Code's Task tool spawns a
+ * child that writes its own `.jsonl` under `<session-file-without-.jsonl>/subagents/`,
+ * with its OWN usage — never folded into the parent's. Counting an agent's REAL
+ * consumption means summing these too, attributed to the parent. Pure (path only).
+ */
+export function subagentDirFor(mainFile: string): string {
+  return path.join(path.dirname(mainFile), path.basename(mainFile, ".jsonl"), "subagents");
+}
+
 export function parseUsageSamples(raw: string): { samples: Map<string, MsgSample>; firstAt: number | null } {
   const samples = new Map<string, MsgSample>();
   let firstAt: number | null = null;
