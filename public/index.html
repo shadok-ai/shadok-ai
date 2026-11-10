@@ -48,7 +48,7 @@
   /* Light mode. An ORTHOGONAL axis to the accent palette: only the base surfaces
      and text flip; the instance's accent (--amber/--phosphor) stays its identity.
      Applied via `data-mode="light"` on <html>, a PER-BROWSER comfort choice set
-     from localStorage before first paint (the small head script) — default dark.
+     from localStorage before first paint (the small head script) — default light.
      --phosphor darkens here: the selection bar is a 3px inset of it, invisible as
      a pale amber on white. Accent-tinted surfaces (--amber-soft) derive from
      --amber and follow on their own. */
@@ -3237,10 +3237,17 @@
   }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
-     body paints — here in <head> — so a light-preferring viewer never sees a
-     flash of the dark default. Nonce'd like every inline script (invariant 12). -->
+     body paints — here in <head> — so a dark-preferring viewer never sees a
+     flash of the light default. Nonce'd like every inline script (invariant 12).
+     Default LIGHT: the attribute is set unless the viewer explicitly chose dark,
+     so a fresh browser (and a storage read that throws) lands on light. Dark
+     stays the ABSENCE of the attribute, which every `:not([data-mode="light"])`
+     rule relies on — only the default this script picks has flipped. -->
 <script nonce="__CSP_NONCE__">
-  try { if (localStorage.getItem("cp.mode") === "light") document.documentElement.setAttribute("data-mode", "light"); } catch (e) {}
+  try {
+    if (localStorage.getItem("cp.mode") === "dark") document.documentElement.removeAttribute("data-mode");
+    else document.documentElement.setAttribute("data-mode", "light");
+  } catch (e) { document.documentElement.setAttribute("data-mode", "light"); }
   // When the cockpit's OWN session expires mid-use (the account cookie lapses —
   // a week by default — or the GUI password changes under us), the server starts
   // answering every request 401 and refuses the WebSocket upgrade. The page used
@@ -3321,7 +3328,7 @@
       <button id="starMenuItem">★ Star on GitHub</button>
       <div class="mm-sep"></div>
       <div class="mm-label">Appearance</div>
-      <!-- Light / dark mode — per browser (localStorage), default dark. -->
+      <!-- Light / dark mode — per browser (localStorage), default light. -->
       <div id="modeRow" class="mm-mode">
         <button type="button" data-mode="dark">☾ Dark</button>
         <button type="button" data-mode="light">☀ Light</button>
@@ -7275,7 +7282,7 @@
   // A comfort choice that belongs to the person, not the cockpit's identity (the
   // accent palette is the shared one). The <head> script already set the
   // attribute before paint; this syncs the toggle and re-paints the favicon
-  // (which reads --bg / --amber live). Default dark → no attribute.
+  // (which reads --bg / --amber live). Dark → no attribute (default is light).
   function syncModeButtons() {
     const light = document.documentElement.getAttribute("data-mode") === "light";
     for (const b of document.querySelectorAll("#modeRow button")) {
