@@ -22,6 +22,8 @@ import {
 } from "./channels.js";
 import { secretNames, setSecret, deleteSecret, secretWriteVerdict, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
 import { MAIN_GROUP_ID } from "./groups.js";
+import { roomForTopic, telegramLine, type Room } from "./rooms.js";
+import type { TgBinding } from "./channels.js";
 import { startSetupToken, submitSetupTokenCode } from "./setup-token.js";
 import { recordSecretAudit } from "./secret-audit.js";
 import { telegramPhotoable } from "./download.js";
@@ -1190,6 +1192,26 @@ export interface TelegramHandle {
   status(): { username: string | null; tokenError: string | null };
   /** DM the paired owner, plain text. False when there is no bot, no owner or the send failed; never throws. */
   notifyOwner(text: string): Promise<boolean>;
+  /** Mirror a message written in a ROOM (on the web) into its topic. Fire and
+   *  forget; a no-op when the room has no topic or there is no bot. */
+  sendRoomMessage(room: Room, author: string, text: string): void;
+}
+
+/**
+ * What the bridge needs from the server to mirror ROOMS (src/rooms.ts) — the
+ * channels with no agent. Passed in rather than imported so the bridge never
+ * writes the room store on its own, and so a room can never reach the code
+ * that opens a bridge: a bridge IS a session, and a room has none.
+ */
+export interface RoomHooks {
+  /** Every room, archived ones included (an archived room's topic is closed). */
+  list(): Room[];
+  /** Record (or clear) the topic a room is mirrored into. */
+  bind(roomId: string, binding: TgBinding | null, mirror?: boolean): void;
+  /** Store a message that arrived in the room's topic, and fan it out. */
+  post(roomId: string, m: { author: string; text: string; tgMessageId?: number }): void;
+  /** Where an attachment for this room lands (its group's media dir). */
+  mediaDir(roomId: string): string;
 }
 
 const NOOP_HANDLE: TelegramHandle = {
@@ -1197,6 +1219,7 @@ const NOOP_HANDLE: TelegramHandle = {
   running: () => false,
   status: () => ({ username: null, tokenError: null }),
   notifyOwner: async () => false,
+  sendRoomMessage() {},
 };
 
 // Whether this instance runs multi-tenant, so `/mttoken` (which provisions the
@@ -1224,6 +1247,8 @@ export function startTelegram(
      *  prompts as `telegram` and believe their `from` / `voice` — the `start`
      *  frame's own `origin` is no longer trusted (`connectionOrigin`). */
     bridgeSecret?: string;
+    /** Rooms mirrored into topics. Absent → rooms simply never reach Telegram. */
+    rooms?: RoomHooks;
   } = {},
 ): TelegramHandle {
   tgMultiTenant = multiTenant;
@@ -1306,7 +1331,11 @@ export function startTelegram(
 
   /** Download one attachment to MEDIA_DIR; returns the absolute path.
    *  Throws with a user-facing reason on any failure. */
-  const downloadAttachment = async (att: TgAttachment, b: Bridge): Promise<string> => {
+  const downloadAttachment = async (att: TgAttachment, b: Bridge): Promise<string> =>
+    fetchAttachmentInto(att, await mediaDirForBridge(b));
+  /** The download itself, into a directory the caller resolved (an agent's
+   *  media dir, or a room's). */
+  const fetchAttachmentInto = async (att: TgAttachment, dir: string): Promise<string> => {
     if (att.fileSize && att.fileSize > TG_FILE_LIMIT)
       throw new Error("file too large (Telegram bot limit: 20 MB)");
     const f = await tg("getFile", { file_id: att.fileId });
@@ -1320,7 +1349,6 @@ export function startTelegram(
       signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS),
     });
     if (!r.ok) throw new Error(`download HTTP ${r.status}`);
-    const dir = await mediaDirForBridge(b);
     const dest = path.join(dir, mediaFileName(att));
     const data = Buffer.from(await r.arrayBuffer());
     try {
@@ -1855,6 +1883,83 @@ export function startTelegram(
     return false;
   };
 
+  /**
+   * A message in a ROOM's topic: stored as a room message, and that is all.
+   * Called BEFORE anything that resolves a bridge — `bridgeFor` opens a
+   * session, so a room topic that fell through to it would get an agent, the
+   * one thing a room must never have. Commands get a plain answer for the same
+   * reason: `/spawn` here must not quietly put an agent into the topic.
+   */
+  const handleRoomMessage = async (room: Room, msg: any, cmd: { cmd: string } | null, att: TgAttachment | null) => {
+    const chatId = msg.chat.id as number;
+    const threadId = msg.message_thread_id as number | undefined;
+    if (cmd) {
+      await reply(chatId, threadId, "💬 This topic is a room: people talk here, there is no agent. Start an agent from the General topic with /spawn.");
+      return;
+    }
+    let text = typeof msg.text === "string" ? msg.text : typeof msg.caption === "string" ? msg.caption : "";
+    if (att) {
+      try {
+        const p = await fetchAttachmentInto(att, opts.rooms!.mediaDir(room.id));
+        const line = attachmentPrompt([{ path: p, kind: att.kind === "image" ? "image" : "file" }]);
+        text = text ? line + "\n" + text : line;
+      } catch (e: any) {
+        await reply(chatId, threadId, tooBigFor(att, e) ? tooLargeNotice(att) : `⚠️ couldn't save that file (${e?.message ?? e})`);
+        if (!text) return;
+      }
+    }
+    if (!text.trim()) return;
+    opts.rooms!.post(room.id, {
+      author: senderName(msg.from) ?? "telegram",
+      text,
+      tgMessageId: typeof msg.message_id === "number" ? msg.message_id : undefined,
+    });
+  };
+
+  /** One serial queue per room topic, so a burst keeps its order. */
+  const roomQueues = new Map<string, ReturnType<typeof makeSendQueue>>();
+  const roomLabel = (t: TgBinding) => `room ${t.chatId}/${t.threadId}`;
+  const sendRoomMessage = (room: Room, author: string, text: string) => {
+    const to = room.telegram;
+    if (stopped || !to || to.threadId == null || !opts.rooms) return;
+    let q = roomQueues.get(room.id);
+    if (!q) roomQueues.set(room.id, (q = makeSendQueue()));
+    const dest = { chat_id: to.chatId, message_thread_id: to.threadId };
+    const flood = <T>(call: () => Promise<T>) =>
+      withFloodControl(call, {
+        sleep: (ms) => new Promise<void>((r) => setTimeout(r, ms)),
+        onWait: (ms) => console.log(`telegram: ${roomLabel(to)} rate-limited by Telegram, holding ${Math.round(ms / 1000)}s`),
+      });
+    let dir: string;
+    try { dir = opts.rooms.mediaDir(room.id); } catch { dir = mediaDir(); }
+    const { files, prose } = attachmentsInPrompt(text, dir);
+    void q(async () => {
+      for (const part of chunk(telegramLine({ author, text: prose.trim() || (files.length ? "📎" : "") }))) {
+        const r = await flood(() => tg("sendMessage", { ...dest, text: mdToTelegramHtml(part), parse_mode: "HTML", disable_web_page_preview: true }));
+        if (r?.ok) continue;
+        const raw = await flood(() => tg("sendMessage", { ...dest, text: part, disable_web_page_preview: true }));
+        if (!raw?.ok) console.log(`telegram: ${roomLabel(to)} — message NOT delivered: ${refusalReason(raw ?? r)}`);
+      }
+      for (const f of files) {
+        try {
+          const buf = await fs.promises.readFile(f.path);
+          const photo = telegramPhotoable(f.name);
+          const form = new FormData();
+          form.append("chat_id", String(to.chatId));
+          form.append("message_thread_id", String(to.threadId));
+          form.append(photo ? "photo" : "document", new Blob([buf]), f.name);
+          const r = await flood(() =>
+            fetch(`${api}/${photo ? "sendPhoto" : "sendDocument"}`, { method: "POST", body: form, signal: AbortSignal.timeout(TRANSFER_TIMEOUT_MS) })
+              .then((x) => x.json() as Promise<{ ok?: boolean; description?: string } | null>),
+          );
+          if (!r?.ok) throw new Error(refusalReason(r));
+        } catch (e: any) {
+          console.log(`telegram: ${roomLabel(to)} — upload of ${f.name} failed: ${e?.message ?? e}`);
+        }
+      }
+    });
+  };
+
   const handleMessage = async (msg: any) => {
     const att = attachmentOf(msg);
     if (typeof msg.text !== "string" && !att) return;
@@ -1933,6 +2038,13 @@ export function startTelegram(
         }
         return;
       }
+    }
+
+    // A ROOM's topic never reaches a bridge (see handleRoomMessage).
+    const room = isGroup && opts.rooms ? roomForTopic(opts.rooms.list(), chat.id, threadId) : undefined;
+    if (room) {
+      await handleRoomMessage(room, msg, cmd, att);
+      return;
     }
 
     if (cmd && commandRequiresOperator(cmd.cmd, cmd.arg, (n) => !!getProfile(n))) {
@@ -2620,6 +2732,47 @@ export function startTelegram(
         mirroring.delete(c.sessionId); // couldn't create (perms/Topics off) — retry later
       }
     }
+    await reconcileRooms(group);
+  };
+
+  /**
+   * The rooms' half of the mirror loop: same declarative rule, and the one
+   * difference that matters — it NEVER opens a bridge. A room topic is created,
+   * closed or deleted; nothing behind it is ever spawned. Topics are not added
+   * to the tracked-topic list either (`addTgTopic`): that list feeds the boot
+   * pass that deletes "orphan" topics with no channel, and a room has none.
+   */
+  const roomsMirroring = new Set<string>();
+  const reconcileRooms = async (group: number) => {
+    if (!opts.rooms) return;
+    for (const r of opts.rooms.list()) {
+      const bound = r.telegram && r.telegram.threadId != null && r.telegram.chatId === group ? r.telegram : null;
+      if (r.archivedAt) {
+        // Closing a room closes its topic — never deletes it: the conversation
+        // stays readable in Telegram, as it does on disk.
+        if (bound) {
+          await tg("closeForumTopic", { chat_id: group, message_thread_id: bound.threadId });
+          opts.rooms.bind(r.id, null);
+        }
+        continue;
+      }
+      // Only an EXPLICIT false un-mirrors (deleting a topic is irreversible).
+      if (r.mirror === false && bound) {
+        console.log(`telegram: unmirroring room ${r.id} — deleting topic ${bound.threadId}`);
+        await tg("deleteForumTopic", { chat_id: group, message_thread_id: bound.threadId });
+        opts.rooms.bind(r.id, null);
+        continue;
+      }
+      if (!r.mirror || bound || roomsMirroring.has(r.id)) continue;
+      roomsMirroring.add(r.id);
+      try {
+        const t = await tg("createForumTopic", { chat_id: group, name: ("💬 " + r.name).slice(0, 128) });
+        if (t?.ok) opts.rooms.bind(r.id, { chatId: group, threadId: t.result.message_thread_id });
+        else console.log(`telegram: createForumTopic failed for room ${r.id}: ${t?.description ?? t}`);
+      } finally {
+        roomsMirroring.delete(r.id);
+      }
+    }
   };
 
   // Connect, retrying transient failures with backoff. A single network hiccup
@@ -2687,6 +2840,21 @@ export function startTelegram(
       }
       // "unknown" (transient check failure) → leave the channel untouched.
     }
+    // A room's topic is not an orphan: keep it out of the sweep below, and
+    // forget the binding of one deleted on Telegram's side (with `mirror`
+    // dropped too, or the loop would recreate a topic someone just removed).
+    // Kept OUT of `bound`, which is saved as the tracked-topic list: a room
+    // topic in that list would be swept as an orphan once the room is closed.
+    const roomThreads = new Set<number>();
+    for (const r of opts.rooms?.list() ?? []) {
+      const th = r.telegram?.threadId;
+      if (!th || r.telegram!.chatId !== group) continue;
+      const st = await topicStatus(group, th);
+      if (st === "gone") {
+        console.log(`telegram: reconcile — room ${r.id}'s topic ${th} is gone, unbinding it`);
+        opts.rooms!.bind(r.id, null, false);
+      } else roomThreads.add(th);
+    }
     // Reattach the agents that are STILL ALIVE. Until now a bridge was only
     // born at the channel's next message: after a restart — hence on every
     // auto-update — nobody was listening, and everything the agent wrote in the
@@ -2702,7 +2870,7 @@ export function startTelegram(
 
     let kept = [...bound];
     for (const th of loadTgTopics()) {
-      if (bound.has(th)) continue;
+      if (bound.has(th) || roomThreads.has(th)) continue;
       if (await topicExists(group, th)) {
         console.log(`telegram: reconcile — deleting orphan topic ${th} (no channel)`);
         await tg("deleteForumTopic", { chat_id: group, message_thread_id: th });
@@ -2765,6 +2933,7 @@ export function startTelegram(
     },
     running: () => polling,
     status: () => ({ username: botUsername, tokenError }),
+    sendRoomMessage,
     async notifyOwner(text: string) {
       try {
         const owner = loadTgOwner();

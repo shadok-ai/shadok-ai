@@ -1,6 +1,7 @@
 # Rooms: channels with no agent, for people to talk
 
-Status: **design, awaiting approval.** Nothing here is built.
+Status: **built** (2026-11-10). See "As built" at the end for where the code
+departs from this design, and why.
 Points the author settled are marked **[CALL]**; points left to the reviewer
 are marked **[OPEN]**.
 
@@ -353,3 +354,29 @@ errors (invariants 10, 12).
 2. DM mirroring: refused in v1 (author's lean), or allowed?
 3. After v1: may an agent *post* to a room (announcements), and under which
    principal?
+
+## As built (2026-11-10)
+
+Where the implementation departs from the design above:
+
+- **The web client draws a room as a tab object** (with `roomId` and no
+  `sessionId`), not as a separate kind of entry. This reuses the column, the
+  groups, drag-and-drop, the avatar, the chat and the composer. It keeps the
+  separation the design asks for, because every agent path in the client is
+  already keyed on `sessionId`: `persistChannels`, `syncChannels` and
+  `reconnectAllNow` skip a tab without one. `openLink` / `launchTab` divert a
+  room tab before any `start` frame, and the server refuses `start` on a room
+  socket anyway. `test/rooms-boundary.test.ts` locks these seams.
+- **Mute is per browser** (localStorage), not a `Room.muted` field. The room
+  list is shared by everyone who sees it, and muting is a personal preference.
+- **No `files` field on a message.** Attachments travel as the
+  `[Attached image|file: path]` lines that agents already use, so the chat
+  renders them with the existing code. Telegram uploads them with the existing
+  `attachmentsInPrompt`.
+- **The three kinds of entry are told apart visually.** This was asked for
+  during the build. An agent keeps the round initials avatar. A room is a
+  square slate tile with 💬, no presence LED, an italic name and a "room"
+  label. An agent with scheduled prompts gets a dashed ring and a ⏰ on its
+  avatar.
+- Open decisions 1–3 stay open. Archived rooms are on disk only. Rooms mirror
+  to topics only, never to a DM. Agents cannot post in a room.

@@ -1989,3 +1989,30 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     role can have. Choosing a profile at `start` stays open: without the write,
     a role only lends its guardrails, and its secrets are resolved against the
     spawning agent's group. Mono-tenant is unchanged.
+
+<a id="inv-68"></a>
+
+64. **A room is not a channel — nothing that reads the channel registry may
+    ever see one.** Rooms (src/rooms.ts) are channels with no agent. The cheap
+    design was a `Channel` row with a `kind` field and a fake `sessionId`, and
+    every consumer of that registry would then have spawned or miscounted
+    something: the web client resumes each row (`start` + `resume` on an
+    unknown id opens Claude Code's session picker in a fresh pane, invariant
+    36), `reconcileWebChannels` opens a BRIDGE behind every mirrored row (a
+    bridge is a session), `firstAgentPlan` counts rows (an instance with only
+    rooms would never get its lead agent), and crons, kinship, the ledger and
+    `/live` list them as agents. One forgotten check = one agent behind a
+    room. So rooms have their own registry, routes and WS messages, and four
+    seams are locked by `test/rooms-boundary.test.ts`: Telegram's
+    `handleMessage` routes a room topic BEFORE the first `bridgeFor`; the
+    rooms' mirror loop never calls `openBridge` nor `addTgTopic` (that tracked
+    list feeds the boot sweep that deletes "orphan" topics, and a closed room's
+    topic would be swept); a socket is an agent link or a room link, never both
+    (`start` is refused after `room-join` and the reverse); and the web client's
+    `openLink`/`launchTab` divert a room tab before any `start` frame. A room
+    tab has no `sessionId`, which is what keeps it out of `persistChannels` and
+    `syncChannels` for free. Rooms are for PEOPLE: `roomPerson` refuses an
+    agent's session key, a peer, and the in-process Telegram client (which goes
+    through `roomHooks` instead), and a post's author is the session's account,
+    never the frame's — measured: a script posting `author: "mallory"` is
+    stored as the account it authenticated as.
