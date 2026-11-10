@@ -242,6 +242,7 @@ import {
   markCronPrompt,
   isCronPrompt,
   normalizeSchedule,
+  parseDays,
   onceAt,
   stateAfterFire,
   scheduleLabel,
@@ -3250,6 +3251,8 @@ app.post("/crons", (req, res) => {
     if (at == null) return res.status(400).json({ error: `unreadable date '${rawSchedule.at}' — use YYYY-MM-DDTHH:MM` });
     rawSchedule = { kind: "once", at };
   }
+  if (rawSchedule?.kind === "daily" && typeof rawSchedule.days === "string" && !parseDays(rawSchedule.days))
+    return res.status(400).json({ error: `unreadable days '${rawSchedule.days}' — use e.g. mon-fri, mon,wed,fri or weekend` });
   const schedule = normalizeSchedule(rawSchedule);
   if (!sessionId || !prompt || !schedule) return res.status(400).json({ error: "sessionId, prompt and a valid schedule are required" });
   // An instant already past is refused rather than stored: it would fire within

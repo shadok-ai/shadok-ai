@@ -16,6 +16,8 @@ import {
   scheduleLabel,
   stateAfterFire,
   type Cron,
+  parseDays,
+  daysLabel,
 } from "../src/crons.js";
 import type { Channel } from "../src/channels.js";
 
@@ -276,4 +278,58 @@ test("onceAt: tolerates a lowercase 't' separator", () => {
   // the CLI lowercases its whole schedule spec ("once:2026-08-25T08:42"), and a
   // human typing the date by hand rarely reaches for the shift key either
   assert.equal(onceAt("Europe/Paris", "2026-08-25t08:42"), Date.UTC(2026, 7, 25, 6, 42));
+});
+
+// 2026-11-13 is a Friday. 10:00 Paris (09:00Z), past a 09:00 slot.
+const FRI_10_PARIS = Date.UTC(2026, 10, 13, 9, 0);
+
+test("daily with days: skips to the next allowed weekday, in the cron's zone", () => {
+  const t = nextRunFor({ kind: "daily", hour: 9, minute: 0, days: [1, 2, 3, 4, 5] }, FRI_10_PARIS, "Europe/Paris");
+  assert.equal(t, Date.UTC(2026, 10, 16, 8, 0)); // Monday 09:00 Paris
+  // Same day when today is allowed and the slot is still ahead.
+  const early = Date.UTC(2026, 10, 13, 6, 0); // Fri 07:00 Paris
+  assert.equal(nextRunFor({ kind: "daily", hour: 9, minute: 0, days: [5] }, early, "Europe/Paris"), Date.UTC(2026, 10, 13, 8, 0));
+  // Only today's weekday, slot already past: a full week later.
+  assert.equal(nextRunFor({ kind: "daily", hour: 9, minute: 0, days: [5] }, FRI_10_PARIS, "Europe/Paris"), Date.UTC(2026, 10, 20, 8, 0));
+});
+
+test("daily with days: a weekend-only cron from a Friday lands on Saturday", () => {
+  assert.equal(nextRunFor({ kind: "daily", hour: 9, minute: 0, days: [0, 6] }, FRI_10_PARIS, "Europe/Paris"), Date.UTC(2026, 10, 14, 8, 0));
+});
+
+test("daily with days: machine-zone path honours the weekday too", () => {
+  const t = nextRunFor({ kind: "daily", hour: 9, minute: 0, days: [1] }, FRI_10_PARIS);
+  assert.equal(new Date(t).getDay(), 1);
+  assert.ok(t > FRI_10_PARIS);
+});
+
+test("daily without days keeps firing every day (unchanged)", () => {
+  assert.equal(nextRunFor({ kind: "daily", hour: 9, minute: 0 }, FRI_10_PARIS, "Europe/Paris"), Date.UTC(2026, 10, 14, 8, 0));
+});
+
+test("normalizeSchedule: days are sorted, deduplicated, and every-day folds to no field", () => {
+  assert.deepEqual(normalizeSchedule({ kind: "daily", hour: 9, minute: 0, days: [5, 1, 1] }), { kind: "daily", hour: 9, minute: 0, days: [1, 5] });
+  assert.deepEqual(normalizeSchedule({ kind: "daily", hour: 9, minute: 0, days: [0, 1, 2, 3, 4, 5, 6] }), { kind: "daily", hour: 9, minute: 0 });
+  assert.deepEqual(normalizeSchedule({ kind: "daily", hour: 9, minute: 0, days: [] }), { kind: "daily", hour: 9, minute: 0 });
+  assert.deepEqual(normalizeSchedule({ kind: "daily", hour: 9, minute: 0, days: "mon-fri" }), { kind: "daily", hour: 9, minute: 0, days: [1, 2, 3, 4, 5] });
+  assert.equal(normalizeSchedule({ kind: "daily", hour: 9, minute: 0, days: [7] }), null);
+  assert.equal(normalizeSchedule({ kind: "daily", hour: 9, minute: 0, days: "someday" }), null);
+});
+
+test("parseDays: lists, ranges (wrapping), keywords, French names; null on anything unreadable", () => {
+  assert.deepEqual(parseDays("mon,wed,fri"), [1, 3, 5]);
+  assert.deepEqual(parseDays("mon-fri"), [1, 2, 3, 4, 5]);
+  assert.deepEqual(parseDays("fri-mon"), [0, 1, 5, 6]);
+  assert.deepEqual(parseDays("weekend"), [0, 6]);
+  assert.deepEqual(parseDays("lun,MER, vendredi"), [1, 3, 5]);
+  assert.equal(parseDays("mon,funday"), null);
+  assert.equal(parseDays("report"), null);
+  assert.equal(parseDays(""), null);
+});
+
+test("scheduleLabel / daysLabel: a restricted daily names its days", () => {
+  assert.equal(scheduleLabel({ kind: "daily", hour: 9, minute: 0, days: [1, 2, 3, 4, 5] }, "Europe/Paris"), "mon-fri at 09:00 (Europe/Paris)");
+  assert.equal(daysLabel([3, 1]), "mon,wed");
+  assert.equal(daysLabel([6, 0]), "sat,sun");
+  assert.equal(scheduleLabel({ kind: "daily", hour: 9, minute: 0 }, "Europe/Paris"), "daily at 09:00 (Europe/Paris)");
 });

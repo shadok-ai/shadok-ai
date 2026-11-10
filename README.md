@@ -177,7 +177,7 @@ Enter to skip; you can add it later from the web UI).
   cockpit's own ports and well-known local services (debuggers, Docker's API,
   databases) are refused, and only the listener's HTTP status comes back.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
-  daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
+  daily at HH:MM in a time zone you choose, optionally only on some days of the week) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
   model*: prints nothing → nothing to report, the agent is never woken and the
   run costs **zero tokens**; prints something → that output is prepended to the
@@ -571,7 +571,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/new` · `/end` | reset · kill the session |
 | `/restart` | respawn the agent in place (e.g. to pick up new secrets) |
 | `/profiles` · `/list` | list profiles · list bindings |
-| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
+| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` · `/cron daily 09:00 mon-fri <prompt>` | schedule a recurring prompt on this agent |
 | `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
 | `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault; an existing name is never replaced unless you append `--overwrite` |

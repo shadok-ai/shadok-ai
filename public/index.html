@@ -2454,6 +2454,12 @@
      fields stacked — and `align-items: center` centred them instead of aligning. */
   .cron-when { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
   .cron-when input[type=number] { width: 76px; }
+  #cronDailyFields:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cron-days { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .cron-days label { position: relative; font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; user-select: none; color: var(--text-dim); }
+  .cron-days input { position: absolute; opacity: 0; pointer-events: none; }
+  .cron-days label:has(input:checked) { border-color: var(--amber); color: var(--text); background: color-mix(in srgb, var(--amber) 16%, transparent); }
+  .cron-days label:has(input:focus-visible) { outline: 2px solid var(--amber); outline-offset: 1px; }
   .sec-panel .field { margin: 8px 0; }
   .sec-panel textarea, .sec-panel input[type=text], .sec-panel input[type=password], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-family: inherit; }
   #profilesList { list-style: none; padding: 0; margin: 0 0 8px; }
@@ -3541,6 +3547,15 @@
           </span>
           <span id="cronDailyFields" hidden>
             <input id="cronTime" type="time" value="09:00" aria-label="Time of day">
+            <span id="cronDays" class="cron-days" role="group" aria-label="Days of the week">
+              <label><input type="checkbox" value="1" checked><span>Mon</span></label>
+              <label><input type="checkbox" value="2" checked><span>Tue</span></label>
+              <label><input type="checkbox" value="3" checked><span>Wed</span></label>
+              <label><input type="checkbox" value="4" checked><span>Thu</span></label>
+              <label><input type="checkbox" value="5" checked><span>Fri</span></label>
+              <label><input type="checkbox" value="6" checked><span>Sat</span></label>
+              <label><input type="checkbox" value="0" checked><span>Sun</span></label>
+            </span>
           </span>
           <span id="cronOnceFields" hidden>
             <input id="cronAt" type="datetime-local" aria-label="Date and time">
@@ -13774,7 +13789,16 @@
       try { return "once at " + new Date(s.at).toLocaleString("sv-SE", o); }
       catch { return "once at " + new Date(s.at).toISOString().slice(0, 16).replace("T", " "); }
     }
-    return "daily at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
+    // Twin of `daysLabel` (src/crons.ts): the days a restricted daily runs on.
+    const DAY = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+    const ds = Array.isArray(s.days) ? [...s.days].sort((a, b) => a - b) : [];
+    const when = !ds.length ? "daily" : ds.join() === "1,2,3,4,5" ? "mon-fri" : ds.join() === "0,6" ? "sat,sun" : ds.map((d) => DAY[d]).join(",");
+    return when + " at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
+  }
+  /** The day chips: tick exactly `days` (absent/empty = every day). */
+  function setCronDays(days) {
+    const set = Array.isArray(days) && days.length ? new Set(days.map(String)) : null;
+    for (const cb of $("cronDays").querySelectorAll("input")) cb.checked = !set || set.has(cb.value);
   }
   /**
    * The zone actually applied to daily schedules, in the popin's footer.
@@ -13840,6 +13864,7 @@
   let editingCronId = null;
   function resetCronEditMode() {
     editingCronId = null;
+    setCronDays(null);
     $("cronSubmit").textContent = "Add schedule";
     $("cronCancelEdit").hidden = true;
     $("cronErr").textContent = "";
@@ -13859,6 +13884,7 @@
     if (s.kind === "daily") {
       $("cronKind").value = "daily";
       $("cronTime").value = pad2(s.hour ?? 9) + ":" + pad2(s.minute ?? 0);
+      setCronDays(s.days);
     } else if (s.kind === "once") {
       $("cronKind").value = "once";
       if (Number.isFinite(s.at)) $("cronAt").value = toDatetimeLocal(s.at);
@@ -13879,7 +13905,9 @@
     if ($("cronKind").value === "once") return { kind: "once", at: $("cronAt").value };
     if ($("cronKind").value === "daily") {
       const [h, m] = ($("cronTime").value || "09:00").split(":").map((n) => parseInt(n, 10) || 0);
-      return { kind: "daily", hour: h, minute: m };
+      // All seven ticked = every day: the field is omitted, as the server stores it.
+      const days = [...$("cronDays").querySelectorAll("input:checked")].map((c) => Number(c.value));
+      return days.length === 7 ? { kind: "daily", hour: h, minute: m } : { kind: "daily", hour: h, minute: m, days };
     }
     const every = Math.max(1, parseInt($("cronEvery").value, 10) || 1);
     const unit = parseInt($("cronUnit").value, 10) || 1;
@@ -13999,6 +14027,12 @@
     const prompt = $("cronPrompt").value.trim();
     if (!prompt || !active || !active.sessionId) return;
     const check = $("cronCheck").value.trim();
+    // No day ticked would read as "every day" on the server (an empty list is
+    // folded to the default): say it instead of scheduling the opposite.
+    if ($("cronKind").value === "daily" && !$("cronDays").querySelector("input:checked")) {
+      $("cronErr").textContent = "Pick at least one day.";
+      return;
+    }
     // A refusal from the server (past date, unreadable date) used to be
     // swallowed in silence: the panel repainted without the new cron, wordlessly.
     $("cronErr").textContent = "";
