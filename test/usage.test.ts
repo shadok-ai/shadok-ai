@@ -1,26 +1,48 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { getUsage, parseWindow, chooseUsageToken } from "../src/usage.js";
+import { getUsage, parseWindow, pickUsage, hasWindow, type Usage } from "../src/usage.js";
 
-test("chooseUsageToken: the vault long-lived token wins over the fallback", () => {
-  let fellBack = false;
-  const fallback = () => {
-    fellBack = true;
-    return "env-token";
+const win = (pct: number) => ({ usedPercentage: pct, resetsAt: null });
+const snap = (five: number | null, seven: number | null): Usage => ({
+  fiveHour: five === null ? null : win(five),
+  sevenDay: seven === null ? null : win(seven),
+  fetchedAt: 123,
+});
+
+test("hasWindow: a snapshot counts only if it carries a window", () => {
+  assert.equal(hasWindow(null), false);
+  assert.equal(hasWindow(snap(null, null)), false); // 200-but-empty (a setup-token) is NOT useful
+  assert.equal(hasWindow(snap(null, 45)), true);
+  assert.equal(hasWindow(snap(3, null)), true);
+});
+
+test("pickUsage: the first token that reports a window wins; the rest are not fetched", async () => {
+  const fetched: string[] = [];
+  const fetchOne = async (t: string) => {
+    fetched.push(t);
+    return t === "vault" ? snap(null, 45) : snap(10, 10);
   };
-  assert.equal(chooseUsageToken("vault-token", fallback), "vault-token");
-  assert.equal(fellBack, false); // the fallback is not even consulted
+  const r = await pickUsage(["vault", "env"], fetchOne, null);
+  assert.deepEqual(r, snap(null, 45));
+  assert.deepEqual(fetched, ["vault"]); // short-circuits — the env token is never tried
 });
 
-test("chooseUsageToken: no vault token → the fallback (live store / env)", () => {
-  assert.equal(chooseUsageToken(null, () => "env-token"), "env-token");
-  assert.equal(chooseUsageToken(undefined, () => "env-token"), "env-token");
-  assert.equal(chooseUsageToken("   ", () => "env-token"), "env-token"); // blank is absent
-  assert.equal(chooseUsageToken("", () => null), null); // nothing anywhere
+test("pickUsage: a 200-but-empty primary (setup-token) falls through to the next candidate", async () => {
+  const fetchOne = async (t: string) => (t === "vault" ? snap(null, null) : snap(null, 45));
+  const r = await pickUsage(["vault", "env"], fetchOne, null);
+  assert.deepEqual(r, snap(null, 45)); // the env token keeps a number on screen
 });
 
-test("chooseUsageToken: a padded vault token is trimmed, never sent as-is", () => {
-  assert.equal(chooseUsageToken("  sk-ant-oat01-abc  ", () => "env"), "sk-ant-oat01-abc");
+test("pickUsage: all candidates empty → the empty answer (not the stale cache)", async () => {
+  const stale = snap(99, 99);
+  const r = await pickUsage(["a", "b"], async () => snap(null, null), stale);
+  assert.deepEqual(r, snap(null, null));
+});
+
+test("pickUsage: every candidate errors → keep the last good snapshot", async () => {
+  const stale = snap(99, 99);
+  const r = await pickUsage(["a", "b"], async () => null, stale);
+  assert.equal(r, stale);
 });
 
 test("parseWindow reads `utilization` (the real endpoint shape) + ISO resets_at", () => {
@@ -63,8 +85,8 @@ test("getUsage: a token-less read does not latch the in-flight guard", async () 
     );
   }) as typeof fetch;
   try {
-    assert.equal(await getUsage(() => null), null);
-    const u = await getUsage(() => "tok");
+    assert.equal(await getUsage(() => []), null);
+    const u = await getUsage(() => ["tok"]);
     assert.equal(fetches, 1, "the second call must reach the network");
     assert.ok(u);
     assert.equal(u!.fiveHour?.usedPercentage, 3);
