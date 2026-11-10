@@ -186,7 +186,7 @@ test("cross-group tab drops follow groupMoveRefusal on a capable instance, and a
   assert.match(g, /window\.groupMoveRefusal\(/);
   assert.match(fnBlock("function tabMoveAllowed(zone)"), /tabMoveRefusal\(zone\) === null/);
   const dnd = html.slice(html.indexOf('tabbar.addEventListener("dragover"'), html.indexOf("// ── Groups column"));
-  assert.equal((dnd.match(/tabMoveAllowed\(/g) || []).length, 3); // every dragover target is checked
+  assert.equal((dnd.match(/tabMoveAllowed\(/g) || []).length, 4); // every dragover target is checked (tab, folder header, group header, zone)
   assert.match(dnd, /if \(why\) moveNotice\(why\);/); // the column's drop says why
   assert.match(html, /const why = dragTabEl\.parentNode !== body \? tabMoveRefusal\(body\) : null;\s*if \(why\) moveNotice\(why\);/);
 });

@@ -108,6 +108,7 @@ import {
   loadGroups,
   saveGroups,
   loadFolders,
+  saveChannels,
   saveFolders,
   normalizeGroups,
   ensureMainGroup,
@@ -128,7 +129,7 @@ import {
   type Channel,
   type SessionTarget,
 } from "./channels.js";
-import { foldersForViewer, mergeFoldersPut, reparentGroups, visibleFolderIds } from "./group-folders.js";
+import { channelFolder, foldersForViewer, mergeFoldersPut, refileItems } from "./agent-folders.js";
 import { deliverWithRetry } from "./reload.js";
 import {
   startTelegram,
@@ -3317,6 +3318,16 @@ app.put("/channels", (req, res) => {
     const same = (prev.group ?? MAIN_GROUP_ID) === (to ?? MAIN_GROUP_ID);
     return !why && !same;
   };
+  // A folder is cosmetic but GROUP-scoped: an id that does not exist, or names
+  // a folder of another group (a stale one after a move), files the agent at
+  // its group's root rather than somewhere it does not belong.
+  const foldersNow = loadFolders();
+  const storedGroup = new Map(loadChannels().map((c) => [c.sessionId, c.group]));
+  for (const c of body) {
+    if (!c || typeof c !== "object" || !("folder" in c)) continue;
+    const g = "group" in c ? c.group : storedGroup.get(c.sessionId);
+    c.folder = channelFolder(foldersNow, c.folder, g);
+  }
   const merged = mergeClientChannels(body, live, canSee, mayMove);
   // A web-side rename of a Telegram-bound channel → rename its topic too.
   for (const c of merged) {
@@ -3402,38 +3413,33 @@ app.put("/groups", (req, res) => {
   res.status(r.status).json(r.body);
 });
 
-// Group FOLDERS: a visual arrangement of the rail (src/group-folders.ts), never
-// an ACL. The read is filtered (a folder shows only where the viewer sees a group
-// under it, or made it), so the write is filtered the same way (invariant 58):
-// a viewer edits/deletes only folders it can see; the rest are carried through.
-function folderViewerName(req: Parameters<typeof currentAccount>[0]): string | null {
-  return currentAccount(req)?.name ?? null;
+// Agent FOLDERS: a visual arrangement of the agents inside a group
+// (src/agent-folders.ts), never an ACL. A folder belongs to one group and is
+// visible exactly where that group is; the write is filtered the same way
+// (invariant 58): a viewer edits/deletes only folders of groups it can see.
+function visibleGroupIds(req: Parameters<typeof currentAccount>[0]): Set<string> {
+  const viewer = viewerFor(currentAccount(req));
+  return new Set(loadGroups().filter((g) => canSeeGroup(g, viewer)).map((g) => g.id));
 }
-app.get("/group-folders", (req, res) => {
-  const visibleGroups = listableGroups(loadGroups(), viewerFor(currentAccount(req)));
-  res.json(foldersForViewer(loadFolders(), visibleGroups, folderViewerName(req)));
+app.get("/agent-folders", (req, res) => {
+  res.json(foldersForViewer(loadFolders(), visibleGroupIds(req)));
 });
-app.put("/group-folders", (req, res) => {
-  // BROWSER-ONLY like PUT /groups: arranging the rail is a person's act.
-  if (!requestFromBrowser(req)) return res.status(403).json({ error: "group folders are arranged from the web UI only" });
+app.put("/agent-folders", (req, res) => {
+  // BROWSER-ONLY like PUT /groups: arranging the column is a person's act.
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "agent folders are arranged from the web UI only" });
   if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
     return res.status(409).json({ error: "instance-mismatch" });
   }
   const stored = loadFolders();
-  const allGroups = loadGroups();
-  const visibleGroups = listableGroups(allGroups, viewerFor(currentAccount(req)));
-  const visible = visibleFolderIds(stored, visibleGroups, folderViewerName(req));
-  const next = mergeFoldersPut(stored, req.body, visible, folderViewerName(req));
+  const visible = visibleGroupIds(req);
+  const next = mergeFoldersPut(stored, req.body, visible);
   saveFolders(next);
-  // A removed folder must not strand the groups filed in it — including groups
+  // A removed folder must not strand the agents filed in it — including agents
   // this caller cannot see: they move up to the nearest surviving ancestor.
-  const moves = reparentGroups(allGroups as Array<{ id: string; folder?: string | null }>, stored, next);
-  if (moves.size) {
-    saveGroups(
-      allGroups.map((g) => (moves.has(g.id) ? ({ ...g, folder: moves.get(g.id) } as typeof g) : g)),
-    );
-  }
-  res.json(foldersForViewer(next, listableGroups(loadGroups(), viewerFor(currentAccount(req))), folderViewerName(req)));
+  const chans = loadChannels();
+  const moves = refileItems(chans.map((c) => ({ id: c.sessionId, folder: c.folder ?? null })), stored, next);
+  if (moves.size) saveChannels(chans.map((c) => (moves.has(c.sessionId) ? { ...c, folder: moves.get(c.sessionId) } : c)));
+  res.json(foldersForViewer(next, visible));
 });
 
 // Add and/or remove members of a Private (`restricted`) group. Any MEMBER may do
