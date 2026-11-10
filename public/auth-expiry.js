@@ -79,3 +79,50 @@ export function accountExpiryLine(auth, now = Date.now()) {
   if (typeof auth.tokenExpiresAt === "number") return fmtExpiry(auth.tokenExpiresAt, now);
   return null;
 }
+
+/** 5 days: the usage-gauge login is a month-long credential whose renewal needs
+ *  the human's browser, so it gets more notice than the instance login. Kept in
+ *  step with GAUGE_WARN_MS in src/gauge-login.ts (the server derives `state`). */
+export const GAUGE_WARN_MS = 5 * 24 * 60 * 60 * 1000;
+
+/**
+ * The reminder for the OPTIONAL usage-gauge login (`gauge` in the `/auth`
+ * payload). Null unless a gauge login exists AND is within 5 days of its wall or
+ * past it — an instance that never set one up is never nagged, and neither is
+ * one on a platform where the row does not apply. The wall is the refresh
+ * token's fixed ~1 month window: refreshing never extends it, so this reminder is
+ * the whole mitigation.
+ *
+ * @param {{supported?: boolean, state?: string, refreshExpiresAt?: number|null}|null|undefined} gauge
+ * @param {number} [now]
+ * @returns {{remainingMs: number, text: string, expired: boolean}|null}
+ */
+export function gaugeWarning(gauge, now = Date.now()) {
+  if (!gauge || gauge.supported === false) return null;
+  if (gauge.state !== "expiring" && gauge.state !== "expired") return null;
+  const ts = gauge.refreshExpiresAt;
+  if (typeof ts !== "number" || !Number.isFinite(ts)) return null;
+  const remainingMs = ts - now;
+  const expired = remainingMs <= 0;
+  const text = expired
+    ? "The usage gauge login has expired — sign it in again to bring the 5h/7d gauges back."
+    : "The usage gauge login expires " + fmtExpiry(ts, now) + " — sign it in again to keep the 5h/7d gauges.";
+  return { remainingMs, text, expired };
+}
+
+/**
+ * The version-menu line for the gauge login.
+ *
+ * @param {{supported?: boolean, state?: string, email?: string|null, refreshExpiresAt?: number|null, lastRefresh?: {ok: boolean, error?: string}|null}|null|undefined} gauge
+ * @param {number} [now]
+ * @returns {string|null} null when the row should be hidden
+ */
+export function gaugeLine(gauge, now = Date.now()) {
+  if (!gauge || gauge.supported === false) return null;
+  if (gauge.state === "none") return "not set up";
+  if (gauge.state === "wrong-scope") return "signed in without usage access — sign in again";
+  const who = gauge.email || "signed in";
+  const until = typeof gauge.refreshExpiresAt === "number" ? " · " + (gauge.state === "expired" ? "expired" : "sign-in lasts " + fmtExpiry(gauge.refreshExpiresAt, now)) : "";
+  const bad = gauge.lastRefresh && gauge.lastRefresh.ok === false ? " · refresh failing" : "";
+  return who + until + bad;
+}

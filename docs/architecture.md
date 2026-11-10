@@ -777,6 +777,49 @@ is either permanent and invisible (the seeded state) or transient and blocking
 never be visited. The onboarding is instead cards that exist only while
 something is missing.
 
+
+### Usage-gauge login (`src/gauge-login.ts`)
+
+The 5h/7d gauge reads `GET /api/oauth/usage`, which requires the `user:profile`
+scope. A multi-tenant instance's agents run on a `setup-token`, scoped
+`user:inference` only, so they cannot feed it (a scope limit, not an endpoint
+one). The optional **gauge login** is a second, independent claude.ai sign-in
+used for nothing else.
+
+Design decisions and their reasons:
+
+- **Its own store, one owner.** `CLAUDE_CONFIG_DIR=~/.shadok-ai/gauge/<key>/.claude`
+  (0700). The refresh token rotates on each refresh, so two users of one store
+  invalidate each other; shadok is the only one. Agents run as other OS users in
+  multi-tenant and cannot read it. `gaugeEnv` also scrubs `CLAUDE_CODE_OAUTH_TOKEN`
+  / `ANTHROPIC_*` from the children, since the CLI prefers an env token to a
+  stored login and would otherwise act as the agents.
+- **The login reuses the CLI** (`createLoginFlow`, the same piped flow as the
+  instance sign-in, success = clean exit). It became a factory because module
+  state would have made the two logins cancel each other.
+- **Keep-fresh has no dedicated subcommand.** `claude auth refresh` does not
+  exist (the "auth refresh" strings in the binary belong to `awsAuthRefresh`).
+  The CLI refreshes lazily before an authenticated request, so the keeper runs
+  one minimal `-p` turn on the smallest model when the access token has < 90 min
+  left (15-min tick, 10-min backoff) and decides success by whether the access
+  expiry in `.credentials.json` moved. The invocation is isolated in
+  `refreshInvocation()` so it can change if the CLI grows a real command.
+- **The month is a wall, not a clock to extend.** The CLI stores
+  `Math.min(oldExpiry, newExpiry)` for the refresh token's expiry, so refreshing
+  never lengthens it. A re-login about monthly is inherent; the product answer is
+  a reminder (`gaugeWarning`, 5 days) on its own banner, beside the instance
+  login's.
+- **Additive.** `usageCandidates` = `[gauge, vaultLongLived, live]`. `getUsage`
+  already keeps the first candidate that reports a window, and the gauge token is
+  `null` unless it is present, scoped and unexpired, so with no gauge login the
+  list is what it was.
+- **It shows that account's usage.** Whoever signs in decides which account the
+  gauges (and the pace guard) measure; the intent is to match the agents'.
+
+Not covered: macOS (credentials go to the keychain, not the file we read — the
+row is hidden there), and a real login/refresh cycle is the one thing only a
+human's browser can exercise (see the spec's verification section).
+
 ## The first message (`src/ground.ts`, `src/greeting.ts`)
 
 A fresh cockpit opened on a blank chat and left the newcomer to guess. The lead
@@ -2175,6 +2218,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `context/tweak-prompt.md` | Role of the tweak agent, written for the person it answers to rather than for the procedure: the non-developer rule comes FIRST and governs the rest (a named banned-words table — pull request / branch / CI / diff — with what to say instead, a three-line answer budget, never hand back a technical decision), and the job ends when the change is VISIBLE, not when it is merged — so the agent reads `updateChannel` / `autoUpdate` off `/version` and never promises a beta instance something only a release will bring. Then the technical half: `CLAUDE.md` first, verify on a free port and never touch 3789, deliver as fork + PR, watch it through. Injected via the managed `Shadok-Tweak` profile, whose `systemPrompt` is refreshed from this file at every boot (`seedTweakProfile` / `withManagedPrompt`) — only that field, so a secret or model the user attached survives. `test/tweak-role.test.ts` locks the intent: prose is the one thing a refactor can quietly undo. |
 | `context/tweak-pr-check.sh` | The cron guard behind that watch, seeded to `~/.shadok-ai/` at boot (`seedTweakPrCheck`) — **outside** the agent's worktree, which is pruned once its tree is clean. Prints nothing until the PR's state / mergeability / review / CI actually changes; a `gh` failure stays silent and exits 0, because stderr would wake the agent every five minutes (invariant 16). Two things that silence hides, and that the tests now pin: a host with **no `gh` at all** made it permanently inert — silent forever while looking like coverage — so it falls back to the **public REST API** via `curl`, which needs no credential on a public repo; and GitHub computes mergeability lazily, so an `UNKNOWN`/`null` slot is **skipped**, otherwise `UNKNOWN → MERGEABLE → UNKNOWN` woke the agent three times for one non-event. Tested against a fake `gh` AND a fake `curl` in `test/tweak-pr-check.test.ts`. |
 | `src/usage.ts` | Fetches subscription usage (5h/7d) from `/api/oauth/usage`. Its in-flight guard is cleared from OUTSIDE the promise (`run.finally`, identity-checked) and the token is read before the promise exists: an async IIFE with no `await` on a path settles synchronously, so a `finally` inside it ran BEFORE `inflight = …` assigned the resolved-null promise and pinned `getUsage` to null for the process's life — blank gauges and an inert pace guard. |
+| `src/gauge-login.ts` | The OPTIONAL dedicated claude.ai login that feeds ONLY the 5h/7d gauge. A multi-tenant instance's agents run on a `setup-token` (`user:inference` only), which cannot read `/api/oauth/usage` (needs `user:profile`); an interactive `claude auth login --claudeai` can. The credential lives in its OWN `CLAUDE_CONFIG_DIR` (`~/.shadok-ai/gauge/<instanceKey>/.claude`, 0700) with exactly one owner, because the refresh token ROTATES. The login reuses `createLoginFlow` (`claude-auth.ts`, parameterised by env) — no OAuth client of our own. Keep-fresh: **there is no `claude auth refresh`** (2.1.322: unknown command); the CLI refreshes lazily before a request, so `refreshOnce` runs one minimal `claude -p` on the smallest model and judges success on the credentials FILE (access expiry advanced), never on output. The refresh token has a FIXED ~1-month window (`Math.min(old,new)`: refreshing never extends it), so a manual re-login is inherent; `gaugeState`/`gaugeWarning` remind 5 days ahead. `usageCandidates` puts its token FIRST, before the vault long-lived token and the live store; `getUsage` keeps the first that reports a window, so an absent or lapsed gauge login falls through to the old behaviour. File store only (macOS keychain unsupported → row hidden). Opt-in: no credential, nothing runs. Pure cores tested in `test/gauge-login.test.ts`; spec `docs/superpowers/specs/2026-11-10-usage-gauge-login.md`. |
 | `src/pace.ts` | The quota **guardrail**: ideal-pace computation + block verdict. |
 | `src/retry.ts` | Auto-retry of turns that died on a transient API error (529, 5xx, timeout). |
 | `src/channels.ts` | Server-side persistence of the channel + group lists, and **the one answer to "where does this session live"** — `resolveSessionTarget` / `resumeTarget` (pure, tested), which EVERY caller acting on a session's behalf goes through; on a resume the registry beats whatever the caller sent (see invariant 1). keyed by launch dir (`~/.shadok-ai/channels/<enc>.json`). `isMirrored` = does this channel live in Telegram too (opt-in per channel; falls back to "has a binding" so existing setups don't change). **Enabling a mirror is admin-only**, same reason as the Telegram config: the `start` handler drops a non-admin's `mirror:true`, and `PUT /channels` pins each incoming `mirror` to its stored value for a non-admin (the agent-menu toggle persists through that endpoint) — an agent is a member principal (`src/agent-principal.ts`), so an agent can no longer enable a mirror either; a person does it from the agent menu. Also the Telegram board-group binding. Forces the main channel's name to `general`. `model` joins `profile` in `SERVER_OWNED` and for the same reason: it is applied AT SPAWN, so a resume or restart that forgot it would quietly move a running agent onto another model. Assert-only on `start` (invariant 24) — a client that omits the key must never erase it. `isHomeChannel` (pure, tested) is the ONE definition of the home base — the server-owned `home` flag, or a bound board's General (`threadId == null` **and** `chatId < 0`, since a DM has no topic either and must stay closable). It replaced three copies of that condition: `endChannel`, the client's `isMain`, and a comment in `telegram.ts`. `homeAdoptionTarget` gives a pre-flag cockpit its home base and **refuses when it cannot tell** (zero or several candidates): a wrong adoption is irreversible from the UI, since the channel becomes precisely the one that cannot be closed. `homeChannelForGeneral` (pure, tested) is the twin for the OTHER direction: when a board's General is first opened, `bridgeFor` resumes the web home session (`home: true`, not yet Telegram-bound) instead of spawning a SECOND "general" beside it — the home channel gains the binding rather than being duplicated. `channelWriteAllowed` (pure, tested) gates `PUT /channels`/`/groups` on the caller's `x-shadok-instance` key so a stale tab can't write to an instance that took over its port; `dropForeignHomes` (pure, tested, applied on load AND save) strips another instance's `home` "general". `profilePatch` (pure, tested) makes `profile` assert-only in the `start` upsert, so a resume that carries none never null-writes over the channel's stored role (invariant 1). See invariant 35. |

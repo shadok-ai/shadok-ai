@@ -366,14 +366,14 @@
   }
   /* The re-login reminder (sign-in within 48h / expired). Same top strip as the
      update banner; its own id so the two never share styling by accident. */
-  #expiryBanner {
+  #expiryBanner, #gaugeBanner {
     flex: 0 0 auto; width: 100%; z-index: 1000;
     background: var(--amber); color: var(--on-accent);
     font-family: var(--sans); font-size: 12px;
     padding: 6px 12px;
     display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
   }
-  #expiryBanner button {
+  #expiryBanner button, #gaugeBanner button {
     font: inherit; cursor: pointer; padding: 2px 10px;
     border: 1px solid currentColor; border-radius: 4px;
     background: transparent; color: inherit;
@@ -3362,6 +3362,10 @@
        Filled from /auth when the menu opens (instance-global, not per tab). -->
   <div class="vm-row"><span class="vm-label">Account</span><span id="vmAccount">—</span></div>
   <div class="vm-row"><span class="vm-label">Token</span><span id="vmToken">—</span></div>
+  <!-- Optional dedicated claude.ai login that feeds ONLY the 5h/7d gauges (a
+       setup-token cannot read usage). Hidden until /auth says it applies. -->
+  <div class="vm-row" id="vmGaugeRow" hidden><span class="vm-label">Usage gauge</span><span id="vmGauge">—</span></div>
+  <button class="vm-btn" id="gaugeLoginBtn" type="button" hidden>📊 Usage gauge login…</button>
   <!-- Re-login to Claude without waiting for the token to lapse. Shown only
        when signed in (when signed out the sign-in card opens on its own). -->
   <button class="vm-btn" id="reloginBtn" type="button" hidden>↻ Re-login to Claude</button>
@@ -4426,9 +4430,11 @@
   window.toggleProfile = toggleProfile;
   window.accountBanners = accountBanners;
   window.logEntryLine = logEntryLine;
-  import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
+  import { fmtExpiry, expiryWarning, accountExpiryLine, gaugeWarning, gaugeLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
+  window.gaugeWarning = gaugeWarning;
+  window.gaugeLine = gaugeLine;
   window.accountExpiryLine = accountExpiryLine;
   import { filterLedger, ledgerFacets, ledgerAge, LEDGER_AGES, LEDGER_SORTS } from "/ledger-view.js?v=__ASSET_V__";
   window.filterLedger = filterLedger;
@@ -4580,6 +4586,8 @@
     // after the /auth fetch), and the re-login reminder never nags blind.
     fmtExpiry: () => "—",
     expiryWarning: () => null,
+    gaugeWarning: () => null,
+    gaugeLine: () => null,
     accountExpiryLine: () => null,
     // Before the module lands, never open the Connect card on a guess.
     connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
@@ -9642,6 +9650,20 @@
     // Only offer a re-login when we KNOW the account is signed in — a failed
     // probe ("unknown") or a signed-out state is the sign-in card's job.
     if (relBtn) relBtn.hidden = true;
+    // Usage-gauge login row: only where /auth says it applies, and only for an
+    // admin (it signs the instance's gauge in). Painted before the early returns
+    // below, like the agent-auth button, so it survives a signed-out account row.
+    const gRow = document.getElementById("vmGaugeRow");
+    const gBtn = document.getElementById("gaugeLoginBtn");
+    const gLine = a && window.gaugeLine(a.gauge);
+    if (gRow) {
+      gRow.hidden = gLine === null || gLine === undefined;
+      document.getElementById("vmGauge").textContent = gLine || "—";
+    }
+    if (gBtn) {
+      gBtn.hidden = !(gLine !== null && gLine !== undefined && (!me || me.role === "admin"));
+      gBtn.textContent = a && a.gauge && a.gauge.state !== "none" ? "📊 Renew usage gauge login…" : "📊 Set up usage gauge login…";
+    }
     // The "replace subscription token" button only makes sense once a token is
     // actually held (longLived) on a multi-tenant instance, for an admin.
     const mtBtn = document.getElementById("mtTokenReplaceBtn");
@@ -9699,18 +9721,25 @@
   // start getting 401s. The decision (and its 48h threshold) is pure —
   // window.expiryWarning, public/auth-expiry.js — so only the DOM lives here.
   function updateExpiryBanner() {
-    const w = window.expiryWarning(lastAuth);
-    let el = document.getElementById("expiryBanner");
+    paintExpiryBanner("expiryBanner", window.expiryWarning(lastAuth), () => openAuthCard(true));
+    // The OPTIONAL usage-gauge login has its own clock (a month, renewed by hand)
+    // and its own strip, so neither reminder hides the other. Admin only: the
+    // button signs the instance's gauge in, which a member cannot do.
+    paintExpiryBanner("gaugeBanner", (!me || me.role === "admin") ? window.gaugeWarning(lastAuth && lastAuth.gauge) : null, () => openGaugeCard());
+  }
+  function paintExpiryBanner(id, w, onClick) {
+    let el = document.getElementById(id);
     if (!w) { if (el) el.remove(); return; }   // re-logged in → clock reset → gone
     if (!el) {
       el = document.createElement("div");
-      el.id = "expiryBanner";
+      el.id = id;
+      el.className = "expiry-strip";
       const span = document.createElement("span");
-      span.id = "expiryBannerText";
+      span.id = id + "Text";
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = "Re-login now";
-      btn.addEventListener("click", () => openAuthCard(true));
+      btn.addEventListener("click", onClick);
       el.append(span, btn);
       // First child → above the header in the flex chassis, not floating over it.
       document.body.insertBefore(el, document.body.firstChild);
@@ -9718,7 +9747,7 @@
     // Expired is an escalation, not just a reminder — turn the strip red.
     el.style.background = w.expired ? "var(--err)" : "";
     el.style.color = w.expired ? "#fff" : "";
-    document.getElementById("expiryBannerText").textContent = w.text;
+    document.getElementById(id + "Text").textContent = w.text;
   }
 
   function toggleVerMenu(show) {
@@ -9908,6 +9937,11 @@
   document.getElementById("reloginBtn").addEventListener("click", () => {
     toggleVerMenu(false);
     openAuthCard(true);
+  });
+  // The optional usage-gauge login: same card, its own flow and its own store.
+  document.getElementById("gaugeLoginBtn").addEventListener("click", () => {
+    toggleVerMenu(false);
+    openGaugeCard();
   });
   // Change where agents get their model, any time — the same card, opened on
   // its "Another model" side, and dismissable since nothing is broken.
@@ -15168,6 +15202,19 @@
     checkAuth(null, force);
   }
 
+  // The usage-gauge login (src/gauge-login.ts) reuses the authorise step of the
+  // Connect card with its own endpoints. Never blocking: nothing is broken
+  // without it, so it is always dismissable.
+  function openGaugeCard() {
+    cxCancel();
+    cx = { plan: null, flow: "gauge", user: null, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+    authDismissable = true;
+    $("authClose").hidden = false;
+    $("authMsg").hidden = true;
+    $("authOverlay").hidden = false;
+    cxStartAuthorise("gauge", null, false);
+  }
+
   function closeAuthCard() {
     if (!authDismissable) return;
     cxCancel();
@@ -15187,6 +15234,7 @@
   function cxCancelFlow(flow, user) {
     const json = { "Content-Type": "application/json" };
     if (flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    else if (flow === "gauge") fetch("/usage-gauge/login", { method: "DELETE" }).catch(() => {});
     else if (flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
     else if (flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user }) }).catch(() => {});
   }
@@ -15243,6 +15291,7 @@
 
   const CX_FLOWS = {
     instance: { start: "/auth/login", code: "/auth/code" },
+    gauge: { start: "/usage-gauge/login", code: "/usage-gauge/code" },
     token: { start: "/mt-token/start", code: "/mt-token/code" },
     login: { start: "/agent-login/start", code: "/agent-login/code" },
   };
@@ -15261,12 +15310,16 @@
     $("cxOtherLink2").hidden = !(flow === "instance" && cx.plan && !cx.plan.dismissable);
     $("cxHint").hidden = false;
     $("authCode").value = "";
-    $("authTitle").textContent = flow === "instance" && lastAuth && lastAuth.state === "signed-in"
+    $("authTitle").textContent = flow === "gauge" ? "Sign in the usage gauge"
+      : flow === "instance" && lastAuth && lastAuth.state === "signed-in"
       ? "Renew the Claude sign-in" : "Authorise Shadok on claude.ai";
     $("authNote").textContent = flow === "login" && cx.user && cx.plan && cx.plan.step !== "choose" && !fromChoose
       ? "Connect this space (" + cx.user + ") to your Claude account. A Claude page opens in a new tab; approve it, then paste the short code it shows."
       : "A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.";
+    if (flow === "gauge")
+      $("authNote").textContent = "This sign-in only feeds the 5h/7d usage gauges — agents never use it. Sign in with the account whose usage you want shown (the one your agents run on). Anthropic limits it to about a month, so Shadok reminds you to renew it. A Claude page opens in a new tab; approve it, then paste the short code it shows.";
     cxShow("authorise");
+    if (flow === "gauge") $("cxTag").textContent = "Usage gauge";
     const link = $("authLink");
     link.textContent = "Preparing…";
     link.removeAttribute("href");
@@ -15333,7 +15386,7 @@
     cxMsg("");
     const body = cx.flow === "login" ? { user: cx.user, code } : { code };
     const r = await cxPost(CX_FLOWS[cx.flow].code, body);
-    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cxConnected(); }
+    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cx.flow === "gauge" ? gaugeConnected() : cxConnected(); }
     else cxMsg((r && r.error) || "the code was refused", "bad");
   });
 
@@ -15347,6 +15400,22 @@
     if (r && r.ok) cxConnected();
     else cxMsg((r && r.error) || "the token was refused", "bad");
   });
+
+  // The gauge login landed: repaint the gauges and say until when it lasts.
+  async function gaugeConnected() {
+    refreshUsage();
+    await refreshAuthRows();
+    const g = (lastAuth && lastAuth.gauge) || {};
+    let text = g.state === "wrong-scope"
+      ? "That sign-in did not grant usage access, so the gauges cannot use it. Try again."
+      : "The usage gauges now read " + (g.email ? g.email + "'s" : "this account's") + " usage.";
+    if (g.state !== "wrong-scope" && typeof g.refreshExpiresAt === "number")
+      text += " This sign-in lasts until " + new Date(g.refreshExpiresAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) + " — Shadok reminds you a few days before.";
+    $("cxDoneText").textContent = text;
+    authDismissable = true;
+    $("authClose").hidden = false;
+    cxShow("done");
+  }
 
   // Success: say until when, and that the lead agent is on its way when it is.
   async function cxConnected() {

@@ -215,6 +215,19 @@ Enter to skip; you can add it later from the web UI).
 - **Quota gauges + pace guard** — 5h and 7d subscription usage, with an
   optional block when you're burning faster than the window elapses (any
   message can force through).
+  On an instance whose agents run on a long-lived `setup-token` (multi-tenant),
+  that token cannot read usage (it is scoped `user:inference` only), so the gauges
+  stay blank unless you add the **usage gauge login**: version menu → *Set up
+  usage gauge login…*, then sign in with the account whose usage you want shown.
+  It is a separate, optional claude.ai sign-in kept in its own config dir
+  (`~/.shadok-ai/gauge/<instance>/.claude`) and used only for the gauges —
+  agents never see it. Shadok keeps its access token fresh on its own, but
+  Anthropic fixes the sign-in itself at about a month and refreshing never
+  extends it, so you re-login roughly **monthly**; a banner reminds you 5 days
+  before. Not configured = nothing changes. File credential store only (Linux,
+  Docker); on macOS the row is hidden. Endpoints (admin): `GET /usage-gauge`,
+  `POST /usage-gauge/login`, `POST /usage-gauge/code`,
+  `DELETE /usage-gauge/login` (cancel), `DELETE /usage-gauge` (remove).
 - **Notifications** — favicon, title badge and an optional sound when an agent
   needs you. It only blinks when the tab is hidden *and* an unmuted channel is
   actually waiting. Mute a single agent from its menu, or **mute the whole
