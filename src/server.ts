@@ -333,6 +333,7 @@ import {
   originProfile,
   ANY_PROFILE,
   agentOverwriteRefusal,
+  secretNameRefusal,
 } from "./secrets.js";
 import {
   recordSecretAudit,
@@ -4730,6 +4731,10 @@ app.put("/secrets", (req, res) => {
   const ownerGroup = target.ownerGroup;
   const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
+  if (verdict === "created") {
+    const bad = secretNameRefusal(key);
+    if (bad) return res.status(400).json({ error: bad, name: key });
+  }
   if (verdict === "updated") {
     const slice = loadVault()[ownerGroup];
     const entry = slice && Object.hasOwn(slice, key) ? slice[key] : undefined;

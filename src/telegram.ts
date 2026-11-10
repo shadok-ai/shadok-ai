@@ -20,7 +20,7 @@ import {
   tgToolsEnabled,
   setTgTools,
 } from "./channels.js";
-import { secretNames, setSecret, deleteSecret, secretWriteVerdict, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
+import { secretNames, setSecret, deleteSecret, secretWriteVerdict, secretNameRefusal, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
 import { MAIN_GROUP_ID } from "./groups.js";
 import { startSetupToken, submitSetupTokenCode } from "./setup-token.js";
 import { recordSecretAudit } from "./secret-audit.js";
@@ -2230,6 +2230,12 @@ export function startTelegram(
               threadId,
               `🔐 ${skey} already exists — nothing changed. To replace it: /secret ${skey} <value> --overwrite${d?.ok ? "" : "\n⚠️ I couldn't delete your message — remove it manually."}`,
             );
+            return;
+          }
+          const badName = verdict === "created" ? secretNameRefusal(skey) : null;
+          if (badName) {
+            const d = await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(chat.id, threadId, `🔐 ${badName}${d?.ok ? "" : "\n⚠️ I couldn't delete your message — remove it manually."}`);
             return;
           }
           setSecret(skey, parsed.value);

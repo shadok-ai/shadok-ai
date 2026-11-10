@@ -1129,6 +1129,7 @@
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   #secretAttach[data-grouped="1"][data-editing="1"] { display: none; }
   #secretsAdd { margin-bottom: 12px; }
+  #secretsAdd input[aria-invalid="true"] { border-color: #e2564a; }
   .sec-val { flex-basis: 100%; display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
   .sec-val .sec-mask { font-family: var(--mono); letter-spacing: .1em; color: var(--text-dim); }
   .sec-val input { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--amber); background: rgba(0,0,0,.25); color: inherit; font-size: 16px; }
@@ -13576,6 +13577,10 @@
     const value = $("secretVal").value;
     const wanted = checkedProfiles();
     if (!name) return;
+    // A NEW name must be usable as an environment variable — the server refuses
+    // it anyway (`secretNameRefusal`, src/secrets.ts), this just says so before
+    // the round trip and keeps the form filled.
+    if (!editingSecret && !SECRET_NAME_RE.test(name)) { showVaultError(secretNameHint(name)); $("secretKey").focus(); return; }
     // Editing an existing secret with the value left BLANK means "keep the value,
     // just change the profiles" — the vault is write-only, so we must not clobber
     // it with "". A new secret, or a value typed, is written (overwrite: true
@@ -13632,6 +13637,24 @@
     }
     return out;
   }
+  // Twin of `secretNameRefusal` (src/secrets.ts): a secret is injected as an
+  // environment variable named after it, so a name with a space, a dash or a
+  // leading digit cannot work. Said while typing, not only at submit.
+  const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  function secretNameHint(name) {
+    const why = /\s/.test(name) ? "it contains a space"
+      : /^[0-9]/.test(name) ? "it starts with a digit"
+      : "it contains a character other than letters, digits and _";
+    return `"${name}" cannot be a secret name: ${why}. A secret becomes an environment variable, so use only letters, digits and _ (not starting with a digit).`;
+  }
+  let secretNameHintShown = false;
+  $("secretKey").addEventListener("input", () => {
+    const name = $("secretKey").value.trim();
+    const bad = !editingSecret && name !== "" && !SECRET_NAME_RE.test(name);
+    $("secretKey").setAttribute("aria-invalid", bad ? "true" : "false");
+    if (bad) { showVaultError(secretNameHint(name)); secretNameHintShown = true; }
+    else if (secretNameHintShown) { showVaultError(""); secretNameHintShown = false; }
+  });
   // Pasting an .env list into the NAME field adds every secret at once.
   $("secretKey").addEventListener("paste", async (e) => {
     const text = (e.clipboardData || window.clipboardData).getData("text");
