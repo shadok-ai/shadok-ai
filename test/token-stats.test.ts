@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { messageCostUSD, windowStats, MODEL_PRICING, type MsgSample } from "../src/token-stats.js";
-import { scanUsageSamples, scanUsageSamplesAsync } from "../src/tail.js";
+import { scanUsageSamples, scanUsageSamplesAsync, subagentDirFor } from "../src/tail.js";
 
 const u = (input: number, output: number, cacheCreation: number, cacheRead: number) => ({
   input,
@@ -99,6 +99,13 @@ test("scanUsageSamples: collapses streaming partials per id, earliest ts is upSi
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test("subagentDirFor: the Task children's transcripts sit under <main-without-.jsonl>/subagents", () => {
+  assert.equal(
+    subagentDirFor("/h/.claude/projects/enc/ID.jsonl"),
+    path.join("/h/.claude/projects/enc/ID", "subagents"),
+  );
 });
 
 test("scanUsageSamplesAsync: same result as the sync scanner (used for the instance total)", async () => {

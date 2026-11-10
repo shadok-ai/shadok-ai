@@ -97,7 +97,7 @@ import {
 } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd, tmuxSessionCreated } from "./tmux.js";
-import { scanUsageSamples, scanUsageSamplesAsync, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
+import { scanUsageSamples, scanUsageSamplesAsync, subagentDirFor, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
 import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
@@ -3037,33 +3037,40 @@ app.get("/channels/glance", async (req, res) => {
 // agent is loaded; otherwise scanned once from its transcript — scope stays the
 // CURRENT session file either way, which is why it cannot drag (no cross-session
 // sweep). Same per-session ACL as /crons.
-app.get("/channels/stats", (req, res) => {
+app.get("/channels/stats", async (req, res) => {
   const id = String(req.query.id ?? "");
   if (!id) return res.status(400).json({ error: "id required" });
   if (!mayActFor(req, id)) return res.status(403).json({ error: "forbidden" });
   const live = sessions.get(id);
-  let samples: Iterable<MsgSample>;
+  let mainSamples: MsgSample[];
   let upSince: number | null;
   let model: string;
   let lastRespawn: number | null;
+  let mainFile: string;
   if (live) {
-    samples = live.usageSamples.values();
+    mainSamples = [...live.usageSamples.values()];
     upSince = live.firstMessageAt;
     model = live.model ?? "";
     // A tmux pane's own creation time survives a server restart (true process
     // age); node-pty dies with the server, so the Live's build time is right.
     lastRespawn =
       live.pilot instanceof TmuxPilot ? (tmuxSessionCreated("sk-" + id) ?? live.spawnedAt) : live.spawnedAt;
+    mainFile = sessionFilePath(live.cwd, id, live.transcriptHome);
   } else {
     const ch = loadChannels().find((c) => c.sessionId === id);
     if (!ch) return res.status(404).json({ error: "unknown session" });
-    const scan = scanUsageSamples(sessionFilePath(ch.cwd, id, channelStateHome(ch)));
-    samples = scan.samples.values();
+    mainFile = sessionFilePath(ch.cwd, id, channelStateHome(ch));
+    const scan = await scanUsageSamplesAsync(mainFile);
+    mainSamples = [...scan.samples.values()];
     upSince = scan.firstAt;
     model = ch.model ?? "";
     lastRespawn = null; // not running — there is no live process to date
   }
-  const windows: TokenStats = windowStats(samples, Date.now());
+  // A subagent (Task tool) writes its own transcript with its own usage, never
+  // folded into the parent's — so add it here, attributed to this agent, or a
+  // delegating agent reads far cheaper than it was.
+  const subs = await subagentSamples(mainFile);
+  const windows: TokenStats = windowStats([...mainSamples, ...subs], Date.now());
   res.json({ windows, upSince, lastRespawn, model });
 });
 
@@ -3077,10 +3084,11 @@ const statsScanCache = new Map<string, { mtime: number; size: number; samples: M
 // with every agent that ever lived on the instance. Insertion order gives a
 // plain FIFO eviction; an evicted file is simply re-scanned next time.
 const STATS_CACHE_MAX = 64;
-async function channelStatsSamples(ch: Channel): Promise<Iterable<MsgSample>> {
-  const live = sessions.get(ch.sessionId);
-  if (live) return live.usageSamples.values(); // in memory — no I/O
-  const file = sessionFilePath(ch.cwd, ch.sessionId, channelStateHome(ch));
+// A transcript's samples, async and cached by (mtime,size): a file that has not
+// changed since last read is never re-parsed, only stat()ed. Used for dormant
+// main transcripts AND subagent ones (a finished subagent's file is static, so
+// it is read once ever).
+async function cachedFileSamples(file: string): Promise<MsgSample[]> {
   let st: fs.Stats;
   try {
     st = await fs.promises.stat(file);
@@ -3088,7 +3096,7 @@ async function channelStatsSamples(ch: Channel): Promise<Iterable<MsgSample>> {
     return [];
   }
   const cached = statsScanCache.get(file);
-  if (cached && cached.mtime === st.mtimeMs && cached.size === st.size) return cached.samples.values();
+  if (cached && cached.mtime === st.mtimeMs && cached.size === st.size) return [...cached.samples.values()];
   const { samples } = await scanUsageSamplesAsync(file);
   statsScanCache.delete(file); // re-insert, so a refreshed file is the newest entry
   if (statsScanCache.size >= STATS_CACHE_MAX) {
@@ -3096,7 +3104,35 @@ async function channelStatsSamples(ch: Channel): Promise<Iterable<MsgSample>> {
     if (!oldest.done) statsScanCache.delete(oldest.value);
   }
   statsScanCache.set(file, { mtime: st.mtimeMs, size: st.size, samples });
-  return samples.values();
+  return [...samples.values()];
+}
+// Every subagent transcript's samples, merged — the Task-tool children whose
+// usage is theirs alone. Missing dir (no subagents) → none. One file at a time
+// so a deep tree still yields the event loop.
+async function subagentSamples(mainFile: string): Promise<MsgSample[]> {
+  const dir = subagentDirFor(mainFile);
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: MsgSample[] = [];
+  for (const name of names) {
+    if (!name.endsWith(".jsonl")) continue;
+    out.push(...(await cachedFileSamples(path.join(dir, name))));
+  }
+  return out;
+}
+async function channelStatsSamples(ch: Channel): Promise<MsgSample[]> {
+  const live = sessions.get(ch.sessionId);
+  const home = live ? live.transcriptHome : channelStateHome(ch);
+  const cwd = live ? live.cwd : ch.cwd;
+  const mainFile = sessionFilePath(cwd, ch.sessionId, home);
+  // A live agent's MAIN usage is in memory (no I/O); its subagents are on disk.
+  const main = live ? [...live.usageSamples.values()] : await cachedFileSamples(mainFile);
+  const subs = await subagentSamples(mainFile);
+  return [...main, ...subs];
 }
 
 // Sum of every agent the caller may SEE (a member → their groups; admin → all) —
