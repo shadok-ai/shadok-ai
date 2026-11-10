@@ -1946,6 +1946,12 @@ token; the figure prices the tokens at API list rates (`MODEL_PRICING` in
 (`windowStats`, `messageCostUSD`); the samples come from the live session's
 `usageSamples` (seeded once by `scanUsageSamples`, updated per `usage` event — no
 per-request file read) or, for a dormant agent, one scan of its current transcript.
+Both views also add the agent's **subagents** (`subagentSamples`): the Task tool's
+children write their own `.jsonl` under `subagentDirFor(mainFile)` with usage
+that is never folded into the parent's, so a delegating agent's REAL total is
+mostly there (measured: for one real session, subagents were ~90% of it). The
+subagent files are read via the same `(mtime,size)` cache (`cachedFileSamples`),
+and a finished subagent's file is static, so it is parsed once ever.
 Scope is the **current** session file, which is why it cannot drag (no
 cross-session sweep). It also returns `upSince` (the transcript's first timestamp —
 session age, stable across restarts) and `lastRespawn` (the running process's

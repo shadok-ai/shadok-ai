@@ -68,6 +68,18 @@ cached by `(mtime,size)` so a repeat open only `stat()`s unchanged files. Scope
 stays each agent's current session. First cold open on a big fleet pays one async
 read per dormant agent; steady state is stats + stat().
 
+## Subagents count, attributed to the parent
+
+An agent's Task-tool children write their OWN transcript under
+`<main-without-.jsonl>/subagents/agent-*.jsonl`, with their own usage that is
+never folded into the parent's (the parent only sees the child's final result as
+a tool_result). So counting only the main file UNDER-reads a delegating agent —
+and not by a little: measured on one real session, the subagents were **95.3M of
+106.1M tokens, ~90%** of the true consumption. Both views now add
+`subagentSamples(mainFile)`, attributed to the parent agent, read through the
+same `(mtime,size)` cache (a finished subagent file is static → parsed once).
+Still out of scope: earlier resume-chain files of the same conversation.
+
 ## Verification
 
 - Pure units: `messageCostUSD` (known vs unknown model), `windowStats` (nesting,
@@ -78,6 +90,9 @@ read per dormant agent; steady state is stats + stat().
 - `GET /instance/stats` over that same transcript (seeded as one channel) returned
   the identical 30 d total (17,834,971 tokens / $13.32) through the full HTTP path
   (`visibleChannels` → dormant async scan → merge → `windowStats`).
+- Subagents: on a real session with 24 subagent files, both `/channels/stats` and
+  `/instance/stats` returned 106,106,764 tokens / $103.64 — exactly main (10.76M)
+  + subagents (95.3M), confirming the children are summed through the endpoints.
 - Served build (free port): page serves the panel, every inline script parses
   (invariant 12), `GET /channels/stats` wired (400 no id, 404 unknown). Prod 3789
   untouched. No browser on this host (Playwright absent), so the render was

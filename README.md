@@ -192,12 +192,16 @@ Enter to skip; you can add it later from the web UI).
   API, so nothing is billed per token; the figure is what those tokens would cost
   at Anthropic API list prices, a way to compare agents rather than an invoice. It
   also shows how long the agent has been **up** (session age, which survives
-  restarts) and when it **last respawned** (the running process's start). Scope is
-  the current session's transcript, read once, so opening it never drags. The
-  header **⋯** menu has the **instance-wide total** — the same windows summed over
-  every agent you can see (a member → their groups, admin → all). Running agents
-  are summed from memory and a dormant agent's transcript is read once and cached,
-  so the fleet total doesn't stall the cockpit either.
+  restarts) and when it **last respawned** (the running process's start). The
+  figures are the **real** per-message counts the API reported (only the *cost* is
+  notional), and they include the agent's **subagents** — the Task-tool children
+  write their own transcripts, so a delegating agent's true total is mostly there;
+  it is attributed back to the parent. Scope is each agent's current session (not
+  earlier resume files). The header **⋯** menu has the **instance-wide total** —
+  the same windows summed over every agent you can see (a member → their groups,
+  admin → all). Live agents are summed from memory; a dormant agent's transcript
+  (and its subagents') is read once and cached by modification time, so neither
+  opening a panel nor the fleet total stalls the cockpit.
 - **Agents that report back** — an agent that launches other agents is told when
   each one finishes, blocks on a question, or dies. It hears about **its own**
   children and nothing else, so a busy channel never wakes it. What arrives is
