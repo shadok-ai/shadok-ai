@@ -102,7 +102,7 @@ import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
-import { getUsage, chooseUsageToken, readOAuthToken, type Window } from "./usage.js";
+import { getUsage, readOAuthToken, type Window } from "./usage.js";
 import {
   loadChannels,
   loadGroups,
@@ -625,11 +625,13 @@ function instanceLongLivedToken(): string | null {
   return typeof t === "string" && t.trim() ? t.trim() : null;
 }
 
-// The token the usage gauge authenticates with: the account the agents actually
-// run on (the vault long-lived token) first, else the CLI's live store / env.
-// Shared by the /usage endpoint and both pace-guard checks so all three measure
-// the same account.
-const usageToken = (): string | null => chooseUsageToken(instanceLongLivedToken(), readOAuthToken);
+// The candidate Bearers for the usage gauge, in preference order: the account
+// the agents actually run on (the vault long-lived token) FIRST, then the CLI's
+// live store / env. `getUsage` takes the first that actually reports a window —
+// so a long-lived `setup-token` (which authenticates agents but reports no usage)
+// falls through to the env token instead of blanking the gauge. Shared by the
+// /usage endpoint and both pace-guard checks so all three measure one account.
+const usageToken = (): Array<string | null> => [instanceLongLivedToken(), readOAuthToken()];
 
 // The server drives channels it manages over its OWN loopback WS (cron fires,
 // parent notifications, the reload nudge — all through `driveChannel`). Those
