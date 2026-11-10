@@ -107,6 +107,8 @@ import {
   loadChannels,
   loadGroups,
   saveGroups,
+  loadFolders,
+  saveFolders,
   normalizeGroups,
   ensureMainGroup,
   mainGroupHeal,
@@ -126,6 +128,7 @@ import {
   type Channel,
   type SessionTarget,
 } from "./channels.js";
+import { foldersForViewer, mergeFoldersPut, reparentGroups, visibleFolderIds } from "./group-folders.js";
 import { deliverWithRetry } from "./reload.js";
 import {
   startTelegram,
@@ -3397,6 +3400,40 @@ app.put("/groups", (req, res) => {
   });
   if (r.groups) saveGroups(r.groups);
   res.status(r.status).json(r.body);
+});
+
+// Group FOLDERS: a visual arrangement of the rail (src/group-folders.ts), never
+// an ACL. The read is filtered (a folder shows only where the viewer sees a group
+// under it, or made it), so the write is filtered the same way (invariant 58):
+// a viewer edits/deletes only folders it can see; the rest are carried through.
+function folderViewerName(req: Parameters<typeof currentAccount>[0]): string | null {
+  return currentAccount(req)?.name ?? null;
+}
+app.get("/group-folders", (req, res) => {
+  const visibleGroups = listableGroups(loadGroups(), viewerFor(currentAccount(req)));
+  res.json(foldersForViewer(loadFolders(), visibleGroups, folderViewerName(req)));
+});
+app.put("/group-folders", (req, res) => {
+  // BROWSER-ONLY like PUT /groups: arranging the rail is a person's act.
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "group folders are arranged from the web UI only" });
+  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
+    return res.status(409).json({ error: "instance-mismatch" });
+  }
+  const stored = loadFolders();
+  const allGroups = loadGroups();
+  const visibleGroups = listableGroups(allGroups, viewerFor(currentAccount(req)));
+  const visible = visibleFolderIds(stored, visibleGroups, folderViewerName(req));
+  const next = mergeFoldersPut(stored, req.body, visible, folderViewerName(req));
+  saveFolders(next);
+  // A removed folder must not strand the groups filed in it — including groups
+  // this caller cannot see: they move up to the nearest surviving ancestor.
+  const moves = reparentGroups(allGroups as Array<{ id: string; folder?: string | null }>, stored, next);
+  if (moves.size) {
+    saveGroups(
+      allGroups.map((g) => (moves.has(g.id) ? ({ ...g, folder: moves.get(g.id) } as typeof g) : g)),
+    );
+  }
+  res.json(foldersForViewer(next, listableGroups(loadGroups(), viewerFor(currentAccount(req))), folderViewerName(req)));
 });
 
 // Add and/or remove members of a Private (`restricted`) group. Any MEMBER may do

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { type Group, type Nature, MAIN_GROUP_ID } from "./groups.js";
+import { type Folder, sanitizeFolders } from "./group-folders.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -476,6 +477,15 @@ export function loadGroups(): Group[] {
 }
 export function saveGroups(list: Group[]): void {
   writeJson("groups", normalizeGroups(list));
+}
+
+/** Group folders (a visual arrangement of the rail, src/group-folders.ts),
+ *  persisted per launch dir beside the groups. */
+export function loadFolders(): Folder[] {
+  return sanitizeFolders(readJson("folders"));
+}
+export function saveFolders(list: Folder[]): void {
+  writeJson("folders", sanitizeFolders(list));
 }
 
 /** The single group this instance is bound to (one board per instance), or null.

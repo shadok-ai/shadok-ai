@@ -469,7 +469,7 @@ const sameMembers = (a: readonly string[], b: readonly string[]): boolean => {
  * The server-side merge behind `PUT /groups` (pure, so the route is a thin
  * mapper and the SECURITY rule is unit-tested).
  *
- * The web client PUTs only COSMETIC fields (id, name, icon, collapsed, order) —
+ * The web client PUTs only COSMETIC fields (id, name, icon, collapsed, order, folder) —
  * it never sends `members`/`nature`/`owner`. A naive `saveGroups(body)` would
  * therefore default those through `normalizeGroups` and silently turn a
  * restricted COMEX into an empty public group: a people-wall breach by omission.
@@ -555,6 +555,9 @@ export function mergeGroupsPut(
       if ("icon" in row) cosmetic.icon = row.icon;
       if ("collapsed" in row) cosmetic.collapsed = row.collapsed;
       if ("order" in row) cosmetic.order = row.order;
+      // The rail folder it is filed in (src/group-folders.ts) — cosmetic, never
+      // an ACL. Anything but a string id means "the root".
+      if ("folder" in row) cosmetic.folder = typeof row.folder === "string" && row.folder ? row.folder : null;
       const acl: Partial<Group> = isMember
         ? {
             ...(wantsNature !== undefined ? { nature: wantsNature } : {}),
@@ -570,6 +573,7 @@ export function mergeGroupsPut(
       const extras: Record<string, unknown> = {};
       if ("icon" in row) extras.icon = row.icon;
       if ("collapsed" in row) extras.collapsed = row.collapsed;
+      if (typeof row.folder === "string" && row.folder) extras.folder = row.folder;
       out.push({
         id,
         name: typeof row.name === "string" ? row.name : "",

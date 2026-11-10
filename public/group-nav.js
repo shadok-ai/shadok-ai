@@ -123,3 +123,112 @@ export function groupMoveRefusal(from, to) {
     return `An agent can’t be moved into ${label(to)}: that space is walled off (its own system account, its own files). Create the agent from inside it instead.`;
   return null;
 }
+
+/* ── Folders: a visual arrangement of the rail (src/group-folders.ts) ──────
+ * A folder holds groups and other folders. It is never an ACL: nothing here
+ * changes who sees an agent or which OS user it runs as. */
+
+/** Same cap as the server's MAX_FOLDER_DEPTH. */
+export const MAX_FOLDER_DEPTH = 8;
+
+/** A fresh folder id the server accepts (`[A-Za-z0-9_-]{1,64}`). */
+export function newFolderId(rand = Math.random) {
+  return "f-" + Date.now().toString(36) + "-" + Math.floor(rand() * 1e9).toString(36);
+}
+
+/** Is `ancestorId` `id` itself or one of its ancestors? A folder can't be moved
+ *  into itself or below itself. */
+export function isSelfOrAncestor(folders, ancestorId, id) {
+  const byId = new Map((folders || []).map((f) => [String(f.id), f]));
+  let cur = id == null ? null : String(id);
+  for (let i = 0; cur != null && i <= byId.size; i++) {
+    if (cur === String(ancestorId)) return true;
+    const f = byId.get(cur);
+    cur = f && f.parent != null ? String(f.parent) : null;
+  }
+  return false;
+}
+
+/** How many folders deep `id` sits (1 for a root folder; 0 for null). */
+export function folderDepth(folders, id) {
+  const byId = new Map((folders || []).map((f) => [String(f.id), f]));
+  let d = 0;
+  let cur = id == null ? null : String(id);
+  while (cur != null && byId.has(cur) && d <= byId.size) {
+    d++;
+    const p = byId.get(cur).parent;
+    cur = p == null ? null : String(p);
+  }
+  return d;
+}
+
+/** The height of the folder subtree rooted at `id` (1 for a folder with no sub-folder). */
+function subtreeHeight(folders, id) {
+  const kids = folders.filter((f) => f.parent != null && String(f.parent) === String(id));
+  return 1 + kids.reduce((m, k) => Math.max(m, subtreeHeight(folders, k.id)), 0);
+}
+
+/** May folder `id` be moved under `parent` (null = root)? Not into itself or a
+ *  descendant, and not past MAX_FOLDER_DEPTH counting its own sub-folders. */
+export function canMoveFolder(folders, id, parent) {
+  if (parent == null) return true;
+  if (isSelfOrAncestor(folders || [], id, parent)) return false;
+  return folderDepth(folders, parent) + subtreeHeight(folders || [], id) <= MAX_FOLDER_DEPTH;
+}
+
+/**
+ * The rail's rows, in display order: at each level the sub-folders
+ * (alphabetical) then the groups (in their own manual order). A group whose
+ * folder does not exist sits at the root; a folded folder's contents are left
+ * out. `groups` is `[{id, folder}]` in display order; `collapsed` a Set of ids.
+ * Rows: `{kind: "folder"|"group", id, depth}`.
+ */
+export function folderRows(folders, groups, collapsed) {
+  const fl = folders || [];
+  const ids = new Set(fl.map((f) => String(f.id)));
+  const parentOf = (f) => (f.parent != null && ids.has(String(f.parent)) ? String(f.parent) : null);
+  const folderOf = (g) => (g.folder != null && ids.has(String(g.folder)) ? String(g.folder) : null);
+  const fold = collapsed || new Set();
+  const rows = [];
+  const seen = new Set();
+  const walk = (parent, depth) => {
+    const subs = fl
+      .filter((f) => parentOf(f) === parent && !seen.has(String(f.id)))
+      .sort((a, b) => String(a.name).localeCompare(String(b.name), undefined, { sensitivity: "base" }));
+    for (const f of subs) {
+      const id = String(f.id);
+      seen.add(id);
+      rows.push({ kind: "folder", id, depth });
+      if (!fold.has(id) && depth + 1 < MAX_FOLDER_DEPTH + 1) walk(id, depth + 1);
+    }
+    for (const g of groups || []) if (folderOf(g) === parent) rows.push({ kind: "group", id: String(g.id), depth });
+  };
+  walk(null, 0);
+  return rows;
+}
+
+/** Every group id filed anywhere under folder `id` (for its mood and count). */
+export function groupsUnder(folders, groups, id) {
+  const fl = folders || [];
+  const ids = new Set(fl.map((f) => String(f.id)));
+  return (groups || [])
+    .filter((g) => g.folder != null && ids.has(String(g.folder)) && isSelfOrAncestor(fl, id, g.folder))
+    .map((g) => String(g.id));
+}
+
+/**
+ * Removing folder `id`: its sub-folders and groups move up to its parent, so
+ * nothing is lost. Returns the new folder list and the groups to refile
+ * (`Map<groupId, newFolder>`).
+ */
+export function removeFolder(folders, groups, id) {
+  const sid = String(id);
+  const gone = (folders || []).find((f) => String(f.id) === sid);
+  const up = gone && gone.parent != null ? String(gone.parent) : null;
+  const next = (folders || [])
+    .filter((f) => String(f.id) !== sid)
+    .map((f) => (f.parent != null && String(f.parent) === sid ? { ...f, parent: up } : f));
+  const refile = new Map();
+  for (const g of groups || []) if (g.folder != null && String(g.folder) === sid) refile.set(String(g.id), up);
+  return { folders: next, refile };
+}
