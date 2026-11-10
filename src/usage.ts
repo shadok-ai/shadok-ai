@@ -34,7 +34,7 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
  * emptying the usage gauges. Live-first prevents that.)
  * Returns null if none is found (usage simply won't be shown).
  */
-function readOAuthToken(): string | null {
+export function readOAuthToken(): string | null {
   // Credentials file (Linux, and some macOS setups).
   const file = path.join(os.homedir(), ".claude", ".credentials.json");
   try {
@@ -96,6 +96,30 @@ export function parseWindow(w: any): Window | null {
     if (!Number.isNaN(t)) resetsAt = Math.floor(t / 1000);
   }
   return { usedPercentage: pct, resetsAt };
+}
+
+/**
+ * The token the usage gauge should authenticate with.
+ *
+ * On a multi-tenant instance the AGENTS authenticate with the long-lived token
+ * from the vault (`MT_CLAUDE_OAUTH_TOKEN`, injected into each agent as
+ * `CLAUDE_CODE_OAUTH_TOKEN` at spawn). The gauge, though, read only the live
+ * credentials store / the server's OWN frozen `CLAUDE_CODE_OAUTH_TOKEN` env — a
+ * DIFFERENT account. So re-pasting the long-lived token moved every agent to the
+ * new account and left the gauge measuring the old one. Prefer the vault token
+ * here so the gauge follows the account the agents actually run on; the vault is
+ * read live, so a re-mint reaches the gauge within the 60s cache, no restart.
+ *
+ * Pure (the caller resolves both inputs): the vault token when the instance has
+ * one, else whatever `readOAuthToken` finds. An empty/whitespace vault value is
+ * treated as absent — never sent as a Bearer.
+ */
+export function chooseUsageToken(
+  vaultLongLivedToken: string | null | undefined,
+  fallback: () => string | null,
+): string | null {
+  const t = vaultLongLivedToken?.trim();
+  return t ? t : fallback();
 }
 
 let cache: Usage | null = null;
