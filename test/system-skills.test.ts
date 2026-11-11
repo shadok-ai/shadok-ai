@@ -92,3 +92,32 @@ test("every skill seeder is gated by SEED_SKILLS, so a side-by-side build cannot
   // And the gate itself: default ON (an ordinary boot must keep refreshing).
   assert.match(SERVER, /const SEED_SKILLS = \(process\.env\.SHADOK_SEED_SKILLS \?\? ""\)\.trim\(\) !== "0";/);
 });
+
+// ── the HOME tier's links ────────────────────────────────────────────────
+
+test("a group HOME gets the machine-wide skills LINKED, as the user, never forced", () => {
+  const i = SERVER.indexOf("function linkSystemSkills(");
+  assert.ok(i >= 0, "linkSystemSkills present");
+  const body = SERVER.slice(i, SERVER.indexOf("\n}\n", i));
+  // Multi-tenant only: a mono-tenant HOME already holds the real skills.
+  assert.match(body, /if \(DEPLOYMENT_MODE !== "multi-tenant"\) return;/);
+  // AS the user, like ensureTierStateDir: root must not write through a 0700
+  // HOME it does not own, where an agent could have planted a symlink.
+  assert.match(body, /spawnAsUserSync\(user, "mkdir", \["-p", dir\]\)/);
+  assert.match(body, /spawnAsUserSync\(user, "ln", \["-s",/);
+  // `ln -s` WITHOUT -f: an agent's own skill of the same name is never replaced.
+  assert.doesNotMatch(body, /"-sf"|"-f"/);
+  // Symlinks, not copies: the skills stay in ONE place and need no refresh.
+  assert.doesNotMatch(body, /cpSync|"cp"/);
+  assert.match(body, /missingHomeSkillLinks\(system, have\)/);
+});
+
+test("the links are (re)made at BOOT, not only at provisioning", () => {
+  // A HOME that predates this, or one a docker recreate wiped, would otherwise
+  // keep answering MODULE_NOT_FOUND for ever.
+  const i = SERVER.indexOf("function preseedGroupHomes(");
+  const body = SERVER.slice(i, SERVER.indexOf("\n}\n", i));
+  assert.match(body, /linkSystemSkills\(user, home\)/);
+  const j = SERVER.indexOf("async function seedGroupHome(");
+  assert.match(SERVER.slice(j, SERVER.indexOf("\n}\n", j)), /linkSystemSkills\(user, home\)/);
+});
