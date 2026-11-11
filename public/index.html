@@ -366,14 +366,14 @@
   }
   /* The re-login reminder (sign-in within 48h / expired). Same top strip as the
      update banner; its own id so the two never share styling by accident. */
-  #expiryBanner {
+  #expiryBanner, #gaugeBanner {
     flex: 0 0 auto; width: 100%; z-index: 1000;
     background: var(--amber); color: var(--on-accent);
     font-family: var(--sans); font-size: 12px;
     padding: 6px 12px;
     display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
   }
-  #expiryBanner button {
+  #expiryBanner button, #gaugeBanner button {
     font: inherit; cursor: pointer; padding: 2px 10px;
     border: 1px solid currentColor; border-radius: 4px;
     background: transparent; color: inherit;
@@ -687,7 +687,7 @@
     animation: breathe 1.8s ease-in-out infinite;
   }
   @media (prefers-reduced-motion: reduce) { .tab.working, .tab.has-bg { animation: none; } }
-  #newTab, #newGroup, #newGroupBare {
+  #newTab, #newRoom, #newGroup, #newGroupBare {
     margin-top: 6px;
     border-color: transparent;
     font-size: 13px;
@@ -695,7 +695,8 @@
     padding: 8px 10px;
     text-align: left;
   }
-  #newTab:hover, #newGroup:hover, #newGroupBare:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
+  #newRoom { margin-top: 0; }
+  #newTab:hover, #newRoom:hover, #newGroup:hover, #newGroupBare:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
   #newGroup { margin-top: 4px; }
   /* The fallback "new group" entry: only on desktop, only while the rail (which
      has its own) is hidden for want of a group. */
@@ -1129,6 +1130,7 @@
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   #secretAttach[data-grouped="1"][data-editing="1"] { display: none; }
   #secretsAdd { margin-bottom: 12px; }
+  #secretsAdd input[aria-invalid="true"] { border-color: #e2564a; }
   .sec-val { flex-basis: 100%; display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
   .sec-val .sec-mask { font-family: var(--mono); letter-spacing: .1em; color: var(--text-dim); }
   .sec-val input { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--amber); background: rgba(0,0,0,.25); color: inherit; font-size: 16px; }
@@ -2361,7 +2363,16 @@
      cockpit uses 6 — i.e. a grey and a white that existed nowhere else. The amber
      rule on top follows the instruments' grammar (active tab edge, lit ⌨️): this
      panel is in the foreground. */
-  #securityBtn { position: relative; }
+  #securityBtn, #reportsBtn { position: relative; }
+  /* Agent reports: a card per report, the open ones first. */
+  /* Doubled class: `.sec-events li` (same specificity, declared later) centres. */
+  .sec-events.rep-list li { flex-direction: column; align-items: stretch; gap: 4px; text-align: left; }
+  .sec-events.rep-list li.resolved { opacity: .6; }
+  .rep-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .rep-head .rep-title { flex: 1; min-width: 0; font-weight: 600; }
+  .rep-meta { color: var(--text-dim); font-size: 11px; }
+  .rep-body { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 0; max-height: 180px; overflow: auto; color: var(--text-dim); }
+  .rep-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   .sec-badge {
     position: absolute; top: -5px; right: -5px;
     min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
@@ -2460,6 +2471,12 @@
      fields stacked — and `align-items: center` centred them instead of aligning. */
   .cron-when { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
   .cron-when input[type=number] { width: 76px; }
+  #cronDailyFields:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cron-days { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .cron-days label { position: relative; font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; user-select: none; color: var(--text-dim); }
+  .cron-days input { position: absolute; opacity: 0; pointer-events: none; }
+  .cron-days label:has(input:checked) { border-color: var(--amber); color: var(--text); background: color-mix(in srgb, var(--amber) 16%, transparent); }
+  .cron-days label:has(input:focus-visible) { outline: 2px solid var(--amber); outline-offset: 1px; }
   .sec-panel .field { margin: 8px 0; }
   .sec-panel textarea, .sec-panel input[type=text], .sec-panel input[type=password], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-family: inherit; }
   #profilesList { list-style: none; padding: 0; margin: 0 0 8px; }
@@ -3242,6 +3259,30 @@
     border: 1px solid var(--amber, #d9a441); box-shadow: 0 8px 30px rgba(0,0,0,.35);
     font-size: 13px; line-height: 1.4; cursor: pointer;
   }
+
+  /* ── Three kinds of entries in the column, told apart at a glance ──────────
+     An AGENT keeps the round initials avatar. A ROOM (no agent, people only)
+     gets a square slate tile with a speech bubble and no presence LED: nothing
+     runs behind it. An agent with SCHEDULED prompts gets a dashed ring and a
+     clock on its avatar — it can speak with nobody asking. */
+  .tab.room .tav, body.room-active #chanAvatar {
+    border-radius: 8px; background: #64748b; box-shadow: none;
+  }
+  .tab.room .tav > span:first-child, body.room-active #chanAvatar { font-size: 0; }
+  .tab.room .tav::before, body.room-active #chanAvatar::before { content: "💬"; font-size: 15px; line-height: 1; }
+  body.room-active #chanAvatar::before { font-size: 18px; }
+  .tab.room .tav .led, .tab.room .ctxbar, .tab.room .timer { display: none; }
+  .tab.room .name { font-style: italic; }
+  .tab.room .kind { color: var(--text-dim); font-size: 11px; }
+  .tab.has-cron:not(.room) .tav { outline: 2px dashed var(--ac, var(--amber)); outline-offset: 2px; }
+  .tab.has-cron:not(.room) .tav::after {
+    content: "⏰"; position: absolute; top: -7px; right: -7px; font-size: 11px; line-height: 1;
+  }
+  /* A room's chat has none of an agent's machinery. */
+  body.room-active #dirGauge, body.room-active #branchGauge,
+  body.room-active #chanBar .gauge:has(#sessionView),
+  body.room-active #chanGallery, body.room-active #chanCron, body.room-active #chanInfo,
+  body.room-active #chanTerm, body.room-active #chanUpdate, body.room-active #skillBtn { display: none !important; }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a dark-preferring viewer never sees a
@@ -3314,6 +3355,9 @@
   <!-- Security: what was done to accounts and second factors, and "this wasn't
        me". Kept out of the ⋯ overflow on a phone: its badge is the point. -->
   <button id="securityBtn" class="icon" title="Security — what happened to your account" aria-label="Security" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6l7-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span id="securityBadge" class="sec-badge" hidden></span><span class="ab-txt">Security</span></button>
+  <!-- Reports: agents that are stuck ask an admin for help (src/agent-reports.ts).
+       Admins only; kept out of the ⋯ overflow for the same reason as Security. -->
+  <button id="reportsBtn" class="icon" title="Reports — agents asking an admin for help" aria-label="Reports" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 21V4M6 4h11l-2.5 4L17 12H6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="reportsBadge" class="sec-badge" hidden></span><span class="ab-txt">Reports</span></button>
   <button id="usersBtn" class="icon" title="Users — accounts for this instance" aria-label="Users" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 19a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 6.2a3.2 3.2 0 0 1 0 6.1M17.5 19a6 6 0 0 0-2.2-4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Users</span></button>
   <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg><span class="ab-txt">Telegram</span></button>
   <button id="muteNotif" class="icon" title="Mute the notification sound" aria-label="Notification sound"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 16.5h12c-1.3-1.1-2-2.7-2-4.5v-1.2a4 4 0 0 0-8 0v1.2c0 1.8-.7 3.4-2 4.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.4 19a1.7 1.7 0 0 0 3.2 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line class="mute-slash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Sound</span></button>
@@ -3369,6 +3413,10 @@
        Filled from /auth when the menu opens (instance-global, not per tab). -->
   <div class="vm-row"><span class="vm-label">Account</span><span id="vmAccount">—</span></div>
   <div class="vm-row"><span class="vm-label">Token</span><span id="vmToken">—</span></div>
+  <!-- Optional dedicated claude.ai login that feeds ONLY the 5h/7d gauges (a
+       setup-token cannot read usage). Hidden until /auth says it applies. -->
+  <div class="vm-row" id="vmGaugeRow" hidden><span class="vm-label">Usage gauge</span><span id="vmGauge">—</span></div>
+  <button class="vm-btn" id="gaugeLoginBtn" type="button" hidden>📊 Usage gauge login…</button>
   <!-- Re-login to Claude without waiting for the token to lapse. Shown only
        when signed in (when signed out the sign-in card opens on its own). -->
   <button class="vm-btn" id="reloginBtn" type="button" hidden>↻ Re-login to Claude</button>
@@ -3510,6 +3558,28 @@
   </div>
 </div>
 
+<!-- New room: a channel with NO agent, where people talk (src/rooms.ts). -->
+<div id="roomOverlay" class="overlay" hidden>
+  <div id="roomPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>New <span class="obj">room</span></strong>
+      <button id="roomClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="sec-note">A conversation between people — no agent behind it, nothing runs, no quota spent.</p>
+      <form id="roomForm">
+        <div class="field">
+          <span class="label">Name</span>
+          <input id="roomName" maxlength="80" autocomplete="off" placeholder="e.g. release sync">
+        </div>
+        <label class="check" id="roomMirrorRow" hidden><input type="checkbox" id="roomMirror"> Also in Telegram (a topic in the board group)</label>
+        <p class="check-hint" id="roomErr" hidden></p>
+        <div class="sec-foot"><button type="submit" class="primary" id="roomCreate">Create room</button></div>
+      </form>
+    </div>
+  </div>
+</div>
+
 <div id="cronOverlay" class="overlay" hidden>
   <!-- The panel used to carry id="secretsPanel" — a DUPLICATE of the real
        secrets popin's id, so $("secretsPanel") could land on the wrong one. -->
@@ -3543,6 +3613,15 @@
           </span>
           <span id="cronDailyFields" hidden>
             <input id="cronTime" type="time" value="09:00" aria-label="Time of day">
+            <span id="cronDays" class="cron-days" role="group" aria-label="Days of the week">
+              <label><input type="checkbox" value="1" checked><span>Mon</span></label>
+              <label><input type="checkbox" value="2" checked><span>Tue</span></label>
+              <label><input type="checkbox" value="3" checked><span>Wed</span></label>
+              <label><input type="checkbox" value="4" checked><span>Thu</span></label>
+              <label><input type="checkbox" value="5" checked><span>Fri</span></label>
+              <label><input type="checkbox" value="6" checked><span>Sat</span></label>
+              <label><input type="checkbox" value="0" checked><span>Sun</span></label>
+            </span>
           </span>
           <span id="cronOnceFields" hidden>
             <input id="cronAt" type="datetime-local" aria-label="Date and time">
@@ -3773,6 +3852,17 @@
       <div class="label sec-sub">Security log</div>
       <ul id="secLog" class="sec-events"></ul>
     </div>
+  </div>
+</div>
+
+<div id="reportsOverlay" class="overlay" hidden>
+  <div class="sec-panel">
+    <div class="sec-head">
+      <strong>Agent reports</strong>
+      <button id="reportsClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note">Agents that hit something only a human can fix — an expired token, an access they don't have, a bug — ask for help here. Fix it, then mark it resolved (and reload the agent if you changed a secret).</p>
+    <ul id="reportsList" class="sec-events rep-list"></ul>
   </div>
 </div>
 
@@ -4145,6 +4235,7 @@
     <div id="groups"></div>
     <p id="viewEmpty" class="check-hint" hidden>No agent in this group yet — create one, or drag one onto the group.</p>
     <button id="newTab" title="New agent">＋ new agent</button>
+    <button id="newRoom" title="New room — a conversation between people, no agent">＋ new room</button>
     <!-- The rail carries "+ new group" at its foot, but the rail is gone until a
          group exists — so this is the way to create the FIRST one. Desktop-only
          and only while there are no groups (CSS); it hands off to the rail's
@@ -4451,9 +4542,11 @@
   window.toggleProfile = toggleProfile;
   window.accountBanners = accountBanners;
   window.logEntryLine = logEntryLine;
-  import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
+  import { fmtExpiry, expiryWarning, accountExpiryLine, gaugeWarning, gaugeLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
+  window.gaugeWarning = gaugeWarning;
+  window.gaugeLine = gaugeLine;
   window.accountExpiryLine = accountExpiryLine;
   import { filterLedger, ledgerFacets, ledgerAge, LEDGER_AGES, LEDGER_SORTS } from "/ledger-view.js?v=__ASSET_V__";
   window.filterLedger = filterLedger;
@@ -4605,6 +4698,8 @@
     // after the /auth fetch), and the re-login reminder never nags blind.
     fmtExpiry: () => "—",
     expiryWarning: () => null,
+    gaugeWarning: () => null,
+    gaugeLine: () => null,
     accountExpiryLine: () => null,
     // Before the module lands, never open the Connect card on a guess.
     connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
@@ -5205,6 +5300,7 @@
 
   /** Inline rename of a channel (double-click on its name). */
   function startRename(tab) {
+    if (tab.roomId) return renameRoom(tab);
     inlineRename(tab.btnEl, tab.nameEl, (v) => {
       tab.customName = true;
       tab.nameEl.textContent = v;
@@ -5224,6 +5320,7 @@
     tab.muted = !!on;
     tab.muteEl.hidden = !tab.muted;
     refreshBadge();
+    if (tab.roomId) return saveRoomMute(tab);
     if (persist) persistChannels();
   }
 
@@ -5439,6 +5536,9 @@
   function setCrons(tab, labels) {
     tab.crons = Array.isArray(labels) ? labels : [];
     tab.cronEl.hidden = tab.crons.length === 0;
+    // The avatar says it too (dashed ring + clock): a scheduled agent is a
+    // different KIND of entry, not just an agent with one more icon.
+    tab.btnEl.classList.toggle("has-cron", tab.crons.length > 0);
     tab.cronEl.title = tab.crons.length
       ? (tab.crons.length === 1 ? "Scheduled prompt: " : "Scheduled prompts: ") + tab.crons.join(" · ")
       : "";
@@ -5663,6 +5763,7 @@
 
   function openTabMenu(tab, x, y) {
     tabMenu.replaceChildren();
+    if (tab.roomId) return openRoomMenu(tab, x, y);
     // Header: WHO this agent is. The profile is what qualifies it (role,
     // guardrails, secrets); it is chosen at spawn and then became invisible.
     const head = document.createElement("div");
@@ -5950,6 +6051,7 @@
   }
 
   function closeTab(tab) {
+    if (tab.roomId) return closeRoom(tab);
     if (tab.isMain) return; // the environment's main channel is never closed
     if (!confirmEndAgent(tab)) return;
     // Full close: end the channel everywhere (stop the agent, delete its
@@ -6303,6 +6405,8 @@
 
   function endDrag() {
     const wasGroup = !!dragGroupEl;
+    const draggedRoom = dragTabEl && dragTabEl._tab && dragTabEl._tab.roomId ? dragTabEl._tab : null;
+    if (draggedRoom) moveRoomGroup(draggedRoom);
     if (dragTabEl) dragTabEl.classList.remove("dragging");
     if (dragGroupEl) dragGroupEl.classList.remove("dragging");
     dragTabEl = dragGroupEl = dragTabHome = null;
@@ -7162,6 +7266,7 @@
     promptInput.value = tab.draft;
     autosizePrompt();
     renderAttachments(tab); // each tab keeps its own pending chips
+    if (tab.roomId) roomActivated(tab);
     refreshChrome();
     // Picking an agent from the mobile sheet dismisses it.
     closePicker();
@@ -7730,6 +7835,7 @@
     rebuildChanSelect();   // keeps the mobile selector in step (list + active)
     const t = active;
     if (!t) {
+      document.body.classList.remove("room-active");
       $("led").className = "led ";
       $("state").textContent = "no agent";
       $("cwdView").textContent = "—";
@@ -7761,6 +7867,11 @@
     }
     $("emptyState").classList.remove("visible");
     $("startingState").classList.remove("visible");
+    document.body.classList.toggle("room-active", !!t.roomId);
+    // Nobody is "prompted" in a room: the wording follows what the box talks to.
+    // The base text is captured once, so the phone's shorter variant survives.
+    promptInput.dataset.agentPlaceholder ??= promptInput.placeholder;
+    promptInput.placeholder = t.roomId ? "Write a message to the room" : promptInput.dataset.agentPlaceholder;
     $("chanCron").disabled = !t.sessionId;
     $("chanGallery").disabled = !t.sessionId;
     $("chanInfo").disabled = !t.sessionId;
@@ -8782,7 +8893,8 @@
      Tool traffic is grouped instead of stacked. A *block* is a run of tool
      events between two pieces of assistant text; inside it, consecutive calls
      to the same tool condense into a *run*; each call hides its own output.
-     At turn-done every block folds — except any that saw an error.
+     Every block is born folded (one "N operations" line) and stays that way;
+     the reader expands it on demand.
 
      All fold state lives on `tab.act` (current block) and `tab.turnBlocks`
      (blocks awaiting the end-of-turn fold). */
@@ -8812,10 +8924,13 @@
   function openBlock(tab) {
     const turn = document.createElement("div");
     turn.className = "turn claude activity";
-    turn.dataset.folded = "false";
+    // Folded from the start, not only at turn-done: while the agent works the
+    // chat shows "N operations" on one line, and the reader opens it on demand.
+    // An error shows on that line ("· N errors"), and expanding lands on it.
+    turn.dataset.folded = "true";
     const head = document.createElement("button");
     head.className = "act-head";
-    head.innerHTML = '<span class="caret">▾</span><span class="count"></span>';
+    head.innerHTML = '<span class="caret">▸</span><span class="count"></span>';
     head.addEventListener("click", () => toggleFold(turn));
     const body = document.createElement("div");
     body.className = "act-body";
@@ -9120,6 +9235,7 @@
   // ── Link ────────────────────────────────────────────────
   /** Starts a channel's session (from the form or a restore). */
   function launchTab(t, msg) {
+    if (t.roomId) return openRoomLink(t);
     t.cwd = msg.cwd || "(server directory)";
     if (!t.customName) t.nameEl.textContent = basename(msg.cwd || "") || "agent " + t.id;
     t.launchMsg = msg;      // remembered so a dropped link can reconnect
@@ -9143,6 +9259,9 @@
    *  drop transparently reattaches to the same session (resume by id) instead
    *  of stranding the tab on "link lost". */
   function openLink(t) {
+    // A room never sends `start`: that frame spawns an agent. Belt to the
+    // server's braces (it refuses `start` on a room socket anyway).
+    if (t.roomId) return openRoomLink(t);
     setTabState(t, "connecting", t.reconnectAttempts ? "reconnecting…" : "connecting…");
     // The scheme MUST follow the page's. On an HTTPS page — the cockpit behind an
     // nginx/TLS reverse proxy — a `ws://` socket is blocked as mixed content, and
@@ -9667,6 +9786,20 @@
     // Only offer a re-login when we KNOW the account is signed in — a failed
     // probe ("unknown") or a signed-out state is the sign-in card's job.
     if (relBtn) relBtn.hidden = true;
+    // Usage-gauge login row: only where /auth says it applies, and only for an
+    // admin (it signs the instance's gauge in). Painted before the early returns
+    // below, like the agent-auth button, so it survives a signed-out account row.
+    const gRow = document.getElementById("vmGaugeRow");
+    const gBtn = document.getElementById("gaugeLoginBtn");
+    const gLine = a && window.gaugeLine(a.gauge);
+    if (gRow) {
+      gRow.hidden = gLine === null || gLine === undefined;
+      document.getElementById("vmGauge").textContent = gLine || "—";
+    }
+    if (gBtn) {
+      gBtn.hidden = !(gLine !== null && gLine !== undefined && (!me || me.role === "admin"));
+      gBtn.textContent = a && a.gauge && a.gauge.state !== "none" ? "📊 Renew usage gauge login…" : "📊 Set up usage gauge login…";
+    }
     // The "replace subscription token" button only makes sense once a token is
     // actually held (longLived) on a multi-tenant instance, for an admin.
     const mtBtn = document.getElementById("mtTokenReplaceBtn");
@@ -9724,18 +9857,25 @@
   // start getting 401s. The decision (and its 48h threshold) is pure —
   // window.expiryWarning, public/auth-expiry.js — so only the DOM lives here.
   function updateExpiryBanner() {
-    const w = window.expiryWarning(lastAuth);
-    let el = document.getElementById("expiryBanner");
+    paintExpiryBanner("expiryBanner", window.expiryWarning(lastAuth), () => openAuthCard(true));
+    // The OPTIONAL usage-gauge login has its own clock (a month, renewed by hand)
+    // and its own strip, so neither reminder hides the other. Admin only: the
+    // button signs the instance's gauge in, which a member cannot do.
+    paintExpiryBanner("gaugeBanner", (!me || me.role === "admin") ? window.gaugeWarning(lastAuth && lastAuth.gauge) : null, () => openGaugeCard());
+  }
+  function paintExpiryBanner(id, w, onClick) {
+    let el = document.getElementById(id);
     if (!w) { if (el) el.remove(); return; }   // re-logged in → clock reset → gone
     if (!el) {
       el = document.createElement("div");
-      el.id = "expiryBanner";
+      el.id = id;
+      el.className = "expiry-strip";
       const span = document.createElement("span");
-      span.id = "expiryBannerText";
+      span.id = id + "Text";
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = "Re-login now";
-      btn.addEventListener("click", () => openAuthCard(true));
+      btn.addEventListener("click", onClick);
       el.append(span, btn);
       // First child → above the header in the flex chassis, not floating over it.
       document.body.insertBefore(el, document.body.firstChild);
@@ -9743,7 +9883,7 @@
     // Expired is an escalation, not just a reminder — turn the strip red.
     el.style.background = w.expired ? "var(--err)" : "";
     el.style.color = w.expired ? "#fff" : "";
-    document.getElementById("expiryBannerText").textContent = w.text;
+    document.getElementById(id + "Text").textContent = w.text;
   }
 
   function toggleVerMenu(show) {
@@ -9934,6 +10074,11 @@
     toggleVerMenu(false);
     openAuthCard(true);
   });
+  // The optional usage-gauge login: same card, its own flow and its own store.
+  document.getElementById("gaugeLoginBtn").addEventListener("click", () => {
+    toggleVerMenu(false);
+    openGaugeCard();
+  });
   // Change where agents get their model, any time — the same card, opened on
   // its "Another model" side, and dismissable since nothing is broken.
   // ── Instance context editor ───────────────────────────────────────────────
@@ -10024,6 +10169,10 @@
     switch (msg.type) {
       case "version":
         handleVersion(msg);
+        break;
+      case "agent-report":
+        // Defined with the Reports panel, further down this script.
+        window.onAgentReport?.(msg);
         break;
       case "server-reload":
         showUpdateBanner(msg.version);
@@ -10778,6 +10927,8 @@
     // Only READY attachments are sent; an upload still in flight is held by the
     // pendingUploads guard below, and a failed one is left for the user to drop.
     const ready = ((t && t.attachments) || []).filter((a) => a.state === "ready" && a.path);
+    // A room has no agent behind it: no turn, no queue, no pace guard.
+    if (t && t.roomId) return submitRoom(t, typed, ready);
     // A message may be attachments alone (just a screenshot, no words).
     if ((!typed && !ready.length) || !t || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
     // Fold each attachment back into the "[Attached …: path]" line the agent
@@ -10801,6 +10952,311 @@
     if (paceBlocked) return renderPaceConfirm(t, text, paceReason);
     submitPrompt(t, text);
   });
+
+  // ── Rooms: channels with no agent, where people talk (src/rooms.ts) ─────────
+  // A room is drawn as a tab — same column, same groups, same chat — but it is
+  // never an agent: no `sessionId` (so `persistChannels` and `syncChannels`
+  // never see it), no `start` frame (its socket only ever sends `room-join` /
+  // `room-post`), and the server refuses to mix the two on one connection.
+  const roomTabs = new Map();      // roomId → tab
+  const dismissedRooms = new Set(); // closed here, until the server list agrees
+  const roomMuted = (() => { try { return JSON.parse(localStorage.getItem("cp.roomMuted") || "{}"); } catch { return {}; } })();
+  function saveRoomMute(tab) {
+    if (tab.muted) roomMuted[tab.roomId] = true; else delete roomMuted[tab.roomId];
+    try { localStorage.setItem("cp.roomMuted", JSON.stringify(roomMuted)); } catch {}
+  }
+  function roomHeaders() {
+    return { "content-type": "application/json", "x-shadok-instance": instanceKey };
+  }
+
+  function createRoomTab(r) {
+    const tab = createTab(r.group ?? null, { focus: false });
+    tab.roomId = r.id;
+    tab.status = "ready";
+    tab.stateText = "room · people only";
+    tab.cwd = "";
+    tab.btnEl.classList.add("room");
+    tab.btnEl.title = "Room — people talk here, no agent";
+    tab.nameEl.textContent = r.name;
+    tab.nameEl.title = "Room — double-click to rename";
+    tab.btnEl.querySelector(".close").title = "Close this room";
+    tab.ctxNumEl.classList.add("kind");
+    tab.ctxNumEl.textContent = "room";
+    tab.muted = !!roomMuted[r.id];
+    tab.muteEl.hidden = !tab.muted;
+    tab.mirror = !!r.mirror;
+    tab.tgEl.hidden = !r.telegram;
+    tab.roomGroup = r.group ?? null;
+    tab.roomLoaded = false;
+    roomTabs.set(r.id, tab);
+    return tab;
+  }
+
+  /** The server list is the truth: create, rename, re-file, badge and drop. */
+  async function syncRooms() {
+    if (restoring || swapped) return;
+    let list;
+    try {
+      const r = await fetch("/rooms");
+      if (!r.ok) return;
+      list = await r.json();
+    } catch { return; }
+    if (!Array.isArray(list)) return;
+    const seen = new Set();
+    for (const r of list) {
+      if (!r || dismissedRooms.has(r.id)) continue;
+      seen.add(r.id);
+      let tab = roomTabs.get(r.id);
+      if (!tab) tab = createRoomTab(r);
+      if (tab.nameEl.textContent !== r.name && !tab.btnEl.querySelector("input")) tab.nameEl.textContent = r.name;
+      tab.mirror = !!r.mirror;
+      tab.tgEl.hidden = !r.telegram;
+      // Moved from another device: follow it (never while this tab drags it).
+      if ((r.group ?? null) !== tab.roomGroup && dragTabEl !== tab.btnEl) {
+        tab.roomGroup = r.group ?? null;
+        const g = groups.find((x) => String(x.id) === String(tab.roomGroup));
+        (g ? g.bodyEl : ungroupedEl).appendChild(tab.btnEl);
+      }
+      if (r.lastTs && !tab.lastMsgAt) { tab.lastMsgAt = r.lastTs; renderLastAt(tab); }
+      if (r.unread > 0 && tab !== active) setTabMood(tab, "unread");
+    }
+    for (const [id, tab] of roomTabs) {
+      if (seen.has(id)) continue;
+      roomTabs.delete(id);
+      removeTabLocal(tab);
+    }
+    rebuildChanSelect();
+    railSig = "";
+    renderRail();
+  }
+  setTimeout(syncRooms, 1500);
+  setInterval(syncRooms, 4000);
+
+  function openRoomLink(tab) {
+    if (tab.ws && (tab.ws.readyState === WebSocket.OPEN || tab.ws.readyState === WebSocket.CONNECTING)) return;
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:"; // never hardcode ws:// (invariant 20)
+    const ws = new WebSocket(`${scheme}//${location.host}/ws`);
+    tab.ws = ws;
+    if (!tab.roomLoaded) showChatSkeleton(tab);
+    ws.addEventListener("open", () => ws.send(JSON.stringify({ type: "room-join", roomId: tab.roomId })));
+    ws.addEventListener("message", (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      handleRoomMessage(tab, msg);
+    });
+    ws.addEventListener("close", () => {
+      if (tab.closing || tab.ws !== ws) return;
+      tab.reconnectTimer = setTimeout(() => openRoomLink(tab), 2000);
+    });
+  }
+
+  function addRoomMessage(tab, m) {
+    const own = m.origin === "web" && me && m.account === me.name;
+    const label = own ? "you" : echoAuthorLabel({ from: m.author, origin: m.origin });
+    const b = addTurn(tab, "user", label, m.text, null, m.ts);
+    markPromptSide(b, { from: m.account || m.author, origin: m.origin });
+    b.parentElement.dataset.roomMsg = m.id;
+    tab.lastRoomTs = Math.max(tab.lastRoomTs || 0, m.ts);
+    return b;
+  }
+
+  function handleRoomMessage(tab, msg) {
+    switch (msg.type) {
+      case "room-history": {
+        // A reconnect replays the page: start from a clean transcript.
+        clearChatSkeleton(tab);
+        tab.transcriptEl.replaceChildren();
+        tab.unreadSep = null;
+        for (const m of msg.messages || []) {
+          const b = addRoomMessage(tab, m);
+          if (m.ts > (msg.lastRead || 0) && !tab.unreadSep && tab !== active) markUnreadBoundary(tab, b.parentElement);
+        }
+        if (!(msg.messages || []).length) addTurn(tab, "system", "", "A room: people talk here, there is no agent. Say hello.", null, Date.now());
+        tab.roomLoaded = true;
+        if (tab === active) { tab.transcriptEl.scrollTop = tab.transcriptEl.scrollHeight; markRoomRead(tab); }
+        break;
+      }
+      case "room-message": {
+        const pending = msg.clientId && tab.pendingPosts && tab.pendingPosts.get(msg.clientId);
+        if (pending) {
+          // Our own optimistic bubble: the stored message replaces it 1-for-1.
+          tab.pendingPosts.delete(msg.clientId);
+          pending.parentElement.remove();
+        }
+        const b = addRoomMessage(tab, msg.message);
+        if (!pending) markUnreadBoundary(tab, b.parentElement);
+        pinBottom(tab);
+        if (tab === active && isCaughtUp(tab)) markRoomRead(tab);
+        else if (!pending) setTabMood(tab, "unread");
+        if (tab === active) updateJumpButton();
+        break;
+      }
+      case "room-error": {
+        const pending = msg.clientId && tab.pendingPosts && tab.pendingPosts.get(msg.clientId);
+        if (pending) {
+          tab.pendingPosts.delete(msg.clientId);
+          pending.parentElement.remove();
+          // A refused message is never lost: it goes back to the composer.
+          if (tab === active && !promptInput.value.trim()) { promptInput.value = pending._roomText || ""; autosizePrompt(); }
+          else tab.draft = tab.draft || pending._roomText || "";
+        }
+        addTurn(tab, "system", "", "⚠️ " + (msg.error || "refused"), null, Date.now());
+        break;
+      }
+      case "room-closed":
+        roomTabs.delete(tab.roomId);
+        removeTabLocal(tab);
+        break;
+    }
+  }
+
+  let roomReadTimer = null;
+  function markRoomRead(tab) {
+    if (!tab.lastRoomTs || tab.lastRoomTs <= (tab.sentReadTs || 0)) return;
+    clearTimeout(roomReadTimer);
+    roomReadTimer = setTimeout(() => {
+      tab.sentReadTs = tab.lastRoomTs;
+      fetch("/rooms/" + tab.roomId + "/read", { method: "POST", headers: roomHeaders(), body: JSON.stringify({ ts: tab.lastRoomTs }) }).catch(() => {});
+    }, 400);
+  }
+
+  function roomActivated(tab) {
+    openRoomLink(tab);
+    setTabMood(tab, null);
+    markRoomRead(tab);
+  }
+
+  let roomPostSeq = 0;
+  function submitRoom(t, typed, ready) {
+    if (pendingUploads > 0) return;
+    const lines = ready.map((a) => "[Attached " + (a.isImage ? "image" : "file") + ": " + a.path + "]").join("\n");
+    const text = [typed, lines].filter(Boolean).join("\n");
+    if (!text) return;
+    if (!t.ws || t.ws.readyState !== WebSocket.OPEN) {
+      addTurn(t, "system", "", "⚠️ Not connected to the room yet — try again in a moment.", null, Date.now());
+      return;
+    }
+    const clientId = "p" + (++roomPostSeq) + "-" + Date.now();
+    const b = addTurn(t, "user", "you", text, "pending", Date.now());
+    markPromptSide(b, { from: me ? me.name : "", origin: "web" });
+    b._roomText = typed;
+    (t.pendingPosts ||= new Map()).set(clientId, b);
+    t.ws.send(JSON.stringify({ type: "room-post", roomId: t.roomId, text, clientId }));
+    promptInput.value = "";
+    t.draft = "";
+    t.attachments = [];
+    renderAttachments(t);
+    autosizePrompt();
+    t.transcriptEl._stickBottom = true;
+    pinBottom(t);
+  }
+
+  async function patchRoom(tab, body) {
+    try {
+      const r = await fetch("/rooms/" + tab.roomId, { method: "PATCH", headers: roomHeaders(), body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+      return j;
+    } catch (e) {
+      addTurn(tab, "system", "", "⚠️ " + e.message, null, Date.now());
+      syncRooms(); // put the column back to what the server holds
+      return null;
+    }
+  }
+  function renameRoom(tab) {
+    inlineRename(tab.btnEl, tab.nameEl, (v) => {
+      tab.nameEl.textContent = v;
+      patchRoom(tab, { name: v });
+      rebuildChanSelect();
+    });
+  }
+  function moveRoomGroup(tab) {
+    const g = groupIdOf(tab.btnEl);
+    const group = g == null ? null : String(g);
+    if (group === tab.roomGroup) return;
+    tab.roomGroup = group;
+    patchRoom(tab, { group });
+  }
+  async function closeRoom(tab) {
+    if (!confirm("Close the room “" + tab.nameEl.textContent + "”?\n\nIt leaves the list for everyone. Its messages are kept (archived), and its Telegram topic is closed, not deleted.")) return;
+    dismissedRooms.add(tab.roomId);
+    roomTabs.delete(tab.roomId);
+    removeTabLocal(tab);
+    try {
+      const r = await fetch("/rooms/" + tab.roomId + "/archive", { method: "POST", headers: roomHeaders() });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+    } catch {
+      dismissedRooms.delete(tab.roomId); // not closed after all: let the sync bring it back
+    }
+  }
+  function openRoomMenu(tab, x, y) {
+    const head = document.createElement("div");
+    head.className = "tm-head";
+    head.append("💬 ", Object.assign(document.createElement("b"), { textContent: "Room" }));
+    const sub = document.createElement("span");
+    sub.className = "tm-sub";
+    sub.textContent = "people only — no agent";
+    head.appendChild(sub);
+    tabMenu.appendChild(head);
+    const items = [
+      [tab.muted ? "🔔 Unmute notifications" : "🔕 Mute notifications", () => setMuted(tab, !tab.muted)],
+      ["✎ Rename", () => startRename(tab)],
+    ];
+    if (me?.role === "admin") {
+      items.push([
+        tab.mirror ? "✈️ Stop mirroring (deletes the topic)" : "✈️ Mirror to Telegram",
+        () => {
+          if (tab.mirror && !confirm("Stop mirroring this room?\n\nIts Telegram topic will be deleted, with the messages it holds. The room itself stays here.")) return;
+          patchRoom(tab, { mirror: !tab.mirror }).then((j) => { if (j) tab.mirror = j.mirror; });
+        },
+      ]);
+    }
+    items.push(["✕ Close room", () => closeRoom(tab)]);
+    for (const [label, fn] of items) {
+      const b = document.createElement("button");
+      b.className = "tm-item";
+      b.textContent = label;
+      b.addEventListener("click", (e) => { e.stopPropagation(); closeTabMenu(); fn(); });
+      tabMenu.appendChild(b);
+    }
+    placeTabMenu(x, y);
+  }
+
+  // Creation popin.
+  function openRoomSetup() {
+    closePicker();
+    $("roomName").value = "";
+    $("roomErr").hidden = true;
+    $("roomMirror").checked = false;
+    $("roomMirrorRow").hidden = me?.role !== "admin";
+    $("roomCreate").disabled = false;
+    $("roomOverlay").hidden = false;
+    $("roomName").focus();
+  }
+  function closeRoomSetup() { $("roomOverlay").hidden = true; }
+  $("newRoom").addEventListener("click", () => openRoomSetup());
+  $("roomClose").addEventListener("click", closeRoomSetup);
+  $("roomOverlay").addEventListener("click", (e) => { if (e.target === $("roomOverlay")) closeRoomSetup(); });
+  $("roomForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("roomName").value.trim();
+    if (!name) { $("roomName").focus(); return; }
+    $("roomCreate").disabled = true;
+    try {
+      const body = { name, group: viewGroupId(), mirror: $("roomMirror").checked };
+      const r = await fetch("/rooms", { method: "POST", headers: roomHeaders(), body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+      closeRoomSetup();
+      const tab = roomTabs.get(j.id) || createRoomTab(j);
+      activate(tab);
+    } catch (err) {
+      $("roomErr").textContent = err.message;
+      $("roomErr").hidden = false;
+      $("roomCreate").disabled = false;
+    }
+  });
+
   /**
    * Paste ANY file into the composer — an image, a PDF, a CSV, etc.
    *
@@ -10854,6 +11310,8 @@
           // Which agent the file is for: in multi-tenant it lands in THAT
           // agent's group media directory, unreadable by any other group.
           "x-shadok-session": t.sessionId || "",
+          // …or which ROOM: its group's media directory, for people who see it.
+          ...(t.roomId ? { "x-shadok-room": t.roomId } : {}),
         },
         body: file,
       });
@@ -13567,6 +14025,10 @@
     const value = $("secretVal").value;
     const wanted = checkedProfiles();
     if (!name) return;
+    // A NEW name must be usable as an environment variable — the server refuses
+    // it anyway (`secretNameRefusal`, src/secrets.ts), this just says so before
+    // the round trip and keeps the form filled.
+    if (!editingSecret && !SECRET_NAME_RE.test(name)) { showVaultError(secretNameHint(name)); $("secretKey").focus(); return; }
     // Editing an existing secret with the value left BLANK means "keep the value,
     // just change the profiles" — the vault is write-only, so we must not clobber
     // it with "". A new secret, or a value typed, is written (overwrite: true
@@ -13623,6 +14085,24 @@
     }
     return out;
   }
+  // Twin of `secretNameRefusal` (src/secrets.ts): a secret is injected as an
+  // environment variable named after it, so a name with a space, a dash or a
+  // leading digit cannot work. Said while typing, not only at submit.
+  const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  function secretNameHint(name) {
+    const why = /\s/.test(name) ? "it contains a space"
+      : /^[0-9]/.test(name) ? "it starts with a digit"
+      : "it contains a character other than letters, digits and _";
+    return `"${name}" cannot be a secret name: ${why}. A secret becomes an environment variable, so use only letters, digits and _ (not starting with a digit).`;
+  }
+  let secretNameHintShown = false;
+  $("secretKey").addEventListener("input", () => {
+    const name = $("secretKey").value.trim();
+    const bad = !editingSecret && name !== "" && !SECRET_NAME_RE.test(name);
+    $("secretKey").setAttribute("aria-invalid", bad ? "true" : "false");
+    if (bad) { showVaultError(secretNameHint(name)); secretNameHintShown = true; }
+    else if (secretNameHintShown) { showVaultError(""); secretNameHintShown = false; }
+  });
   // Pasting an .env list into the NAME field adds every secret at once.
   $("secretKey").addEventListener("paste", async (e) => {
     const text = (e.clipboardData || window.clipboardData).getData("text");
@@ -13742,7 +14222,16 @@
       try { return "once at " + new Date(s.at).toLocaleString("sv-SE", o); }
       catch { return "once at " + new Date(s.at).toISOString().slice(0, 16).replace("T", " "); }
     }
-    return "daily at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
+    // Twin of `daysLabel` (src/crons.ts): the days a restricted daily runs on.
+    const DAY = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+    const ds = Array.isArray(s.days) ? [...s.days].sort((a, b) => a - b) : [];
+    const when = !ds.length ? "daily" : ds.join() === "1,2,3,4,5" ? "mon-fri" : ds.join() === "0,6" ? "sat,sun" : ds.map((d) => DAY[d]).join(",");
+    return when + " at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
+  }
+  /** The day chips: tick exactly `days` (absent/empty = every day). */
+  function setCronDays(days) {
+    const set = Array.isArray(days) && days.length ? new Set(days.map(String)) : null;
+    for (const cb of $("cronDays").querySelectorAll("input")) cb.checked = !set || set.has(cb.value);
   }
   /**
    * The zone actually applied to daily schedules, in the popin's footer.
@@ -13897,6 +14386,7 @@
   let editingCronId = null;
   function resetCronEditMode() {
     editingCronId = null;
+    setCronDays(null);
     $("cronSubmit").textContent = "Add schedule";
     $("cronCancelEdit").hidden = true;
     $("cronErr").textContent = "";
@@ -13916,6 +14406,7 @@
     if (s.kind === "daily") {
       $("cronKind").value = "daily";
       $("cronTime").value = pad2(s.hour ?? 9) + ":" + pad2(s.minute ?? 0);
+      setCronDays(s.days);
     } else if (s.kind === "once") {
       $("cronKind").value = "once";
       if (Number.isFinite(s.at)) $("cronAt").value = toDatetimeLocal(s.at);
@@ -13936,7 +14427,9 @@
     if ($("cronKind").value === "once") return { kind: "once", at: $("cronAt").value };
     if ($("cronKind").value === "daily") {
       const [h, m] = ($("cronTime").value || "09:00").split(":").map((n) => parseInt(n, 10) || 0);
-      return { kind: "daily", hour: h, minute: m };
+      // All seven ticked = every day: the field is omitted, as the server stores it.
+      const days = [...$("cronDays").querySelectorAll("input:checked")].map((c) => Number(c.value));
+      return days.length === 7 ? { kind: "daily", hour: h, minute: m } : { kind: "daily", hour: h, minute: m, days };
     }
     const every = Math.max(1, parseInt($("cronEvery").value, 10) || 1);
     const unit = parseInt($("cronUnit").value, 10) || 1;
@@ -14056,6 +14549,12 @@
     const prompt = $("cronPrompt").value.trim();
     if (!prompt || !active || !active.sessionId) return;
     const check = $("cronCheck").value.trim();
+    // No day ticked would read as "every day" on the server (an empty list is
+    // folded to the default): say it instead of scheduling the opposite.
+    if ($("cronKind").value === "daily" && !$("cronDays").querySelector("input:checked")) {
+      $("cronErr").textContent = "Pick at least one day.";
+      return;
+    }
     // A refusal from the server (past date, unreadable date) used to be
     // swallowed in silence: the panel repainted without the new cron, wordlessly.
     $("cronErr").textContent = "";
@@ -14537,6 +15036,8 @@
     // instance, who is everybody). The server answers 403 otherwise.
     $("securityBtn").hidden = !(me?.name || me?.role === "admin");
     refreshSecurityBadge();
+    $("reportsBtn").hidden = me?.role !== "admin" || !!me?.agent;
+    refreshReportsBadge();
   }
 
   $("signOut").addEventListener("click", async () => {
@@ -14906,6 +15407,96 @@
   });
   $("securityClose").addEventListener("click", () => { $("securityOverlay").hidden = true; });
   $("securityOverlay").addEventListener("click", (e) => { if (e.target === $("securityOverlay")) $("securityOverlay").hidden = true; });
+
+  // ── Agent reports panel ─────────────────────────────────
+  async function reportsInbox() {
+    try { const r = await fetch("/reports"); return r.ok ? await r.json() : null; } catch { return null; }
+  }
+  async function refreshReportsBadge() {
+    if ($("reportsBtn").hidden) return;
+    const box = await reportsInbox();
+    const n = box?.badge || 0;
+    $("reportsBadge").hidden = !n;
+    $("reportsBadge").textContent = n > 9 ? "9+" : String(n);
+  }
+  // The live `agent-report` frame is the fast path; this poll is the net (a
+  // socket that was reconnecting when the report came in).
+  setInterval(refreshReportsBadge, 60000);
+  // Every open tab has its own socket, so one report arrives once per tab: ring once.
+  const reportsRung = new Set();
+  window.onAgentReport = (msg) => {
+    refreshReportsBadge();
+    const k = msg.id + ":" + msg.count;
+    if (reportsRung.has(k)) return;
+    reportsRung.add(k);
+    ding();
+    if (!$("reportsOverlay").hidden) renderReports();
+  };
+  const REPORT_KIND = { access: "🔑 access", bug: "🐞 bug", blocked: "⛔ blocked" };
+  function reportRow(r) {
+    const li = document.createElement("li");
+    if (r.unread) li.classList.add("unread");
+    if (r.status === "resolved") li.classList.add("resolved");
+    const head = document.createElement("div");
+    head.className = "rep-head";
+    const kind = document.createElement("span");
+    kind.textContent = REPORT_KIND[r.kind] || r.kind;
+    const title = document.createElement("span");
+    title.className = "rep-title";
+    title.textContent = r.title + (r.count > 1 ? "  ×" + r.count : "");
+    head.append(kind, title);
+    const meta = document.createElement("div");
+    meta.className = "rep-meta";
+    meta.textContent = r.agent + (r.profile ? " · " + r.profile : "") + " · " + new Date(r.lastAt).toLocaleString() +
+      (r.secret ? " · secret " + r.secret : "") +
+      (r.status === "resolved" ? " · resolved by " + r.resolvedBy : "");
+    li.append(head, meta);
+    if (r.body) {
+      const pre = document.createElement("pre");
+      pre.className = "rep-body";
+      pre.textContent = r.body;
+      li.appendChild(pre);
+    }
+    const acts = document.createElement("div");
+    acts.className = "rep-actions";
+    const btn = (label, fn, cls) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      if (cls) b.className = cls;
+      b.addEventListener("click", fn);
+      acts.appendChild(b);
+    };
+    const tab = tabs.find((t) => t.sessionId === r.sessionId);
+    if (tab) btn("Open agent", () => { $("reportsOverlay").hidden = true; activate(tab); });
+    if (r.secret && r.status === "open")
+      btn("Set " + r.secret, () => { $("reportsOverlay").hidden = true; openSecretFor(tab || { profile: r.profile }, r.secret); });
+    btn(r.status === "open" ? "Mark resolved" : "Reopen", async () => {
+      const res = await fetch("/reports/resolve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: r.id, reopen: r.status !== "open" }),
+      });
+      if (!res.ok) { alert((await res.json().catch(() => ({}))).error || "refused"); return; }
+      renderReports();
+    }, r.status === "open" ? "primary" : "");
+    li.appendChild(acts);
+    return li;
+  }
+  async function renderReports() {
+    const box = await reportsInbox();
+    const ul = $("reportsList");
+    if (!box) { ul.replaceChildren(Object.assign(document.createElement("li"), { className: "ev-empty", textContent: "couldn't load — admins only" })); return; }
+    ul.replaceChildren(...(box.reports.length ? box.reports.map(reportRow)
+      : [Object.assign(document.createElement("li"), { className: "ev-empty", textContent: "no agent has asked for help" })]));
+    await fetch("/reports/seen", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    refreshReportsBadge();
+  }
+  $("reportsBtn").addEventListener("click", async () => {
+    $("reportsOverlay").hidden = false;
+    await renderReports();
+  });
+  $("reportsClose").addEventListener("click", () => { $("reportsOverlay").hidden = true; });
+  $("reportsOverlay").addEventListener("click", (e) => { if (e.target === $("reportsOverlay")) $("reportsOverlay").hidden = true; });
 
   $("usersBtn").addEventListener("click", async () => {
     $("inviteBox").hidden = true;
@@ -15282,6 +15873,19 @@
     checkAuth(null, force);
   }
 
+  // The usage-gauge login (src/gauge-login.ts) reuses the authorise step of the
+  // Connect card with its own endpoints. Never blocking: nothing is broken
+  // without it, so it is always dismissable.
+  function openGaugeCard() {
+    cxCancel();
+    cx = { plan: null, flow: "gauge", user: null, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+    authDismissable = true;
+    $("authClose").hidden = false;
+    $("authMsg").hidden = true;
+    $("authOverlay").hidden = false;
+    cxStartAuthorise("gauge", null, false);
+  }
+
   function closeAuthCard() {
     if (!authDismissable) return;
     cxCancel();
@@ -15301,6 +15905,7 @@
   function cxCancelFlow(flow, user) {
     const json = { "Content-Type": "application/json" };
     if (flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    else if (flow === "gauge") fetch("/usage-gauge/login", { method: "DELETE" }).catch(() => {});
     else if (flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
     else if (flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user }) }).catch(() => {});
   }
@@ -15357,6 +15962,7 @@
 
   const CX_FLOWS = {
     instance: { start: "/auth/login", code: "/auth/code" },
+    gauge: { start: "/usage-gauge/login", code: "/usage-gauge/code" },
     token: { start: "/mt-token/start", code: "/mt-token/code" },
     login: { start: "/agent-login/start", code: "/agent-login/code" },
   };
@@ -15375,12 +15981,16 @@
     $("cxOtherLink2").hidden = !(flow === "instance" && cx.plan && !cx.plan.dismissable);
     $("cxHint").hidden = false;
     $("authCode").value = "";
-    $("authTitle").textContent = flow === "instance" && lastAuth && lastAuth.state === "signed-in"
+    $("authTitle").textContent = flow === "gauge" ? "Sign in the usage gauge"
+      : flow === "instance" && lastAuth && lastAuth.state === "signed-in"
       ? "Renew the Claude sign-in" : "Authorise Shadok on claude.ai";
     $("authNote").textContent = flow === "login" && cx.user && cx.plan && cx.plan.step !== "choose" && !fromChoose
       ? "Connect this space (" + cx.user + ") to your Claude account. A Claude page opens in a new tab; approve it, then paste the short code it shows."
       : "A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.";
+    if (flow === "gauge")
+      $("authNote").textContent = "This sign-in only feeds the 5h/7d usage gauges — agents never use it. Sign in with the account whose usage you want shown (the one your agents run on). Anthropic limits it to about a month, so Shadok reminds you to renew it. A Claude page opens in a new tab; approve it, then paste the short code it shows.";
     cxShow("authorise");
+    if (flow === "gauge") $("cxTag").textContent = "Usage gauge";
     const link = $("authLink");
     link.textContent = "Preparing…";
     link.removeAttribute("href");
@@ -15447,7 +16057,7 @@
     cxMsg("");
     const body = cx.flow === "login" ? { user: cx.user, code } : { code };
     const r = await cxPost(CX_FLOWS[cx.flow].code, body);
-    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cxConnected(); }
+    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cx.flow === "gauge" ? gaugeConnected() : cxConnected(); }
     else cxMsg((r && r.error) || "the code was refused", "bad");
   });
 
@@ -15461,6 +16071,22 @@
     if (r && r.ok) cxConnected();
     else cxMsg((r && r.error) || "the token was refused", "bad");
   });
+
+  // The gauge login landed: repaint the gauges and say until when it lasts.
+  async function gaugeConnected() {
+    refreshUsage();
+    await refreshAuthRows();
+    const g = (lastAuth && lastAuth.gauge) || {};
+    let text = g.state === "wrong-scope"
+      ? "That sign-in did not grant usage access, so the gauges cannot use it. Try again."
+      : "The usage gauges now read " + (g.email ? g.email + "'s" : "this account's") + " usage.";
+    if (g.state !== "wrong-scope" && typeof g.refreshExpiresAt === "number")
+      text += " This sign-in lasts until " + new Date(g.refreshExpiresAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) + " — Shadok reminds you a few days before.";
+    $("cxDoneText").textContent = text;
+    authDismissable = true;
+    $("authClose").hidden = false;
+    cxShow("done");
+  }
 
   // Success: say until when, and that the lead agent is on its way when it is.
   async function cxConnected() {

@@ -76,6 +76,15 @@ Enter to skip; you can add it later from the web UI).
 - **Channels** — one `claude` process each, running in parallel. Renaming,
   grouping, and closing all sync live between the browser and Telegram: it's
   one list, server-owned, not two copies.
+- **Rooms** — a channel with **no agent**, where people talk: same column,
+  same groups, same chat, nothing running behind it and no quota spent. **＋ new
+  room** under the agents; an admin can mirror one into a Telegram topic, and a
+  message there lands in the room (commands answer that there is no agent
+  here). Closing a room archives it: it leaves the list for everyone and its
+  messages stay on disk. The column tells the three kinds apart at a glance —
+  an **agent** is a round avatar with initials, a **room** a square slate tile
+  with a speech bubble (and no presence dot), and an agent with **scheduled
+  prompts** wears a dashed ring and a clock.
 - **Groups** — on a desktop the groups live in their own **left column**: pick
   one to narrow the agents pane to it, and the global tools (Profiles, Ledger,
   Secrets, Users, Security, Telegram, Sound) stay in the header at the top. Each
@@ -177,7 +186,7 @@ Enter to skip; you can add it later from the web UI).
   cockpit's own ports and well-known local services (debuggers, Docker's API,
   databases) are refused, and only the listener's HTTP status comes back.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
-  daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
+  daily at HH:MM in a time zone you choose, optionally only on some days of the week) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
   model*: prints nothing → nothing to report, the agent is never woken and the
   run costs **zero tokens**; prints something → that output is prepended to the
@@ -234,6 +243,19 @@ Enter to skip; you can add it later from the web UI).
 - **Quota gauges + pace guard** — 5h and 7d subscription usage, with an
   optional block when you're burning faster than the window elapses (any
   message can force through).
+  On an instance whose agents run on a long-lived `setup-token` (multi-tenant),
+  that token cannot read usage (it is scoped `user:inference` only), so the gauges
+  stay blank unless you add the **usage gauge login**: version menu → *Set up
+  usage gauge login…*, then sign in with the account whose usage you want shown.
+  It is a separate, optional claude.ai sign-in kept in its own config dir
+  (`~/.shadok-ai/gauge/<instance>/.claude`) and used only for the gauges —
+  agents never see it. Shadok keeps its access token fresh on its own, but
+  Anthropic fixes the sign-in itself at about a month and refreshing never
+  extends it, so you re-login roughly **monthly**; a banner reminds you 5 days
+  before. Not configured = nothing changes. File credential store only (Linux,
+  Docker); on macOS the row is hidden. Endpoints (admin): `GET /usage-gauge`,
+  `POST /usage-gauge/login`, `POST /usage-gauge/code`,
+  `DELETE /usage-gauge/login` (cancel), `DELETE /usage-gauge` (remove).
 - **Notifications** — favicon, title badge and an optional sound when an agent
   needs you. It only blinks when the tab is hidden *and* an unmuted channel is
   actually waiting. Mute a single agent from its menu, or **mute the whole
@@ -332,6 +354,15 @@ Enter to skip; you can add it later from the web UI).
   otherwise just print a local path you cannot open. **Artifacts are denied**
   cockpit-wide for the same reason — a page on claude.ai is not the file you
   asked for (`SHADOK_ALLOW_ARTIFACTS=1` lifts it).
+- **Agents can ask an admin for help** — an agent stuck on something only a
+  human can fix (a Linear token that expired, no access to the Slack token it
+  needs, a Claude API key answering 401, a bug) files a report through the
+  `shadok-report` skill instead of failing silently. Every admin gets a badge
+  and a sound on the **Reports** button (🚩 in the header), and the Telegram
+  owner gets a DM. The panel shows each report with what the agent was doing,
+  merges a repeated failure into one card (`×3`), opens the vault on the
+  credential named (`--secret LINEAR_API_KEY`) and lets you mark it resolved.
+  Agents never put a secret's value in a report, only its name.
 - **Photos and videos, viewable** — an image or a **video** (mp4/webm/mov…) in
   the chat renders inline (a video gets a real player), and clicking a photo
   opens it full-size in a lightbox. The 🖼 button in an agent's bar opens a
@@ -577,7 +608,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/new` · `/end` | reset · kill the session |
 | `/restart` | respawn the agent in place (e.g. to pick up new secrets) |
 | `/profiles` · `/list` | list profiles · list bindings |
-| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
+| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` · `/cron daily 09:00 mon-fri <prompt>` | schedule a recurring prompt on this agent |
 | `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
 | `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault; an existing name is never replaced unless you append `--overwrite` |
@@ -1312,6 +1343,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"term-attach"}` · `{type:"term-detach"}` | **experimental, tmux only** — open/close the pane's raw byte pipe |
 | `{type:"term-input", data}` · `{type:"term-resize", cols, rows}` | raw input (base64) / match the pane to the viewport |
 | `{type:"stop", sessionId?}` | ends the session for all clients; `sessionId` targets another channel (zombie cleanup) |
+| `{type:"room-join", roomId}` · `{type:"room-post", roomId, text, clientId?}` | a ROOM link (people only, same-origin browser): join a room (answered with `room-history`), then post to it (fanned out as `room-message`, refusals as `room-error`). A connection is an agent link or a room link, never both — `start` is refused after `room-join` |
 
 **server → client**
 

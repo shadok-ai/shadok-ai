@@ -88,3 +88,35 @@ test("non-longLived: unchanged behaviour", () => {
   assert.ok(expiryWarning(auth, NOW));
   assert.equal(accountExpiryLine({ state: "signed-in" }, NOW), null);
 });
+
+// ── The optional usage-gauge login (`gauge` in the /auth payload) ───────────
+import { gaugeWarning, gaugeLine, GAUGE_WARN_MS } from "../public/auth-expiry.js";
+
+test("gaugeWarning: silent unless a gauge login is near or past its wall", () => {
+  const now = 1_000_000_000_000;
+  const g = (state: string, refreshExpiresAt: number | null, extra = {}) => ({ supported: true, state, refreshExpiresAt, ...extra });
+  assert.equal(gaugeWarning(null, now), null);
+  assert.equal(gaugeWarning(undefined, now), null);
+  assert.equal(gaugeWarning(g("none", null), now), null, "never set up → never nagged");
+  assert.equal(gaugeWarning(g("ok", now + 20 * 86400_000), now), null);
+  assert.equal(gaugeWarning(g("expiring", now + 20 * 86400_000, { supported: false }), now), null, "unsupported platform");
+  const near = gaugeWarning(g("expiring", now + GAUGE_WARN_MS - 1000), now);
+  assert.equal(near?.expired, false);
+  assert.match(near!.text, /usage gauge login expires in \d+ days/);
+  const past = gaugeWarning(g("expired", now - 1000), now);
+  assert.equal(past?.expired, true);
+  assert.match(past!.text, /expired/);
+});
+
+test("gaugeLine: hidden when unsupported, honest about each state", () => {
+  const now = 1_000_000_000_000;
+  assert.equal(gaugeLine(null, now), null);
+  assert.equal(gaugeLine({ supported: false, state: "ok" }, now), null);
+  assert.equal(gaugeLine({ supported: true, state: "none" }, now), "not set up");
+  assert.match(gaugeLine({ supported: true, state: "wrong-scope" }, now)!, /sign in again/);
+  assert.equal(
+    gaugeLine({ supported: true, state: "ok", email: "a@b.c", refreshExpiresAt: now + 20 * 86400_000 }, now),
+    "a@b.c · sign-in lasts in 20 days",
+  );
+  assert.match(gaugeLine({ supported: true, state: "ok", email: "a@b.c", lastRefresh: { ok: false } }, now)!, /refresh failing/);
+});
