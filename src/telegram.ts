@@ -2796,6 +2796,13 @@ export function startTelegram(
     for (const c of loadChannels()) {
       const t = c.telegram;
       if (!t || t.threadId != null || t.chatId < 0) continue;
+      // Check for the bridge HERE, before `reattachLiveBridge`: its
+      // `sessionAlive` argument is a tmux probe evaluated eagerly at the call
+      // site, and this runs on the 5s loop over every DM. With open DMs the
+      // number of DMs is the number of guests, which nothing caps — so the
+      // steady state (every bridge already up) must cost no process spawns at
+      // all (invariant 38).
+      if (bridges.has(bindKey({ id: t.chatId, type: "private" }))) continue;
       reattachLiveBridge(c);
     }
   };
