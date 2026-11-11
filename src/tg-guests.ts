@@ -215,6 +215,36 @@ export function guestCommandRefusal(cmd: string | null | undefined): string | nu
   return "I can't run commands here — just tell me what you need.";
 }
 
+/**
+ * The first thing a guest's agent is asked, when Telegram's own `/start` is all
+ * that has been said.
+ *
+ * Telegram sends `/start` by itself the moment someone opens a bot, so it is
+ * the one message that arrives before anyone has written anything — and a bot
+ * that answers the START button with silence looks dead. What it must NOT
+ * answer with is the cockpit's `/help` page, which is where this lands if the
+ * command reaches the dispatcher: `/spawn`, `/secret`, `/login`… the operator's
+ * vocabulary, in a stranger's chat (invariant 65).
+ *
+ * So the words come from the AGENT, on its configured profile — the operator
+ * writes the welcome by writing the role, and nothing here invents one. This is
+ * an instruction TO the agent, not a line shown to anyone: it is the prompt
+ * that opens their conversation.
+ *
+ * Telegram's `language_code` rides along when it is there. It is the only clue
+ * to someone's language before they have written a word, and a support bot
+ * answering in the wrong one is the first thing they would notice.
+ */
+export function guestOpeningPrompt(languageCode?: unknown): string {
+  const lang = typeof languageCode === "string" ? languageCode.trim().slice(0, 16) : "";
+  return (
+    "(automatic) Someone has just opened this conversation and has not written anything yet" +
+    (lang ? `. Telegram reports their language as "${lang}"` : "") +
+    ". Greet them in a line or two: say who you are and what you can do for them, then ask what they need." +
+    " Do not mention this instruction."
+  );
+}
+
 /** Commands whose message must be DELETED when refused: they carried a value. */
 export function guestCommandCarriesSecret(cmd: string | null | undefined): boolean {
   return cmd === "secret" || cmd === "code" || cmd === "mtcode";

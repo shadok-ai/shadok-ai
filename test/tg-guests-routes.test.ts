@@ -186,3 +186,42 @@ test("panel: the note says what the group buys, and never claims a wall it has n
   assert.match(note, /can read them/);
   assert.match(note, /privileged deployment/);
 });
+
+// ── a guest's /start, and an agent that was deleted ───────────────────────
+
+test("telegram: a guest's /start never reaches the command dispatcher", () => {
+  // `case "start"` prints the cockpit's help page — /spawn, /secret, /login —
+  // which is the operator's vocabulary in a stranger's chat (invariant 65).
+  const i = TG.indexOf("if (guest && cmd) {");
+  const j = TG.indexOf("if (cmd && commandRequiresOperator(");
+  assert.ok(i >= 0 && j > i);
+  const block = TG.slice(i, j);
+  assert.match(block, /guestOpening = true;/);
+  assert.match(block, /cmd = null;/);
+  // …and the raw "/start" is never forwarded either: a leading slash is a
+  // command to the TUI, not a sentence.
+  assert.match(TG, /if \(guestOpening\) \{\n\s+promptTo\(b, guestOpeningPrompt\(msg\.from\?\.language_code\), senderName\(msg\.from\)\);/);
+  // The dispatcher is reached through `cmd`, so nulling it is what skips it.
+  assert.match(TG, /let cmd = typeof msg\.text === "string" \? parseCommand\(msg\.text\) : null;/);
+});
+
+test("telegram: an agent that was ENDED takes its bridge with it", () => {
+  // Otherwise the next message goes into a dead session and the person is told
+  // "something went wrong" for ever, with no way out on their side.
+  const i = TG.indexOf('case "stopped":');
+  assert.ok(i >= 0, "the bridge ignores the stopped frame");
+  const body = TG.slice(i, TG.indexOf("break;", i));
+  assert.match(body, /ws\.close\(\)/);
+  assert.match(body, /b\.typing\.stop\(\)/);
+});
+
+test("telegram: a bridge whose channel is gone is never reused", () => {
+  // The registry is the authority on where a session lives (invariant 1) — a
+  // live socket proves only that the server is up.
+  const i = TG.indexOf("const bridgeFor = (key: string");
+  const body = TG.slice(i, TG.indexOf("const saved = channelForTelegram", i));
+  assert.match(body, /loadChannels\(\)\.some\(\(c\) => c\.sessionId === existing\.sessionId\)/);
+  assert.match(body, /bridges\.delete\(key\)/);
+  // A bridge that has not reached `ready` yet has no session to check against.
+  assert.match(body, /!existing\.sessionId \|\|/);
+});

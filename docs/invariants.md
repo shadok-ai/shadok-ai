@@ -2048,6 +2048,22 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     guest's conversation **permanently**: the preface arrives, the click is
     refused, nothing times out. Answering your own agent's question is driving
     your own conversation, not a new power.
+    **A fifth one, found the day the feature was first used in anger, and the
+    best evidence this invariant is right.** `guestCommandRefusal` lets `/start`
+    through — Telegram sends it by itself when someone opens a bot, and refusing
+    it would make "I can't run commands here" the first thing the bot ever says.
+    The comment next to it said it "falls through as ordinary text". It does
+    not: it falls through into the command DISPATCHER, five screens below,
+    whose `case "start"` prints the cockpit's help page. So the very first
+    thing a stranger read, on the very first test with a real person, was
+    `/spawn`, `/secret`, `/login`, `/mttoken` and "Operator-only: …". Written
+    into the fix for this invariant, by the same hands, in the same week.
+    What it needed was a POSITIVE answer rather than an exemption:
+    `guestOpeningPrompt` turns it into the opening prompt of that person's own
+    agent, so the welcome comes from the profile. The raw `/start` is never
+    forwarded either — a leading slash is a command to the TUI, not a sentence.
     The generalisation worth keeping: when you open a door, re-read every
     sentence the subsystem emits and every predicate that identifies someone by
-    the shape of their data. The compiler has nothing to say about either.
+    the shape of their data. The compiler has nothing to say about either. And
+    an exemption ("this one is not refused") is not a decision about what
+    HAPPENS next: follow the message to the end of the function it falls into.
