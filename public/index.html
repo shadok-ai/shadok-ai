@@ -287,6 +287,7 @@
   #verMenu .vm-label { color: var(--text-dim); }
   #verMenu .vm-check { display: flex; align-items: center; gap: 6px; margin-top: 9px; cursor: pointer; }
   #verMenu .vm-hint { color: var(--text-dim); font-size: 10px; margin-top: 7px; line-height: 1.4; }
+  #verMenu .vm-hint.danger { color: #e2564a; }
   #verMenu .vm-btn { margin-top: 10px; width: 100%; padding: 6px 10px; font-size: 11px; cursor: pointer;
     color: var(--text, #e8e8ea); background: transparent; border: 1px solid var(--line, #3a3d42); border-radius: 6px; }
   #verMenu .vm-btn:hover { border-color: var(--amber, #d0a000); }
@@ -2189,11 +2190,13 @@
   #infoBody .ip-skill .ip-meta { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
   #infoBody .ip-cron { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; background: var(--bg); }
   #infoBody .ip-cron .ip-prompt { color: var(--text-dim); font-size: 12px; margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #infoBody .ip-chip {
+  #infoBody .ip-chip, #cronList .ip-chip {
     display: inline-block; margin: 6px 6px 0 0; padding: 2px 9px; border-radius: 999px; font-size: 12px; cursor: pointer;
     border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); color: var(--text);
   }
-  #infoBody .ip-chip:hover { border-color: var(--amber); }
+  #infoBody .ip-chip:hover, #cronList .ip-chip:hover { border-color: var(--amber); }
+  #cronList .cron-skills { margin: -6px 0 10px; font-size: 12px; }
+  #cronList .cron-skills .ip-chip { margin-top: 4px; }
   #infoBody .ip-empty { color: var(--text-dim); font-size: 12px; font-style: italic; padding: 4px 0; }
   #infoBody .ip-link { background: none; border: 0; padding: 0; color: var(--amber); cursor: pointer; font-size: 12px; }
   .fp-agent-link { background: none; border: 0; padding: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline dotted; }
@@ -3438,7 +3441,14 @@
     </select>
   </div>
   <div class="vm-hint" id="vmChannelHint"></div>
-  <label class="vm-check"><input type="checkbox" id="acceptEditsChk"><span>Auto mode</span></label>
+  <div class="vm-row"><span class="vm-label">Permissions</span>
+    <select id="permModeSel">
+      <option value="default">Ask before each action</option>
+      <option value="acceptEdits">Auto-apply edits</option>
+      <option value="auto">Auto mode — no prompts</option>
+      <option value="bypassPermissions">Bypass — 0 questions ⚠️</option>
+    </select>
+  </div>
   <div class="vm-hint" id="vmModeHint"></div>
   <label class="vm-check"><input type="checkbox" id="ledgerChk"><span>Shared ledger</span></label>
   <div class="vm-hint" id="vmLedgerHint"></div>
@@ -9675,7 +9685,7 @@
   const verMenu = document.getElementById("verMenu");
   const autoUpdateChk = document.getElementById("autoUpdateChk");
   const updChannelSel = document.getElementById("updChannelSel");
-  const acceptEditsChk = document.getElementById("acceptEditsChk");
+  const permModeSel = document.getElementById("permModeSel");
   const ledgerChk = document.getElementById("ledgerChk");
   const restartAllBtn = document.getElementById("restartAllBtn");
 
@@ -9738,6 +9748,33 @@
       : "Group isolation did NOT complete — agents are running un-isolated (commons). Check the server logs; it retries on the next restart.";
   }
 
+  // The permission mode every NEW agent spawns in. The dropdown lists the four
+  // useful rungs; the server accepts more (manual/dontAsk/plan, settable via the
+  // API or config). If the instance is on one of those, we show it as a
+  // read-through option rather than snapping the menu to a mode nobody picked.
+  const PERM_MODE_HINTS = {
+    default: "New agents ask before each action.",
+    acceptEdits: "New agents auto-apply file edits, and ask before other actions.",
+    auto: "New agents start in auto mode (Shift+Tab): no prompts, though a risky action can still be refused.",
+    bypassPermissions: "⚠️ No permission checks at all — any command runs with no question. Agents aren't sandboxed and read untrusted content; a prompt injection could do real damage.",
+  };
+  function renderPermMode(mode) {
+    const m = mode || "default";
+    const known = Object.prototype.hasOwnProperty.call(PERM_MODE_HINTS, m);
+    let extra = permModeSel.querySelector('option[data-extra="1"]');
+    if (!known) {
+      if (!extra) { extra = document.createElement("option"); extra.dataset.extra = "1"; permModeSel.appendChild(extra); }
+      extra.value = m; extra.textContent = "Mode: " + m;
+    } else if (extra) {
+      extra.remove();
+    }
+    permModeSel.value = m;
+    permModeSel.dataset.applied = m;
+    const hint = document.getElementById("vmModeHint");
+    hint.textContent = PERM_MODE_HINTS[m] || ("Mode: " + m + ".");
+    hint.classList.toggle("danger", m === "bypassPermissions");
+  }
+
   function renderVerMenu() {
     if (!lastVersion || verMenu.hidden) return;
     const m = lastVersion;
@@ -9756,13 +9793,7 @@
     document.getElementById("vmChannelHint").textContent = ch === "alpha"
       ? "Every merge, as soon as it ships — newest work, freshest bugs."
       : "Only promoted releases. Quieter, and what a fresh install gets.";
-    const autoOn = m.permissionMode === "auto";
-    acceptEditsChk.checked = autoOn;
-    document.getElementById("vmModeHint").textContent = autoOn
-      ? "New agents start in auto mode (Shift+Tab), running without prompts."
-      : (m.permissionMode && m.permissionMode !== "default"
-           ? "Mode: " + m.permissionMode + "."
-           : "New agents ask before each action.");
+    renderPermMode(m.permissionMode || "default");
     ledgerChk.checked = !!m.ledgerEnabled;
     document.getElementById("vmLedgerHint").textContent = m.ledgerEnabled
       ? "Agents verify a status before re-raising it. Toggling restarts all agents."
@@ -9997,19 +10028,31 @@
       updChannelSel.value = channel === "alpha" ? "beta" : "alpha"; // revert on failure
     }
   });
-  acceptEditsChk.addEventListener("change", async () => {
-    const on = acceptEditsChk.checked;
+  permModeSel.addEventListener("change", async () => {
+    const mode = permModeSel.value;
+    const prev = permModeSel.dataset.applied || "default";
+    if (mode === prev) return;
+    // Bypass runs every new agent with no permission checks at all; make the
+    // operator confirm it explicitly (same native confirm() as End agent etc.).
+    if (mode === "bypassPermissions" && !confirm(
+      "Switch every NEW agent to Bypass (0 questions)?\n\n" +
+      "Agents will run with NO permission checks — any shell command, any file write, " +
+      "nothing is ever asked. They are not sandboxed, run as your user, and read " +
+      "untrusted content (web pages, cloned repos, messages), so a prompt injection " +
+      "could do real damage.\n\nOnly enable this if you understand the risk."
+    )) { permModeSel.value = prev; return; }
     try {
       const r = await fetch("/permission-mode", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: on ? "auto" : "default" }),
+        body: JSON.stringify({ mode }),
       });
       if (!r.ok) throw new Error("refused");
-      // Server echoes the new mode back over WS; the hint updates then. Only
-      // affects agents started after this — running ones keep their mode.
+      // Optimistic; the server also echoes the new mode over WS (renderVerMenu).
+      // Only affects agents started after this — running ones keep their mode.
+      renderPermMode(mode);
     } catch {
-      acceptEditsChk.checked = !on; // revert on failure
+      permModeSel.value = prev; // revert on failure
     }
   });
   ledgerChk.addEventListener("change", async () => {
@@ -14125,6 +14168,21 @@
   // only through textContent (facEl): skill titles and cron prompts can be
   // written by an agent.
   let infoSeq = 0;
+  /** A skill as a chip that opens its card in the Skill Factory. `before` runs
+   *  first (the schedule panel closes its overlay so the card is visible). */
+  function skillChip(s, before) {
+    const go = () => { if (before) before(); openSkillCard(s.id); };
+    return facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory to edit it", text: "✦ " + facTitle(s),
+      onclick: go, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } } });
+  }
+  /** Which factory skills an agent's schedules use (src/skill-usage.ts):
+   *  `named(cronId)` — the skills that cron's prompt names; `picked` — skills a
+   *  scheduled run CALLED without any prompt naming them (no cron in particular). */
+  function cronSkillUse(skills, sid) {
+    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
+    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
+    return { named, picked };
+  }
   async function renderInfoPanel() {
     const body = $("infoBody");
     const t = active;
@@ -14165,9 +14223,8 @@
     const list = (Array.isArray(crons) ? crons : []).filter((c) => c.sessionId === sid);
     body.appendChild(facEl("h3", {}, ["Schedules", facEl("span", { class: "ip-count", text: String(list.length) })]));
     if (!list.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No schedule." }));
-    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
-    const chip = (s) => facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory", text: "✦ " + facTitle(s),
-      onclick: () => openSkillCard(s.id), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSkillCard(s.id); } } });
+    const { named, picked } = cronSkillUse(skills, sid);
+    const chip = (s) => skillChip(s);
     for (const c of list) {
       const uses = named(c.id);
       body.appendChild(facEl("div", { class: "ip-cron" }, [
@@ -14179,7 +14236,6 @@
     }
     // Skills a scheduled run CALLED without any prompt naming them: the agent
     // picked them itself, so they belong to no cron in particular.
-    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
     if (picked.length) body.appendChild(facEl("div", { style: "margin-top:8px" }, [facEl("span", { class: "ip-k", text: "Also called by scheduled runs:" }), facEl("div", {}, picked.map(chip))]));
     body.appendChild(facEl("div", { style: "margin-top:10px" }, [facEl("button", { class: "ip-link", type: "button", text: "Manage schedules…", onclick: () => { $("cronOverlay").hidden = false; renderCrons(); } })]));
   }
@@ -14257,10 +14313,20 @@
     $("hookReveal").hidden = true; $("hookReveal").replaceChildren();
     renderHooks();
     if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
-    let all = [];
-    try { all = await (await fetch("/crons")).json(); } catch { all = []; }
-    const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === active.sessionId);
+    const sid = active.sessionId;
+    // The skills each schedule uses, so a cron that runs a factory skill links
+    // straight to it (same join as the info panel). Skills failing to load only
+    // costs the chips, never the schedule list.
+    const [all, skills] = await Promise.all([
+      fetch("/crons").then((r) => r.json()).catch(() => []),
+      facCall("GET", "/factory/skills").then((o) => (o && o.skills) || []).catch(() => []),
+    ]);
+    if (!active || active.sessionId !== sid) return; // switched agent meanwhile
+    ul.innerHTML = "";
+    const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === sid);
     if (!list.length) { ul.innerHTML = '<li><span style="opacity:.6">no schedule yet</span></li>'; return; }
+    const { named, picked } = cronSkillUse(skills, sid);
+    const closeCron = () => { $("cronOverlay").hidden = true; };
     for (const c of list) {
       const li = document.createElement("li"); li.style.display = "block";
       const line = document.createElement("div");
@@ -14290,6 +14356,13 @@
       p.textContent = c.prompt;
       p.style.cssText = "opacity:.75;font-size:12px;margin:3px 0 10px;white-space:pre-wrap";
       li.append(line, p);
+      const uses = named(c.id);
+      if (uses.length) li.appendChild(facEl("div", { class: "cron-skills" }, [facEl("span", { style: "opacity:.6", text: "Uses " }), ...uses.map((s) => skillChip(s, closeCron))]));
+      ul.appendChild(li);
+    }
+    if (picked.length) {
+      const li = document.createElement("li"); li.style.display = "block";
+      li.appendChild(facEl("div", { class: "cron-skills", style: "margin:0" }, [facEl("span", { style: "opacity:.6", text: "Also called by scheduled runs: " }), ...picked.map((s) => skillChip(s, closeCron))]));
       ul.appendChild(li);
     }
   }
@@ -14996,7 +15069,7 @@
   // the reason, rather than a control that silently snaps back.
   function applyAdminOnlyControls(amAdmin) {
     const why = amAdmin ? "" : "Admin only";
-    for (const id of ["autoUpdateChk", "updChannelSel", "acceptEditsChk", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
+    for (const id of ["autoUpdateChk", "updChannelSel", "permModeSel", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
       const el = $(id);
       if (!el) continue;
       el.disabled = !amAdmin;

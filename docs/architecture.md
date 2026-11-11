@@ -656,9 +656,19 @@ let anyone who could reach the cockpit read a local service's page.
 ## Permission mode
 
 Spawned agents start in `acceptEdits` (the Shift+Tab auto-accept-edits mode) by
-default. Configurable from the GUI (`POST /permission-mode`), persisted in
-`config.json`, overridable with `SHADOK_PERMISSION_MODE`. Only affects agents
-started *after* the change — a running one keeps its launch mode.
+default. The GUI version menu exposes a **Permissions** dropdown
+(`POST /permission-mode`, admin only) spanning the autonomy ladder — *Ask before
+each action* (`default`), *Auto-apply edits* (`acceptEdits`), *Auto mode*
+(`auto`), and *Bypass — 0 questions* (`bypassPermissions`). The last is the real
+`--dangerously-skip-permissions`: the menu paints a red warning and asks for an
+explicit confirm before switching into it, because agents are NOT sandboxed and
+run as the same OS user while reading untrusted content (a prompt injection could
+do real damage). The server still accepts the other CLI modes (`manual`,
+`dontAsk`, `plan`) over the API/config; a mode set that way shows as a
+read-through option so the menu reflects reality instead of snapping to a mode
+nobody picked. Persisted in `config.json`, overridable with
+`SHADOK_PERMISSION_MODE`. Only affects agents started *after* the change — a
+running one keeps its launch mode.
 
 ## Claude onboarding and sign-in (`src/claude-home.ts`, `src/claude-auth.ts`)
 
@@ -1777,6 +1787,10 @@ at its current path. Verified: the same agent then answered with v3.
   opens its card in the Skill Factory (`openSkillCard`). It is the per-agent
   view of the same two reads (`/factory/skills`, `/crons`), no endpoint of its
   own.
+- **The schedule panel** (`#cronOverlay`, `renderCrons`) shows the same join
+  under each cron ("Uses ✦ skill", plus the unprompted ones), through the
+  helpers it shares with the info panel (`cronSkillUse`, `skillChip`); a chip
+  closes the overlay and opens the skill's card, where Edit is.
 
 **The page** (`public/index.html`, "Skill Factory"):
 - `body.factory-mode` hides `main` and shows `#factoryPage`, with a short
