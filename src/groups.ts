@@ -136,6 +136,45 @@ export function canSeeSession(
 }
 
 /**
+ * Why `name` may not leave `g`: it is the LAST member of a restricted group.
+ *
+ * Every question about a restricted group — see it, list it, administer it,
+ * delete it — is member-only, and an admin has no override (operator decision
+ * 2026-11-03). A restricted group with an empty roster is therefore invisible to
+ * everyone, admin included, cannot be deleted, and hides its agents — and no
+ * route can repair it, only a hand edit of the groups file. So the roster may
+ * never be emptied: the way out for the last member is deleting the group.
+ */
+export function lastMemberRefusal(g: Group, name: string): string | null {
+  if (g.nature !== "restricted") return null;
+  if (!g.members.includes(name) || g.members.some((m) => m !== name)) return null;
+  return `"${name}" is the last member of "${g.name}" — delete the group instead`;
+}
+
+/**
+ * Restricted groups found with NO member get `heir` back as their member (new
+ * list), or null when there is nothing to repair. `null` too on an empty list:
+ * empty may mean "could not read", and nothing is written over that
+ * (invariant 6).
+ *
+ * Such rows exist: before `lastMemberRefusal`, closing the Telegram guest door
+ * removed the instance's account — the human admin's own — from a group they
+ * were the only member of. The bootstrap admin is the heir because it is the
+ * account that was taken out, and the instance's owner: the alternative is a
+ * group nobody can ever reach again.
+ */
+export function orphanedGroupsHeal(groups: readonly Group[], heir: string): Group[] | null {
+  if (groups.length === 0) return null;
+  let changed = false;
+  const out = groups.map((g) => {
+    if (g.nature !== "restricted" || g.members.length > 0) return g;
+    changed = true;
+    return { ...g, members: [heir] };
+  });
+  return changed ? out : null;
+}
+
+/**
  * Who may change a group's membership. Refusals are explicit strings, never a
  * silent no-op. Only `restricted` groups have a mutable roster.
  */
@@ -153,15 +192,19 @@ export function membershipVerdict(
   switch (action) {
     case "invite":
       return memberOf(g, actor.name) ? { ok: true } : { ok: false, error: "only a member can invite" };
-    case "leave":
-      return actor.name === target ? { ok: true } : { ok: false, error: "you can only remove yourself" };
-    case "remove":
+    case "leave": {
+      if (actor.name !== target) return { ok: false, error: "you can only remove yourself" };
+      const last = lastMemberRefusal(g, target);
+      return last ? { ok: false, error: last } : { ok: true };
+    }
+    case "remove": {
       // Mirrors `invite`: whoever may add a member may also remove one (a Private
       // group is run by its members). An admin has NO override: not a member,
       // no reach (operator decision 2026-11-03).
-      return memberOf(g, actor.name)
-        ? { ok: true }
-        : { ok: false, error: "only a member can remove a member" };
+      if (!memberOf(g, actor.name)) return { ok: false, error: "only a member can remove a member" };
+      const last = lastMemberRefusal(g, target);
+      return last ? { ok: false, error: last } : { ok: true };
+    }
   }
 }
 
@@ -223,13 +266,20 @@ export function membersWithout(members: readonly string[], accountName: string):
 export function accountDeleteGroups(
   accountName: string,
   groups: readonly Group[],
+  heir?: string,
 ): { torndown: Group | null; groups: Group[] } {
   const torndown = privateGroupFor(accountName, groups);
   const remaining = groups
     .filter((g) => !(torndown && g.id === torndown.id))
-    .map((g) =>
-      g.members.includes(accountName) ? { ...g, members: membersWithout(g.members, accountName) } : g,
-    );
+    .map((g) => {
+      if (!g.members.includes(accountName)) return g;
+      const members = membersWithout(g.members, accountName);
+      // The deleted person was its last member: hand the group to `heir` (the
+      // admin deleting them) rather than leave a roster no one can ever reach
+      // (lastMemberRefusal).
+      if (members.length === 0 && g.nature === "restricted" && heir) return { ...g, members: [heir] };
+      return { ...g, members };
+    });
   return { torndown, groups: remaining };
 }
 
@@ -543,6 +593,9 @@ export function mergeGroupsPut(
       const isMember = actor !== null && memberOf(prev, actor);
       if ((natureChange || membersChange || ownerChange) && !isMember) {
         return { ok: false, error: "only a member can change a group's membership or nature" };
+      }
+      if ((wantsNature ?? prev.nature) === "restricted" && (wantsMembers ?? prev.members).length === 0) {
+        return { ok: false, error: `"${prev.name}" would have no member left — delete the group instead` };
       }
       // Display extras (icon/collapsed/order) travel on the row but aren't on
       // the Group type — carry them through a loose record, like normalizeGroups.

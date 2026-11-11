@@ -190,6 +190,7 @@ import {
   privateGroupFor,
   newPrivateGroup,
   accountDeleteGroups,
+  orphanedGroupsHeal,
   MAIN_GROUP_ID,
   groupMoveRefusal,
   type Viewer,
@@ -4419,6 +4420,15 @@ async function ensureGroupsProvisioned(): Promise<void> {
     saveGroups(withMain);
     console.log("groups: the commons group (main) was missing — restored");
   }
+  // A restricted group left with NO member is invisible to everyone, admin
+  // included, and cannot be deleted (`lastMemberRefusal`). Older builds made such
+  // rows (the Telegram guest door removed the admin's own account on close), so
+  // hand them back to the bootstrap admin on every capable boot.
+  const unorphaned = orphanedGroupsHeal(loadGroups(), BOOTSTRAP_ADMIN);
+  if (unorphaned) {
+    saveGroups(unorphaned);
+    console.log(`groups: restricted group(s) with no member handed back to "${BOOTSTRAP_ADMIN}"`);
+  }
   const r = await reconcileGroupProvisioning(loadGroups(), {
     userExists: osUserExists,
     provision: async (g) => {
@@ -6013,7 +6023,7 @@ app.delete("/users", async (req, res) => {
   // so an orphaned OS user/HOME does not go unnoticed.
   let warning: string | undefined;
   if (DEPLOYMENT_MODE === "multi-tenant") {
-    const { torndown, groups } = accountDeleteGroups(name, loadGroups());
+    const { torndown, groups } = accountDeleteGroups(name, loadGroups(), me!.name);
     saveGroups(groups); // row removed + memberships dropped BEFORE any await
     if (torndown) {
       const r = await teardownGroupUser(torndown, {

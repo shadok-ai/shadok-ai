@@ -571,6 +571,11 @@ group already bound before this change stays bound.
   (invariant 47). Enabling writes the instance into that group's `members`, which
   is how the bridge may spawn, resume and drive there; it widens nothing else,
   since an agent principal is judged on its own `agentGroup`, never on that name.
+  That name is ALSO the human admin's own account, usually already a member (the
+  picker only offers their groups), so the setup records `joined` only when the
+  flow actually added it, and closing or moving the door takes back only that.
+  Removing it unconditionally threw the admin out of their own group, and emptied
+  the roster of one they were alone in (see the restricted-group rule below).
   The group and the profile are resolved **server-side from the configuration**
   (invariant 49): the `start` frame carries a marker and nothing more, believed
   only on a socket that proved `x-shadok-bridge`, ignored outright on a resume.
@@ -2046,7 +2051,14 @@ natures (`Nature` in `groups.ts`):
 - **private** — one person, sealed, invisible even to an admin; one per account
   (`newPrivateGroup`, created when an invitation is redeemed, torn down by
   `accountDeleteGroups` when the account is deleted);
-- **restricted** — a member list; any member can invite (`membershipVerdict`);
+- **restricted** — a member list; any member can invite (`membershipVerdict`).
+  The roster is **never emptied** (`lastMemberRefusal`): every question about a
+  restricted group is member-only and an admin has no override, so a group with
+  no member is invisible to all, undeletable, and hides its agents. The last
+  member cannot leave or be removed (delete the group instead), a `PUT /groups`
+  that empties one is refused, an account deletion hands such a group to the
+  deleting admin, and `orphanedGroupsHeal` gives any empty one found at boot back
+  to `BOOTSTRAP_ADMIN` (never over an empty read, invariant 6);
 - **public** — everyone. `Main` (`MAIN_GROUP_ID`) is the default public group and
   the commons: an existing single-tenant instance already *is* exactly this.
 

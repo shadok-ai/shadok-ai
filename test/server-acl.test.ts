@@ -324,7 +324,7 @@ test("server: DELETE /users removes the group row (saveGroups) BEFORE the teardo
       "reuse-leak: no ownerless row survives a crash for a re-invite to match+reuse by owner)",
   );
   // The group list is re-read fresh for that save (invariant 6, not a pre-await snapshot).
-  assert.ok(/accountDeleteGroups\(\s*name,\s*loadGroups\(\)\s*\)/.test(cascade), "the save re-reads loadGroups() fresh");
+  assert.ok(/accountDeleteGroups\(\s*name,\s*loadGroups\(\)\s*(,[^)]*)?\)/.test(cascade), "the save re-reads loadGroups() fresh");
 });
 
 test("server: a boot reconciler re-provisions missing group OS users, INDEPENDENT of the migration marker", () => {
