@@ -287,6 +287,7 @@
   #verMenu .vm-label { color: var(--text-dim); }
   #verMenu .vm-check { display: flex; align-items: center; gap: 6px; margin-top: 9px; cursor: pointer; }
   #verMenu .vm-hint { color: var(--text-dim); font-size: 10px; margin-top: 7px; line-height: 1.4; }
+  #verMenu .vm-hint.danger { color: #e2564a; }
   #verMenu .vm-btn { margin-top: 10px; width: 100%; padding: 6px 10px; font-size: 11px; cursor: pointer;
     color: var(--text, #e8e8ea); background: transparent; border: 1px solid var(--line, #3a3d42); border-radius: 6px; }
   #verMenu .vm-btn:hover { border-color: var(--amber, #d0a000); }
@@ -3433,7 +3434,14 @@
     </select>
   </div>
   <div class="vm-hint" id="vmChannelHint"></div>
-  <label class="vm-check"><input type="checkbox" id="acceptEditsChk"><span>Auto mode</span></label>
+  <div class="vm-row"><span class="vm-label">Permissions</span>
+    <select id="permModeSel">
+      <option value="default">Ask before each action</option>
+      <option value="acceptEdits">Auto-apply edits</option>
+      <option value="auto">Auto mode — no prompts</option>
+      <option value="bypassPermissions">Bypass — 0 questions ⚠️</option>
+    </select>
+  </div>
   <div class="vm-hint" id="vmModeHint"></div>
   <label class="vm-check"><input type="checkbox" id="ledgerChk"><span>Shared ledger</span></label>
   <div class="vm-hint" id="vmLedgerHint"></div>
@@ -9652,7 +9660,7 @@
   const verMenu = document.getElementById("verMenu");
   const autoUpdateChk = document.getElementById("autoUpdateChk");
   const updChannelSel = document.getElementById("updChannelSel");
-  const acceptEditsChk = document.getElementById("acceptEditsChk");
+  const permModeSel = document.getElementById("permModeSel");
   const ledgerChk = document.getElementById("ledgerChk");
   const restartAllBtn = document.getElementById("restartAllBtn");
 
@@ -9715,6 +9723,33 @@
       : "Group isolation did NOT complete — agents are running un-isolated (commons). Check the server logs; it retries on the next restart.";
   }
 
+  // The permission mode every NEW agent spawns in. The dropdown lists the four
+  // useful rungs; the server accepts more (manual/dontAsk/plan, settable via the
+  // API or config). If the instance is on one of those, we show it as a
+  // read-through option rather than snapping the menu to a mode nobody picked.
+  const PERM_MODE_HINTS = {
+    default: "New agents ask before each action.",
+    acceptEdits: "New agents auto-apply file edits, and ask before other actions.",
+    auto: "New agents start in auto mode (Shift+Tab): no prompts, though a risky action can still be refused.",
+    bypassPermissions: "⚠️ No permission checks at all — any command runs with no question. Agents aren't sandboxed and read untrusted content; a prompt injection could do real damage.",
+  };
+  function renderPermMode(mode) {
+    const m = mode || "default";
+    const known = Object.prototype.hasOwnProperty.call(PERM_MODE_HINTS, m);
+    let extra = permModeSel.querySelector('option[data-extra="1"]');
+    if (!known) {
+      if (!extra) { extra = document.createElement("option"); extra.dataset.extra = "1"; permModeSel.appendChild(extra); }
+      extra.value = m; extra.textContent = "Mode: " + m;
+    } else if (extra) {
+      extra.remove();
+    }
+    permModeSel.value = m;
+    permModeSel.dataset.applied = m;
+    const hint = document.getElementById("vmModeHint");
+    hint.textContent = PERM_MODE_HINTS[m] || ("Mode: " + m + ".");
+    hint.classList.toggle("danger", m === "bypassPermissions");
+  }
+
   function renderVerMenu() {
     if (!lastVersion || verMenu.hidden) return;
     const m = lastVersion;
@@ -9733,13 +9768,7 @@
     document.getElementById("vmChannelHint").textContent = ch === "alpha"
       ? "Every merge, as soon as it ships — newest work, freshest bugs."
       : "Only promoted releases. Quieter, and what a fresh install gets.";
-    const autoOn = m.permissionMode === "auto";
-    acceptEditsChk.checked = autoOn;
-    document.getElementById("vmModeHint").textContent = autoOn
-      ? "New agents start in auto mode (Shift+Tab), running without prompts."
-      : (m.permissionMode && m.permissionMode !== "default"
-           ? "Mode: " + m.permissionMode + "."
-           : "New agents ask before each action.");
+    renderPermMode(m.permissionMode || "default");
     ledgerChk.checked = !!m.ledgerEnabled;
     document.getElementById("vmLedgerHint").textContent = m.ledgerEnabled
       ? "Agents verify a status before re-raising it. Toggling restarts all agents."
@@ -9974,19 +10003,31 @@
       updChannelSel.value = channel === "alpha" ? "beta" : "alpha"; // revert on failure
     }
   });
-  acceptEditsChk.addEventListener("change", async () => {
-    const on = acceptEditsChk.checked;
+  permModeSel.addEventListener("change", async () => {
+    const mode = permModeSel.value;
+    const prev = permModeSel.dataset.applied || "default";
+    if (mode === prev) return;
+    // Bypass runs every new agent with no permission checks at all; make the
+    // operator confirm it explicitly (same native confirm() as End agent etc.).
+    if (mode === "bypassPermissions" && !confirm(
+      "Switch every NEW agent to Bypass (0 questions)?\n\n" +
+      "Agents will run with NO permission checks — any shell command, any file write, " +
+      "nothing is ever asked. They are not sandboxed, run as your user, and read " +
+      "untrusted content (web pages, cloned repos, messages), so a prompt injection " +
+      "could do real damage.\n\nOnly enable this if you understand the risk."
+    )) { permModeSel.value = prev; return; }
     try {
       const r = await fetch("/permission-mode", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: on ? "auto" : "default" }),
+        body: JSON.stringify({ mode }),
       });
       if (!r.ok) throw new Error("refused");
-      // Server echoes the new mode back over WS; the hint updates then. Only
-      // affects agents started after this — running ones keep their mode.
+      // Optimistic; the server also echoes the new mode over WS (renderVerMenu).
+      // Only affects agents started after this — running ones keep their mode.
+      renderPermMode(mode);
     } catch {
-      acceptEditsChk.checked = !on; // revert on failure
+      permModeSel.value = prev; // revert on failure
     }
   });
   ledgerChk.addEventListener("change", async () => {
@@ -14914,7 +14955,7 @@
   // the reason, rather than a control that silently snaps back.
   function applyAdminOnlyControls(amAdmin) {
     const why = amAdmin ? "" : "Admin only";
-    for (const id of ["autoUpdateChk", "updChannelSel", "acceptEditsChk", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
+    for (const id of ["autoUpdateChk", "updChannelSel", "permModeSel", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
       const el = $(id);
       if (!el) continue;
       el.disabled = !amAdmin;
