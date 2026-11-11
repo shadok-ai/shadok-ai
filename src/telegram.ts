@@ -55,6 +55,7 @@ import {
   guestCommandCarriesSecret,
   guestCommandRefusal,
   guestNotice,
+  guestOpeningPrompt,
   guestsOpen,
   ownerAdoptionCandidate,
   type GuestNotice,
@@ -1830,6 +1831,20 @@ export function startTelegram(
           b.awaitingFreetext = undefined;
           sendOps(b, "— session ended —", "exited");
           break;
+        case "stopped":
+          // The agent was DELETED — the cockpit's ✕, "End session", /end, or a
+          // closed topic. Its channel row is gone with it, so this bridge now
+          // points at nothing: keeping it would send every later message into a
+          // dead session, and the person on the other side would get "something
+          // went wrong" for ever with no way out. Closing it drops it from
+          // `bridges` (see `ws.on("close")`), so the NEXT message opens a fresh
+          // agent — `bridgeFor` finds no channel to resume, which is exactly
+          // what a deleted agent should mean.
+          b.typing.stop();
+          b.awaitingFreetext = undefined;
+          console.log(`telegram: ${b.key} — its agent was ended, the next message starts a new one`);
+          try { ws.close(); } catch { /* already closing */ }
+          break;
       }
     });
     ws.on("close", () => {
@@ -1842,7 +1857,18 @@ export function startTelegram(
 
   const bridgeFor = (key: string, chatId: number, threadId?: number, name?: string): Bridge => {
     const existing = bridges.get(key);
-    if (existing && existing.ws.readyState <= WebSocket.OPEN) return existing;
+    // A live socket is not proof that the agent behind it still exists: a
+    // deleted channel leaves a bridge pointing at a dead session (the `stopped`
+    // frame closes it, but a removal that never broadcast one — a reconcile, a
+    // crashed server — would not). The registry is the authority on where a
+    // session lives (invariant 1), so it is asked here too, and a bridge it no
+    // longer knows is dropped rather than reused.
+    if (existing && existing.ws.readyState <= WebSocket.OPEN) {
+      if (!existing.sessionId || loadChannels().some((c) => c.sessionId === existing.sessionId)) return existing;
+      console.log(`telegram: ${key} — its agent is gone from the registry, starting a new one`);
+      bridges.delete(key);
+      try { existing.ws.close(); } catch { /* already closing */ }
+    }
     const saved = channelForTelegram(chatId, threadId);
     // The board's General (no threadId, a group) is the environment's home base.
     // The web home channel has `home: true` but NO Telegram binding until now, so
@@ -2082,7 +2108,12 @@ export function startTelegram(
     const threadId = msg.message_thread_id as number | undefined;
     const isGroup = chat.type === "group" || chat.type === "supergroup";
     // Commands only exist in text messages — a caption is never a command.
-    const cmd = typeof msg.text === "string" ? parseCommand(msg.text) : null;
+    // Not `const`: a guest's `/start` is taken out of the dispatcher's hands
+    // below, and becomes the opening prompt of their own agent instead.
+    let cmd = typeof msg.text === "string" ? parseCommand(msg.text) : null;
+    // Is this message Telegram's own `/start`, from someone who has not written
+    // anything yet (`guestOpeningPrompt`)?
+    let guestOpening = false;
 
     // DM-only mode: a group chat reaches nothing at all, and that refusal sits
     // ABOVE the board logic on purpose — a group bound before the switch must
@@ -2179,6 +2210,14 @@ export function startTelegram(
         await reply(chat.id, undefined, refusal);
         return;
       }
+      // `/start` is the only command that survives that refusal, and it must
+      // never reach the dispatcher below: `case "start"` prints the COCKPIT's
+      // help page — /spawn, /secret, /login — which is exactly the operator's
+      // vocabulary landing in a stranger's chat (invariant 65). It becomes the
+      // opening prompt of their own agent instead, so the welcome is written by
+      // the profile rather than by this file.
+      guestOpening = true;
+      cmd = null;
     }
 
     if (cmd && commandRequiresOperator(cmd.cmd, cmd.arg, (n) => !!getProfile(n))) {
@@ -2629,6 +2668,13 @@ export function startTelegram(
       const wsMsg = { type: "freetext", n, text: msg.text };
       if (b.ready && b.ws.readyState === WebSocket.OPEN) b.ws.send(JSON.stringify(wsMsg));
       else b.pendingActions.push(wsMsg);
+      return;
+    }
+    // Telegram's own `/start`, before this person has written a word: the agent
+    // is asked to greet them, and the raw "/start" is never forwarded — a
+    // leading slash is a command to the TUI, not a sentence.
+    if (guestOpening) {
+      promptTo(b, guestOpeningPrompt(msg.from?.language_code), senderName(msg.from));
       return;
     }
     // A reply carries the message it answers: without it the agent reads

@@ -580,8 +580,21 @@ group already bound before this change stays bound.
   conversation to every account on the instance. A guest gets no worktree and
   runs in its group's own home. It may talk and answer its own agent's
   questions; every command is refused above `commandRequiresOperator`
-  (an allowlist of the privileged ones only), with `/start` falling through
-  because Telegram sends it unasked. What the bridge says about ITSELF goes
+  (an allowlist of the privileged ones only), with `/start` the one exception —
+  Telegram sends it unasked the moment someone opens a bot. "Falling through"
+  was not enough: it fell through into the command DISPATCHER, whose `case
+  "start"` prints the cockpit's help page (`/spawn`, `/secret`, `/login`), so
+  the very first thing a stranger ever read was the operator's vocabulary. It
+  is now turned into the opening PROMPT of their own agent
+  (`guestOpeningPrompt`, carrying Telegram's `language_code` — the only clue to
+  someone's language before they have written a word): the welcome is written
+  by the profile, not by the bridge, and the raw `/start` is never forwarded,
+  since a leading slash is a command to the TUI rather than a sentence.
+  **An agent that is ended takes its bridge with it**: `stopped` closes the
+  bridge's socket, so the next message opens a fresh agent instead of
+  disappearing into a dead session (and `bridgeFor` re-checks the registry
+  before reusing any bridge, for a removal that broadcast nothing).
+  What the bridge says about ITSELF goes
   through `sendOps`, so the cockpit's vocabulary never reaches a stranger — see
   invariant 65 for the four assumptions that broke the day this door opened.
   Deliberately absent, and the operator's own call: no cap on the number of

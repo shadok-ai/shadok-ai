@@ -12,6 +12,7 @@ import {
   guestCommandRefusal,
   guestEnableRefusal,
   guestNotice,
+  guestOpeningPrompt,
   guestGroupChoices,
   guestPatchFlow,
   guestSpawnPlan,
@@ -284,6 +285,28 @@ test("guestCommandRefusal: every command is refused, with one deliberate excepti
   for (const c of ["secret", "spawn", "stop", "end", "tools", "new", "login", "setup", "whatever"]) {
     assert.match(String(guestCommandRefusal(c)), /can't run commands/i, c);
   }
+});
+
+test("guestOpeningPrompt: Telegram's own /start opens the conversation, in the AGENT's voice", () => {
+  const p = guestOpeningPrompt("fr");
+  // It is an instruction to the agent, not a line anyone is shown — and the
+  // welcome itself comes from the profile, so nothing here writes one.
+  assert.match(p, /greet them/i);
+  assert.match(p, /ask what they need/i);
+  assert.match(p, /do not mention this instruction/i);
+  // The language is the only clue there is before a first word is written.
+  assert.match(p, /"fr"/);
+  // No cockpit vocabulary: this text ends up in a stranger's conversation.
+  assert.doesNotMatch(p, /shadok|cockpit|operator|session|profile|command|\/start/i);
+});
+
+test("guestOpeningPrompt: no language, no invented one — and nothing unbounded", () => {
+  const p = guestOpeningPrompt(undefined);
+  assert.doesNotMatch(p, /language/i);
+  assert.equal(guestOpeningPrompt(42), p, "a non-string is no language");
+  // Telegram's field is short; a hostile one must not become the whole prompt.
+  assert.ok(guestOpeningPrompt("x".repeat(500)).includes("x".repeat(16)));
+  assert.ok(!guestOpeningPrompt("x".repeat(500)).includes("x".repeat(17)));
 });
 
 test("guestCommandRefusal: the line names no cockpit internals", () => {

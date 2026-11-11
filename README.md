@@ -326,6 +326,11 @@ Enter to skip; you can add it later from the web UI).
   driving, so choose it deliberately. You read and take over those conversations
   from the cockpit, in that group; the group runs under its own Unix user, and
   only its members see it, so whoever you add to the group can read them too.
+  Opening the bot is enough to be greeted: Telegram's own **START** button
+  wakes that person's agent, which introduces itself in the words its profile
+  gives it — so the welcome is something you write, by writing the role. If you
+  delete someone's agent from the cockpit, their next message simply starts a
+  new one.
   They can talk and answer their agent's questions, and nothing else: no
   command reaches the bot. Two things worth knowing before you open it — every
   conversation is a real agent that stays resident, and they all draw on **your**
