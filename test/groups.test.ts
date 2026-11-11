@@ -375,7 +375,14 @@ import { readFileSync } from "node:fs";
 
 test("server start handler passes a !resumed-gated msg.group to resolveSpawnIsolation", () => {
   const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
-  assert.match(src, /const requestedGroupId =\s*!resumed && typeof msg\.group === "string" && msg\.group\.trim\(\)/);
+  // Two sources, in this order. A GUEST's group (open DMs, src/tg-guests.ts)
+  // comes from the CONFIGURATION and therefore needs no `!resumed` gate of its
+  // own — `guestSpawnPlan` already refuses a marker on a resume. The frame's
+  // `msg.group` stays gated, which is what this test has always been about.
+  assert.match(
+    src,
+    /const requestedGroupId =\s*guestGroupId \?\?\s*\(!resumed && typeof msg\.group === "string" && msg\.group\.trim\(\)/,
+  );
   assert.match(src, /resolveSpawnIsolation\(\{[^}]*storedGroupId,\s*requestedGroupId,/);
 });
 
