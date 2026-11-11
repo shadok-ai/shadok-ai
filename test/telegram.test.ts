@@ -185,6 +185,20 @@ test("dmGate: a sender with no id is refused, even with no owner set", () => {
   assert.equal(dmGate(4242, undefined), "deny");
 });
 
+test("dmGate: with open DMs, a stranger is a GUEST instead of being refused", () => {
+  assert.equal(dmGate(4242, 9999, true), "guest");
+  // The owner is still the owner — they do not become one guest among many.
+  assert.equal(dmGate(4242, 4242, true), "allow");
+});
+
+test("dmGate: open DMs never hand over OWNERSHIP, and never answer a sender with no id", () => {
+  // `pair` keeps priority: while the bot is unowned, a code is the only way in,
+  // so no stranger can become the owner by being first through the open door.
+  assert.equal(dmGate(null, 9999, true), "pair");
+  assert.equal(dmGate(null, undefined, true), "deny");
+  assert.equal(dmGate(4242, undefined, true), "deny");
+});
+
 test("parseCommand: plain text is not a command", () => {
   assert.equal(parseCommand("hello there"), null);
   assert.equal(parseCommand("what is /usr/bin?"), null);

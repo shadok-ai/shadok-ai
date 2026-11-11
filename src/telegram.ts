@@ -237,13 +237,25 @@ export function nextToolsState(arg: string, current: boolean): boolean {
  * (`src/tg-pairing.ts`). It used to be "the first to write claims DMs", which
  * handed the machine to whichever stranger got there first.
  *
- * A sender with no id is refused outright: there is nothing to store as owner.
+ * `guestsOn` opens a SECOND door, deliberately (`src/tg-guests.ts`): a sender
+ * who is not the owner becomes a `guest` and gets a dedicated agent instead of
+ * a refusal. Two orderings inside are load-bearing. `pair` keeps priority, so
+ * while the bot is unowned a code is still the only way in and no stranger can
+ * become the owner by walking through the open door. And a sender with no id is
+ * refused before anything else: there is nothing to store as owner, and nothing
+ * stable to key a guest's own agent on either.
+ *
  * Pure — unit tested.
  */
-export function dmGate(owner: number | null, from: number | undefined): "pair" | "allow" | "deny" {
+export function dmGate(
+  owner: number | null,
+  from: number | undefined,
+  guestsOn = false,
+): "pair" | "allow" | "guest" | "deny" {
   if (typeof from !== "number") return "deny";
   if (owner === null) return "pair";
-  return owner === from ? "allow" : "deny";
+  if (owner === from) return "allow";
+  return guestsOn ? "guest" : "deny";
 }
 
 /**
