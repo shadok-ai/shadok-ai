@@ -8870,7 +8870,8 @@
      Tool traffic is grouped instead of stacked. A *block* is a run of tool
      events between two pieces of assistant text; inside it, consecutive calls
      to the same tool condense into a *run*; each call hides its own output.
-     At turn-done every block folds — except any that saw an error.
+     Every block is born folded (one "N operations" line) and stays that way;
+     the reader expands it on demand.
 
      All fold state lives on `tab.act` (current block) and `tab.turnBlocks`
      (blocks awaiting the end-of-turn fold). */
@@ -8900,10 +8901,13 @@
   function openBlock(tab) {
     const turn = document.createElement("div");
     turn.className = "turn claude activity";
-    turn.dataset.folded = "false";
+    // Folded from the start, not only at turn-done: while the agent works the
+    // chat shows "N operations" on one line, and the reader opens it on demand.
+    // An error shows on that line ("· N errors"), and expanding lands on it.
+    turn.dataset.folded = "true";
     const head = document.createElement("button");
     head.className = "act-head";
-    head.innerHTML = '<span class="caret">▾</span><span class="count"></span>';
+    head.innerHTML = '<span class="caret">▸</span><span class="count"></span>';
     head.addEventListener("click", () => toggleFold(turn));
     const body = document.createElement("div");
     body.className = "act-body";
