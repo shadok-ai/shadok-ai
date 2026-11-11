@@ -34,7 +34,7 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
  * emptying the usage gauges. Live-first prevents that.)
  * Returns null if none is found (usage simply won't be shown).
  */
-function readOAuthToken(): string | null {
+export function readOAuthToken(): string | null {
   // Credentials file (Linux, and some macOS setups).
   const file = path.join(os.homedir(), ".claude", ".credentials.json");
   try {
@@ -102,48 +102,113 @@ let cache: Usage | null = null;
 let inflight: Promise<Usage | null> | null = null;
 const TTL_MS = 60_000;
 
+/** Drop the cached snapshot, so the next read goes to the network. Used when the
+ *  token the gauge reads with just changed (a fresh gauge login), so the number
+ *  on screen follows at once instead of lingering up to TTL_MS. */
+export function resetUsageCache(): void {
+  cache = null;
+}
+
+/** One usage fetch with a given Bearer. `null` on a failed request (non-2xx or a
+ *  thrown fetch) — kept DISTINCT from a 200 whose windows are simply empty, so
+ *  the caller can tell "this token errored" from "this token reports nothing". */
+async function fetchUsage(token: string): Promise<Usage | null> {
+  try {
+    const res = await fetch(USAGE_URL, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "shadok-ai",
+      },
+    });
+    if (!res.ok) return null;
+    const j: any = await res.json();
+    // The endpoint may nest the windows under rate_limits or expose them at the
+    // top level depending on version — handle both.
+    const src = j?.rate_limits ?? j ?? {};
+    return {
+      fiveHour: parseWindow(src.five_hour),
+      sevenDay: parseWindow(src.seven_day),
+      fetchedAt: Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** A snapshot is USEFUL only if it carries at least one window. A 200 with both
+ *  windows null is a token the usage endpoint reports nothing for — a long-lived
+ *  `setup-token` is exactly that: it authenticates and runs agents, but is not
+ *  scoped for `/api/oauth/usage`. That is precisely when the next candidate must
+ *  be tried. */
+export function hasWindow(u: Usage | null): u is Usage {
+  return !!u && (u.fiveHour !== null || u.sevenDay !== null);
+}
+
 /**
- * Fetches the current 5-hour and 7-day usage. Cached for 60s and
- * de-duplicated across concurrent callers, so polling is cheap.
- * Returns null if no token is available or the request fails.
- * `readToken` exists for tests only; production callers pass nothing.
+ * Pick a usage snapshot across candidate Bearers tried in PREFERENCE order: the
+ * first that reports a window wins; failing that a 200-but-empty result (a real
+ * answer, kept over a stale cache); failing that the last good snapshot.
+ *
+ * Pure over `fetchOne`, so the selection is tested without the module cache or
+ * the network. This is the regression fix: preferring the vault long-lived token
+ * (so the gauge follows the account the AGENTS run on) must NOT blank the gauge
+ * when that token is a `setup-token` reporting nothing — the live store / env is
+ * the next candidate and keeps a number on screen.
  */
-export async function getUsage(readToken: () => string | null = readOAuthToken): Promise<Usage | null> {
+export async function pickUsage(
+  tokens: readonly string[],
+  fetchOne: (token: string) => Promise<Usage | null>,
+  lastGood: Usage | null,
+): Promise<Usage | null> {
+  let empty: Usage | null = null;
+  for (const token of tokens) {
+    const u = await fetchOne(token);
+    if (hasWindow(u)) return u;
+    if (u) empty = u; // 200 with no windows — remember, but keep trying
+  }
+  return empty ?? lastGood;
+}
+
+/**
+ * Fetches the current 5-hour and 7-day usage. Cached for 60s and de-duplicated
+ * across concurrent callers, so polling is cheap.
+ *
+ * `readTokens` yields the candidate Bearers in preference order; `pickUsage`
+ * takes the first that actually reports a window. A multi-tenant instance puts
+ * its long-lived vault token first and the live CLI store / env second, so the
+ * gauge follows the agents' account when that token CAN report usage and falls
+ * back instead of going dark when it cannot. Returns null only when no candidate
+ * token exists at all. `readTokens` is injectable for tests; production callers
+ * pass the server's resolver.
+ */
+export async function getUsage(
+  readTokens: () => Array<string | null> = () => [readOAuthToken()],
+): Promise<Usage | null> {
   if (cache && Date.now() - cache.fetchedAt < TTL_MS) return cache;
   if (inflight) return inflight;
-  // The token is read BEFORE the promise exists, so a token-less call creates
-  // no in-flight entry at all. Reading it inside the async IIFE (the previous
-  // "fix") re-created the very latch it meant to remove: with no `await` on
-  // that path the IIFE settled synchronously, its `finally { inflight = null }`
-  // ran first, and only THEN did `inflight = (...)()` store the resolved-null
-  // promise — pinning every later call to null for the life of the process.
-  const token = readToken();
-  if (!token) return null;
-  const run = (async (): Promise<Usage | null> => {
-    try {
-      const res = await fetch(USAGE_URL, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          Accept: "application/json",
-          "anthropic-beta": "oauth-2025-04-20",
-          "User-Agent": "shadok-ai",
-        },
-      });
-      if (!res.ok) return cache; // keep last good snapshot on transient errors
-      const j: any = await res.json();
-      // The endpoint may nest the windows under rate_limits or expose them
-      // at the top level depending on version — handle both.
-      const src = j?.rate_limits ?? j ?? {};
-      const usage: Usage = {
-        fiveHour: parseWindow(src.five_hour),
-        sevenDay: parseWindow(src.seven_day),
-        fetchedAt: Date.now(),
-      };
-      cache = usage;
-      return usage;
-    } catch {
-      return cache;
+  // Candidates are resolved BEFORE the promise exists, so a token-less call
+  // creates no in-flight entry at all. Reading them inside the async IIFE (an
+  // earlier "fix") re-created the very latch it meant to remove: with no `await`
+  // on that path the IIFE settled synchronously, its `finally { inflight = null }`
+  // ran first, and only THEN did `inflight = (...)()` store the resolved promise
+  // — pinning every later call to it for the life of the process. Deduped and
+  // trimmed; a blank is never sent as a Bearer.
+  const seen = new Set<string>();
+  const tokens: string[] = [];
+  for (const t of readTokens()) {
+    const s = t?.trim();
+    if (s && !seen.has(s)) {
+      seen.add(s);
+      tokens.push(s);
     }
+  }
+  if (tokens.length === 0) return null;
+  const run = (async (): Promise<Usage | null> => {
+    const chosen = await pickUsage(tokens, fetchUsage, cache);
+    if (chosen) cache = chosen; // a fresh window/empty refreshes it; lastGood is a no-op
+    return chosen;
   })();
   inflight = run;
   // Cleared from OUTSIDE, after the assignment: `.finally` always runs on a
