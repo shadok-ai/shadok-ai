@@ -240,7 +240,7 @@ import {
   mediaServable,
 } from "./media-scope.js";
 import { runPrivileged, TREE_OP_TIMEOUT_MS } from "./privileged.js";
-import { HOME_SKILLS_BASE, rewriteSkillsBase } from "./skill-paths.js";
+import { HOME_SKILLS_BASE, missingHomeSkillLinks, rewriteSkillsBase } from "./skill-paths.js";
 import { instanceKey } from "./paths.js";
 import {
   peerFileFor,
@@ -4256,12 +4256,59 @@ function seedSystemSkills(): void {
 }
 
 /**
- * Seed a group user's HOME at PROVISION time. Skills are no longer copied here —
- * they live in the machine-wide Enterprise tier (`seedSystemSkills`), read by
- * every user. Kept as the hook for any future per-HOME provisioning step.
+ * Make the conventional `~/.claude/skills/<skill>` path resolve in a group's
+ * HOME, by linking each machine-wide skill into it.
+ *
+ * The skills themselves stay in ONE place (`seedSystemSkills`) — these are
+ * symlinks, not copies, so an updated skill needs no per-HOME refresh. What
+ * this buys is the path: `rewriteSkillsBase` fixes what an agent reads, and
+ * cannot fix what an agent KNOWS. A dropped agent writing a command from habit
+ * reaches for `~/.claude/skills/...`, which exists for the server user and for
+ * every mono-tenant install and, until now, nowhere in a group home — the
+ * answer being a bare `MODULE_NOT_FOUND` that names no better path
+ * (`missingHomeSkillLinks`).
+ *
+ * A directory, never a symlink to the tier: `~/.claude/skills` is also where an
+ * agent keeps the skills it AUTHORS (`healCommonsStrandedScripts`), and that
+ * directory has to stay writable by its owner. For the same reason an existing
+ * name is never touched — `ln -s` without `-f`, so the agent's own copy wins.
+ *
+ * Everything runs AS the group user, like `ensureTierStateDir`: root must not
+ * write through a 0700 HOME it does not own, where an agent could have planted
+ * a symlink.
  */
-async function seedGroupHome(_home: string, _user: string): Promise<void> {
-  /* skills are machine-wide now; nothing per-HOME to seed */
+function linkSystemSkills(user: string, home: string): void {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return;
+  const dir = path.join(home, ".claude", "skills");
+  try {
+    const system = fs
+      .readdirSync(SYSTEM_SKILLS_DIR, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name);
+    if (!system.length) return; // nothing seeded (SHADOK_SEED_SKILLS=0, or a failed seed)
+    if (!spawnAsUserSync(user, "mkdir", ["-p", dir]).ok) {
+      console.log(`skills: could not create ${dir} as ${user} — left alone`);
+      return;
+    }
+    const have = spawnAsUserSync(user, "ls", ["-1", dir]).stdout.split("\n");
+    const missing = missingHomeSkillLinks(system, have);
+    for (const name of missing) {
+      spawnAsUserSync(user, "ln", ["-s", path.join(SYSTEM_SKILLS_DIR, name), path.join(dir, name)]);
+    }
+    if (missing.length) console.log(`skills: linked ${missing.length} machine-wide skills into ${dir}`);
+  } catch (e) {
+    console.log(`skills: could not link the machine-wide skills into ${dir} — ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/**
+ * Seed a group user's HOME at PROVISION time. The skills are not COPIED here —
+ * they live in the machine-wide Enterprise tier (`seedSystemSkills`), read by
+ * every user — but they are LINKED, so the conventional `~/.claude/skills` path
+ * an agent reaches for from habit resolves (`linkSystemSkills`).
+ */
+async function seedGroupHome(home: string, user: string): Promise<void> {
+  linkSystemSkills(user, home);
 }
 
 /** Does an OS user already exist? Used to make provisioning idempotent. */
@@ -8717,6 +8764,11 @@ function preseedGroupHomes(): void {
     // merely RESUMED never runs the spawn path, so it stayed without an identity
     // until someone reloaded it. Idempotent: skipped the moment the key is there.
     ensureAgentSshKey(user, home);
+    // And the skills' conventional path, at BOOT and not only at provisioning:
+    // every HOME that predates this, and every one a docker recreate wiped,
+    // would otherwise keep answering MODULE_NOT_FOUND. Idempotent — an existing
+    // name is left exactly as it is.
+    linkSystemSkills(user, home);
   }
   seedCommonsPeersOut();
 }

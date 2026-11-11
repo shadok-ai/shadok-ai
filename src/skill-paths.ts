@@ -33,6 +33,29 @@
 export const HOME_SKILLS_BASE = "~/.claude/skills";
 
 /**
+ * Which machine-wide skills a HOME tier has no entry for — the ones a group's
+ * home should link, so the conventional `~/.claude/skills/<skill>/...` path
+ * resolves there too.
+ *
+ * Rewriting the shipped docs fixes what an agent READS. It cannot fix what an
+ * agent KNOWS: `~/.claude/skills` is where skills live everywhere else, so an
+ * agent writing its own command from habit — or from a memory it wrote on
+ * another instance — lands there whatever the doc said. Linking makes that
+ * guess true instead of making it fail.
+ *
+ * A name the home already carries is NEVER in the result: an agent's own
+ * authored skill (`~/.claude/skills` is exactly where those live, see
+ * `healCommonsStrandedScripts`) must win over the shipped one of the same
+ * name, and nothing here may replace it.
+ */
+export function missingHomeSkillLinks(system: readonly string[], home: readonly string[]): string[] {
+  const have = new Set(home.map((n) => n.trim()).filter(Boolean));
+  return [...new Set(system.map((n) => n.trim()))]
+    .filter((n) => n && !n.startsWith(".") && !have.has(n))
+    .sort();
+}
+
+/**
  * Retarget the shipped `~/.claude/skills` script base to `base`. Identity when
  * `base` is the home tier (mono-tenant) or falsy (never blank out a path). A
  * plain literal swap: `~/.claude/skills` only ever appears as that base, and the
