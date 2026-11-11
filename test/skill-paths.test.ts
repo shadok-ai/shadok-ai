@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
 import { HOME_SKILLS_BASE, missingHomeSkillLinks, rewriteSkillsBase } from "../src/skill-paths.js";
 
 // The shipped skill docs/prompts invoke their scripts by the HOME-tier path
@@ -76,4 +77,35 @@ test("missingHomeSkillLinks: tolerant of the listing it is handed", () => {
   // Dotfiles are not skills.
   assert.deepEqual(missingHomeSkillLinks([".git", "a"], []), ["a"]);
   assert.deepEqual(missingHomeSkillLinks([], ["a"]), []);
+});
+
+// ── what the rewrite cannot save: a path that names no base ──────────────
+
+test("no shipped skill invokes its own script by a relative path", () => {
+  // `rewriteSkillsBase` can only retarget a base it can SEE. A command written
+  // `node scripts/x.mjs` has none, and the skill directory is not the agent's
+  // cwd — so the agent has to invent an absolute path, and it invents the
+  // conventional `~/.claude/skills/...`. That exists for the server user and
+  // for every mono-tenant install, and NOT in a dropped group agent's HOME.
+  // Measured on a real instance: a group agent ran
+  // `node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs list` and got
+  // MODULE_NOT_FOUND, with nothing in the message naming the right tier.
+  // shadok-scheduler was the only one of the ten written that way.
+  const dir = new URL("../context/", import.meta.url);
+  const offenders: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    let text: string;
+    try {
+      text = fs.readFileSync(new URL(`${name}/SKILL.md`, dir), "utf8");
+    } catch {
+      continue; // not a skill directory
+    }
+    for (const m of text.matchAll(/\b(?:node|python3?|bash|sh)[ \t]+(\S+\.(?:mjs|cjs|js|py|sh))/g)) {
+      const p = m[1];
+      // Absolute, env-anchored, or the HOME literal the rewrite understands.
+      if (p.startsWith("/") || p.startsWith("$") || p.startsWith(HOME_SKILLS_BASE + "/")) continue;
+      offenders.push(`${name}: ${m[0]}`);
+    }
+  }
+  assert.deepEqual(offenders, [], "write the full ~/.claude/skills/<skill>/... path, which the rewrite retargets");
 });

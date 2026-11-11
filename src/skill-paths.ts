@@ -15,6 +15,18 @@
  * So the base the docs/prompts name must be rewritten to where the skills were
  * actually installed for THIS instance. Pure and tiny so it is unit-testable;
  * the mode→base decision and the wiring live in `server.ts`.
+ *
+ * The other half of the rule is on the SHIPPED side, and it cannot be fixed
+ * here: a command written `node scripts/x.mjs` names no base at all, so there
+ * is nothing to rewrite — and the skill's directory is not the agent's cwd, so
+ * the agent has to invent an absolute path. It invents the conventional
+ * `~/.claude/skills/...`, which exists for the server user and for every
+ * mono-tenant install, and NOT in a dropped group agent's HOME. Measured: a
+ * group agent ran `node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs
+ * list` and got a bare MODULE_NOT_FOUND, with nothing in it naming the tier it
+ * should have read. Every shipped skill therefore spells the full
+ * `~/.claude/skills/<skill>/...` path, and `test/skill-paths.test.ts` refuses
+ * the next relative one.
  */
 
 /** The literal base the shipped skill docs and prompts are written with. */
