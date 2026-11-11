@@ -4056,6 +4056,15 @@
         <button type="submit">Add</button>
       </form>
     </div>
+    <div class="field" id="tgGuestsField">
+      <span class="label">Open DMs <span class="check-hint">— anyone who writes the bot gets their own agent</span></span>
+      <label class="check"><input type="checkbox" id="tgGuestsOn"><span>Let people other than you talk to the bot</span></label>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <select id="tgGuestGroup" style="flex:1;min-width:160px" title="The restricted group their agents live in"></select>
+        <select id="tgGuestProfile" style="flex:1;min-width:160px" title="The profile their agents run on — this is what defines the job"></select>
+      </div>
+      <p class="check-hint" id="tgGuestsNote"></p>
+    </div>
     <p class="sec-note">Applies live — running sessions are not interrupted.</p>
     </div>
   </div>
@@ -16086,6 +16095,46 @@
       li.appendChild(x);
       ul.appendChild(li);
     }
+    renderGuests(s);
+  }
+
+  /** Open DMs: the switch, the group their agents live in, the profile they run
+   *  on. The two pickers are solidary with the switch — the server refuses to
+   *  enable with either missing, and the panel says so rather than looking
+   *  saved. The group list comes from the server and is per-caller: a group you
+   *  are not a member of is never in it. */
+  function renderGuests(s) {
+    const g = s.guests || { on: false, group: null, profile: null };
+    const groups = s.guestGroups || [];
+    const sel = (id, items, value, empty) => {
+      const el = $(id);
+      el.innerHTML = "";
+      const none = document.createElement("option");
+      none.value = "";
+      none.textContent = empty;
+      el.appendChild(none);
+      for (const it of items) {
+        const o = document.createElement("option");
+        o.value = it.id;
+        o.textContent = it.name;
+        el.appendChild(o);
+      }
+      el.value = items.some((it) => it.id === value) ? value : "";
+    };
+    sel("tgGuestGroup", groups, g.group, groups.length ? "pick a group…" : "no restricted group");
+    sel(
+      "tgGuestProfile",
+      (Array.isArray(profileCache) ? profileCache : [])
+        .filter((p) => p && p.name && !window.isManagedProfile(p.name))
+        .map((p) => ({ id: p.name, name: p.name })),
+      g.profile,
+      "pick a profile…",
+    );
+    $("tgGuestsOn").checked = !!g.on;
+    $("tgGuestsOn").disabled = !groups.length;
+    $("tgGuestsNote").textContent = groups.length
+      ? "Their agents live in that group: it runs under its own Unix user, and only its members see those conversations — you included, from this cockpit. Anyone you add to the group can read them."
+      : "You need a restricted group first (Groups panel) — and that needs the privileged deployment. Only its members will ever see these conversations.";
   }
   // Pairing code: shown once, as issued — the server never returns it again.
   let tgPairTimer = null;
@@ -16124,6 +16173,11 @@
   }
   async function loadTelegram() {
     delete $("tgGuide").dataset.auto; // each opening of the panel re-decides the fold
+    // The guest profile picker needs the roles; the profiles panel may never
+    // have been opened, so fill the cache here rather than show an empty list.
+    if (!Array.isArray(profileCache) || !profileCache.length) {
+      try { profileCache = await (await fetch("/profiles")).json(); } catch { profileCache = []; }
+    }
     renderTelegram(await (await fetch("/telegram")).json());
   }
   async function putTelegram(patch) {
@@ -16872,6 +16926,27 @@
   $("telegramClose").addEventListener("click", () => { $("telegramOverlay").hidden = true; });
   $("telegramOverlay").addEventListener("click", (e) => { if (e.target === $("telegramOverlay")) $("telegramOverlay").hidden = true; });
   $("tgEnabled").addEventListener("change", (e) => putTelegram({ enabled: e.target.checked }));
+  // Open DMs. Re-reads the server's state whatever happens: a refused enable
+  // (no group, no profile, wrong nature) must visibly bounce back to off rather
+  // than leave a ticked box over a door that is shut.
+  async function saveGuests() {
+    const guests = {
+      on: $("tgGuestsOn").checked,
+      group: $("tgGuestGroup").value || null,
+      profile: $("tgGuestProfile").value || null,
+    };
+    const r = await fetch("/telegram", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ guests }),
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) alert(body.error || "update failed");
+    loadTelegram();
+  }
+  for (const id of ["tgGuestsOn", "tgGuestGroup", "tgGuestProfile"]) {
+    $(id).addEventListener("change", saveGuests);
+  }
   $("tgTokenSave").addEventListener("click", () => {
     const el = $("tgToken");
     if (el.value.trim()) { putTelegram({ token: el.value.trim() }); el.value = ""; }

@@ -145,3 +145,34 @@ test("telegram: the owner is never adopted from a guest's DM, and a guest keeps 
   assert.match(TG, /ownerAdoptionCandidate\(c, guestGroup\)/);
   assert.match(TG, /const name = b\.guest \|\| b\.threadId \?/);
 });
+
+// ── the panel ─────────────────────────────────────────────────────────────
+const HTML = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+
+test("panel: the open-DM field exists, with its two solidary pickers", () => {
+  for (const id of ["tgGuestsField", "tgGuestsOn", "tgGuestGroup", "tgGuestProfile", "tgGuestsNote"]) {
+    assert.ok(HTML.includes(`id="${id}"`), id);
+  }
+  // Wired through addEventListener, never an inline handler (invariant 12).
+  assert.match(HTML, /for \(const id of \["tgGuestsOn", "tgGuestGroup", "tgGuestProfile"\]\)/);
+  assert.doesNotMatch(HTML.slice(HTML.indexOf('id="tgGuestsField"'), HTML.indexOf('id="tgGuestsField"') + 900), /onchange=|onclick=/);
+});
+
+test("panel: a refused save re-reads the server's state, so the box cannot lie", () => {
+  const i = HTML.indexOf("async function saveGuests()");
+  assert.ok(i >= 0);
+  const body = HTML.slice(i, HTML.indexOf("\n  }", i));
+  // Whatever happens: the server is the authority on whether the door is open.
+  assert.match(body, /loadTelegram\(\)/);
+  assert.match(body, /if \(!r\.ok\) alert/);
+});
+
+test("panel: the note says what the group buys, and never claims a wall it has not", () => {
+  const i = HTML.indexOf('$("tgGuestsNote").textContent');
+  assert.ok(i >= 0);
+  const note = HTML.slice(i, i + 700);
+  assert.match(note, /own Unix user/);
+  // Its members CAN read those conversations — said, not glossed (invariant 47).
+  assert.match(note, /can read them/);
+  assert.match(note, /privileged deployment/);
+});
