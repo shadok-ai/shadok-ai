@@ -523,16 +523,38 @@ group already bound before this change stays bound.
   `MEDIA_DIR` — the same basename rule, for the same reason, as `GET /media/:name`.
   A refused marker is left in the prose rather than removed, so the topic shows
   exactly what it showed before and nothing is swallowed.
+- **Where the bot works: one mode, three answers** (`TgMode`, `src/tg-guests.ts`).
+  Per launch directory, the Telegram panel answers "where does this bot work" —
+  `group` (the default and the classic instance: a board group bound with
+  `/setup <code>`, and private messages reserved for their one owner),
+  `group+dm` (the same board, plus the open door below) and `dm-only` (no board
+  at all: a group chat is turned away, `/setup` is refused everywhere, nobody
+  owns the bot's DMs and every private message is a guest's — the operator's own
+  included). An instance that updates into this reads `group`, byte for byte the
+  behaviour it had; a row written before the mode existed carries `on: true`,
+  which was exactly `group+dm`, and is read as one.
+  The three consequences of `dm-only` are ONE decision, and the reason is
+  invariant 66: a mode that refused `/setup` while still honouring a group bound
+  yesterday would be a guarantee that depends on the instance's history. So the
+  group refusal sits ABOVE the board logic in `handleMessage` (which is also
+  what prevents `/setup` there — binding a board and becoming an operator both
+  live below that line), `dmGate` takes a `dmOnly` flag and ignores a stored
+  owner outright, and `adoptOwnerFromBindings` stops adopting. Everything is
+  IGNORED rather than cleared, so coming back to `group` restores the board and
+  the owner that were already there.
 - **Open DMs: a stranger gets their own agent** (`src/tg-guests.ts`, design:
   `docs/superpowers/specs/2026-11-11-telegram-open-dm-design.md`). A DM normally
   belongs to ONE owner and everyone else is told the bot is private. An admin can
   open that door, per launch directory, by naming a **restricted group** and a
-  **profile** in the Telegram panel — both or nothing, and only once the bot's
-  DMs are **paired**: `dmGate` answers `pair` while there is no owner, so a
-  stranger would be asked for a code instead of getting an agent, and enabling
-  first would save a door that cannot open. Both prerequisites are refused at
-  the panel, most fundamental first (the deployment, then the pairing), rather
-  than discovered as silence in Telegram. A sender who is not the
+  **profile** in the Telegram panel — both or nothing. `group+dm` also needs the
+  bot's DMs **paired** first: `dmGate` answers `pair` while there is no owner, so
+  a stranger would be asked for a code instead of getting an agent, and enabling
+  first would save a door that cannot open. `dm-only` is exempt, because it
+  removes the owner altogether — there is no claim left to lose, and requiring a
+  pairing there would be the very prerequisite that mode exists to delete. Each
+  prerequisite is refused at the panel, most fundamental first (the deployment,
+  then the pairing), and stated on the option it blocks, rather than discovered
+  as silence in Telegram. A sender who is not the
   owner then becomes a `guest`: `dmGate` grows a fourth verdict, and their first
   message spawns an agent on that profile, in that group, bound to their DM. The
   same person always lands on the same agent, and that costs no new storage: a
