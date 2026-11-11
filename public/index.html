@@ -3299,8 +3299,9 @@
   /* ── Three kinds of entries in the column, told apart at a glance ──────────
      An AGENT keeps the round initials avatar. A ROOM (no agent, people only)
      gets a square slate tile with a speech bubble and no presence LED: nothing
-     runs behind it. An agent with SCHEDULED prompts gets a dashed ring and a
-     clock on its avatar — it can speak with nobody asking. */
+     runs behind it. An agent with SCHEDULED prompts gets a clock on its avatar
+     — it can speak with nobody asking. No ring around it: the clock (and the
+     ⏰ in the row) already say it, and a dashed outline read as noise. */
   .tab.room .tav, body.room-active #chanAvatar {
     border-radius: 8px; background: #64748b; box-shadow: none;
   }
@@ -3310,7 +3311,6 @@
   .tab.room .tav .led, .tab.room .ctxbar, .tab.room .timer { display: none; }
   .tab.room .name { font-style: italic; }
   .tab.room .kind { color: var(--text-dim); font-size: 11px; }
-  .tab.has-cron:not(.room) .tav { outline: 2px dashed var(--ac, var(--amber)); outline-offset: 2px; }
   .tab.has-cron:not(.room) .tav::after {
     content: "⏰"; position: absolute; top: -7px; right: -7px; font-size: 11px; line-height: 1;
   }
@@ -5594,7 +5594,7 @@
   function setCrons(tab, labels) {
     tab.crons = Array.isArray(labels) ? labels : [];
     tab.cronEl.hidden = tab.crons.length === 0;
-    // The avatar says it too (dashed ring + clock): a scheduled agent is a
+    // The avatar says it too (a clock): a scheduled agent is a
     // different KIND of entry, not just an agent with one more icon.
     tab.btnEl.classList.toggle("has-cron", tab.crons.length > 0);
     tab.cronEl.title = tab.crons.length

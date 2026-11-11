@@ -2244,7 +2244,7 @@ drag-to-group (`PATCH`). `body.room-active` hides the agent machinery (gauges,
 gallery, cron, terminal, skills). Mute is per browser (localStorage), since
 it is a personal preference and the room list is shared. The three kinds of
 entry are told apart in CSS: round initials (agent), square slate 💬 tile with
-no LED (room), dashed ring + ⏰ (agent with crons, `.has-cron` from `setCrons`).
+no LED (room), ⏰ on the avatar (agent with crons, `.has-cron` from `setCrons`).
 
 ## Known rough edges / debt
 

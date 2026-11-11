@@ -84,7 +84,7 @@ Enter to skip; you can add it later from the web UI).
   messages stay on disk. The column tells the three kinds apart at a glance —
   an **agent** is a round avatar with initials, a **room** a square slate tile
   with a speech bubble (and no presence dot), and an agent with **scheduled
-  prompts** wears a dashed ring and a clock.
+  prompts** wears a clock on its avatar.
 - **Groups** — on a desktop the groups live in their own **left column**: pick
   one to narrow the agents pane to it, and the global tools (Profiles, Ledger,
   Secrets, Users, Security, Telegram, Sound) stay in the header at the top. Each
