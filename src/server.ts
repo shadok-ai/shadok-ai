@@ -102,7 +102,8 @@ import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
-import { getUsage, type Window } from "./usage.js";
+import { getUsage, readOAuthToken, resetUsageCache, type Window } from "./usage.js";
+import { createGauge, usageCandidates } from "./gauge-login.js";
 import {
   loadChannels,
   loadGroups,
@@ -147,6 +148,22 @@ import {
 import { transcribe, audioClipExtension } from "./whisper.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
 import { migrateTgBindings } from "./channels.js";
+import {
+  RoomStore,
+  canSeeRoom,
+  isRoomId,
+  newRoomId,
+  pageMessages,
+  patchRoomIn,
+  postRefusal,
+  roomGroupFor,
+  roomName,
+  unreadCount,
+  visibleRooms,
+  ROOM_PAGE,
+  type Room,
+  type RoomMessage,
+} from "./rooms.js";
 import {
   viewerFor,
   canResumeAs,
@@ -245,6 +262,7 @@ import {
   markCronPrompt,
   isCronPrompt,
   normalizeSchedule,
+  parseDays,
   onceAt,
   stateAfterFire,
   scheduleLabel,
@@ -336,6 +354,7 @@ import {
   originProfile,
   ANY_PROFILE,
   agentOverwriteRefusal,
+  secretNameRefusal,
 } from "./secrets.js";
 import {
   recordSecretAudit,
@@ -617,6 +636,32 @@ const DEPLOYMENT_MODE = deploymentMode({
 });
 console.log(`deployment mode: ${DEPLOYMENT_MODE}`);
 
+// The long-lived token this instance's AGENTS run on (multi-tenant only): the
+// vault's `MT_CLAUDE_OAUTH_TOKEN`, the very token injected into each agent at
+// spawn. Null when it does not apply, so the usage gauge falls back to the live
+// store / env. Read live (not frozen), so re-pasting the token updates the gauge.
+function instanceLongLivedToken(): string | null {
+  if (DEPLOYMENT_MODE !== "multi-tenant") return null;
+  const vault = loadVault();
+  if (!longLivedTokenInfo(vault, "multi-tenant").longLived) return null;
+  const t = vault[MAIN_GROUP_ID]?.[MT_CLAUDE_OAUTH_TOKEN_NAME]?.value;
+  return typeof t === "string" && t.trim() ? t.trim() : null;
+}
+
+// The candidate Bearers for the usage gauge, in preference order: the account
+// the agents actually run on (the vault long-lived token) FIRST, then the CLI's
+// live store / env. `getUsage` takes the first that actually reports a window —
+// so a long-lived `setup-token` (which authenticates agents but reports no usage)
+// falls through to the env token instead of blanking the gauge. Shared by the
+// /usage endpoint and both pace-guard checks so all three measure one account.
+// The optional dedicated gauge login (src/gauge-login.ts) goes FIRST when it
+// holds a usable token: it is the only credential guaranteed to carry the
+// `user:profile` scope the endpoint needs. Absent or lapsed, it is null and the
+// list is what it always was.
+const gauge = createGauge({ onChange: resetUsageCache });
+const usageToken = (): Array<string | null> =>
+  usageCandidates({ gauge: gauge.token(), longLived: instanceLongLivedToken(), live: readOAuthToken() });
+
 // The server drives channels it manages over its OWN loopback WS (cron fires,
 // parent notifications, the reload nudge — all through `driveChannel`). Those
 // deliveries authenticate as the bootstrap admin, but in multi-tenant the
@@ -700,6 +745,7 @@ let tgBridge: TelegramHandle = {
   running: () => false,
   status: () => ({ username: null, tokenError: null }),
   notifyOwner: async () => false,
+  sendRoomMessage() {},
 };
 let boundPort = 0;
 // The bridge is in-process and reaches us over the loopback WS: it is the
@@ -826,7 +872,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET, rooms: roomHooks });
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -2189,10 +2235,17 @@ app.post("/paste", express.raw({ type: () => true, limit: PASTE_LIMIT }), (req, 
   // neither read nor replace it. A caller who may not drive that agent may not
   // drop files on it either.
   const forSession = String(req.headers["x-shadok-session"] ?? "").trim();
-  if (DEPLOYMENT_MODE === "multi-tenant" && (!forSession || !mayActFor(req, forSession)))
+  // A file posted in a ROOM goes to that room's group, and only for a person
+  // who may see the room.
+  const forRoom = String(req.headers["x-shadok-room"] ?? "").trim();
+  if (forRoom) {
+    const person = roomPerson(req);
+    if (!person || !canSeeRoom(roomStore.get(forRoom), loadGroups(), viewerFor(person)))
+      return res.status(403).json({ error: "not a room you can post in" });
+  } else if (DEPLOYMENT_MODE === "multi-tenant" && (!forSession || !mayActFor(req, forSession)))
     return res.status(forSession ? 403 : 409).json({ error: forSession ? "not your agent" : "the agent is not ready yet — try again in a moment" });
   try {
-    const dir = mediaDirForSession(forSession || null);
+    const dir = forRoom ? mediaDirForRoom(forRoom) : mediaDirForSession(forSession || null);
     const file = path.join(dir, pasteFileName(randomUUID(), name, contentType));
     writeMediaFile(file, body);
     // The very wording Telegram already uses, so an agent sees one format.
@@ -2357,7 +2410,7 @@ app.get("/live", (req, res) => {
 // Current 5-hour and 7-day subscription usage, each window enriched with how it
 // compares to the time already elapsed (for the quota gauges and the send guard).
 app.get("/usage", async (_req, res) => {
-  const u = await getUsage();
+  const u = await getUsage(usageToken);
   const now = Date.now();
   // The pace is derived per request, not per fetch: getUsage() caches for 60 s
   // and a frozen pace would drift away from the clock.
@@ -2567,6 +2620,7 @@ app.get("/auth", async (_req, res) => {
     ...customBackendFields(),
     ...mtTokenFields(),
     ...(await connectFields(expiry)),
+    gauge: gauge.view(),
   });
 });
 
@@ -2662,6 +2716,43 @@ app.delete("/auth/login", (req, res) => {
   if (!accountAdmin(req, res, true, "cancel this instance's Claude sign-in")) return;
   cancelLogin();
   res.json({ ok: true });
+});
+
+// --- Usage-gauge login (src/gauge-login.ts) ---------------------------------
+// An OPTIONAL second claude.ai sign-in, in a config dir of its own, used only to
+// read the 5h/7d gauge. Same shape as /auth/*: the instance's subscription is one
+// account, so signing the gauge in is an admin act, browser-origin for writes.
+// Responses never carry a token — only the view (state, expiries, email).
+app.get("/usage-gauge", (req, res) => {
+  if (!accountAdmin(req, res, false, "read the usage-gauge login")) return;
+  res.json(gauge.view());
+});
+
+app.post("/usage-gauge/login", async (req, res) => {
+  if (!accountAdmin(req, res, true, "sign in the usage gauge")) return;
+  // Always forced: re-login while signed in is the normal renewal.
+  const r = await gauge.login.start(true);
+  if ("error" in r) return res.status(502).json(r);
+  res.json(r);
+});
+
+app.post("/usage-gauge/code", async (req, res) => {
+  if (!accountAdmin(req, res, true, "sign in the usage gauge")) return;
+  const code = typeof req.body?.code === "string" ? req.body.code : "";
+  const r = await gauge.login.submit(code);
+  res.status(r.ok ? 200 : 400).json(r);
+});
+
+app.delete("/usage-gauge/login", (req, res) => {
+  if (!accountAdmin(req, res, true, "cancel the usage-gauge sign-in")) return;
+  gauge.login.cancel();
+  res.json({ ok: true });
+});
+
+// Opt out: forget the dedicated login entirely (the gauge falls back to today's).
+app.delete("/usage-gauge", (req, res) => {
+  if (!accountAdmin(req, res, true, "remove the usage-gauge login")) return;
+  res.json({ ok: gauge.forget() });
 });
 
 // --- Subscription-token provisioning (src/setup-token.ts) -----------------
@@ -3013,6 +3104,194 @@ app.get("/channels", (req, res) => {
 // boot paints every row from this one call instead of waiting for N resumes
 // (each a spawn + full history replay); the WS `history`/`context` that follow
 // overwrite it with the authoritative values. Same ACL as GET /channels.
+// ── Rooms: channels with no agent, where people talk (src/rooms.ts) ──────────
+// A separate registry on purpose: nothing that reads the CHANNEL registry may
+// ever see a room, or it would resume / bridge / count it as an agent and
+// spawn a `claude` behind it. See the spec,
+// docs/superpowers/specs/2026-11-02-human-rooms-design.md.
+const roomStore = new RoomStore();
+/** The sockets that joined each room, for the fan-out. */
+const roomClients = new Map<string, Set<WebSocket>>();
+
+/**
+ * The PERSON behind a room request, or null. Rooms are for people: an agent's
+ * session key and a peer token are refused outright (`machineHeaders`), and so
+ * is the in-process Telegram client, which reaches rooms through `roomHooks`
+ * instead of the API. With no password everything is open, like the rest of
+ * the cockpit.
+ */
+function roomPerson(req: Caller): { name: string; role: Role } | null {
+  if (machineHeaders(req as { headers: Record<string, unknown> })) return null;
+  const me = currentAccount(req);
+  if (!me || me.agent) return null;
+  if (isInternalClient(cookieSession(req as { headers: Record<string, unknown> }))) return null;
+  return { name: me.name, role: me.role };
+}
+
+function roomBroadcast(roomId: string, msg: object): void {
+  const raw = JSON.stringify(msg);
+  for (const ws of roomClients.get(roomId) ?? []) if (ws.readyState === ws.OPEN) ws.send(raw);
+}
+
+/**
+ * Store a room message and fan it out. The ONE write path, shared by the web
+ * socket and the Telegram topic, so both surfaces see the same thing. `ts` is
+ * strictly increasing per room — the page cursor is a timestamp, and two
+ * messages in one millisecond would otherwise straddle a page boundary.
+ */
+function postRoomMessage(room: Room, m: Omit<RoomMessage, "id" | "ts">, clientId?: string): RoomMessage {
+  const last = roomStore.messages(room.id).at(-1)?.ts ?? 0;
+  const full: RoomMessage = { id: randomUUID(), ts: Math.max(Date.now(), last + 1), ...m };
+  roomStore.append(room.id, full);
+  roomBroadcast(room.id, { type: "room-message", roomId: room.id, message: full, ...(clientId ? { clientId } : {}) });
+  if (full.account) roomStore.markRead(room.id, full.account, full.ts);
+  if (full.origin === "web") tgBridge.sendRoomMessage(room, full.author, full.text);
+  return full;
+}
+
+/** What the Telegram bridge may do with rooms — and nothing else. */
+const roomHooks = {
+  list: () => roomStore.list(),
+  bind: (roomId: string, binding: { chatId: number; threadId?: number } | null, mirror?: boolean) => {
+    roomStore.update(roomId, (r) => ({ ...r, telegram: binding, ...(mirror !== undefined ? { mirror } : {}) }));
+  },
+  post: (roomId: string, m: { author: string; text: string; tgMessageId?: number }) => {
+    const room = roomStore.get(roomId);
+    if (room && !postRefusal(room, m.text)) postRoomMessage(room, { author: m.author, origin: "telegram", text: m.text, tgMessageId: m.tgMessageId });
+  },
+  mediaDir: (roomId: string) => mediaDirForRoom(roomId),
+};
+
+/** The fields a client sees. `unread` / `lastTs` are DERIVED per caller, never stored. */
+function roomView(r: Room, person: { name: string }) {
+  const msgs = roomStore.messages(r.id);
+  return {
+    id: r.id,
+    name: r.name,
+    group: r.group ?? null,
+    mirror: !!r.mirror,
+    telegram: !!r.telegram,
+    createdBy: r.createdBy,
+    createdAt: r.createdAt,
+    lastTs: msgs.at(-1)?.ts ?? null,
+    unread: unreadCount(msgs, roomStore.lastRead(r.id, person.name), person.name),
+  };
+}
+
+/** A write's common gate: a same-origin person, on THIS instance (invariant 35). */
+function roomWriter(req: express.Request, res: express.Response): { name: string; role: Role } | null {
+  const person = requestFromBrowser(req) ? roomPerson(req) : null;
+  if (!person) {
+    res.status(403).json({ error: "rooms are for people, from the cockpit" });
+    return null;
+  }
+  if (!channelWriteAllowed(instanceKey(), req.get("x-shadok-instance"))) {
+    res.status(409).json({ error: "instance-mismatch" });
+    return null;
+  }
+  return person;
+}
+/** The room `:id` names, if this person may see it; answers 404 otherwise
+ *  (never 403: a room you cannot see does not exist for you). */
+function roomFor(req: express.Request, res: express.Response, person: { name: string; role: Role }): Room | null {
+  const id = String(req.params.id ?? "");
+  const room = isRoomId(id) ? roomStore.get(id) : undefined;
+  if (!room || !canSeeRoom(room, loadGroups(), viewerFor(person))) {
+    res.status(404).json({ error: "no such room" });
+    return null;
+  }
+  return room;
+}
+
+app.get("/rooms", (req, res) => {
+  const person = roomPerson(req);
+  if (!person) return res.status(403).json({ error: "rooms are for people" });
+  res.json(visibleRooms(roomStore.list(), loadGroups(), viewerFor(person)).map((r) => roomView(r, person)));
+});
+
+app.post("/rooms", (req, res) => {
+  const person = roomWriter(req, res);
+  if (!person) return;
+  const body = (req.body ?? {}) as { name?: unknown; group?: unknown; mirror?: unknown };
+  const name = roomName(body.name);
+  if (!name.ok) return res.status(400).json({ error: name.error });
+  // Mirroring into the board group is admin-only, like an agent's.
+  if (body.mirror === true && person.role !== "admin")
+    return res.status(403).json({ error: "only an admin can mirror a room to Telegram" });
+  const room: Room = {
+    id: newRoomId(),
+    name: name.name,
+    group: roomGroupFor(body.group, loadGroups(), viewerFor(person)),
+    createdBy: person.name,
+    createdAt: Date.now(),
+    ...(body.mirror === true ? { mirror: true } : {}),
+  };
+  roomStore.create(room);
+  console.log(`rooms: ${person.name} created ${room.id} "${room.name}"`);
+  res.json(roomView(room, person));
+});
+
+app.patch("/rooms/:id", (req, res) => {
+  const person = roomWriter(req, res);
+  if (!person) return;
+  const room = roomFor(req, res, person);
+  if (!room) return;
+  const body = (req.body ?? {}) as { name?: unknown; group?: unknown; mirror?: unknown };
+  const patch: { name?: string; group?: string | null; mirror?: boolean } = {};
+  if (body.name !== undefined) {
+    const n = roomName(body.name);
+    if (!n.ok) return res.status(400).json({ error: n.error });
+    patch.name = n.name;
+  }
+  if (body.group !== undefined) {
+    // An explicit null files it in the commons; a group must be one the
+    // caller sees — refused out loud, never silently moved elsewhere.
+    const g = body.group === null ? null : roomGroupFor(body.group, loadGroups(), viewerFor(person));
+    if (body.group !== null && g === null) return res.status(403).json({ error: "not a group you belong to" });
+    patch.group = g;
+  }
+  if (body.mirror !== undefined) {
+    if (person.role !== "admin") return res.status(403).json({ error: "only an admin can mirror a room to Telegram" });
+    patch.mirror = body.mirror === true;
+  }
+  const list = patchRoomIn(roomStore.list(), room.id, patch);
+  roomStore.save(list);
+  res.json(roomView(list.find((r) => r.id === room.id)!, person));
+});
+
+// Closing ARCHIVES: the room leaves every list, its topic is closed, and its
+// messages stay on disk. Nothing deletes a room's messages.
+app.post("/rooms/:id/archive", (req, res) => {
+  const person = roomWriter(req, res);
+  if (!person) return;
+  const room = roomFor(req, res, person);
+  if (!room) return;
+  roomStore.update(room.id, (r) => ({ ...r, archivedAt: Date.now() }));
+  roomBroadcast(room.id, { type: "room-closed", roomId: room.id });
+  console.log(`rooms: ${person.name} closed ${room.id} "${room.name}"`);
+  res.json({ ok: true });
+});
+
+app.post("/rooms/:id/read", (req, res) => {
+  const person = roomWriter(req, res);
+  if (!person) return;
+  const room = roomFor(req, res, person);
+  if (!room) return;
+  const ts = Number((req.body ?? {}).ts);
+  if (Number.isFinite(ts) && ts > 0) roomStore.markRead(room.id, person.name, ts);
+  res.json({ ok: true });
+});
+
+app.get("/rooms/:id/messages", (req, res) => {
+  const person = roomPerson(req);
+  if (!person) return res.status(403).json({ error: "rooms are for people" });
+  const room = roomFor(req, res, person);
+  if (!room) return;
+  const before = req.query.before !== undefined ? Number(req.query.before) : undefined;
+  const limit = Math.min(ROOM_PAGE, Math.max(1, Number(req.query.limit) || ROOM_PAGE));
+  res.json(pageMessages(roomStore.messages(room.id), Number.isFinite(before) ? before : undefined, limit));
+});
+
 app.get("/channels/glance", async (req, res) => {
   const box = restrictedBoxOf(req);
   const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))).filter(
@@ -3188,6 +3467,8 @@ app.post("/crons", (req, res) => {
     if (at == null) return res.status(400).json({ error: `unreadable date '${rawSchedule.at}' — use YYYY-MM-DDTHH:MM` });
     rawSchedule = { kind: "once", at };
   }
+  if (rawSchedule?.kind === "daily" && typeof rawSchedule.days === "string" && !parseDays(rawSchedule.days))
+    return res.status(400).json({ error: `unreadable days '${rawSchedule.days}' — use e.g. mon-fri, mon,wed,fri or weekend` });
   const schedule = normalizeSchedule(rawSchedule);
   if (!sessionId || !prompt || !schedule) return res.status(400).json({ error: "sessionId, prompt and a valid schedule are required" });
   // An instant already past is refused rather than stored: it would fire within
@@ -4708,6 +4989,10 @@ app.put("/secrets", (req, res) => {
   const ownerGroup = target.ownerGroup;
   const verdict = secretWriteVerdict(secretNames(ownerGroup).includes(key), overwrite === true);
   if (verdict === "refused") return res.status(409).json({ error: "exists", name: key });
+  if (verdict === "created") {
+    const bad = secretNameRefusal(key);
+    if (bad) return res.status(400).json({ error: bad, name: key });
+  }
   if (verdict === "updated") {
     const slice = loadVault()[ownerGroup];
     const entry = slice && Object.hasOwn(slice, key) ? slice[key] : undefined;
@@ -6912,14 +7197,33 @@ function mediaDirForSession(sessionId: string | null): string {
   }
   const ch = sessionId ? loadChannels().find((c) => c.sessionId === sessionId) : undefined;
   if (!ch) throw new Error("no agent for this attachment yet");
-  const who = osUserForChannelGroup(ch.group, loadGroups(), commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }));
+  return mediaDirForGroupId(ch.group ?? null);
+}
+
+/** A ROOM's attachments land in its group's media directory, exactly like an
+ *  agent's of that group: whoever may read that group's media may read them. */
+function mediaDirForRoom(roomId: string): string {
+  const room = roomStore.get(roomId);
+  if (!room) throw new Error("no such room");
+  if (DEPLOYMENT_MODE !== "multi-tenant") {
+    const root = mediaDir();
+    fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+    return root;
+  }
+  return mediaDirForGroupId(room.group ?? null);
+}
+
+/** Multi-tenant only: a group's media directory, created and locked down. */
+function mediaDirForGroupId(group: string | null): string {
+  const root = mediaDir();
+  const who = osUserForChannelGroup(group, loadGroups(), commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }));
   if (!who.ok) throw new Error("the agent's group no longer exists");
   let gid: number | null = null;
   if (who.user) {
     gid = passwdGid(fs.readFileSync("/etc/passwd", "utf8"), who.user);
     if (gid == null) throw new Error(`OS user ${who.user} not found`);
   }
-  return ensureMediaGroupDir(mediaDirForGroup(root, ch.group, true), gid);
+  return ensureMediaGroupDir(mediaDirForGroup(root, group, true), gid);
 }
 
 function ensureMediaGroupDir(dir: string, gid: number | null): string {
@@ -7384,7 +7688,11 @@ type ClientMessage =
   | { type: "term-detach" }
   /** `sessionId`: kill a specific channel even if it isn't the connection's
    *  attached session (lets the UI remove a dead/zombie channel). */
-  | { type: "stop"; sessionId?: string };
+  | { type: "stop"; sessionId?: string }
+  // A ROOM link (src/rooms.ts): a connection is either an agent link or a room
+  // link, decided by its first message, and the two never mix.
+  | { type: "room-join"; roomId: string }
+  | { type: "room-post"; roomId: string; text: string; clientId?: string };
 
 /**
  * A piloted session = ONE claude process, shared by N WebSocket clients.
@@ -9547,7 +9855,7 @@ function maybeScheduleRetry(s: Live) {
     const verdict =
       s.backend === "custom"
         ? paceBlock(null, Date.now())
-        : paceBlock(await getUsage().catch(() => null), Date.now());
+        : paceBlock(await getUsage(usageToken).catch(() => null), Date.now());
     // A takeover (or teardown) replaced or cleared our timer while we were
     // fetching: this chain is no longer the live one, so stand down — and
     // leave s.retryTimer alone, it now belongs to whoever replaced us.
@@ -9641,6 +9949,17 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   const wsBy = (): SpawnBy =>
     spawnActor({ account: me?.name, origin, peer: callerPeer, agent: callerAgent?.name });
   let session: Live | null = null;
+  // The ROOM this connection joined, when it is a room link. A connection is
+  // an agent link OR a room link, never both: nothing a room socket sends can
+  // reach `createSession`.
+  let roomId: string | null = null;
+  const leaveRoom = () => {
+    if (!roomId) return;
+    const set = roomClients.get(roomId);
+    set?.delete(ws);
+    if (set && !set.size) roomClients.delete(roomId);
+    roomId = null;
+  };
   // Where does this client come from (web, cron, telegram, agent, peer, cli…)?
   // It travels with the prompt echo — other clients must be able to SAY who
   // spoke — and it decides the header the agent reads, whether `from` is
@@ -9691,6 +10010,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
     // detaching the old object would leak the ws in the live one's client set.
     if (session) detach(ws, sessions.get(session.id) ?? session);
     session = null;
+    leaveRoom();
   });
 
   ws.on("message", async (raw) => {
@@ -9725,8 +10045,44 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
         session.retryCount = 0;
       }
       switch (msg.type) {
+        case "room-join": {
+          if (session) return fail("this connection drives an agent, not a room");
+          // A person in the cockpit, nobody else (see `roomPerson`).
+          const person = fromBrowser && me && !me.agent ? me : null;
+          if (!person) return send({ type: "room-error", code: "forbidden", error: "rooms are for people" });
+          const room = isRoomId(msg.roomId) ? roomStore.get(msg.roomId) : undefined;
+          if (!canSeeRoom(room, loadGroups(), viewerFor(person)))
+            return send({ type: "room-error", code: "unknown-room", error: "no such room" });
+          leaveRoom();
+          roomId = room!.id;
+          if (!roomClients.has(roomId)) roomClients.set(roomId, new Set());
+          roomClients.get(roomId)!.add(ws);
+          send({
+            type: "room-history",
+            roomId,
+            messages: pageMessages(roomStore.messages(roomId), undefined),
+            lastRead: roomStore.lastRead(roomId, person.name),
+            me: person.name,
+          });
+          return;
+        }
+        case "room-post": {
+          const clientId = typeof msg.clientId === "string" ? msg.clientId.slice(0, 64) : undefined;
+          const refuse = (code: string, error: string) =>
+            send({ type: "room-error", code, error, roomId: msg.roomId, ...(clientId ? { clientId } : {}) });
+          if (!roomId || msg.roomId !== roomId || !me) return refuse("not-joined", "join the room first");
+          const room = roomStore.get(roomId);
+          // Re-checked on every post: a membership can be revoked under an open tab.
+          if (!canSeeRoom(room, loadGroups(), viewerFor(me))) return refuse("unknown-room", "no such room");
+          const refusal = postRefusal(room, msg.text);
+          if (refusal) return refuse(refusal.code, refusal.error);
+          // The author is the SESSION's account, never a field of the frame.
+          postRoomMessage(room!, { author: me.name, account: me.name, origin: "web", text: msg.text }, clientId);
+          return;
+        }
         case "start": {
           if (session) return fail("session already started");
+          if (roomId) return fail("this connection is a room, not an agent");
           // Refusing here is what actually prevents zombies. The historical
           // failure was never "the login was missing" — it was "an agent was
           // allowed to start without one", and then sat on the first-run screen
@@ -10271,7 +10627,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // goes through — including the pilotctl thin client.
           // A custom backend spends no subscription quota: nothing to pace.
           if (!msg.force && session.backend !== "custom") {
-            const verdict = paceBlock(await getUsage(), Date.now());
+            const verdict = paceBlock(await getUsage(usageToken), Date.now());
             if (verdict.blocked) return send({ type: "pace-blocked", reason: verdict.reason, text });
             // The busy test above is now stale: a parked fire() (or another
             // client's prompt) can have claimed the session while we awaited
@@ -11126,7 +11482,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET });
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET, rooms: roomHooks });
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).
@@ -11135,6 +11491,7 @@ server.listen(port, HOST, () => {
   cronTimer.unref();
   // Connected accounts: expiry warnings, lapsed drafts — hourly, plus once soon after boot.
   const expiryTimer = setInterval(watchConnectedAccounts, 3_600_000);
+  gauge.startKeeper((l) => console.log(l));
   expiryTimer.unref();
   setTimeout(watchConnectedAccounts, 30_000).unref();
   // Reload indicator: re-evaluate every live agent's staleness once a minute and

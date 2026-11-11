@@ -31,6 +31,34 @@ export function agentOverwriteRefusal(entry: Pick<SecretEntry, "profiles"> | und
   return "This secret is given to every profile; only a person can change its value, from the web UI.";
 }
 
+/**
+ * Why a NEW secret's name is refused, or null when it is usable. A secret
+ * reaches an agent as an ENVIRONMENT VARIABLE named after it, so the name must
+ * be a valid one: letters, digits and `_`, not starting with a digit. A name
+ * with a space (or a dash, a dot…) was accepted, then broke at use — the
+ * variable cannot be set or read by that name. Checked at CREATION only: an
+ * existing odd name stays editable and deletable, so nobody is trapped with it.
+ * Twin in `index.html` (the vault form), same message.
+ */
+export function secretNameRefusal(name: string): string | null {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null;
+  const why = /\s/.test(name)
+    ? "it contains a space"
+    : /^[0-9]/.test(name)
+      ? "it starts with a digit"
+      : "it contains a character other than letters, digits and _";
+  return `"${name}" cannot be a secret name: ${why}. A secret becomes an environment variable, so use only letters, digits and _ (not starting with a digit), e.g. ${suggestSecretName(name)}.`;
+}
+
+/** The nearest valid name, for the refusal's example: separators → `_`, other
+ *  characters dropped, upper-cased, a leading digit prefixed. */
+export function suggestSecretName(name: string): string {
+  let s = name.trim().replace(/[\s.\-/]+/g, "_").replace(/[^A-Za-z0-9_]/g, "").toUpperCase();
+  if (!s) return "MY_SECRET";
+  if (/^[0-9]/.test(s)) s = "_" + s;
+  return s;
+}
+
 export interface SecretEntry {
   value: string;
   ownerGroup: string;

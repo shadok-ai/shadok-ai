@@ -777,6 +777,49 @@ is either permanent and invisible (the seeded state) or transient and blocking
 never be visited. The onboarding is instead cards that exist only while
 something is missing.
 
+
+### Usage-gauge login (`src/gauge-login.ts`)
+
+The 5h/7d gauge reads `GET /api/oauth/usage`, which requires the `user:profile`
+scope. A multi-tenant instance's agents run on a `setup-token`, scoped
+`user:inference` only, so they cannot feed it (a scope limit, not an endpoint
+one). The optional **gauge login** is a second, independent claude.ai sign-in
+used for nothing else.
+
+Design decisions and their reasons:
+
+- **Its own store, one owner.** `CLAUDE_CONFIG_DIR=~/.shadok-ai/gauge/<key>/.claude`
+  (0700). The refresh token rotates on each refresh, so two users of one store
+  invalidate each other; shadok is the only one. Agents run as other OS users in
+  multi-tenant and cannot read it. `gaugeEnv` also scrubs `CLAUDE_CODE_OAUTH_TOKEN`
+  / `ANTHROPIC_*` from the children, since the CLI prefers an env token to a
+  stored login and would otherwise act as the agents.
+- **The login reuses the CLI** (`createLoginFlow`, the same piped flow as the
+  instance sign-in, success = clean exit). It became a factory because module
+  state would have made the two logins cancel each other.
+- **Keep-fresh has no dedicated subcommand.** `claude auth refresh` does not
+  exist (the "auth refresh" strings in the binary belong to `awsAuthRefresh`).
+  The CLI refreshes lazily before an authenticated request, so the keeper runs
+  one minimal `-p` turn on the smallest model when the access token has < 90 min
+  left (15-min tick, 10-min backoff) and decides success by whether the access
+  expiry in `.credentials.json` moved. The invocation is isolated in
+  `refreshInvocation()` so it can change if the CLI grows a real command.
+- **The month is a wall, not a clock to extend.** The CLI stores
+  `Math.min(oldExpiry, newExpiry)` for the refresh token's expiry, so refreshing
+  never lengthens it. A re-login about monthly is inherent; the product answer is
+  a reminder (`gaugeWarning`, 5 days) on its own banner, beside the instance
+  login's.
+- **Additive.** `usageCandidates` = `[gauge, vaultLongLived, live]`. `getUsage`
+  already keeps the first candidate that reports a window, and the gauge token is
+  `null` unless it is present, scoped and unexpired, so with no gauge login the
+  list is what it was.
+- **It shows that account's usage.** Whoever signs in decides which account the
+  gauges (and the pace guard) measure; the intent is to match the agents'.
+
+Not covered: macOS (credentials go to the keychain, not the file we read — the
+row is hidden there), and a real login/refresh cycle is the one thing only a
+human's browser can exercise (see the spec's verification section).
+
 ## The first message (`src/ground.ts`, `src/greeting.ts`)
 
 A fresh cockpit opened on a blank chat and left the newcomer to guess. The lead
@@ -1348,7 +1391,7 @@ broadcast so the UI can show what's happening rather than looking hung.
 A cron is a prompt fired at a channel on a timer: `{sessionId, prompt, schedule,
 enabled, check?, tz?}`, persisted per launch directory in
 `~/.shadok-ai/crons/<encoded cwd>.json`. Three schedules: `interval` (every N
-minutes), `daily` (HH:MM) and `once` (a single absolute instant). The server
+minutes), `daily` (HH:MM, optionally restricted to weekdays by `days`, 0 = Sunday — absent means every day, and `normalizeSchedule` folds an empty or seven-day list back to absent so there is one spelling; `parseDays` reads `mon-fri` / `mon,wed` / `weekend`, French names too, for Telegram and the skill) and `once` (a single absolute instant). The server
 resumes the channel and prompts it, so
 nothing has to stay alive between runs — which is why there is no duration cap
 here, unlike an agent scheduling itself.
@@ -2105,6 +2148,52 @@ is out of this heal's reach — the rehearsal is what catches that residue.
   credential in-place-vs-rename gate, and a full migration on a copy of a real
   volume. The unit tests inject every side effect.
 
+## Rooms: channels with no agent (`src/rooms.ts`)
+
+A room is a conversation between PEOPLE, drawn in the agents column like a
+channel but with nothing running behind it. Spec:
+`docs/superpowers/specs/2026-11-02-human-rooms-design.md`.
+
+**Its own registry, on purpose.** The channel registry answers "which agents
+exist", and everything that reads it acts on that: the client resumes rows, the
+Telegram reconciler opens a bridge (a session) behind mirrored rows,
+`firstAgentPlan` counts them, crons/kinship/ledger/`/live` list them. A room row
+there would get a `claude` spawned behind it by whichever consumer forgot a
+check (invariant 64). So: `~/.shadok-ai/rooms/<key>.json` for the list (written
+whole, atomically, only by targeted operations — never replaced from a client's
+list, invariant 6's lesson), `<key>/<roomId>.jsonl` for messages (append-only,
+a torn last line is skipped), `<key>.read.json` for each account's last-read
+mark (only ever moves forward). Room ids are `r_` + 16 hex, never UUID-shaped.
+
+**Server.** `/rooms*` routes (writes: same-origin person + `x-shadok-instance`),
+and on `/ws` a connection decides by its first message whether it is an agent
+link (`start`) or a room link (`room-join`); the other is refused for the life
+of the socket. `postRoomMessage` is the one write path, shared by the web and
+Telegram: it gives `ts` a strictly increasing value per room (the page cursor
+is a timestamp), appends, fans out to joined sockets, moves the author's read
+mark, and mirrors web messages to the topic. Visibility is `visibleChannels`'
+rule: no group → commons; a group → `canSeeGroup`; a dangling group → hidden.
+Attachments go through `/paste` with `x-shadok-room`, into the room's group
+media directory (`mediaDirForGroupId`, shared with agents).
+
+**Telegram.** `startTelegram` receives `roomHooks` (list / bind / post /
+mediaDir) and nothing else about rooms. A message in a room's topic is routed
+before `bridgeFor`; commands there answer that there is no agent. The rooms'
+half of the 5s mirror loop (`reconcileRooms`) creates a `💬 name` topic when
+`mirror` is set, deletes it on an explicit `mirror: false`, and CLOSES it (never
+deletes) when the room is archived. Room topics are kept out of the tracked
+topic list, because the boot pass deletes tracked topics that no channel claims.
+
+**Web.** A room is a tab object with `roomId` and no `sessionId` — which keeps
+it out of `persistChannels`/`syncChannels`/`reconnectAllNow` by construction —
+synced from `GET /rooms` every 4 s (`syncRooms`), joined lazily on first
+activation (`openRoomLink`), with its own menu, rename, close (archive) and
+drag-to-group (`PATCH`). `body.room-active` hides the agent machinery (gauges,
+gallery, cron, terminal, skills). Mute is per browser (localStorage), since
+it is a personal preference and the room list is shared. The three kinds of
+entry are told apart in CSS: round initials (agent), square slate 💬 tile with
+no LED (room), dashed ring + ⏰ (agent with crons, `.has-cron` from `setCrons`).
+
 ## Known rough edges / debt
 
 - Much was built in low-visibility agent sessions; detection heuristics,
@@ -2145,6 +2234,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 
 | File | Responsibility |
 |---|---|
+| `src/rooms.ts` | Rooms — channels with no agent. Own registry + append-only JSONL messages + per-account read marks (`RoomStore`); pure rules `visibleRooms`, `canSeeRoom`, `roomGroupFor`, `postRefusal`, `patchRoomIn`, `parseMessages`, `pageMessages`, `unreadCount`, `roomForTopic`, `telegramLine`. Tested in `test/rooms.test.ts`; the no-agent seams in `test/rooms-boundary.test.ts`. |
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
 | `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
@@ -2175,6 +2265,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `context/tweak-prompt.md` | Role of the tweak agent, written for the person it answers to rather than for the procedure: the non-developer rule comes FIRST and governs the rest (a named banned-words table — pull request / branch / CI / diff — with what to say instead, a three-line answer budget, never hand back a technical decision), and the job ends when the change is VISIBLE, not when it is merged — so the agent reads `updateChannel` / `autoUpdate` off `/version` and never promises a beta instance something only a release will bring. Then the technical half: `CLAUDE.md` first, verify on a free port and never touch 3789, deliver as fork + PR, watch it through. Injected via the managed `Shadok-Tweak` profile, whose `systemPrompt` is refreshed from this file at every boot (`seedTweakProfile` / `withManagedPrompt`) — only that field, so a secret or model the user attached survives. `test/tweak-role.test.ts` locks the intent: prose is the one thing a refactor can quietly undo. |
 | `context/tweak-pr-check.sh` | The cron guard behind that watch, seeded to `~/.shadok-ai/` at boot (`seedTweakPrCheck`) — **outside** the agent's worktree, which is pruned once its tree is clean. Prints nothing until the PR's state / mergeability / review / CI actually changes; a `gh` failure stays silent and exits 0, because stderr would wake the agent every five minutes (invariant 16). Two things that silence hides, and that the tests now pin: a host with **no `gh` at all** made it permanently inert — silent forever while looking like coverage — so it falls back to the **public REST API** via `curl`, which needs no credential on a public repo; and GitHub computes mergeability lazily, so an `UNKNOWN`/`null` slot is **skipped**, otherwise `UNKNOWN → MERGEABLE → UNKNOWN` woke the agent three times for one non-event. Tested against a fake `gh` AND a fake `curl` in `test/tweak-pr-check.test.ts`. |
 | `src/usage.ts` | Fetches subscription usage (5h/7d) from `/api/oauth/usage`. Its in-flight guard is cleared from OUTSIDE the promise (`run.finally`, identity-checked) and the token is read before the promise exists: an async IIFE with no `await` on a path settles synchronously, so a `finally` inside it ran BEFORE `inflight = …` assigned the resolved-null promise and pinned `getUsage` to null for the process's life — blank gauges and an inert pace guard. |
+| `src/gauge-login.ts` | The OPTIONAL dedicated claude.ai login that feeds ONLY the 5h/7d gauge. A multi-tenant instance's agents run on a `setup-token` (`user:inference` only), which cannot read `/api/oauth/usage` (needs `user:profile`); an interactive `claude auth login --claudeai` can. The credential lives in its OWN `CLAUDE_CONFIG_DIR` (`~/.shadok-ai/gauge/<instanceKey>/.claude`, 0700) with exactly one owner, because the refresh token ROTATES. The login reuses `createLoginFlow` (`claude-auth.ts`, parameterised by env) — no OAuth client of our own. Keep-fresh: **there is no `claude auth refresh`** (2.1.322: unknown command); the CLI refreshes lazily before a request, so `refreshOnce` runs one minimal `claude -p` on the smallest model and judges success on the credentials FILE (access expiry advanced), never on output. The refresh token has a FIXED ~1-month window (`Math.min(old,new)`: refreshing never extends it), so a manual re-login is inherent; `gaugeState`/`gaugeWarning` remind 5 days ahead. `usageCandidates` puts its token FIRST, before the vault long-lived token and the live store; `getUsage` keeps the first that reports a window, so an absent or lapsed gauge login falls through to the old behaviour. File store only (macOS keychain unsupported → row hidden). Opt-in: no credential, nothing runs. Pure cores tested in `test/gauge-login.test.ts`; spec `docs/superpowers/specs/2026-11-10-usage-gauge-login.md`. |
 | `src/pace.ts` | The quota **guardrail**: ideal-pace computation + block verdict. |
 | `src/retry.ts` | Auto-retry of turns that died on a transient API error (529, 5xx, timeout). |
 | `src/channels.ts` | Server-side persistence of the channel + group lists, and **the one answer to "where does this session live"** — `resolveSessionTarget` / `resumeTarget` (pure, tested), which EVERY caller acting on a session's behalf goes through; on a resume the registry beats whatever the caller sent (see invariant 1). keyed by launch dir (`~/.shadok-ai/channels/<enc>.json`). `isMirrored` = does this channel live in Telegram too (opt-in per channel; falls back to "has a binding" so existing setups don't change). **Enabling a mirror is admin-only**, same reason as the Telegram config: the `start` handler drops a non-admin's `mirror:true`, and `PUT /channels` pins each incoming `mirror` to its stored value for a non-admin (the agent-menu toggle persists through that endpoint) — an agent is a member principal (`src/agent-principal.ts`), so an agent can no longer enable a mirror either; a person does it from the agent menu. Also the Telegram board-group binding. Forces the main channel's name to `general`. `model` joins `profile` in `SERVER_OWNED` and for the same reason: it is applied AT SPAWN, so a resume or restart that forgot it would quietly move a running agent onto another model. Assert-only on `start` (invariant 24) — a client that omits the key must never erase it. `isHomeChannel` (pure, tested) is the ONE definition of the home base — the server-owned `home` flag, or a bound board's General (`threadId == null` **and** `chatId < 0`, since a DM has no topic either and must stay closable). It replaced three copies of that condition: `endChannel`, the client's `isMain`, and a comment in `telegram.ts`. `homeAdoptionTarget` gives a pre-flag cockpit its home base and **refuses when it cannot tell** (zero or several candidates): a wrong adoption is irreversible from the UI, since the channel becomes precisely the one that cannot be closed. `homeChannelForGeneral` (pure, tested) is the twin for the OTHER direction: when a board's General is first opened, `bridgeFor` resumes the web home session (`home: true`, not yet Telegram-bound) instead of spawning a SECOND "general" beside it — the home channel gains the binding rather than being duplicated. `channelWriteAllowed` (pure, tested) gates `PUT /channels`/`/groups` on the caller's `x-shadok-instance` key so a stale tab can't write to an instance that took over its port; `dropForeignHomes` (pure, tested, applied on load AND save) strips another instance's `home` "general". `profilePatch` (pure, tested) makes `profile` assert-only in the `start` upsert, so a resume that carries none never null-writes over the channel's stored role (invariant 1). See invariant 35. |
