@@ -687,7 +687,7 @@
     animation: breathe 1.8s ease-in-out infinite;
   }
   @media (prefers-reduced-motion: reduce) { .tab.working, .tab.has-bg { animation: none; } }
-  #newTab, #newGroup, #newGroupBare {
+  #newTab, #newRoom, #newGroup, #newGroupBare {
     margin-top: 6px;
     border-color: transparent;
     font-size: 13px;
@@ -695,7 +695,8 @@
     padding: 8px 10px;
     text-align: left;
   }
-  #newTab:hover, #newGroup:hover, #newGroupBare:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
+  #newRoom { margin-top: 0; }
+  #newTab:hover, #newRoom:hover, #newGroup:hover, #newGroupBare:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
   #newGroup { margin-top: 4px; }
   /* The fallback "new group" entry: only on desktop, only while the rail (which
      has its own) is hidden for want of a group. */
@@ -3242,6 +3243,30 @@
     border: 1px solid var(--amber, #d9a441); box-shadow: 0 8px 30px rgba(0,0,0,.35);
     font-size: 13px; line-height: 1.4; cursor: pointer;
   }
+
+  /* ── Three kinds of entries in the column, told apart at a glance ──────────
+     An AGENT keeps the round initials avatar. A ROOM (no agent, people only)
+     gets a square slate tile with a speech bubble and no presence LED: nothing
+     runs behind it. An agent with SCHEDULED prompts gets a dashed ring and a
+     clock on its avatar — it can speak with nobody asking. */
+  .tab.room .tav, body.room-active #chanAvatar {
+    border-radius: 8px; background: #64748b; box-shadow: none;
+  }
+  .tab.room .tav > span:first-child, body.room-active #chanAvatar { font-size: 0; }
+  .tab.room .tav::before, body.room-active #chanAvatar::before { content: "💬"; font-size: 15px; line-height: 1; }
+  body.room-active #chanAvatar::before { font-size: 18px; }
+  .tab.room .tav .led, .tab.room .ctxbar, .tab.room .timer { display: none; }
+  .tab.room .name { font-style: italic; }
+  .tab.room .kind { color: var(--text-dim); font-size: 11px; }
+  .tab.has-cron:not(.room) .tav { outline: 2px dashed var(--ac, var(--amber)); outline-offset: 2px; }
+  .tab.has-cron:not(.room) .tav::after {
+    content: "⏰"; position: absolute; top: -7px; right: -7px; font-size: 11px; line-height: 1;
+  }
+  /* A room's chat has none of an agent's machinery. */
+  body.room-active #dirGauge, body.room-active #branchGauge,
+  body.room-active #chanBar .gauge:has(#sessionView),
+  body.room-active #chanGallery, body.room-active #chanCron, body.room-active #chanInfo,
+  body.room-active #chanTerm, body.room-active #chanUpdate, body.room-active #skillBtn { display: none !important; }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
      body paints — here in <head> — so a dark-preferring viewer never sees a
@@ -3510,6 +3535,28 @@
     </div>
     <div class="pin-body">
       <ul id="ledgerList"></ul>
+    </div>
+  </div>
+</div>
+
+<!-- New room: a channel with NO agent, where people talk (src/rooms.ts). -->
+<div id="roomOverlay" class="overlay" hidden>
+  <div id="roomPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>New <span class="obj">room</span></strong>
+      <button id="roomClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p class="sec-note">A conversation between people — no agent behind it, nothing runs, no quota spent.</p>
+      <form id="roomForm">
+        <div class="field">
+          <span class="label">Name</span>
+          <input id="roomName" maxlength="80" autocomplete="off" placeholder="e.g. release sync">
+        </div>
+        <label class="check" id="roomMirrorRow" hidden><input type="checkbox" id="roomMirror"> Also in Telegram (a topic in the board group)</label>
+        <p class="check-hint" id="roomErr" hidden></p>
+        <div class="sec-foot"><button type="submit" class="primary" id="roomCreate">Create room</button></div>
+      </form>
     </div>
   </div>
 </div>
@@ -4140,6 +4187,7 @@
     <div id="groups"></div>
     <p id="viewEmpty" class="check-hint" hidden>No agent in this group yet — create one, or drag one onto the group.</p>
     <button id="newTab" title="New agent">＋ new agent</button>
+    <button id="newRoom" title="New room — a conversation between people, no agent">＋ new room</button>
     <!-- The rail carries "+ new group" at its foot, but the rail is gone until a
          group exists — so this is the way to create the FIRST one. Desktop-only
          and only while there are no groups (CSS); it hands off to the rail's
@@ -5204,6 +5252,7 @@
 
   /** Inline rename of a channel (double-click on its name). */
   function startRename(tab) {
+    if (tab.roomId) return renameRoom(tab);
     inlineRename(tab.btnEl, tab.nameEl, (v) => {
       tab.customName = true;
       tab.nameEl.textContent = v;
@@ -5223,6 +5272,7 @@
     tab.muted = !!on;
     tab.muteEl.hidden = !tab.muted;
     refreshBadge();
+    if (tab.roomId) return saveRoomMute(tab);
     if (persist) persistChannels();
   }
 
@@ -5438,6 +5488,9 @@
   function setCrons(tab, labels) {
     tab.crons = Array.isArray(labels) ? labels : [];
     tab.cronEl.hidden = tab.crons.length === 0;
+    // The avatar says it too (dashed ring + clock): a scheduled agent is a
+    // different KIND of entry, not just an agent with one more icon.
+    tab.btnEl.classList.toggle("has-cron", tab.crons.length > 0);
     tab.cronEl.title = tab.crons.length
       ? (tab.crons.length === 1 ? "Scheduled prompt: " : "Scheduled prompts: ") + tab.crons.join(" · ")
       : "";
@@ -5662,6 +5715,7 @@
 
   function openTabMenu(tab, x, y) {
     tabMenu.replaceChildren();
+    if (tab.roomId) return openRoomMenu(tab, x, y);
     // Header: WHO this agent is. The profile is what qualifies it (role,
     // guardrails, secrets); it is chosen at spawn and then became invisible.
     const head = document.createElement("div");
@@ -5949,6 +6003,7 @@
   }
 
   function closeTab(tab) {
+    if (tab.roomId) return closeRoom(tab);
     if (tab.isMain) return; // the environment's main channel is never closed
     if (!confirmEndAgent(tab)) return;
     // Full close: end the channel everywhere (stop the agent, delete its
@@ -6302,6 +6357,8 @@
 
   function endDrag() {
     const wasGroup = !!dragGroupEl;
+    const draggedRoom = dragTabEl && dragTabEl._tab && dragTabEl._tab.roomId ? dragTabEl._tab : null;
+    if (draggedRoom) moveRoomGroup(draggedRoom);
     if (dragTabEl) dragTabEl.classList.remove("dragging");
     if (dragGroupEl) dragGroupEl.classList.remove("dragging");
     dragTabEl = dragGroupEl = dragTabHome = null;
@@ -7161,6 +7218,7 @@
     promptInput.value = tab.draft;
     autosizePrompt();
     renderAttachments(tab); // each tab keeps its own pending chips
+    if (tab.roomId) roomActivated(tab);
     refreshChrome();
     // Picking an agent from the mobile sheet dismisses it.
     closePicker();
@@ -7729,6 +7787,7 @@
     rebuildChanSelect();   // keeps the mobile selector in step (list + active)
     const t = active;
     if (!t) {
+      document.body.classList.remove("room-active");
       $("led").className = "led ";
       $("state").textContent = "no agent";
       $("cwdView").textContent = "—";
@@ -7760,6 +7819,11 @@
     }
     $("emptyState").classList.remove("visible");
     $("startingState").classList.remove("visible");
+    document.body.classList.toggle("room-active", !!t.roomId);
+    // Nobody is "prompted" in a room: the wording follows what the box talks to.
+    // The base text is captured once, so the phone's shorter variant survives.
+    promptInput.dataset.agentPlaceholder ??= promptInput.placeholder;
+    promptInput.placeholder = t.roomId ? "Write a message to the room" : promptInput.dataset.agentPlaceholder;
     $("chanCron").disabled = !t.sessionId;
     $("chanGallery").disabled = !t.sessionId;
     $("chanInfo").disabled = !t.sessionId;
@@ -9119,6 +9183,7 @@
   // ── Link ────────────────────────────────────────────────
   /** Starts a channel's session (from the form or a restore). */
   function launchTab(t, msg) {
+    if (t.roomId) return openRoomLink(t);
     t.cwd = msg.cwd || "(server directory)";
     if (!t.customName) t.nameEl.textContent = basename(msg.cwd || "") || "agent " + t.id;
     t.launchMsg = msg;      // remembered so a dropped link can reconnect
@@ -9142,6 +9207,9 @@
    *  drop transparently reattaches to the same session (resume by id) instead
    *  of stranding the tab on "link lost". */
   function openLink(t) {
+    // A room never sends `start`: that frame spawns an agent. Belt to the
+    // server's braces (it refuses `start` on a room socket anyway).
+    if (t.roomId) return openRoomLink(t);
     setTabState(t, "connecting", t.reconnectAttempts ? "reconnecting…" : "connecting…");
     // The scheme MUST follow the page's. On an HTTPS page — the cockpit behind an
     // nginx/TLS reverse proxy — a `ws://` socket is blocked as mixed content, and
@@ -10803,6 +10871,8 @@
     // Only READY attachments are sent; an upload still in flight is held by the
     // pendingUploads guard below, and a failed one is left for the user to drop.
     const ready = ((t && t.attachments) || []).filter((a) => a.state === "ready" && a.path);
+    // A room has no agent behind it: no turn, no queue, no pace guard.
+    if (t && t.roomId) return submitRoom(t, typed, ready);
     // A message may be attachments alone (just a screenshot, no words).
     if ((!typed && !ready.length) || !t || t.pendingChoices || pendingUploads > 0 || !t.ws) return;
     // Fold each attachment back into the "[Attached …: path]" line the agent
@@ -10826,6 +10896,311 @@
     if (paceBlocked) return renderPaceConfirm(t, text, paceReason);
     submitPrompt(t, text);
   });
+
+  // ── Rooms: channels with no agent, where people talk (src/rooms.ts) ─────────
+  // A room is drawn as a tab — same column, same groups, same chat — but it is
+  // never an agent: no `sessionId` (so `persistChannels` and `syncChannels`
+  // never see it), no `start` frame (its socket only ever sends `room-join` /
+  // `room-post`), and the server refuses to mix the two on one connection.
+  const roomTabs = new Map();      // roomId → tab
+  const dismissedRooms = new Set(); // closed here, until the server list agrees
+  const roomMuted = (() => { try { return JSON.parse(localStorage.getItem("cp.roomMuted") || "{}"); } catch { return {}; } })();
+  function saveRoomMute(tab) {
+    if (tab.muted) roomMuted[tab.roomId] = true; else delete roomMuted[tab.roomId];
+    try { localStorage.setItem("cp.roomMuted", JSON.stringify(roomMuted)); } catch {}
+  }
+  function roomHeaders() {
+    return { "content-type": "application/json", "x-shadok-instance": instanceKey };
+  }
+
+  function createRoomTab(r) {
+    const tab = createTab(r.group ?? null, { focus: false });
+    tab.roomId = r.id;
+    tab.status = "ready";
+    tab.stateText = "room · people only";
+    tab.cwd = "";
+    tab.btnEl.classList.add("room");
+    tab.btnEl.title = "Room — people talk here, no agent";
+    tab.nameEl.textContent = r.name;
+    tab.nameEl.title = "Room — double-click to rename";
+    tab.btnEl.querySelector(".close").title = "Close this room";
+    tab.ctxNumEl.classList.add("kind");
+    tab.ctxNumEl.textContent = "room";
+    tab.muted = !!roomMuted[r.id];
+    tab.muteEl.hidden = !tab.muted;
+    tab.mirror = !!r.mirror;
+    tab.tgEl.hidden = !r.telegram;
+    tab.roomGroup = r.group ?? null;
+    tab.roomLoaded = false;
+    roomTabs.set(r.id, tab);
+    return tab;
+  }
+
+  /** The server list is the truth: create, rename, re-file, badge and drop. */
+  async function syncRooms() {
+    if (restoring || swapped) return;
+    let list;
+    try {
+      const r = await fetch("/rooms");
+      if (!r.ok) return;
+      list = await r.json();
+    } catch { return; }
+    if (!Array.isArray(list)) return;
+    const seen = new Set();
+    for (const r of list) {
+      if (!r || dismissedRooms.has(r.id)) continue;
+      seen.add(r.id);
+      let tab = roomTabs.get(r.id);
+      if (!tab) tab = createRoomTab(r);
+      if (tab.nameEl.textContent !== r.name && !tab.btnEl.querySelector("input")) tab.nameEl.textContent = r.name;
+      tab.mirror = !!r.mirror;
+      tab.tgEl.hidden = !r.telegram;
+      // Moved from another device: follow it (never while this tab drags it).
+      if ((r.group ?? null) !== tab.roomGroup && dragTabEl !== tab.btnEl) {
+        tab.roomGroup = r.group ?? null;
+        const g = groups.find((x) => String(x.id) === String(tab.roomGroup));
+        (g ? g.bodyEl : ungroupedEl).appendChild(tab.btnEl);
+      }
+      if (r.lastTs && !tab.lastMsgAt) { tab.lastMsgAt = r.lastTs; renderLastAt(tab); }
+      if (r.unread > 0 && tab !== active) setTabMood(tab, "unread");
+    }
+    for (const [id, tab] of roomTabs) {
+      if (seen.has(id)) continue;
+      roomTabs.delete(id);
+      removeTabLocal(tab);
+    }
+    rebuildChanSelect();
+    railSig = "";
+    renderRail();
+  }
+  setTimeout(syncRooms, 1500);
+  setInterval(syncRooms, 4000);
+
+  function openRoomLink(tab) {
+    if (tab.ws && (tab.ws.readyState === WebSocket.OPEN || tab.ws.readyState === WebSocket.CONNECTING)) return;
+    const scheme = location.protocol === "https:" ? "wss:" : "ws:"; // never hardcode ws:// (invariant 20)
+    const ws = new WebSocket(`${scheme}//${location.host}/ws`);
+    tab.ws = ws;
+    if (!tab.roomLoaded) showChatSkeleton(tab);
+    ws.addEventListener("open", () => ws.send(JSON.stringify({ type: "room-join", roomId: tab.roomId })));
+    ws.addEventListener("message", (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      handleRoomMessage(tab, msg);
+    });
+    ws.addEventListener("close", () => {
+      if (tab.closing || tab.ws !== ws) return;
+      tab.reconnectTimer = setTimeout(() => openRoomLink(tab), 2000);
+    });
+  }
+
+  function addRoomMessage(tab, m) {
+    const own = m.origin === "web" && me && m.account === me.name;
+    const label = own ? "you" : echoAuthorLabel({ from: m.author, origin: m.origin });
+    const b = addTurn(tab, "user", label, m.text, null, m.ts);
+    markPromptSide(b, { from: m.account || m.author, origin: m.origin });
+    b.parentElement.dataset.roomMsg = m.id;
+    tab.lastRoomTs = Math.max(tab.lastRoomTs || 0, m.ts);
+    return b;
+  }
+
+  function handleRoomMessage(tab, msg) {
+    switch (msg.type) {
+      case "room-history": {
+        // A reconnect replays the page: start from a clean transcript.
+        clearChatSkeleton(tab);
+        tab.transcriptEl.replaceChildren();
+        tab.unreadSep = null;
+        for (const m of msg.messages || []) {
+          const b = addRoomMessage(tab, m);
+          if (m.ts > (msg.lastRead || 0) && !tab.unreadSep && tab !== active) markUnreadBoundary(tab, b.parentElement);
+        }
+        if (!(msg.messages || []).length) addTurn(tab, "system", "", "A room: people talk here, there is no agent. Say hello.", null, Date.now());
+        tab.roomLoaded = true;
+        if (tab === active) { tab.transcriptEl.scrollTop = tab.transcriptEl.scrollHeight; markRoomRead(tab); }
+        break;
+      }
+      case "room-message": {
+        const pending = msg.clientId && tab.pendingPosts && tab.pendingPosts.get(msg.clientId);
+        if (pending) {
+          // Our own optimistic bubble: the stored message replaces it 1-for-1.
+          tab.pendingPosts.delete(msg.clientId);
+          pending.parentElement.remove();
+        }
+        const b = addRoomMessage(tab, msg.message);
+        if (!pending) markUnreadBoundary(tab, b.parentElement);
+        pinBottom(tab);
+        if (tab === active && isCaughtUp(tab)) markRoomRead(tab);
+        else if (!pending) setTabMood(tab, "unread");
+        if (tab === active) updateJumpButton();
+        break;
+      }
+      case "room-error": {
+        const pending = msg.clientId && tab.pendingPosts && tab.pendingPosts.get(msg.clientId);
+        if (pending) {
+          tab.pendingPosts.delete(msg.clientId);
+          pending.parentElement.remove();
+          // A refused message is never lost: it goes back to the composer.
+          if (tab === active && !promptInput.value.trim()) { promptInput.value = pending._roomText || ""; autosizePrompt(); }
+          else tab.draft = tab.draft || pending._roomText || "";
+        }
+        addTurn(tab, "system", "", "⚠️ " + (msg.error || "refused"), null, Date.now());
+        break;
+      }
+      case "room-closed":
+        roomTabs.delete(tab.roomId);
+        removeTabLocal(tab);
+        break;
+    }
+  }
+
+  let roomReadTimer = null;
+  function markRoomRead(tab) {
+    if (!tab.lastRoomTs || tab.lastRoomTs <= (tab.sentReadTs || 0)) return;
+    clearTimeout(roomReadTimer);
+    roomReadTimer = setTimeout(() => {
+      tab.sentReadTs = tab.lastRoomTs;
+      fetch("/rooms/" + tab.roomId + "/read", { method: "POST", headers: roomHeaders(), body: JSON.stringify({ ts: tab.lastRoomTs }) }).catch(() => {});
+    }, 400);
+  }
+
+  function roomActivated(tab) {
+    openRoomLink(tab);
+    setTabMood(tab, null);
+    markRoomRead(tab);
+  }
+
+  let roomPostSeq = 0;
+  function submitRoom(t, typed, ready) {
+    if (pendingUploads > 0) return;
+    const lines = ready.map((a) => "[Attached " + (a.isImage ? "image" : "file") + ": " + a.path + "]").join("\n");
+    const text = [typed, lines].filter(Boolean).join("\n");
+    if (!text) return;
+    if (!t.ws || t.ws.readyState !== WebSocket.OPEN) {
+      addTurn(t, "system", "", "⚠️ Not connected to the room yet — try again in a moment.", null, Date.now());
+      return;
+    }
+    const clientId = "p" + (++roomPostSeq) + "-" + Date.now();
+    const b = addTurn(t, "user", "you", text, "pending", Date.now());
+    markPromptSide(b, { from: me ? me.name : "", origin: "web" });
+    b._roomText = typed;
+    (t.pendingPosts ||= new Map()).set(clientId, b);
+    t.ws.send(JSON.stringify({ type: "room-post", roomId: t.roomId, text, clientId }));
+    promptInput.value = "";
+    t.draft = "";
+    t.attachments = [];
+    renderAttachments(t);
+    autosizePrompt();
+    t.transcriptEl._stickBottom = true;
+    pinBottom(t);
+  }
+
+  async function patchRoom(tab, body) {
+    try {
+      const r = await fetch("/rooms/" + tab.roomId, { method: "PATCH", headers: roomHeaders(), body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+      return j;
+    } catch (e) {
+      addTurn(tab, "system", "", "⚠️ " + e.message, null, Date.now());
+      syncRooms(); // put the column back to what the server holds
+      return null;
+    }
+  }
+  function renameRoom(tab) {
+    inlineRename(tab.btnEl, tab.nameEl, (v) => {
+      tab.nameEl.textContent = v;
+      patchRoom(tab, { name: v });
+      rebuildChanSelect();
+    });
+  }
+  function moveRoomGroup(tab) {
+    const g = groupIdOf(tab.btnEl);
+    const group = g == null ? null : String(g);
+    if (group === tab.roomGroup) return;
+    tab.roomGroup = group;
+    patchRoom(tab, { group });
+  }
+  async function closeRoom(tab) {
+    if (!confirm("Close the room “" + tab.nameEl.textContent + "”?\n\nIt leaves the list for everyone. Its messages are kept (archived), and its Telegram topic is closed, not deleted.")) return;
+    dismissedRooms.add(tab.roomId);
+    roomTabs.delete(tab.roomId);
+    removeTabLocal(tab);
+    try {
+      const r = await fetch("/rooms/" + tab.roomId + "/archive", { method: "POST", headers: roomHeaders() });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+    } catch {
+      dismissedRooms.delete(tab.roomId); // not closed after all: let the sync bring it back
+    }
+  }
+  function openRoomMenu(tab, x, y) {
+    const head = document.createElement("div");
+    head.className = "tm-head";
+    head.append("💬 ", Object.assign(document.createElement("b"), { textContent: "Room" }));
+    const sub = document.createElement("span");
+    sub.className = "tm-sub";
+    sub.textContent = "people only — no agent";
+    head.appendChild(sub);
+    tabMenu.appendChild(head);
+    const items = [
+      [tab.muted ? "🔔 Unmute notifications" : "🔕 Mute notifications", () => setMuted(tab, !tab.muted)],
+      ["✎ Rename", () => startRename(tab)],
+    ];
+    if (me?.role === "admin") {
+      items.push([
+        tab.mirror ? "✈️ Stop mirroring (deletes the topic)" : "✈️ Mirror to Telegram",
+        () => {
+          if (tab.mirror && !confirm("Stop mirroring this room?\n\nIts Telegram topic will be deleted, with the messages it holds. The room itself stays here.")) return;
+          patchRoom(tab, { mirror: !tab.mirror }).then((j) => { if (j) tab.mirror = j.mirror; });
+        },
+      ]);
+    }
+    items.push(["✕ Close room", () => closeRoom(tab)]);
+    for (const [label, fn] of items) {
+      const b = document.createElement("button");
+      b.className = "tm-item";
+      b.textContent = label;
+      b.addEventListener("click", (e) => { e.stopPropagation(); closeTabMenu(); fn(); });
+      tabMenu.appendChild(b);
+    }
+    placeTabMenu(x, y);
+  }
+
+  // Creation popin.
+  function openRoomSetup() {
+    closePicker();
+    $("roomName").value = "";
+    $("roomErr").hidden = true;
+    $("roomMirror").checked = false;
+    $("roomMirrorRow").hidden = me?.role !== "admin";
+    $("roomCreate").disabled = false;
+    $("roomOverlay").hidden = false;
+    $("roomName").focus();
+  }
+  function closeRoomSetup() { $("roomOverlay").hidden = true; }
+  $("newRoom").addEventListener("click", () => openRoomSetup());
+  $("roomClose").addEventListener("click", closeRoomSetup);
+  $("roomOverlay").addEventListener("click", (e) => { if (e.target === $("roomOverlay")) closeRoomSetup(); });
+  $("roomForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = $("roomName").value.trim();
+    if (!name) { $("roomName").focus(); return; }
+    $("roomCreate").disabled = true;
+    try {
+      const body = { name, group: viewGroupId(), mirror: $("roomMirror").checked };
+      const r = await fetch("/rooms", { method: "POST", headers: roomHeaders(), body: JSON.stringify(body) });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+      closeRoomSetup();
+      const tab = roomTabs.get(j.id) || createRoomTab(j);
+      activate(tab);
+    } catch (err) {
+      $("roomErr").textContent = err.message;
+      $("roomErr").hidden = false;
+      $("roomCreate").disabled = false;
+    }
+  });
+
   /**
    * Paste ANY file into the composer — an image, a PDF, a CSV, etc.
    *
@@ -10879,6 +11254,8 @@
           // Which agent the file is for: in multi-tenant it lands in THAT
           // agent's group media directory, unreadable by any other group.
           "x-shadok-session": t.sessionId || "",
+          // …or which ROOM: its group's media directory, for people who see it.
+          ...(t.roomId ? { "x-shadok-room": t.roomId } : {}),
         },
         body: file,
       });

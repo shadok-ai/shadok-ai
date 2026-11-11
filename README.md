@@ -76,6 +76,15 @@ Enter to skip; you can add it later from the web UI).
 - **Channels** — one `claude` process each, running in parallel. Renaming,
   grouping, and closing all sync live between the browser and Telegram: it's
   one list, server-owned, not two copies.
+- **Rooms** — a channel with **no agent**, where people talk: same column,
+  same groups, same chat, nothing running behind it and no quota spent. **＋ new
+  room** under the agents; an admin can mirror one into a Telegram topic, and a
+  message there lands in the room (commands answer that there is no agent
+  here). Closing a room archives it: it leaves the list for everyone and its
+  messages stay on disk. The column tells the three kinds apart at a glance —
+  an **agent** is a round avatar with initials, a **room** a square slate tile
+  with a speech bubble (and no presence dot), and an agent with **scheduled
+  prompts** wears a dashed ring and a clock.
 - **Groups** — on a desktop the groups live in their own **left column**: pick
   one to narrow the agents pane to it, and the global tools (Profiles, Ledger,
   Secrets, Users, Security, Telegram, Sound) stay in the header at the top. Each
@@ -1306,6 +1315,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"term-attach"}` · `{type:"term-detach"}` | **experimental, tmux only** — open/close the pane's raw byte pipe |
 | `{type:"term-input", data}` · `{type:"term-resize", cols, rows}` | raw input (base64) / match the pane to the viewport |
 | `{type:"stop", sessionId?}` | ends the session for all clients; `sessionId` targets another channel (zombie cleanup) |
+| `{type:"room-join", roomId}` · `{type:"room-post", roomId, text, clientId?}` | a ROOM link (people only, same-origin browser): join a room (answered with `room-history`), then post to it (fanned out as `room-message`, refusals as `room-error`). A connection is an agent link or a room link, never both — `start` is refused after `room-join` |
 
 **server → client**
 

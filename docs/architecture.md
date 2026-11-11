@@ -2148,6 +2148,52 @@ is out of this heal's reach — the rehearsal is what catches that residue.
   credential in-place-vs-rename gate, and a full migration on a copy of a real
   volume. The unit tests inject every side effect.
 
+## Rooms: channels with no agent (`src/rooms.ts`)
+
+A room is a conversation between PEOPLE, drawn in the agents column like a
+channel but with nothing running behind it. Spec:
+`docs/superpowers/specs/2026-11-02-human-rooms-design.md`.
+
+**Its own registry, on purpose.** The channel registry answers "which agents
+exist", and everything that reads it acts on that: the client resumes rows, the
+Telegram reconciler opens a bridge (a session) behind mirrored rows,
+`firstAgentPlan` counts them, crons/kinship/ledger/`/live` list them. A room row
+there would get a `claude` spawned behind it by whichever consumer forgot a
+check (invariant 64). So: `~/.shadok-ai/rooms/<key>.json` for the list (written
+whole, atomically, only by targeted operations — never replaced from a client's
+list, invariant 6's lesson), `<key>/<roomId>.jsonl` for messages (append-only,
+a torn last line is skipped), `<key>.read.json` for each account's last-read
+mark (only ever moves forward). Room ids are `r_` + 16 hex, never UUID-shaped.
+
+**Server.** `/rooms*` routes (writes: same-origin person + `x-shadok-instance`),
+and on `/ws` a connection decides by its first message whether it is an agent
+link (`start`) or a room link (`room-join`); the other is refused for the life
+of the socket. `postRoomMessage` is the one write path, shared by the web and
+Telegram: it gives `ts` a strictly increasing value per room (the page cursor
+is a timestamp), appends, fans out to joined sockets, moves the author's read
+mark, and mirrors web messages to the topic. Visibility is `visibleChannels`'
+rule: no group → commons; a group → `canSeeGroup`; a dangling group → hidden.
+Attachments go through `/paste` with `x-shadok-room`, into the room's group
+media directory (`mediaDirForGroupId`, shared with agents).
+
+**Telegram.** `startTelegram` receives `roomHooks` (list / bind / post /
+mediaDir) and nothing else about rooms. A message in a room's topic is routed
+before `bridgeFor`; commands there answer that there is no agent. The rooms'
+half of the 5s mirror loop (`reconcileRooms`) creates a `💬 name` topic when
+`mirror` is set, deletes it on an explicit `mirror: false`, and CLOSES it (never
+deletes) when the room is archived. Room topics are kept out of the tracked
+topic list, because the boot pass deletes tracked topics that no channel claims.
+
+**Web.** A room is a tab object with `roomId` and no `sessionId` — which keeps
+it out of `persistChannels`/`syncChannels`/`reconnectAllNow` by construction —
+synced from `GET /rooms` every 4 s (`syncRooms`), joined lazily on first
+activation (`openRoomLink`), with its own menu, rename, close (archive) and
+drag-to-group (`PATCH`). `body.room-active` hides the agent machinery (gauges,
+gallery, cron, terminal, skills). Mute is per browser (localStorage), since
+it is a personal preference and the room list is shared. The three kinds of
+entry are told apart in CSS: round initials (agent), square slate 💬 tile with
+no LED (room), dashed ring + ⏰ (agent with crons, `.has-cron` from `setCrons`).
+
 ## Known rough edges / debt
 
 - Much was built in low-visibility agent sessions; detection heuristics,
@@ -2188,6 +2234,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 
 | File | Responsibility |
 |---|---|
+| `src/rooms.ts` | Rooms — channels with no agent. Own registry + append-only JSONL messages + per-account read marks (`RoomStore`); pure rules `visibleRooms`, `canSeeRoom`, `roomGroupFor`, `postRefusal`, `patchRoomIn`, `parseMessages`, `pageMessages`, `unreadCount`, `roomForTopic`, `telegramLine`. Tested in `test/rooms.test.ts`; the no-agent seams in `test/rooms-boundary.test.ts`. |
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
 | `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
