@@ -15,6 +15,8 @@ import {
   newPrivateGroup,
   membersWithout,
   accountDeleteGroups,
+  lastMemberRefusal,
+  orphanedGroupsHeal,
   mergeGroupsPut,
   groupNameConflict,
   secretOwnGroupIds,
@@ -398,4 +400,50 @@ test("server start handler derives parentGroupId from callerAgent (not msg.paren
   );
   // Threaded into resolveSpawnIsolation (both call sites end their input with it).
   assert.equal((src.match(/parentGroupId,\n\s*\}\);/g) ?? []).length, 2);
+});
+
+// ── A restricted group can never be left with no member ─────────────────────
+// Every question about a restricted group is member-only and an admin has no
+// override, so an empty roster made a group no one could see, use or delete —
+// repairable only by hand-editing the groups file.
+
+const solo: Group = { id: "p", name: "Patients", nature: "restricted", members: ["admin"], createdAt: 0 };
+
+test("lastMemberRefusal: only the last member of a restricted group is held back", () => {
+  assert.match(lastMemberRefusal(solo, "admin") ?? "", /last member of "Patients"/);
+  assert.equal(lastMemberRefusal({ ...solo, members: ["admin", "ada"] }, "admin"), null);
+  assert.equal(lastMemberRefusal(solo, "ada"), null, "not a member: nothing to hold back");
+  assert.equal(lastMemberRefusal({ ...solo, nature: "public", members: [] }, "admin"), null);
+});
+
+test("membershipVerdict: the last member can neither leave nor be removed", () => {
+  const me = { name: "admin", role: "admin" as const };
+  const leave = membershipVerdict(me, solo, "leave", "admin");
+  assert.equal(leave.ok, false);
+  const remove = membershipVerdict(me, solo, "remove", "admin");
+  assert.equal(remove.ok, false);
+  if (!remove.ok) assert.match(remove.error, /delete the group instead/);
+  assert.equal(membershipVerdict(me, { ...solo, members: ["admin", "ada"] }, "remove", "ada").ok, true);
+});
+
+test("mergeGroupsPut: a PUT that empties a restricted roster is refused", () => {
+  const r = mergeGroupsPut([solo], [{ id: "p", members: [] }], "admin");
+  assert.equal(r.ok, false);
+  assert.equal(mergeGroupsPut([solo], [{ id: "p", members: ["admin", "ada"] }], "admin").ok, true);
+});
+
+test("accountDeleteGroups: a group the deleted person was alone in goes to the heir", () => {
+  const groups: Group[] = [{ ...solo, members: ["ada"] }, { ...solo, id: "q", members: ["ada", "leo"] }];
+  const r = accountDeleteGroups("ada", groups, "admin");
+  assert.deepEqual(r.groups.find((g) => g.id === "p")!.members, ["admin"]);
+  assert.deepEqual(r.groups.find((g) => g.id === "q")!.members, ["leo"]);
+});
+
+test("orphanedGroupsHeal: an empty restricted roster gets the heir back, nothing else moves", () => {
+  const main: Group = { id: "main", name: "main", nature: "public", members: [], createdAt: 0 };
+  const healed = orphanedGroupsHeal([main, { ...solo, members: [] }, { ...solo, id: "q", members: ["leo"] }], "admin");
+  assert.ok(healed);
+  assert.deepEqual(healed!.map((g) => g.members), [[], ["admin"], ["leo"]]);
+  assert.equal(orphanedGroupsHeal([main, solo], "admin"), null, "nothing to repair → nothing to write");
+  assert.equal(orphanedGroupsHeal([], "admin"), null, "an empty read is never written over (invariant 6)");
 });

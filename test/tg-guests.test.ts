@@ -160,6 +160,13 @@ test("guest setup: turning it off KEEPS the group and profile, so re-enabling ne
   assert.deepEqual(guestSetupForCwd(cfg, CWD), { mode: "group", group: "g1", profile: "Support" });
 });
 
+test("guest setup: `joined` survives the round trip, and is absent when false", () => {
+  const cfg = applyGuestSetup({}, CWD, { mode: "group+dm", group: "g1", profile: "Support", joined: true });
+  assert.equal(guestSetupForCwd(cfg, CWD).joined, true);
+  const off = applyGuestSetup({}, CWD, { mode: "group+dm", group: "g1", profile: "Support" });
+  assert.equal("joined" in off.telegramGuests![CWD], false);
+});
+
 test("guest setup: a malformed stored row reads as OFF rather than throwing", () => {
   // The file is hand-editable; a half-written row must never open the door.
   const cfg = { telegramGuests: { [CWD]: { mode: "group+dm", group: 42, profile: null } } } as unknown as Config;
@@ -185,13 +192,14 @@ test("guestPatchFlow: enabling writes the setup and puts the instance in the gro
   const r = flow();
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.deepEqual(r.setup, { mode: "group+dm", group: "g1", profile: "Support" });
+  // `joined`: this flow is what put the instance there, so closing may undo it.
+  assert.deepEqual(r.setup, { mode: "group+dm", group: "g1", profile: "Support", joined: true });
   assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada", BOOTSTRAP_ADMIN]);
 });
 
 test("guestPatchFlow: disabling takes the instance back out", () => {
   const r = flow({
-    previous: { mode: "group+dm", group: "g1", profile: "Support" },
+    previous: { mode: "group+dm", group: "g1", profile: "Support", joined: true },
     want: { mode: "group", group: "g1", profile: "Support" },
     groups: withInstanceMember(GROUPS, "g1", true),
   });
@@ -205,7 +213,7 @@ test("guestPatchFlow: disabling takes the instance back out", () => {
 test("guestPatchFlow: changing group MOVES the membership, leaving none behind", () => {
   const second = group({ id: "g2", nature: "restricted", name: "Clients", members: ["ada"], osUser: "sk-g2" });
   const r = flow({
-    previous: { mode: "group+dm", group: "g1", profile: "Support" },
+    previous: { mode: "group+dm", group: "g1", profile: "Support", joined: true },
     want: { mode: "group+dm", group: "g2", profile: "Support" },
     groups: withInstanceMember([...GROUPS, second], "g1", true),
   });
@@ -213,6 +221,44 @@ test("guestPatchFlow: changing group MOVES the membership, leaving none behind",
   if (!r.ok) return;
   assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada"]);
   assert.deepEqual(r.groups.find((g) => g.id === "g2")!.members, ["ada", BOOTSTRAP_ADMIN]);
+  assert.equal(r.setup.joined, true);
+});
+
+// The instance's account IS the human admin's own (BOOTSTRAP_ADMIN). A group they
+// already belonged to must keep them when the door closes or moves — removing
+// them unconditionally emptied the roster of a group they were alone in, which
+// left it invisible to everyone and impossible to delete.
+test("guestPatchFlow: a membership the admin already had is never taken away", () => {
+  const mine = group({ id: "g3", nature: "restricted", name: "Patients", members: [BOOTSTRAP_ADMIN], osUser: "sk-g3" });
+  const opened = flow({ want: { mode: "group+dm", group: "g3", profile: "Support" }, groups: [...GROUPS, mine] });
+  assert.equal(opened.ok, true);
+  if (!opened.ok) return;
+  assert.equal(opened.setup.joined, undefined, "nothing was added, so nothing is ours to undo");
+  for (const want of [
+    { mode: "group" as const, group: "g3", profile: "Support" },
+    { mode: "group+dm" as const, group: "g1", profile: "Support" },
+  ]) {
+    const closed = flow({ previous: opened.setup, want, groups: opened.groups });
+    assert.equal(closed.ok, true);
+    if (!closed.ok) return;
+    assert.deepEqual(closed.groups.find((g) => g.id === "g3")!.members, [BOOTSTRAP_ADMIN]);
+  }
+});
+
+test("guestPatchFlow: a setup saved before `joined` existed removes no one", () => {
+  const r = flow({
+    previous: { mode: "group+dm", group: "g1", profile: "Support" },
+    want: { mode: "group", group: "g1", profile: "Support" },
+    groups: withInstanceMember(GROUPS, "g1", true),
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada", BOOTSTRAP_ADMIN]);
+});
+
+test("withInstanceMember never takes the last member out of a restricted group", () => {
+  const alone = group({ id: "g4", nature: "restricted", name: "Solo", members: [BOOTSTRAP_ADMIN], osUser: "sk-g4" });
+  assert.deepEqual(withInstanceMember([alone], "g4", false)[0].members, [BOOTSTRAP_ADMIN]);
 });
 
 test("guestPatchFlow: a refused patch is a 400 that writes NOTHING", () => {
@@ -228,7 +274,7 @@ test("guestPatchFlow: whitespace is trimmed, and a blank profile cannot enable",
   const r = flow({ want: { mode: "group+dm", group: " g1 ", profile: " Support " } });
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.deepEqual(r.setup, { mode: "group+dm", group: "g1", profile: "Support" });
+  assert.deepEqual(r.setup, { mode: "group+dm", group: "g1", profile: "Support", joined: true });
   assert.equal(flow({ want: { mode: "group+dm", group: "g1", profile: " " } }).ok, false);
 });
 
@@ -470,7 +516,7 @@ test("guestPatchFlow: switching between the two open modes keeps the membership"
 
 test("guestPatchFlow: coming back to the classic mode takes the instance out", () => {
   const r = flow({
-    previous: { mode: "dm-only", group: "g1", profile: "Support" },
+    previous: { mode: "dm-only", group: "g1", profile: "Support", joined: true },
     want: { mode: "group", group: "g1", profile: "Support" },
     groups: withInstanceMember(GROUPS, "g1", true),
   });

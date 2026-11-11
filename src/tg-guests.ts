@@ -1,6 +1,6 @@
 import { BOOTSTRAP_ADMIN } from "./accounts.js";
 import { type DeploymentMode, isolationRefusal } from "./capability.js";
-import { type Group, type Viewer, viewerInGroup } from "./groups.js";
+import { type Group, type Viewer, lastMemberRefusal, viewerInGroup } from "./groups.js";
 
 /**
  * Open DMs: the bot's door for people who are not its owner.
@@ -54,6 +54,17 @@ export interface GuestSetup {
   group: string | null;
   /** Profile name every guest agent is spawned on — the job description. */
   profile: string | null;
+  /**
+   * True only when opening the door is what put the instance (`BOOTSTRAP_ADMIN`)
+   * into `group`'s members. Closing or moving the door takes back ONLY that
+   * membership: `BOOTSTRAP_ADMIN` is also the human admin's own account, who is
+   * normally already a member (the picker only offers groups they belong to) —
+   * and removing it unconditionally threw them out of their own group, which,
+   * when they were its only member, left a group no one could see or delete.
+   * Absent on a row written before the field existed: read as false, so an old
+   * setup never removes anyone.
+   */
+  joined?: boolean;
 }
 
 /** The classic instance: a board group, and DMs for their one owner. */
@@ -168,6 +179,9 @@ export function withInstanceMember(groups: readonly Group[], groupId: string, me
     if (g.id !== groupId) return g;
     const has = g.members.includes(BOOTSTRAP_ADMIN);
     if (member === has) return g;
+    // Never the last member out: a restricted group with no member is invisible
+    // to everyone, admin included, and can no longer be deleted (lastMemberRefusal).
+    if (!member && lastMemberRefusal(g, BOOTSTRAP_ADMIN)) return g;
     return {
       ...g,
       members: member ? [...g.members, BOOTSTRAP_ADMIN] : g.members.filter((m) => m !== BOOTSTRAP_ADMIN),
@@ -189,7 +203,9 @@ export function normalizeGuestSetup(want: GuestSetup): GuestSetup {
   const group = want.group?.trim() || null;
   const profile = want.profile?.trim() || null;
   const mode = normalizeTgMode(want.mode);
-  return { mode: mode !== "group" && (!group || !profile) ? "group" : mode, group, profile };
+  const out: GuestSetup = { mode: mode !== "group" && (!group || !profile) ? "group" : mode, group, profile };
+  if (want.joined === true) out.joined = true;
+  return out;
 }
 
 /**
@@ -202,7 +218,9 @@ export function normalizeGuestSetup(want: GuestSetup): GuestSetup {
  *
  * The membership is MOVED rather than merely added: a change of group must take
  * the instance out of the old one, or an abandoned group would keep a member
- * that outlives the reason it was put there.
+ * that outlives the reason it was put there. But only a membership THIS flow
+ * added is taken back (`joined`): the instance's name is the human admin's own
+ * account, and a membership they had before the door opened is theirs.
  */
 export function guestPatchFlow(input: {
   mode: DeploymentMode;
@@ -223,10 +241,22 @@ export function guestPatchFlow(input: {
   if (error) return { ok: false, status: 400, error };
   let groups = [...input.groups];
   const old = input.previous.group?.trim() || null;
-  if (guestsOpen(input.previous) && old && old !== want.group) groups = withInstanceMember(groups, old, false);
-  if (guestsOpen(want) && want.group) groups = withInstanceMember(groups, want.group, true);
-  else if (old) groups = withInstanceMember(groups, old, false);
-  return { ok: true, setup: want, groups };
+  // Did the CURRENT open door add the membership? Only then is it ours to undo.
+  const ours = guestsOpen(input.previous) && input.previous.joined === true && old ? old : null;
+  const target = guestsOpen(want) ? want.group : null;
+  const setup: GuestSetup = { mode: want.mode, group: want.group, profile: want.profile };
+  if (ours && ours !== target) groups = withInstanceMember(groups, ours, false);
+  if (target) {
+    if (target === ours) setup.joined = true;
+    else {
+      const already = groups.find((g) => g.id === target)?.members.includes(BOOTSTRAP_ADMIN) ?? false;
+      if (!already) {
+        groups = withInstanceMember(groups, target, true);
+        setup.joined = true;
+      }
+    }
+  }
+  return { ok: true, setup, groups };
 }
 
 /** What a `start` frame carrying the guest marker amounts to. */

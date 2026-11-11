@@ -44,7 +44,7 @@ export interface Config {
    */
   telegramGuests?: Record<
     string,
-    { mode?: string; on?: boolean; group?: string | null; profile?: string | null }
+    { mode?: string; on?: boolean; group?: string | null; profile?: string | null; joined?: boolean }
   >;
   /** Optional GUI password (also settable via SHADOK_GUI_PASSWORD). */
   guiPassword?: string;
@@ -334,7 +334,7 @@ export function guestSetupForCwd(cfg: Config, cwd: string): GuestSetup {
   const group = typeof row.group === "string" && row.group.trim() ? row.group.trim() : null;
   const profile = typeof row.profile === "string" && row.profile.trim() ? row.profile.trim() : null;
   const mode = row.mode === undefined && row.on === true ? "group+dm" : normalizeTgMode(row.mode);
-  return normalizeGuestSetup({ mode, group, profile });
+  return normalizeGuestSetup({ mode, group, profile, joined: row.joined === true });
 }
 
 /**
@@ -348,7 +348,13 @@ export function guestSetupForCwd(cfg: Config, cwd: string): GuestSetup {
 export function applyGuestSetup(cfg: Config, cwd: string, s: GuestSetup): Config {
   cfg.telegramGuests ??= {};
   // `on` rides along for a server that predates the mode: see the field's doc.
-  cfg.telegramGuests[cwd] = { mode: s.mode, on: guestsOpen(s), group: s.group, profile: s.profile };
+  cfg.telegramGuests[cwd] = {
+    mode: s.mode,
+    on: guestsOpen(s),
+    group: s.group,
+    profile: s.profile,
+    ...(s.joined ? { joined: true } : {}),
+  };
   return cfg;
 }
 
