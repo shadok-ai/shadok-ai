@@ -1628,7 +1628,12 @@ export function startTelegram(
                 // configuration (invariant 49), so this frame cannot choose
                 // where a stranger's agent lands nor what role it carries. A
                 // resume needs none of it: the channel's stored group decides.
-                ...(b.guest ? { guest: true } : {}),
+                // `guestKey` is the one thing the server cannot work out on its
+                // own: the channel's Telegram binding is written at `ready`,
+                // after the spawn that needs it. It names a DIRECTORY inside
+                // the group's home and nothing else — no group, no profile, no
+                // rights — and it is believed only on the bridge's own socket.
+                ...(b.guest ? { guest: true, guestKey: chatId } : {}),
               },
         ),
       );

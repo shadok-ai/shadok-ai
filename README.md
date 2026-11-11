@@ -331,6 +331,13 @@ Enter to skip; you can add it later from the web UI).
   gives it — so the welcome is something you write, by writing the role. If you
   delete someone's agent from the cockpit, their next message simply starts a
   new one.
+  Each person's agent works in **its own folder**, named after their Telegram
+  id, inside that group's home — so what one agent remembers about the person
+  it is talking to (Claude Code keeps a project's memory per directory) is not
+  loaded by the next person's agent. Said plainly, because it is not a wall:
+  they all run under the SAME Unix user, so an agent that goes looking can
+  still read its neighbour's folder. It stops the accident, not a determined
+  agent; a real wall would be one group per person.
   They can talk and answer their agent's questions, and nothing else: no
   command reaches the bot. Two things worth knowing before you open it — every
   conversation is a real agent that stays resident, and they all draw on **your**

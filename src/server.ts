@@ -154,6 +154,7 @@ import {
   guestGroupChoices,
   guestPatchFlow,
   guestSpawnPlan,
+  guestWorkDirName,
   normalizeTgMode,
   type GuestSetup,
 } from "./tg-guests.js";
@@ -3953,6 +3954,51 @@ function agentStateHome(user: string | null | undefined): string {
   return user ? homeForUser(user, GROUP_HOME_BASE) : os.homedir();
 }
 
+/**
+ * The directory a guest's agent works in, created on first use.
+ *
+ * It sits INSIDE the group's home, so it is already behind the group's Unix
+ * wall; what it adds is the thing that was missing, one folder per PERSON
+ * (`guestWorkDirName` says why, and says what this is not). It is owned by the
+ * group's user because the agent runs as that user: its `.claude` project
+ * state, its notes and anything it writes land here.
+ *
+ * The home itself is NEVER created here — `useradd --create-home` owns that. A
+ * recursive mkdir would make a root-owned home the dropped agent cannot even
+ * traverse, and the failure would surface as an agent that will not start, far
+ * from here.
+ */
+function ensureGuestWorkDir(home: string, sub: string, user: string | null | undefined): string {
+  if (!fs.existsSync(home)) throw new Error(`the group's home is missing (${home}) — its OS user is not provisioned`);
+  const dir = path.join(home, sub);
+  // The same person coming back is the common case. `lstat`, never `stat`:
+  // the agents of that group can write in this home, so the name could have
+  // been replaced by a symlink — and a `chown` through one would hand its
+  // TARGET to that Unix user.
+  let st: fs.Stats | null = null;
+  try {
+    st = fs.lstatSync(dir);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+  }
+  if (st) {
+    if (st.isSymbolicLink() || !st.isDirectory()) throw new Error(`${dir} is not a directory`);
+    return dir;
+  }
+  // Fresh: `mkdir` refuses an existing name (a symlink included), so what we
+  // chown below is necessarily the directory we have just created.
+  fs.mkdirSync(dir, { mode: 0o700 });
+  if (user) {
+    const uid = uidOf(user);
+    const gid = gidOf(user);
+    // Unowned by its own agent, the directory is unwritable and every turn
+    // fails later, somewhere else: refuse here instead.
+    if (uid === null || gid === null) throw new Error(`cannot resolve the uid of ${user}`);
+    fs.chownSync(dir, uid, gid);
+  }
+  return dir;
+}
+
 /** The COMMONS tier for secret resolution: Main plus every PUBLIC non-Main group.
  *  A public group is visible-to-all ("public = commun"), so its secrets resolve
  *  for every agent like Main's — not only for an agent that happens to run in it.
@@ -4309,6 +4355,20 @@ function uidOf(user: string): number | null {
     return null;
   }
 }
+/** Synchronous primary gid of an OS user, or null if it does not exist.
+ *  `useradd` gives each `sk-*` a group of its own, so this is not always the
+ *  uid — and a directory chowned to the wrong group is one the agent may not
+ *  be able to use. */
+function gidOf(user: string): number | null {
+  try {
+    const out = execFileSync("id", ["-g", user], { encoding: "utf8", timeout: 5000 }).trim();
+    const n = Number(out);
+    return Number.isInteger(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The server's gh auth token, probed once and cached (`undefined` = not probed,
  *  `null` = none). Best-effort: gh missing or signed out → no token, so a dropped
  *  agent simply gets no `GH_TOKEN` and gh is reachable-but-unauthenticated rather
@@ -7913,6 +7973,15 @@ type ClientMessage =
        * (invariant 49). Ignored on a resume — the channel's stored group wins.
        */
       guest?: boolean;
+      /**
+       * WHICH guest — the Telegram chat id, i.e. that person's own user id.
+       * Believed on the same connection and for the same reason as `guest`, and
+       * it names ONE thing: the directory inside the guest group's home that
+       * belongs to this person (`guestWorkDirName`). The server cannot derive
+       * it: the channel's Telegram binding is written at `ready`, after the
+       * spawn that needs it.
+       */
+      guestKey?: number;
       cwd?: string;
       resume?: string;
       continue?: boolean;
@@ -10592,7 +10661,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // operator's launch directory: a stranger has no business holding a
             // checkout of someone else's repository, and that home is the only
             // directory its Unix user can write in anyway.
-            if (guestSetup) effectiveCwd = agentStateHome(earlyUser);
+            //
+            // …and inside that home, in a directory of ITS OWN. Every guest
+            // shares the group's Unix user, so they shared the working
+            // directory too — which is where Claude Code keeps a project's
+            // memory and where `CLAUDE.md` is read, so one person's agent
+            // loaded the notes another person's agent had written, with
+            // nothing on screen to show it (`guestWorkDirName`).
+            if (guestSetup) {
+              const sub = guestWorkDirName(msg.guestKey);
+              // No usable id → REFUSE, never fall back to the shared home: a
+              // silent fallback is exactly the mixing this closes, and it would
+              // come back the day a caller forgets the field (invariant 24).
+              if (!sub) return fail("a guest's agent needs the person it belongs to", "guest-key");
+              effectiveCwd = ensureGuestWorkDir(agentStateHome(earlyUser), sub, earlyUser);
+            }
             const early = await connectRefusal(earlyUser);
             if (early) return fail(early.message, early.code, early.user);
           }
