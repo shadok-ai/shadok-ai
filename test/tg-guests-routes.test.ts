@@ -107,3 +107,24 @@ test("telegram: a guest's DM is recognised by DERIVING it, not by storing a flag
   assert.match(TG, /guestsOn && threadId == null && chatId > 0 && chatId !== loadTgOwner\(\)/);
   assert.match(TG, /guest: isGuestChat\(chatId, threadId\)/);
 });
+
+test("telegram: every line the bridge authors ABOUT ITSELF goes through sendOps", () => {
+  // The guard for the next one added: a bare `send(b, "⚠️ …")` would reach a
+  // stranger in the cockpit's own words. The ONE exception is the mirrored
+  // topic's backfill header, which cannot reach a DM at all — `b.backfill` is
+  // set only when a web channel's topic is freshly created.
+  const EXEMPT = [/^— history resumed/];
+  const offenders = [...TG.matchAll(/\bsend\(b, (?:"|`)([^"`]*)/g)]
+    .map((m) => m[1])
+    .filter((text) => /⚠️|⏸️|♻️|🎬|^—/.test(text))
+    .filter((text) => !EXEMPT.some((re) => re.test(text)));
+  assert.deepEqual(offenders, []);
+});
+
+test("telegram: sendOps replaces the cockpit's wording for a guest, or says nothing", () => {
+  const i = TG.indexOf("const sendOps = (b: Bridge");
+  assert.ok(i >= 0, "sendOps not found");
+  const body = TG.slice(i, TG.indexOf("\n  };", i));
+  assert.match(body, /if \(!b\.guest\) return send\(b, text\)/);
+  assert.match(body, /guestNotice\(kind\)/);
+});

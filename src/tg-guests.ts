@@ -229,3 +229,42 @@ export function guestCallbackAllowed(
   if (verdict !== "guest") return false;
   return typeof chatId === "number" && chatId === fromId;
 }
+
+/** The bridge's own voice, by occasion — what it would say in a topic. */
+export type GuestNotice =
+  | "pace-blocked"    // the pace guard refused the prompt: it was NOT sent
+  | "error"           // the server refused something after the person wrote
+  | "preempt-failed"  // we could not take the hand back: the message was lost
+  | "no-keyboard"     // Telegram refused the question's inline keyboard
+  | "exited"          // the agent's process is gone
+  | "upload-failed"   // a file the agent sent could not be delivered
+  | "tool-activity";  // the running commentary of tool calls
+
+/**
+ * What a GUEST hears in place of a line the cockpit says to itself, or null to
+ * say nothing at all.
+ *
+ * The rule is not "drop everything": it is that a person who does not know what
+ * shadok is must never be left believing their message arrived when it did not.
+ * So anything they could not act on is dropped, and anything that MEANS "what
+ * you wrote is lost" is rewritten in words that stand on their own — no pace
+ * guard, no session, no /stop, no web UI, none of which exist for them.
+ */
+export function guestNotice(kind: GuestNotice): string | null {
+  switch (kind) {
+    case "pace-blocked":
+      return "⏳ I'm at capacity right now — please send that again in a little while.";
+    case "error":
+      return "⚠️ Something went wrong on my side — please send that again in a moment.";
+    case "preempt-failed":
+      return "⚠️ Your message didn't go through — please send it again.";
+    case "no-keyboard":
+      return "⚠️ I couldn't show you the options — just tell me your answer in words.";
+    // Nothing to act on: a new message starts the conversation up again, and a
+    // failed upload or a tool trace is the operator's business, not theirs.
+    case "exited":
+    case "upload-failed":
+    case "tool-activity":
+      return null;
+  }
+}

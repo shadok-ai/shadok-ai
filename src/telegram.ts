@@ -52,6 +52,8 @@ import {
   guestCallbackAllowed,
   guestCommandCarriesSecret,
   guestCommandRefusal,
+  guestNotice,
+  type GuestNotice,
 } from "./tg-guests.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
@@ -1450,6 +1452,23 @@ export function startTelegram(
       return first;
     });
 
+  /**
+   * A line the BRIDGE authors about ITSELF — the cockpit's own voice, as
+   * opposed to anything the agent said.
+   *
+   * In a GUEST's DM the cockpit's wording is replaced by `guestNotice`'s, or
+   * dropped when there is nothing for that person to act on. The distinction
+   * only exists because of open DMs: before them, everyone reading a topic was
+   * the operator, so "⏸️ pace guard" and "— session ended —" were addressed to
+   * someone who knew what they meant.
+   */
+  const sendOps = (b: Bridge, text: string, kind: GuestNotice): Promise<number | null> | void => {
+    if (!b.guest) return send(b, text);
+    const line = guestNotice(kind);
+    if (line) return send(b, line);
+    console.log(`telegram: ${b.key} — ${kind} not shown to a guest`);
+  };
+
   /** Deliver a file the AGENT sent (SendUserFile) into the topic: a PHOTO when
    *  Telegram previews it inline, a DOCUMENT otherwise. A multipart upload of the
    *  bytes — no public URL needed, so it works for a loopback / proxied instance.
@@ -1480,7 +1499,7 @@ export function startTelegram(
         if (!r?.ok) throw new Error(refusalReason(r));
       } catch (e: any) {
         console.log(`telegram: ${chatLabel(b)} — upload of ${f.name} failed: ${e?.message ?? e}`);
-        send(b, "⚠️ couldn't send " + f.name + " (" + (e?.message ?? e) + ")");
+        sendOps(b, "⚠️ couldn't send " + f.name + " (" + (e?.message ?? e) + ")", "upload-failed");
       }
     });
 
@@ -1675,7 +1694,7 @@ export function startTelegram(
           // Hidden by default: on a slightly long turn the agent's answer
           // drowns under "→ Read …" lines. /tools turns them back on per
           // channel.
-          if (b.showTools) send(b, "→ " + m.name + (m.summary ? "  " + m.summary : ""));
+          if (b.showTools) sendOps(b, "→ " + m.name + (m.summary ? "  " + m.summary : ""), "tool-activity");
           break;
         case "dialog":
           // The turn is suspended on a question — Claude isn't "typing",
@@ -1719,7 +1738,7 @@ export function startTelegram(
                 if (r?.ok) b.dialogMsgId = r.result.message_id;
                 // Say it rather than leaving the channel silent: with no
                 // keyboard, the only way out is the web UI or /stop.
-                else send(b, `⚠️ Telegram refused the question's keyboard (${r?.description ?? "unknown reason"}). Answer from the web UI, or /stop.`);
+                else sendOps(b, `⚠️ Telegram refused the question's keyboard (${r?.description ?? "unknown reason"}). Answer from the web UI, or /stop.`, "no-keyboard");
               }),
             );
           }
@@ -1751,7 +1770,7 @@ export function startTelegram(
           // button here) — say so instead of staying silent, and drop the
           // optimistic typing started at message receipt.
           b.typing.stop();
-          send(b, "⏸️ pace guard: " + (m.reason ?? "over the ideal pace") + "\nYour message was not sent — retry later.");
+          sendOps(b, "⏸️ pace guard: " + (m.reason ?? "over the ideal pace") + "\nYour message was not sent — retry later.", "pace-blocked");
           break;
         case "error":
           // Écrire pendant un tour en cours : plutôt que de refuser et de PERDRE
@@ -1774,18 +1793,18 @@ export function startTelegram(
               if (b.preempting !== text) return;
               b.preempting = undefined;
               b.typing.stop();
-              send(b, "⚠️ Couldn't take the hand back — your message was not sent. Try /stop, then send it again.");
+              sendOps(b, "⚠️ Couldn't take the hand back — your message was not sent. Try /stop, then send it again.", "preempt-failed");
             }, PREEMPT_TIMEOUT_MS);
             break;
           }
           // No typing.stop() here: fail() errors ("a response is already in
           // progress") don't end the running turn — turn-done/exited will.
-          send(b, "⚠️ " + m.message);
+          sendOps(b, "⚠️ " + m.message, "error");
           break;
         case "exited":
           b.typing.stop();
           b.awaitingFreetext = undefined;
-          send(b, "— session ended —");
+          sendOps(b, "— session ended —", "exited");
           break;
       }
     });

@@ -9,6 +9,7 @@ import {
   guestCommandCarriesSecret,
   guestCommandRefusal,
   guestEnableRefusal,
+  guestNotice,
   guestGroupChoices,
   guestPatchFlow,
   guestSpawnPlan,
@@ -265,4 +266,29 @@ test("guestCallbackAllowed: nothing else gets through", () => {
   assert.equal(guestCallbackAllowed("guest", undefined, 4242), false);
   assert.equal(guestCallbackAllowed("deny", 4242, 4242), false);
   assert.equal(guestCallbackAllowed("pair", 4242, 4242), false);
+});
+
+// ── the cockpit's own voice, as a guest hears it ──────────────────────────
+
+test("guestNotice: what a guest cannot act on is dropped", () => {
+  assert.equal(guestNotice("exited"), null);
+  assert.equal(guestNotice("upload-failed"), null);
+  assert.equal(guestNotice("tool-activity"), null);
+});
+
+test("guestNotice: anything meaning 'your message is lost' is REWRITTEN, never dropped", () => {
+  // Silence here is the one outcome we cannot have: the person waits for an
+  // answer that is never coming.
+  for (const kind of ["pace-blocked", "error", "preempt-failed", "no-keyboard"] as const) {
+    const line = guestNotice(kind);
+    assert.ok(line, kind);
+    assert.match(String(line), /\S/);
+  }
+});
+
+test("guestNotice: the words a guest hears name nothing of the cockpit", () => {
+  for (const kind of ["pace-blocked", "error", "preempt-failed", "no-keyboard"] as const) {
+    const line = String(guestNotice(kind));
+    assert.doesNotMatch(line, /pace|guard|quota|session|agent|shadok|cockpit|web UI|\/stop|profile|group/i, kind);
+  }
 });
