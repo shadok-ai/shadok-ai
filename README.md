@@ -304,6 +304,21 @@ Enter to skip; you can add it later from the web UI).
   the audio was left unheard — ask and the agent can listen. Telegram caps what
   a bot may download at 20 MB; past that you get a clear notice instead of
   silence.
+- **Open the bot to other people** (admin, Telegram panel, privileged
+  deployment only) — normally the bot's private messages belong to you alone and
+  anyone else is told it is private. Tick **Open DMs**, pick a **restricted
+  group** and a **profile**, and anyone who writes to the bot gets their own
+  agent instead: on that profile, inside that group, and always the same agent
+  for the same person. The profile is what decides the job — support, a front
+  desk, whatever you set up — and its guardrails are what those people are
+  driving, so choose it deliberately. You read and take over those conversations
+  from the cockpit, in that group; the group runs under its own Unix user, and
+  only its members see it, so whoever you add to the group can read them too.
+  They can talk and answer their agent's questions, and nothing else: no
+  command reaches the bot. Two things worth knowing before you open it — every
+  conversation is a real agent that stays resident, and they all draw on **your**
+  Claude subscription, so there is no cap and no queue by design. Untick it and
+  every such conversation is closed at once.
 - **Link to a message** — every message (yours and the agent's) has a 🔗 link
   button beside copy. It copies a URL like `…/#agent=<session>&msg=<id>`;
   whoever opens it — someone who already has access to this cockpit, after the
