@@ -163,6 +163,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/login-limit.ts` | `AttemptLimiter` — failed `POST /login` and enrollment-code attempts per address and per account, in memory, refused with 429 BEFORE hashing. Pure over a clock, tested. |
 | `src/heartbeat.ts` | Keeps idle `/ws` connections alive behind a reverse proxy: an idle agent sends no traffic, so a proxy (nginx `proxy_read_timeout` 60s, Cloudflare ~100s) cuts the socket and the client loops on "reconnecting" — with nothing actually broken. |
 | `src/config.ts` | `~/.shadok-ai/config.json` (600): port, per-launch-dir Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`, `cockpitTitle` (per-launch-dir display name, `titleForCwd`/`setTitleForCwd` — the header brand + browser tab, so several cockpits stay apart), `cockpitTheme` (per-launch-dir colour palette key, `themeForCwd`/`setThemeForCwd`, validated against `COCKPIT_THEMES`; default/unknown → cleared), and `cockpitMuted` (per-launch-dir instance-wide mute, `mutedForCwd`/`setMutedForCwd` — `true` = no web attention signal for ANY agent, the shared twin of `Channel.muted`; false stored as absent). |
+| `src/webhooks.ts` | Webhooks: `POST /hooks/<id>` + per-hook bearer token (SHA-256 stored, one 404 for every refusal) wakes an agent through the cron path (`driveChannel`), body fenced as untrusted. Management (`/webhooks`) is browser-person only. |
 | `src/crons.ts` | Per-channel scheduled prompts (`~/.shadok-ai/crons/<enc>.json`) + the deterministic `check` that avoids waking the LLM for nothing. |
 | `src/lock.ts` | Single-instance lock, keyed by launch dir: two servers from the same directory share a registry and a Telegram bridge, so the second refuses to start. |
 | `src/kinship.ts` | Who launched whom, and what a parent is told about it. |
@@ -285,6 +286,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 - agents & roles: `/tweak/prepare`, `/profiles` (+ `/prompt`, `/secret`, `/restore`), `/secrets`, `/reload`, `/restart-all`, `/models`, `/backend`
 - accounts & 2FA: `/users`, `/users/role`, `/peers`, `/invite/:token`, `/me`, `/login*`, `/2fa*`
 - media & voice: `/paste`, `/media/:name`, `/files`, `/reports` (+ `/seen`, `/resolve`), `/download`, `/transcribe`
+- webhooks: `/hooks/:id` (BEFORE the gate, token-authenticated), `/webhooks` (+ `/:id`, `/:id/rotate`) — writes browser person only
 - ops: `/version`, `/autoupdate`, `/permission-mode`, `/ledger`, `/claude-update`, `/telegram`
 - connected accounts: `/connect/status`, `/connect/linkedin/{start,complete,done}`, `/connected-accounts` (+ `/:id`, `/:id/log`) — browser person only; `/social/accounts`, `/social/posts` — the agent side (`x-shadok-session-key`); `/social/drafts/:id/{publish,discard}` — browser person only. WS: `social-draft`
 - skills: `/factory/*` (the Skill Factory, `src/factory-routes.ts`), `/commands`
