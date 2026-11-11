@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession } from "../src/tmux.js";
+import { TmuxPilot, isServerExitRace, tmuxAvailable, tmuxHasSession, tmuxKillSession } from "../src/tmux.js";
 
 /**
  * `stop()` must kill the pane even when the graceful path cannot work.
@@ -80,4 +80,14 @@ test("abandon() stops watching an ADOPTED pane but leaves it running", { skip: !
     owner.kill();
     tmuxKillSession(NAME);
   }
+});
+
+test("only a new-session that met a dying tmux server is retried", () => {
+  const race = "server exited unexpectedly\n";
+  assert.equal(isServerExitRace(["new-session", "-d", "-s", "x"], race), true);
+  assert.equal(isServerExitRace(["new-session"], Buffer.from(race)), true);
+  // Anything else is a real failure, or a call whose effect may already be done.
+  assert.equal(isServerExitRace(["send-keys", "-t", "x", "hi"], race), false);
+  assert.equal(isServerExitRace(["new-session"], "duplicate session: x"), false);
+  assert.equal(isServerExitRace(["new-session"], undefined), false);
 });

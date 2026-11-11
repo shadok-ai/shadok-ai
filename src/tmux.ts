@@ -34,17 +34,46 @@ export interface TmuxPilotOptions extends PilotOptions {
 }
 
 function tmux(args: string[], input?: string): string {
-  try {
-    return execFileSync("tmux", args, {
-      encoding: "utf8",
-      input,
-      timeout: 10_000,
-      maxBuffer: 8 * 1024 * 1024,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-  } catch (e) {
-    throw new Error(tmuxErrorMessage(args, (e as { stderr?: unknown }).stderr));
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return execFileSync("tmux", args, {
+        encoding: "utf8",
+        input,
+        timeout: 10_000,
+        maxBuffer: 8 * 1024 * 1024,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (e) {
+      const stderr = (e as { stderr?: unknown }).stderr;
+      if (attempt < SERVER_EXIT_RETRIES && isServerExitRace(args, stderr)) {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100 * attempt);
+        continue;
+      }
+      throw new Error(tmuxErrorMessage(args, stderr));
+    }
   }
+}
+
+const SERVER_EXIT_RETRIES = 4;
+
+/**
+ * A `new-session` that lost the race against the tmux server shutting down.
+ *
+ * tmux exits its server when the LAST session ends. A client that connects in
+ * that window reaches a server already tearing down and gets "server exited
+ * unexpectedly" — the session was never created, and a fresh attempt simply
+ * starts a new server. Closing the only agent and spawning the next one right
+ * away hits it; so did the test suite, whose files run in parallel on the same
+ * default socket (one file killing its last pane while another started one), and
+ * the publish job then stopped before publishing.
+ *
+ * Only `new-session` is retried: it is the one call that STARTS a server, and a
+ * failed one created nothing, so retrying cannot double an effect.
+ */
+export function isServerExitRace(args: string[], stderr: unknown): boolean {
+  if (args[0] !== "new-session") return false;
+  const why = typeof stderr === "string" ? stderr : Buffer.isBuffer(stderr) ? stderr.toString("utf8") : "";
+  return /server exited unexpectedly/i.test(why);
 }
 
 /**
