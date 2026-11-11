@@ -1739,6 +1739,10 @@ at its current path. Verified: the same agent then answered with v3.
   opens its card in the Skill Factory (`openSkillCard`). It is the per-agent
   view of the same two reads (`/factory/skills`, `/crons`), no endpoint of its
   own.
+- **The schedule panel** (`#cronOverlay`, `renderCrons`) shows the same join
+  under each cron ("Uses ✦ skill", plus the unprompted ones), through the
+  helpers it shares with the info panel (`cronSkillUse`, `skillChip`); a chip
+  closes the overlay and opens the skill's card, where Edit is.
 
 **The page** (`public/index.html`, "Skill Factory"):
 - `body.factory-mode` hides `main` and shows `#factoryPage`, with a short
