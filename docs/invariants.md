@@ -2016,3 +2016,38 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     through `roomHooks` instead), and a post's author is the session's account,
     never the frame's — measured: a script posting `author: "mallory"` is
     stored as the account it authenticated as.
+
+<a id="inv-69"></a>
+
+65. **The moment a surface stops being operator-only, every line and every
+    SHAPE that assumed "whoever is there is us" becomes a bug — and each one
+    fails in silence.** Open DMs (`src/tg-guests.ts`) let a stranger reach the
+    bot, and four assumptions broke at once; none of them threw, and none of
+    them would have appeared in a log.
+    **The cockpit's own vocabulary.** "⏸️ pace guard: … your message was not
+    sent", "— session ended —", "⚠️ couldn't send x.pdf" were written for
+    someone who knows what a pace guard and a session are. A stranger gets a
+    sentence about the operator's quota. `sendOps` is now the one door for a
+    line the BRIDGE authors about itself, and `guestNotice` splits them in two —
+    the ones a guest cannot act on are dropped, the ones that MEAN "what you
+    wrote is lost" are rewritten in words that stand alone. Dropping all of them
+    would have been its own failure: silence leaves a person waiting for an
+    answer that is never coming.
+    **The owner was recognised by a shape.** `adoptOwnerFromBindings` adopts the
+    bot's owner from "a private chat with no topic", which is exactly what a
+    guest's DM is. On an instance that lost its owner file, the bot would have
+    gone to whichever stranger came first in the channel list — the very window
+    adoption exists to close, reopened from the other side.
+    `ownerAdoptionCandidate` excludes a channel whose group is the guest group
+    (server-stamped, `SERVER_OWNED`, unforgeable by a client).
+    **A name that was "always general".** `persist` forced every topic-less
+    channel's name, so a hundred guests would have been one hundred rows called
+    `general`.
+    **A refusal with no way out.** A DM callback was refused unless it came from
+    the owner, so the first `AskUserQuestion` a profile asked would wedge a
+    guest's conversation **permanently**: the preface arrives, the click is
+    refused, nothing times out. Answering your own agent's question is driving
+    your own conversation, not a new power.
+    The generalisation worth keeping: when you open a door, re-read every
+    sentence the subsystem emits and every predicate that identifies someone by
+    the shape of their data. The compiler has nothing to say about either.

@@ -47,7 +47,15 @@ import {
   type Cron,
   type CronSchedule,
 } from "./crons.js";
-import { SHADOK_DIR, loadConfig, telegramConfig } from "./config.js";
+import { SHADOK_DIR, guestSetupForCwd, loadConfig, telegramConfig } from "./config.js";
+import {
+  guestCallbackAllowed,
+  guestCommandCarriesSecret,
+  guestCommandRefusal,
+  guestNotice,
+  ownerAdoptionCandidate,
+  type GuestNotice,
+} from "./tg-guests.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
 import { pairingRefusal, redeemPairingCode } from "./tg-pairing.js";
@@ -237,13 +245,25 @@ export function nextToolsState(arg: string, current: boolean): boolean {
  * (`src/tg-pairing.ts`). It used to be "the first to write claims DMs", which
  * handed the machine to whichever stranger got there first.
  *
- * A sender with no id is refused outright: there is nothing to store as owner.
+ * `guestsOn` opens a SECOND door, deliberately (`src/tg-guests.ts`): a sender
+ * who is not the owner becomes a `guest` and gets a dedicated agent instead of
+ * a refusal. Two orderings inside are load-bearing. `pair` keeps priority, so
+ * while the bot is unowned a code is still the only way in and no stranger can
+ * become the owner by walking through the open door. And a sender with no id is
+ * refused before anything else: there is nothing to store as owner, and nothing
+ * stable to key a guest's own agent on either.
+ *
  * Pure — unit tested.
  */
-export function dmGate(owner: number | null, from: number | undefined): "pair" | "allow" | "deny" {
+export function dmGate(
+  owner: number | null,
+  from: number | undefined,
+  guestsOn = false,
+): "pair" | "allow" | "guest" | "deny" {
   if (typeof from !== "number") return "deny";
   if (owner === null) return "pair";
-  return owner === from ? "allow" : "deny";
+  if (owner === from) return "allow";
+  return guestsOn ? "guest" : "deny";
 }
 
 /**
@@ -1085,6 +1105,12 @@ interface Bridge {
   key: string;
   chatId: number;
   threadId?: number;
+  /** This DM belongs to a GUEST — someone who is not the bot's owner, on an
+   *  instance whose DMs are open (`isGuestChat`). Two things hang off it: the
+   *  spawn asks the server for a guest's agent, and the bridge stops saying its
+   *  own cockpit vocabulary into the chat (`sendOps`). Derived at every
+   *  `openBridge`, so a spawn, a resume and a boot reattach all agree. */
+  guest?: boolean;
   ws: WebSocket;
   sessionId: string | null;
   ready: boolean;
@@ -1260,6 +1286,21 @@ export function startTelegram(
   const token = cfg.token;
   const api = `https://api.telegram.org/bot${token}`;
   const allowed = cfg.allowedChats;
+  // Open DMs (src/tg-guests.ts). Read at start like the rest of the config: the
+  // panel restarts the bridge when it changes, so this cannot go stale. Only
+  // the SWITCH is read here — which group and which profile a guest's agent
+  // gets is resolved server-side at spawn, never carried from here.
+  const guestsOn = guestSetupForCwd(loadConfig(), process.cwd()).on;
+  /**
+   * Is this chat a GUEST's DM? One definition, derived rather than stored, so a
+   * bridge opened by a spawn, a resume or a boot reattach all agree — and so
+   * nothing has to carry a flag through those three paths.
+   *
+   * A DM's chat id IS the sender's user id and is always positive; a group's is
+   * negative. So "a private chat that is not the owner's" is the whole rule.
+   */
+  const isGuestChat = (chatId: number, threadId?: number) =>
+    guestsOn && threadId == null && chatId > 0 && chatId !== loadTgOwner();
   // Mutable bridge state, closed over by the returned handle (see stop()/status()).
   let stopped = false;
   let polling = false;
@@ -1412,6 +1453,23 @@ export function startTelegram(
       return first;
     });
 
+  /**
+   * A line the BRIDGE authors about ITSELF — the cockpit's own voice, as
+   * opposed to anything the agent said.
+   *
+   * In a GUEST's DM the cockpit's wording is replaced by `guestNotice`'s, or
+   * dropped when there is nothing for that person to act on. The distinction
+   * only exists because of open DMs: before them, everyone reading a topic was
+   * the operator, so "⏸️ pace guard" and "— session ended —" were addressed to
+   * someone who knew what they meant.
+   */
+  const sendOps = (b: Bridge, text: string, kind: GuestNotice): Promise<number | null> | void => {
+    if (!b.guest) return send(b, text);
+    const line = guestNotice(kind);
+    if (line) return send(b, line);
+    console.log(`telegram: ${b.key} — ${kind} not shown to a guest`);
+  };
+
   /** Deliver a file the AGENT sent (SendUserFile) into the topic: a PHOTO when
    *  Telegram previews it inline, a DOCUMENT otherwise. A multipart upload of the
    *  bytes — no public URL needed, so it works for a loopback / proxied instance.
@@ -1442,7 +1500,7 @@ export function startTelegram(
         if (!r?.ok) throw new Error(refusalReason(r));
       } catch (e: any) {
         console.log(`telegram: ${chatLabel(b)} — upload of ${f.name} failed: ${e?.message ?? e}`);
-        send(b, "⚠️ couldn't send " + f.name + " (" + (e?.message ?? e) + ")");
+        sendOps(b, "⚠️ couldn't send " + f.name + " (" + (e?.message ?? e) + ")", "upload-failed");
       }
     });
 
@@ -1477,8 +1535,11 @@ export function startTelegram(
       if (!b.sessionId) continue;
       const existing = channelForTelegram(b.chatId, b.threadId);
       // The General (no threadId) is the environment's main channel — always
-      // named "general". Topics seed their name from the topic once.
-      const name = b.threadId ? (b.name && !existing?.name ? b.name : undefined) : "general";
+      // named "general". Topics seed their name from the topic once, and a
+      // GUEST's DM from the person writing: without that exception every guest
+      // would be upserted as "general", and the group would read as a column of
+      // identical rows instead of a list of people.
+      const name = b.guest || b.threadId ? (b.name && !existing?.name ? b.name : undefined) : "general";
       upsertChannel({
         sessionId: b.sessionId,
         ...(name ? { name } : {}),
@@ -1516,6 +1577,7 @@ export function startTelegram(
       pendingActions: [],
       worktree: opts.worktree,
       backfill: opts.backfill,
+      guest: isGuestChat(chatId, threadId),
       showTools: tgToolsEnabled(key),
       name: opts.name,
       send: makeSendQueue(),
@@ -1534,7 +1596,19 @@ export function startTelegram(
         JSON.stringify(
           opts.resumeId
             ? { type: "start", resume: opts.resumeId, cwd: process.cwd(), origin: "telegram", ...(opts.profile ? { profile: opts.profile } : {}) }
-            : { type: "start", cwd: process.cwd(), origin: "telegram", worktree: !!opts.worktree, ...(opts.profile ? { profile: opts.profile } : {}) },
+            : {
+                type: "start",
+                cwd: process.cwd(),
+                origin: "telegram",
+                worktree: !!opts.worktree,
+                ...(opts.profile ? { profile: opts.profile } : {}),
+                // A GUEST's spawn. The marker says only "this is a guest" — the
+                // group and the profile are resolved server-side from the
+                // configuration (invariant 49), so this frame cannot choose
+                // where a stranger's agent lands nor what role it carries. A
+                // resume needs none of it: the channel's stored group decides.
+                ...(b.guest ? { guest: true } : {}),
+              },
         ),
       );
     });
@@ -1624,7 +1698,7 @@ export function startTelegram(
           // Hidden by default: on a slightly long turn the agent's answer
           // drowns under "→ Read …" lines. /tools turns them back on per
           // channel.
-          if (b.showTools) send(b, "→ " + m.name + (m.summary ? "  " + m.summary : ""));
+          if (b.showTools) sendOps(b, "→ " + m.name + (m.summary ? "  " + m.summary : ""), "tool-activity");
           break;
         case "dialog":
           // The turn is suspended on a question — Claude isn't "typing",
@@ -1668,7 +1742,7 @@ export function startTelegram(
                 if (r?.ok) b.dialogMsgId = r.result.message_id;
                 // Say it rather than leaving the channel silent: with no
                 // keyboard, the only way out is the web UI or /stop.
-                else send(b, `⚠️ Telegram refused the question's keyboard (${r?.description ?? "unknown reason"}). Answer from the web UI, or /stop.`);
+                else sendOps(b, `⚠️ Telegram refused the question's keyboard (${r?.description ?? "unknown reason"}). Answer from the web UI, or /stop.`, "no-keyboard");
               }),
             );
           }
@@ -1700,7 +1774,7 @@ export function startTelegram(
           // button here) — say so instead of staying silent, and drop the
           // optimistic typing started at message receipt.
           b.typing.stop();
-          send(b, "⏸️ pace guard: " + (m.reason ?? "over the ideal pace") + "\nYour message was not sent — retry later.");
+          sendOps(b, "⏸️ pace guard: " + (m.reason ?? "over the ideal pace") + "\nYour message was not sent — retry later.", "pace-blocked");
           break;
         case "error":
           // Écrire pendant un tour en cours : plutôt que de refuser et de PERDRE
@@ -1723,18 +1797,18 @@ export function startTelegram(
               if (b.preempting !== text) return;
               b.preempting = undefined;
               b.typing.stop();
-              send(b, "⚠️ Couldn't take the hand back — your message was not sent. Try /stop, then send it again.");
+              sendOps(b, "⚠️ Couldn't take the hand back — your message was not sent. Try /stop, then send it again.", "preempt-failed");
             }, PREEMPT_TIMEOUT_MS);
             break;
           }
           // No typing.stop() here: fail() errors ("a response is already in
           // progress") don't end the running turn — turn-done/exited will.
-          send(b, "⚠️ " + m.message);
+          sendOps(b, "⚠️ " + m.message, "error");
           break;
         case "exited":
           b.typing.stop();
           b.awaitingFreetext = undefined;
-          send(b, "— session ended —");
+          sendOps(b, "— session ended —", "exited");
           break;
       }
     });
@@ -1859,11 +1933,16 @@ export function startTelegram(
     if (ch) removeChannel(ch.sessionId);
   };
 
-  /** Apply `dmGate` to a private message. Returns false when we must stop. */
-  const guardDm = async (msg: any): Promise<boolean> => {
+  /**
+   * Apply `dmGate` to a private message. Returns the verdict the caller must
+   * act on: `allow` (the owner), `guest` (a stranger, with open DMs on) or
+   * `false` when the message must go no further.
+   */
+  const guardDm = async (msg: any): Promise<"allow" | "guest" | false> => {
     const from = msg.from?.id as number | undefined;
-    const verdict = dmGate(loadTgOwner(), from);
-    if (verdict === "allow") return true;
+    const verdict = dmGate(loadTgOwner(), from, guestsOn);
+    if (verdict === "allow") return "allow";
+    if (verdict === "guest") return "guest";
     if (verdict === "pair") {
       // No owner yet: the only message that gets anywhere is a valid code, and
       // it is consumed — it is a pairing, not a prompt for an agent.
@@ -1972,7 +2051,14 @@ export function startTelegram(
     // DMs belong to ONE owner, paired with the cockpit's code. An explicit
     // allowlist still wins (it has already filtered above): this is the
     // default guard, for an install that configures none.
-    if (chat.type === "private" && !(await guardDm(msg))) return;
+    // `guest` = a stranger on an instance whose DMs are open: they get their
+    // own agent instead of a refusal, and may do nothing but talk (below).
+    let guest = false;
+    if (chat.type === "private") {
+      const verdict = await guardDm(msg);
+      if (!verdict) return;
+      guest = verdict === "guest";
+    }
     const threadId = msg.message_thread_id as number | undefined;
     const isGroup = chat.type === "group" || chat.type === "supergroup";
     // Commands only exist in text messages — a caption is never a command.
@@ -2046,6 +2132,22 @@ export function startTelegram(
     if (room) {
       await handleRoomMessage(room, msg, cmd, att);
       return;
+    }
+
+    // A GUEST talks, and nothing else — the refusal sits ABOVE
+    // `commandRequiresOperator`, which only gates the privileged commands and
+    // would leave the rest of the cockpit's machinery open (`guestCommandRefusal`).
+    if (guest && cmd) {
+      const refusal = guestCommandRefusal(cmd.cmd);
+      if (refusal) {
+        // A refused /secret still carried its value: do not leave it lying in a
+        // chat history we do not control.
+        if (guestCommandCarriesSecret(cmd.cmd))
+          await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+        console.log(`telegram: /${cmd.cmd} refused for guest ${msg.from?.id ?? "?"}`);
+        await reply(chat.id, undefined, refusal);
+        return;
+      }
     }
 
     if (cmd && commandRequiresOperator(cmd.cmd, cmd.arg, (n) => !!getProfile(n))) {
@@ -2416,7 +2518,9 @@ export function startTelegram(
     // anything — spawning/resuming a session can take tens of seconds and the
     // first "working" only arrives after it. Every terminal outcome stops it
     // (turn-done, dialog, pace-blocked, exited, ws close).
-    const b = bridgeFor(key, chat.id, threadId, topicName);
+    // A guest's channel is named after the person writing: the group reads as a
+    // list of people rather than a column of identical rows (see `persist`).
+    const b = bridgeFor(key, chat.id, threadId, guest ? senderName(msg.from) ?? topicName : topicName);
     b.typing.start();
 
     if (att) {
@@ -2510,7 +2614,10 @@ export function startTelegram(
     // stranger cannot reach this path — we close it anyway rather than depend
     // on that assumption. Never a pairing here: DMs are paired by a typed code,
     // not by clicking.
-    if (msg.chat?.type === "private" && dmGate(loadTgOwner(), cq.from?.id) !== "allow") {
+    if (
+      msg.chat?.type === "private" &&
+      !guestCallbackAllowed(dmGate(loadTgOwner(), cq.from?.id, guestsOn), msg.chat?.id, cq.from?.id)
+    ) {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ This bot is private." });
       return;
     }
@@ -2674,7 +2781,34 @@ export function startTelegram(
     return true;
   };
 
+  /**
+   * Reattach the DM-bound agents — the owner's, and with open DMs every guest's.
+   *
+   * Deliberately ABOVE the board-group gate in both reconcilers. They return
+   * early when no group is bound, and an instance that opened its DMs for
+   * support may well never bind one; the boot pass also only ever reattached
+   * channels that have a TOPIC, which a DM by construction has not. Without
+   * this, after a restart — hence on every auto-update — an agent speaking
+   * UNPROMPTED reached nobody, while inbound traffic recovered by itself
+   * (`bridgeFor` resumes from the registry). Same silent loss as invariant 7.
+   */
+  const reattachDmBridges = () => {
+    for (const c of loadChannels()) {
+      const t = c.telegram;
+      if (!t || t.threadId != null || t.chatId < 0) continue;
+      // Check for the bridge HERE, before `reattachLiveBridge`: its
+      // `sessionAlive` argument is a tmux probe evaluated eagerly at the call
+      // site, and this runs on the 5s loop over every DM. With open DMs the
+      // number of DMs is the number of guests, which nothing caps — so the
+      // steady state (every bridge already up) must cost no process spawns at
+      // all (invariant 38).
+      if (bridges.has(bindKey({ id: t.chatId, type: "private" }))) continue;
+      reattachLiveBridge(c);
+    }
+  };
+
   const reconcileWebChannels = async () => {
+    reattachDmBridges();
     const group = loadTgGroup();
     if (group === null) return;
     const bridged = new Set([...bridges.values()].map((b) => b.sessionId).filter(Boolean));
@@ -2823,11 +2957,15 @@ export function startTelegram(
    */
   const adoptOwnerFromBindings = async () => {
     if (loadTgOwner() !== null) return;
+    // A GUEST's DM has exactly the shape this looks for, so it is excluded by
+    // its channel's group (`ownerAdoptionCandidate`): adopting one would hand
+    // the bot to a stranger — the very window adoption exists to close.
+    const guestGroup = guestSetupForCwd(loadConfig(), process.cwd()).group;
     for (const c of loadChannels()) {
-      const tgb = c.telegram;
-      if (tgb && tgb.threadId == null && tgb.chatId > 0) {
-        saveTgOwner(tgb.chatId);
-        console.log(`telegram: DM owner adopted from an existing binding (user ${tgb.chatId})`);
+      const who = ownerAdoptionCandidate(c, guestGroup);
+      if (who !== null) {
+        saveTgOwner(who);
+        console.log(`telegram: DM owner adopted from an existing binding (user ${who})`);
         return;
       }
     }
@@ -2839,6 +2977,7 @@ export function startTelegram(
 
   const reconcileOnBoot = async () => {
     await adoptOwnerFromBindings();
+    reattachDmBridges();
     const group = loadTgGroup();
     if (group === null) return;
     const bound = new Set<number>();

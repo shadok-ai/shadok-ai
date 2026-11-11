@@ -523,6 +523,48 @@ group already bound before this change stays bound.
   `MEDIA_DIR` — the same basename rule, for the same reason, as `GET /media/:name`.
   A refused marker is left in the prose rather than removed, so the topic shows
   exactly what it showed before and nothing is swallowed.
+- **Open DMs: a stranger gets their own agent** (`src/tg-guests.ts`, design:
+  `docs/superpowers/specs/2026-11-11-telegram-open-dm-design.md`). A DM normally
+  belongs to ONE owner and everyone else is told the bot is private. An admin can
+  open that door, per launch directory, by naming a **restricted group** and a
+  **profile** in the Telegram panel — both or nothing, and only once the bot's
+  DMs are **paired**: `dmGate` answers `pair` while there is no owner, so a
+  stranger would be asked for a code instead of getting an agent, and enabling
+  first would save a door that cannot open. Both prerequisites are refused at
+  the panel, most fundamental first (the deployment, then the pairing), rather
+  than discovered as silence in Telegram. A sender who is not the
+  owner then becomes a `guest`: `dmGate` grows a fourth verdict, and their first
+  message spawns an agent on that profile, in that group, bound to their DM. The
+  same person always lands on the same agent, and that costs no new storage: a
+  DM's binding key is `private:<chat.id>`, a DM's chat id IS the sender's user
+  id, so the channel registry already holds the person→agent mapping.
+  Why a RESTRICTED group and not the "private" one the feature was asked for:
+  a private group is an account's **Personal** space, auto-provisioned, refused
+  by `POST /groups` and sealed by `mergeGroupsPut` — and the bridge drives as
+  `BOOTSTRAP_ADMIN`, a name reserved for the instance password, so it could never
+  be a member of one. `canSeeGroup` would be false, and the spawn would be
+  accepted while every message afterwards was refused. A restricted group gives
+  the same wall (its own Unix user) and the same member-only visibility; what it
+  does not give — invisibility from its own members — is said rather than glossed
+  (invariant 47). Enabling writes the instance into that group's `members`, which
+  is how the bridge may spawn, resume and drive there; it widens nothing else,
+  since an agent principal is judged on its own `agentGroup`, never on that name.
+  The group and the profile are resolved **server-side from the configuration**
+  (invariant 49): the `start` frame carries a marker and nothing more, believed
+  only on a socket that proved `x-shadok-bridge`, ignored outright on a resume.
+  And the resolved group is **asserted** before the agent exists (invariant 24) —
+  a guest's agent lands in the configured group or the spawn is refused, because
+  the silent fallback is the commons, which would publish a stranger's
+  conversation to every account on the instance. A guest gets no worktree and
+  runs in its group's own home. It may talk and answer its own agent's
+  questions; every command is refused above `commandRequiresOperator`
+  (an allowlist of the privileged ones only), with `/start` falling through
+  because Telegram sends it unasked. What the bridge says about ITSELF goes
+  through `sendOps`, so the cockpit's vocabulary never reaches a stranger — see
+  invariant 65 for the four assumptions that broke the day this door opened.
+  Deliberately absent, and the operator's own call: no cap on the number of
+  guests. These agents are never idle-reclaimed (a bridge is a client), the quota
+  is shared, and each auto-update replays the serial-restart herd.
 - `/secret NAME value` deletes the user's message after storing, so the value
   doesn't linger in chat history (needs *Delete messages* admin rights).
 
