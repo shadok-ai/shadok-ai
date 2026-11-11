@@ -4,7 +4,7 @@ import test from "node:test";
 import { BOOTSTRAP_ADMIN } from "../src/accounts.js";
 import { applyGuestSetup, guestSetupForCwd, type Config } from "../src/config.js";
 import type { Group } from "../src/groups.js";
-import { guestEnableRefusal, guestGroupChoices, withInstanceMember } from "../src/tg-guests.js";
+import { guestEnableRefusal, guestGroupChoices, guestPatchFlow, withInstanceMember } from "../src/tg-guests.js";
 
 const CWD = "/srv/one";
 const group = (over: Partial<Group> & Pick<Group, "id" | "nature">): Group => ({
@@ -108,4 +108,69 @@ test("guest setup: a malformed stored row reads as OFF rather than throwing", ()
   // The file is hand-editable; a half-written row must never open the door.
   const cfg = { telegramGuests: { [CWD]: { on: true, group: 42, profile: null } } } as unknown as Config;
   assert.deepEqual(guestSetupForCwd(cfg, CWD), { on: false, group: null, profile: null });
+});
+
+// ── guestPatchFlow: the whole PUT decision, transport-free ────────────────
+// Same shape as createGroupFlow/groupsPutFlow: the route is a thin mapper, so
+// the behaviour is unit-tested with no server (server.ts is un-importable).
+
+const flow = (over: Partial<Parameters<typeof guestPatchFlow>[0]> = {}) =>
+  guestPatchFlow({
+    mode: "multi-tenant",
+    previous: { on: false, group: null, profile: null },
+    want: { on: true, group: "g1", profile: "Support" },
+    groups: GROUPS,
+    profileExists: (n) => n === "Support" || n === "Other",
+    ...over,
+  });
+
+test("guestPatchFlow: enabling writes the setup and puts the instance in the group", () => {
+  const r = flow();
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.setup, { on: true, group: "g1", profile: "Support" });
+  assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada", BOOTSTRAP_ADMIN]);
+});
+
+test("guestPatchFlow: disabling takes the instance back out", () => {
+  const r = flow({
+    previous: { on: true, group: "g1", profile: "Support" },
+    want: { on: false, group: "g1", profile: "Support" },
+    groups: withInstanceMember(GROUPS, "g1", true),
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada"]);
+  // The group and the profile survive the switch-off: re-enabling needs no retyping.
+  assert.deepEqual(r.setup, { on: false, group: "g1", profile: "Support" });
+});
+
+test("guestPatchFlow: changing group MOVES the membership, leaving none behind", () => {
+  const second = group({ id: "g2", nature: "restricted", name: "Clients", members: ["ada"], osUser: "sk-g2" });
+  const r = flow({
+    previous: { on: true, group: "g1", profile: "Support" },
+    want: { on: true, group: "g2", profile: "Support" },
+    groups: withInstanceMember([...GROUPS, second], "g1", true),
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada"]);
+  assert.deepEqual(r.groups.find((g) => g.id === "g2")!.members, ["ada", BOOTSTRAP_ADMIN]);
+});
+
+test("guestPatchFlow: a refused patch is a 400 that writes NOTHING", () => {
+  const r = flow({ want: { on: true, group: "main", profile: "Support" } });
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.equal(r.status, 400);
+  assert.match(r.error, /restricted/);
+  assert.ok(!("groups" in r), "a refusal carries no group list to save");
+});
+
+test("guestPatchFlow: whitespace is trimmed, and a blank profile cannot enable", () => {
+  const r = flow({ want: { on: true, group: " g1 ", profile: " Support " } });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.setup, { on: true, group: "g1", profile: "Support" });
+  assert.equal(flow({ want: { on: true, group: "g1", profile: " " } }).ok, false);
 });

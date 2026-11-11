@@ -148,6 +148,7 @@ import {
 } from "./telegram.js";
 import { transcribe, audioClipExtension } from "./whisper.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
+import { guestGroupChoices, guestPatchFlow, type GuestSetup } from "./tg-guests.js";
 import { migrateTgBindings } from "./channels.js";
 import {
   RoomStore,
@@ -348,6 +349,8 @@ import {
   backendForCwd,
   setBackendForCwd,
   type TelegramPatch,
+  guestSetupForCwd,
+  setGuestSetupForCwd,
 } from "./config.js";
 import {
   secretsFor,
@@ -6744,11 +6747,19 @@ app.delete("/profiles", (req, res) => {
 });
 
 /** Build the /telegram state view (token is never included). */
-async function telegramState() {
+async function telegramState(viewer: Viewer | null = null) {
   const tc = telegramConfig(loadConfig(), process.cwd());
   const probe = await probeToken(tc.token);
   const groupId = loadTgGroup();
+  // The open-DM setup, plus the groups a picker may offer. The CHOICES are
+  // per-caller (`guestGroupChoices` asks `viewerInGroup`), which is where the
+  // "may I put strangers here?" authorisation lives — a group the caller does
+  // not belong to is never in the list.
+  const guests = guestSetupForCwd(loadConfig(), process.cwd());
+  const guestGroups = guestGroupChoices(loadGroups(), viewer).map((g) => ({ id: g.id, name: g.name }));
   return {
+    guests,
+    guestGroups,
     hasToken: Boolean(tc.token),
     enabled: tc.enabled,
     running: tgBridge.running(),
@@ -6770,7 +6781,7 @@ async function telegramState() {
 // PUT keeps the write-side CSRF guard.
 app.get("/telegram", async (req, res) => {
   if (!accountAdmin(req, res, false, "view or change the Telegram configuration")) return;
-  res.json(await telegramState());
+  res.json(await telegramState(viewerFor(currentAccount(req))));
 });
 app.put("/telegram", async (req, res) => {
   if (!accountAdmin(req, res, true, "view or change the Telegram configuration")) return;
@@ -6796,13 +6807,42 @@ app.put("/telegram", async (req, res) => {
     saveTgOperators([]);
   }
 
+  // Open DMs (src/tg-guests.ts): the switch, the restricted group guests' agents
+  // live in, and the profile they run on. The whole decision is the pure
+  // `guestPatchFlow` — a refusal carries no group list, so it cannot half-write.
+  // Enabling also writes the INSTANCE into that group's members: the bridge
+  // drives as the bootstrap admin, and every group question goes through
+  // `memberOf`, so without it the spawn would be accepted and every message
+  // afterwards refused.
+  let guestsChanged = false;
+  if (b.guests && typeof b.guests === "object") {
+    const want: GuestSetup = {
+      on: (b.guests as Record<string, unknown>).on === true,
+      group: typeof (b.guests as Record<string, unknown>).group === "string" ? String((b.guests as Record<string, unknown>).group) : null,
+      profile: typeof (b.guests as Record<string, unknown>).profile === "string" ? String((b.guests as Record<string, unknown>).profile) : null,
+    };
+    const flow = guestPatchFlow({
+      mode: DEPLOYMENT_MODE,
+      previous: guestSetupForCwd(loadConfig(), cwd),
+      want,
+      groups: loadGroups(),
+      profileExists: (n) => !!getProfile(n),
+    });
+    if (!flow.ok) return res.status(flow.status).json({ error: flow.error });
+    saveGroups(flow.groups);
+    setGuestSetupForCwd(loadConfig(), cwd, flow.setup);
+    guestsChanged = true;
+  }
+
   const hasConfigChange =
     patch.token !== undefined || patch.enabled !== undefined || patch.allowedChats !== undefined;
   if (hasConfigChange) {
     saveConfig(applyTelegramPatch(loadConfig(), cwd, patch, tc.envOverride));
-    restartTelegram();
   }
-  res.json(await telegramState());
+  // The bridge reads the guest setup at start, so a guests change restarts it
+  // too — otherwise the panel would save a door the running bridge never opens.
+  if (hasConfigChange || guestsChanged) restartTelegram();
+  res.json(await telegramState(viewerFor(currentAccount(req))));
 });
 
 // Pairing code for the bot (`src/tg-pairing.ts`): binding the board group or

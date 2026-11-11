@@ -103,3 +103,47 @@ export function withInstanceMember(groups: readonly Group[], groupId: string, me
     };
   });
 }
+
+/** Pure: a setup with its strings trimmed, `on` only ever true with both
+ *  halves present — the two fields are solidary, so a switch alone is never a
+ *  door to nowhere. */
+export function normalizeGuestSetup(want: GuestSetup): GuestSetup {
+  const group = want.group?.trim() || null;
+  const profile = want.profile?.trim() || null;
+  return { on: want.on === true && !!group && !!profile, group, profile };
+}
+
+/**
+ * The whole `PUT /telegram` guest decision, transport-free — the twin of
+ * `createGroupFlow`/`groupsPutFlow`, so the route is a thin mapper and the
+ * behaviour is unit-tested with no server.
+ *
+ * A refusal carries no group list at all, so a refused patch cannot possibly
+ * write one (invariant 6's family: never persist a half-decided state).
+ *
+ * The membership is MOVED rather than merely added: a change of group must take
+ * the instance out of the old one, or an abandoned group would keep a member
+ * that outlives the reason it was put there.
+ */
+export function guestPatchFlow(input: {
+  mode: DeploymentMode;
+  previous: GuestSetup;
+  want: GuestSetup;
+  groups: readonly Group[];
+  profileExists: (name: string) => boolean;
+}): { ok: false; status: number; error: string } | { ok: true; setup: GuestSetup; groups: Group[] } {
+  const want = normalizeGuestSetup(input.want);
+  const error = guestEnableRefusal({
+    mode: input.mode,
+    want: input.want,
+    groups: input.groups,
+    profileExists: input.profileExists,
+  });
+  if (error) return { ok: false, status: 400, error };
+  let groups = [...input.groups];
+  const old = input.previous.group?.trim() || null;
+  if (input.previous.on && old && old !== want.group) groups = withInstanceMember(groups, old, false);
+  if (want.on && want.group) groups = withInstanceMember(groups, want.group, true);
+  else if (old) groups = withInstanceMember(groups, old, false);
+  return { ok: true, setup: want, groups };
+}
