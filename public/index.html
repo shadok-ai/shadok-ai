@@ -2998,11 +2998,11 @@
   #chanBar .gauge .label { display: none; }
   #chanBar .gauge .value { color: var(--text-dim); font-size: 12px; }
   #chanBar .gauge:nth-of-type(3) { display: none; } /* the session id: in the tooltip of the menu */
-  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanTerm, #chanBar .chan-actions #chanInfo {
+  #chanBar .chan-actions #chanGallery, #chanBar .chan-actions #chanCron, #chanBar .chan-actions #chanWebhooks, #chanBar .chan-actions #chanTerm, #chanBar .chan-actions #chanInfo {
     position: relative; align-self: stretch; display: inline-flex; align-items: center; gap: 6px;
     border: 0; border-radius: 0; background: none; padding: 0 10px; color: var(--text-dim); font-size: 14px;
   }
-  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanTerm:hover, #chanBar .chan-actions #chanInfo:hover { color: var(--text); background: none; }
+  #chanBar .chan-actions #chanGallery:hover, #chanBar .chan-actions #chanCron:hover, #chanBar .chan-actions #chanWebhooks:hover, #chanBar .chan-actions #chanTerm:hover, #chanBar .chan-actions #chanInfo:hover { color: var(--text); background: none; }
   #chanBar .chan-actions #chanInfo.on { color: var(--amber); }
   #chanBar .chan-actions #chanTerm.on { color: var(--text); font-weight: 600; background: none; border: 0; }
   #chanBar .chan-actions #chanTerm.on::after {
@@ -3317,7 +3317,7 @@
   /* A room's chat has none of an agent's machinery. */
   body.room-active #dirGauge, body.room-active #branchGauge,
   body.room-active #chanBar .gauge:has(#sessionView),
-  body.room-active #chanGallery, body.room-active #chanCron, body.room-active #chanInfo,
+  body.room-active #chanGallery, body.room-active #chanCron, body.room-active #chanWebhooks, body.room-active #chanInfo,
   body.room-active #chanTerm, body.room-active #chanUpdate, body.room-active #skillBtn { display: none !important; }
 </style>
 <!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
@@ -3671,7 +3671,25 @@
           </span>
         </div>
       </form>
-      <h3 class="hook-title">⚡ Webhooks</h3>
+    </div>
+    <div class="modal-foot">
+      <span class="foot-note" id="cronTzNote"></span>
+      <span class="foot-note" id="cronErr" style="color:#ff9a9a"></span>
+      <button type="button" id="cronCancelEdit" hidden>Cancel</button>
+      <button type="submit" form="cronAdd" class="primary" id="cronSubmit">Add schedule</button>
+    </div>
+  </div>
+</div>
+
+<!-- Webhooks: the event-driven twin of the Schedule popin — an outside HTTP
+     call wakes this agent. Its own entry (⚡ in the header) and its own popin. -->
+<div id="webhookOverlay" class="overlay" hidden>
+  <div id="webhookPanel" class="sec-panel modal">
+    <div class="sec-head">
+      <strong>⚡ Webhooks — <span class="obj" id="hookChanName">this agent</span></strong>
+      <button id="hookClose" title="Close">✕</button>
+    </div>
+    <div class="modal-body">
       <p class="sec-note">Let an outside system (CI, a form, a monitoring tool…) wake this agent with an HTTP <code>POST</code>. The request body is handed to the agent as untrusted data, after your prompt. Each webhook has its own secret token, shown only once.</p>
       <ul id="hookList"></ul>
       <div id="hookReveal" class="hook-reveal" hidden></div>
@@ -3689,12 +3707,6 @@
           <button type="submit" id="hookSubmit">Add webhook</button>
         </div>
       </form>
-    </div>
-    <div class="modal-foot">
-      <span class="foot-note" id="cronTzNote"></span>
-      <span class="foot-note" id="cronErr" style="color:#ff9a9a"></span>
-      <button type="button" id="cronCancelEdit" hidden>Cancel</button>
-      <button type="submit" form="cronAdd" class="primary" id="cronSubmit">Add schedule</button>
     </div>
   </div>
 </div>
@@ -4330,6 +4342,8 @@
         <button id="chanUpdate" class="icon" title="Claude Code updated — reload this agent to apply it" aria-label="Reload to apply update" hidden>↻ update</button>
         <button id="chanGallery" class="icon" title="Media gallery — every photo and video in this conversation" aria-label="Media gallery"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="8.5" cy="9.5" r="1.4" fill="currentColor"/><path d="M5 17l4.5-4.5 3 3 2.5-2.5L19 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <button id="chanCron" class="icon" title="Scheduled prompts for this agent (monitoring / reporting)" aria-label="Schedule"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="12" cy="13" r="6.3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 9.8V13l2.2 1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.8 6.6 7.2 4.6M19.2 6.6 16.8 4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <!-- Webhooks: wake this agent from outside with an HTTP call (its own popin). -->
+        <button id="chanWebhooks" class="icon" title="Webhooks — wake this agent from outside with an HTTP call" aria-label="Webhooks"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M13 2.5 5.5 13.5H11l-1 8L18.5 10H13z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg></button>
         <!-- About this agent: its environment, the skills it uses, its schedules. -->
         <button id="chanInfo" class="icon" title="About this agent — skills it uses, schedules" aria-label="About this agent" aria-pressed="false"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M14.5 4v16M17 8.5h0M17 12h0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M6.5 9h5M6.5 12.5h5M6.5 16h3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
         <!-- No end-session icon here: "✕ Close agent" lives in the ⋯ menu below. -->
@@ -5869,6 +5883,8 @@
     // Scheduled prompts (crons) for this agent — the panel targets the active
     // channel, so switch to it first (this menu can be opened on any tab).
     if (tab.sessionId) items.push(["⏰ Schedule…", () => { activate(tab); $("cronOverlay").hidden = false; renderCrons(); }]);
+    // Webhooks — the event-driven twin, in its own popin.
+    if (tab.sessionId) items.push(["⚡ Webhooks…", () => { activate(tab); openWebhooks(); }]);
     // The Telegram mirror. The label states the action AND its cost: turning it
     // off deletes the topic, hence the conversation on the phone — so we confirm.
     // The main channel (the General) is the board's home base: not un-mirrorable.
@@ -8203,6 +8219,7 @@
       // Scheduling has no target: better a dimmed button than a popin talking
       // about an agent that does not exist.
       $("chanCron").disabled = true;
+      $("chanWebhooks").disabled = true;
       $("chanGallery").disabled = true;
       $("chanInfo").disabled = true;
       closeGallery(); // no agent → its media grid is stale; don't leave it up
@@ -8227,6 +8244,7 @@
     promptInput.dataset.agentPlaceholder ??= promptInput.placeholder;
     promptInput.placeholder = t.roomId ? "Write a message to the room" : promptInput.dataset.agentPlaceholder;
     $("chanCron").disabled = !t.sessionId;
+    $("chanWebhooks").disabled = !t.sessionId;
     $("chanGallery").disabled = !t.sessionId;
     $("chanInfo").disabled = !t.sessionId;
     paintChanUpdate();
@@ -12200,6 +12218,18 @@
   });
   $("chanUpdate").addEventListener("click", () => { if (active) handleClaudeUpdate(active); });
   $("chanCron").addEventListener("click", () => { $("cronOverlay").hidden = false; renderCrons(); });
+  // Webhooks live in their own popin (⚡ in the header), the event-driven twin of
+  // the Schedule one. Opening it resets the one-shot token reveal and renders.
+  function openWebhooks() {
+    $("webhookOverlay").hidden = false;
+    $("hookChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
+    $("hookErr").textContent = "";
+    $("hookReveal").hidden = true; $("hookReveal").replaceChildren();
+    renderHooks();
+  }
+  $("chanWebhooks").addEventListener("click", openWebhooks);
+  $("hookClose").addEventListener("click", () => { $("webhookOverlay").hidden = true; });
+  $("webhookOverlay").addEventListener("click", (e) => { if (e.target === $("webhookOverlay")) $("webhookOverlay").hidden = true; });
   // Ending an agent lives only in the ⋯ menu ("✕ Close agent") — no bar icon.
   // The per-agent menu, opened from the channel header — the same one a
   // right-click / long-press on a tab shows. stopPropagation so the document
@@ -12449,6 +12479,7 @@
     if (!$("groupCreateOverlay").hidden) { closeGroupCreate(); e.preventDefault(); return; }
     if (!$("setupOverlay").hidden) { closeSetup(); e.preventDefault(); return; }
     if (!$("cronOverlay").hidden) { $("cronOverlay").hidden = true; e.preventDefault(); return; }
+    if (!$("webhookOverlay").hidden) { $("webhookOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("statsOverlay").hidden) { $("statsOverlay").hidden = true; e.preventDefault(); return; }
     if (!$("telegramOverlay").hidden) { $("telegramOverlay").hidden = true; e.preventDefault(); return; }
     // Only a voluntary (dismissable) re-login card; the signed-out funnel ignores Escape.
@@ -14654,8 +14685,6 @@
     const ul = $("cronList"); ul.innerHTML = "";
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
-    $("hookReveal").hidden = true; $("hookReveal").replaceChildren();
-    renderHooks();
     if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
     const sid = active.sessionId;
     // The skills each schedule uses, so a cron that runs a factory skill links
