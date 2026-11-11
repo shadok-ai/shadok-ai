@@ -81,10 +81,9 @@ Enter to skip; you can add it later from the web UI).
   room** under the agents; an admin can mirror one into a Telegram topic, and a
   message there lands in the room (commands answer that there is no agent
   here). Closing a room archives it: it leaves the list for everyone and its
-  messages stay on disk. The column tells the three kinds apart at a glance —
+  messages stay on disk. The column tells them apart at a glance —
   an **agent** is a round avatar with initials, a **room** a square slate tile
-  with a speech bubble (and no presence dot), and an agent with **scheduled
-  prompts** wears a clock on its avatar.
+  with a speech bubble (and no presence dot).
 - **Groups** — on a desktop the groups live in their own **left column**: pick
   one to narrow the agents pane to it, and the global tools (Profiles, Ledger,
   Secrets, Users, Security, Telegram, Sound) stay in the header at the top. Each
