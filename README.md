@@ -204,8 +204,8 @@ Enter to skip; you can add it later from the web UI).
   they can drive).
 - **Webhooks** — let an outside system (CI, a form, a monitoring tool, Zapier…)
   wake an agent with an HTTP call, the event-driven twin of a schedule. Create
-  one in the agent's **⏰ Schedule** popin (name + the prompt to run); you get a
-  URL and a secret token, shown **once**:
+  one in the agent's **⚡ Webhooks** popin (the ⚡ icon in its bar, beside ⏰;
+  name + the prompt to run); you get a URL and a secret token, shown **once**:
 
   ```bash
   curl -X POST https://<your-cockpit>/hooks/<id> \
