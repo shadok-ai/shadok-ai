@@ -189,6 +189,21 @@ test("dmGate: with open DMs, a stranger is a GUEST instead of being refused", ()
   assert.equal(dmGate(4242, 9999, true), "guest");
   // The owner is still the owner — they do not become one guest among many.
   assert.equal(dmGate(4242, 4242, true), "allow");
+  // Unowned, `pair` still wins: a code remains the only way to claim the bot.
+  assert.equal(dmGate(null, 9999, true), "pair");
+});
+
+test("dmGate: in DM-only mode nobody pairs and nobody owns the bot", () => {
+  // A stored owner from before the switch is IGNORED, their own DM included: a
+  // mode's guarantee must not depend on the instance's history.
+  assert.equal(dmGate(4242, 4242, true, true), "guest");
+  assert.equal(dmGate(4242, 9999, true, true), "guest");
+  // And with no owner there is nothing to pair — the first message is an agent,
+  // not a code prompt. That is the whole point of the mode.
+  assert.equal(dmGate(null, 9999, true, true), "guest");
+  // Fail-closed: a mode that opens no door refuses rather than letting anyone in.
+  assert.equal(dmGate(null, 9999, false, true), "deny");
+  assert.equal(dmGate(4242, undefined, true, true), "deny");
 });
 
 test("dmGate: open DMs never hand over OWNERSHIP, and never answer a sender with no id", () => {

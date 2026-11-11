@@ -2067,3 +2067,26 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     the shape of their data. The compiler has nothing to say about either. And
     an exemption ("this one is not refused") is not a decision about what
     HAPPENS next: follow the message to the end of the function it falls into.
+
+<a id="inv-70"></a>
+
+66. **A mode that changes the rules must also DISOWN the state the old rules
+    created — or its guarantee depends on when the instance was set up.** The
+    Telegram panel's mode (`TgMode`, `src/tg-guests.ts`) has a `dm-only` answer
+    whose whole promise is "no board, no pairing, no owner". Written as a gate on
+    the NEW decisions only — refuse `/setup`, refuse a fresh binding — it would
+    have left two pieces of yesterday's state in force, both of them files that
+    outlive any restart: the board group in `…-telegram-group.json` would have
+    kept driving agents from its topics, and the owner in
+    `…-telegram-owner.json` would have kept a privileged DM with every command
+    in it. An instance that was once classic would then behave differently from
+    one born `dm-only`, with the same configuration on screen and nothing
+    anywhere to say why. So the group refusal sits ABOVE the board logic in
+    `handleMessage` (which is also what prevents `/setup` there — binding a
+    board and becoming an operator both live below that line), `dmGate` ignores
+    a stored owner outright, and `adoptOwnerFromBindings` stops adopting.
+    The rule generalises to any new switch: for every piece of state the old
+    mode could have written, say what the new mode does with it. And prefer
+    IGNORING it to clearing it — ignoring is reversible, so coming back to the
+    old mode restores what was there, while a clear turns a mis-click into lost
+    pairing.

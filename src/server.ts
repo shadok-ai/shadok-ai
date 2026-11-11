@@ -149,7 +149,14 @@ import {
 } from "./telegram.js";
 import { transcribe, audioClipExtension } from "./whisper.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
-import { GUEST_SETUP_OFF, guestGroupChoices, guestPatchFlow, guestSpawnPlan, type GuestSetup } from "./tg-guests.js";
+import {
+  GUEST_SETUP_OFF,
+  guestGroupChoices,
+  guestPatchFlow,
+  guestSpawnPlan,
+  normalizeTgMode,
+  type GuestSetup,
+} from "./tg-guests.js";
 import { migrateTgBindings } from "./channels.js";
 import {
   RoomStore,
@@ -6761,8 +6768,8 @@ async function telegramState(viewer: Viewer | null = null) {
   return {
     guests,
     guestGroups,
-    // Whether the bot's DMs have an owner: a prerequisite for open DMs, and the
-    // panel must be able to say so instead of letting the save fail.
+    // Whether the bot's DMs have an owner: a prerequisite for `group+dm`, and
+    // the panel must be able to say so instead of letting the save fail.
     dmOwned: loadTgOwner() !== null,
     hasToken: Boolean(tc.token),
     enabled: tc.enabled,
@@ -6820,10 +6827,14 @@ app.put("/telegram", async (req, res) => {
   // afterwards refused.
   let guestsChanged = false;
   if (b.guests && typeof b.guests === "object") {
+    const g = b.guests as Record<string, unknown>;
     const want: GuestSetup = {
-      on: (b.guests as Record<string, unknown>).on === true,
-      group: typeof (b.guests as Record<string, unknown>).group === "string" ? String((b.guests as Record<string, unknown>).group) : null,
-      profile: typeof (b.guests as Record<string, unknown>).profile === "string" ? String((b.guests as Record<string, unknown>).profile) : null,
+      // Anything the body does not spell as one of the three modes is the
+      // classic one: the panel sends the mode it painted, and a hand-made
+      // request must never open a door by omitting a field.
+      mode: normalizeTgMode(g.mode),
+      group: typeof g.group === "string" ? String(g.group) : null,
+      profile: typeof g.profile === "string" ? String(g.profile) : null,
     };
     const flow = guestPatchFlow({
       mode: DEPLOYMENT_MODE,
@@ -6831,9 +6842,9 @@ app.put("/telegram", async (req, res) => {
       want,
       groups: loadGroups(),
       profileExists: (n) => !!getProfile(n),
-      // `dmGate` answers `pair` while the bot has no owner, so guests cannot be
-      // recognised before the DMs are paired — enabling first would save a door
-      // that cannot open.
+      // `dmGate` answers `pair` while the bot has no owner, so `group+dm`
+      // cannot be saved before the DMs are paired — it would be a door that
+      // cannot open. `dm-only` has no owner at all and is exempt.
       hasOwner: loadTgOwner() !== null,
     });
     if (!flow.ok) return res.status(flow.status).json({ error: flow.error });

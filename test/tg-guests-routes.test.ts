@@ -26,6 +26,9 @@ test("PUT /telegram: the group and profile are never read from the body beyond t
   const r = route('app.put("/telegram",');
   // The body feeds `want`, which the flow validates; nothing else may reach a
   // spawn. The frame path is covered in test/tg-guests.test.ts.
+  // An unspelled mode is the CLASSIC one: a hand-made request must never open a
+  // door by omitting a field.
+  assert.match(r, /mode: normalizeTgMode\(g\.mode\)/);
   assert.match(r, /previous: guestSetupForCwd\(loadConfig\(\), cwd\)/);
   assert.match(r, /profileExists: \(n\) => !!getProfile\(n\)/);
   assert.match(r, /mode: DEPLOYMENT_MODE/);
@@ -100,14 +103,43 @@ test("telegram: a guest's command is refused ABOVE the operator allowlist", () =
   assert.match(TG.slice(i, j), /deleteMessage/);
 });
 
-test("telegram: the DM callback gate asks guestCallbackAllowed, with the open-DM switch", () => {
-  assert.match(TG, /guestCallbackAllowed\(dmGate\(loadTgOwner\(\), cq\.from\?\.id, guestsOn\), msg\.chat\?\.id, cq\.from\?\.id\)/);
+test("telegram: the DM callback gate asks guestCallbackAllowed, with the mode", () => {
+  assert.match(
+    TG,
+    /guestCallbackAllowed\(dmGate\(loadTgOwner\(\), cq\.from\?\.id, guestsOn, dmOnlyMode\), msg\.chat\?\.id, cq\.from\?\.id\)/,
+  );
 });
 
 test("telegram: a guest's DM is recognised by DERIVING it, not by storing a flag", () => {
   assert.match(TG, /const isGuestChat = \(chatId: number, threadId\?: number\) =>/);
-  assert.match(TG, /guestsOn && threadId == null && chatId > 0 && chatId !== loadTgOwner\(\)/);
+  // In DM-only mode there is no owner to except — the operator's own DM included.
+  assert.match(TG, /guestsOn && threadId == null && chatId > 0 && \(dmOnlyMode \|\| chatId !== loadTgOwner\(\)\)/);
   assert.match(TG, /guest: isGuestChat\(chatId, threadId\)/);
+});
+
+test("telegram: the mode is read ONCE at start, like the rest of the config", () => {
+  // The panel restarts the bridge when it changes, so a read per message would
+  // buy nothing and a stale copy is impossible.
+  assert.match(TG, /const tgSetup = guestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\);/);
+  assert.match(TG, /const guestsOn = guestsOpen\(tgSetup\);/);
+  assert.match(TG, /const dmOnlyMode = dmOnly\(tgSetup\);/);
+});
+
+test("telegram: DM-only turns a group away ABOVE the board logic, /setup included", () => {
+  // A group bound BEFORE the switch must stop working too, or the mode's
+  // guarantee would depend on when the instance was set up. Binding a board and
+  // becoming an operator both live below that line.
+  const i = TG.indexOf("const groupClosed = groupChatRefusal(tgSetup);");
+  assert.ok(i >= 0, "the group refusal is missing");
+  const board = TG.indexOf("// One board per instance: a group must be the bound group.");
+  assert.ok(board > i, "the refusal must come before the board logic");
+  assert.match(TG.slice(i, board), /if \(isGroup && groupClosed\)/);
+  // A click in a group is gated the same way: no board means nothing to click in.
+  assert.match(TG, /callbackChatAllowed\(msg\.chat, allowed, dmOnlyMode \? null : loadTgGroup\(\)\)/);
+});
+
+test("telegram: DM-only adopts no owner — the mode says the bot has none", () => {
+  assert.match(TG, /if \(dmOnlyMode \|\| loadTgOwner\(\) !== null\) return;/);
 });
 
 test("telegram: every line the bridge authors ABOUT ITSELF goes through sendOps", () => {
@@ -151,13 +183,32 @@ test("telegram: the owner is never adopted from a guest's DM, and a guest keeps 
 // ── the panel ─────────────────────────────────────────────────────────────
 const HTML = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
-test("panel: the open-DM field exists, with its two solidary pickers", () => {
-  for (const id of ["tgGuestsField", "tgGuestsOn", "tgGuestGroup", "tgGuestProfile", "tgGuestsNote"]) {
+test("panel: the mode picker exists, with its two solidary group/profile pickers", () => {
+  for (const id of ["tgGuestsField", "tgMode", "tgGuestGroup", "tgGuestProfile", "tgGuestsNote"]) {
     assert.ok(HTML.includes(`id="${id}"`), id);
   }
+  // The three modes, and the classic one FIRST — it is the default, and the
+  // only one that changes nothing about an existing instance.
+  const i = HTML.indexOf('id="tgMode"');
+  const field = HTML.slice(i, HTML.indexOf("</select>", i));
+  assert.match(field, /<option value="group">/);
+  assert.match(field, /<option value="group\+dm">/);
+  assert.match(field, /<option value="dm-only">/);
+  assert.ok(field.indexOf('"group"') < field.indexOf('"group+dm"'), "the classic mode comes first");
   // Wired through addEventListener, never an inline handler (invariant 12).
-  assert.match(HTML, /for \(const id of \["tgGuestsOn", "tgGuestGroup", "tgGuestProfile"\]\)/);
-  assert.doesNotMatch(HTML.slice(HTML.indexOf('id="tgGuestsField"'), HTML.indexOf('id="tgGuestsField"') + 900), /onchange=|onclick=/);
+  assert.match(HTML, /for \(const id of \["tgMode", "tgGuestGroup", "tgGuestProfile"\]\)/);
+  assert.doesNotMatch(HTML.slice(HTML.indexOf('id="tgGuestsField"'), HTML.indexOf('id="tgGuestsField"') + 1200), /onchange=|onclick=/);
+});
+
+test("panel: a DM-only instance is never told to bind a group it cannot have", () => {
+  // The status line, the pairing button and the guide all presented the board
+  // group as a step everyone owes — on this mode it is refused on purpose.
+  const i = HTML.indexOf("const dmOnlyMode = (s.guests && s.guests.mode) === \"dm-only\";");
+  assert.ok(i >= 0, "renderTelegram does not know the mode");
+  const body = HTML.slice(i, i + 1400);
+  assert.match(body, /private messages only/);
+  assert.match(body, /\$\("tgPair"\)\.hidden = dmOnlyMode;/);
+  assert.match(body, /!\(s\.hasToken && \(s\.boundGroup \|\| dmOnlyMode\)\)/);
 });
 
 test("panel: a refused save re-reads the server's state, so the box cannot lie", () => {
@@ -169,18 +220,25 @@ test("panel: a refused save re-reads the server's state, so the box cannot lie",
   assert.match(body, /if \(!r\.ok\) alert/);
 });
 
-test("panel: both prerequisites are stated, not discovered through a failed save", () => {
-  assert.match(HTML, /\$\("tgGuestsOn"\)\.disabled = !groups\.length \|\| !s\.dmOwned;/);
+test("panel: each prerequisite is stated on the option it blocks, not discovered by saving", () => {
+  // An open mode needs a restricted group; `group+dm` also needs the DMs
+  // paired, and `dm-only` is exempt because it removes the owner altogether.
+  assert.match(
+    HTML,
+    /o\.disabled = \(o\.value !== "group" && !groups\.length\) \|\| \(o\.value === "group\+dm" && !s\.dmOwned\);/,
+  );
   const i = HTML.indexOf('$("tgGuestsNote").textContent');
-  const note = HTML.slice(i, i + 900);
+  const note = HTML.slice(i, i + 1600);
   assert.match(note, /Pair the bot's private messages first/);
-  assert.match(note, /asked for a code instead of getting an agent/);
+  // …and the way out of that prerequisite is named, not left to be guessed.
+  assert.match(note, /nobody pairs at all/);
+  assert.match(note, /refused everywhere/);
 });
 
 test("panel: the note says what the group buys, and never claims a wall it has not", () => {
-  const i = HTML.indexOf('$("tgGuestsNote").textContent');
+  const i = HTML.indexOf("const WALL =");
   assert.ok(i >= 0);
-  const note = HTML.slice(i, i + 700);
+  const note = HTML.slice(i, i + 1600);
   assert.match(note, /own Unix user/);
   // Its members CAN read those conversations — said, not glossed (invariant 47).
   assert.match(note, /can read them/);

@@ -303,11 +303,22 @@ Enter to skip; you can add it later from the web UI).
   the audio was left unheard — ask and the agent can listen. Telegram caps what
   a bot may download at 20 MB; past that you get a clear notice instead of
   silence.
+- **Choose where the bot works** (admin, Telegram panel) — **Where the bot
+  works** has three answers. **Board group** is the default and leaves
+  everything as it was: a group you pair with `/setup <code>`, one topic per
+  agent, and private messages that belong to you alone. **Board group + open
+  DMs** adds the door below to it. **Open DMs only** removes the group
+  entirely: a group that adds the bot is told it only works in private,
+  `/setup` is refused everywhere, nobody pairs — and your own private chat with
+  the bot becomes one guest conversation among the others, with no commands.
+  Updating changes nothing on its own: an instance that never touched this
+  reads as **Board group**.
 - **Open the bot to other people** (admin, Telegram panel, privileged
   deployment only) — normally the bot's private messages belong to you alone and
-  anyone else is told it is private. Pair the bot's DMs
-  first (**Pair Telegram**, then `/setup <code>` in a private chat with it — you
-  do NOT need a board group), then tick **Open DMs** and pick a **restricted
+  anyone else is told it is private. Pick **Board group + open DMs** (pair the
+  bot's DMs first — **Pair Telegram**, then `/setup <code>` in a private chat
+  with it; you do NOT need a board group) or **Open DMs only** (no pairing at
+  all), then a **restricted
   group** and a **profile**: anyone who writes to the bot then gets their own
   agent instead, on that profile, inside that group, and always the same agent
   for the same person. The profile is what decides the job — support, a front
@@ -323,8 +334,8 @@ Enter to skip; you can add it later from the web UI).
   They can talk and answer their agent's questions, and nothing else: no
   command reaches the bot. Two things worth knowing before you open it — every
   conversation is a real agent that stays resident, and they all draw on **your**
-  Claude subscription, so there is no cap and no queue by design. Untick it and
-  every such conversation is closed at once.
+  Claude subscription, so there is no cap and no queue by design. Go back to
+  **Board group** and every such conversation is closed at once.
 - **Link to a message** — every message (yours and the agent's) has a 🔗 link
   button beside copy. It copies a URL like `…/#agent=<session>&msg=<id>`;
   whoever opens it — someone who already has access to this cockpit, after the

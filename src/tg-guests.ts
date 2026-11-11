@@ -17,22 +17,79 @@ import { type Group, type Viewer, viewerInGroup } from "./groups.js";
  * See docs/superpowers/specs/2026-11-11-telegram-open-dm-design.md.
  */
 
+/**
+ * WHERE this bot works. One choice, three answers, and everything else about
+ * open DMs follows from it:
+ *
+ * - `group` — the classic instance, and the default: a board group bound with
+ *   `/setup <code>`, one topic per agent, and private messages reserved for the
+ *   ONE owner who paired them. A stranger who writes is refused.
+ * - `group+dm` — the same board, plus the open door: a stranger gets their own
+ *   agent. The owner's DM keeps its commands, so the DMs must be paired first.
+ * - `dm-only` — there is no board at all. A group chat reaches nothing,
+ *   `/setup` is refused everywhere, nobody owns the bot's DMs, and every
+ *   private message is a guest's. It is the mode for an instance whose whole
+ *   job is DMs.
+ *
+ * Those last three consequences are one decision, deliberately: a mode that
+ * refused `/setup` but still honoured a group bound yesterday would be a
+ * guarantee that depends on the instance's history. So `dm-only` ignores a
+ * stored board AND a stored owner — including the operator's own DM, which
+ * becomes a guest's conversation like everyone else's.
+ */
+export type TgMode = "group" | "group+dm" | "dm-only";
+
+export const TG_MODES: readonly TgMode[] = ["group", "group+dm", "dm-only"];
+
+/** Anything unrecognised reads as `group` — the config file is hand-editable,
+ *  and the classic mode is the one that changes nothing. */
+export function normalizeTgMode(v: unknown): TgMode {
+  return TG_MODES.includes(v as TgMode) ? (v as TgMode) : "group";
+}
+
 /** What the Telegram panel stores for this launch directory. */
 export interface GuestSetup {
-  on: boolean;
+  mode: TgMode;
   /** Id of the RESTRICTED group guests' agents are born into. */
   group: string | null;
   /** Profile name every guest agent is spawned on — the job description. */
   profile: string | null;
 }
 
-export const GUEST_SETUP_OFF: GuestSetup = { on: false, group: null, profile: null };
+/** The classic instance: a board group, and DMs for their one owner. */
+export const GUEST_SETUP_OFF: GuestSetup = { mode: "group", group: null, profile: null };
+
+/**
+ * Does a stranger who writes to the bot get their own agent?
+ *
+ * The three fields are solidary: a mode that opens the door without a group and
+ * a profile to put the person in is a door to nowhere, so it reads as closed.
+ */
+export function guestsOpen(s: GuestSetup): boolean {
+  return normalizeTgMode(s.mode) !== "group" && !!s.group?.trim() && !!s.profile?.trim();
+}
+
+/** Is this the DM-only instance — no board, no `/setup`, no owner? */
+export function dmOnly(s: GuestSetup): boolean {
+  return normalizeTgMode(s.mode) === "dm-only" && guestsOpen(s);
+}
+
+/**
+ * What a GROUP chat is told on a DM-only instance, or null when groups are
+ * open.
+ *
+ * It names no command and no internals: for whoever added the bot to their
+ * group, "it only works in private" is the whole truth they can act on.
+ */
+export function groupChatRefusal(s: GuestSetup): string | null {
+  return dmOnly(s) ? "⛔ I only work in private messages — send me a direct message instead." : null;
+}
 
 /**
  * May this setup be saved? `null` = yes, else the reason, shown to the admin
  * as-is.
  *
- * Turning the option OFF is always allowed, deliberately: the way out must not
+ * Going back to `group` is always allowed, deliberately: the way out must not
  * be gated by the checks that guard the way in, or an operator who wants to
  * close their bot would first have to repair a group someone deleted.
  *
@@ -54,18 +111,23 @@ export function guestEnableRefusal(input: {
   hasOwner: boolean;
 }): string | null {
   const { want } = input;
-  if (!want.on) return null;
+  const wanted = normalizeTgMode(want.mode);
+  if (wanted === "group") return null;
   // A non-public group cannot even exist outside the privileged deployment, so
   // there is nothing here that could hold a guest.
   const capability = isolationRefusal(input.mode);
   if (capability) return capability;
-  // The bot's DMs must already have an OWNER. `dmGate` answers `pair` while
-  // there is none — a stranger then gets the pairing refusal, not an agent —
-  // and that ordering is deliberate: it is what stops the first person through
-  // an open door from claiming the bot. Without this check the panel would save
-  // a door that cannot open, and nothing anywhere would say so.
-  if (!input.hasOwner)
-    return "pair the bot's private messages first (Pair Telegram above): guests are only recognised once the bot has an owner";
+  // In `group+dm` the bot's DMs must already have an OWNER. `dmGate` answers
+  // `pair` while there is none — a stranger then gets the pairing refusal, not
+  // an agent — and that ordering is what stops the first person through an open
+  // door from claiming the bot. Without this check the panel would save a door
+  // that cannot open, and nothing anywhere would say so.
+  //
+  // `dm-only` is exempt because it removes the owner altogether: nobody pairs,
+  // so there is no claim left to lose. Requiring a pairing there would be the
+  // prerequisite that mode exists to delete.
+  if (wanted === "group+dm" && !input.hasOwner)
+    return "pair the bot's private messages first (Pair Telegram above), or choose “DMs only”: while the bot has an owner's DM to protect, guests are only recognised once it is paired";
   const groupId = want.group?.trim();
   if (!groupId) return "choose the group guests' agents live in";
   const profile = want.profile?.trim();
@@ -113,13 +175,21 @@ export function withInstanceMember(groups: readonly Group[], groupId: string, me
   });
 }
 
-/** Pure: a setup with its strings trimmed, `on` only ever true with both
- *  halves present — the two fields are solidary, so a switch alone is never a
- *  door to nowhere. */
+/**
+ * Pure: a setup with its strings trimmed, and a mode that opens the door only
+ * with both halves present — the three fields are solidary, so a mode alone is
+ * never a door to nowhere.
+ *
+ * A half-written open mode falls back to `group` rather than to a closed
+ * version of itself: `dm-only` with nowhere to put people would otherwise be an
+ * instance that answers neither a group nor a DM, i.e. a bot that silently does
+ * nothing. The classic mode is the one that always works.
+ */
 export function normalizeGuestSetup(want: GuestSetup): GuestSetup {
   const group = want.group?.trim() || null;
   const profile = want.profile?.trim() || null;
-  return { on: want.on === true && !!group && !!profile, group, profile };
+  const mode = normalizeTgMode(want.mode);
+  return { mode: mode !== "group" && (!group || !profile) ? "group" : mode, group, profile };
 }
 
 /**
@@ -153,8 +223,8 @@ export function guestPatchFlow(input: {
   if (error) return { ok: false, status: 400, error };
   let groups = [...input.groups];
   const old = input.previous.group?.trim() || null;
-  if (input.previous.on && old && old !== want.group) groups = withInstanceMember(groups, old, false);
-  if (want.on && want.group) groups = withInstanceMember(groups, want.group, true);
+  if (guestsOpen(input.previous) && old && old !== want.group) groups = withInstanceMember(groups, old, false);
+  if (guestsOpen(want) && want.group) groups = withInstanceMember(groups, want.group, true);
   else if (old) groups = withInstanceMember(groups, old, false);
   return { ok: true, setup: want, groups };
 }
@@ -190,7 +260,7 @@ export function guestSpawnPlan(input: {
 }): GuestSpawn {
   if (input.marker !== true || !input.fromBridge || input.resuming) return { kind: "not-a-guest" };
   const s = normalizeGuestSetup(input.setup);
-  if (!s.on || !s.group || !s.profile)
+  if (!guestsOpen(s) || !s.group || !s.profile)
     return { kind: "refused", code: "guest-closed", message: "this instance is not accepting guests" };
   return { kind: "guest", group: s.group, profile: s.profile };
 }

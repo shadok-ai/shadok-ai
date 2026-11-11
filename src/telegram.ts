@@ -49,11 +49,14 @@ import {
 } from "./crons.js";
 import { SHADOK_DIR, guestSetupForCwd, loadConfig, telegramConfig } from "./config.js";
 import {
+  dmOnly,
+  groupChatRefusal,
   guestCallbackAllowed,
   guestCommandCarriesSecret,
   guestCommandRefusal,
   guestNotice,
   guestOpeningPrompt,
+  guestsOpen,
   ownerAdoptionCandidate,
   type GuestNotice,
 } from "./tg-guests.js";
@@ -254,14 +257,25 @@ export function nextToolsState(arg: string, current: boolean): boolean {
  * refused before anything else: there is nothing to store as owner, and nothing
  * stable to key a guest's own agent on either.
  *
+ * `dmOnly` removes the owner from the question altogether (`TgMode`): nobody
+ * pairs, so a stored owner from before the switch is IGNORED rather than
+ * privileged — a mode's guarantee must not depend on the instance's history.
+ * With no door to put them through it still answers `deny`, fail-closed, even
+ * though the config cannot be saved in that state.
+ *
  * Pure — unit tested.
  */
 export function dmGate(
   owner: number | null,
   from: number | undefined,
   guestsOn = false,
+  // Named like the bridge's own flag rather than the `dmOnly()` predicate it
+  // comes from: this file imports that function, and shadowing it here would
+  // make the next reader look twice.
+  dmOnlyMode = false,
 ): "pair" | "allow" | "guest" | "deny" {
   if (typeof from !== "number") return "deny";
+  if (dmOnlyMode) return guestsOn ? "guest" : "deny";
   if (owner === null) return "pair";
   if (owner === from) return "allow";
   return guestsOn ? "guest" : "deny";
@@ -1287,21 +1301,27 @@ export function startTelegram(
   const token = cfg.token;
   const api = `https://api.telegram.org/bot${token}`;
   const allowed = cfg.allowedChats;
-  // Open DMs (src/tg-guests.ts). Read at start like the rest of the config: the
-  // panel restarts the bridge when it changes, so this cannot go stale. Only
-  // the SWITCH is read here — which group and which profile a guest's agent
-  // gets is resolved server-side at spawn, never carried from here.
-  const guestsOn = guestSetupForCwd(loadConfig(), process.cwd()).on;
+  // Where this bot works (`TgMode`, src/tg-guests.ts). Read at start like the
+  // rest of the config: the panel restarts the bridge when it changes, so this
+  // cannot go stale. Only the MODE is read here — which group and which profile
+  // a guest's agent gets is resolved server-side at spawn, never carried from
+  // here.
+  const tgSetup = guestSetupForCwd(loadConfig(), process.cwd());
+  const guestsOn = guestsOpen(tgSetup);
+  // DM-only: no board group, no `/setup`, and no owner at all (see `TgMode`).
+  const dmOnlyMode = dmOnly(tgSetup);
   /**
    * Is this chat a GUEST's DM? One definition, derived rather than stored, so a
    * bridge opened by a spawn, a resume or a boot reattach all agree — and so
    * nothing has to carry a flag through those three paths.
    *
    * A DM's chat id IS the sender's user id and is always positive; a group's is
-   * negative. So "a private chat that is not the owner's" is the whole rule.
+   * negative. So "a private chat that is not the owner's" is the whole rule —
+   * and in DM-only mode there is no owner to except, the operator's own DM
+   * included.
    */
   const isGuestChat = (chatId: number, threadId?: number) =>
-    guestsOn && threadId == null && chatId > 0 && chatId !== loadTgOwner();
+    guestsOn && threadId == null && chatId > 0 && (dmOnlyMode || chatId !== loadTgOwner());
   // Mutable bridge state, closed over by the returned handle (see stop()/status()).
   let stopped = false;
   let polling = false;
@@ -1966,7 +1986,7 @@ export function startTelegram(
    */
   const guardDm = async (msg: any): Promise<"allow" | "guest" | false> => {
     const from = msg.from?.id as number | undefined;
-    const verdict = dmGate(loadTgOwner(), from, guestsOn);
+    const verdict = dmGate(loadTgOwner(), from, guestsOn, dmOnlyMode);
     if (verdict === "allow") return "allow";
     if (verdict === "guest") return "guest";
     if (verdict === "pair") {
@@ -2094,6 +2114,17 @@ export function startTelegram(
     // Is this message Telegram's own `/start`, from someone who has not written
     // anything yet (`guestOpeningPrompt`)?
     let guestOpening = false;
+
+    // DM-only mode: a group chat reaches nothing at all, and that refusal sits
+    // ABOVE the board logic on purpose — a group bound before the switch must
+    // stop working too, or the mode's guarantee would depend on when the
+    // instance was set up. It is also what prevents `/setup` here: binding a
+    // board, and becoming an operator of one, both live below this line.
+    const groupClosed = groupChatRefusal(tgSetup);
+    if (isGroup && groupClosed) {
+      await reply(chat.id, threadId, groupClosed);
+      return;
+    }
 
     // One board per instance: a group must be the bound group.
     if (isGroup) {
@@ -2662,7 +2693,7 @@ export function startTelegram(
     // not by clicking.
     if (
       msg.chat?.type === "private" &&
-      !guestCallbackAllowed(dmGate(loadTgOwner(), cq.from?.id, guestsOn), msg.chat?.id, cq.from?.id)
+      !guestCallbackAllowed(dmGate(loadTgOwner(), cq.from?.id, guestsOn, dmOnlyMode), msg.chat?.id, cq.from?.id)
     ) {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ This bot is private." });
       return;
@@ -2671,7 +2702,9 @@ export function startTelegram(
     // board. Without it a click in any group reached `bridgeFor` and opened a
     // bridge there. Answering dialogs stays open to every board member — it
     // is driving the conversation, like sending a message.
-    if (!msg.chat || !callbackChatAllowed(msg.chat, allowed, loadTgGroup())) {
+    // In DM-only mode there is no board, so a group has nothing to click in:
+    // the gate is asked about a null board rather than a stale binding.
+    if (!msg.chat || !callbackChatAllowed(msg.chat, allowed, dmOnlyMode ? null : loadTgGroup())) {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ this bot is restricted." });
       return;
     }
@@ -3002,7 +3035,9 @@ export function startTelegram(
    * enough to name it.
    */
   const adoptOwnerFromBindings = async () => {
-    if (loadTgOwner() !== null) return;
+    // DM-only: the bot has no owner by design (`TgMode`), so there is nothing
+    // to adopt — and writing one would leave a file that contradicts the mode.
+    if (dmOnlyMode || loadTgOwner() !== null) return;
     // A GUEST's DM has exactly the shape this looks for, so it is excluded by
     // its channel's group (`ownerAdoptionCandidate`): adopting one would hand
     // the bot to a stranger — the very window adoption exists to close.

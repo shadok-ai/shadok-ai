@@ -5,6 +5,8 @@ import { BOOTSTRAP_ADMIN } from "../src/accounts.js";
 import { applyGuestSetup, guestSetupForCwd, type Config } from "../src/config.js";
 import type { Group } from "../src/groups.js";
 import {
+  dmOnly,
+  groupChatRefusal,
   guestCallbackAllowed,
   guestCommandCarriesSecret,
   guestCommandRefusal,
@@ -14,6 +16,9 @@ import {
   guestGroupChoices,
   guestPatchFlow,
   guestSpawnPlan,
+  guestsOpen,
+  normalizeGuestSetup,
+  normalizeTgMode,
   ownerAdoptionCandidate,
   withInstanceMember,
 } from "../src/tg-guests.js";
@@ -35,7 +40,7 @@ const GROUPS = [MAIN, GUESTS, PERSONAL];
 const refusal = (over: Partial<Parameters<typeof guestEnableRefusal>[0]> = {}) =>
   guestEnableRefusal({
     mode: "multi-tenant",
-    want: { on: true, group: "g1", profile: "Support" },
+    want: { mode: "group+dm", group: "g1", profile: "Support" },
     groups: GROUPS,
     profileExists: (n) => n === "Support",
     hasOwner: true,
@@ -46,17 +51,19 @@ test("guestEnableRefusal: a restricted group and a known profile is allowed", ()
   assert.equal(refusal(), null);
 });
 
-test("guestEnableRefusal: turning it OFF is always allowed, even with nothing named", () => {
+test("guestEnableRefusal: going back to the classic mode is always allowed, even with nothing named", () => {
   // The way out must never be blocked by the same checks as the way in — an
   // operator closing their bot cannot be asked to fix a stale group first.
-  assert.equal(refusal({ want: { on: false, group: null, profile: null } }), null);
-  assert.equal(refusal({ want: { on: false, group: null, profile: null }, mode: "mono-tenant" }), null);
+  assert.equal(refusal({ want: { mode: "group", group: null, profile: null } }), null);
+  assert.equal(refusal({ want: { mode: "group", group: null, profile: null }, mode: "mono-tenant" }), null);
 });
 
-test("guestEnableRefusal: both fields are required to enable", () => {
-  assert.match(String(refusal({ want: { on: true, group: null, profile: "Support" } })), /group/i);
-  assert.match(String(refusal({ want: { on: true, group: "g1", profile: null } })), /profile/i);
-  assert.match(String(refusal({ want: { on: true, group: "g1", profile: "   " } })), /profile/i);
+test("guestEnableRefusal: both fields are required by either open mode", () => {
+  assert.match(String(refusal({ want: { mode: "dm-only", group: null, profile: "Support" } })), /group/i);
+  assert.match(String(refusal({ want: { mode: "dm-only", group: "g1", profile: null } })), /profile/i);
+  assert.match(String(refusal({ want: { mode: "group+dm", group: null, profile: "Support" } })), /group/i);
+  assert.match(String(refusal({ want: { mode: "group+dm", group: "g1", profile: null } })), /profile/i);
+  assert.match(String(refusal({ want: { mode: "group+dm", group: "g1", profile: "   " } })), /profile/i);
 });
 
 test("guestEnableRefusal: outside multi-tenant there is no group that could hold guests", () => {
@@ -65,13 +72,13 @@ test("guestEnableRefusal: outside multi-tenant there is no group that could hold
 });
 
 test("guestEnableRefusal: an unknown group, a public one and a personal one are all refused", () => {
-  assert.match(String(refusal({ want: { on: true, group: "nope", profile: "Support" } })), /no such group/i);
-  assert.match(String(refusal({ want: { on: true, group: "main", profile: "Support" } })), /restricted/i);
+  assert.match(String(refusal({ want: { mode: "group+dm", group: "nope", profile: "Support" } })), /no such group/i);
+  assert.match(String(refusal({ want: { mode: "group+dm", group: "main", profile: "Support" } })), /restricted/i);
   // A personal group is sealed and the bridge could never be a member of it.
-  assert.match(String(refusal({ want: { on: true, group: "p1", profile: "Support" } })), /personal/i);
+  assert.match(String(refusal({ want: { mode: "group+dm", group: "p1", profile: "Support" } })), /personal/i);
 });
 
-test("guestEnableRefusal: the bot's DMs must be PAIRED first", () => {
+test("guestEnableRefusal: the bot's DMs must be PAIRED first for group+dm", () => {
   // `dmGate` answers `pair` while the bot has no owner, so a stranger would get
   // the pairing refusal instead of an agent — and that ordering is what stops
   // the first person through an open door from claiming the bot. Enabling
@@ -79,7 +86,24 @@ test("guestEnableRefusal: the bot's DMs must be PAIRED first", () => {
   const r = String(refusal({ hasOwner: false }));
   assert.match(r, /pair/i);
   // Switching off is still allowed with no owner: the way out is never gated.
-  assert.equal(refusal({ hasOwner: false, want: { on: false, group: "g1", profile: "Support" } }), null);
+  assert.equal(refusal({ hasOwner: false, want: { mode: "group", group: "g1", profile: "Support" } }), null);
+  // And the way the message points is a real way out, not a dead end.
+  assert.match(r, /DMs only/);
+});
+
+test("guestEnableRefusal: dm-only needs NO pairing — it is the mode without an owner", () => {
+  // Nobody pairs in that mode, so there is no claim left to lose: requiring a
+  // pairing would be exactly the prerequisite it exists to delete.
+  assert.equal(refusal({ hasOwner: false, want: { mode: "dm-only", group: "g1", profile: "Support" } }), null);
+  // Everything else still holds: the group must be one that can hold people.
+  assert.match(
+    String(refusal({ hasOwner: false, want: { mode: "dm-only", group: "main", profile: "Support" } })),
+    /restricted/i,
+  );
+  assert.equal(
+    refusal({ hasOwner: false, mode: "mono-tenant", want: { mode: "dm-only", group: "g1", profile: "Support" } }),
+    "isolation requires the privileged deployment",
+  );
 });
 
 test("guestPatchFlow: enabling with no owner writes nothing", () => {
@@ -91,7 +115,7 @@ test("guestPatchFlow: enabling with no owner writes nothing", () => {
 });
 
 test("guestEnableRefusal: an unknown profile is refused by name", () => {
-  const r = String(refusal({ want: { on: true, group: "g1", profile: "Ghost" } }));
+  const r = String(refusal({ want: { mode: "group+dm", group: "g1", profile: "Ghost" } }));
   assert.match(r, /Ghost/);
 });
 
@@ -123,23 +147,23 @@ test("withInstanceMember: an unknown group id changes nothing", () => {
 
 test("guest setup: stored per launch dir, two directories independent", () => {
   let cfg: Config = {};
-  assert.deepEqual(guestSetupForCwd(cfg, CWD), { on: false, group: null, profile: null });
-  cfg = applyGuestSetup(cfg, CWD, { on: true, group: "g1", profile: "Support" });
-  cfg = applyGuestSetup(cfg, "/srv/two", { on: true, group: "g9", profile: "Other" });
-  assert.deepEqual(guestSetupForCwd(cfg, CWD), { on: true, group: "g1", profile: "Support" });
-  assert.deepEqual(guestSetupForCwd(cfg, "/srv/two"), { on: true, group: "g9", profile: "Other" });
+  assert.deepEqual(guestSetupForCwd(cfg, CWD), { mode: "group", group: null, profile: null });
+  cfg = applyGuestSetup(cfg, CWD, { mode: "group+dm", group: "g1", profile: "Support" });
+  cfg = applyGuestSetup(cfg, "/srv/two", { mode: "group+dm", group: "g9", profile: "Other" });
+  assert.deepEqual(guestSetupForCwd(cfg, CWD), { mode: "group+dm", group: "g1", profile: "Support" });
+  assert.deepEqual(guestSetupForCwd(cfg, "/srv/two"), { mode: "group+dm", group: "g9", profile: "Other" });
 });
 
 test("guest setup: turning it off KEEPS the group and profile, so re-enabling needs no retyping", () => {
-  let cfg: Config = applyGuestSetup({}, CWD, { on: true, group: "g1", profile: "Support" });
-  cfg = applyGuestSetup(cfg, CWD, { on: false, group: "g1", profile: "Support" });
-  assert.deepEqual(guestSetupForCwd(cfg, CWD), { on: false, group: "g1", profile: "Support" });
+  let cfg: Config = applyGuestSetup({}, CWD, { mode: "group+dm", group: "g1", profile: "Support" });
+  cfg = applyGuestSetup(cfg, CWD, { mode: "group", group: "g1", profile: "Support" });
+  assert.deepEqual(guestSetupForCwd(cfg, CWD), { mode: "group", group: "g1", profile: "Support" });
 });
 
 test("guest setup: a malformed stored row reads as OFF rather than throwing", () => {
   // The file is hand-editable; a half-written row must never open the door.
-  const cfg = { telegramGuests: { [CWD]: { on: true, group: 42, profile: null } } } as unknown as Config;
-  assert.deepEqual(guestSetupForCwd(cfg, CWD), { on: false, group: null, profile: null });
+  const cfg = { telegramGuests: { [CWD]: { mode: "group+dm", group: 42, profile: null } } } as unknown as Config;
+  assert.deepEqual(guestSetupForCwd(cfg, CWD), { mode: "group", group: null, profile: null });
 });
 
 // ── guestPatchFlow: the whole PUT decision, transport-free ────────────────
@@ -149,8 +173,8 @@ test("guest setup: a malformed stored row reads as OFF rather than throwing", ()
 const flow = (over: Partial<Parameters<typeof guestPatchFlow>[0]> = {}) =>
   guestPatchFlow({
     mode: "multi-tenant",
-    previous: { on: false, group: null, profile: null },
-    want: { on: true, group: "g1", profile: "Support" },
+    previous: { mode: "group", group: null, profile: null },
+    want: { mode: "group+dm", group: "g1", profile: "Support" },
     groups: GROUPS,
     profileExists: (n) => n === "Support" || n === "Other",
     hasOwner: true,
@@ -161,28 +185,28 @@ test("guestPatchFlow: enabling writes the setup and puts the instance in the gro
   const r = flow();
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.deepEqual(r.setup, { on: true, group: "g1", profile: "Support" });
+  assert.deepEqual(r.setup, { mode: "group+dm", group: "g1", profile: "Support" });
   assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada", BOOTSTRAP_ADMIN]);
 });
 
 test("guestPatchFlow: disabling takes the instance back out", () => {
   const r = flow({
-    previous: { on: true, group: "g1", profile: "Support" },
-    want: { on: false, group: "g1", profile: "Support" },
+    previous: { mode: "group+dm", group: "g1", profile: "Support" },
+    want: { mode: "group", group: "g1", profile: "Support" },
     groups: withInstanceMember(GROUPS, "g1", true),
   });
   assert.equal(r.ok, true);
   if (!r.ok) return;
   assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada"]);
   // The group and the profile survive the switch-off: re-enabling needs no retyping.
-  assert.deepEqual(r.setup, { on: false, group: "g1", profile: "Support" });
+  assert.deepEqual(r.setup, { mode: "group", group: "g1", profile: "Support" });
 });
 
 test("guestPatchFlow: changing group MOVES the membership, leaving none behind", () => {
   const second = group({ id: "g2", nature: "restricted", name: "Clients", members: ["ada"], osUser: "sk-g2" });
   const r = flow({
-    previous: { on: true, group: "g1", profile: "Support" },
-    want: { on: true, group: "g2", profile: "Support" },
+    previous: { mode: "group+dm", group: "g1", profile: "Support" },
+    want: { mode: "group+dm", group: "g2", profile: "Support" },
     groups: withInstanceMember([...GROUPS, second], "g1", true),
   });
   assert.equal(r.ok, true);
@@ -192,7 +216,7 @@ test("guestPatchFlow: changing group MOVES the membership, leaving none behind",
 });
 
 test("guestPatchFlow: a refused patch is a 400 that writes NOTHING", () => {
-  const r = flow({ want: { on: true, group: "main", profile: "Support" } });
+  const r = flow({ want: { mode: "group+dm", group: "main", profile: "Support" } });
   assert.equal(r.ok, false);
   if (r.ok) return;
   assert.equal(r.status, 400);
@@ -201,16 +225,16 @@ test("guestPatchFlow: a refused patch is a 400 that writes NOTHING", () => {
 });
 
 test("guestPatchFlow: whitespace is trimmed, and a blank profile cannot enable", () => {
-  const r = flow({ want: { on: true, group: " g1 ", profile: " Support " } });
+  const r = flow({ want: { mode: "group+dm", group: " g1 ", profile: " Support " } });
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.deepEqual(r.setup, { on: true, group: "g1", profile: "Support" });
-  assert.equal(flow({ want: { on: true, group: "g1", profile: " " } }).ok, false);
+  assert.deepEqual(r.setup, { mode: "group+dm", group: "g1", profile: "Support" });
+  assert.equal(flow({ want: { mode: "group+dm", group: "g1", profile: " " } }).ok, false);
 });
 
 // ── guestSpawnPlan: the trust decision behind a guest's spawn ─────────────
 
-const ON: Parameters<typeof guestSpawnPlan>[0]["setup"] = { on: true, group: "g1", profile: "Support" };
+const ON: Parameters<typeof guestSpawnPlan>[0]["setup"] = { mode: "group+dm", group: "g1", profile: "Support" };
 const plan = (over: Partial<Parameters<typeof guestSpawnPlan>[0]> = {}) =>
   guestSpawnPlan({ marker: true, fromBridge: true, resuming: false, setup: ON, ...over });
 
@@ -237,10 +261,10 @@ test("guestSpawnPlan: a marker on a RESUME is ignored — the stored group is th
 
 test("guestSpawnPlan: the bridge proved itself and the door is shut → a named refusal", () => {
   for (const setup of [
-    { on: false, group: "g1", profile: "Support" },
-    { on: true, group: null, profile: "Support" },
-    { on: true, group: "g1", profile: null },
-    { on: true, group: "  ", profile: "Support" },
+    { mode: "group", group: "g1", profile: "Support" },
+    { mode: "group+dm", group: null, profile: "Support" },
+    { mode: "group+dm", group: "g1", profile: null },
+    { mode: "group+dm", group: "  ", profile: "Support" },
   ]) {
     const r = plan({ setup });
     assert.equal(r.kind, "refused");
@@ -363,4 +387,102 @@ test("guestEnableRefusal: the most fundamental blocker speaks first", () => {
   // wasted errand — so the capability is named before the pairing.
   const r = String(refusal({ mode: "mono-tenant", hasOwner: false }));
   assert.equal(r, "isolation requires the privileged deployment");
+});
+
+// ── the mode: where this bot works ───────────────────────────────────────
+// Three answers, and `group` is the one that changes nothing — so anything
+// unrecognised must land there rather than on an open door.
+
+test("normalizeTgMode: the three modes pass through, everything else is the classic one", () => {
+  for (const m of ["group", "group+dm", "dm-only"] as const) assert.equal(normalizeTgMode(m), m);
+  for (const bad of [undefined, null, "", "dm", "DM-ONLY", true, 1, {}])
+    assert.equal(normalizeTgMode(bad), "group", String(bad));
+});
+
+test("guestsOpen / dmOnly: a mode with nowhere to put people is not an open door", () => {
+  assert.equal(guestsOpen({ mode: "group", group: "g1", profile: "Support" }), false);
+  assert.equal(guestsOpen({ mode: "group+dm", group: "g1", profile: "Support" }), true);
+  assert.equal(guestsOpen({ mode: "dm-only", group: "g1", profile: "Support" }), true);
+  // The three fields are solidary: no group or no profile is no door.
+  assert.equal(guestsOpen({ mode: "dm-only", group: null, profile: "Support" }), false);
+  assert.equal(guestsOpen({ mode: "group+dm", group: "g1", profile: "  " }), false);
+  assert.equal(dmOnly({ mode: "dm-only", group: "g1", profile: "Support" }), true);
+  assert.equal(dmOnly({ mode: "group+dm", group: "g1", profile: "Support" }), false);
+  assert.equal(dmOnly({ mode: "dm-only", group: null, profile: null }), false);
+});
+
+test("normalizeGuestSetup: a half-written open mode falls back to the CLASSIC one", () => {
+  // Not to a closed version of itself: a `dm-only` with nowhere to put people
+  // would answer neither a group nor a DM — a bot that silently does nothing.
+  assert.deepEqual(normalizeGuestSetup({ mode: "dm-only", group: null, profile: "Support" }), {
+    mode: "group",
+    group: null,
+    profile: "Support",
+  });
+  assert.deepEqual(normalizeGuestSetup({ mode: "nope" as never, group: " g1 ", profile: " S " }), {
+    mode: "group",
+    group: "g1",
+    profile: "S",
+  });
+});
+
+test("groupChatRefusal: only the DM-only instance turns a group away", () => {
+  assert.equal(groupChatRefusal({ mode: "group", group: null, profile: null }), null);
+  assert.equal(groupChatRefusal({ mode: "group+dm", group: "g1", profile: "Support" }), null);
+  const line = String(groupChatRefusal({ mode: "dm-only", group: "g1", profile: "Support" }));
+  assert.match(line, /private messages/i);
+  // Whoever added the bot to their group is not an operator: no internals, and
+  // no command they are not allowed to run anyway.
+  assert.doesNotMatch(line, /setup|shadok|board|agent|profile|group|cockpit/i);
+});
+
+test("guest setup: a row written before the mode existed reads as group+dm", () => {
+  // `on: true` was exactly that mode. The migration is a READ: nothing rewrites
+  // the file until the panel saves.
+  const legacy = { telegramGuests: { [CWD]: { on: true, group: "g1", profile: "Support" } } } as Config;
+  assert.deepEqual(guestSetupForCwd(legacy, CWD), { mode: "group+dm", group: "g1", profile: "Support" });
+  const off = { telegramGuests: { [CWD]: { on: false, group: "g1", profile: "Support" } } } as Config;
+  assert.deepEqual(guestSetupForCwd(off, CWD), { mode: "group", group: "g1", profile: "Support" });
+  // An explicit mode always wins over the compat field.
+  const both = { telegramGuests: { [CWD]: { mode: "dm-only", on: false, group: "g1", profile: "S" } } } as Config;
+  assert.equal(guestSetupForCwd(both, CWD).mode, "dm-only");
+});
+
+test("guest setup: what is written stays readable by a server that predates the mode", () => {
+  const cfg = applyGuestSetup({}, CWD, { mode: "dm-only", group: "g1", profile: "Support" });
+  assert.deepEqual(cfg.telegramGuests?.[CWD], { mode: "dm-only", on: true, group: "g1", profile: "Support" });
+  const classic = applyGuestSetup({}, CWD, { mode: "group", group: "g1", profile: "Support" });
+  assert.equal(classic.telegramGuests?.[CWD]?.on, false);
+});
+
+test("guestPatchFlow: switching between the two open modes keeps the membership", () => {
+  const r = flow({
+    previous: { mode: "group+dm", group: "g1", profile: "Support" },
+    want: { mode: "dm-only", group: "g1", profile: "Support" },
+    groups: withInstanceMember(GROUPS, "g1", true),
+    hasOwner: false,
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.setup, { mode: "dm-only", group: "g1", profile: "Support" });
+  assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada", BOOTSTRAP_ADMIN]);
+});
+
+test("guestPatchFlow: coming back to the classic mode takes the instance out", () => {
+  const r = flow({
+    previous: { mode: "dm-only", group: "g1", profile: "Support" },
+    want: { mode: "group", group: "g1", profile: "Support" },
+    groups: withInstanceMember(GROUPS, "g1", true),
+  });
+  assert.equal(r.ok, true);
+  if (!r.ok) return;
+  assert.deepEqual(r.groups.find((g) => g.id === "g1")!.members, ["ada"]);
+});
+
+test("guestSpawnPlan: a dm-only instance spawns guests like group+dm does", () => {
+  assert.deepEqual(plan({ setup: { mode: "dm-only", group: "g1", profile: "Support" } }), {
+    kind: "guest",
+    group: "g1",
+    profile: "Support",
+  });
 });
