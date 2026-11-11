@@ -75,6 +75,8 @@ node scripts/schedule.mjs env
 ```
 
 `<spec>`: `every:30m` · `every:2h` · `daily:09:00` · `once:2026-08-25T08:42`.
+Only on some days of the week: `daily:09:00@mon-fri`, `daily:08:30@mon,wed,fri`,
+`daily:10:00@weekend` (English or French day names, ranges allowed).
 
 ### One-shot — a reminder on a given date
 

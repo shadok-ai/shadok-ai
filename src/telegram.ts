@@ -20,7 +20,7 @@ import {
   tgToolsEnabled,
   setTgTools,
 } from "./channels.js";
-import { secretNames, setSecret, deleteSecret, secretWriteVerdict, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
+import { secretNames, setSecret, deleteSecret, secretWriteVerdict, secretNameRefusal, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
 import { MAIN_GROUP_ID } from "./groups.js";
 import { roomForTopic, telegramLine, type Room } from "./rooms.js";
 import type { TgBinding } from "./channels.js";
@@ -42,6 +42,7 @@ import {
   onceAt,
   cronTimeZone,
   normalizeSchedule,
+  parseDays,
   scheduleLabel,
   type Cron,
   type CronSchedule,
@@ -2145,6 +2146,7 @@ export function startTelegram(
             "⏰ Scheduled prompts for this agent:\n" +
             "• /cron every 30m <prompt>  (or 2h)\n" +
             "• /cron daily 09:00 <prompt>  (in the server's time zone)\n" +
+            "• /cron daily 09:00 mon-fri <prompt>  (only some days: mon,wed,fri · sat-sun · weekdays)\n" +
             "• /cron once 2026-08-25T08:42 <prompt>  (one shot)\n" +
             "• /cron list · /cron off <id> · /cron on <id> · /cron del <id>";
           const ch = channelForTelegram(chat.id, threadId);
@@ -2205,7 +2207,12 @@ export function startTelegram(
             if (m) sched = normalizeSchedule({ kind: "interval", everyMin: m[2].toLowerCase() === "h" ? +m[1] * 60 : +m[1] });
           } else if (sub === "daily") {
             const m = /^(\d{1,2}):(\d{2})$/.exec(spec);
-            if (m) sched = normalizeSchedule({ kind: "daily", hour: +m[1], minute: +m[2] });
+            // An optional day list right after the time ("mon-fri", "lun,mer"):
+            // taken only when the WHOLE word reads as days, otherwise it is the
+            // prompt's first word and stays there.
+            const days = parts.length > 1 ? parseDays(parts[0]) : null;
+            if (days) parts.shift();
+            if (m) sched = normalizeSchedule({ kind: "daily", hour: +m[1], minute: +m[2], ...(days ? { days } : {}) });
           } else if (sub === "once") {
             const at = onceAt(cronTimeZone({}), spec);
             if (at != null) sched = normalizeSchedule({ kind: "once", at });
@@ -2342,6 +2349,12 @@ export function startTelegram(
               threadId,
               `🔐 ${skey} already exists — nothing changed. To replace it: /secret ${skey} <value> --overwrite${d?.ok ? "" : "\n⚠️ I couldn't delete your message — remove it manually."}`,
             );
+            return;
+          }
+          const badName = verdict === "created" ? secretNameRefusal(skey) : null;
+          if (badName) {
+            const d = await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+            await reply(chat.id, threadId, `🔐 ${badName}${d?.ok ? "" : "\n⚠️ I couldn't delete your message — remove it manually."}`);
             return;
           }
           setSecret(skey, parsed.value);

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, agentOverwriteRefusal, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
+import { visibleSecrets, longLivedTokenInfo, LONG_LIVED_TOKEN_TTL_MS, RESERVED_SECRET_NAMES, filterReserved, resolveSecretValues, secretNamesForProfile, ANY_PROFILE, agentOverwriteRefusal, secretNameRefusal, suggestSecretName, migrateFlatVault, normalizeVault, type Vault, type SecretEntry } from "../src/secrets.js";
 
 const e = (value: string, ownerGroup: string, sharedWith: string[] = []): SecretEntry => ({
   value, ownerGroup, sharedWith, profiles: [], createdBy: "u", createdAt: 1, updatedAt: 1,
@@ -161,4 +161,18 @@ test("agentOverwriteRefusal: an agent may not replace an Any-profile secret; a p
   assert.equal(agentOverwriteRefusal({ profiles: [ANY_PROFILE] }, false), null);
   assert.equal(agentOverwriteRefusal({ profiles: ["Dev"] }, true), null);
   assert.equal(agentOverwriteRefusal(undefined, true), null);
+});
+
+test("secretNameRefusal: a valid environment variable name passes", () => {
+  for (const n of ["API_KEY", "x", "_TOKEN", "Key2"]) assert.equal(secretNameRefusal(n), null, n);
+});
+
+test("secretNameRefusal: a space, a dash or a leading digit is refused, saying why and suggesting a name", () => {
+  const space = secretNameRefusal("my api key");
+  assert.match(space ?? "", /contains a space/);
+  assert.match(space ?? "", /MY_API_KEY/);
+  assert.match(secretNameRefusal("API-KEY") ?? "", /other than letters, digits and _/);
+  assert.match(secretNameRefusal("2FA_CODE") ?? "", /starts with a digit/);
+  assert.equal(suggestSecretName("2fa code"), "_2FA_CODE");
+  assert.equal(suggestSecretName("é"), "MY_SECRET");
 });

@@ -186,7 +186,7 @@ Enter to skip; you can add it later from the web UI).
   cockpit's own ports and well-known local services (debuggers, Docker's API,
   databases) are refused, and only the listener's HTTP status comes back.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
-  daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
+  daily at HH:MM in a time zone you choose, optionally only on some days of the week) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
   model*: prints nothing → nothing to report, the agent is never woken and the
   run costs **zero tokens**; prints something → that output is prepended to the
@@ -224,6 +224,19 @@ Enter to skip; you can add it later from the web UI).
 - **Quota gauges + pace guard** — 5h and 7d subscription usage, with an
   optional block when you're burning faster than the window elapses (any
   message can force through).
+  On an instance whose agents run on a long-lived `setup-token` (multi-tenant),
+  that token cannot read usage (it is scoped `user:inference` only), so the gauges
+  stay blank unless you add the **usage gauge login**: version menu → *Set up
+  usage gauge login…*, then sign in with the account whose usage you want shown.
+  It is a separate, optional claude.ai sign-in kept in its own config dir
+  (`~/.shadok-ai/gauge/<instance>/.claude`) and used only for the gauges —
+  agents never see it. Shadok keeps its access token fresh on its own, but
+  Anthropic fixes the sign-in itself at about a month and refreshing never
+  extends it, so you re-login roughly **monthly**; a banner reminds you 5 days
+  before. Not configured = nothing changes. File credential store only (Linux,
+  Docker); on macOS the row is hidden. Endpoints (admin): `GET /usage-gauge`,
+  `POST /usage-gauge/login`, `POST /usage-gauge/code`,
+  `DELETE /usage-gauge/login` (cancel), `DELETE /usage-gauge` (remove).
 - **Notifications** — favicon, title badge and an optional sound when an agent
   needs you. It only blinks when the tab is hidden *and* an unmuted channel is
   actually waiting. Mute a single agent from its menu, or **mute the whole
@@ -567,7 +580,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/new` · `/end` | reset · kill the session |
 | `/restart` | respawn the agent in place (e.g. to pick up new secrets) |
 | `/profiles` · `/list` | list profiles · list bindings |
-| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
+| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` · `/cron daily 09:00 mon-fri <prompt>` | schedule a recurring prompt on this agent |
 | `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
 | `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault; an existing name is never replaced unless you append `--overwrite` |

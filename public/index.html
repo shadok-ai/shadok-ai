@@ -366,14 +366,14 @@
   }
   /* The re-login reminder (sign-in within 48h / expired). Same top strip as the
      update banner; its own id so the two never share styling by accident. */
-  #expiryBanner {
+  #expiryBanner, #gaugeBanner {
     flex: 0 0 auto; width: 100%; z-index: 1000;
     background: var(--amber); color: var(--on-accent);
     font-family: var(--sans); font-size: 12px;
     padding: 6px 12px;
     display: flex; gap: 10px; align-items: center; justify-content: center; flex-wrap: wrap;
   }
-  #expiryBanner button {
+  #expiryBanner button, #gaugeBanner button {
     font: inherit; cursor: pointer; padding: 2px 10px;
     border: 1px solid currentColor; border-radius: 4px;
     background: transparent; color: inherit;
@@ -1130,6 +1130,7 @@
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
   #secretAttach[data-grouped="1"][data-editing="1"] { display: none; }
   #secretsAdd { margin-bottom: 12px; }
+  #secretsAdd input[aria-invalid="true"] { border-color: #e2564a; }
   .sec-val { flex-basis: 100%; display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
   .sec-val .sec-mask { font-family: var(--mono); letter-spacing: .1em; color: var(--text-dim); }
   .sec-val input { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--amber); background: rgba(0,0,0,.25); color: inherit; font-size: 16px; }
@@ -2454,6 +2455,12 @@
      fields stacked — and `align-items: center` centred them instead of aligning. */
   .cron-when { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; }
   .cron-when input[type=number] { width: 76px; }
+  #cronDailyFields:not([hidden]) { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cron-days { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+  .cron-days label { position: relative; font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 12px; cursor: pointer; user-select: none; color: var(--text-dim); }
+  .cron-days input { position: absolute; opacity: 0; pointer-events: none; }
+  .cron-days label:has(input:checked) { border-color: var(--amber); color: var(--text); background: color-mix(in srgb, var(--amber) 16%, transparent); }
+  .cron-days label:has(input:focus-visible) { outline: 2px solid var(--amber); outline-offset: 1px; }
   .sec-panel .field { margin: 8px 0; }
   .sec-panel textarea, .sec-panel input[type=text], .sec-panel input[type=password], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-family: inherit; }
   #profilesList { list-style: none; padding: 0; margin: 0 0 8px; }
@@ -3387,6 +3394,10 @@
        Filled from /auth when the menu opens (instance-global, not per tab). -->
   <div class="vm-row"><span class="vm-label">Account</span><span id="vmAccount">—</span></div>
   <div class="vm-row"><span class="vm-label">Token</span><span id="vmToken">—</span></div>
+  <!-- Optional dedicated claude.ai login that feeds ONLY the 5h/7d gauges (a
+       setup-token cannot read usage). Hidden until /auth says it applies. -->
+  <div class="vm-row" id="vmGaugeRow" hidden><span class="vm-label">Usage gauge</span><span id="vmGauge">—</span></div>
+  <button class="vm-btn" id="gaugeLoginBtn" type="button" hidden>📊 Usage gauge login…</button>
   <!-- Re-login to Claude without waiting for the token to lapse. Shown only
        when signed in (when signed out the sign-in card opens on its own). -->
   <button class="vm-btn" id="reloginBtn" type="button" hidden>↻ Re-login to Claude</button>
@@ -3583,6 +3594,15 @@
           </span>
           <span id="cronDailyFields" hidden>
             <input id="cronTime" type="time" value="09:00" aria-label="Time of day">
+            <span id="cronDays" class="cron-days" role="group" aria-label="Days of the week">
+              <label><input type="checkbox" value="1" checked><span>Mon</span></label>
+              <label><input type="checkbox" value="2" checked><span>Tue</span></label>
+              <label><input type="checkbox" value="3" checked><span>Wed</span></label>
+              <label><input type="checkbox" value="4" checked><span>Thu</span></label>
+              <label><input type="checkbox" value="5" checked><span>Fri</span></label>
+              <label><input type="checkbox" value="6" checked><span>Sat</span></label>
+              <label><input type="checkbox" value="0" checked><span>Sun</span></label>
+            </span>
           </span>
           <span id="cronOnceFields" hidden>
             <input id="cronAt" type="datetime-local" aria-label="Date and time">
@@ -4474,9 +4494,11 @@
   window.toggleProfile = toggleProfile;
   window.accountBanners = accountBanners;
   window.logEntryLine = logEntryLine;
-  import { fmtExpiry, expiryWarning, accountExpiryLine } from "/auth-expiry.js?v=__ASSET_V__";
+  import { fmtExpiry, expiryWarning, accountExpiryLine, gaugeWarning, gaugeLine } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
+  window.gaugeWarning = gaugeWarning;
+  window.gaugeLine = gaugeLine;
   window.accountExpiryLine = accountExpiryLine;
   import { filterLedger, ledgerFacets, ledgerAge, LEDGER_AGES, LEDGER_SORTS } from "/ledger-view.js?v=__ASSET_V__";
   window.filterLedger = filterLedger;
@@ -4628,6 +4650,8 @@
     // after the /auth fetch), and the re-login reminder never nags blind.
     fmtExpiry: () => "—",
     expiryWarning: () => null,
+    gaugeWarning: () => null,
+    gaugeLine: () => null,
     accountExpiryLine: () => null,
     // Before the module lands, never open the Connect card on a guess.
     connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
@@ -9710,6 +9734,20 @@
     // Only offer a re-login when we KNOW the account is signed in — a failed
     // probe ("unknown") or a signed-out state is the sign-in card's job.
     if (relBtn) relBtn.hidden = true;
+    // Usage-gauge login row: only where /auth says it applies, and only for an
+    // admin (it signs the instance's gauge in). Painted before the early returns
+    // below, like the agent-auth button, so it survives a signed-out account row.
+    const gRow = document.getElementById("vmGaugeRow");
+    const gBtn = document.getElementById("gaugeLoginBtn");
+    const gLine = a && window.gaugeLine(a.gauge);
+    if (gRow) {
+      gRow.hidden = gLine === null || gLine === undefined;
+      document.getElementById("vmGauge").textContent = gLine || "—";
+    }
+    if (gBtn) {
+      gBtn.hidden = !(gLine !== null && gLine !== undefined && (!me || me.role === "admin"));
+      gBtn.textContent = a && a.gauge && a.gauge.state !== "none" ? "📊 Renew usage gauge login…" : "📊 Set up usage gauge login…";
+    }
     // The "replace subscription token" button only makes sense once a token is
     // actually held (longLived) on a multi-tenant instance, for an admin.
     const mtBtn = document.getElementById("mtTokenReplaceBtn");
@@ -9767,18 +9805,25 @@
   // start getting 401s. The decision (and its 48h threshold) is pure —
   // window.expiryWarning, public/auth-expiry.js — so only the DOM lives here.
   function updateExpiryBanner() {
-    const w = window.expiryWarning(lastAuth);
-    let el = document.getElementById("expiryBanner");
+    paintExpiryBanner("expiryBanner", window.expiryWarning(lastAuth), () => openAuthCard(true));
+    // The OPTIONAL usage-gauge login has its own clock (a month, renewed by hand)
+    // and its own strip, so neither reminder hides the other. Admin only: the
+    // button signs the instance's gauge in, which a member cannot do.
+    paintExpiryBanner("gaugeBanner", (!me || me.role === "admin") ? window.gaugeWarning(lastAuth && lastAuth.gauge) : null, () => openGaugeCard());
+  }
+  function paintExpiryBanner(id, w, onClick) {
+    let el = document.getElementById(id);
     if (!w) { if (el) el.remove(); return; }   // re-logged in → clock reset → gone
     if (!el) {
       el = document.createElement("div");
-      el.id = "expiryBanner";
+      el.id = id;
+      el.className = "expiry-strip";
       const span = document.createElement("span");
-      span.id = "expiryBannerText";
+      span.id = id + "Text";
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = "Re-login now";
-      btn.addEventListener("click", () => openAuthCard(true));
+      btn.addEventListener("click", onClick);
       el.append(span, btn);
       // First child → above the header in the flex chassis, not floating over it.
       document.body.insertBefore(el, document.body.firstChild);
@@ -9786,7 +9831,7 @@
     // Expired is an escalation, not just a reminder — turn the strip red.
     el.style.background = w.expired ? "var(--err)" : "";
     el.style.color = w.expired ? "#fff" : "";
-    document.getElementById("expiryBannerText").textContent = w.text;
+    document.getElementById(id + "Text").textContent = w.text;
   }
 
   function toggleVerMenu(show) {
@@ -9976,6 +10021,11 @@
   document.getElementById("reloginBtn").addEventListener("click", () => {
     toggleVerMenu(false);
     openAuthCard(true);
+  });
+  // The optional usage-gauge login: same card, its own flow and its own store.
+  document.getElementById("gaugeLoginBtn").addEventListener("click", () => {
+    toggleVerMenu(false);
+    openGaugeCard();
   });
   // Change where agents get their model, any time — the same card, opened on
   // its "Another model" side, and dismissable since nothing is broken.
@@ -13919,6 +13969,10 @@
     const value = $("secretVal").value;
     const wanted = checkedProfiles();
     if (!name) return;
+    // A NEW name must be usable as an environment variable — the server refuses
+    // it anyway (`secretNameRefusal`, src/secrets.ts), this just says so before
+    // the round trip and keeps the form filled.
+    if (!editingSecret && !SECRET_NAME_RE.test(name)) { showVaultError(secretNameHint(name)); $("secretKey").focus(); return; }
     // Editing an existing secret with the value left BLANK means "keep the value,
     // just change the profiles" — the vault is write-only, so we must not clobber
     // it with "". A new secret, or a value typed, is written (overwrite: true
@@ -13975,6 +14029,24 @@
     }
     return out;
   }
+  // Twin of `secretNameRefusal` (src/secrets.ts): a secret is injected as an
+  // environment variable named after it, so a name with a space, a dash or a
+  // leading digit cannot work. Said while typing, not only at submit.
+  const SECRET_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+  function secretNameHint(name) {
+    const why = /\s/.test(name) ? "it contains a space"
+      : /^[0-9]/.test(name) ? "it starts with a digit"
+      : "it contains a character other than letters, digits and _";
+    return `"${name}" cannot be a secret name: ${why}. A secret becomes an environment variable, so use only letters, digits and _ (not starting with a digit).`;
+  }
+  let secretNameHintShown = false;
+  $("secretKey").addEventListener("input", () => {
+    const name = $("secretKey").value.trim();
+    const bad = !editingSecret && name !== "" && !SECRET_NAME_RE.test(name);
+    $("secretKey").setAttribute("aria-invalid", bad ? "true" : "false");
+    if (bad) { showVaultError(secretNameHint(name)); secretNameHintShown = true; }
+    else if (secretNameHintShown) { showVaultError(""); secretNameHintShown = false; }
+  });
   // Pasting an .env list into the NAME field adds every secret at once.
   $("secretKey").addEventListener("paste", async (e) => {
     const text = (e.clipboardData || window.clipboardData).getData("text");
@@ -14094,7 +14166,16 @@
       try { return "once at " + new Date(s.at).toLocaleString("sv-SE", o); }
       catch { return "once at " + new Date(s.at).toISOString().slice(0, 16).replace("T", " "); }
     }
-    return "daily at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
+    // Twin of `daysLabel` (src/crons.ts): the days a restricted daily runs on.
+    const DAY = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+    const ds = Array.isArray(s.days) ? [...s.days].sort((a, b) => a - b) : [];
+    const when = !ds.length ? "daily" : ds.join() === "1,2,3,4,5" ? "mon-fri" : ds.join() === "0,6" ? "sat,sun" : ds.map((d) => DAY[d]).join(",");
+    return when + " at " + String(s.hour).padStart(2, "0") + ":" + String(s.minute).padStart(2, "0");
+  }
+  /** The day chips: tick exactly `days` (absent/empty = every day). */
+  function setCronDays(days) {
+    const set = Array.isArray(days) && days.length ? new Set(days.map(String)) : null;
+    for (const cb of $("cronDays").querySelectorAll("input")) cb.checked = !set || set.has(cb.value);
   }
   /**
    * The zone actually applied to daily schedules, in the popin's footer.
@@ -14160,6 +14241,7 @@
   let editingCronId = null;
   function resetCronEditMode() {
     editingCronId = null;
+    setCronDays(null);
     $("cronSubmit").textContent = "Add schedule";
     $("cronCancelEdit").hidden = true;
     $("cronErr").textContent = "";
@@ -14179,6 +14261,7 @@
     if (s.kind === "daily") {
       $("cronKind").value = "daily";
       $("cronTime").value = pad2(s.hour ?? 9) + ":" + pad2(s.minute ?? 0);
+      setCronDays(s.days);
     } else if (s.kind === "once") {
       $("cronKind").value = "once";
       if (Number.isFinite(s.at)) $("cronAt").value = toDatetimeLocal(s.at);
@@ -14199,7 +14282,9 @@
     if ($("cronKind").value === "once") return { kind: "once", at: $("cronAt").value };
     if ($("cronKind").value === "daily") {
       const [h, m] = ($("cronTime").value || "09:00").split(":").map((n) => parseInt(n, 10) || 0);
-      return { kind: "daily", hour: h, minute: m };
+      // All seven ticked = every day: the field is omitted, as the server stores it.
+      const days = [...$("cronDays").querySelectorAll("input:checked")].map((c) => Number(c.value));
+      return days.length === 7 ? { kind: "daily", hour: h, minute: m } : { kind: "daily", hour: h, minute: m, days };
     }
     const every = Math.max(1, parseInt($("cronEvery").value, 10) || 1);
     const unit = parseInt($("cronUnit").value, 10) || 1;
@@ -14319,6 +14404,12 @@
     const prompt = $("cronPrompt").value.trim();
     if (!prompt || !active || !active.sessionId) return;
     const check = $("cronCheck").value.trim();
+    // No day ticked would read as "every day" on the server (an empty list is
+    // folded to the default): say it instead of scheduling the opposite.
+    if ($("cronKind").value === "daily" && !$("cronDays").querySelector("input:checked")) {
+      $("cronErr").textContent = "Pick at least one day.";
+      return;
+    }
     // A refusal from the server (past date, unreadable date) used to be
     // swallowed in silence: the panel repainted without the new cron, wordlessly.
     $("cronErr").textContent = "";
@@ -15545,6 +15636,19 @@
     checkAuth(null, force);
   }
 
+  // The usage-gauge login (src/gauge-login.ts) reuses the authorise step of the
+  // Connect card with its own endpoints. Never blocking: nothing is broken
+  // without it, so it is always dismissable.
+  function openGaugeCard() {
+    cxCancel();
+    cx = { plan: null, flow: "gauge", user: null, dur: "token", fromChoose: false, url: "", started: false, seq: cx.seq + 1 };
+    authDismissable = true;
+    $("authClose").hidden = false;
+    $("authMsg").hidden = true;
+    $("authOverlay").hidden = false;
+    cxStartAuthorise("gauge", null, false);
+  }
+
   function closeAuthCard() {
     if (!authDismissable) return;
     cxCancel();
@@ -15564,6 +15668,7 @@
   function cxCancelFlow(flow, user) {
     const json = { "Content-Type": "application/json" };
     if (flow === "instance") fetch("/auth/login", { method: "DELETE" }).catch(() => {});
+    else if (flow === "gauge") fetch("/usage-gauge/login", { method: "DELETE" }).catch(() => {});
     else if (flow === "token") fetch("/mt-token", { method: "DELETE" }).catch(() => {});
     else if (flow === "login") fetch("/agent-login", { method: "DELETE", headers: json, body: JSON.stringify({ user }) }).catch(() => {});
   }
@@ -15620,6 +15725,7 @@
 
   const CX_FLOWS = {
     instance: { start: "/auth/login", code: "/auth/code" },
+    gauge: { start: "/usage-gauge/login", code: "/usage-gauge/code" },
     token: { start: "/mt-token/start", code: "/mt-token/code" },
     login: { start: "/agent-login/start", code: "/agent-login/code" },
   };
@@ -15638,12 +15744,16 @@
     $("cxOtherLink2").hidden = !(flow === "instance" && cx.plan && !cx.plan.dismissable);
     $("cxHint").hidden = false;
     $("authCode").value = "";
-    $("authTitle").textContent = flow === "instance" && lastAuth && lastAuth.state === "signed-in"
+    $("authTitle").textContent = flow === "gauge" ? "Sign in the usage gauge"
+      : flow === "instance" && lastAuth && lastAuth.state === "signed-in"
       ? "Renew the Claude sign-in" : "Authorise Shadok on claude.ai";
     $("authNote").textContent = flow === "login" && cx.user && cx.plan && cx.plan.step !== "choose" && !fromChoose
       ? "Connect this space (" + cx.user + ") to your Claude account. A Claude page opens in a new tab; approve it, then paste the short code it shows."
       : "A Claude page opens in a new tab. Approve it, then Claude shows you a short code — come back to this tab and paste it.";
+    if (flow === "gauge")
+      $("authNote").textContent = "This sign-in only feeds the 5h/7d usage gauges — agents never use it. Sign in with the account whose usage you want shown (the one your agents run on). Anthropic limits it to about a month, so Shadok reminds you to renew it. A Claude page opens in a new tab; approve it, then paste the short code it shows.";
     cxShow("authorise");
+    if (flow === "gauge") $("cxTag").textContent = "Usage gauge";
     const link = $("authLink");
     link.textContent = "Preparing…";
     link.removeAttribute("href");
@@ -15710,7 +15820,7 @@
     cxMsg("");
     const body = cx.flow === "login" ? { user: cx.user, code } : { code };
     const r = await cxPost(CX_FLOWS[cx.flow].code, body);
-    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cxConnected(); }
+    if (r && r.ok) { cx.started = false; $("authCode").value = ""; cx.flow === "gauge" ? gaugeConnected() : cxConnected(); }
     else cxMsg((r && r.error) || "the code was refused", "bad");
   });
 
@@ -15724,6 +15834,22 @@
     if (r && r.ok) cxConnected();
     else cxMsg((r && r.error) || "the token was refused", "bad");
   });
+
+  // The gauge login landed: repaint the gauges and say until when it lasts.
+  async function gaugeConnected() {
+    refreshUsage();
+    await refreshAuthRows();
+    const g = (lastAuth && lastAuth.gauge) || {};
+    let text = g.state === "wrong-scope"
+      ? "That sign-in did not grant usage access, so the gauges cannot use it. Try again."
+      : "The usage gauges now read " + (g.email ? g.email + "'s" : "this account's") + " usage.";
+    if (g.state !== "wrong-scope" && typeof g.refreshExpiresAt === "number")
+      text += " This sign-in lasts until " + new Date(g.refreshExpiresAt).toLocaleDateString(undefined, { day: "numeric", month: "long", year: "numeric" }) + " — Shadok reminds you a few days before.";
+    $("cxDoneText").textContent = text;
+    authDismissable = true;
+    $("authClose").hidden = false;
+    cxShow("done");
+  }
 
   // Success: say until when, and that the lead agent is on its way when it is.
   async function cxConnected() {
