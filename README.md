@@ -76,6 +76,15 @@ Enter to skip; you can add it later from the web UI).
 - **Channels** — one `claude` process each, running in parallel. Renaming,
   grouping, and closing all sync live between the browser and Telegram: it's
   one list, server-owned, not two copies.
+- **Rooms** — a channel with **no agent**, where people talk: same column,
+  same groups, same chat, nothing running behind it and no quota spent. **＋ new
+  room** under the agents; an admin can mirror one into a Telegram topic, and a
+  message there lands in the room (commands answer that there is no agent
+  here). Closing a room archives it: it leaves the list for everyone and its
+  messages stay on disk. The column tells the three kinds apart at a glance —
+  an **agent** is a round avatar with initials, a **room** a square slate tile
+  with a speech bubble (and no presence dot), and an agent with **scheduled
+  prompts** wears a dashed ring and a clock.
 - **Groups** — on a desktop the groups live in their own **left column**: pick
   one to narrow the agents pane to it, and the global tools (Profiles, Ledger,
   Secrets, Users, Security, Telegram, Sound) stay in the header at the top. Each
@@ -177,7 +186,7 @@ Enter to skip; you can add it later from the web UI).
   cockpit's own ports and well-known local services (debuggers, Docker's API,
   databases) are refused, and only the listener's HTTP status comes back.
 - **Scheduled prompts** — give a channel a recurring prompt (every N minutes, or
-  daily at HH:MM in a time zone you choose) for monitoring and reporting. Each
+  daily at HH:MM in a time zone you choose, optionally only on some days of the week) for monitoring and reporting. Each
   schedule can carry a **deterministic guard command** that runs *without the
   model*: prints nothing → nothing to report, the agent is never woken and the
   run costs **zero tokens**; prints something → that output is prepended to the
@@ -580,7 +589,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/new` · `/end` | reset · kill the session |
 | `/restart` | respawn the agent in place (e.g. to pick up new secrets) |
 | `/profiles` · `/list` | list profiles · list bindings |
-| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` | schedule a recurring prompt on this agent |
+| `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` · `/cron daily 09:00 mon-fri <prompt>` | schedule a recurring prompt on this agent |
 | `/cron once 2026-08-25T08:42 <prompt>` | fire it **once** on that date, then the schedule is left disabled and marked `(fired)` |
 | `/cron list` · `/cron on\|off\|del <id>` | manage them (`<id>` accepts the printed 8-char prefix) |
 | `/secrets` · `/secret KEY value` · `/unsecret KEY` | the secret vault; an existing name is never replaced unless you append `--overwrite` |
@@ -1315,6 +1324,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"term-attach"}` · `{type:"term-detach"}` | **experimental, tmux only** — open/close the pane's raw byte pipe |
 | `{type:"term-input", data}` · `{type:"term-resize", cols, rows}` | raw input (base64) / match the pane to the viewport |
 | `{type:"stop", sessionId?}` | ends the session for all clients; `sessionId` targets another channel (zombie cleanup) |
+| `{type:"room-join", roomId}` · `{type:"room-post", roomId, text, clientId?}` | a ROOM link (people only, same-origin browser): join a room (answered with `room-history`), then post to it (fanned out as `room-message`, refusals as `room-error`). A connection is an agent link or a room link, never both — `start` is refused after `room-join` |
 
 **server → client**
 
