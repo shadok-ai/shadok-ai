@@ -96,7 +96,15 @@ Enter to skip; you can add it later from the web UI).
   (access to Claude, workspace, Claude Code) rather than a black screen. Dragging an agent onto a
   group files it there, dragging groups reorders them, and double-clicking a name
   renames it — a group can also be renamed by clicking its name at the top of the
-  agents column. A question the agent asks shows as an *Approval requested* card. The
+  agents column. **Folders** arrange the agents INSIDE a group: *📁 new folder*
+  (under *＋ new agent*) makes one in the group on screen, its ＋ makes a
+  sub-folder, and folders nest up to 8 levels. Drag an agent onto a folder to put
+  it inside, or onto another agent to sit beside it; drag a folder onto a folder
+  to nest it. A click folds a folder (folded, it shows the mood and agent count of
+  all it holds); × removes it and what it held moves up a level. Folders are only
+  an arrangement: they change nothing about who sees an agent or where it runs —
+  a folder belongs to its group and is seen exactly by those who see the group.
+  Whether a folder is folded is your browser's own choice. A question the agent asks shows as an *Approval requested* card. The
   whole cockpit is skinned like Microsoft Teams (grey light mode / near-black dark
   mode, the Shadok mark in the header). On a phone the tools sit in the ⋯ menu and
   the agents sheet lists every group.

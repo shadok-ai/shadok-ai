@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { type Group, type Nature, MAIN_GROUP_ID } from "./groups.js";
+import { type Folder, sanitizeFolders } from "./agent-folders.js";
 import os from "node:os";
 import path from "node:path";
 
@@ -23,6 +24,9 @@ export interface Channel {
    *  under multi-tenant only between groups that share an OS user (public ↔
    *  public/Main, `groupMoveRefusal`), never across an isolation wall. */
   group?: string | null;
+  /** The agent folder it is filed in (src/agent-folders.ts) — cosmetic, client-
+   *  owned like `name`, and only ever a folder of the agent's own group. */
+  folder?: string | null;
   /** The environment's home base: pinned, never closable. Server-owned, so a
    *  stale client's PUT cannot clear it. See `isHomeChannel`. */
   home?: boolean;
@@ -380,6 +384,9 @@ export function mergeChannels(
     if (prev.skills === undefined) delete merged.skills;
     if (prev.createdBy === undefined) delete merged.createdBy;
     if (!("group" in c) && prev.group !== undefined) merged.group = prev.group;
+    // Same for `folder`: a tab pushes it only when it filed the agent itself, so
+    // one that had not seen a move made elsewhere cannot write the old one back.
+    if (!("folder" in c) && prev.folder !== undefined) merged.folder = prev.folder;
     // A move the caller is entitled to: the only way a client changes `group`.
     if (mayMove && "group" in c) {
       const to = c.group ?? null;
@@ -476,6 +483,15 @@ export function loadGroups(): Group[] {
 }
 export function saveGroups(list: Group[]): void {
   writeJson("groups", normalizeGroups(list));
+}
+
+/** Agent folders (a visual arrangement of the agents inside a group,
+ *  src/agent-folders.ts), persisted per launch dir beside the groups. */
+export function loadFolders(): Folder[] {
+  return sanitizeFolders(readJson("folders"));
+}
+export function saveFolders(list: Folder[]): void {
+  writeJson("folders", sanitizeFolders(list));
 }
 
 /** The single group this instance is bound to (one board per instance), or null.

@@ -688,7 +688,7 @@
     animation: breathe 1.8s ease-in-out infinite;
   }
   @media (prefers-reduced-motion: reduce) { .tab.working, .tab.has-bg { animation: none; } }
-  #newTab, #newRoom, #newGroup, #newGroupBare {
+  #newTab, #newRoom, #newGroup, #newGroupBare, #newFolder {
     margin-top: 6px;
     border-color: transparent;
     font-size: 13px;
@@ -697,7 +697,7 @@
     text-align: left;
   }
   #newRoom { margin-top: 0; }
-  #newTab:hover, #newRoom:hover, #newGroup:hover, #newGroupBare:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
+  #newTab:hover, #newRoom:hover, #newGroup:hover, #newGroupBare:hover, #newFolder:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
   #newGroup { margin-top: 4px; }
   /* The fallback "new group" entry: only on desktop, only while the rail (which
      has its own) is hidden for want of a group. */
@@ -800,7 +800,40 @@
   .group-head .gclose:hover { color: var(--err); }
   .group-body { padding-left: 10px; }
   .group.collapsed .group-body { display: none; }
-  .tab.dragging, .group.dragging { opacity: 0.4; }
+  .tab.dragging, .group.dragging, .agent-folder.dragging { opacity: 0.4; }
+  /* Agent folders (src/agent-folders.ts): a visual arrangement of the agents
+     INSIDE a group, never an ACL. A folder is a quiet header over an indented
+     body; folded, it speaks for what it hides (count + mood dot). */
+  .agent-folder { display: flex; flex-direction: column; gap: 2px; }
+  .folder-head {
+    display: flex; align-items: center; gap: 6px;
+    font-family: var(--sans); font-size: 12px; font-weight: 600; color: var(--text-dim);
+    border-radius: 6px; padding: 5px 8px; cursor: pointer; user-select: none;
+  }
+  .folder-head:hover { color: var(--text); background: var(--bg-inset); }
+  .folder-head .fcaret { flex: none; width: 9px; font-size: 9px; }
+  .folder-head .ficon { flex: none; font-size: 14px; }
+  .folder-head .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .folder-head input.rename {
+    flex: 1; min-width: 0; font-family: var(--sans); font-size: 12px;
+    background: var(--bg-inset); border: 1px solid var(--amber); border-radius: 3px; color: var(--text); padding: 2px 5px;
+  }
+  .folder-head .fcount { flex: none; font-size: 11px; font-weight: 400; }
+  .folder-head .fdot { flex: none; width: 7px; height: 7px; border-radius: 50%; display: none; }
+  .folder-head.needs-answer .fdot { display: block; background: var(--amber); animation: breathe 1.2s ease-in-out infinite; }
+  .folder-head.unread .fdot { display: block; background: var(--phosphor); }
+  .folder-head.working .fdot { display: block; background: var(--text-dim); animation: breathe 1.8s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .folder-head .fdot { animation: none !important; } }
+  .folder-head .fbtn { flex: none; font-size: 13px; line-height: 1; padding: 0 2px; opacity: 0; }
+  .folder-head:hover .fbtn { opacity: 0.8; }
+  .folder-head .fbtn:hover { color: var(--amber); opacity: 1; }
+  .folder-head .fdel:hover { color: var(--err); }
+  .folder-head.drop-target { box-shadow: inset 0 0 0 1px var(--amber); }
+  /* Folded over the agent on screen: outlined, so the selection is never lost. */
+  .agent-folder.holds-active > .folder-head { box-shadow: inset 0 0 0 1px var(--line); }
+  .folder-body { display: flex; flex-direction: column; gap: 2px; margin-left: 12px; padding-left: 6px; border-left: 1px solid var(--line); }
+  .agent-folder.folded > .folder-body { display: none; }
+  body.dragging-tab .folder-body:empty { min-height: 22px; border: 1px dashed var(--line); border-radius: 4px; }
   /* While dragging a tab, empty drop zones become visible targets. */
   body.dragging-tab #ungrouped:empty,
   body.dragging-tab .group-body:empty {
@@ -4246,6 +4279,7 @@
     <p id="viewEmpty" class="check-hint" hidden>No agent in this group yet — create one, or drag one onto the group.</p>
     <button id="newTab" title="New agent">＋ new agent</button>
     <button id="newRoom" title="New room — a conversation between people, no agent">＋ new room</button>
+    <button id="newFolder" type="button" title="New folder in this group — arranges its agents, changes nothing about who sees them">📁 new folder</button>
     <!-- The rail carries "+ new group" at its foot, but the rail is gone until a
          group exists — so this is the way to create the FIRST one. Desktop-only
          and only while there are no groups (CSS); it hands off to the rail's
@@ -4529,6 +4563,12 @@
   window.focusTarget = focusTarget;
   window.groupMoveRefusal = groupMoveRefusal;
   import { searchEmoji, looksLikeEmoji } from "/emoji-search.js?v=__ASSET_V__";
+  import { newFolderId, canMoveFolder, folderChildren, effectiveFolder, removeFolder } from "/agent-folders.js?v=__ASSET_V__";
+  window.newFolderId = newFolderId;
+  window.canMoveFolder = canMoveFolder;
+  window.folderChildren = folderChildren;
+  window.effectiveFolder = effectiveFolder;
+  window.removeFolder = removeFolder;
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
   import { pumpLine, mascotSay, pickMaxim } from "/shadok-soul.js?v=__ASSET_V__";
@@ -4746,6 +4786,14 @@
     // load; before the module lands, no suggestions (and typed text is treated
     // as a word, not an emoji) — both harmless, repainted on bridge-ready.
     searchEmoji: () => [],
+    // Folders before the module lands: none drawn (every agent at its group's
+    // root) and no folder edit possible — never a half-built tree. The column
+    // re-lays itself out on the next mutation once the module is in.
+    newFolderId: () => "f-" + Date.now().toString(36),
+    canMoveFolder: () => false,
+    folderChildren: () => () => [],
+    effectiveFolder: () => null,
+    removeFolder: (folders) => ({ folders, refile: new Map() }),
     looksLikeEmoji: () => false,
     uploadFailure: (status, contentType) =>
       /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
@@ -6096,6 +6144,7 @@
         // the stored value untouched (mergeChannels), and the server asserts it
         // from the session's real worktree.
         group: groupIdOf(t.btnEl),
+        folder: t.folder ?? null,
         muted: !!t.muted,
         mirror: !!t.mirror,
       }));
@@ -6105,10 +6154,12 @@
     // had not seen a move made elsewhere wrote the old group back.
     // No persistGroups() here either, for the same reason: the group LIST is
     // pushed by the gestures that change it, never as a side effect.
+    // `folder` follows the same rule: only the tab that filed the agent sends it.
     pushChannels(list.map((c, i) => {
-      if (window.groupIsDirty(c.group, shown[i].syncedGroup)) return c;
-      const { group, ...rest } = c;
-      return rest;
+      const out = { ...c };
+      if (!window.groupIsDirty(c.group, shown[i].syncedGroup)) delete out.group;
+      if (!window.groupIsDirty(c.folder, shown[i].syncedFolder)) delete out.folder;
+      return out;
     }));
   }
 
@@ -6153,9 +6204,10 @@
         // The group we sent is now the server's: record it, or moving the agent
         // BACK before the next poll would read as "unchanged" and never be sent.
         for (const c of list) {
-          if (!("group" in c)) continue;
           const t = tabs.find((x) => x.sessionId === c.sessionId);
-          if (t) t.syncedGroup = c.group ?? null;
+          if (!t) continue;
+          if ("group" in c) t.syncedGroup = c.group ?? null;
+          if ("folder" in c) t.syncedFolder = c.folder ?? null;
         }
       }).catch(() => {});
     }, 400);
@@ -6253,6 +6305,235 @@
         body: JSON.stringify(list),
       }).then((r) => { if (r.status === 409) handleSwap(); }).catch(() => {});
     }, 400);
+  }
+
+  // ── Agent folders: a VISUAL arrangement of a group's agents, never an ACL ──
+  // (src/agent-folders.ts). Each folder belongs to one group (null = Main) and
+  // nests inside that group's body in the agents column. The structure is shared
+  // through the server (/agent-folders); an agent's folder rides /channels as
+  // `t.folder`; whether a folder is folded is this browser's own choice.
+  let folders = [];
+  const FOLD_KEY = () => dirKey("cp.folderCollapsed", instanceKey);
+  let foldedFolders = new Set();
+  function loadFolded() {
+    try { foldedFolders = new Set(JSON.parse(localStorage.getItem(FOLD_KEY()) || "[]")); } catch { foldedFolders = new Set(); }
+  }
+  loadFolded();
+  function saveFolded() {
+    try { localStorage.setItem(FOLD_KEY(), JSON.stringify([...foldedFolders])); } catch {}
+  }
+  // A local edit not yet confirmed by the server: a poll in between must not
+  // put the old tree back under the user's hands.
+  let folderPushTimer = null;
+  let foldersDirtyUntil = 0;
+  let dragFolderId = null; // a folder being dragged in the agents column
+  function persistFolders() {
+    foldersDirtyUntil = Date.now() + 5000;
+    if (restoring || swapped) return;
+    clearTimeout(folderPushTimer);
+    folderPushTimer = setTimeout(() => {
+      fetch("/agent-folders", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "x-shadok-instance": instanceKey },
+        body: JSON.stringify(folders.map(({ id, name, icon, parent, group }) => ({ id, name, icon, parent, group }))),
+      }).then((r) => {
+        if (r.status === 409) return handleSwap();
+        foldersDirtyUntil = 0;
+      }).catch(() => {});
+    }, 300);
+  }
+  /** Adopt the server's folders, unless a local edit is still in flight. */
+  function adoptFolders(list) {
+    if (!Array.isArray(list) || Date.now() < foldersDirtyUntil || dragFolderId != null) return;
+    if (tabbar.querySelector(".folder-head input.rename")) return;
+    folders = list
+      .filter((f) => f && f.id != null)
+      .map((f) => ({ id: String(f.id), name: f.name || "folder", icon: f.icon, parent: f.parent ?? null, group: f.group ?? null }));
+    layoutFolders();
+  }
+  const folderById = (id) => folders.find((f) => f.id === String(id)) || null;
+  /** The folder a tab's element sits in right now (null = its group's root). */
+  const domFolderOf = (el) => el.parentNode?.closest(".agent-folder")?.dataset.folder ?? null;
+  /** The group key (null = Main) a zone of the column belongs to. */
+  const zoneGroupKey = (el) => {
+    const g = el.closest(".group");
+    return g ? String(g._group.id) : null;
+  };
+  const scopeEl = (key) => (key == null ? ungroupedEl : groups.find((g) => String(g.id) === String(key))?.bodyEl || null);
+
+  // One element per folder, kept across layouts so its listeners stay put.
+  const folderEls = new Map();
+  function folderEl(f) {
+    let rec = folderEls.get(f.id);
+    if (!rec) {
+      const el = document.createElement("div");
+      el.className = "agent-folder";
+      el.dataset.folder = f.id;
+      const head = document.createElement("div");
+      head.className = "folder-head";
+      head.draggable = true;
+      const caret = document.createElement("span");
+      caret.className = "fcaret";
+      const icon = document.createElement("span");
+      icon.className = "ficon";
+      icon.title = "Double-click to change the icon";
+      const name = document.createElement("span");
+      name.className = "fname";
+      name.title = "Double-click to rename";
+      const dot = document.createElement("span");
+      dot.className = "fdot";
+      const count = document.createElement("span");
+      count.className = "fcount";
+      const add = document.createElement("span");
+      add.className = "fbtn fadd";
+      add.textContent = "＋";
+      add.title = "New folder inside this one";
+      const del = document.createElement("span");
+      del.className = "fbtn fdel";
+      del.textContent = "×";
+      del.title = "Remove the folder (its agents move up a level)";
+      head.append(caret, icon, name, dot, count, add, del);
+      const body = document.createElement("div");
+      body.className = "folder-body";
+      el.append(head, body);
+      rec = { el, head, body, caret, icon, name, count };
+      el._folderBody = body;
+      const id = f.id;
+      head.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (e.target === add) return createFolder(folderById(id)?.group ?? null, id);
+        if (e.target === del) return deleteFolder(id);
+        if (foldedFolders.has(id)) foldedFolders.delete(id); else foldedFolders.add(id);
+        saveFolded();
+        paintFolderHeads();
+      });
+      name.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const cur = folderById(id);
+        if (!cur) return;
+        inlineRename(head, name, (v) => { cur.name = v; persistFolders(); layoutFolders(); });
+      });
+      icon.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const cur = folderById(id);
+        if (!cur) return;
+        // setGroupIcon writes `.icon` on its target: a folder answers to that too.
+        const target = { get icon() { return cur.icon; }, set icon(v) { cur.icon = v; persistFolders(); paintFolderHeads(); } };
+        openIconPicker(target, icon);
+      });
+      head.addEventListener("dragstart", (e) => {
+        e.stopPropagation();
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", "folder");
+        dragFolderId = id;
+        requestAnimationFrame(() => el.classList.add("dragging"));
+      });
+      head.addEventListener("dragend", () => endDrag());
+      folderEls.set(f.id, rec);
+    }
+    return rec;
+  }
+
+  /**
+   * Put every agent of every group in its folder. The DOM stays the source of
+   * the ORDER (as for groups and tabs); this only nests it: at each level the
+   * sub-folders (by name) come first, then the agents in their own order. A
+   * no-op when the column already matches, so it can run on every repaint.
+   */
+  function layoutFolders() {
+    if (dragTabEl || dragFolderId != null) return;
+    const scopes = [[null, ungroupedEl], ...groups.map((g) => [String(g.id), g.bodyEl])];
+    for (const [key, el] of scopes) layoutScope(key, el);
+    for (const [id, rec] of folderEls) {
+      if (folderById(id)) continue;
+      // Deleted: whatever is still inside goes up to where the folder stood.
+      for (const t of [...rec.body.querySelectorAll(".tab")]) rec.el.parentNode?.insertBefore(t, rec.el);
+      rec.el.remove();
+      folderEls.delete(id);
+    }
+    paintFolderHeads();
+  }
+  function layoutScope(key, scope) {
+    if (scope.querySelector("input.rename")) return; // a re-nest would eat the typing
+    const own = folders.some((f) => (f.group ?? null) === key);
+    if (!own && !scope.querySelector(".agent-folder")) return;
+    const kids = window.folderChildren(folders, key);
+    const tabEls = [...scope.querySelectorAll(".tab")];
+    const place = (b) => window.effectiveFolder(folders, b._tab?.folder ?? null, key);
+    const desired = (parent) =>
+      [...kids(parent).map((f) => "f" + f.id + "(" + desired(f.id) + ")"),
+       ...tabEls.filter((b) => place(b) === parent).map((b) => "t" + (b._tab?.id ?? ""))].join(",");
+    const actual = (box) =>
+      [...box.children].map((ch) =>
+        ch.classList.contains("agent-folder") ? "f" + ch.dataset.folder + "(" + actual(ch._folderBody) + ")"
+          : ch.classList.contains("tab") ? "t" + (ch._tab?.id ?? "") : "?").join(",");
+    if (desired(null) === actual(scope)) return;
+    const build = (box, parent) => {
+      for (const f of kids(parent)) {
+        const rec = folderEl(f);
+        box.appendChild(rec.el);
+        build(rec.body, f.id);
+      }
+      for (const b of tabEls) if (place(b) === parent) box.appendChild(b);
+    };
+    const keep = new Set();
+    const mark = (parent) => { for (const f of kids(parent)) { keep.add(f.id); mark(f.id); } };
+    mark(null);
+    build(scope, null);
+    // A folder of another group that ended up here (its group was dissolved):
+    // it is empty by now, every tab having been placed above.
+    for (const el of [...scope.querySelectorAll(".agent-folder")]) if (!keep.has(el.dataset.folder)) el.remove();
+  }
+
+  /** Count, fold caret, icon and mood of every folder header. Guarded writes:
+   *  the column's MutationObserver repaints on every change, so an unchanged
+   *  value must not be written back. */
+  function paintFolderHeads() {
+    for (const [id, rec] of folderEls) {
+      const f = folderById(id);
+      if (!f) continue;
+      const folded = foldedFolders.has(id);
+      rec.el.classList.toggle("folded", folded);
+      // Not while it is being renamed: the span is swapped out for the input.
+      if (!rec.head.querySelector("input.rename") && rec.name.textContent !== f.name) rec.name.textContent = f.name;
+      const caret = folded ? "▸" : "▾";
+      if (rec.caret.textContent !== caret) rec.caret.textContent = caret;
+      const icon = f.icon || (folded ? "📁" : "📂");
+      if (rec.icon.textContent !== icon) rec.icon.textContent = icon;
+      const inside = [...rec.body.querySelectorAll(".tab")];
+      const n = String(inside.length || "");
+      if (rec.count.textContent !== n) rec.count.textContent = n;
+      // Folded, it speaks for what it hides; unfolded, its agents speak for themselves.
+      const mood = folded ? window.groupMood(inside.map((b) => b._tab).filter(Boolean).map(moodOf)) : null;
+      for (const m of ["needs-answer", "unread", "working"]) rec.head.classList.toggle(m, m === mood);
+      rec.el.classList.toggle("holds-active", folded && inside.some((b) => b.classList.contains("active")));
+    }
+  }
+
+  /** A new folder in group `group` (null = Main), at its root or inside `parent`. */
+  function createFolder(group, parent = null) {
+    const f = { id: window.newFolderId(), name: "New folder", icon: undefined, parent, group: group ?? null };
+    folders.push(f);
+    if (parent != null) foldedFolders.delete(String(parent));
+    saveFolded();
+    persistFolders();
+    layoutFolders();
+    // Name it straight away: a folder called "New folder" is rarely what was meant.
+    const rec = folderEls.get(f.id);
+    if (rec) inlineRename(rec.head, rec.name, (v) => { f.name = v; persistFolders(); layoutFolders(); });
+  }
+  function deleteFolder(id) {
+    const r = window.removeFolder(folders, tabs.filter((t) => t.sessionId).map((t) => ({ id: t.sessionId, folder: t.folder ?? null })), id);
+    folders = r.folders;
+    for (const [sid, up] of r.refile) {
+      const t = tabs.find((x) => x.sessionId === sid);
+      if (t) t.folder = up;
+    }
+    foldedFolders.delete(String(id));
+    saveFolded();
+    persistFolders();
+    layoutFolders();
+    if (r.refile.size) persistChannels();
   }
 
   function createGroup(opts = {}) {
@@ -6392,7 +6673,8 @@
   // running agent: between public groups and Main (all the commons user), never
   // into or out of a Private/Personal one (`groupMoveRefusal`, enforced again by
   // the server). Mono-tenant groups are cosmetic and always move.
-  const zoneGroup = (zone) => (zone && zone._group) || groups.find((g) => g.bodyEl === zone) || null;
+  // A zone may be a folder's body: its group is the one it sits in.
+  const zoneGroup = (zone) => (zone && (zone._group || zone.closest(".group")?._group)) || null;
   function tabMoveRefusal(zone) {
     if (groupCapable !== true || !dragTabHome || zone === dragTabHome) return null;
     return window.groupMoveRefusal(zoneGroup(dragTabHome), zoneGroup(zone));
@@ -6417,22 +6699,61 @@
     const wasGroup = !!dragGroupEl;
     const draggedRoom = dragTabEl && dragTabEl._tab && dragTabEl._tab.roomId ? dragTabEl._tab : null;
     if (draggedRoom) moveRoomGroup(draggedRoom);
+    // The folder an agent was dropped in is read off where it landed. A room is
+    // not an agent: it has no folder, and the next layout puts it back at its root.
+    if (dragTabEl && dragTabEl._tab && !draggedRoom) dragTabEl._tab.folder = domFolderOf(dragTabEl);
+    if (dragFolderId != null) folderEls.get(dragFolderId)?.el.classList.remove("dragging");
+    document.querySelectorAll(".folder-head.drop-target").forEach((h) => h.classList.remove("drop-target"));
     if (dragTabEl) dragTabEl.classList.remove("dragging");
     if (dragGroupEl) dragGroupEl.classList.remove("dragging");
     dragTabEl = dragGroupEl = dragTabHome = null;
+    dragFolderId = null;
     document.body.classList.remove("dragging-tab");
     document.querySelectorAll(".rail-item.drop-target, .rail-item.dragging").forEach((r) => r.classList.remove("drop-target", "dragging"));
     persistChannels();
     if (wasGroup) persistGroups();
+    layoutFolders();
     railSig = "";
     renderRail();
   }
 
+  /** Where a dragged folder would land: inside the folder whose header is under
+   *  the pointer, beside the agent under it, or at the root of the zone. */
+  function folderDropTarget(e) {
+    const f = folderById(dragFolderId);
+    if (!f) return undefined;
+    const head = e.target.closest(".folder-head");
+    const zoneEl = head ? head.parentNode : e.target.closest(".tab, .folder-body, #ungrouped, .group-body");
+    if (!zoneEl) return undefined;
+    if ((zoneGroupKey(zoneEl) ?? null) !== (f.group ?? null)) return undefined; // folders stay in their group
+    const target = head ? head.parentNode.dataset.folder
+      : zoneEl.classList.contains("tab") ? domFolderOf(zoneEl)
+      : zoneEl.classList.contains("folder-body") ? zoneEl.parentNode.dataset.folder : null;
+    return window.canMoveFolder(folders, f.id, target) ? target : undefined;
+  }
   tabbar.addEventListener("dragover", (e) => {
-    if (!dragTabEl && !dragGroupEl) return;
+    if (!dragTabEl && !dragGroupEl && dragFolderId == null) return;
+    if (dragFolderId != null) {
+      document.querySelectorAll(".folder-head.drop-target").forEach((h) => h.classList.remove("drop-target"));
+      const target = folderDropTarget(e);
+      if (target === undefined) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (target != null) folderEls.get(target)?.head.classList.add("drop-target");
+      return;
+    }
     e.preventDefault();
     e.dataTransfer.dropEffect = "move";
     if (dragTabEl) {
+      // Onto a folder's header: into that folder (unfolded, so it stays in sight).
+      const fhead = e.target.closest(".folder-head");
+      if (fhead) {
+        const rec = folderEls.get(fhead.parentNode.dataset.folder);
+        if (!rec || !tabMoveAllowed(rec.body)) return;
+        if (foldedFolders.delete(rec.el.dataset.folder)) { saveFolded(); paintFolderHeads(); }
+        if (dragTabEl.parentNode !== rec.body) rec.body.appendChild(dragTabEl);
+        return;
+      }
       const overTab = e.target.closest(".tab");
       // The bottom slot ONLY hosts the tweak channel: without this guard, a tab
       // dragged over it would be inserted there and end up pinned in place.
@@ -6455,7 +6776,7 @@
           g._group.bodyEl.appendChild(dragTabEl);
         return;
       }
-      const zone = e.target.closest("#ungrouped, .group-body");
+      const zone = e.target.closest("#ungrouped, .group-body, .folder-body");
       if (zone && dragTabEl.parentNode !== zone && tabMoveAllowed(zone)) zone.appendChild(dragTabEl);
     } else if (dragGroupEl) {
       const overGroup = e.target.closest(".group");
@@ -6467,10 +6788,24 @@
     }
   });
   tabbar.addEventListener("drop", (e) => {
+    if (dragFolderId != null) {
+      const target = folderDropTarget(e);
+      const f = folderById(dragFolderId);
+      if (target !== undefined && f) {
+        e.preventDefault();
+        f.parent = target;
+        if (target != null) { foldedFolders.delete(target); saveFolded(); }
+        persistFolders();
+      }
+      return endDrag();
+    }
     if (dragTabEl || dragGroupEl) e.preventDefault();
     if (!dragTabEl) return;
     const head = e.target.closest(".group-head");
-    const zone = head ? head.parentNode._group.bodyEl : e.target.closest(".tab")?.parentNode || e.target.closest("#ungrouped, .group-body");
+    const fhead = e.target.closest(".folder-head");
+    const zone = head ? head.parentNode._group.bodyEl
+      : fhead ? fhead.parentNode._folderBody
+      : e.target.closest(".tab")?.parentNode || e.target.closest("#ungrouped, .group-body, .folder-body");
     const why = zone && tabMoveRefusal(zone);
     if (why) moveNotice(why);
   });
@@ -6556,6 +6891,7 @@
     // No group → no column (invariant: the rail earns its space, see the CSS).
     document.body.classList.toggle("has-groups", groups.length > 0);
     tabbar.dataset.view = v;
+    layoutFolders();
     for (const g of groups) {
       g.el.classList.toggle("in-view", String(g.id) === v);
       const gi = g.headEl.querySelector(".gicon");
@@ -7046,13 +7382,15 @@
   const CHANNEL_REMOVE_AFTER_MS = 20000;
   async function syncChannels() {
     if (restoring) return;
-    let chans, srvGroups;
+    let chans, srvGroups, srvFolders;
     try {
-      [chans, srvGroups] = await Promise.all([
+      [chans, srvGroups, srvFolders] = await Promise.all([
         fetch("/channels").then((r) => r.json()),
         fetch("/groups").then((r) => r.json()).catch(() => null),
+        fetch("/agent-folders").then((r) => r.json()).catch(() => null),
       ]);
     } catch { return; }
+    adoptFolders(srvFolders);
     if (!Array.isArray(chans)) return;
     // A group created on another device must exist here before an agent can be
     // filed into it. Additive only: a group missing from the server may be one
@@ -7132,6 +7470,10 @@
           const dest = r.move && (cg == null ? ungroupedEl : groups.find((g) => String(g.id) === String(cg))?.bodyEl);
           if (dest) dest.appendChild(t.btnEl);
           if (!r.move || dest) t.syncedGroup = r.synced;
+          // Filed in another folder elsewhere: same rule as the group.
+          const rf = window.reconcileTabGroup(t.folder ?? null, t.syncedFolder, c.folder ?? null);
+          if (rf.move) t.folder = c.folder ?? null;
+          t.syncedFolder = rf.synced;
         }
       } else if (!dismissedChannels.has(c.sessionId)) {
         // Discovered, not asked for: never steal the view. The one exception is
@@ -7141,6 +7483,8 @@
         const nt = createTab(foldCommons(c.group), { focus: !active });
         nt.sessionId = c.sessionId;
         nt.syncedGroup = foldCommons(c.group) ?? null;
+        nt.folder = c.folder ?? null;
+        nt.syncedFolder = nt.folder;
         nt.draft = savedDrafts[c.sessionId] || "";
         if (c.branch) nt.branch = c.branch;
         nt.profile = c.profile || null;
@@ -16698,6 +17042,8 @@
   // END group-create
   newGroupBtn.addEventListener("click", openGroupCreate);
   $("newGroupBare").addEventListener("click", openGroupCreate);
+  // A new folder goes in the group on screen (Main on a phone, which has no rail).
+  $("newFolder").addEventListener("click", () => createFolder(viewGroupId()));
 
   // ── Quota gauges (5h / 7d) ──────────────────────────────
   function fmtReset(sec) {
@@ -16799,11 +17145,12 @@
     // `/first-agent` rides along in the SAME batch rather than being awaited in
     // the empty branch below: it costs no extra latency there, and it adds no
     // second place where a hanging server could hold the first paint.
-    const [defaultsR, groupsR, channelsR, firstAgentR] = await Promise.allSettled([
+    const [defaultsR, groupsR, channelsR, firstAgentR, foldersR] = await Promise.allSettled([
       serverCwd ? Promise.resolve(null) : fetch("/defaults").then((r) => r.json()),
       fetch("/groups").then((r) => r.json()),
       fetch("/channels").then((r) => r.json()),
       fetch("/first-agent").then((r) => r.json()),
+      fetch("/agent-folders").then((r) => r.json()),
     ]);
     if (defaultsR.status === "fulfilled" && defaultsR.value) {
       if (!serverCwd) serverCwd = defaultsR.value.cwd || "";
@@ -16827,6 +17174,9 @@
     // The commons group ("main") is the "Main" view, never a rail group (see foldCommons).
     if (groupsR.status === "fulfilled") noteCommons(groupsR.value);
     for (const g of savedGroups) if (String(g.id) !== COMMONS_GROUP_ID) createGroup(g);
+    // Folders: the fold state is keyed by instance, known only now.
+    loadFolded();
+    if (foldersR.status === "fulfilled") adoptFolders(foldersR.value);
 
     let saved = pickChannelSource(channelsR, JSON.parse(localStorage.getItem(dirKey("cp.channels", instanceKey)) || "[]"));
 
@@ -16842,6 +17192,8 @@
       for (const s of uniqueChannels) {
         const t = createTab(foldCommons(s.group));
         t.syncedGroup = foldCommons(s.group) ?? null;
+        t.folder = s.folder ?? null;
+        t.syncedFolder = t.folder;
         // Know the session id from the start, so a slow or failed reattach never
         // drops the channel from a persist (which eroded the list to one).
         t.sessionId = s.sessionId;
