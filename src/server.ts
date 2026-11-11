@@ -1,6 +1,7 @@
 import { randomUUID, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import { newRequest, askVerdict, approveVerdict, cancelVerdict, dueRequests, expire, upsertRequest, requestsFor, describeRequest, loadRequests, saveRequests, isOpen, REQUEST_TTL_MS, type AdminRequest, type RequestKind } from "./admin-requests.js";
 import { recordEvent, loadEvents, saveEvents, inboxFor, markSeen, notMeEffect, describeEvent, type SecEvent } from "./security-events.js";
+import { reportInput, fileReport, rateRefusal, shouldNotify, reportsInbox, markReportsSeen, resolveReport, notificationText as reportNotificationText, loadReports, saveReports } from "./agent-reports.js";
 import { execFile, execFileSync, spawnSync, spawn as spawnChild } from "node:child_process";
 import type { Readable } from "node:stream";
 import type { IncomingMessage } from "node:http";
@@ -3936,6 +3937,8 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
   // group's own OS user reads only this tier.
   ["factory-skill", "shadok-factory"],
+  // Asking an admin for help when stuck (src/agent-reports.ts).
+  ["report-skill", "shadok-report"],
 ];
 
 /** Claude Code's machine-wide ("Enterprise"/managed) skills directory — read by
@@ -6704,6 +6707,15 @@ function broadcastAll(msg: object): void {
   for (const c of wss.clients) if (c.readyState === c.OPEN) c.send(data);
 }
 
+/** Send a message to every socket an ADMIN person opened (stamped at connect,
+ *  never from a frame). Agents and members never get it: a report may name a
+ *  credential problem the rest of the instance has no business reading. */
+function broadcastAdmins(msg: object): void {
+  const data = JSON.stringify(msg);
+  for (const c of wss.clients)
+    if (c.readyState === c.OPEN && (c as WebSocket & { __admin?: boolean }).__admin) c.send(data);
+}
+
 /** The version + settings snapshot every client needs: running/latest version,
  *  whether auto-update is armed, and the spawn permission mode. */
 /** What both /version and the WS `version` message report. */
@@ -6880,6 +6892,62 @@ app.post("/files", (req, res) => {
   }
   if (!accepted.length) return res.status(400).json({ error: refused.join("; ") });
   res.json({ ok: true, sent: accepted.map((f) => ({ path: f.path, name: f.name, size: f.size })), refused });
+});
+
+// ── Agent reports (src/agent-reports.ts): an agent that is stuck asks an
+// admin for help — an expired token, an access it does not have, a bug.
+//
+// Filed by the AGENT only, authenticated by its session key (invariant 33): a
+// person has the chat and the admins themselves. Read and resolved by an ADMIN
+// person only. Notified twice, because a report nobody sees is the very failure
+// this exists to end: a DM to the Telegram owner, and a live `agent-report`
+// frame to every admin socket (badge + sound), backed by the panel's poll.
+app.post("/reports", (req, res) => {
+  const agent = agentPrincipal(req);
+  if (!agent) return res.status(403).json({ error: "agents only — authenticate with x-shadok-session-key" });
+  const v = reportInput(req.body);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const now = Date.now();
+  let list = loadReports();
+  const ch = loadChannels().find((c) => c.sessionId === agent.sessionId);
+  const who = { sessionId: agent.sessionId, agent: ch?.name || agent.sessionId.slice(0, 8), group: agent.group, profile: agent.profile };
+  const filed = fileReport(list, v.input, who, now);
+  if (!filed.merged) {
+    const refused = rateRefusal(list, agent.sessionId, now);
+    if (refused) return res.status(429).json({ error: refused });
+  }
+  list = filed.list;
+  const r = filed.report;
+  const notify = shouldNotify(r, filed.merged, now);
+  if (notify) list = list.map((x) => (x.id === r.id ? { ...x, notifiedAt: now } : x));
+  saveReports(list);
+  console.log(`reports: ${who.agent} (${agent.sessionId.slice(0, 8)}) filed ${r.kind} "${r.title}"${filed.merged ? ` ×${r.count}` : ""}`);
+  broadcastAdmins({ type: "agent-report", id: r.id, agent: r.agent, kind: r.kind, title: r.title, count: r.count });
+  let telegram: Promise<boolean> = Promise.resolve(false);
+  if (notify) telegram = tgBridge.notifyOwner(reportNotificationText(r, titleForCwd(loadConfig(), process.cwd()))).catch(() => false);
+  void telegram.then((sent) => {
+    res.json({ ok: true, id: r.id, merged: filed.merged, count: r.count, notified: { cockpit: true, telegram: sent } });
+  });
+});
+app.get("/reports", (req, res) => {
+  const me = accountAdmin(req, res, false, "read agent reports");
+  if (!me) return;
+  res.json(reportsInbox(loadReports(), me.name));
+});
+app.post("/reports/seen", (req, res) => {
+  const me = accountAdmin(req, res, true, "read agent reports");
+  if (!me) return;
+  saveReports(markReportsSeen(loadReports(), me.name));
+  res.json({ ok: true });
+});
+app.post("/reports/resolve", (req, res) => {
+  const me = accountAdmin(req, res, true, "resolve agent reports");
+  if (!me) return;
+  const out = resolveReport(loadReports(), String(req.body?.id ?? ""), me.name, Date.now(), req.body?.reopen === true);
+  if (!out.ok) return res.status(404).json({ error: out.error });
+  saveReports(out.list);
+  console.log(`reports: ${me.name} ${req.body?.reopen === true ? "reopened" : "resolved"} "${out.report.title}"`);
+  res.json({ ok: true, report: out.report });
 });
 
 /**
@@ -9878,6 +9946,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // so the cockpit always shows which peer created what.
   const callerPeerRestricted = restrictedBoxOf(req) !== null;
   (ws as WebSocket & { __peer?: string | null }).__peer = callerPeer;
+  // An admin PERSON's socket receives `agent-report` frames (broadcastAdmins).
+  (ws as WebSocket & { __admin?: boolean }).__admin = me?.role === "admin" && !me.agent && !callerPeer;
   // A same-origin browser, decided ONCE at connect from the upgrade's headers —
   // not from anything a frame says. `run` is gated on it: shell mode bypasses a
   // profile's `deny` (measured), so pilotctl and the agents, which connect with
@@ -11235,6 +11305,24 @@ function seedFilesSkill(): void {
   }
 }
 if (SEED_SKILLS) seedFilesSkill();
+
+/** The `shadok-report` skill — an agent that is stuck asks an admin for help
+ *  (POST /reports). Seeded like shadok-files, for the same reason: every boot
+ *  reaches the agents already running. */
+function seedReportSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "report-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-report");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "report.mjs"), path.join(dst, "scripts", "report.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "report.mjs"), 0o755);
+  } catch {
+    /* best effort — without it an agent says it in its own chat, as before */
+  }
+}
+if (SEED_SKILLS) seedReportSkill();
 
 /** The `shadok-social` skill — posting on a connected LinkedIn account. */
 function seedSocialSkill(): void {
