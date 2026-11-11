@@ -4022,6 +4022,7 @@
         <li>Send <code>/spawn &lt;name&gt;</code> (or create a topic by hand): each topic is one agent, also visible here as a tab.</li>
       </ol>
       <p class="check-hint">Optional: list chat ids under <i>Allowed chats</i> so only they can reach the bot.</p>
+      <p class="check-hint">Only want private messages? Steps 3 to 6 are not for you: pick <b>Open DMs only</b> under <i>Where the bot works</i> — no group, no pairing, and anyone who writes to the bot gets their own agent.</p>
     </details>
     <div class="tg-pair">
       <button id="tgPair" title="Show a one-time code: only the Telegram account that enters it can bind the board group or own the bot's DMs">Pair Telegram</button>
@@ -4054,8 +4055,12 @@
       </form>
     </div>
     <div class="field" id="tgGuestsField">
-      <span class="label">Open DMs <span class="check-hint">— anyone who writes the bot gets their own agent</span></span>
-      <label class="check"><input type="checkbox" id="tgGuestsOn"><span>Let people other than you talk to the bot</span></label>
+      <span class="label">Where the bot works <span class="check-hint">— a board group, open private messages, or both</span></span>
+      <select id="tgMode" style="width:100%" title="Open private messages give anyone who writes to the bot their own agent">
+        <option value="group">Board group — private messages are yours alone</option>
+        <option value="group+dm">Board group + open DMs — anyone who writes gets their own agent</option>
+        <option value="dm-only">Open DMs only — no board group, nobody pairs</option>
+      </select>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <select id="tgGuestGroup" style="flex:1;min-width:160px" title="The restricted group their agents live in"></select>
         <select id="tgGuestProfile" style="flex:1;min-width:160px" title="The profile their agents run on — this is what defines the job"></select>
@@ -16063,15 +16068,25 @@
     tgAllowed = s.allowedChats.slice();
     const dot = s.running && s.username ? "🟢" : s.tokenError ? "🟠" : "⚪";
     const who = s.username ? s.username : s.hasToken ? "(token set)" : "no token";
-    const grp = s.boundGroup ? ` · group ${s.boundGroup.chatId}` : " · no group bound (pair it below)";
+    // A DM-only instance has no board group and never will: saying "no group
+    // bound" there would describe a step that is refused on purpose.
+    const dmOnlyMode = (s.guests && s.guests.mode) === "dm-only";
+    const grp = dmOnlyMode
+      ? " · private messages only"
+      : s.boundGroup ? ` · group ${s.boundGroup.chatId}` : " · no group bound (pair it below)";
     const err = s.tokenError ? ` — ${s.tokenError}` : "";
     $("tgStatus").textContent = `${dot} ${who}${grp}${err}`;
     $("tgUnbind").hidden = !s.boundGroup; // only offer unbind when a group is bound
-    // The guide unfolds on its own until the setup is done (token + bound group);
-    // once it is, it stays folded unless opened — decided once per opening of
-    // the panel, so saving a token never folds a guide the user is reading.
+    // Nothing can redeem a code on a DM-only instance (`/setup` is refused
+    // everywhere), so the button that issues one is not offered.
+    $("tgPair").hidden = dmOnlyMode;
+    if (dmOnlyMode) hidePairing();
+    // The guide unfolds on its own until the setup is done (token + bound
+    // group, or a mode that needs no group); once it is, it stays folded unless
+    // opened — decided once per opening of the panel, so saving a token never
+    // folds a guide the user is reading.
     if (!$("tgGuide").dataset.auto) {
-      $("tgGuide").open = !(s.hasToken && s.boundGroup);
+      $("tgGuide").open = !(s.hasToken && (s.boundGroup || dmOnlyMode));
       $("tgGuide").dataset.auto = "1";
     }
     $("tgEnabled").checked = s.enabled;
@@ -16092,13 +16107,13 @@
     renderGuests(s);
   }
 
-  /** Open DMs: the switch, the group their agents live in, the profile they run
-   *  on. The two pickers are solidary with the switch — the server refuses to
-   *  enable with either missing, and the panel says so rather than looking
+  /** Where the bot works: the mode, the group guests' agents live in, the
+   *  profile they run on. The three are solidary — the server refuses an open
+   *  mode with either picker missing, and the panel says so rather than looking
    *  saved. The group list comes from the server and is per-caller: a group you
    *  are not a member of is never in it. */
   function renderGuests(s) {
-    const g = s.guests || { on: false, group: null, profile: null };
+    const g = s.guests || { mode: "group", group: null, profile: null };
     const groups = s.guestGroups || [];
     const sel = (id, items, value, empty) => {
       const el = $(id);
@@ -16124,16 +16139,27 @@
       g.profile,
       "pick a profile…",
     );
-    $("tgGuestsOn").checked = !!g.on;
-    // Two prerequisites, both stated rather than discovered through a failed
-    // save: a restricted group to put them in, and the bot's DMs already paired
-    // (with no owner, a stranger is asked to pair instead of getting an agent).
-    $("tgGuestsOn").disabled = !groups.length || !s.dmOwned;
+    const mode = $("tgMode");
+    mode.value = ["group", "group+dm", "dm-only"].includes(g.mode) ? g.mode : "group";
+    // The prerequisites are stated on the options themselves rather than
+    // discovered through a failed save: an open mode needs a restricted group
+    // to put people in, and `group+dm` also needs the bot's DMs paired — with
+    // no owner, a stranger is asked for a code instead of getting an agent.
+    // "DMs only" is exempt: it removes the owner altogether.
+    for (const o of mode.options) {
+      o.disabled = (o.value !== "group" && !groups.length) || (o.value === "group+dm" && !s.dmOwned);
+    }
+    const WALL =
+      "Their agents live in that group: it runs under its own Unix user, and only its members see those conversations — you included, from this cockpit. Anyone you add to the group can read them.";
     $("tgGuestsNote").textContent = !groups.length
       ? "You need a restricted group first (Groups panel) — and that needs the privileged deployment. Only its members will ever see these conversations."
-      : !s.dmOwned
-        ? "Pair the bot's private messages first (Pair Telegram above): until the bot has an owner, anyone writing to it is asked for a code instead of getting an agent."
-        : "Their agents live in that group: it runs under its own Unix user, and only its members see those conversations — you included, from this cockpit. Anyone you add to the group can read them.";
+      : mode.value === "dm-only"
+        ? "No board group at all: a group that adds the bot is told it only works in private, and /setup is refused everywhere — nobody pairs, and your own chat with the bot becomes a guest conversation like anyone else's. " + WALL
+        : mode.value === "group+dm"
+          ? WALL
+          : s.dmOwned
+            ? "The classic setup, unchanged: the board group runs your agents, and the bot's private messages are yours alone. Pick the group and the profile other people's agents would use, then change the mode above."
+            : "The classic setup, unchanged. Pair the bot's private messages first (Pair Telegram above) to add open DMs to it — or pick “Open DMs only”, where nobody pairs at all.";
   }
   // Pairing code: shown once, as issued — the server never returns it again.
   let tgPairTimer = null;
@@ -16925,12 +16951,13 @@
   $("telegramClose").addEventListener("click", () => { $("telegramOverlay").hidden = true; });
   $("telegramOverlay").addEventListener("click", (e) => { if (e.target === $("telegramOverlay")) $("telegramOverlay").hidden = true; });
   $("tgEnabled").addEventListener("change", (e) => putTelegram({ enabled: e.target.checked }));
-  // Open DMs. Re-reads the server's state whatever happens: a refused enable
-  // (no group, no profile, wrong nature) must visibly bounce back to off rather
-  // than leave a ticked box over a door that is shut.
+  // Where the bot works. Re-reads the server's state whatever happens: a
+  // refused mode (no group, no profile, wrong nature, DMs not paired) must
+  // visibly bounce back to the classic one rather than leave the picker
+  // showing a door that is shut.
   async function saveGuests() {
     const guests = {
-      on: $("tgGuestsOn").checked,
+      mode: $("tgMode").value,
       group: $("tgGuestGroup").value || null,
       profile: $("tgGuestProfile").value || null,
     };
@@ -16943,7 +16970,7 @@
     if (!r.ok) alert(body.error || "update failed");
     loadTelegram();
   }
-  for (const id of ["tgGuestsOn", "tgGuestGroup", "tgGuestProfile"]) {
+  for (const id of ["tgMode", "tgGuestGroup", "tgGuestProfile"]) {
     $(id).addEventListener("change", saveGuests);
   }
   $("tgTokenSave").addEventListener("click", () => {
