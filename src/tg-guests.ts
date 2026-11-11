@@ -50,6 +50,8 @@ export function guestEnableRefusal(input: {
   want: GuestSetup;
   groups: readonly Group[];
   profileExists: (name: string) => boolean;
+  /** Has the bot's DM owner been paired yet (`loadTgOwner() !== null`)? */
+  hasOwner: boolean;
 }): string | null {
   const { want } = input;
   if (!want.on) return null;
@@ -57,6 +59,13 @@ export function guestEnableRefusal(input: {
   // there is nothing here that could hold a guest.
   const capability = isolationRefusal(input.mode);
   if (capability) return capability;
+  // The bot's DMs must already have an OWNER. `dmGate` answers `pair` while
+  // there is none — a stranger then gets the pairing refusal, not an agent —
+  // and that ordering is deliberate: it is what stops the first person through
+  // an open door from claiming the bot. Without this check the panel would save
+  // a door that cannot open, and nothing anywhere would say so.
+  if (!input.hasOwner)
+    return "pair the bot's private messages first (Pair Telegram above): guests are only recognised once the bot has an owner";
   const groupId = want.group?.trim();
   if (!groupId) return "choose the group guests' agents live in";
   const profile = want.profile?.trim();
@@ -131,6 +140,7 @@ export function guestPatchFlow(input: {
   want: GuestSetup;
   groups: readonly Group[];
   profileExists: (name: string) => boolean;
+  hasOwner: boolean;
 }): { ok: false; status: number; error: string } | { ok: true; setup: GuestSetup; groups: Group[] } {
   const want = normalizeGuestSetup(input.want);
   const error = guestEnableRefusal({
@@ -138,6 +148,7 @@ export function guestPatchFlow(input: {
     want: input.want,
     groups: input.groups,
     profileExists: input.profileExists,
+    hasOwner: input.hasOwner,
   });
   if (error) return { ok: false, status: 400, error };
   let groups = [...input.groups];

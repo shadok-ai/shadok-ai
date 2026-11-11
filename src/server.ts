@@ -121,6 +121,7 @@ import {
   channelWriteAllowed,
   profilePatch,
   loadTgGroup,
+  loadTgOwner,
   saveTgGroup,
   saveTgOperators,
   isHomeChannel,
@@ -6760,6 +6761,9 @@ async function telegramState(viewer: Viewer | null = null) {
   return {
     guests,
     guestGroups,
+    // Whether the bot's DMs have an owner: a prerequisite for open DMs, and the
+    // panel must be able to say so instead of letting the save fail.
+    dmOwned: loadTgOwner() !== null,
     hasToken: Boolean(tc.token),
     enabled: tc.enabled,
     running: tgBridge.running(),
@@ -6827,6 +6831,10 @@ app.put("/telegram", async (req, res) => {
       want,
       groups: loadGroups(),
       profileExists: (n) => !!getProfile(n),
+      // `dmGate` answers `pair` while the bot has no owner, so guests cannot be
+      // recognised before the DMs are paired — enabling first would save a door
+      // that cannot open.
+      hasOwner: loadTgOwner() !== null,
     });
     if (!flow.ok) return res.status(flow.status).json({ error: flow.error });
     saveGroups(flow.groups);

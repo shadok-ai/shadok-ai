@@ -527,7 +527,12 @@ group already bound before this change stays bound.
   `docs/superpowers/specs/2026-11-11-telegram-open-dm-design.md`). A DM normally
   belongs to ONE owner and everyone else is told the bot is private. An admin can
   open that door, per launch directory, by naming a **restricted group** and a
-  **profile** in the Telegram panel — both or nothing. A sender who is not the
+  **profile** in the Telegram panel — both or nothing, and only once the bot's
+  DMs are **paired**: `dmGate` answers `pair` while there is no owner, so a
+  stranger would be asked for a code instead of getting an agent, and enabling
+  first would save a door that cannot open. Both prerequisites are refused at
+  the panel, most fundamental first (the deployment, then the pairing), rather
+  than discovered as silence in Telegram. A sender who is not the
   owner then becomes a `guest`: `dmGate` grows a fourth verdict, and their first
   message spawns an agent on that profile, in that group, bound to their DM. The
   same person always lands on the same agent, and that costs no new storage: a

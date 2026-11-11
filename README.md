@@ -306,9 +306,11 @@ Enter to skip; you can add it later from the web UI).
   silence.
 - **Open the bot to other people** (admin, Telegram panel, privileged
   deployment only) — normally the bot's private messages belong to you alone and
-  anyone else is told it is private. Tick **Open DMs**, pick a **restricted
-  group** and a **profile**, and anyone who writes to the bot gets their own
-  agent instead: on that profile, inside that group, and always the same agent
+  anyone else is told it is private. Pair the bot's DMs
+  first (**Pair Telegram**, then `/setup <code>` in a private chat with it — you
+  do NOT need a board group), then tick **Open DMs** and pick a **restricted
+  group** and a **profile**: anyone who writes to the bot then gets their own
+  agent instead, on that profile, inside that group, and always the same agent
   for the same person. The profile is what decides the job — support, a front
   desk, whatever you set up — and its guardrails are what those people are
   driving, so choose it deliberately. You read and take over those conversations

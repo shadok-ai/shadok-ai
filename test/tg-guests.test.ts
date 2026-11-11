@@ -37,6 +37,7 @@ const refusal = (over: Partial<Parameters<typeof guestEnableRefusal>[0]> = {}) =
     want: { on: true, group: "g1", profile: "Support" },
     groups: GROUPS,
     profileExists: (n) => n === "Support",
+    hasOwner: true,
     ...over,
   });
 
@@ -67,6 +68,25 @@ test("guestEnableRefusal: an unknown group, a public one and a personal one are 
   assert.match(String(refusal({ want: { on: true, group: "main", profile: "Support" } })), /restricted/i);
   // A personal group is sealed and the bridge could never be a member of it.
   assert.match(String(refusal({ want: { on: true, group: "p1", profile: "Support" } })), /personal/i);
+});
+
+test("guestEnableRefusal: the bot's DMs must be PAIRED first", () => {
+  // `dmGate` answers `pair` while the bot has no owner, so a stranger would get
+  // the pairing refusal instead of an agent — and that ordering is what stops
+  // the first person through an open door from claiming the bot. Enabling
+  // before pairing would save a door that cannot open.
+  const r = String(refusal({ hasOwner: false }));
+  assert.match(r, /pair/i);
+  // Switching off is still allowed with no owner: the way out is never gated.
+  assert.equal(refusal({ hasOwner: false, want: { on: false, group: "g1", profile: "Support" } }), null);
+});
+
+test("guestPatchFlow: enabling with no owner writes nothing", () => {
+  const r = flow({ hasOwner: false });
+  assert.equal(r.ok, false);
+  if (r.ok) return;
+  assert.equal(r.status, 400);
+  assert.match(r.error, /pair/i);
 });
 
 test("guestEnableRefusal: an unknown profile is refused by name", () => {
@@ -132,6 +152,7 @@ const flow = (over: Partial<Parameters<typeof guestPatchFlow>[0]> = {}) =>
     want: { on: true, group: "g1", profile: "Support" },
     groups: GROUPS,
     profileExists: (n) => n === "Support" || n === "Other",
+    hasOwner: true,
     ...over,
   });
 
@@ -312,4 +333,11 @@ test("ownerAdoptionCandidate: a topic and a group chat are never DMs", () => {
   assert.equal(ownerAdoptionCandidate({ telegram: { chatId: -100500 } }, "g1"), null);
   assert.equal(ownerAdoptionCandidate({ telegram: null }, "g1"), null);
   assert.equal(ownerAdoptionCandidate({}, "g1"), null);
+});
+
+test("guestEnableRefusal: the most fundamental blocker speaks first", () => {
+  // On an instance that can never host a guest, "pair your DMs" would be a
+  // wasted errand — so the capability is named before the pairing.
+  const r = String(refusal({ mode: "mono-tenant", hasOwner: false }));
+  assert.equal(r, "isolation requires the privileged deployment");
 });

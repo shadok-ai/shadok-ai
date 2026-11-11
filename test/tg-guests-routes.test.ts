@@ -29,6 +29,8 @@ test("PUT /telegram: the group and profile are never read from the body beyond t
   assert.match(r, /previous: guestSetupForCwd\(loadConfig\(\), cwd\)/);
   assert.match(r, /profileExists: \(n\) => !!getProfile\(n\)/);
   assert.match(r, /mode: DEPLOYMENT_MODE/);
+  // The pairing prerequisite is read server-side, never taken from the body.
+  assert.match(r, /hasOwner: loadTgOwner\(\) !== null/);
 });
 
 test("PUT /telegram: a guests change restarts the bridge, which reads the setup at start", () => {
@@ -165,6 +167,14 @@ test("panel: a refused save re-reads the server's state, so the box cannot lie",
   // Whatever happens: the server is the authority on whether the door is open.
   assert.match(body, /loadTelegram\(\)/);
   assert.match(body, /if \(!r\.ok\) alert/);
+});
+
+test("panel: both prerequisites are stated, not discovered through a failed save", () => {
+  assert.match(HTML, /\$\("tgGuestsOn"\)\.disabled = !groups\.length \|\| !s\.dmOwned;/);
+  const i = HTML.indexOf('$("tgGuestsNote").textContent');
+  const note = HTML.slice(i, i + 900);
+  assert.match(note, /Pair the bot's private messages first/);
+  assert.match(note, /asked for a code instead of getting an agent/);
 });
 
 test("panel: the note says what the group buys, and never claims a wall it has not", () => {

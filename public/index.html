@@ -16131,10 +16131,15 @@
       "pick a profile…",
     );
     $("tgGuestsOn").checked = !!g.on;
-    $("tgGuestsOn").disabled = !groups.length;
-    $("tgGuestsNote").textContent = groups.length
-      ? "Their agents live in that group: it runs under its own Unix user, and only its members see those conversations — you included, from this cockpit. Anyone you add to the group can read them."
-      : "You need a restricted group first (Groups panel) — and that needs the privileged deployment. Only its members will ever see these conversations.";
+    // Two prerequisites, both stated rather than discovered through a failed
+    // save: a restricted group to put them in, and the bot's DMs already paired
+    // (with no owner, a stranger is asked to pair instead of getting an agent).
+    $("tgGuestsOn").disabled = !groups.length || !s.dmOwned;
+    $("tgGuestsNote").textContent = !groups.length
+      ? "You need a restricted group first (Groups panel) — and that needs the privileged deployment. Only its members will ever see these conversations."
+      : !s.dmOwned
+        ? "Pair the bot's private messages first (Pair Telegram above): until the bot has an owner, anyone writing to it is asked for a code instead of getting an agent."
+        : "Their agents live in that group: it runs under its own Unix user, and only its members see those conversations — you included, from this cockpit. Anyone you add to the group can read them.";
   }
   // Pairing code: shown once, as issued — the server never returns it again.
   let tgPairTimer = null;
