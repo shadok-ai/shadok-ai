@@ -85,3 +85,25 @@ test("start: a guest gets no worktree, and runs in its group's own home", () => 
   assert.match(START, /if \(msg\.worktree && !resumed && !guestSetup && isGitRepo\(cwd\)\)/);
   assert.match(START, /if \(guestSetup\) effectiveCwd = agentStateHome\(earlyUser\)/);
 });
+
+// ── the bridge's call sites use those rules ───────────────────────────────
+const TG = fs.readFileSync(new URL("../src/telegram.ts", import.meta.url), "utf8");
+
+test("telegram: a guest's command is refused ABOVE the operator allowlist", () => {
+  const i = TG.indexOf("if (guest && cmd) {");
+  const j = TG.indexOf("if (cmd && commandRequiresOperator(");
+  assert.ok(i >= 0 && j > i, "the guest refusal must come first");
+  assert.match(TG.slice(i, j), /guestCommandRefusal\(cmd\.cmd\)/);
+  assert.match(TG.slice(i, j), /guestCommandCarriesSecret\(cmd\.cmd\)/);
+  assert.match(TG.slice(i, j), /deleteMessage/);
+});
+
+test("telegram: the DM callback gate asks guestCallbackAllowed, with the open-DM switch", () => {
+  assert.match(TG, /guestCallbackAllowed\(dmGate\(loadTgOwner\(\), cq\.from\?\.id, guestsOn\), msg\.chat\?\.id, cq\.from\?\.id\)/);
+});
+
+test("telegram: a guest's DM is recognised by DERIVING it, not by storing a flag", () => {
+  assert.match(TG, /const isGuestChat = \(chatId: number, threadId\?: number\) =>/);
+  assert.match(TG, /guestsOn && threadId == null && chatId > 0 && chatId !== loadTgOwner\(\)/);
+  assert.match(TG, /guest: isGuestChat\(chatId, threadId\)/);
+});

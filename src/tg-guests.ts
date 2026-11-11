@@ -183,3 +183,49 @@ export function guestSpawnPlan(input: {
     return { kind: "refused", code: "guest-closed", message: "this instance is not accepting guests" };
   return { kind: "guest", group: s.group, profile: s.profile };
 }
+
+/**
+ * What a guest is told when they type a command, or null when the message is
+ * none of our business as a command.
+ *
+ * A guest talks, and nothing else. This is deliberately NOT "no operator
+ * commands": `commandRequiresOperator` is an allowlist of the privileged ones,
+ * and what it leaves open (`/stop`, `/tools`, `/new`…) is still the cockpit's
+ * machinery — a stranger ending their own agent would erase the continuity the
+ * feature promises.
+ *
+ * `/start` is the exception, and not a concession: Telegram sends it by itself
+ * when someone opens a bot for the first time. Refusing it would make "I can't
+ * run commands here" the first thing the bot ever says. It falls through as
+ * ordinary text instead, so the agent answers it like the greeting it is.
+ */
+export function guestCommandRefusal(cmd: string | null | undefined): string | null {
+  if (!cmd || cmd === "start") return null;
+  return "I can't run commands here — just tell me what you need.";
+}
+
+/** Commands whose message must be DELETED when refused: they carried a value. */
+export function guestCommandCarriesSecret(cmd: string | null | undefined): boolean {
+  return cmd === "secret" || cmd === "code" || cmd === "mtcode";
+}
+
+/**
+ * May this callback (an inline-keyboard click) be acted on?
+ *
+ * Answering your own agent's question is driving your own conversation, not a
+ * new power — and without it the first `AskUserQuestion` any profile asks would
+ * wedge a guest's conversation permanently and in silence: the question's
+ * preface arrives, the click is refused, and nothing ever times out.
+ *
+ * A DM's chat id IS the sender's user id, so "their own DM" is an equality we
+ * can check rather than a thing we have to trust.
+ */
+export function guestCallbackAllowed(
+  verdict: "pair" | "allow" | "guest" | "deny",
+  chatId: number | undefined,
+  fromId: number | undefined,
+): boolean {
+  if (verdict === "allow") return true;
+  if (verdict !== "guest") return false;
+  return typeof chatId === "number" && chatId === fromId;
+}

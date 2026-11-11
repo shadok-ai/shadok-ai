@@ -5,6 +5,9 @@ import { BOOTSTRAP_ADMIN } from "../src/accounts.js";
 import { applyGuestSetup, guestSetupForCwd, type Config } from "../src/config.js";
 import type { Group } from "../src/groups.js";
 import {
+  guestCallbackAllowed,
+  guestCommandCarriesSecret,
+  guestCommandRefusal,
   guestEnableRefusal,
   guestGroupChoices,
   guestPatchFlow,
@@ -222,4 +225,44 @@ test("guestSpawnPlan: the bridge proved itself and the door is shut → a named 
     // The reason reaches a person, so it must not name internals.
     assert.doesNotMatch(r.message, /group|profile|config/i);
   }
+});
+
+// ── what a guest may do ───────────────────────────────────────────────────
+
+test("guestCommandRefusal: every command is refused, with one deliberate exception", () => {
+  assert.equal(guestCommandRefusal(null), null);
+  // Telegram sends /start on its own when someone opens the bot: refusing it
+  // would make the refusal the bot's first words.
+  assert.equal(guestCommandRefusal("start"), null);
+  for (const c of ["secret", "spawn", "stop", "end", "tools", "new", "login", "setup", "whatever"]) {
+    assert.match(String(guestCommandRefusal(c)), /can't run commands/i, c);
+  }
+});
+
+test("guestCommandRefusal: the line names no cockpit internals", () => {
+  const line = String(guestCommandRefusal("spawn"));
+  assert.doesNotMatch(line, /operator|owner|agent|shadok|profile|group/i);
+});
+
+test("guestCommandCarriesSecret: a refused value-carrying command must be deleted", () => {
+  assert.equal(guestCommandCarriesSecret("secret"), true);
+  assert.equal(guestCommandCarriesSecret("code"), true);
+  assert.equal(guestCommandCarriesSecret("mtcode"), true);
+  assert.equal(guestCommandCarriesSecret("spawn"), false);
+  assert.equal(guestCommandCarriesSecret(null), false);
+});
+
+test("guestCallbackAllowed: a guest answers their OWN agent's question", () => {
+  // Without this the first AskUserQuestion wedges the conversation for good.
+  assert.equal(guestCallbackAllowed("guest", 4242, 4242), true);
+  assert.equal(guestCallbackAllowed("allow", -100, 7), true);
+});
+
+test("guestCallbackAllowed: nothing else gets through", () => {
+  // Someone else's DM (a shape Telegram does not produce — asserted, not trusted).
+  assert.equal(guestCallbackAllowed("guest", 4242, 9999), false);
+  assert.equal(guestCallbackAllowed("guest", 4242, undefined), false);
+  assert.equal(guestCallbackAllowed("guest", undefined, 4242), false);
+  assert.equal(guestCallbackAllowed("deny", 4242, 4242), false);
+  assert.equal(guestCallbackAllowed("pair", 4242, 4242), false);
 });

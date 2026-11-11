@@ -48,6 +48,11 @@ import {
   type CronSchedule,
 } from "./crons.js";
 import { SHADOK_DIR, guestSetupForCwd, loadConfig, telegramConfig } from "./config.js";
+import {
+  guestCallbackAllowed,
+  guestCommandCarriesSecret,
+  guestCommandRefusal,
+} from "./tg-guests.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
 import { pairingRefusal, redeemPairingCode } from "./tg-pairing.js";
@@ -2106,6 +2111,22 @@ export function startTelegram(
       return;
     }
 
+    // A GUEST talks, and nothing else — the refusal sits ABOVE
+    // `commandRequiresOperator`, which only gates the privileged commands and
+    // would leave the rest of the cockpit's machinery open (`guestCommandRefusal`).
+    if (guest && cmd) {
+      const refusal = guestCommandRefusal(cmd.cmd);
+      if (refusal) {
+        // A refused /secret still carried its value: do not leave it lying in a
+        // chat history we do not control.
+        if (guestCommandCarriesSecret(cmd.cmd))
+          await tg("deleteMessage", { chat_id: chat.id, message_id: msg.message_id });
+        console.log(`telegram: /${cmd.cmd} refused for guest ${msg.from?.id ?? "?"}`);
+        await reply(chat.id, undefined, refusal);
+        return;
+      }
+    }
+
     if (cmd && commandRequiresOperator(cmd.cmd, cmd.arg, (n) => !!getProfile(n))) {
       if (!isOperator(msg.from?.id, loadTgOperators(), loadTgOwner(), !!msg.from?.is_bot)) {
         // A refused /secret or /code still carried its value: don't leave it.
@@ -2570,7 +2591,10 @@ export function startTelegram(
     // stranger cannot reach this path — we close it anyway rather than depend
     // on that assumption. Never a pairing here: DMs are paired by a typed code,
     // not by clicking.
-    if (msg.chat?.type === "private" && dmGate(loadTgOwner(), cq.from?.id) !== "allow") {
+    if (
+      msg.chat?.type === "private" &&
+      !guestCallbackAllowed(dmGate(loadTgOwner(), cq.from?.id, guestsOn), msg.chat?.id, cq.from?.id)
+    ) {
       await tg("answerCallbackQuery", { callback_query_id: cq.id, text: "⛔ This bot is private." });
       return;
     }
