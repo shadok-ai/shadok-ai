@@ -53,6 +53,7 @@ import {
   guestCommandCarriesSecret,
   guestCommandRefusal,
   guestNotice,
+  ownerAdoptionCandidate,
   type GuestNotice,
 } from "./tg-guests.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
@@ -1534,8 +1535,11 @@ export function startTelegram(
       if (!b.sessionId) continue;
       const existing = channelForTelegram(b.chatId, b.threadId);
       // The General (no threadId) is the environment's main channel — always
-      // named "general". Topics seed their name from the topic once.
-      const name = b.threadId ? (b.name && !existing?.name ? b.name : undefined) : "general";
+      // named "general". Topics seed their name from the topic once, and a
+      // GUEST's DM from the person writing: without that exception every guest
+      // would be upserted as "general", and the group would read as a column of
+      // identical rows instead of a list of people.
+      const name = b.guest || b.threadId ? (b.name && !existing?.name ? b.name : undefined) : "general";
       upsertChannel({
         sessionId: b.sessionId,
         ...(name ? { name } : {}),
@@ -2777,7 +2781,27 @@ export function startTelegram(
     return true;
   };
 
+  /**
+   * Reattach the DM-bound agents — the owner's, and with open DMs every guest's.
+   *
+   * Deliberately ABOVE the board-group gate in both reconcilers. They return
+   * early when no group is bound, and an instance that opened its DMs for
+   * support may well never bind one; the boot pass also only ever reattached
+   * channels that have a TOPIC, which a DM by construction has not. Without
+   * this, after a restart — hence on every auto-update — an agent speaking
+   * UNPROMPTED reached nobody, while inbound traffic recovered by itself
+   * (`bridgeFor` resumes from the registry). Same silent loss as invariant 7.
+   */
+  const reattachDmBridges = () => {
+    for (const c of loadChannels()) {
+      const t = c.telegram;
+      if (!t || t.threadId != null || t.chatId < 0) continue;
+      reattachLiveBridge(c);
+    }
+  };
+
   const reconcileWebChannels = async () => {
+    reattachDmBridges();
     const group = loadTgGroup();
     if (group === null) return;
     const bridged = new Set([...bridges.values()].map((b) => b.sessionId).filter(Boolean));
@@ -2926,11 +2950,15 @@ export function startTelegram(
    */
   const adoptOwnerFromBindings = async () => {
     if (loadTgOwner() !== null) return;
+    // A GUEST's DM has exactly the shape this looks for, so it is excluded by
+    // its channel's group (`ownerAdoptionCandidate`): adopting one would hand
+    // the bot to a stranger — the very window adoption exists to close.
+    const guestGroup = guestSetupForCwd(loadConfig(), process.cwd()).group;
     for (const c of loadChannels()) {
-      const tgb = c.telegram;
-      if (tgb && tgb.threadId == null && tgb.chatId > 0) {
-        saveTgOwner(tgb.chatId);
-        console.log(`telegram: DM owner adopted from an existing binding (user ${tgb.chatId})`);
+      const who = ownerAdoptionCandidate(c, guestGroup);
+      if (who !== null) {
+        saveTgOwner(who);
+        console.log(`telegram: DM owner adopted from an existing binding (user ${who})`);
         return;
       }
     }
@@ -2942,6 +2970,7 @@ export function startTelegram(
 
   const reconcileOnBoot = async () => {
     await adoptOwnerFromBindings();
+    reattachDmBridges();
     const group = loadTgGroup();
     if (group === null) return;
     const bound = new Set<number>();

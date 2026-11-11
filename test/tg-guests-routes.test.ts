@@ -128,3 +128,20 @@ test("telegram: sendOps replaces the cockpit's wording for a guest, or says noth
   assert.match(body, /if \(!b\.guest\) return send\(b, text\)/);
   assert.match(body, /guestNotice\(kind\)/);
 });
+
+test("telegram: DM bridges are reattached ABOVE the board-group gate, in both reconcilers", () => {
+  // An instance that opened its DMs may never bind a board group; the gate used
+  // to make every reconciler return before any DM was looked at.
+  assert.match(TG, /const reattachDmBridges = \(\) => \{/);
+  for (const fn of ["const reconcileWebChannels = async () => {", "const reconcileOnBoot = async () => {"]) {
+    const i = TG.indexOf(fn);
+    assert.ok(i >= 0, fn);
+    const head = TG.slice(i, TG.indexOf("loadTgGroup()", i));
+    assert.match(head, /reattachDmBridges\(\)/, fn);
+  }
+});
+
+test("telegram: the owner is never adopted from a guest's DM, and a guest keeps its own name", () => {
+  assert.match(TG, /ownerAdoptionCandidate\(c, guestGroup\)/);
+  assert.match(TG, /const name = b\.guest \|\| b\.threadId \?/);
+});

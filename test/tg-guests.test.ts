@@ -13,6 +13,7 @@ import {
   guestGroupChoices,
   guestPatchFlow,
   guestSpawnPlan,
+  ownerAdoptionCandidate,
   withInstanceMember,
 } from "../src/tg-guests.js";
 
@@ -291,4 +292,24 @@ test("guestNotice: the words a guest hears name nothing of the cockpit", () => {
     const line = String(guestNotice(kind));
     assert.doesNotMatch(line, /pace|guard|quota|session|agent|shadok|cockpit|web UI|\/stop|profile|group/i, kind);
   }
+});
+
+// ── a guest must never be adopted as the bot's owner ──────────────────────
+
+test("ownerAdoptionCandidate: an ordinary DM binding is adoptable", () => {
+  assert.equal(ownerAdoptionCandidate({ telegram: { chatId: 4242 }, group: null }, "g1"), 4242);
+  assert.equal(ownerAdoptionCandidate({ telegram: { chatId: 4242 }, group: "main" }, null), 4242);
+});
+
+test("ownerAdoptionCandidate: a GUEST's DM is NOT — it has the same shape", () => {
+  // Otherwise an instance that lost its owner file would hand the bot to
+  // whichever stranger came first in the channel list.
+  assert.equal(ownerAdoptionCandidate({ telegram: { chatId: 9999 }, group: "g1" }, "g1"), null);
+});
+
+test("ownerAdoptionCandidate: a topic and a group chat are never DMs", () => {
+  assert.equal(ownerAdoptionCandidate({ telegram: { chatId: 4242, threadId: 7 } }, "g1"), null);
+  assert.equal(ownerAdoptionCandidate({ telegram: { chatId: -100500 } }, "g1"), null);
+  assert.equal(ownerAdoptionCandidate({ telegram: null }, "g1"), null);
+  assert.equal(ownerAdoptionCandidate({}, "g1"), null);
 });

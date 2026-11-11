@@ -268,3 +268,25 @@ export function guestNotice(kind: GuestNotice): string | null {
       return null;
   }
 }
+
+/**
+ * Pure: may this channel's Telegram binding be adopted as the bot's OWNER?
+ *
+ * `adoptOwnerFromBindings` recognises an owner by the SHAPE of a binding — a
+ * private chat (positive id) with no topic — which is exactly the shape a
+ * guest's DM has. Without this, an instance that lost its owner file would
+ * hand the bot to whichever stranger happened to be first in the channel list:
+ * the very window that adoption exists to close, reopened from the other side.
+ *
+ * A guest is recognised by its channel's GROUP, which the server stamped at
+ * spawn and no client can rewrite (`SERVER_OWNED`).
+ */
+export function ownerAdoptionCandidate(
+  c: { telegram?: { chatId: number; threadId?: number } | null; group?: string | null },
+  guestGroup: string | null,
+): number | null {
+  const t = c.telegram;
+  if (!t || t.threadId != null || t.chatId <= 0) return null;
+  if (guestGroup && c.group === guestGroup) return null;
+  return t.chatId;
+}
