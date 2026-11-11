@@ -1,7 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
 import type { ConfiguredBackend } from "./backend.js";
+import { type GuestSetup, GUEST_SETUP_OFF } from "./tg-guests.js";
 
 /**
  * Global CLI config at ~/.shadok-ai/config.json (mode 600). The Telegram bot
@@ -24,6 +26,12 @@ export interface Config {
   telegramAllowed?: Record<string, string[]>;
   /** Per launch-directory on/off switch for the Telegram bridge (default on). */
   telegramEnabled?: Record<string, boolean>;
+  /**
+   * Per launch-directory open-DM setup: the switch, the restricted group
+   * guests' agents are born into, and the profile they run on
+   * (`src/tg-guests.ts`). Absent = closed, which is every instance's default.
+   */
+  telegramGuests?: Record<string, { on?: boolean; group?: string | null; profile?: string | null }>;
   /** Optional GUI password (also settable via SHADOK_GUI_PASSWORD). */
   guiPassword?: string;
   /**
@@ -292,6 +300,41 @@ export function telegramConfig(cfg: Config, cwd: string, env: NodeJS.ProcessEnv 
     enabled: cfg.telegramEnabled?.[cwd] ?? true,
     allowedChats,
   };
+}
+
+/**
+ * This directory's open-DM setup, OFF whenever the row is absent or malformed.
+ *
+ * The file is hand-editable, so a half-written row must read as CLOSED rather
+ * than throw or — far worse — open the bot's DMs with a group it cannot honour.
+ */
+export function guestSetupForCwd(cfg: Config, cwd: string): GuestSetup {
+  const row = cfg.telegramGuests?.[cwd];
+  if (!row || typeof row !== "object") return { ...GUEST_SETUP_OFF };
+  const group = typeof row.group === "string" && row.group.trim() ? row.group.trim() : null;
+  const profile = typeof row.profile === "string" && row.profile.trim() ? row.profile.trim() : null;
+  // `on` is only ever true with both halves present: the two fields are
+  // solidary, and a stored `on` without them would be a door to nowhere.
+  const on = row.on === true && !!group && !!profile;
+  return { on, group, profile };
+}
+
+/**
+ * Pure: set this directory's open-DM setup on `cfg` (caller persists).
+ *
+ * The group and the profile are kept when the switch goes off, so re-enabling
+ * needs no retyping — and clearing them is done by saving them as null, never
+ * as a side effect of switching off.
+ */
+export function applyGuestSetup(cfg: Config, cwd: string, s: GuestSetup): Config {
+  cfg.telegramGuests ??= {};
+  cfg.telegramGuests[cwd] = { on: s.on, group: s.group, profile: s.profile };
+  return cfg;
+}
+
+/** Set this directory's open-DM setup and persist. */
+export function setGuestSetupForCwd(cfg: Config, cwd: string, s: GuestSetup): void {
+  saveConfig(applyGuestSetup(cfg, cwd, s));
 }
 
 export interface TelegramPatch {
