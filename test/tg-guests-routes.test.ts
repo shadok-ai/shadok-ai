@@ -46,3 +46,42 @@ test("GET /telegram: the picker's choices are resolved per caller, never instanc
   assert.doesNotMatch(body, /token:\s*tc\.token/);
   assert.match(body, /\{ id: g\.id, name: g\.name \}/);
 });
+
+// ── the WS `start` handler's guest branch ─────────────────────────────────
+// The real observation (a guest's channel row carrying the configured group)
+// is an end-to-end run on a free port, recorded in the PR; this locks the
+// SHAPE so a refactor cannot quietly drop a condition.
+const START = (() => {
+  const i = SRC.indexOf('case "start": {');
+  assert.ok(i >= 0, "start handler not found");
+  const j = SRC.indexOf('case "prompt"', i);
+  assert.ok(j > i, "end of the start handler not found");
+  return SRC.slice(i, j);
+})();
+
+test("start: the guest decision is the pure plan, fed the proof and the config", () => {
+  // The rules themselves (unproven marker ignored, resume ignored, shut door
+  // refused) are tested for real in test/tg-guests.test.ts.
+  assert.match(START, /guestSpawnPlan\(\{/);
+  assert.match(START, /fromBridge: isTelegramBridge/);
+  assert.match(START, /resuming: !!msg\.resume/);
+  assert.match(START, /setup: msg\.guest === true \? guestSetupForCwd\(loadConfig\(\), process\.cwd\(\)\) : GUEST_SETUP_OFF/);
+  assert.match(START, /if \(guestPlan\.kind === "refused"\) return fail\(guestPlan\.message, guestPlan\.code\)/);
+});
+
+test("start: a guest's group and profile come from the config, not from the frame", () => {
+  // Both isolation resolutions (the early token pre-check and the real one)
+  // must prefer the configured group, or they would disagree about the OS user.
+  assert.equal((START.match(/guestGroupId \?\?/g) ?? []).length, 2);
+  assert.match(START, /guestSetup \? guestSetup\.profile : msg\.profile \?\? null/);
+});
+
+test("start: a guest's agent lands in the configured group or nowhere (invariant 24)", () => {
+  assert.match(START, /if \(guestSetup && agentGroupId !== guestSetup\.group\)/);
+  assert.match(START, /"guest-group"/);
+});
+
+test("start: a guest gets no worktree, and runs in its group's own home", () => {
+  assert.match(START, /if \(msg\.worktree && !resumed && !guestSetup && isGitRepo\(cwd\)\)/);
+  assert.match(START, /if \(guestSetup\) effectiveCwd = agentStateHome\(earlyUser\)/);
+});

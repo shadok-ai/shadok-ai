@@ -47,7 +47,7 @@ import {
   type Cron,
   type CronSchedule,
 } from "./crons.js";
-import { SHADOK_DIR, loadConfig, telegramConfig } from "./config.js";
+import { SHADOK_DIR, guestSetupForCwd, loadConfig, telegramConfig } from "./config.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
 import { pairingRefusal, redeemPairingCode } from "./tg-pairing.js";
@@ -1097,6 +1097,12 @@ interface Bridge {
   key: string;
   chatId: number;
   threadId?: number;
+  /** This DM belongs to a GUEST — someone who is not the bot's owner, on an
+   *  instance whose DMs are open (`isGuestChat`). Two things hang off it: the
+   *  spawn asks the server for a guest's agent, and the bridge stops saying its
+   *  own cockpit vocabulary into the chat (`sendOps`). Derived at every
+   *  `openBridge`, so a spawn, a resume and a boot reattach all agree. */
+  guest?: boolean;
   ws: WebSocket;
   sessionId: string | null;
   ready: boolean;
@@ -1272,6 +1278,21 @@ export function startTelegram(
   const token = cfg.token;
   const api = `https://api.telegram.org/bot${token}`;
   const allowed = cfg.allowedChats;
+  // Open DMs (src/tg-guests.ts). Read at start like the rest of the config: the
+  // panel restarts the bridge when it changes, so this cannot go stale. Only
+  // the SWITCH is read here — which group and which profile a guest's agent
+  // gets is resolved server-side at spawn, never carried from here.
+  const guestsOn = guestSetupForCwd(loadConfig(), process.cwd()).on;
+  /**
+   * Is this chat a GUEST's DM? One definition, derived rather than stored, so a
+   * bridge opened by a spawn, a resume or a boot reattach all agree — and so
+   * nothing has to carry a flag through those three paths.
+   *
+   * A DM's chat id IS the sender's user id and is always positive; a group's is
+   * negative. So "a private chat that is not the owner's" is the whole rule.
+   */
+  const isGuestChat = (chatId: number, threadId?: number) =>
+    guestsOn && threadId == null && chatId > 0 && chatId !== loadTgOwner();
   // Mutable bridge state, closed over by the returned handle (see stop()/status()).
   let stopped = false;
   let polling = false;
@@ -1528,6 +1549,7 @@ export function startTelegram(
       pendingActions: [],
       worktree: opts.worktree,
       backfill: opts.backfill,
+      guest: isGuestChat(chatId, threadId),
       showTools: tgToolsEnabled(key),
       name: opts.name,
       send: makeSendQueue(),
@@ -1546,7 +1568,19 @@ export function startTelegram(
         JSON.stringify(
           opts.resumeId
             ? { type: "start", resume: opts.resumeId, cwd: process.cwd(), origin: "telegram", ...(opts.profile ? { profile: opts.profile } : {}) }
-            : { type: "start", cwd: process.cwd(), origin: "telegram", worktree: !!opts.worktree, ...(opts.profile ? { profile: opts.profile } : {}) },
+            : {
+                type: "start",
+                cwd: process.cwd(),
+                origin: "telegram",
+                worktree: !!opts.worktree,
+                ...(opts.profile ? { profile: opts.profile } : {}),
+                // A GUEST's spawn. The marker says only "this is a guest" — the
+                // group and the profile are resolved server-side from the
+                // configuration (invariant 49), so this frame cannot choose
+                // where a stranger's agent lands nor what role it carries. A
+                // resume needs none of it: the channel's stored group decides.
+                ...(b.guest ? { guest: true } : {}),
+              },
         ),
       );
     });
@@ -1871,11 +1905,16 @@ export function startTelegram(
     if (ch) removeChannel(ch.sessionId);
   };
 
-  /** Apply `dmGate` to a private message. Returns false when we must stop. */
-  const guardDm = async (msg: any): Promise<boolean> => {
+  /**
+   * Apply `dmGate` to a private message. Returns the verdict the caller must
+   * act on: `allow` (the owner), `guest` (a stranger, with open DMs on) or
+   * `false` when the message must go no further.
+   */
+  const guardDm = async (msg: any): Promise<"allow" | "guest" | false> => {
     const from = msg.from?.id as number | undefined;
-    const verdict = dmGate(loadTgOwner(), from);
-    if (verdict === "allow") return true;
+    const verdict = dmGate(loadTgOwner(), from, guestsOn);
+    if (verdict === "allow") return "allow";
+    if (verdict === "guest") return "guest";
     if (verdict === "pair") {
       // No owner yet: the only message that gets anywhere is a valid code, and
       // it is consumed — it is a pairing, not a prompt for an agent.
@@ -1984,7 +2023,14 @@ export function startTelegram(
     // DMs belong to ONE owner, paired with the cockpit's code. An explicit
     // allowlist still wins (it has already filtered above): this is the
     // default guard, for an install that configures none.
-    if (chat.type === "private" && !(await guardDm(msg))) return;
+    // `guest` = a stranger on an instance whose DMs are open: they get their
+    // own agent instead of a refusal, and may do nothing but talk (below).
+    let guest = false;
+    if (chat.type === "private") {
+      const verdict = await guardDm(msg);
+      if (!verdict) return;
+      guest = verdict === "guest";
+    }
     const threadId = msg.message_thread_id as number | undefined;
     const isGroup = chat.type === "group" || chat.type === "supergroup";
     // Commands only exist in text messages — a caption is never a command.
@@ -2428,7 +2474,9 @@ export function startTelegram(
     // anything — spawning/resuming a session can take tens of seconds and the
     // first "working" only arrives after it. Every terminal outcome stops it
     // (turn-done, dialog, pace-blocked, exited, ws close).
-    const b = bridgeFor(key, chat.id, threadId, topicName);
+    // A guest's channel is named after the person writing: the group reads as a
+    // list of people rather than a column of identical rows (see `persist`).
+    const b = bridgeFor(key, chat.id, threadId, guest ? senderName(msg.from) ?? topicName : topicName);
     b.typing.start();
 
     if (att) {

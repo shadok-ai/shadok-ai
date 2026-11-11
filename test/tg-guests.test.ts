@@ -4,7 +4,13 @@ import test from "node:test";
 import { BOOTSTRAP_ADMIN } from "../src/accounts.js";
 import { applyGuestSetup, guestSetupForCwd, type Config } from "../src/config.js";
 import type { Group } from "../src/groups.js";
-import { guestEnableRefusal, guestGroupChoices, guestPatchFlow, withInstanceMember } from "../src/tg-guests.js";
+import {
+  guestEnableRefusal,
+  guestGroupChoices,
+  guestPatchFlow,
+  guestSpawnPlan,
+  withInstanceMember,
+} from "../src/tg-guests.js";
 
 const CWD = "/srv/one";
 const group = (over: Partial<Group> & Pick<Group, "id" | "nature">): Group => ({
@@ -173,4 +179,47 @@ test("guestPatchFlow: whitespace is trimmed, and a blank profile cannot enable",
   if (!r.ok) return;
   assert.deepEqual(r.setup, { on: true, group: "g1", profile: "Support" });
   assert.equal(flow({ want: { on: true, group: "g1", profile: " " } }).ok, false);
+});
+
+// ── guestSpawnPlan: the trust decision behind a guest's spawn ─────────────
+
+const ON: Parameters<typeof guestSpawnPlan>[0]["setup"] = { on: true, group: "g1", profile: "Support" };
+const plan = (over: Partial<Parameters<typeof guestSpawnPlan>[0]> = {}) =>
+  guestSpawnPlan({ marker: true, fromBridge: true, resuming: false, setup: ON, ...over });
+
+test("guestSpawnPlan: the bridge's marker on a new session resolves the configured group and profile", () => {
+  assert.deepEqual(plan(), { kind: "guest", group: "g1", profile: "Support" });
+});
+
+test("guestSpawnPlan: an UNPROVEN marker is ignored, never refused", () => {
+  // Any Origin-less loopback client can send anything (invariant 11). What it
+  // sends is simply not a guest's spawn — and an error would tell it something
+  // about the instance it has no business learning.
+  assert.deepEqual(plan({ fromBridge: false }), { kind: "not-a-guest" });
+  // A marker that is not literally `true` is not a marker.
+  assert.deepEqual(plan({ marker: "yes" }), { kind: "not-a-guest" });
+  assert.deepEqual(plan({ marker: 1 }), { kind: "not-a-guest" });
+  assert.deepEqual(plan({ marker: undefined }), { kind: "not-a-guest" });
+});
+
+test("guestSpawnPlan: a marker on a RESUME is ignored — the stored group is the authority", () => {
+  // Otherwise the frame would be a way to move an existing agent across the
+  // people wall (invariant 1, and `canResumeAs` guards the rest).
+  assert.deepEqual(plan({ resuming: true }), { kind: "not-a-guest" });
+});
+
+test("guestSpawnPlan: the bridge proved itself and the door is shut → a named refusal", () => {
+  for (const setup of [
+    { on: false, group: "g1", profile: "Support" },
+    { on: true, group: null, profile: "Support" },
+    { on: true, group: "g1", profile: null },
+    { on: true, group: "  ", profile: "Support" },
+  ]) {
+    const r = plan({ setup });
+    assert.equal(r.kind, "refused");
+    if (r.kind !== "refused") return;
+    assert.equal(r.code, "guest-closed");
+    // The reason reaches a person, so it must not name internals.
+    assert.doesNotMatch(r.message, /group|profile|config/i);
+  }
 });

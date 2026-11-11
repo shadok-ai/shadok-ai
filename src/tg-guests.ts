@@ -147,3 +147,39 @@ export function guestPatchFlow(input: {
   else if (old) groups = withInstanceMember(groups, old, false);
   return { ok: true, setup: want, groups };
 }
+
+/** What a `start` frame carrying the guest marker amounts to. */
+export type GuestSpawn =
+  | { kind: "not-a-guest" }
+  | { kind: "refused"; code: "guest-closed"; message: string }
+  | { kind: "guest"; group: string; profile: string };
+
+/**
+ * Pure: should this spawn be a guest's, and with what group and profile?
+ *
+ * The whole trust decision in one place, so it is unit-tested rather than
+ * inferred from the shape of a 400-line handler.
+ *
+ * An unproven marker is **ignored, not refused**: a loopback client may send
+ * anything (invariant 11), and what it sends simply is not a guest's spawn —
+ * answering with an error would tell it something about the instance it has no
+ * business learning. A marker on a RESUME is ignored for a different reason:
+ * the channel's stored group is the authority there (invariant 1), and honouring
+ * a frame would be a way to move an existing agent across the people wall.
+ *
+ * `refused` is kept apart from both: the bridge DID prove itself and the door is
+ * shut, which is a state worth naming — the bridge can then say something to
+ * whoever is writing instead of leaving them in silence.
+ */
+export function guestSpawnPlan(input: {
+  marker: unknown;
+  fromBridge: boolean;
+  resuming: boolean;
+  setup: GuestSetup;
+}): GuestSpawn {
+  if (input.marker !== true || !input.fromBridge || input.resuming) return { kind: "not-a-guest" };
+  const s = normalizeGuestSetup(input.setup);
+  if (!s.on || !s.group || !s.profile)
+    return { kind: "refused", code: "guest-closed", message: "this instance is not accepting guests" };
+  return { kind: "guest", group: s.group, profile: s.profile };
+}

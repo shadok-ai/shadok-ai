@@ -148,7 +148,7 @@ import {
 } from "./telegram.js";
 import { transcribe, audioClipExtension } from "./whisper.js";
 import { cancelPairingCode, issuePairingCode, pairingStatus } from "./tg-pairing.js";
-import { guestGroupChoices, guestPatchFlow, type GuestSetup } from "./tg-guests.js";
+import { GUEST_SETUP_OFF, guestGroupChoices, guestPatchFlow, guestSpawnPlan, type GuestSetup } from "./tg-guests.js";
 import { migrateTgBindings } from "./channels.js";
 import {
   RoomStore,
@@ -7875,6 +7875,15 @@ type ClientMessage =
       type: "start";
       /** NEW agent only: the target group; honoured iff the caller can see it. */
       group?: string;
+      /**
+       * This is a GUEST's agent — someone who DM'd an instance whose Telegram
+       * DMs are open (`src/tg-guests.ts`). Believed ONLY on a connection that
+       * proved the bridge secret, and it decides nothing by itself: the group
+       * and the profile are read server-side from the configuration, so this
+       * frame can neither place a stranger's agent nor choose its role
+       * (invariant 49). Ignored on a resume — the channel's stored group wins.
+       */
+      guest?: boolean;
       cwd?: string;
       resume?: string;
       continue?: boolean;
@@ -10402,6 +10411,22 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             msg.origin,
           );
           const cwd = msg.cwd?.trim() || process.cwd();
+          // A GUEST's spawn (open DMs, src/tg-guests.ts). The marker is believed
+          // only on a socket that proved the bridge secret — the same condition
+          // that makes `from` believable (invariant 61) — and never on a resume,
+          // where the channel's stored group is the authority (invariant 1).
+          // Everything that matters is then read from the CONFIGURATION, so no
+          // loopback client can place an agent in that group or pick the role
+          // strangers drive (invariant 49).
+          const guestPlan = guestSpawnPlan({
+            marker: msg.guest,
+            fromBridge: isTelegramBridge,
+            resuming: !!msg.resume,
+            setup: msg.guest === true ? guestSetupForCwd(loadConfig(), process.cwd()) : GUEST_SETUP_OFF,
+          });
+          if (guestPlan.kind === "refused") return fail(guestPlan.message, guestPlan.code);
+          const guestSetup = guestPlan.kind === "guest" ? guestPlan : null;
+          const guestGroupId = guestSetup?.group ?? null;
           // Deterministic id: enforced with --session-id for a new session,
           // known for a resume. NEVER derive it from the most recent file
           // in the directory — with several channels in the same directory
@@ -10477,7 +10502,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           const connectRefusal = async (
             dropUser: string | null | undefined,
           ): Promise<{ message: string; code: "logged-out" | "space-not-connected"; user: string | null } | null> => {
-            const customBackend = sessionBackend(gateProfile(msg)).kind === "custom";
+            const customBackend =
+              sessionBackend(guestSetup ? guestSetup.profile : gateProfile(msg)).kind === "custom";
             const user = dropUser ?? null;
             const agentAuth = agentAuthForCwd(loadConfig(), process.cwd());
             // Probe only what decides: the root sign-in is a ~850ms process spawn,
@@ -10528,15 +10554,21 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               viewer: viewerFor(me),
               groups: loadGroups(),
               storedGroupId: null,
-              requestedGroupId: typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null,
+              requestedGroupId:
+                guestGroupId ?? (typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null),
               parentGroupId,
             });
             earlyUser = earlyIso.user ?? commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE });
+            // A guest's agent runs in its GROUP's own home, never in the
+            // operator's launch directory: a stranger has no business holding a
+            // checkout of someone else's repository, and that home is the only
+            // directory its Unix user can write in anyway.
+            if (guestSetup) effectiveCwd = agentStateHome(earlyUser);
             const early = await connectRefusal(earlyUser);
             if (early) return fail(early.message, early.code, early.user);
           }
           announceStep("workspace");
-          if (msg.worktree && !resumed && isGitRepo(cwd)) {
+          if (msg.worktree && !resumed && !guestSetup && isGitRepo(cwd)) {
             try {
               // Create the checkout under the DROP USER's own home (not the
               // server's `/root`, which that user cannot traverse) and hand it to
@@ -10660,7 +10692,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // that id is empty): the bridge passes the topic's channel profile, and
           // it gets re-persisted below — so a channel never silently loses its
           // profile (which would leave its cron scripts without secrets).
-          let profile: string | null = msg.profile ?? null;
+          // A guest's role is the configured one, never the frame's: the profile
+          // IS the job description strangers drive, so it is not theirs to pick.
+          let profile: string | null = guestSetup ? guestSetup.profile : msg.profile ?? null;
           if (resumed) {
             const stored = loadChannels().find((c) => c.sessionId === id)?.profile;
             if (stored != null) profile = stored; // the channel's own profile wins on resume
@@ -10722,7 +10756,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // `storedGroupId`/`groupsNow` and the resume people-boundary gate were
           // resolved ABOVE the live-attach branch (see CRIT1 note there).
           const requestedGroupId =
-            !resumed && typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null;
+            guestGroupId ??
+            (!resumed && typeof msg.group === "string" && msg.group.trim() ? msg.group.trim() : null);
           const isolation = resolveSpawnIsolation({
             mode: DEPLOYMENT_MODE,
             resumed,
@@ -10736,6 +10771,20 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // stored group; a new spawn gets the one the isolation policy derived
           // from the caller's identity. Both null in mono-tenant → secrets = Main.
           const agentGroupId = resumed ? storedGroupId : isolation.groupPatch.group ?? null;
+          // ASSERT the one field this feature's safety rests on (invariant 24): a
+          // guest's agent lands in the configured group or it does not exist.
+          // Silently falling back to the commons — which is what an unseeable
+          // group resolves to — would publish a stranger's conversation to every
+          // account on the instance.
+          if (guestSetup && agentGroupId !== guestSetup.group) {
+            console.log(
+              `telegram: guest spawn refused — resolved group ${agentGroupId ?? "none"} is not the configured ${guestSetup.group}`,
+            );
+            return fail(
+              "the configured guest group is not usable from here — a guest's agent must never land anywhere else",
+              "guest-group",
+            );
+          }
           // T15 carry: a COMMONS agent (no dedicated group user) must not run as
           // root post-migration — drop it to the non-root `main` once migration
           // has completed. Before migration (or mono-tenant) this is null and the
