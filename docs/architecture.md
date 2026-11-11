@@ -1036,7 +1036,7 @@ of a group by name and never of a group its creator belongs to. So:
   `membershipVerdict`);
 - the legitimate agent surface keeps working: pilotctl (WS spawn/drive, `/sessions`,
   `/diff`, `/talk*`, `/profiles/prompt`), crons and `/timezone`, `/secrets` and
-  `/profiles/secret`, `/ledger*`, `/reload`, `/files`, the Factory, `/channels`,
+  `/profiles/secret`, `/ledger*`, `/reload`, `/files`, `POST /reports`, the Factory, `/channels`,
   `/live`, `/usage`. Routes that need "which agent" read `agentPrincipal(req)`
   (or `callerOf` for the body-key routes), never `currentAccount(...).name`.
 
@@ -1749,6 +1749,10 @@ at its current path. Verified: the same agent then answered with v3.
   opens its card in the Skill Factory (`openSkillCard`). It is the per-agent
   view of the same two reads (`/factory/skills`, `/crons`), no endpoint of its
   own.
+- **The schedule panel** (`#cronOverlay`, `renderCrons`) shows the same join
+  under each cron ("Uses ✦ skill", plus the unprompted ones), through the
+  helpers it shares with the info panel (`cronSkillUse`, `skillChip`); a chip
+  closes the overlay and opens the skill's card, where Edit is.
 
 **The page** (`public/index.html`, "Skill Factory"):
 - `body.factory-mode` hides `main` and shows `#factoryPage`, with a short
@@ -2158,6 +2162,52 @@ is out of this heal's reach — the rehearsal is what catches that residue.
   credential in-place-vs-rename gate, and a full migration on a copy of a real
   volume. The unit tests inject every side effect.
 
+## Rooms: channels with no agent (`src/rooms.ts`)
+
+A room is a conversation between PEOPLE, drawn in the agents column like a
+channel but with nothing running behind it. Spec:
+`docs/superpowers/specs/2026-11-02-human-rooms-design.md`.
+
+**Its own registry, on purpose.** The channel registry answers "which agents
+exist", and everything that reads it acts on that: the client resumes rows, the
+Telegram reconciler opens a bridge (a session) behind mirrored rows,
+`firstAgentPlan` counts them, crons/kinship/ledger/`/live` list them. A room row
+there would get a `claude` spawned behind it by whichever consumer forgot a
+check (invariant 64). So: `~/.shadok-ai/rooms/<key>.json` for the list (written
+whole, atomically, only by targeted operations — never replaced from a client's
+list, invariant 6's lesson), `<key>/<roomId>.jsonl` for messages (append-only,
+a torn last line is skipped), `<key>.read.json` for each account's last-read
+mark (only ever moves forward). Room ids are `r_` + 16 hex, never UUID-shaped.
+
+**Server.** `/rooms*` routes (writes: same-origin person + `x-shadok-instance`),
+and on `/ws` a connection decides by its first message whether it is an agent
+link (`start`) or a room link (`room-join`); the other is refused for the life
+of the socket. `postRoomMessage` is the one write path, shared by the web and
+Telegram: it gives `ts` a strictly increasing value per room (the page cursor
+is a timestamp), appends, fans out to joined sockets, moves the author's read
+mark, and mirrors web messages to the topic. Visibility is `visibleChannels`'
+rule: no group → commons; a group → `canSeeGroup`; a dangling group → hidden.
+Attachments go through `/paste` with `x-shadok-room`, into the room's group
+media directory (`mediaDirForGroupId`, shared with agents).
+
+**Telegram.** `startTelegram` receives `roomHooks` (list / bind / post /
+mediaDir) and nothing else about rooms. A message in a room's topic is routed
+before `bridgeFor`; commands there answer that there is no agent. The rooms'
+half of the 5s mirror loop (`reconcileRooms`) creates a `💬 name` topic when
+`mirror` is set, deletes it on an explicit `mirror: false`, and CLOSES it (never
+deletes) when the room is archived. Room topics are kept out of the tracked
+topic list, because the boot pass deletes tracked topics that no channel claims.
+
+**Web.** A room is a tab object with `roomId` and no `sessionId` — which keeps
+it out of `persistChannels`/`syncChannels`/`reconnectAllNow` by construction —
+synced from `GET /rooms` every 4 s (`syncRooms`), joined lazily on first
+activation (`openRoomLink`), with its own menu, rename, close (archive) and
+drag-to-group (`PATCH`). `body.room-active` hides the agent machinery (gauges,
+gallery, cron, terminal, skills). Mute is per browser (localStorage), since
+it is a personal preference and the room list is shared. The three kinds of
+entry are told apart in CSS: round initials (agent), square slate 💬 tile with
+no LED (room), dashed ring + ⏰ (agent with crons, `.has-cron` from `setCrons`).
+
 ## Known rough edges / debt
 
 - Much was built in low-visibility agent sessions; detection heuristics,
@@ -2198,6 +2248,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 
 | File | Responsibility |
 |---|---|
+| `src/rooms.ts` | Rooms — channels with no agent. Own registry + append-only JSONL messages + per-account read marks (`RoomStore`); pure rules `visibleRooms`, `canSeeRoom`, `roomGroupFor`, `postRefusal`, `patchRoomIn`, `parseMessages`, `pageMessages`, `unreadCount`, `roomForTopic`, `telegramLine`. Tested in `test/rooms.test.ts`; the no-agent seams in `test/rooms-boundary.test.ts`. |
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
 | `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
@@ -2295,6 +2346,7 @@ editor. The editor's prompt panel mirrors a background Skillsmith tab through
 | `src/accounts.ts` | Web accounts, PER INSTANCE (`~/.shadok-ai/users/<key>.json`, 600): roles (`admin`/`member`), salted scrypt hashes, single-use invitations, and the signed session token. The signing secret (`<key>.key`) is per instance and **never exported into an agent's env** — the GUI password is, so signing with it would let an agent mint a cookie for anyone. `SHADOK_GUI_PASSWORD` stays the door and IS the `admin` account; with no password everything is dormant. `promptAuthor` is where the web's author comes from the SESSION and never from the frame. Also `signSessionKey` / `readSessionKey` — the per-session key an AGENT authenticates with (`x-shadok-session-key`), DERIVED from the session id by HMAC so it needs no server state and carries no issue time. See invariant 33. Pure cores tested. |
 | `src/agent-principal.ts` | The AGENT as a principal of its own (no longer the bootstrap admin): `resolveAgentPrincipal` (session id, its channel's group from the registry, profile, creator, inherited restricted-peer box — a revoked peer still boxes, fail-closed), `agentAccount` (a `member` named `agent:<id>`), `isBrowserPerson` (what "browser-only" means: no agent key, no peer token, a person's cookie when a password is set, same-origin), and `AGENT_CREDENTIAL_VARS` (`SHADOK_AUTH`, `SHADOK_GUI_PASSWORD` — stripped from every agent spawn). `server.ts` exposes `agentPrincipal(req)` and `restrictedBoxOf(req)` on top. Pure, tested (`test/agent-principal.test.ts`). See invariant 59. |
 | `src/twofactor.ts` | Two-factor sign-in with a passkey (WebAuthn via `@simplewebauthn/server`), opt-in per instance (`config.twoFactor[<cwd>]`, `twoFactorForCwd`). Pure rules, tested: `twoFactorEnableVerdict` (≥ 2 NAMED admins, each with a passkey — the recovery rule is "another admin resets you"), `keepsTwoAdminsVerdict`, `resetVerdict` (never yourself, never the bootstrap admin), `loginNext`, `enrollCodeVerdict`; the pending sign-in token (`signPending`, a key DERIVED from the session secret so it can never pass as `sk_auth`); single-use challenges bound to user + purpose. The routes live in `server.ts` (`/login/passkey*`, `/login/enroll*` before the gate; `/2fa*` behind it, all through `cookieAccount`, never an agent key or a peer). `isInternalClient` is the one exception and says so: a bootstrap cookie marked `mfa` can only have been minted in-process with the signing secret, so it is the SERVER (the Telegram bridge) — `currentAccount` accepts it, `cookieAccount` still does not. See invariant 46. |
+| `src/agent-reports.ts` + `context/report-skill/` | Agent reports — an agent STUCK on something only a human can fix (expired/refused credential, missing access, a bug) asks the admins for help. Before it, the only outlet was the agent's own chat, which nobody reads when nobody watches that agent (a cron agent on a dead token failed hourly, silently). `POST /reports` is AGENT-only (`agentPrincipal`, session key — invariant 33); `GET /reports`, `POST /reports/seen`, `POST /reports/resolve` are ADMIN-only (`accountAdmin`, writes browser-only). Pure cores tested: `reportInput` (a `secret` must be an env-var NAME — a pasted value is refused without being echoed), `fileReport` (same open title from the same agent MERGES: `count`, `lastAt`, unread again — so an agent retrying in a loop makes one card, not fifty), `rateRefusal` (10 NEW reports/agent/hour; merges never count), `shouldNotify` (new → DM; duplicate → at most hourly), `reportsInbox` (open first, per-admin unread badge), `resolveReport` (resolve / reopen). Stored in `~/.shadok-ai/reports/<instanceKey>.json` (600, 500 rows, resolved kept 30 days). Two notifications: `tgBridge.notifyOwner` (DM to the Telegram owner) and a live `agent-report` WS frame sent ONLY to sockets an admin person opened (`__admin`, stamped at connect — `broadcastAdmins`), since a report can describe a credential problem members have no business reading; the panel's 60s poll is the net. The skill (`report.mjs [--kind access|bug|blocked] [--secret NAME] "title" <<< body`) is seeded to the server HOME (`seedReportSkill`) and listed in `SKILL_SOURCES` for the machine-wide tier. In multi-tenant a report crosses from the agent's group to the admins by the agent's own act, like a `/talk` letter: its SKILL.md forbids secret values. Spec: `docs/superpowers/specs/2026-11-10-agent-reports.md`. |
 | `src/security-events.ts` | The Security panel's event log — 2FA v2's notification channel while no mail sender exists. `recordEvent` (never throws: losing an audit line must not fail the action), pure `appendEvent` (500 rows / 90 days), `aboutYou` (what others did to you, plus EVERY passkey change on your account — a thief with your password and a code is "you" to the server), `inboxFor` (per-viewer unread; admins get the whole log and the "this wasn't me" flags), `notMeEffect`. Routes `/2fa/inbox`, `/2fa/inbox/seen`, `/2fa/not-me`, person-only like the rest of `/2fa`. Spec: `docs/superpowers/specs/2026-10-28-2fa-v2-recovery-design.md` § 6. |
 | `src/admin-requests.ts` | 2FA v2's two-admin requests — `passkey-reset` (level 2), `full-reset` (level 3, effective after `FULL_RESET_DELAY_MS` or a second admin), `promote` / `demote`. Pure `askVerdict` / `approveVerdict` (a SECOND admin: never the asker, never the target) / `cancelVerdict` (asker, any admin, or the target) / `dueRequests` / `expire` / `upsertRequest` / `requestsFor`, tested. No timer: `settleRequests` (server) applies due ones on read. Routes `/2fa/recover` (levels 1–3), `/2fa/requests/approve`, `/2fa/requests/cancel`. Verified end to end with CDP virtual authenticators — run such a test with a scratch `HOME`, because turning 2FA on writes `config.json`. |
 | `src/paths.ts` | `instanceKey(cwd)` — the launch directory encoded as a filename, for anything stored per instance. |
@@ -2356,7 +2408,7 @@ a spawn arg, so it ALWAYS respawns. An unknown level is refused OUT LOUD, becaus
 the CLI itself would only warn and silently run at the default), `stop`
 (`sessionId?` — kills a specific channel, so the UI can remove a zombie).
 
-**server → client:** `starting` (a FRESH spawn's progress, `step` = `connect` / `workspace` / `claude`, each sent just BEFORE the work it names — `src/spawn-steps.ts`; the page's birth loader, `public/spawn-steps.js`, ticks them off and gives way on `ready` or the refusal; a resume sends none, it has history to show), `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
+**server → client:** `agent-report` (`{id, agent, kind, title, count}` — sent ONLY to admin persons' sockets when an agent files or re-files a report; the client rings once per id+count across tabs and refreshes the Reports badge), `starting` (a FRESH spawn's progress, `step` = `connect` / `workspace` / `claude`, each sent just BEFORE the work it names — `src/spawn-steps.ts`; the page's birth loader, `public/spawn-steps.js`, ticks them off and gives way on `ready` or the refusal; a resume sends none, it has history to show), `ready` (carries `instanceKey` — which instance answers this origin, so a stale tab whose port was taken over detects the swap, invariant 35), `working` (carries `elapsedMs` — how long the turn has been running; the client anchors on the DURATION and never on a server instant, or the stopwatch is off by the whole gap between the two clocks), `turn-done`, `stream-text`,
 `stream-tool` (carries `files` — `{path,name,image,video}[]` — when it's a `SendUserFile`, so the client renders a download / inline-image / inline-video card instead of a folded tool line, and Telegram uploads them), `stream-result`, `stream-bash` (`command` then `output`/`isError` — a shell-mode exchange read from the transcript), `history` (whose turns may be `role:"file"` for a delivered file, or `role:"bash"` for a shell-mode exchange), `dialog` (question, options, `multi`, optional `body` — the box's own text, invariant 43 — and optional `preface`), `screen`, `tokens`,
 `context`, `background` (`shells` + `monitors` — what the pane reports still running; live only, never stored, like the context percentage), `parent` (the parent channel changed — broadcast, so every tab follows),
 `profile` (the `{profile, applied}` pair — desired vs the one the running process
@@ -2464,6 +2516,7 @@ OR a video is `inline`, everything else `attachment`. No transcript check becaus
 these are files the USER supplied, not paths an agent named; instead the entry is
 `lstat`ed and opened `O_NOFOLLOW` (never a symlink), and in multi-tenant only a
 server-written file of a group the caller can see is served — invariant 60),
+`/reports` (POST — an agent asks the admins for help: `{title, kind?: access|bug|blocked, body?, secret?: ENV_NAME}`, session key only, 429 past 10 new reports/agent/hour; GET / `/reports/seen` / `/reports/resolve` `{id, reopen?}` — admin person only; see `src/agent-reports.ts`),
 `/files` (POST — an agent offers a file through shadok's own path, authenticated by `x-shadok-session-key`; refusals name the path and say why, and a partial success reports WHICH file did not make it),
 `/download` (GET — `session` + `path`: streams back a file the agent DELIVERED via `SendUserFile` **or offered through `POST /files`** — two sources, one rule. The caller must be allowed to act on that session (`mayActOnSession`), and in multi-tenant the bytes are read AS the agent's OS user (`stat`/`dd` under `setpriv`), never as root; mono-tenant streams from an fstat'ed fd and refuses (409) a file whose dev+inode differ from the offer's — invariant 60. The path is verified against that session's transcript
 (`sentFilePaths`), so it can never be walked into an arbitrary file; the response
