@@ -287,6 +287,7 @@
   #verMenu .vm-label { color: var(--text-dim); }
   #verMenu .vm-check { display: flex; align-items: center; gap: 6px; margin-top: 9px; cursor: pointer; }
   #verMenu .vm-hint { color: var(--text-dim); font-size: 10px; margin-top: 7px; line-height: 1.4; }
+  #verMenu .vm-hint.danger { color: #e2564a; }
   #verMenu .vm-btn { margin-top: 10px; width: 100%; padding: 6px 10px; font-size: 11px; cursor: pointer;
     color: var(--text, #e8e8ea); background: transparent; border: 1px solid var(--line, #3a3d42); border-radius: 6px; }
   #verMenu .vm-btn:hover { border-color: var(--amber, #d0a000); }
@@ -2222,11 +2223,13 @@
   #infoBody .ip-skill .ip-meta { color: var(--text-dim); font-size: 12px; flex-shrink: 0; }
   #infoBody .ip-cron { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 6px; background: var(--bg); }
   #infoBody .ip-cron .ip-prompt { color: var(--text-dim); font-size: 12px; margin-top: 3px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #infoBody .ip-chip {
+  #infoBody .ip-chip, #cronList .ip-chip {
     display: inline-block; margin: 6px 6px 0 0; padding: 2px 9px; border-radius: 999px; font-size: 12px; cursor: pointer;
     border: 1px solid color-mix(in srgb, var(--amber) 45%, transparent); background: var(--amber-soft); color: var(--text);
   }
-  #infoBody .ip-chip:hover { border-color: var(--amber); }
+  #infoBody .ip-chip:hover, #cronList .ip-chip:hover { border-color: var(--amber); }
+  #cronList .cron-skills { margin: -6px 0 10px; font-size: 12px; }
+  #cronList .cron-skills .ip-chip { margin-top: 4px; }
   #infoBody .ip-empty { color: var(--text-dim); font-size: 12px; font-style: italic; padding: 4px 0; }
   #infoBody .ip-link { background: none; border: 0; padding: 0; color: var(--amber); cursor: pointer; font-size: 12px; }
   .fp-agent-link { background: none; border: 0; padding: 0; color: inherit; font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline dotted; }
@@ -2396,7 +2399,16 @@
      cockpit uses 6 — i.e. a grey and a white that existed nowhere else. The amber
      rule on top follows the instruments' grammar (active tab edge, lit ⌨️): this
      panel is in the foreground. */
-  #securityBtn { position: relative; }
+  #securityBtn, #reportsBtn { position: relative; }
+  /* Agent reports: a card per report, the open ones first. */
+  /* Doubled class: `.sec-events li` (same specificity, declared later) centres. */
+  .sec-events.rep-list li { flex-direction: column; align-items: stretch; gap: 4px; text-align: left; }
+  .sec-events.rep-list li.resolved { opacity: .6; }
+  .rep-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .rep-head .rep-title { flex: 1; min-width: 0; font-weight: 600; }
+  .rep-meta { color: var(--text-dim); font-size: 11px; }
+  .rep-body { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 0; max-height: 180px; overflow: auto; color: var(--text-dim); }
+  .rep-actions { display: flex; gap: 6px; flex-wrap: wrap; }
   .sec-badge {
     position: absolute; top: -5px; right: -5px;
     min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px;
@@ -2481,6 +2493,13 @@
   #cronList { list-style: none; padding: 0; margin: 0 0 14px; }
   #cronList li { padding: 6px 8px; border-radius: 6px; }
   #cronList li:nth-child(odd) { background: rgba(255, 255, 255, 0.04); }
+  #hookList { list-style: none; padding: 0; margin: 0 0 10px; }
+  #hookList li { padding: 6px 8px; border-radius: 6px; }
+  #hookList li:nth-child(odd) { background: rgba(255, 255, 255, 0.04); }
+  .hook-title { margin: 18px 0 4px; font-size: 14px; }
+  .hook-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; }
+  .hook-reveal { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; font-size: 12px; }
+  .hook-reveal pre { white-space: pre-wrap; word-break: break-all; margin: 6px 0; user-select: all; }
   .cron-form { border-top: 1px solid var(--line); padding-top: 12px; }
   .cron-form .field { margin: 12px 0; }
   .cron-form .field:last-child { margin-bottom: 0; }
@@ -3372,6 +3391,9 @@
   <!-- Security: what was done to accounts and second factors, and "this wasn't
        me". Kept out of the ⋯ overflow on a phone: its badge is the point. -->
   <button id="securityBtn" class="icon" title="Security — what happened to your account" aria-label="Security" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6l7-3z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg><span id="securityBadge" class="sec-badge" hidden></span><span class="ab-txt">Security</span></button>
+  <!-- Reports: agents that are stuck ask an admin for help (src/agent-reports.ts).
+       Admins only; kept out of the ⋯ overflow for the same reason as Security. -->
+  <button id="reportsBtn" class="icon" title="Reports — agents asking an admin for help" aria-label="Reports" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 21V4M6 4h11l-2.5 4L17 12H6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span id="reportsBadge" class="sec-badge" hidden></span><span class="ab-txt">Reports</span></button>
   <button id="usersBtn" class="icon" title="Users — accounts for this instance" aria-label="Users" hidden><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3 19a6 6 0 0 1 12 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M16 6.2a3.2 3.2 0 0 1 0 6.1M17.5 19a6 6 0 0 0-2.2-4.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Users</span></button>
   <button id="telegramBtn" class="icon" title="Configure the Telegram bot (token, on/off, allowed chats)"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path fill="#26A5E4" d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg><span class="ab-txt">Telegram</span></button>
   <button id="muteNotif" class="icon" title="Mute the notification sound" aria-label="Notification sound"><svg viewBox="0 0 24 24" width="15" height="15" style="vertical-align:-2px" aria-hidden="true"><path d="M6 16.5h12c-1.3-1.1-2-2.7-2-4.5v-1.2a4 4 0 0 0-8 0v1.2c0 1.8-.7 3.4-2 4.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10.4 19a1.7 1.7 0 0 0 3.2 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><line class="mute-slash" x1="4.5" y1="4.5" x2="19.5" y2="19.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span class="ab-txt">Sound</span></button>
@@ -3452,7 +3474,14 @@
     </select>
   </div>
   <div class="vm-hint" id="vmChannelHint"></div>
-  <label class="vm-check"><input type="checkbox" id="acceptEditsChk"><span>Auto mode</span></label>
+  <div class="vm-row"><span class="vm-label">Permissions</span>
+    <select id="permModeSel">
+      <option value="default">Ask before each action</option>
+      <option value="acceptEdits">Auto-apply edits</option>
+      <option value="auto">Auto mode — no prompts</option>
+      <option value="bypassPermissions">Bypass — 0 questions ⚠️</option>
+    </select>
+  </div>
   <div class="vm-hint" id="vmModeHint"></div>
   <label class="vm-check"><input type="checkbox" id="ledgerChk"><span>Shared ledger</span></label>
   <div class="vm-hint" id="vmLedgerHint"></div>
@@ -3640,6 +3669,24 @@
           <span id="cronOnceFields" hidden>
             <input id="cronAt" type="datetime-local" aria-label="Date and time">
           </span>
+        </div>
+      </form>
+      <h3 class="hook-title">⚡ Webhooks</h3>
+      <p class="sec-note">Let an outside system (CI, a form, a monitoring tool…) wake this agent with an HTTP <code>POST</code>. The request body is handed to the agent as untrusted data, after your prompt. Each webhook has its own secret token, shown only once.</p>
+      <ul id="hookList"></ul>
+      <div id="hookReveal" class="hook-reveal" hidden></div>
+      <form id="hookAdd" class="cron-form">
+        <div class="field">
+          <span class="label">Name</span>
+          <input id="hookName" placeholder="e.g. CI failed" autocomplete="off" maxlength="80" />
+        </div>
+        <div class="field">
+          <span class="label">Prompt to run when called</span>
+          <textarea id="hookPrompt" rows="2" placeholder="e.g. A build failed: read the payload, find the cause and tell me"></textarea>
+        </div>
+        <div class="hook-actions">
+          <span class="foot-note" id="hookErr" style="color:#ff9a9a"></span>
+          <button type="submit" id="hookSubmit">Add webhook</button>
         </div>
       </form>
     </div>
@@ -3848,6 +3895,17 @@
       <div class="label sec-sub">Security log</div>
       <ul id="secLog" class="sec-events"></ul>
     </div>
+  </div>
+</div>
+
+<div id="reportsOverlay" class="overlay" hidden>
+  <div class="sec-panel">
+    <div class="sec-head">
+      <strong>Agent reports</strong>
+      <button id="reportsClose" title="Close">✕</button>
+    </div>
+    <p class="sec-note">Agents that hit something only a human can fix — an expired token, an access they don't have, a bug — ask for help here. Fix it, then mark it resolved (and reload the agent if you changed a secret).</p>
+    <ul id="reportsList" class="sec-events rep-list"></ul>
   </div>
 </div>
 
@@ -9189,7 +9247,8 @@
      Tool traffic is grouped instead of stacked. A *block* is a run of tool
      events between two pieces of assistant text; inside it, consecutive calls
      to the same tool condense into a *run*; each call hides its own output.
-     At turn-done every block folds — except any that saw an error.
+     Every block is born folded (one "N operations" line) and stays that way;
+     the reader expands it on demand.
 
      All fold state lives on `tab.act` (current block) and `tab.turnBlocks`
      (blocks awaiting the end-of-turn fold). */
@@ -9219,10 +9278,13 @@
   function openBlock(tab) {
     const turn = document.createElement("div");
     turn.className = "turn claude activity";
-    turn.dataset.folded = "false";
+    // Folded from the start, not only at turn-done: while the agent works the
+    // chat shows "N operations" on one line, and the reader opens it on demand.
+    // An error shows on that line ("· N errors"), and expanding lands on it.
+    turn.dataset.folded = "true";
     const head = document.createElement("button");
     head.className = "act-head";
-    head.innerHTML = '<span class="caret">▾</span><span class="count"></span>';
+    head.innerHTML = '<span class="caret">▸</span><span class="count"></span>';
     head.addEventListener("click", () => toggleFold(turn));
     const body = document.createElement("div");
     body.className = "act-body";
@@ -9967,7 +10029,7 @@
   const verMenu = document.getElementById("verMenu");
   const autoUpdateChk = document.getElementById("autoUpdateChk");
   const updChannelSel = document.getElementById("updChannelSel");
-  const acceptEditsChk = document.getElementById("acceptEditsChk");
+  const permModeSel = document.getElementById("permModeSel");
   const ledgerChk = document.getElementById("ledgerChk");
   const restartAllBtn = document.getElementById("restartAllBtn");
 
@@ -10030,6 +10092,33 @@
       : "Group isolation did NOT complete — agents are running un-isolated (commons). Check the server logs; it retries on the next restart.";
   }
 
+  // The permission mode every NEW agent spawns in. The dropdown lists the four
+  // useful rungs; the server accepts more (manual/dontAsk/plan, settable via the
+  // API or config). If the instance is on one of those, we show it as a
+  // read-through option rather than snapping the menu to a mode nobody picked.
+  const PERM_MODE_HINTS = {
+    default: "New agents ask before each action.",
+    acceptEdits: "New agents auto-apply file edits, and ask before other actions.",
+    auto: "New agents start in auto mode (Shift+Tab): no prompts, though a risky action can still be refused.",
+    bypassPermissions: "⚠️ No permission checks at all — any command runs with no question. Agents aren't sandboxed and read untrusted content; a prompt injection could do real damage.",
+  };
+  function renderPermMode(mode) {
+    const m = mode || "default";
+    const known = Object.prototype.hasOwnProperty.call(PERM_MODE_HINTS, m);
+    let extra = permModeSel.querySelector('option[data-extra="1"]');
+    if (!known) {
+      if (!extra) { extra = document.createElement("option"); extra.dataset.extra = "1"; permModeSel.appendChild(extra); }
+      extra.value = m; extra.textContent = "Mode: " + m;
+    } else if (extra) {
+      extra.remove();
+    }
+    permModeSel.value = m;
+    permModeSel.dataset.applied = m;
+    const hint = document.getElementById("vmModeHint");
+    hint.textContent = PERM_MODE_HINTS[m] || ("Mode: " + m + ".");
+    hint.classList.toggle("danger", m === "bypassPermissions");
+  }
+
   function renderVerMenu() {
     if (!lastVersion || verMenu.hidden) return;
     const m = lastVersion;
@@ -10048,13 +10137,7 @@
     document.getElementById("vmChannelHint").textContent = ch === "alpha"
       ? "Every merge, as soon as it ships — newest work, freshest bugs."
       : "Only promoted releases. Quieter, and what a fresh install gets.";
-    const autoOn = m.permissionMode === "auto";
-    acceptEditsChk.checked = autoOn;
-    document.getElementById("vmModeHint").textContent = autoOn
-      ? "New agents start in auto mode (Shift+Tab), running without prompts."
-      : (m.permissionMode && m.permissionMode !== "default"
-           ? "Mode: " + m.permissionMode + "."
-           : "New agents ask before each action.");
+    renderPermMode(m.permissionMode || "default");
     ledgerChk.checked = !!m.ledgerEnabled;
     document.getElementById("vmLedgerHint").textContent = m.ledgerEnabled
       ? "Agents verify a status before re-raising it. Toggling restarts all agents."
@@ -10289,19 +10372,31 @@
       updChannelSel.value = channel === "alpha" ? "beta" : "alpha"; // revert on failure
     }
   });
-  acceptEditsChk.addEventListener("change", async () => {
-    const on = acceptEditsChk.checked;
+  permModeSel.addEventListener("change", async () => {
+    const mode = permModeSel.value;
+    const prev = permModeSel.dataset.applied || "default";
+    if (mode === prev) return;
+    // Bypass runs every new agent with no permission checks at all; make the
+    // operator confirm it explicitly (same native confirm() as End agent etc.).
+    if (mode === "bypassPermissions" && !confirm(
+      "Switch every NEW agent to Bypass (0 questions)?\n\n" +
+      "Agents will run with NO permission checks — any shell command, any file write, " +
+      "nothing is ever asked. They are not sandboxed, run as your user, and read " +
+      "untrusted content (web pages, cloned repos, messages), so a prompt injection " +
+      "could do real damage.\n\nOnly enable this if you understand the risk."
+    )) { permModeSel.value = prev; return; }
     try {
       const r = await fetch("/permission-mode", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ mode: on ? "auto" : "default" }),
+        body: JSON.stringify({ mode }),
       });
       if (!r.ok) throw new Error("refused");
-      // Server echoes the new mode back over WS; the hint updates then. Only
-      // affects agents started after this — running ones keep their mode.
+      // Optimistic; the server also echoes the new mode over WS (renderVerMenu).
+      // Only affects agents started after this — running ones keep their mode.
+      renderPermMode(mode);
     } catch {
-      acceptEditsChk.checked = !on; // revert on failure
+      permModeSel.value = prev; // revert on failure
     }
   });
   ledgerChk.addEventListener("change", async () => {
@@ -10461,6 +10556,10 @@
     switch (msg.type) {
       case "version":
         handleVersion(msg);
+        break;
+      case "agent-report":
+        // Defined with the Reports panel, further down this script.
+        window.onAgentReport?.(msg);
         break;
       case "server-reload":
         showUpdateBanner(msg.version);
@@ -14413,6 +14512,21 @@
   // only through textContent (facEl): skill titles and cron prompts can be
   // written by an agent.
   let infoSeq = 0;
+  /** A skill as a chip that opens its card in the Skill Factory. `before` runs
+   *  first (the schedule panel closes its overlay so the card is visible). */
+  function skillChip(s, before) {
+    const go = () => { if (before) before(); openSkillCard(s.id); };
+    return facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory to edit it", text: "✦ " + facTitle(s),
+      onclick: go, onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } } });
+  }
+  /** Which factory skills an agent's schedules use (src/skill-usage.ts):
+   *  `named(cronId)` — the skills that cron's prompt names; `picked` — skills a
+   *  scheduled run CALLED without any prompt naming them (no cron in particular). */
+  function cronSkillUse(skills, sid) {
+    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
+    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
+    return { named, picked };
+  }
   async function renderInfoPanel() {
     const body = $("infoBody");
     const t = active;
@@ -14453,9 +14567,8 @@
     const list = (Array.isArray(crons) ? crons : []).filter((c) => c.sessionId === sid);
     body.appendChild(facEl("h3", {}, ["Schedules", facEl("span", { class: "ip-count", text: String(list.length) })]));
     if (!list.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No schedule." }));
-    const named = (cronId) => skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.crons.some((c) => c.id === cronId && c.mentions)));
-    const chip = (s) => facEl("span", { class: "ip-chip", role: "button", tabindex: "0", title: "Open this skill in the Skill Factory", text: "✦ " + facTitle(s),
-      onclick: () => openSkillCard(s.id), onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openSkillCard(s.id); } } });
+    const { named, picked } = cronSkillUse(skills, sid);
+    const chip = (s) => skillChip(s);
     for (const c of list) {
       const uses = named(c.id);
       body.appendChild(facEl("div", { class: "ip-cron" }, [
@@ -14467,7 +14580,6 @@
     }
     // Skills a scheduled run CALLED without any prompt naming them: the agent
     // picked them itself, so they belong to no cron in particular.
-    const picked = skills.filter((s) => (s.cronUsers || []).some((u) => u.sessionId === sid && u.cronRuns && !u.crons.some((c) => c.mentions)));
     if (picked.length) body.appendChild(facEl("div", { style: "margin-top:8px" }, [facEl("span", { class: "ip-k", text: "Also called by scheduled runs:" }), facEl("div", {}, picked.map(chip))]));
     body.appendChild(facEl("div", { style: "margin-top:10px" }, [facEl("button", { class: "ip-link", type: "button", text: "Manage schedules…", onclick: () => { $("cronOverlay").hidden = false; renderCrons(); } })]));
   }
@@ -14542,11 +14654,23 @@
     const ul = $("cronList"); ul.innerHTML = "";
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
+    $("hookReveal").hidden = true; $("hookReveal").replaceChildren();
+    renderHooks();
     if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
-    let all = [];
-    try { all = await (await fetch("/crons")).json(); } catch { all = []; }
-    const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === active.sessionId);
+    const sid = active.sessionId;
+    // The skills each schedule uses, so a cron that runs a factory skill links
+    // straight to it (same join as the info panel). Skills failing to load only
+    // costs the chips, never the schedule list.
+    const [all, skills] = await Promise.all([
+      fetch("/crons").then((r) => r.json()).catch(() => []),
+      facCall("GET", "/factory/skills").then((o) => (o && o.skills) || []).catch(() => []),
+    ]);
+    if (!active || active.sessionId !== sid) return; // switched agent meanwhile
+    ul.innerHTML = "";
+    const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === sid);
     if (!list.length) { ul.innerHTML = '<li><span style="opacity:.6">no schedule yet</span></li>'; return; }
+    const { named, picked } = cronSkillUse(skills, sid);
+    const closeCron = () => { $("cronOverlay").hidden = true; };
     for (const c of list) {
       const li = document.createElement("li"); li.style.display = "block";
       const line = document.createElement("div");
@@ -14576,9 +14700,103 @@
       p.textContent = c.prompt;
       p.style.cssText = "opacity:.75;font-size:12px;margin:3px 0 10px;white-space:pre-wrap";
       li.append(line, p);
+      const uses = named(c.id);
+      if (uses.length) li.appendChild(facEl("div", { class: "cron-skills" }, [facEl("span", { style: "opacity:.6", text: "Uses " }), ...uses.map((s) => skillChip(s, closeCron))]));
+      ul.appendChild(li);
+    }
+    if (picked.length) {
+      const li = document.createElement("li"); li.style.display = "block";
+      li.appendChild(facEl("div", { class: "cron-skills", style: "margin:0" }, [facEl("span", { style: "opacity:.6", text: "Also called by scheduled runs: " }), ...picked.map((s) => skillChip(s, closeCron))]));
       ul.appendChild(li);
     }
   }
+  // ── Webhooks (same popin as the schedules: both wake the agent from outside
+  // a conversation). The token comes back from the server ONCE, at creation or
+  // rotation, and is shown with a ready-to-run curl; it is never listed again.
+  function hookUrl(h) { return location.origin + "/hooks/" + h.id; }
+  function revealHookToken(h) {
+    const box = $("hookReveal");
+    box.replaceChildren();
+    const msg = document.createElement("div");
+    msg.textContent = "Token for “" + h.name + "” — copy it now, it will not be shown again:";
+    const curl = document.createElement("pre");
+    curl.textContent =
+      "curl -X POST " + hookUrl(h) + " \\\n" +
+      "  -H 'Authorization: Bearer " + h.token + "' \\\n" +
+      "  -H 'Content-Type: application/json' -d '{\"hello\":\"world\"}'";
+    const hint = document.createElement("div");
+    hint.style.opacity = ".7";
+    hint.textContent = "A sender that only takes a URL can use " + hookUrl(h) + "?token=… (the header is better: it stays out of logs).";
+    const ok = document.createElement("button");
+    ok.type = "button"; ok.textContent = "Done";
+    ok.addEventListener("click", () => { box.hidden = true; box.replaceChildren(); });
+    box.append(msg, curl, hint, ok);
+    box.hidden = false;
+  }
+  async function renderHooks() {
+    const ul = $("hookList"); ul.replaceChildren();
+    if (!active || !active.sessionId) return;
+    let all = [];
+    try { all = await (await fetch("/webhooks")).json(); } catch { all = []; }
+    const list = (Array.isArray(all) ? all : []).filter((h) => h.sessionId === active.sessionId);
+    if (!list.length) { const li = document.createElement("li"); li.style.opacity = ".6"; li.textContent = "no webhook yet"; ul.appendChild(li); return; }
+    for (const h of list) {
+      const li = document.createElement("li"); li.style.display = "block";
+      const line = document.createElement("div");
+      line.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:space-between";
+      const label = document.createElement("span");
+      const b = document.createElement("b"); b.textContent = h.name;
+      label.append(b);
+      const meta = document.createElement("span");
+      meta.style.opacity = ".55";
+      meta.textContent = (h.enabled ? "" : " (paused)") + (h.lastRun ? " · last call " + new Date(h.lastRun).toLocaleString() + " → " + (h.lastOutcome || "?") : " · never called");
+      label.append(meta);
+      const btns = document.createElement("span");
+      const mk = (text, title, fn) => { const x = document.createElement("button"); x.type = "button"; x.textContent = text; x.title = title; x.addEventListener("click", fn); return x; };
+      const call = (method, path, body) => fetch(path, { method, headers: { "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      btns.append(
+        mk("⧉", "Copy the webhook URL", () => navigator.clipboard && navigator.clipboard.writeText(hookUrl(h))),
+        mk(h.enabled ? "Pause" : "Resume", h.enabled ? "Calls are refused while paused" : "Accept calls again", async () => { await call("PATCH", "/webhooks/" + h.id, { enabled: !h.enabled }); renderHooks(); }),
+        mk("↻", "New token (the old one stops working at once)", async () => {
+          if (!confirm("Generate a new token for “" + h.name + "”? The current one stops working immediately.")) return;
+          const r = await call("POST", "/webhooks/" + h.id + "/rotate");
+          if (r.ok) revealHookToken(await r.json());
+          renderHooks();
+        }),
+        mk("✕", "Delete webhook", async () => {
+          if (!confirm("Delete the webhook “" + h.name + "”?")) return;
+          await call("DELETE", "/webhooks/" + h.id); renderHooks();
+        }),
+      );
+      line.append(label, btns);
+      const p = document.createElement("div");
+      p.textContent = h.prompt;
+      p.style.cssText = "opacity:.75;font-size:12px;margin:3px 0 4px;white-space:pre-wrap";
+      const u = document.createElement("div");
+      u.textContent = "POST " + hookUrl(h);
+      u.style.cssText = "opacity:.5;font-size:11px;margin-bottom:8px;word-break:break-all";
+      li.append(line, p, u);
+      ul.appendChild(li);
+    }
+  }
+  $("hookAdd").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    $("hookErr").textContent = "";
+    const prompt = $("hookPrompt").value.trim();
+    const name = $("hookName").value.trim();
+    if (!active || !active.sessionId) return;
+    if (!prompt) { $("hookErr").textContent = "a prompt is required"; return; }
+    let r;
+    try {
+      r = await fetch("/webhooks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: active.sessionId, name, prompt }) });
+    } catch { $("hookErr").textContent = "server unreachable"; return; }
+    let j = null;
+    try { j = await r.json(); } catch { /* non-JSON body */ }
+    if (!r.ok) { $("hookErr").textContent = (j && j.error) || "could not create (" + r.status + ")"; return; }
+    $("hookName").value = ""; $("hookPrompt").value = "";
+    revealHookToken(j);
+    renderHooks();
+  });
   // Editing an existing schedule: its id, or null when the form creates a new
   // one. POST /crons upserts on `id` (preserving lastRun and recomputing
   // nextRun), so editing is the same submit with the id attached.
@@ -15195,7 +15413,7 @@
   // the reason, rather than a control that silently snaps back.
   function applyAdminOnlyControls(amAdmin) {
     const why = amAdmin ? "" : "Admin only";
-    for (const id of ["autoUpdateChk", "updChannelSel", "acceptEditsChk", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
+    for (const id of ["autoUpdateChk", "updChannelSel", "permModeSel", "ledgerChk", "restartAllBtn", "reloginBtn"]) {
       const el = $(id);
       if (!el) continue;
       el.disabled = !amAdmin;
@@ -15235,6 +15453,8 @@
     // instance, who is everybody). The server answers 403 otherwise.
     $("securityBtn").hidden = !(me?.name || me?.role === "admin");
     refreshSecurityBadge();
+    $("reportsBtn").hidden = me?.role !== "admin" || !!me?.agent;
+    refreshReportsBadge();
   }
 
   $("signOut").addEventListener("click", async () => {
@@ -15604,6 +15824,96 @@
   });
   $("securityClose").addEventListener("click", () => { $("securityOverlay").hidden = true; });
   $("securityOverlay").addEventListener("click", (e) => { if (e.target === $("securityOverlay")) $("securityOverlay").hidden = true; });
+
+  // ── Agent reports panel ─────────────────────────────────
+  async function reportsInbox() {
+    try { const r = await fetch("/reports"); return r.ok ? await r.json() : null; } catch { return null; }
+  }
+  async function refreshReportsBadge() {
+    if ($("reportsBtn").hidden) return;
+    const box = await reportsInbox();
+    const n = box?.badge || 0;
+    $("reportsBadge").hidden = !n;
+    $("reportsBadge").textContent = n > 9 ? "9+" : String(n);
+  }
+  // The live `agent-report` frame is the fast path; this poll is the net (a
+  // socket that was reconnecting when the report came in).
+  setInterval(refreshReportsBadge, 60000);
+  // Every open tab has its own socket, so one report arrives once per tab: ring once.
+  const reportsRung = new Set();
+  window.onAgentReport = (msg) => {
+    refreshReportsBadge();
+    const k = msg.id + ":" + msg.count;
+    if (reportsRung.has(k)) return;
+    reportsRung.add(k);
+    ding();
+    if (!$("reportsOverlay").hidden) renderReports();
+  };
+  const REPORT_KIND = { access: "🔑 access", bug: "🐞 bug", blocked: "⛔ blocked" };
+  function reportRow(r) {
+    const li = document.createElement("li");
+    if (r.unread) li.classList.add("unread");
+    if (r.status === "resolved") li.classList.add("resolved");
+    const head = document.createElement("div");
+    head.className = "rep-head";
+    const kind = document.createElement("span");
+    kind.textContent = REPORT_KIND[r.kind] || r.kind;
+    const title = document.createElement("span");
+    title.className = "rep-title";
+    title.textContent = r.title + (r.count > 1 ? "  ×" + r.count : "");
+    head.append(kind, title);
+    const meta = document.createElement("div");
+    meta.className = "rep-meta";
+    meta.textContent = r.agent + (r.profile ? " · " + r.profile : "") + " · " + new Date(r.lastAt).toLocaleString() +
+      (r.secret ? " · secret " + r.secret : "") +
+      (r.status === "resolved" ? " · resolved by " + r.resolvedBy : "");
+    li.append(head, meta);
+    if (r.body) {
+      const pre = document.createElement("pre");
+      pre.className = "rep-body";
+      pre.textContent = r.body;
+      li.appendChild(pre);
+    }
+    const acts = document.createElement("div");
+    acts.className = "rep-actions";
+    const btn = (label, fn, cls) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = label;
+      if (cls) b.className = cls;
+      b.addEventListener("click", fn);
+      acts.appendChild(b);
+    };
+    const tab = tabs.find((t) => t.sessionId === r.sessionId);
+    if (tab) btn("Open agent", () => { $("reportsOverlay").hidden = true; activate(tab); });
+    if (r.secret && r.status === "open")
+      btn("Set " + r.secret, () => { $("reportsOverlay").hidden = true; openSecretFor(tab || { profile: r.profile }, r.secret); });
+    btn(r.status === "open" ? "Mark resolved" : "Reopen", async () => {
+      const res = await fetch("/reports/resolve", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: r.id, reopen: r.status !== "open" }),
+      });
+      if (!res.ok) { alert((await res.json().catch(() => ({}))).error || "refused"); return; }
+      renderReports();
+    }, r.status === "open" ? "primary" : "");
+    li.appendChild(acts);
+    return li;
+  }
+  async function renderReports() {
+    const box = await reportsInbox();
+    const ul = $("reportsList");
+    if (!box) { ul.replaceChildren(Object.assign(document.createElement("li"), { className: "ev-empty", textContent: "couldn't load — admins only" })); return; }
+    ul.replaceChildren(...(box.reports.length ? box.reports.map(reportRow)
+      : [Object.assign(document.createElement("li"), { className: "ev-empty", textContent: "no agent has asked for help" })]));
+    await fetch("/reports/seen", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
+    refreshReportsBadge();
+  }
+  $("reportsBtn").addEventListener("click", async () => {
+    $("reportsOverlay").hidden = false;
+    await renderReports();
+  });
+  $("reportsClose").addEventListener("click", () => { $("reportsOverlay").hidden = true; });
+  $("reportsOverlay").addEventListener("click", (e) => { if (e.target === $("reportsOverlay")) $("reportsOverlay").hidden = true; });
 
   $("usersBtn").addEventListener("click", async () => {
     $("inviteBox").hidden = true;

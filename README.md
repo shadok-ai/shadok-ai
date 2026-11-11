@@ -202,6 +202,25 @@ Enter to skip; you can add it later from the web UI).
   nothing most of the day. The guard runs with the target agent's profile
   secrets, so an agent may put one only on itself (a person may guard any agent
   they can drive).
+- **Webhooks** — let an outside system (CI, a form, a monitoring tool, Zapier…)
+  wake an agent with an HTTP call, the event-driven twin of a schedule. Create
+  one in the agent's **⏰ Schedule** popin (name + the prompt to run); you get a
+  URL and a secret token, shown **once**:
+
+  ```bash
+  curl -X POST https://<your-cockpit>/hooks/<id> \
+    -H 'Authorization: Bearer whk_…' \
+    -H 'Content-Type: application/json' -d '{"status":"failed"}'
+  ```
+
+  The call answers `202` at once and the agent runs in the background with your
+  prompt, followed by the request body (≤16 kB, labelled as **untrusted** data —
+  it never speaks for you). Calls to the same webhook are queued and run one
+  after the other; a busy agent is retried for ~10 min. A sender that can only
+  take a URL may pass `?token=…` instead of the header. Pause, rotate the token
+  (↻) or delete it from the same popin. Only a person in the browser can create
+  or change a webhook — never an agent. An unknown id, a paused webhook and a
+  wrong token all answer the same `404`.
 - **Per-agent stats** — the agent's ⋯ menu has a **📊 Stats** view: token usage
   over the last hour / 24 h / 7 days / 30 days, split in a tooltip into input,
   output, cache-write and cache-read, with a **notional cost** beside each window.
@@ -343,6 +362,15 @@ Enter to skip; you can add it later from the web UI).
   otherwise just print a local path you cannot open. **Artifacts are denied**
   cockpit-wide for the same reason — a page on claude.ai is not the file you
   asked for (`SHADOK_ALLOW_ARTIFACTS=1` lifts it).
+- **Agents can ask an admin for help** — an agent stuck on something only a
+  human can fix (a Linear token that expired, no access to the Slack token it
+  needs, a Claude API key answering 401, a bug) files a report through the
+  `shadok-report` skill instead of failing silently. Every admin gets a badge
+  and a sound on the **Reports** button (🚩 in the header), and the Telegram
+  owner gets a DM. The panel shows each report with what the agent was doing,
+  merges a repeated failure into one card (`×3`), opens the vault on the
+  credential named (`--secret LINEAR_API_KEY`) and lets you mark it resolved.
+  Agents never put a secret's value in a report, only its name.
 - **Photos and videos, viewable** — an image or a **video** (mp4/webm/mov…) in
   the chat renders inline (a video gets a real player), and clicking a photo
   opens it full-size in a lightbox. The 🖼 button in an agent's bar opens a
@@ -372,7 +400,8 @@ Enter to skip; you can add it later from the web UI).
   - **From the agent's side.** The ▯ button in an agent's bar opens its info
     panel: its directory and profile, the skills it has (runs this week, ⏰ how
     many on a schedule), and its schedules with the skills each one uses. Click
-    a skill to open its card in the Skill Factory.
+    a skill to open its card in the Skill Factory. The ⏰ Schedule panel shows
+    the same thing under each schedule ("Uses ✦ skill"), one click from editing it.
   - **Creating.** The new-skill form asks for a **name** (what people see) and
     a **technical name** (what agents call it, `/name:name`), proposed from the
     name until you type your own. Choose it then: it is the skill's repository
@@ -1351,7 +1380,7 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/channels/glance` (GET — each visible row's last-message time and context %,
 read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
-register per group, filtered like `/groups`), `/crons`, `/timezone`, `/title` (GET/PUT — the
+register per group, filtered like `/groups`), `/crons`, `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent

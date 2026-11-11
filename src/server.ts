@@ -1,6 +1,7 @@
 import { randomUUID, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import { newRequest, askVerdict, approveVerdict, cancelVerdict, dueRequests, expire, upsertRequest, requestsFor, describeRequest, loadRequests, saveRequests, isOpen, REQUEST_TTL_MS, type AdminRequest, type RequestKind } from "./admin-requests.js";
 import { recordEvent, loadEvents, saveEvents, inboxFor, markSeen, notMeEffect, describeEvent, type SecEvent } from "./security-events.js";
+import { reportInput, fileReport, rateRefusal, shouldNotify, reportsInbox, markReportsSeen, resolveReport, notificationText as reportNotificationText, loadReports, saveReports } from "./agent-reports.js";
 import { execFile, execFileSync, spawnSync, spawn as spawnChild } from "node:child_process";
 import type { Readable } from "node:stream";
 import type { IncomingMessage } from "node:http";
@@ -273,6 +274,21 @@ import {
   type Cron,
   type DriveReason,
 } from "./crons.js";
+import {
+  loadWebhooks,
+  upsertWebhook,
+  removeWebhook,
+  recordWebhookRun,
+  publicWebhook,
+  newWebhookToken,
+  hashWebhookToken,
+  presentedToken,
+  callVerdict,
+  payloadText,
+  webhookPrompt,
+  isWebhookPrompt,
+  type Webhook,
+} from "./webhooks.js";
 import { isSlashCommand, promptMetaHeader, connectionOrigin } from "./promptmeta.js";
 import { markHumanPrompt } from "./prompt-kind.js";
 import { listCommands } from "./slash-commands.js";
@@ -1098,6 +1114,68 @@ function driveChannel(sessionId: string, text: string, target: SessionTarget): P
     // just the socket we closed ourselves.
     ws.on("close", () => finish({ ok: false, reason: "ws-error", detail: "closed before the turn ended" }));
   });
+}
+
+// ── Webhook delivery ─────────────────────────────────────────────────────
+// One queue per webhook, drained one call at a time: `driveChannel` holds until
+// the turn ends, so two calls of the same hook land as two turns, in order,
+// instead of the second being refused `busy`. Capped, so a sender looping on
+// the URL cannot pile up an unbounded backlog (it gets a 429 instead).
+const WEBHOOK_QUEUE_MAX = 10;
+// The agent may be mid-turn (a human, a cron): a busy refusal is retried for a
+// while rather than lost. Other failures are recorded, not retried — a pace
+// block can last hours, and a gone/exited channel won't heal in a minute.
+const WEBHOOK_BUSY_RETRY_MS = 30_000;
+const WEBHOOK_BUSY_RETRIES = 20; // ≈ 10 min
+const webhookQueues = new Map<string, string[]>();
+const webhookDraining = new Set<string>();
+
+/** Queue one call's prompt for `hookId`. False when the queue is full. */
+function enqueueWebhook(hookId: string, text: string): boolean {
+  const q = webhookQueues.get(hookId) ?? [];
+  if (q.length >= WEBHOOK_QUEUE_MAX) return false;
+  q.push(text);
+  webhookQueues.set(hookId, q);
+  if (!webhookDraining.has(hookId)) void drainWebhook(hookId);
+  return true;
+}
+
+async function drainWebhook(hookId: string): Promise<void> {
+  webhookDraining.add(hookId);
+  const tag = `webhook: ${hookId.slice(0, 8)}`;
+  try {
+    for (;;) {
+      const q = webhookQueues.get(hookId);
+      const text = q?.shift();
+      if (text === undefined) break;
+      // Re-read at delivery time: the hook may have been deleted, disabled or
+      // repointed while the call waited in the queue.
+      const hook = loadWebhooks().find((w) => w.id === hookId);
+      if (!hook || !hook.enabled) {
+        console.log(`${tag} dropped a queued call (webhook gone or disabled)`);
+        continue;
+      }
+      const target = resolveSessionTarget(loadChannels(), hook.sessionId, process.cwd());
+      let outcome = "error";
+      for (let attempt = 0; ; attempt++) {
+        const res = await driveChannel(hook.sessionId, text, target);
+        if (res.ok) { outcome = "ok"; break; }
+        outcome = res.reason;
+        if (res.reason !== "busy" || attempt >= WEBHOOK_BUSY_RETRIES) {
+          console.log(`${tag} delivery failed: ${res.reason}${res.detail ? ` (${res.detail})` : ""}`);
+          break;
+        }
+        await new Promise((r) => setTimeout(r, WEBHOOK_BUSY_RETRY_MS).unref?.());
+      }
+      if (outcome === "ok") console.log(`${tag} delivered -> ok`);
+      recordWebhookRun(hookId, outcome, Date.now());
+    }
+  } catch (e) {
+    console.log(`${tag} crashed: ${(e as Error)?.message ?? e}`);
+  } finally {
+    webhookDraining.delete(hookId);
+    if (!webhookQueues.get(hookId)?.length) webhookQueues.delete(hookId);
+  }
 }
 
 /**
@@ -2157,6 +2235,29 @@ app.post("/peers/enrol", (req, res) => {
   savePeers(file, redeemPeer(peers, v.name, Date.now()));
   console.log(`peers: ${v.name} enrolled (ticket consumed)`);
   res.json({ ok: true, name: v.name, token: signPeerToken(v.name, signingSecret(), row.salt!) });
+});
+
+/**
+ * Call a webhook: `POST /hooks/<id>` with the token as `Authorization: Bearer`
+ * (or `X-Shadok-Webhook-Token`, or `?token=` for senders that only take a URL).
+ *
+ * BEFORE the password gate on purpose: the caller is a machine with no cookie,
+ * and the per-hook token IS its credential (src/webhooks.ts). Unknown id,
+ * disabled hook and wrong token all answer the same 404. The agent is driven
+ * in the background (202): a turn can take minutes, far past a sender's timeout.
+ * JSON bodies are already parsed by the global `express.json`; anything else
+ * arrives raw here.
+ */
+app.post("/hooks/:id", express.raw({ type: () => true, limit: "256kb" }), (req, res) => {
+  const token = presentedToken(req.headers, req.query as Record<string, unknown>);
+  const v = callVerdict(loadWebhooks(), String(req.params.id), token);
+  if (!v.ok) return res.status(404).json({ error: "not found" });
+  const text = webhookPrompt(v.hook, payloadText(req.body));
+  if (!enqueueWebhook(v.hook.id, text)) {
+    res.setHeader("Retry-After", "60");
+    return res.status(429).json({ error: "too many calls queued for this webhook" });
+  }
+  res.status(202).json({ ok: true, queued: webhookQueues.get(v.hook.id)?.length ?? 0 });
 });
 
 // Who am I? The client labels itself with this, and a tab whose session expired
@@ -3500,6 +3601,71 @@ app.post("/crons", (req, res) => {
   upsertCron(cron);
   res.json({ ...cron, timezone: cronTimeZone(cron) });
 });
+// ── Webhooks (management) ─────────────────────────────────────────────────
+// Listing is scoped like /crons. Every WRITE is a person's act in a browser:
+// a webhook is a door from outside into an agent, so an agent must not be able
+// to open one (on itself or a sibling) — src/webhooks.ts.
+app.get("/webhooks", (req, res) =>
+  res.json(loadWebhooks().filter((w) => mayActFor(req, w.sessionId)).map(publicWebhook)),
+);
+// Create: { sessionId, name, prompt }. The token is in the answer ONCE.
+app.post("/webhooks", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
+  const b = req.body ?? {};
+  const sessionId = String(b.sessionId ?? "").trim();
+  const prompt = String(b.prompt ?? "").trim();
+  const name = String(b.name ?? "").trim().slice(0, 80) || "webhook";
+  if (!sessionId || !prompt) return res.status(400).json({ error: "sessionId and prompt are required" });
+  if (!mayActFor(req, sessionId)) return res.status(403).json({ error: "not your agent" });
+  const token = newWebhookToken();
+  const hook: Webhook = {
+    id: randomUUID(),
+    sessionId,
+    name,
+    prompt,
+    tokenHash: hashWebhookToken(token),
+    enabled: true,
+    createdAt: Date.now(),
+  };
+  upsertWebhook(hook);
+  res.json({ ...publicWebhook(hook), token });
+});
+/** The hook this request may write, or an error already sent. */
+function writableWebhook(req: express.Request, res: express.Response): Webhook | null {
+  if (!requestFromBrowser(req)) { res.status(403).json({ error: "same-origin browser only" }); return null; }
+  const hook = loadWebhooks().find((w) => w.id === String(req.params.id));
+  // Another group's hook answers like a missing one: no existence leak.
+  if (!hook || !mayActFor(req, hook.sessionId)) { res.status(404).json({ error: "no such webhook" }); return null; }
+  return hook;
+}
+// Edit: { name?, prompt?, enabled? }. Never the target agent: repointing a
+// token someone already holds at another agent is a new webhook, not an edit.
+app.patch("/webhooks/:id", (req, res) => {
+  const hook = writableWebhook(req, res);
+  if (!hook) return;
+  const b = req.body ?? {};
+  if (typeof b.name === "string" && b.name.trim()) hook.name = b.name.trim().slice(0, 80);
+  if (typeof b.prompt === "string" && b.prompt.trim()) hook.prompt = b.prompt.trim();
+  if (typeof b.enabled === "boolean") hook.enabled = b.enabled;
+  upsertWebhook(hook);
+  res.json(publicWebhook(hook));
+});
+// A new token, the old one dead at once. Answered ONCE, like at creation.
+app.post("/webhooks/:id/rotate", (req, res) => {
+  const hook = writableWebhook(req, res);
+  if (!hook) return;
+  const token = newWebhookToken();
+  hook.tokenHash = hashWebhookToken(token);
+  upsertWebhook(hook);
+  res.json({ ...publicWebhook(hook), token });
+});
+app.delete("/webhooks/:id", (req, res) => {
+  const hook = writableWebhook(req, res);
+  if (!hook) return;
+  removeWebhook(hook.id);
+  webhookQueues.delete(hook.id);
+  res.json({ ok: true, id: hook.id });
+});
 // Default zone for `daily` crons. GET also returns the machine's zone, so the
 // caller can show what actually applies when nothing is set.
 app.get("/timezone", (_req, res) =>
@@ -3979,6 +4145,8 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
   // group's own OS user reads only this tier.
   ["factory-skill", "shadok-factory"],
+  // Asking an admin for help when stuck (src/agent-reports.ts).
+  ["report-skill", "shadok-report"],
 ];
 
 /** Claude Code's machine-wide ("Enterprise"/managed) skills directory — read by
@@ -6747,6 +6915,15 @@ function broadcastAll(msg: object): void {
   for (const c of wss.clients) if (c.readyState === c.OPEN) c.send(data);
 }
 
+/** Send a message to every socket an ADMIN person opened (stamped at connect,
+ *  never from a frame). Agents and members never get it: a report may name a
+ *  credential problem the rest of the instance has no business reading. */
+function broadcastAdmins(msg: object): void {
+  const data = JSON.stringify(msg);
+  for (const c of wss.clients)
+    if (c.readyState === c.OPEN && (c as WebSocket & { __admin?: boolean }).__admin) c.send(data);
+}
+
 /** The version + settings snapshot every client needs: running/latest version,
  *  whether auto-update is armed, and the spawn permission mode. */
 /** What both /version and the WS `version` message report. */
@@ -6923,6 +7100,62 @@ app.post("/files", (req, res) => {
   }
   if (!accepted.length) return res.status(400).json({ error: refused.join("; ") });
   res.json({ ok: true, sent: accepted.map((f) => ({ path: f.path, name: f.name, size: f.size })), refused });
+});
+
+// ── Agent reports (src/agent-reports.ts): an agent that is stuck asks an
+// admin for help — an expired token, an access it does not have, a bug.
+//
+// Filed by the AGENT only, authenticated by its session key (invariant 33): a
+// person has the chat and the admins themselves. Read and resolved by an ADMIN
+// person only. Notified twice, because a report nobody sees is the very failure
+// this exists to end: a DM to the Telegram owner, and a live `agent-report`
+// frame to every admin socket (badge + sound), backed by the panel's poll.
+app.post("/reports", (req, res) => {
+  const agent = agentPrincipal(req);
+  if (!agent) return res.status(403).json({ error: "agents only — authenticate with x-shadok-session-key" });
+  const v = reportInput(req.body);
+  if (!v.ok) return res.status(400).json({ error: v.error });
+  const now = Date.now();
+  let list = loadReports();
+  const ch = loadChannels().find((c) => c.sessionId === agent.sessionId);
+  const who = { sessionId: agent.sessionId, agent: ch?.name || agent.sessionId.slice(0, 8), group: agent.group, profile: agent.profile };
+  const filed = fileReport(list, v.input, who, now);
+  if (!filed.merged) {
+    const refused = rateRefusal(list, agent.sessionId, now);
+    if (refused) return res.status(429).json({ error: refused });
+  }
+  list = filed.list;
+  const r = filed.report;
+  const notify = shouldNotify(r, filed.merged, now);
+  if (notify) list = list.map((x) => (x.id === r.id ? { ...x, notifiedAt: now } : x));
+  saveReports(list);
+  console.log(`reports: ${who.agent} (${agent.sessionId.slice(0, 8)}) filed ${r.kind} "${r.title}"${filed.merged ? ` ×${r.count}` : ""}`);
+  broadcastAdmins({ type: "agent-report", id: r.id, agent: r.agent, kind: r.kind, title: r.title, count: r.count });
+  let telegram: Promise<boolean> = Promise.resolve(false);
+  if (notify) telegram = tgBridge.notifyOwner(reportNotificationText(r, titleForCwd(loadConfig(), process.cwd()))).catch(() => false);
+  void telegram.then((sent) => {
+    res.json({ ok: true, id: r.id, merged: filed.merged, count: r.count, notified: { cockpit: true, telegram: sent } });
+  });
+});
+app.get("/reports", (req, res) => {
+  const me = accountAdmin(req, res, false, "read agent reports");
+  if (!me) return;
+  res.json(reportsInbox(loadReports(), me.name));
+});
+app.post("/reports/seen", (req, res) => {
+  const me = accountAdmin(req, res, true, "read agent reports");
+  if (!me) return;
+  saveReports(markReportsSeen(loadReports(), me.name));
+  res.json({ ok: true });
+});
+app.post("/reports/resolve", (req, res) => {
+  const me = accountAdmin(req, res, true, "resolve agent reports");
+  if (!me) return;
+  const out = resolveReport(loadReports(), String(req.body?.id ?? ""), me.name, Date.now(), req.body?.reopen === true);
+  if (!out.ok) return res.status(404).json({ error: out.error });
+  saveReports(out.list);
+  console.log(`reports: ${me.name} ${req.body?.reopen === true ? "reopened" : "resolved"} "${out.report.title}"`);
+  res.json({ ok: true, report: out.report });
 });
 
 /**
@@ -9921,6 +10154,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
   // so the cockpit always shows which peer created what.
   const callerPeerRestricted = restrictedBoxOf(req) !== null;
   (ws as WebSocket & { __peer?: string | null }).__peer = callerPeer;
+  // An admin PERSON's socket receives `agent-report` frames (broadcastAdmins).
+  (ws as WebSocket & { __admin?: boolean }).__admin = me?.role === "admin" && !me.agent && !callerPeer;
   // A same-origin browser, decided ONCE at connect from the upgrade's headers —
   // not from anything a frame says. `run` is gated on it: shell mode bypasses a
   // profile's `deny` (measured), so pilotctl and the agents, which connect with
@@ -10667,7 +10902,8 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             // text would glue onto the previous turn. Flag it for the tail.
             session.gapBeforeNextText = true;
           }
-          session.turnOrigin = origin === "cron" ? (isCronPrompt(text) ? "cron" : "agent") : origin;
+          session.turnOrigin =
+            origin === "cron" ? (isCronPrompt(text) ? "cron" : isWebhookPrompt(text) ? "webhook" : "agent") : origin;
           session.busy = true;
           session.turnStartedAt = Date.now();
           broadcast(session, workingMessage(session));
@@ -11278,6 +11514,24 @@ function seedFilesSkill(): void {
   }
 }
 if (SEED_SKILLS) seedFilesSkill();
+
+/** The `shadok-report` skill — an agent that is stuck asks an admin for help
+ *  (POST /reports). Seeded like shadok-files, for the same reason: every boot
+ *  reaches the agents already running. */
+function seedReportSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "report-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-report");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "report.mjs"), path.join(dst, "scripts", "report.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "report.mjs"), 0o755);
+  } catch {
+    /* best effort — without it an agent says it in its own chat, as before */
+  }
+}
+if (SEED_SKILLS) seedReportSkill();
 
 /** The `shadok-social` skill — posting on a connected LinkedIn account. */
 function seedSocialSkill(): void {
