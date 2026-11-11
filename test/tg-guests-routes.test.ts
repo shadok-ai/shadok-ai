@@ -88,7 +88,8 @@ test("start: a guest's agent lands in the configured group or nowhere (invariant
 
 test("start: a guest gets no worktree, and runs in its group's own home", () => {
   assert.match(START, /if \(msg\.worktree && !resumed && !guestSetup && isGitRepo\(cwd\)\)/);
-  assert.match(START, /if \(guestSetup\) effectiveCwd = agentStateHome\(earlyUser\)/);
+  // …inside that home, in a directory of its own — see below.
+  assert.match(START, /effectiveCwd = ensureGuestWorkDir\(agentStateHome\(earlyUser\), sub, earlyUser\)/);
 });
 
 // ── the bridge's call sites use those rules ───────────────────────────────
@@ -282,4 +283,33 @@ test("telegram: a bridge whose channel is gone is never reused", () => {
   assert.match(body, /bridges\.delete\(key\)/);
   // A bridge that has not reached `ready` yet has no session to check against.
   assert.match(body, /!existing\.sessionId \|\|/);
+});
+
+// ── a working directory per guest ────────────────────────────────────────
+
+test("telegram: a guest's spawn says WHICH guest, and only then", () => {
+  // The server cannot derive it: the channel's Telegram binding is written at
+  // `ready`, after the spawn that needs it.
+  assert.match(TG, /\.\.\.\(b\.guest \? \{ guest: true, guestKey: chatId \} : \{\}\)/);
+});
+
+test("start: a guest lands in a directory of its own, or nowhere", () => {
+  assert.match(START, /const sub = guestWorkDirName\(msg\.guestKey\);/);
+  // A silent fallback to the shared home is exactly the mixing this closes.
+  assert.match(START, /if \(!sub\) return fail\(.*"guest-key"\)/);
+  assert.match(START, /effectiveCwd = ensureGuestWorkDir\(agentStateHome\(earlyUser\), sub, earlyUser\)/);
+});
+
+test("the guest's directory is never created through a symlink", () => {
+  // The agents of that group can write in this home, so the name could have
+  // been replaced — and a chown through a symlink hands its TARGET away.
+  const i = SRC.indexOf("function ensureGuestWorkDir(");
+  assert.ok(i >= 0, "ensureGuestWorkDir not found");
+  const body = SRC.slice(i, SRC.indexOf("\n}\n", i));
+  assert.match(body, /fs\.lstatSync\(dir\)/);
+  assert.match(body, /st\.isSymbolicLink\(\) \|\| !st\.isDirectory\(\)/);
+  assert.match(body, /fs\.mkdirSync\(dir, \{ mode: 0o700 \}\)/);
+  assert.doesNotMatch(body, /recursive: true/, "the group's home is useradd's, never created here");
+  // Owned by the agent that runs there, or the first turn fails elsewhere.
+  assert.match(body, /fs\.chownSync\(dir, uid, gid\)/);
 });

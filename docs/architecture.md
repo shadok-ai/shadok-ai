@@ -583,7 +583,20 @@ group already bound before this change stays bound.
   a guest's agent lands in the configured group or the spawn is refused, because
   the silent fallback is the commons, which would publish a stranger's
   conversation to every account on the instance. A guest gets no worktree and
-  runs in its group's own home. It may talk and answer its own agent's
+  runs in its group's own home — in a directory of its OWN inside it
+  (`guestWorkDirName`, `tg-<telegram id>`). Every guest shares that group's
+  Unix user and home, so they shared the working directory too, and that is
+  where Claude Code keeps a project's memory and where `CLAUDE.md` is read:
+  one person's agent loaded the notes another person's agent had written, with
+  nothing on screen to show it. The id comes from the bridge (`guestKey`) and
+  is believed for the same reason the guest marker is, because the server
+  cannot derive it — the channel's Telegram binding is written at `ready`,
+  after the spawn that needs it. A missing or malformed id REFUSES the spawn
+  rather than falling back to the shared home, which is the mixing itself.
+  What this is not, said rather than glossed (invariant 47): the same Unix
+  user, so an agent that goes looking can still read its neighbour's folder —
+  the accident is closed, not the intent. A real wall is one group per person,
+  hence one provisioned Unix user per stranger who writes to the bot. It may talk and answer its own agent's
   questions; every command is refused above `commandRequiresOperator`
   (an allowlist of the privileged ones only), with `/start` the one exception —
   Telegram sends it unasked the moment someone opens a bot. "Falling through"

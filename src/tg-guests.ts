@@ -296,6 +296,49 @@ export function guestSpawnPlan(input: {
 }
 
 /**
+ * The directory, under the guest group's home, that belongs to ONE person.
+ * `null` when the id is not one Telegram could have sent.
+ *
+ * Every guest of an instance lives in the SAME group — that is shadok's
+ * isolation unit — so they share a Unix user and a home, and until now they
+ * shared the working directory too. That is where Claude Code keeps a
+ * project's memory and where a `CLAUDE.md` is looked up, so one agent's notes
+ * about the person it was talking to were loaded by the next agent at spawn:
+ * two strangers, one memory, and nothing on screen to show it.
+ *
+ * A directory per person closes that, and the Telegram id is the natural name:
+ * a DM's chat id IS the sender's user id, so the same person always comes back
+ * to the same folder — including after their agent is deleted, which ends a
+ * session and is not meant to erase someone.
+ *
+ * Say what it is NOT, or it reads as a wall (invariant 47): same Unix user,
+ * same home, so an agent that goes looking can still read its neighbour's
+ * folder. It stops the ACCIDENT, not a determined agent. A real wall would be
+ * one group per person, hence one provisioned Unix user per stranger who
+ * writes to the bot.
+ *
+ * The name is built from untrusted input, so it is rebuilt rather than
+ * sanitised: only a plain positive integer is accepted, and the result can
+ * only ever be `tg-<digits>` — no separator, no dot, nothing that could climb
+ * out of the home it is joined to.
+ */
+export function guestWorkDirName(chatId: unknown): string | null {
+  // `Number()` alone is too generous for a name: it reads "0x10" as 16 and
+  // "1e3" as 1000, so two spellings of one id would be two folders — and the
+  // id is what makes a person always come back to the same one.
+  const n =
+    typeof chatId === "number"
+      ? chatId
+      : typeof chatId === "string" && /^\d+$/.test(chatId.trim())
+        ? Number(chatId.trim())
+        : NaN;
+  // A DM's chat id is a positive integer; a group's is negative, and a guest
+  // never has one. `MAX_SAFE_INTEGER` is the ceiling of what JSON gave us.
+  if (!Number.isSafeInteger(n) || n <= 0) return null;
+  return `tg-${n}`;
+}
+
+/**
  * What a guest is told when they type a command, or null when the message is
  * none of our business as a command.
  *

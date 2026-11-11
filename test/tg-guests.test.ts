@@ -17,6 +17,7 @@ import {
   guestPatchFlow,
   guestSpawnPlan,
   guestsOpen,
+  guestWorkDirName,
   normalizeGuestSetup,
   normalizeTgMode,
   ownerAdoptionCandidate,
@@ -531,4 +532,38 @@ test("guestSpawnPlan: a dm-only instance spawns guests like group+dm does", () =
     group: "g1",
     profile: "Support",
   });
+});
+
+// ── one directory per person ─────────────────────────────────────────────
+// Every guest shares the group's Unix user and home, so they shared the
+// WORKING directory too — where Claude Code keeps a project's memory and
+// where CLAUDE.md is read. One person's notes were loaded by the next
+// person's agent, in silence.
+
+test("guestWorkDirName: a Telegram id names the person's own folder", () => {
+  assert.equal(guestWorkDirName(4242), "tg-4242");
+  // The bridge sends a number; a string that IS one is the same person.
+  assert.equal(guestWorkDirName("4242"), "tg-4242");
+  assert.equal(guestWorkDirName(" 4242 "), "tg-4242");
+});
+
+test("guestWorkDirName: the name is REBUILT, never sanitised", () => {
+  // It is joined to the group's home, so anything that is not a plain positive
+  // integer is refused outright rather than cleaned up — there is no escaping
+  // `tg-<digits>`.
+  for (const bad of [
+    undefined, null, "", "  ", "abc", "4242abc", "../../etc", "4242/../..", "4.2", "0x10",
+    0, -1, -100500, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 2, {}, [], true,
+  ]) {
+    assert.equal(guestWorkDirName(bad), null, JSON.stringify(String(bad)));
+  }
+  // A group chat id is negative and never a guest's.
+  assert.equal(guestWorkDirName(-1002345678), null);
+});
+
+test("guestWorkDirName: the same person always comes back to the same folder", () => {
+  // Including after their agent is deleted: that ends a session, it is not
+  // meant to erase someone.
+  assert.equal(guestWorkDirName(777), guestWorkDirName("777"));
+  assert.notEqual(guestWorkDirName(777), guestWorkDirName(778));
 });
