@@ -200,7 +200,9 @@ Enter to skip; you can add it later from the web UI).
   prompt and the agent runs. A watcher that is quiet most of the day costs
   nothing most of the day. The guard runs with the target agent's profile
   secrets, so an agent may put one only on itself (a person may guard any agent
-  they can drive).
+  they can drive). Each schedule in the ⏰ popin has a **▶ Run now** button —
+  test a new one without waiting for its slot; its next run stays where it was —
+  and shows when it runs next and how its last run ended.
 - **Webhooks** — let an outside system (CI, a form, a monitoring tool, Zapier…)
   wake an agent with an HTTP call, the event-driven twin of a schedule. Create
   one in the agent's **⚡ Webhooks** popin (the ⚡ icon in its bar, beside ⏰;
@@ -1419,7 +1421,7 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/channels/glance` (GET — each visible row's last-message time and context %,
 read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
-register per group, filtered like `/groups`), `/crons`, `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
+register per group, filtered like `/groups`), `/crons` (+ POST `/crons/:id/run` — fire a schedule now, its next slot unchanged), `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent
