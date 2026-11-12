@@ -9,6 +9,12 @@ nothing and logs no token.
 Routes: `GET /health`, `GET /linkedin/start`, `GET /linkedin/callback`.
 The LinkedIn app's redirect URL must be `https://connect.shadok.ai/linkedin/callback`.
 
+Every other path (`/`, `/waitlist`, …, any method) is forwarded to the site
+Worker `shadok-connect-site` through the `SITE` service binding
+(`wrangler.toml`). That Worker is deployed separately and must exist before
+this one is deployed; without the binding the broker answers 404 there, as it
+always did. The broker's own routes are never forwarded.
+
 ## Secrets
 
 ```bash

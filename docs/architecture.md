@@ -1934,6 +1934,13 @@ back, an **anti-phishing interstitial** names the host the token is about to be
 handed to: a stranger's link made with the stranger's key would otherwise
 deliver the victim's token to the stranger after an ordinary consent screen.
 
+The hostname is shared with a separate site Worker (landing page, waitlist):
+every path the broker does not own — anything but `/health` and
+`/<provider>/{start,callback}` — is forwarded to it through the optional `SITE`
+service binding, whatever the method. The broker's own routes never are, so
+the site cannot shadow a provider route, and without the binding the broker
+behaves exactly as before (404).
+
 ### The instance side
 
 `POST /connect/linkedin/start` (browser person only) makes the key pair and

@@ -15,6 +15,10 @@ export interface Env {
   LINKEDIN_CLIENT_ID: string;
   LINKEDIN_CLIENT_SECRET: string;
   STATE_KEY: string;
+  // The site served on the same hostname (landing page, waitlist), deployed
+  // as its own Worker from another repo. Optional: without the binding the
+  // broker answers 404 for every path it does not own, as before.
+  SITE?: { fetch(req: Request): Promise<Response> };
 }
 
 interface Provider {
@@ -156,11 +160,14 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
-    if (url.pathname === "/health") return Response.json({ ok: true, providers: Object.keys(PROVIDERS) });
     const m = /^\/([a-z]+)\/(start|callback)$/.exec(url.pathname);
     const p = m ? PROVIDERS[m[1]] : undefined;
-    if (!m || !p) return new Response("Not found", { status: 404 });
-    return m[2] === "start" ? start(url, env, p) : callback(url, env, p);
+    const ours = url.pathname === "/health" || (m !== null && p !== undefined);
+    // Every path the broker does not own goes to the site, whatever the method
+    // (the waitlist is a POST). The broker's own routes never do.
+    if (!ours) return env.SITE ? env.SITE.fetch(req) : new Response("Not found", { status: 404 });
+    if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
+    if (url.pathname === "/health") return Response.json({ ok: true, providers: Object.keys(PROVIDERS) });
+    return m![2] === "start" ? start(url, env, p!) : callback(url, env, p!);
   },
 };
