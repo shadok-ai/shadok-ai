@@ -343,13 +343,14 @@ Enter to skip; you can add it later from the web UI).
   conversation is a real agent that stays resident, and they all draw on **your**
   Claude subscription, so there is no cap and no queue by design. Go back to
   **Board group** and every such conversation is closed at once.
-- **Link to a message** — every message (yours and the agent's) has a 🔗 link
-  button beside copy. It copies a URL like `…/#agent=<session>&msg=<id>`;
-  whoever opens it — someone who already has access to this cockpit, after the
-  usual sign-in — lands on that agent, scrolled to that message, highlighted.
-  The link lives in the URL's `#` part, so it never reaches the server or a
-  proxy log. A message older than the history shown (the last 100 turns), or an
-  agent that was closed, says so instead of opening somewhere else.
+- **Link to a message** — every message (yours and the agent's, and a **room**'s
+  too) has a 🔗 link button beside copy. It copies a URL like
+  `…/#agent=<session>&msg=<id>` for an agent, `…/#room=<room>&msg=<id>` for a
+  room; whoever opens it — someone who already has access to this cockpit, after
+  the usual sign-in — lands on that conversation, scrolled to that message,
+  highlighted. The link lives in the URL's `#` part, so it never reaches the
+  server or a proxy log. A message older than the history shown, or a
+  conversation that was closed, says so instead of opening somewhere else.
 - **Run the command an agent asks you to** — when an agent writes `! cmd` for
   you to run (typically because it cannot), a ▶ run button sits right on that
   command's code block, beside its copy button — so it runs where it was

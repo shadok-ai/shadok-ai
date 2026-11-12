@@ -4572,8 +4572,9 @@
   import { connectCardPlan, sameConnectTarget } from "/connect-card.js?v=__ASSET_V__";
   window.connectCardPlan = connectCardPlan;
   window.sameConnectTarget = sameConnectTarget;
-  import { buildMessageLink, parseMessageLink, samePrompt } from "/deep-link.js?v=__ASSET_V__";
+  import { buildMessageLink, buildRoomMessageLink, parseMessageLink, samePrompt } from "/deep-link.js?v=__ASSET_V__";
   window.buildMessageLink = buildMessageLink;
+  window.buildRoomMessageLink = buildRoomMessageLink;
   window.parseMessageLink = parseMessageLink;
   window.samePrompt = samePrompt;
   import { GROUP_ICONS, UNGROUPED, randomGroupIcon, resolveGroupView, groupMood, cleanGroupIcon, reconcileTabGroup, groupIsDirty, focusTarget, groupMoveRefusal } from "/group-nav.js?v=__ASSET_V__";
@@ -4782,6 +4783,7 @@
     // No module → no link button, and a link opened before it lands is read
     // again on `shadok-bridge-ready`.
     buildMessageLink: () => null,
+    buildRoomMessageLink: () => null,
     parseMessageLink: () => null,
     samePrompt: () => false,
     // The rail must paint even before the module lands: a plain folder icon, the
@@ -8504,10 +8506,11 @@
   }
 
   /**
-   * Give a bubble its transcript ids and a "link" button. The link names the
-   * FIRST id; the lookup is by membership (`[data-msg-ids~=…]`), because live
-   * every text block is its own bubble while the replay merges them — so a link
-   * made on either side finds its message on the other.
+   * Give a bubble its message ids and a "link" button. The link names the FIRST
+   * id; the lookup is by membership (`[data-msg-ids~=…]`), because live every
+   * text block is its own bubble while the replay merges them — so a link made on
+   * either side finds its message on the other. Works for an agent (by session
+   * id) and a room (by room id); a room message carries a single uuid.
    */
   function stampMsgIds(tab, turn, ids) {
     if (!turn || !Array.isArray(ids) || !ids.length || turn.dataset.msgIds) return;
@@ -8521,7 +8524,10 @@
     b.title = "Copy a link to this message (for someone with access to this cockpit)";
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const url = window.buildMessageLink(location.origin + location.pathname, tab.sessionId, ids[0]);
+      const base = location.origin + location.pathname;
+      const url = tab.roomId
+        ? window.buildRoomMessageLink(base, tab.roomId, ids[0])
+        : window.buildMessageLink(base, tab.sessionId, ids[0]);
       const ok = !!url && (await copyText(url));
       b.textContent = ok ? "✓ link copied" : "⚠ failed";
       b.classList.toggle("done", ok);
@@ -8579,10 +8585,12 @@
       const link = window.parseMessageLink(location.hash);
       if (!link) return;
       if (restoring) { deepLinkTimer = setTimeout(followDeepLink, 200); return; }
-      const tab = tabs.find((t) => t.sessionId === link.agent);
+      const tab = link.room
+        ? tabs.find((t) => t.roomId === link.room)
+        : tabs.find((t) => t.sessionId === link.agent);
       if (!tab) {
         clearDeepLinkHash();
-        deepLinkNote("This link points to an agent that is not on this cockpit (closed, or another instance).");
+        deepLinkNote("This link points to a conversation that is not on this cockpit (closed, or another instance).");
         return;
       }
       pendingDeepLink = { tab, msg: link.msg, until: Date.now() + 20000 };
@@ -8604,7 +8612,7 @@
     if (Date.now() > until) {
       pendingDeepLink = null;
       clearDeepLinkHash();
-      deepLinkNote("This message is older than the history shown for this agent.");
+      deepLinkNote("This message is older than the history shown for this conversation.");
       return;
     }
     deepLinkTimer = setTimeout(followDeepLink, 300);
@@ -11468,7 +11476,9 @@
     const label = own ? "you" : echoAuthorLabel({ from: m.author, origin: m.origin });
     const b = addTurn(tab, "user", label, m.text, null, m.ts);
     markPromptSide(b, { from: m.account || m.author, origin: m.origin });
-    b.parentElement.dataset.roomMsg = m.id;
+    // A room message's uuid is its own id (randomUUID, server-side): it doubles
+    // as the deep-link anchor, like an agent bubble's transcript id.
+    stampMsgIds(tab, b.parentElement, [m.id]);
     tab.lastRoomTs = Math.max(tab.lastRoomTs || 0, m.ts);
     return b;
   }
