@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
+import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, submitFailure, type SubmitError, type SubmitFailure, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs, forcedEnv } from "./session.js";
 import { dropArgv, dropEnv } from "./osusers.js";
 import { binaryBusyError } from "./claude-bin.js";
@@ -678,7 +678,7 @@ export class TmuxPilot {
       { prelude },
     );
     if (!typed) {
-      throw this.submitError("the text never appeared in the input box");
+      throw this.submitError("not-typed");
     }
     await sleep(200);
     // Sent once the input box is empty again (or the spinner is up). Requiring
@@ -698,17 +698,16 @@ export class TmuxPilot {
         /* Enter swallowed — retry */
       }
     }
-    throw this.submitError("the prompt does not seem to have been sent");
+    throw this.submitError("not-sent");
   }
 
   /** A concise client-facing error; the full screen goes to the server log only. */
-  private submitError(reason: string): Error {
+  private submitError(failure: SubmitFailure): SubmitError {
     const screen = this.screen();
-    // Name the blocking state when we recognise it: the bare symptom points at
-    // the input box, which is exactly where the answer is NOT.
-    const because = describeStuckScreen(screen);
-    console.error(`[${this.name}] submit failed — ${reason}. Screen:\n${screen}`);
-    return new Error(because ? `submit: ${reason} — ${because}.` : `submit: ${reason}.`);
+    const e = submitFailure(failure, screen);
+    // The sentence without its "submit: " prefix and full stop: the line already says both.
+    console.error(`[${this.name}] submit failed — ${e.message.replace(/^submit: /, "").replace(/\.$/, "")}. Screen:\n${screen}`);
+    return e;
   }
 
   async waitFor(

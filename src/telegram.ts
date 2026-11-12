@@ -62,6 +62,7 @@ import {
   ownerAdoptionCandidate,
   type GuestNotice,
 } from "./tg-guests.js";
+import { UNRESPONSIVE_CODE } from "./submit-recovery.js";
 import { readAndClearUpdateResult } from "./update-flag.js";
 import { UPDATE_EXIT_CODE } from "./supervisor.js";
 import { pairingRefusal, redeemPairingCode } from "./tg-pairing.js";
@@ -1833,6 +1834,17 @@ export function startTelegram(
               b.typing.stop();
               sendOps(b, "⚠️ Couldn't take the hand back — your message was not sent. Try /stop, then send it again.", "preempt-failed");
             }, PREEMPT_TIMEOUT_MS);
+            break;
+          }
+          // The agent's terminal stopped taking input and the server's own
+          // restart did not bring it back (`src/submit-recovery.ts`). Unlike the
+          // refusals below, this one DOES end what the person is waiting on —
+          // no turn-done will ever come for a prompt that never went in — and
+          // it gets its own wording, because the generic "send that again" is
+          // the one thing that cannot work here.
+          if (m.code === UNRESPONSIVE_CODE) {
+            b.typing.stop();
+            sendOps(b, "⚠️ " + m.message, "unresponsive");
             break;
           }
           // No typing.stop() here: fail() errors ("a response is already in

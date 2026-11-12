@@ -159,6 +159,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/prompt-args.ts` | `mergeAppendedPrompts` — the spawn passes ONE `--append-system-prompt`: Claude Code keeps only the LAST of several (measured, 2.1.319), so the role, env note, pilot prompt and ledger reflex are joined into one value. Never add a second flag elsewhere. |
 | `src/preprompt.ts` | Pure `prepromptParts` — what shadok adds to an agent's context, as labelled sections with their source. |
 | `src/auto-reload.ts` | Pure `autoReloadVerdict` — applies a pending "reload to apply" by itself, only when the respawn would cut nothing (idle, no dialog, empty input box, no background task/queued notification, quiet 2 min, 30-min backoff). |
+| `src/submit-recovery.ts` | What happens when an agent's TUI stops taking input while its process stays alive (an upstream bug class a restart cures). Pure `submitRecoveryVerdict` + `submitWithRecovery`: on a `SubmitError` from the `prompt` path — restart through `restartSession` and re-deliver ONCE; never while a turn runs, a question is up, or the transcript shows the prompt landed; 10-min per-agent cooldown. Unrecoverable → an agent report filed by the server (admins + Telegram owner) and `error` `code: "unresponsive"` with a true message, incl. the guest wording. `SHADOK_SUBMIT_RECOVERY=0` disables. See invariant 68. |
 | `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). |
 | `src/net.ts` | Where we listen and who may speak: `resolveHost` (`SHADOK_HOST`, loopback by default), `bindRefusal` (fail-closed: no network bind without a password), `originAllowed` (same-origin, see invariant 11), `hostHeaderAllowed` (the DNS-rebinding Host allowlist, strict only without a password or with `SHADOK_ALLOWED_HOSTS` — invariant 62), `clientAddress` / `requestIsHttps` (forwarding headers believed only from a loopback/private hop). |
 | `src/login-limit.ts` | `AttemptLimiter` — failed `POST /login` and enrollment-code attempts per address and per account, in memory, refused with 429 BEFORE hashing. Pure over a clock, tested. |
@@ -280,7 +281,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 
 **client → server:** `start`, `prompt`, `run`, `choose`, `toggle`, `confirm`, `freetext`, `key`, `settle`, `restart`, `set-parent`, `set-profile`, `set-model`, `set-effort`, `stop`; for a ROOM link only (never mixed with an agent link on one socket): `room-join`, `room-post`.
 
-**server → client:** `agent-report` (admins only), `starting`, `ready`, `working`, `turn-done`, `stream-text`, `stream-tool`, `stream-result`, `stream-bash`, `history`, `dialog`, `screen`, `tokens`, `context`, `background`, `parent`, `profile`, `prompt-echo`, `prompt-id`, `pace-blocked`/`pace-hold`/`pace-resumed`, `auto-retry-*`, `version`, `server-reload`, `gone`, `error` (optional `code`: `busy`/`link-refused`/`logged-out`/`resume-refused`), `exited`, `stopped`; rooms: `room-history`, `room-message`, `room-error` (with `code`), `room-closed`.
+**server → client:** `agent-report` (admins only), `starting`, `ready`, `working`, `turn-done`, `stream-text`, `stream-tool`, `stream-result`, `stream-bash`, `history`, `dialog`, `screen`, `tokens`, `context`, `background`, `parent`, `profile`, `prompt-echo`, `prompt-id`, `pace-blocked`/`pace-hold`/`pace-resumed`, `auto-retry-*`, `version`, `server-reload`, `gone`, `error` (optional `code`: `unresponsive`/`busy`/`link-refused`/`logged-out`/`resume-refused`), `exited`, `stopped`; rooms: `room-history`, `room-message`, `room-error` (with `code`), `room-closed`.
 
 **HTTP** (everything but `/login` sits behind the optional password gate):
 
@@ -377,6 +378,8 @@ The FULL text — every war story, every "measured on …", the reason each rule
 - **66.** A mode that changes the rules must also disown the state the old rules created (a bound board, a stored owner) — else its guarantee depends on when the instance was set up. · [detail](docs/invariants.md#inv-70)
 
 - **67.** What targets a channel (its schedules, its webhooks) dies with the CHANNEL being closed — never with its process: a dormant channel is exactly what a schedule wakes. · [detail](docs/invariants.md#inv-71)
+
+- **68.** A prompt that provably did not go in is the ONLY signal of a dead terminal — recover on the submit failure (one enforced restart, one re-delivery, never a watchdog), and a failure the sender cannot act on must reach an admin. · [detail](docs/invariants.md#inv-72)
 
 ## Conventions
 

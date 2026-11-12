@@ -222,24 +222,88 @@ export function boxRaw(screen: string): string {
  * wrong one.
  */
 export function describeStuckScreen(screen: string): string | null {
-  if (/Welcome to Claude Code/i.test(screen))
-    return "the agent is sitting on Claude Code's first-run screen, so it never reached a prompt — its onboarding state (~/.claude.json) was missing when it started";
+  switch (stuckScreenKind(screen)) {
+    case "first-run":
+      return "the agent is sitting on Claude Code's first-run screen, so it never reached a prompt — its onboarding state (~/.claude.json) was missing when it started";
+    case "masked":
+      return "the screen is a masked input field (long runs of asterisks), so the pasted text is never readable back";
+    case "question":
+      return "the agent is waiting on a question, not on a prompt — answer it first";
+    case "box-full": {
+      const box = boxText(screen);
+      return `the input box was not empty — it still held ${box.split("\n").length} lines beginning ${JSON.stringify(box.split("\n")[0].slice(0, 50))}, which is what Claude Code puts back there when a turn is interrupted`;
+    }
+    default:
+      return null;
+  }
+}
+
+/** The recognisable blocking states, as a value rather than a sentence. */
+export type StuckKind = "first-run" | "masked" | "question" | "box-full";
+
+/**
+ * WHICH recognisable state a screen that refused a prompt is in, or null.
+ *
+ * The same recognition as `describeStuckScreen`, kept apart from its wording
+ * because a decision is taken on it (`src/submit-recovery.ts`): whether a
+ * respawn can help depends on the state, and deciding by matching our own prose
+ * would break the day someone rewords a message.
+ */
+export function stuckScreenKind(screen: string): StuckKind | null {
+  if (/Welcome to Claude Code/i.test(screen)) return "first-run";
   // A masked field echoes every pasted character as an asterisk, so the text is
   // physically on screen yet unreadable — and unreadable is what breaks submit.
-  if (/\*{20,}/.test(screen))
-    return "the screen is a masked input field (long runs of asterisks), so the pasted text is never readable back";
-  if (/^\s*❯\s*\d+\.\s+\S/m.test(screen))
-    return "the agent is waiting on a question, not on a prompt — answer it first";
+  if (/\*{20,}/.test(screen)) return "masked";
+  if (/^\s*❯\s*\d+\.\s+\S/m.test(screen)) return "question";
   // Last, because the three above are more specific and a full box is often
   // their consequence rather than their cause. MULTI-LINE only: at rest the box
   // shows the previous message as a one-line suggestion, and blaming that ghost
   // would be the confident wrong answer this function exists to avoid. Text
   // Claude Code put back after an interrupt keeps its ⟦header⟧ line, so it is
   // the multi-line one.
-  const box = boxText(screen);
-  if (box.includes("\n"))
-    return `the input box was not empty — it still held ${box.split("\n").length} lines beginning ${JSON.stringify(box.split("\n")[0].slice(0, 50))}, which is what Claude Code puts back there when a turn is interrupted`;
+  if (boxText(screen).includes("\n")) return "box-full";
   return null;
+}
+
+/**
+ * Which half of `submit` gave up: the text never showed in the box, or it did
+ * and Enter never sent it.
+ */
+export type SubmitFailure = "not-typed" | "not-sent";
+
+/**
+ * A `submit` that failed, with WHAT failed as data.
+ *
+ * Both pilots used to throw a bare `Error`, so the only thing a caller could do
+ * with it was show its message. The server now decides on it — a respawn and a
+ * re-delivery (`src/submit-recovery.ts`) — and that decision must not hang on
+ * the wording of a sentence written for a human.
+ */
+export class SubmitError extends Error {
+  constructor(
+    message: string,
+    readonly failure: SubmitFailure,
+    readonly stuck: StuckKind | null,
+  ) {
+    super(message);
+    this.name = "SubmitError";
+  }
+}
+
+/** Shared by both pilots, which built the very same sentence twice. */
+export function submitFailure(failure: SubmitFailure, screen: string): SubmitError {
+  const reason =
+    failure === "not-typed"
+      ? "the text never appeared in the input box"
+      : "the prompt does not seem to have been sent";
+  // Name the blocking state when we recognise it: the bare symptom points at
+  // the input box, which is exactly where the answer is NOT.
+  const because = describeStuckScreen(screen);
+  return new SubmitError(
+    because ? `submit: ${reason} — ${because}.` : `submit: ${reason}.`,
+    failure,
+    stuckScreenKind(screen),
+  );
 }
 
 /**

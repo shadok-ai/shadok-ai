@@ -1,7 +1,7 @@
 import { randomUUID, randomBytes, timingSafeEqual, createHmac } from "node:crypto";
 import { newRequest, askVerdict, approveVerdict, cancelVerdict, dueRequests, expire, upsertRequest, requestsFor, describeRequest, loadRequests, saveRequests, isOpen, REQUEST_TTL_MS, type AdminRequest, type RequestKind } from "./admin-requests.js";
 import { recordEvent, loadEvents, saveEvents, inboxFor, markSeen, notMeEffect, describeEvent, type SecEvent } from "./security-events.js";
-import { reportInput, fileReport, rateRefusal, shouldNotify, reportsInbox, markReportsSeen, resolveReport, notificationText as reportNotificationText, loadReports, saveReports } from "./agent-reports.js";
+import { type AgentReport, type ReportInput, reportInput, fileReport, rateRefusal, shouldNotify, reportsInbox, markReportsSeen, resolveReport, notificationText as reportNotificationText, loadReports, saveReports } from "./agent-reports.js";
 import { execFile, execFileSync, spawnSync, spawn as spawnChild } from "node:child_process";
 import type { Readable } from "node:stream";
 import type { IncomingMessage } from "node:http";
@@ -38,7 +38,16 @@ import {
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { backgroundTasks, screenShowsWork, moveToOption, boxText } from "./detect.js";
+import { backgroundTasks, screenShowsWork, moveToOption, boxText, SubmitError } from "./detect.js";
+import {
+  submitRecoveryVerdict,
+  submitWithRecovery,
+  submitRecoveryEnabled,
+  RECOVERY_COOLDOWN_MS,
+  UnresponsiveError,
+  UNRESPONSIVE_REPORT_TITLE,
+  unresponsiveReportBody,
+} from "./submit-recovery.js";
 import { autoReloadVerdict, autoReloadEnabled } from "./auto-reload.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted,
@@ -7332,28 +7341,49 @@ app.post("/reports", (req, res) => {
   if (!agent) return res.status(403).json({ error: "agents only — authenticate with x-shadok-session-key" });
   const v = reportInput(req.body);
   if (!v.ok) return res.status(400).json({ error: v.error });
-  const now = Date.now();
-  let list = loadReports();
   const ch = loadChannels().find((c) => c.sessionId === agent.sessionId);
   const who = { sessionId: agent.sessionId, agent: ch?.name || agent.sessionId.slice(0, 8), group: agent.group, profile: agent.profile };
-  const filed = fileReport(list, v.input, who, now);
-  if (!filed.merged) {
-    const refused = rateRefusal(list, agent.sessionId, now);
-    if (refused) return res.status(429).json({ error: refused });
+  const out = fileAndNotifyReport(v.input, who, true);
+  if (!out.ok) return res.status(429).json({ error: out.error });
+  void out.telegram.then((sent) => {
+    res.json({ ok: true, id: out.report.id, merged: out.merged, count: out.report.count, notified: { cockpit: true, telegram: sent } });
+  });
+});
+/**
+ * File a report and notify the admins — the Reports panel (a live frame to
+ * every admin socket) and a DM to the Telegram owner.
+ *
+ * One function for two filers: an agent that says it is stuck (`POST
+ * /reports`), and the SERVER saying an agent is stuck when the agent cannot
+ * say it itself — one whose terminal no longer takes input cannot run a skill
+ * (`escalateUnresponsive`). The rate limit is for the first only: it protects
+ * the admins from a runaway agent, and the server files under one constant
+ * title, which merges instead of piling up.
+ */
+function fileAndNotifyReport(
+  input: ReportInput,
+  who: { sessionId: string; agent: string; group?: string | null; profile?: string | null },
+  rateLimited: boolean,
+): { ok: true; report: AgentReport; merged: boolean; telegram: Promise<boolean> } | { ok: false; error: string } {
+  const now = Date.now();
+  let list = loadReports();
+  const filed = fileReport(list, input, who, now);
+  if (rateLimited && !filed.merged) {
+    const refused = rateRefusal(list, who.sessionId, now);
+    if (refused) return { ok: false, error: refused };
   }
   list = filed.list;
   const r = filed.report;
   const notify = shouldNotify(r, filed.merged, now);
   if (notify) list = list.map((x) => (x.id === r.id ? { ...x, notifiedAt: now } : x));
   saveReports(list);
-  console.log(`reports: ${who.agent} (${agent.sessionId.slice(0, 8)}) filed ${r.kind} "${r.title}"${filed.merged ? ` ×${r.count}` : ""}`);
+  console.log(`reports: ${who.agent} (${who.sessionId.slice(0, 8)}) filed ${r.kind} "${r.title}"${filed.merged ? ` ×${r.count}` : ""}`);
   broadcastAdmins({ type: "agent-report", id: r.id, agent: r.agent, kind: r.kind, title: r.title, count: r.count });
-  let telegram: Promise<boolean> = Promise.resolve(false);
-  if (notify) telegram = tgBridge.notifyOwner(reportNotificationText(r, titleForCwd(loadConfig(), process.cwd()))).catch(() => false);
-  void telegram.then((sent) => {
-    res.json({ ok: true, id: r.id, merged: filed.merged, count: r.count, notified: { cockpit: true, telegram: sent } });
-  });
-});
+  const telegram = notify
+    ? tgBridge.notifyOwner(reportNotificationText(r, titleForCwd(loadConfig(), process.cwd()))).catch(() => false)
+    : Promise.resolve(false);
+  return { ok: true, report: r, merged: filed.merged, telegram };
+}
 app.get("/reports", (req, res) => {
   const me = accountAdmin(req, res, false, "read agent reports");
   if (!me) return;
@@ -9142,6 +9172,20 @@ interface Live {
   /** Settles when the restart in progress has finished — a prompt arriving
    *  mid-respawn waits on it instead of typing into a process being replaced. */
   restartDone?: Promise<void>;
+  /**
+   * True while a prompt whose submit failed is being recovered — the respawn
+   * and the re-delivery (`submitRecovering`).
+   *
+   * It exists for ONE line in `restartSessionNow`, which drops `busy` because
+   * the turn it killed is over. Here the turn is not over: the prompt handler
+   * still owns the session and is about to type into the new process. With
+   * `busy` down for that stretch, a second prompt would be accepted and the two
+   * would be typed into the same box, and the screen watcher could claim the
+   * session for a turn nobody started.
+   */
+  recovering?: boolean;
+  /** When this agent was last respawned by the submit recovery (its loop guard). */
+  lastRecoveryAt?: number;
   /** Experimental raw terminal: pilot detach fn + the clients streaming it.
    *  The pipe stays open while ≥1 client is attached, closed when the last
    *  leaves. */
@@ -9242,7 +9286,9 @@ async function restartSessionNow(s: Live, by: SpawnBy): Promise<void> {
       for (let i = 0; i < 20 && tmuxHasSession("sk-" + s.id); i++) await sleep(100);
     }
   }
-  s.busy = false;
+  // Normally the turn the old process was running died with it. Not when the
+  // restart IS the recovery of a prompt still being delivered (`recovering`).
+  s.busy = !!s.recovering;
   s.lastScreen = "";
   s.lastDialogKey = null;
   // The respawn below resumes `s.id`, so Claude Code writes that transcript
@@ -10139,6 +10185,87 @@ async function submitGuarded(s: Live, text: string, prelude?: string[]): Promise
       if (sent) s.interruptedAt = Date.now();
       try { s.pilot.press(held); } catch { /* pane gone */ }
     }
+  }
+}
+
+const SUBMIT_RECOVERY = submitRecoveryEnabled(process.env.SHADOK_SUBMIT_RECOVERY);
+
+/**
+ * `submitGuarded`, plus the way out of a TUI that has stopped taking input:
+ * respawn the agent through the enforced restart, deliver the prompt again
+ * ONCE, and escalate when that fails too. The policy and its reasons are in
+ * `src/submit-recovery.ts`; this is only the part that touches a process.
+ *
+ * Throws `UnresponsiveError` when the agent could not be brought back — a
+ * report has been filed by then, so its "the admins have been alerted" is true
+ * — and rethrows the original error untouched when the failure is not of this
+ * class (a question on screen, a turn running, a process that exited).
+ */
+async function submitRecovering(s: Live, text: string, prelude?: string[]): Promise<void> {
+  const startedAt = Date.now();
+  const id8 = s.id.slice(0, 8);
+  try {
+    await submitWithRecovery({
+      submit: () => submitGuarded(s, text, prelude),
+      assess: (e) => {
+        const failed = e instanceof SubmitError ? e : null;
+        const screen = s.pilot.hasExited ? "" : s.pilot.screen();
+        // The transcript, not the screen, says whether a prompt went in. Read
+        // only on this path: it is a file read, and a failed submit is rare.
+        const landedAt = failed ? lastPromptAt(s.cwd, s.id, s.transcriptHome) : null;
+        return submitRecoveryVerdict({
+          enabled: SUBMIT_RECOVERY,
+          failure: failed?.failure ?? null,
+          stuck: failed?.stuck ?? null,
+          exited: s.pilot.hasExited,
+          working: !s.pilot.hasExited && screenShowsWork(screen),
+          dialogOpen: !!detectDialog(screen),
+          restarting: !!s.restarting,
+          promptLanded: landedAt !== null && landedAt >= startedAt,
+          sinceLastRecoveryMs: s.lastRecoveryAt ? Date.now() - s.lastRecoveryAt : Infinity,
+          cooldownMs: RECOVERY_COOLDOWN_MS,
+        });
+      },
+      restart: async () => {
+        // Stamped BEFORE the respawn, like the auto-reload's backoff: a restart
+        // that throws must still count as the one attempt this window allows.
+        s.lastRecoveryAt = Date.now();
+        s.recovering = true;
+        await restartSession(s, { actor: "submit-recovery", via: "system" });
+        // The restart's `ready` stopped every client's turn timer; the turn
+        // this prompt opens is still ahead, so say so again.
+        broadcast(s, workingMessage(s));
+      },
+      escalate: (why, restarted) => escalateUnresponsive(s, why, restarted),
+      // One line per decision, like a cron fire (invariant 15): "recovered" and
+      // "never wedged" must not look the same in the log.
+      log: (line) => console.error(`submit-recovery: ${id8} ${line}`),
+    });
+  } finally {
+    s.recovering = false;
+  }
+}
+
+/**
+ * Tell whoever operates the instance that an agent cannot take input.
+ *
+ * Through the agent-reports inbox, because it is the one place built for "an
+ * agent is stuck and only a human can fix it": every admin sees the badge, the
+ * Telegram owner gets a DM, a repeat merges into the open row and re-notifies
+ * at most hourly. The agent cannot file it — its terminal is the thing that is
+ * dead — so the server files it under the agent's name. Best-effort: a report
+ * that cannot be written must not mask the failure being reported.
+ */
+function escalateUnresponsive(s: Live, why: string, restarted: boolean): void {
+  try {
+    const ch = loadChannels().find((c) => c.sessionId === s.id);
+    fileAndNotifyReport(
+      { kind: "bug", title: UNRESPONSIVE_REPORT_TITLE, body: unresponsiveReportBody(why, restarted) },
+      { sessionId: s.id, agent: ch?.name || s.id.slice(0, 8), group: ch?.group ?? null, profile: s.appliedProfile ?? s.profile ?? null },
+      false,
+    );
+  } catch (e) {
+    console.error(`submit-recovery: could not file the report for ${s.id.slice(0, 8)} — ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -11335,7 +11462,7 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
               // which is what lets the whole delta travel in the clear.
               if (rows.length) ledgerPrelude = formatLedgerChunks(rows, total);
             }
-            await submitGuarded(session, submitText, ledgerPrelude);
+            await submitRecovering(session, submitText, ledgerPrelude);
             if (ledgerSeen !== null) {
               session.ledgerSeenAt = ledgerSeen;
               // The live channel list prunes the watermarks of agents that are
@@ -11497,7 +11624,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             if ((msg.key === "escape" || msg.key === "ctrl-c") && session.busy) {
               // ...but not while the prompt is still being typed: there the
               // key would delete the text rather than stop a turn. Hold it.
-              if (session.submitting) {
+              // Same while a failed submit is being recovered: the process is
+              // being swapped and the prompt is about to be typed again.
+              if (session.submitting || session.recovering) {
                 session.pendingInterrupt = msg.key as "escape" | "ctrl-c";
                 break;
               }
@@ -11679,7 +11808,9 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       }
     } catch (err) {
       if (session) session.busy = false;
-      fail(err instanceof Error ? err.message : String(err));
+      // `unresponsive` reaches the client as a CODE: the Telegram bridge says
+      // something different to a guest for it, and must not match on prose.
+      fail(err instanceof Error ? err.message : String(err), err instanceof UnresponsiveError ? err.code : undefined);
     }
   });
 });

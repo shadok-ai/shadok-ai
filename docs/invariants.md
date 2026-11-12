@@ -2124,3 +2124,74 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     confirmation reads the **derived** `closes` count off `GET /channels`
     (paused rows included — they go too), and Telegram's `/end` says what else
     it deleted.
+
+<a id="inv-72"></a>
+
+68. **A prompt that provably did not go in is the ONLY signal of a dead
+    terminal — so recovery belongs on the submit failure, and a failure the
+    sender cannot act on must reach someone who can.** A `claude` process can
+    stay alive and healthy — pane up, not in copy-mode, no dialog, a transcript
+    that ends on a clean `turn_duration` — while its TUI has stopped consuming
+    terminal input. Nothing typed reaches it, not even the Ctrl-U / Ctrl-C
+    clears `typeIntoBox` falls back on; the previous message sits in the box,
+    un-submitted, for hours. It is an upstream bug class we cannot prevent, and
+    the only thing that ends it is a new process: "Reload agent" fixed it
+    instantly. What we had built around it made it both fatal and silent. Every
+    later prompt failed with `the text never appeared in the input box`, one log
+    line was written, nobody was notified — and the person writing was told to
+    "send that again in a moment", twice, when no retry could ever work. That
+    person had no command to run and no other instruction to follow, so a true
+    sentence was the only thing we owed them and the one thing we did not send.
+    Four rules came out of it (`src/submit-recovery.ts`).
+    **React, never watch.** From outside, a wedged agent is byte-for-byte an
+    idle one — same still screen, same silent transcript — so a periodic
+    watchdog can only guess, and a wrong guess respawns a healthy agent with its
+    background shells. The failed submit is a fact; an agent nobody writes to is
+    never touched.
+    **Decide on data, not on our own prose.** Both pilots threw a bare `Error`
+    whose only content was a sentence. They now throw `SubmitError` (`failure`:
+    `not-typed` / `not-sent`, `stuck`: `stuckScreenKind`), so rewording a
+    message cannot silently switch the recovery off.
+    **One restart, one re-delivery, and every "no" names a loss.**
+    `submitRecoveryVerdict` refuses when a turn is running (the input is busy,
+    not dead), when a question is on screen (a respawn throws it away — the
+    person resolves that), when the process exited (the resume path owns it),
+    and when the transcript recorded a prompt after the submit began: the screen
+    said "not sent", the transcript said otherwise, and re-delivering would
+    DUPLICATE the message. The first-run screen and a masked field skip the
+    restart and go straight to a human — a new process lands on the same
+    screen. `RECOVERY_COOLDOWN_MS` allows one automatic respawn per agent per
+    ten minutes; a wedge that returns inside it is not the transient kind. The
+    second failure is not assessed again — `submitWithRecovery` has no loop to
+    get wrong. The restart itself is `restartSession`, i.e. invariant 23's
+    enforced path: on a deaf TUI the graceful `/exit` cannot work (it needs the
+    same input box), and it is the hard kill + re-check that produces the new
+    process.
+    **`busy` must hold across the respawn.** `restartSessionNow` drops `busy`
+    because the turn it killed is over. Here it is not: the prompt handler still
+    owns the session and is about to type into the new process. `Live.recovering`
+    keeps it up — otherwise a second prompt is accepted mid-respawn and both are
+    typed into one box, and the screen watcher may claim the session for a turn
+    nobody started. An interrupt key arriving in that stretch is HELD, as it
+    already was during a submit.
+    When it cannot recover, it says so and escalates, in that order of
+    dependency: the report is filed FIRST (`escalateUnresponsive` →
+    `fileAndNotifyReport`, the agent-reports inbox: admin badge + a DM to the
+    Telegram owner, a repeat merging into one row and re-notifying at most
+    hourly), THEN the sender gets `error` with `code: "unresponsive"` — so "the
+    admins have been alerted" is true when they read it. The agent cannot file
+    that report itself: its terminal is the thing that is dead. A guest hears
+    `guestNotice("unresponsive")`, which says the message did not arrive, that
+    sending it again right now will not help, and that someone has been told —
+    never "send that again". `test/submit-recovery.test.ts` and
+    `test/tg-guests.test.ts` lock both wordings, because prose is what a
+    refactor undoes quietly.
+    Verified end to end on a side-by-side instance with a stand-in TUI that goes
+    deaf on demand while staying alive: one wedge → restart → the prompt
+    delivered exactly once, a normal `turn-done`, ~30 s late; a wedge inside the
+    cooldown → no restart, report filed, `unresponsive`; a wedge that survives
+    the restart → report filed, `unresponsive`. Unit tests alone could not have
+    shown the `busy` rule: it only exists between two real processes.
+    **Left out on purpose:** the auto-retry's own `continue` and the `run`
+    shell-mode submit still report a failure the old way — neither carries a
+    message someone is waiting on an answer to.
