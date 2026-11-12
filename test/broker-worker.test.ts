@@ -133,6 +133,25 @@ test("unknown routes are 404", async () => {
   assert.equal((await get("/nope")).status, 404);
 });
 
+test("with a SITE binding, paths the broker does not own go to the site, any method", async () => {
+  const seen: string[] = [];
+  const site = { fetch: async (req: Request) => (seen.push(`${req.method} ${new URL(req.url).pathname}`), new Response("site", { status: 200 })) };
+  const withSite: Env = { ...env, SITE: site };
+  assert.equal(await (await worker.fetch(new Request(BASE + "/"), withSite)).text(), "site");
+  const post = await worker.fetch(new Request(BASE + "/waitlist", { method: "POST", body: "email=a@b.co" }), withSite);
+  assert.equal(post.status, 200);
+  assert.equal((await worker.fetch(new Request(BASE + "/x/start"), withSite)).status, 200, "an unknown provider is not the broker's");
+  assert.deepEqual(seen, ["GET /", "POST /waitlist", "GET /x/start"]);
+});
+
+test("with a SITE binding, the broker's own routes never reach the site", async () => {
+  const site = { fetch: async () => assert.fail("forwarded a broker route") };
+  const withSite: Env = { ...env, SITE: site };
+  assert.equal((await worker.fetch(new Request(BASE + "/health"), withSite)).status, 200);
+  assert.equal((await worker.fetch(new Request(BASE + "/linkedin/start", { method: "POST" }), withSite)).status, 405);
+  assert.equal((await worker.fetch(new Request(BASE + "/linkedin/callback"), withSite)).status, 400);
+});
+
 test("/linkedin/start refuses a nonce or pub of the wrong shape", async () => {
   const { pub } = await keypair();
   const ret = encodeURIComponent(RETURN);

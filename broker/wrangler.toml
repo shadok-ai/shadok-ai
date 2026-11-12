@@ -6,3 +6,10 @@ compatibility_date = "2025-01-01"
 routes = [{ pattern = "connect.shadok.ai", custom_domain = true }]
 
 # Secrets (never in this file): LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, STATE_KEY
+
+# Paths the broker does not own (/, /waitlist, ...) are forwarded to the site
+# Worker, deployed separately. Deploy that Worker first: a binding to a
+# service that does not exist fails the deploy.
+[[services]]
+binding = "SITE"
+service = "shadok-connect-site"
