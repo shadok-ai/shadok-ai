@@ -12302,7 +12302,10 @@
   // SINGLE row (brand + dials + ⋯) by moving EVERY tool icon into the ⋯ menu —
   // the real button elements, so their click handlers travel with them.
   // Recomputed on load, on resize, and when the instance name changes.
-  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "factoryBtn", "profilesBtn", "telegramBtn", "muteNotif"];
+  const OVERFLOW_TOOLS = ["secretsBtn", "ledgerBtn", "factoryBtn", "profilesBtn"];
+  // Always in the ⋯ menu, at EVERY width (not only on a phone): Telegram and the
+  // notification bell were moved off the header row to keep the top bar compact.
+  const PINNED_OVERFLOW_TOOLS = ["telegramBtn", "muteNotif"];
   function reflowHeaderTools() {
     const hdrTools = document.querySelector(".hdr-tools");
     const moreWrap = document.querySelector(".more-wrap");
@@ -12314,6 +12317,12 @@
       if (!el) continue;
       if (mobile) overflow.appendChild(el);          // all into the ⋯ menu
       else hdrTools.insertBefore(el, moreWrap);       // back in the header, in order
+    }
+    // These stay under ⋯ regardless of width, appended after the width-driven
+    // ones so the phone menu keeps the header's left-to-right order.
+    for (const id of PINNED_OVERFLOW_TOOLS) {
+      const el = $(id);
+      if (el) overflow.appendChild(el);
     }
   }
   let reflowPending = false;

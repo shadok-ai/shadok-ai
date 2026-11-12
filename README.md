@@ -86,7 +86,8 @@ Enter to skip; you can add it later from the web UI).
   with a speech bubble (and no presence dot).
 - **Groups** — on a desktop the groups live in their own **left column**: pick
   one to narrow the agents pane to it, and the global tools (Profiles, Ledger,
-  Secrets, Users, Security, Telegram, Sound) stay in the header at the top. Each
+  Secrets, Users, Security) stay in the header at the top; Telegram and the
+  notification **Sound** live under the header **⋯** to keep the bar compact. Each
   agent is a round avatar with a presence dot (green ready, red working, hollow
   offline). A group's icon opens the icon picker: choose from the grid, type any
   emoji, or **type a word** (`rocket`, `bug`, `money`…) to search for one; its

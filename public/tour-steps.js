@@ -90,19 +90,20 @@ export const TOUR_STEPS = [
     // no test here can hold; a list of functions is not.
     body:
       "The secret vault injected into agents that need it, the shared ledger of what your " +
-      "agents have already resolved, profiles (role, guardrails, model), Telegram, and the " +
-      "notification sound. On a narrow screen they fold into the ⋯ — which also holds the " +
-      "diff of an agent's work, the palette, and replays this tour.",
+      "agents have already resolved, and profiles (role, guardrails, model). Telegram and the " +
+      "notification sound live under the ⋯ — which also holds the diff of an agent's work, the " +
+      "palette, and replays this tour. On a narrow screen the rest fold in there too.",
     // NOT `.hdr-tools`, which is `display: contents` on desktop and therefore
     // generates no box at all — its rect is all zeros, so the step would have
     // been dropped as "not visible" on the very layout where the toolbar is
     // most obvious. Framing the buttons themselves works on both layouts.
     //
     // Every tool is listed, including the ones `reflowHeaderTools` parks inside
-    // the closed ⋯ menu on a phone: those measure {0,0,0,0} and `unionRect`
-    // now drops them, so the group frames exactly what is on screen. Listing
-    // only some of them was the older bug in the other direction — `#usersBtn`
-    // sits left of `#secretsBtn` and stayed outside the spotlight.
+    // the closed ⋯ menu — the width-driven ones on a phone, and `#telegramBtn` /
+    // `#muteNotif` at every width: those measure {0,0,0,0} and `unionRect` drops
+    // them, so the group frames exactly what is on screen. Listing only some of
+    // them was the older bug in the other direction — `#usersBtn` sits left of
+    // `#secretsBtn` and stayed outside the spotlight.
     target: [
       "#usersBtn",
       "#secretsBtn",
