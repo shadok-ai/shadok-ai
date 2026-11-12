@@ -19,7 +19,9 @@ import {
   addTgTopic,
   tgToolsEnabled,
   setTgTools,
+  isHomeChannel,
 } from "./channels.js";
+import { triggerSummary } from "./channel-triggers.js";
 import { secretNames, setSecret, deleteSecret, secretWriteVerdict, secretNameRefusal, MT_CLAUDE_OAUTH_TOKEN_NAME } from "./secrets.js";
 import { MAIN_GROUP_ID } from "./groups.js";
 import { roomForTopic, telegramLine, type Room } from "./rooms.js";
@@ -1291,6 +1293,12 @@ export function startTelegram(
     bridgeSecret?: string;
     /** Rooms mirrored into topics. Absent → rooms simply never reach Telegram. */
     rooms?: RoomHooks;
+    /** A channel was CLOSED from Telegram by a path that drops it from the
+     *  registry itself rather than through the server's `stop` — delete what
+     *  targeted it (its schedules and webhooks). Passed in, like `rooms`, so
+     *  the bridge never writes those stores on its own. Returns the counts so
+     *  the person who typed `/end` is told what else went. */
+    onChannelClosed?: (sessionId: string) => { schedules: number; webhooks: number };
   } = {},
 ): TelegramHandle {
   tgMultiTenant = multiTenant;
@@ -1971,7 +1979,9 @@ export function startTelegram(
     else b.typing.stop(); // nothing to send: do not leave "typing" running
   });
 
-  const endBinding = (key: string, chatId: number, threadId?: number) => {
+  /** `closing` — the agent is being ended for good (`/end`), as opposed to
+   *  reset (`/new`); only then does what targeted it go too. */
+  const endBinding = (key: string, chatId: number, threadId: number | undefined, closing: boolean) => {
     const b = bridges.get(key);
     if (b) {
       b.ws.send(JSON.stringify({ type: "stop" }));
@@ -1981,7 +1991,15 @@ export function startTelegram(
     // The session is stopped → drop it from the one registry (removes it from
     // the web UI too).
     const ch = channelForTelegram(chatId, threadId);
-    if (ch) removeChannel(ch.sessionId);
+    if (!ch) return undefined;
+    removeChannel(ch.sessionId);
+    // The row is dropped HERE, before the server ever handles the `stop` above,
+    // so its `endChannel` finds no channel and cannot tell a closed agent from
+    // the home base — it deletes nothing in that case, and the decision is ours.
+    // `/new` is a reset, not a close, and the home base is never closed: both
+    // keep their schedules, exactly as before.
+    if (!closing || isHomeChannel(ch)) return undefined;
+    return opts.onChannelClosed?.(ch.sessionId);
   };
 
   /**
@@ -2275,10 +2293,14 @@ export function startTelegram(
           return;
         }
         case "new":
-        case "end":
-          endBinding(key, chat.id, threadId);
-          await reply(chat.id, threadId, cmd.cmd === "new" ? "🔄 fresh session — send a message." : "🛑 session ended.");
+        case "end": {
+          // `/end` deletes what targeted the agent, and says so: a schedule
+          // that vanished without a word is what a person notices days later.
+          const gone = triggerSummary(endBinding(key, chat.id, threadId, cmd.cmd === "end") ?? { schedules: 0, webhooks: 0 });
+          const also = gone ? ` Also deleted: ${gone}.` : "";
+          await reply(chat.id, threadId, (cmd.cmd === "new" ? "🔄 fresh session — send a message." : "🛑 session ended.") + also);
           return;
+        }
         case "stop":
         case "esc": {
           // Interrupting the running turn = the web's Escape key (the engine
@@ -2773,7 +2795,12 @@ export function startTelegram(
     const key = bindKey(msg.chat, msg.message_thread_id);
     const b = bridges.get(key);
     if (b?.ws.readyState === WebSocket.OPEN) b.ws.send(JSON.stringify({ type: "stop" }));
-    else removeChannel(ch.sessionId);
+    else {
+      removeChannel(ch.sessionId);
+      // No bridge to carry a `stop`: the server's `endChannel` never runs for
+      // this close, so its cleanup has to be asked for here.
+      if (!isHomeChannel(ch)) opts.onChannelClosed?.(ch.sessionId);
+    }
     bridges.delete(key);
   };
 
@@ -3075,6 +3102,8 @@ export function startTelegram(
       else if (st === "gone") {
         console.log(`telegram: reconcile — channel ${c.sessionId.slice(0, 8)}'s topic ${th} is gone, dropping it`);
         removeChannel(c.sessionId);
+        // A topic deleted while we were down is the same close, seen late.
+        if (!isHomeChannel(c)) opts.onChannelClosed?.(c.sessionId);
       }
       // "unknown" (transient check failure) → leave the channel untouched.
     }

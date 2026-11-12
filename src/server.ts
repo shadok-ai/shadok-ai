@@ -287,6 +287,7 @@ import {
 } from "./crons.js";
 import {
   loadWebhooks,
+  saveWebhooks,
   upsertWebhook,
   removeWebhook,
   recordWebhookRun,
@@ -300,6 +301,7 @@ import {
   isWebhookPrompt,
   type Webhook,
 } from "./webhooks.js";
+import { splitBySession, triggerCount, triggerSummary, type TriggerCount } from "./channel-triggers.js";
 import { isSlashCommand, promptMetaHeader, connectionOrigin } from "./promptmeta.js";
 import { markHumanPrompt } from "./prompt-kind.js";
 import { listCommands } from "./slash-commands.js";
@@ -901,7 +903,7 @@ async function startFirstAgent(): Promise<void> {
 }
 function restartTelegram(): void {
   tgBridge.stop();
-  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET, rooms: roomHooks });
+  tgBridge = startTelegram(boundPort, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET, rooms: roomHooks, onChannelClosed: forgetChannelTriggers });
 }
 
 // ── Cron scheduler ───────────────────────────────────────────────────────────
@@ -3196,7 +3198,6 @@ app.get("/stars", async (_req, res) => res.json({ count: await starCount() }));
  * avoids a second poll — `/channels` is already re-read every 4 s.
  */
 app.get("/channels", (req, res) => {
-  const active = loadCrons().filter((c) => c.enabled);
   // ACL: a caller sees only its own groups' channels + public/commons. The
   // registry is the authority — the client is never trusted to filter. A null
   // viewer (deleted account / no session) resolves to public-only, never a 500.
@@ -3205,10 +3206,21 @@ app.get("/channels", (req, res) => {
   const visible = visibleChannels(loadChannels(), loadGroups(), viewerFor(currentAccount(req))).filter(
     (ch) => !box || ownedByPeer(ch, box),
   );
+  // `closes` — what closing this agent would delete along with it, so the
+  // confirmation can say so BEFORE an irreversible act. Derived like `crons`,
+  // never stored; unlike `crons` it counts paused rows too, since they go as well.
+  const allCrons = loadCrons();
+  const allHooks = loadWebhooks();
+  const active = allCrons.filter((c) => c.enabled);
   res.json(
     visible.map((ch) => {
       const mine = active.filter((c) => c.sessionId === ch.sessionId);
-      return mine.length ? { ...ch, crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : ch;
+      const closes = triggerCount(ch.sessionId, allCrons, allHooks);
+      return {
+        ...ch,
+        ...(mine.length ? { crons: mine.map((c) => scheduleLabel(c.schedule, cronTimeZone(c))) } : {}),
+        ...(closes.schedules || closes.webhooks ? { closes } : {}),
+      };
     }),
   );
 });
@@ -9501,6 +9513,39 @@ function destroySession(s: Live) {
 }
 
 /**
+ * Delete the schedules and webhooks that target a channel which is being
+ * CLOSED, and say so in the log.
+ *
+ * Called only from a path that removes the channel for good — never from
+ * `destroySession`, the idle reclaim or a restart: those end a PROCESS, and a
+ * channel without a process is precisely what a schedule exists to wake (see
+ * `src/channel-triggers.ts`). Idempotent, so a close that reaches it twice (the
+ * Telegram bridge and the `stop` it sent) deletes once and logs once.
+ *
+ * Each store is rewritten only when it actually loses a row: a close is the
+ * common case, a close with schedules the rare one, and an unconditional save
+ * is one more chance to write a list read a moment too early.
+ */
+function forgetChannelTriggers(sessionId: string): TriggerCount {
+  const crons = splitBySession(loadCrons(), sessionId);
+  if (crons.removed.length) saveCrons(crons.kept);
+  const hooks = splitBySession(loadWebhooks(), sessionId);
+  if (hooks.removed.length) {
+    saveWebhooks(hooks.kept);
+    // Calls already queued for a hook that no longer exists have nowhere to go.
+    for (const w of hooks.removed) webhookQueues.delete(w.id);
+  }
+  const count = { schedules: crons.removed.length, webhooks: hooks.removed.length };
+  // One line, with the ids: deleting someone's schedule in silence would be its
+  // own bug, and the id is what lets a person find the fire lines that stop here.
+  if (count.schedules || count.webhooks) {
+    const ids = [...crons.removed, ...hooks.removed].map((r) => r.id.slice(0, 8)).join(", ");
+    console.log(`channel ${sessionId.slice(0, 8)} closed: deleted ${triggerSummary(count)} (${ids})`);
+  }
+  return count;
+}
+
+/**
  * End a channel by id, whichever interface asked — works even when the session
  * isn't live (a dead/zombie channel after a crash): always drops it from the
  * registry and deletes its Telegram topic, and tears down the live session +
@@ -9515,6 +9560,16 @@ async function endChannel(sessionId: string): Promise<boolean> {
   // happened drops the tab from its own list and the two views disagree.
   if (ch && isHomeChannel(ch)) return false;
   removeChannel(sessionId); // registry first, so the sync poll sees it gone
+  // After the home refusal (a channel that stays keeps everything) and before
+  // the slow part: `pilot.stop()` can take seconds, and a schedule due in that
+  // window would resume the very agent being closed.
+  //
+  // Only for a row we actually READ. With none, there is no telling a closed
+  // agent from the home base — the Telegram bridge drops the row itself before
+  // its `stop` lands here, for `/new` on the General as much as for `/end` — and
+  // an irreversible delete must not ride on a guess. That caller decides for
+  // itself (`onChannelClosed`).
+  if (ch) forgetChannelTriggers(sessionId);
   if (ch?.telegram?.threadId) closeTelegramTopic(ch.telegram.chatId, ch.telegram.threadId);
   const s = sessions.get(sessionId);
   const worktreeBranch = s?.worktree?.branch ?? ch?.branch;
@@ -12018,7 +12073,7 @@ server.listen(port, HOST, () => {
   // the internal auth cookie so it gets through the GUI password gate. The
   // handle + bound port let /telegram restart it hot when the config changes.
   boundPort = port;
-  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET, rooms: roomHooks });
+  tgBridge = startTelegram(port, tgCookie(), DEPLOYMENT_MODE === "multi-tenant", { mediaDirFor: mediaDirForSession, readAgentFile: readSessionFile, bridgeSecret: TELEGRAM_BRIDGE_SECRET, rooms: roomHooks, onChannelClosed: forgetChannelTriggers });
   if (GUI_PASSWORD) console.log("gui: password protection ON");
   // Cron scheduler: prime nextRun then tick every 30s (unref'd so it never
   // keeps the process alive on its own).

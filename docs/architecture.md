@@ -1592,6 +1592,15 @@ that cron is already in flight, same ACL as editing it), the `⏰` on a channel 
 invariant #6), Telegram's `/cron every 30m …` / `daily HH:MM …` / `list` / `on` /
 `off` / `del`, and the `shadok-scheduler` skill.
 
+**A schedule does not outlive its channel.** Closing an agent (`endChannel`)
+deletes the schedules and webhooks that target it — `forgetChannelTriggers`,
+over the pure `splitBySession` (`src/channel-triggers.ts`) — and logs one
+`channel <id8> closed: deleted …` line. It is keyed on the channel being
+removed, never on liveness: a dormant channel is what a schedule wakes. The
+close confirmation announces it from a second **derived** field of
+`GET /channels`, `closes: {schedules, webhooks}` (paused rows counted, absent
+when zero). See invariant 67 for the paths that deliberately do not delete.
+
 ## Webhooks (`src/webhooks.ts`)
 
 The event-driven twin of a cron: `POST /hooks/<id>` wakes the webhook's agent
@@ -2590,7 +2599,8 @@ groups it can see, a folder never changes group, and agents filed in a removed
 folder move to its nearest surviving ancestor; an agent's `folder` rides
 `PUT /channels`, checked to name a folder of its own group), `/channels` `/groups` (GET/PUT,
 persisted per launch dir; the GET of `/channels` adds a **derived** `crons` —
-the channel's schedules, for the tab's ⏰ — never stored, see invariant 6; the
+the channel's schedules, for the tab's ⏰ — and a derived `closes`
+(`{schedules, webhooks}`, what closing it would delete, invariant 67) — never stored, see invariant 6; the
 PUT carries an `x-shadok-instance` header and is refused **409** on a mismatch
 with the server's own launch dir — invariant 35),
 `/defaults` (server cwd, plus `instanceKey`),

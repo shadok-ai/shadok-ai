@@ -203,7 +203,10 @@ Enter to skip; you can add it later from the web UI).
   secrets, so an agent may put one only on itself (a person may guard any agent
   they can drive). Each schedule in the ⏰ popin has a **▶ Run now** button —
   test a new one without waiting for its slot; its next run stays where it was —
-  and shows when it runs next and how its last run ended.
+  and shows when it runs next and how its last run ended. A schedule belongs to
+  its agent: **closing the agent deletes its schedules** (and its webhooks) —
+  the confirmation says how many, since that cannot be undone. An agent that is
+  merely idle or asleep keeps them; waking it is what they are for.
 - **Webhooks** — let an outside system (CI, a form, a monitoring tool, Zapier…)
   wake an agent with an HTTP call, the event-driven twin of a schedule. Create
   one in the agent's **⚡ Webhooks** popin (the ⚡ icon in its bar, beside ⏰;
@@ -222,7 +225,8 @@ Enter to skip; you can add it later from the web UI).
   take a URL may pass `?token=…` instead of the header. Pause, rotate the token
   (↻) or delete it from the same popin. Only a person in the browser can create
   or change a webhook — never an agent. An unknown id, a paused webhook and a
-  wrong token all answer the same `404`.
+  wrong token all answer the same `404`. Closing the agent deletes its
+  webhooks: the URL stops answering and the token is dead.
 - **Per-agent stats** — the agent's ⋯ menu has a **📊 Stats** view: token usage
   over the last hour / 24 h / 7 days / 30 days, split in a tooltip into input,
   output, cache-write and cache-read, with a **notional cost** beside each window.
@@ -664,7 +668,7 @@ topics* (and *Delete messages* so `/secret` can scrub values), then in the group
 | `/setup <code>` | bind this group as the board (one group per instance), with the code from the panel's **Pair Telegram** — in an already-bound board, it makes the sender an operator |
 | `/spawn [profile] <name>` | new isolated agent in its own topic (also a web tab) |
 | `/stop` (alias `/esc`) | interrupt the current turn — does **not** end the session |
-| `/new` · `/end` | reset · kill the session |
+| `/new` · `/end` | reset · kill the session (`/end` also deletes the agent's schedules and webhooks, and says so) |
 | `/restart` | respawn the agent in place (e.g. to pick up new secrets) |
 | `/profiles` · `/list` | list profiles · list bindings |
 | `/cron every 30m <prompt>` · `/cron daily 09:00 <prompt>` · `/cron daily 09:00 mon-fri <prompt>` | schedule a recurring prompt on this agent |
@@ -1426,7 +1430,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"gone"}` / `{type:"error", message, code?}` / `{type:"exited", code}` / `{type:"stopped"}` | session lost, errors, termination. `error.code` is `"busy"` for a prompt refused mid-turn and `"logged-out"` for a spawn refused because the instance isn't signed in, `"resume-refused"` for a `resume` whose shortened id matches no agent or several — so a machine client needn't match on the message text |
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
-`/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
+`/diff`, `/channels` (its GET adds a **derived** `crons` field, and `closes` — how many schedules and webhooks closing that agent would delete — never stored),
 `/channels/glance` (GET — each visible row's last-message time and context %,
 read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
