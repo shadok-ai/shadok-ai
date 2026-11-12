@@ -418,6 +418,7 @@ export function guestCallbackAllowed(
 export type GuestNotice =
   | "pace-blocked"    // the pace guard refused the prompt: it was NOT sent
   | "error"           // the server refused something after the person wrote
+  | "unresponsive"    // the agent cannot take input and could not be restarted
   | "preempt-failed"  // we could not take the hand back: the message was lost
   | "no-keyboard"     // Telegram refused the question's inline keyboard
   | "exited"          // the agent's process is gone
@@ -440,6 +441,13 @@ export function guestNotice(kind: GuestNotice): string | null {
       return "⏳ I'm at capacity right now — please send that again in a little while.";
     case "error":
       return "⚠️ Something went wrong on my side — please send that again in a moment.";
+    // NOT "send that again": the wall is still there, and a guest has no
+    // command to get past it — a retry they were told to make failed twice in a
+    // row before this line existed. What is true is that it did not arrive,
+    // that trying again right now changes nothing, and that someone who can fix
+    // it has been told (the report is filed before this is sent).
+    case "unresponsive":
+      return "⚠️ Your message didn't reach me, and sending it again right now won't help — the problem is on my side. The people who look after me have been alerted. Please try again later.";
     case "preempt-failed":
       return "⚠️ Your message didn't go through — please send it again.";
     case "no-keyboard":

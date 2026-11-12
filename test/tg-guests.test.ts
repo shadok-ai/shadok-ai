@@ -395,7 +395,7 @@ test("guestNotice: what a guest cannot act on is dropped", () => {
 test("guestNotice: anything meaning 'your message is lost' is REWRITTEN, never dropped", () => {
   // Silence here is the one outcome we cannot have: the person waits for an
   // answer that is never coming.
-  for (const kind of ["pace-blocked", "error", "preempt-failed", "no-keyboard"] as const) {
+  for (const kind of ["pace-blocked", "error", "unresponsive", "preempt-failed", "no-keyboard"] as const) {
     const line = guestNotice(kind);
     assert.ok(line, kind);
     assert.match(String(line), /\S/);
@@ -403,10 +403,21 @@ test("guestNotice: anything meaning 'your message is lost' is REWRITTEN, never d
 });
 
 test("guestNotice: the words a guest hears name nothing of the cockpit", () => {
-  for (const kind of ["pace-blocked", "error", "preempt-failed", "no-keyboard"] as const) {
+  for (const kind of ["pace-blocked", "error", "unresponsive", "preempt-failed", "no-keyboard"] as const) {
     const line = String(guestNotice(kind));
     assert.doesNotMatch(line, /pace|guard|quota|session|agent|shadok|cockpit|web UI|\/stop|profile|group/i, kind);
   }
+});
+
+test("guestNotice: a guest whose message cannot go in is NOT told to send it again", () => {
+  // A guest can run no command, so the instruction is all they have. "Send
+  // that again" was a lie here: every retry met the same wall.
+  const line = String(guestNotice("unresponsive"));
+  assert.match(line, /didn't reach me/);
+  assert.match(line, /won't help/);
+  assert.match(line, /alerted/);
+  assert.doesNotMatch(line, /send (that|it) again (in|please)|please send/i);
+  assert.notEqual(line, guestNotice("error"));
 });
 
 // ── a guest must never be adopted as the bot's owner ──────────────────────

@@ -1,7 +1,7 @@
 import { isAgentCredentialVar, withoutAgentCredentials } from "./agent-principal.js";
 import pty from "node-pty";
 import xterm from "@xterm/headless";
-import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, describeStuckScreen, typeIntoBox } from "./detect.js";
+import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, submitFailure, type SubmitError, type SubmitFailure, typeIntoBox } from "./detect.js";
 import { dropArgv, dropEnv } from "./osusers.js";
 
 const { Terminal } = xterm;
@@ -282,7 +282,7 @@ export class PtyPilot {
       { prelude },
     );
     if (!typed) {
-      throw this.submitError("the text never appeared in the input box");
+      throw this.submitError("not-typed");
     }
     await sleep(200);
     // Sent once the input box is empty again (or the spinner is up). Requiring
@@ -302,17 +302,16 @@ export class PtyPilot {
         // Enter was swallowed by the TUI: try again.
       }
     }
-    throw this.submitError("the prompt does not seem to have been sent");
+    throw this.submitError("not-sent");
   }
 
   /** A concise client-facing error; the full screen goes to the server log only. */
-  private submitError(reason: string): Error {
+  private submitError(failure: SubmitFailure): SubmitError {
     const screen = this.screen();
-    // Name the blocking state when we recognise it: the bare symptom points at
-    // the input box, which is exactly where the answer is NOT.
-    const because = describeStuckScreen(screen);
-    console.error(`submit failed — ${reason}. Screen:\n${screen}`);
-    return new Error(because ? `submit: ${reason} — ${because}.` : `submit: ${reason}.`);
+    const e = submitFailure(failure, screen);
+    // The sentence without its "submit: " prefix and full stop: the line already says both.
+    console.error(`submit failed — ${e.message.replace(/^submit: /, "").replace(/\.$/, "")}. Screen:\n${screen}`);
+    return e;
   }
 
   press(key: "enter" | "escape" | "up" | "down" | "left" | "right" | "tab" | "ctrl-c"): void {

@@ -516,6 +516,16 @@ Enter to skip; you can add it later from the web UI).
   agent so a change that does not stick cannot loop. A message you send while
   the respawn runs waits a few seconds for it instead of being refused. Clicking
   still reloads at once; `SHADOK_AUTO_RELOAD=0` turns the automatic part off.
+- **An agent that stops listening restarts itself** — Claude Code's terminal can
+  stop taking input while the process behind it stays alive (an upstream bug;
+  nothing on screen shows it). When a message cannot be typed into an agent for
+  that reason, the cockpit restarts it and delivers the message again, once:
+  you see a slower answer, not an error. It never does this while a turn is
+  running or a question is waiting, and at most once per ten minutes per agent.
+  If the restart does not help, the sender is told the truth — the message was
+  *not* delivered and sending it again will not help — and the admins get an
+  agent report (the Reports badge, plus a Telegram DM to the owner).
+  `SHADOK_SUBMIT_RECOVERY=0` turns the automatic restart off.
 - **Phone layout** — the cockpit is a fixed chassis that never pans sideways,
   sized on the *visual* viewport so the composer stays clear of the browser's
   own bar and, when the keyboard opens, sits right above it (the instrument bar
@@ -1225,6 +1235,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_IDLE_MIN` | minutes with no client before a session is reclaimed (60) |
 | `SHADOK_AUTO_RELOAD=0` | don't apply a pending "reload to apply" by itself — leave it to the ↻ click |
 | `SHADOK_AUTO_RELOAD_IDLE_SEC` | how long an agent must be quiet before that automatic reload (120) |
+| `SHADOK_SUBMIT_RECOVERY=0` | don't restart an agent whose terminal stopped taking input — report the failed message as an error instead |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
@@ -1423,7 +1434,7 @@ client, or immediately on an explicit `stop` (which ends it for everyone).
 | `{type:"auto-retry"}` / `-cancelled` / `-gave-up` | transient API error being retried |
 | `{type:"version", …}` / `{type:"server-reload", version}` | update available / server updated, reload |
 | `{type:"term-data", data}` | **experimental** — raw pane output (base64) for a client-side terminal emulator |
-| `{type:"gone"}` / `{type:"error", message, code?}` / `{type:"exited", code}` / `{type:"stopped"}` | session lost, errors, termination. `error.code` is `"busy"` for a prompt refused mid-turn and `"logged-out"` for a spawn refused because the instance isn't signed in, `"resume-refused"` for a `resume` whose shortened id matches no agent or several — so a machine client needn't match on the message text |
+| `{type:"gone"}` / `{type:"error", message, code?}` / `{type:"exited", code}` / `{type:"stopped"}` | session lost, errors, termination. `error.code` is `"busy"` for a prompt refused mid-turn and `"logged-out"` for a spawn refused because the instance isn't signed in, `"resume-refused"` for a `resume` whose shortened id matches no agent or several, `"unresponsive"` for a prompt that could not be delivered because the agent's terminal stopped taking input and the automatic restart did not recover it — so a machine client needn't match on the message text |
 
 HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/diff`, `/channels` (its GET adds a **derived** `crons` field — never stored),
