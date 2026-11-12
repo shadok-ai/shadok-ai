@@ -103,3 +103,34 @@ restore it after.
 README (user-visible feature), CLAUDE.md (protocol: `msgId`, `prompt-id`,
 `HistoryTurn.id`; new module row), `docs/architecture.md` if the protocol
 section lists stream fields.
+
+## Addendum — rooms (2026-11-12)
+
+Rooms (channels with no agent, `src/rooms.ts`) landed after this feature and
+did not get the 🔗 button: `addRoomMessage` rendered a bubble without calling
+`stampMsgIds`, and the hash grammar only knew `agent=`. The whole machinery
+transfers unchanged because a **room message already carries a uuid** — its `id`
+is a `randomUUID()` minted server-side (`postRoomMessage`), the exact shape the
+follower already queries by (`[data-msg-ids~=…]`).
+
+- `deep-link.js` gains `buildRoomMessageLink(base, roomId, msgId)` →
+  `#room=<r_…>&msg=<uuid>`, and `parseMessageLink` returns `{ room, msg }` as an
+  alternative to `{ agent, msg }`. A room id (`r_` + 16 hex, `ROOM_ID_RE`) is
+  never UUID-shaped, so `agent=` and `room=` can never be confused; if both are
+  present `agent=` wins. `msg` is still a uuid in both grammars.
+- `addRoomMessage` now calls `stampMsgIds(tab, bubble, [m.id])`, which paints the
+  button and the `data-msg-ids` hook for every room message (history replay and
+  the 1-for-1 replacement of an optimistic own post alike). `stampMsgIds` builds
+  a room link when `tab.roomId` is set, an agent link otherwise.
+- `followDeepLink` resolves a `room` target by `tabs.find(t => t.roomId === …)`;
+  activating a room tab opens its WS and loads the last page of history
+  (`roomActivated`), the same way activating an agent tab loads its transcript.
+  The "not on this cockpit" / "older than the history shown" notes are worded for
+  a "conversation", agent or room.
+
+UI-only + the pure `deep-link.js`; no room protocol change. Verified end to end
+in a headless browser against a bench instance: a seeded room message renders the
+🔗 button, the link is `#room=…&msg=…`, and following it scrolls to and flashes
+the bubble; console clean. `test/deep-link.test.ts` covers the room build/parse,
+the agent-wins precedence, and the cross-refusals (a session id is not a room id,
+and vice versa).
