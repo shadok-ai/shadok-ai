@@ -534,11 +534,18 @@ Enter to skip; you can add it later from the web UI).
   rename, change profile, mirror to Telegram, close — and closing it brings the
   card back. Desktop only: the agents column is hidden on phones.
 - **Guided tour** — on a browser's first visit, a welcome card explains what
-  shadok-ai is, then a spotlight walks the real controls: the agents list, an
-  agent's ⋯ menu, scheduled prompts, the toolbar, the quota bars. Skip and
+  shadok-ai is, then a spotlight walks the real controls, in up to eleven stops:
+  the groups column, the agents list (and rooms), an agent's own bar (gallery,
+  about, terminal), its ⋯ menu, schedules and webhooks, the composer (attach, add
+  a skill, dictate), the toolbar (secrets, ledger, Skill Factory, profiles,
+  Telegram, sound, and what the ⋯ holds), the people buttons (Users, Reports,
+  Security), the quota bars, and the cockpit's name and settings menu. Skip and
   Escape end it at any point; ⋯ → *Guided tour* replays it. A step whose target
   isn't on screen is **dropped rather than faked** — an empty cockpit has no
-  agent menu, so it gets a shorter tour instead of a spotlight on nothing. The
+  agent menu, a cockpit with no group has no groups column, a member has no
+  Reports button — so it gets a shorter tour instead of a spotlight on nothing.
+  The bubble sits below its target, above it, or **beside** it when the target
+  is a full-height column, so it never covers what it describes. The
   **phone gets the whole tour**, because a step can name the landmark on either
   layout (the agents column *or* the channel picker) and is framed on whichever
   one is rendered. On a brand-new instance it comes **before** the sign-in card
