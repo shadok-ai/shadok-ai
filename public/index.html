@@ -6154,7 +6154,14 @@
   // here (it cannot be closed).
   function confirmEndAgent(tab) {
     const name = (tab && tab.nameEl ? tab.nameEl.textContent : "") || "this agent";
-    return confirm("End “" + name + "”?\n\nIts session stops and it leaves the list. Any work it committed or left in its worktree is kept; an empty worktree is cleaned up.");
+    // What targets this agent goes with it, and unlike the worktree that cannot
+    // be recovered — so it is named, with its count, before the click. The
+    // counts are the server's (`closes`, derived on GET /channels).
+    const n = (tab && tab.closes) || {};
+    const part = (count, noun) => (count ? count + " " + noun + (count === 1 ? "" : "s") : "");
+    const gone = [part(n.schedules, "schedule"), part(n.webhooks, "webhook")].filter(Boolean).join(" and ");
+    const also = gone ? "\n\nThis also deletes " + gone + " targeting it. That cannot be undone." : "";
+    return confirm("End “" + name + "”?\n\nIts session stops and it leaves the list. Any work it committed or left in its worktree is kept; an empty worktree is cleaned up." + also);
   }
 
   function closeTab(tab) {
@@ -7499,6 +7506,7 @@
         // reload, or the menu would offer to attach an agent that already is.
         t.parent = c.parent || null;
         setCrons(t, c.crons);
+        t.closes = c.closes || null;
         // A mute set on another device lands here; persist:false, the registry
         // is already the source of this value.
         if (typeof c.muted === "boolean" && c.muted !== !!t.muted) setMuted(t, c.muted, false);
@@ -7542,6 +7550,7 @@
         // place at the bottom rather than showing up as an ordinary agent.
         if (nt.profile === "Shadok-Tweak" && !tweakTab()) markTweakTab(nt);
         setCrons(nt, c.crons);
+        nt.closes = c.closes || null;
         if (c.muted) setMuted(nt, true, false);
         if (typeof c.mirror === "boolean" ? c.mirror : !!c.telegram) setMirror(nt, true, false);
         if (c.name) {
@@ -17415,6 +17424,7 @@
         // On reload, the tweak channel finds its bottom slot again.
         if (t.profile === "Shadok-Tweak" && !tweakTab()) markTweakTab(t);
         setCrons(t, s.crons);
+        t.closes = s.closes || null;
         if (s.muted) setMuted(t, true, false); // restoring: don't push back
         // The mirror TOO, otherwise the first persist pushes `mirror:false`
         // back and overwrites the registry — which deleted the topic of a

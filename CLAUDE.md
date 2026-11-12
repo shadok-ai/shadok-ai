@@ -159,13 +159,14 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `src/prompt-args.ts` | `mergeAppendedPrompts` — the spawn passes ONE `--append-system-prompt`: Claude Code keeps only the LAST of several (measured, 2.1.319), so the role, env note, pilot prompt and ledger reflex are joined into one value. Never add a second flag elsewhere. |
 | `src/preprompt.ts` | Pure `prepromptParts` — what shadok adds to an agent's context, as labelled sections with their source. |
 | `src/auto-reload.ts` | Pure `autoReloadVerdict` — applies a pending "reload to apply" by itself, only when the respawn would cut nothing (idle, no dialog, empty input box, no background task/queued notification, quiet 2 min, 30-min backoff). |
-| `src/submit-recovery.ts` | What happens when an agent's TUI stops taking input while its process stays alive (an upstream bug class a restart cures). Pure `submitRecoveryVerdict` + `submitWithRecovery`: on a `SubmitError` from the `prompt` path — restart through `restartSession` and re-deliver ONCE; never while a turn runs, a question is up, or the transcript shows the prompt landed; 10-min per-agent cooldown. Unrecoverable → an agent report filed by the server (admins + Telegram owner) and `error` `code: "unresponsive"` with a true message, incl. the guest wording. `SHADOK_SUBMIT_RECOVERY=0` disables. See invariant 67. |
+| `src/submit-recovery.ts` | What happens when an agent's TUI stops taking input while its process stays alive (an upstream bug class a restart cures). Pure `submitRecoveryVerdict` + `submitWithRecovery`: on a `SubmitError` from the `prompt` path — restart through `restartSession` and re-deliver ONCE; never while a turn runs, a question is up, or the transcript shows the prompt landed; 10-min per-agent cooldown. Unrecoverable → an agent report filed by the server (admins + Telegram owner) and `error` `code: "unresponsive"` with a true message, incl. the guest wording. `SHADOK_SUBMIT_RECOVERY=0` disables. See invariant 68. |
 | `src/csp.ts` | The Content-Security-Policy (`cspHeader`) and the nonce injection into the page (`injectNonce`, marker `__CSP_NONCE__`). |
 | `src/net.ts` | Where we listen and who may speak: `resolveHost` (`SHADOK_HOST`, loopback by default), `bindRefusal` (fail-closed: no network bind without a password), `originAllowed` (same-origin, see invariant 11), `hostHeaderAllowed` (the DNS-rebinding Host allowlist, strict only without a password or with `SHADOK_ALLOWED_HOSTS` — invariant 62), `clientAddress` / `requestIsHttps` (forwarding headers believed only from a loopback/private hop). |
 | `src/login-limit.ts` | `AttemptLimiter` — failed `POST /login` and enrollment-code attempts per address and per account, in memory, refused with 429 BEFORE hashing. Pure over a clock, tested. |
 | `src/heartbeat.ts` | Keeps idle `/ws` connections alive behind a reverse proxy: an idle agent sends no traffic, so a proxy (nginx `proxy_read_timeout` 60s, Cloudflare ~100s) cuts the socket and the client loops on "reconnecting" — with nothing actually broken. |
 | `src/config.ts` | `~/.shadok-ai/config.json` (600): port, per-launch-dir Telegram token/allowed chats/on-off, GUI password, `autoUpdate`, `permissionMode`, `timezone`, `cockpitTitle` (per-launch-dir display name, `titleForCwd`/`setTitleForCwd` — the header brand + browser tab, so several cockpits stay apart), `cockpitTheme` (per-launch-dir colour palette key, `themeForCwd`/`setThemeForCwd`, validated against `COCKPIT_THEMES`; default/unknown → cleared), and `cockpitMuted` (per-launch-dir instance-wide mute, `mutedForCwd`/`setMutedForCwd` — `true` = no web attention signal for ANY agent, the shared twin of `Channel.muted`; false stored as absent). |
 | `src/webhooks.ts` | Webhooks: `POST /hooks/<id>` + per-hook bearer token (SHA-256 stored, one 404 for every refusal) wakes an agent through the cron path (`driveChannel`), body fenced as untrusted. Management (`/webhooks`) is browser-person only. |
+| `src/channel-triggers.ts` | What goes away WITH a closed channel: pure `splitBySession` / `triggerCount` / `triggerSummary` over anything keyed by `sessionId` (schedules, webhooks). They take an id and nothing else, so they cannot ask whether a process is running — the delete is decided by `endChannel` (`forgetChannelTriggers`, `server.ts`), on an explicit close only. See invariant 67. |
 | `src/crons.ts` | Per-channel scheduled prompts (`~/.shadok-ai/crons/<enc>.json`) + the deterministic `check` that avoids waking the LLM for nothing. |
 | `src/lock.ts` | Single-instance lock, keyed by launch dir: two servers from the same directory share a registry and a Telegram bridge, so the second refuses to start. |
 | `src/kinship.ts` | Who launched whom, and what a parent is told about it. |
@@ -271,7 +272,8 @@ A quick per-file index. The FULL responsibility of each file — the war stories
   `SHADOK_IDLE_MIN` min (default 60) with no client. With tmux, it also
   outlives the server. **Explicit close ends it everywhere**: the tab ✕, "End
   session", Telegram `/end`, and closing a topic all send `stop`, which drops
-  the session from the registry and archives its Telegram topic.
+  the session from the registry and archives its Telegram topic. The
+  schedules and webhooks that targeted it are deleted with it (invariant 67).
 
 ## WebSocket protocol (`/ws`) and HTTP
 
@@ -375,7 +377,9 @@ The FULL text — every war story, every "measured on …", the reason each rule
 
 - **66.** A mode that changes the rules must also disown the state the old rules created (a bound board, a stored owner) — else its guarantee depends on when the instance was set up. · [detail](docs/invariants.md#inv-70)
 
-- **67.** A prompt that provably did not go in is the ONLY signal of a dead terminal — recover on the submit failure (one enforced restart, one re-delivery, never a watchdog), and a failure the sender cannot act on must reach an admin. · [detail](docs/invariants.md#inv-71)
+- **67.** What targets a channel (its schedules, its webhooks) dies with the CHANNEL being closed — never with its process: a dormant channel is exactly what a schedule wakes. · [detail](docs/invariants.md#inv-71)
+
+- **68.** A prompt that provably did not go in is the ONLY signal of a dead terminal — recover on the submit failure (one enforced restart, one re-delivery, never a watchdog), and a failure the sender cannot act on must reach an admin. · [detail](docs/invariants.md#inv-72)
 
 ## Conventions
 

@@ -2093,7 +2093,41 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
 
 <a id="inv-71"></a>
 
-67. **A prompt that provably did not go in is the ONLY signal of a dead
+67. **What targets a channel dies with the CHANNEL — never with its process.**
+    A schedule (`src/crons.ts`) and a webhook (`src/webhooks.ts`) each carry a
+    `sessionId`, and neither store was told when the channel behind that id was
+    closed. Schedules belonging to closed channels kept firing at every slot and
+    failing on a session that no longer existed, with nobody told; a webhook
+    kept a live URL and a token that still verified, pointing at nothing.
+    `endChannel` now deletes both (`forgetChannelTriggers`, over the pure
+    `splitBySession` in `src/channel-triggers.ts`) and logs one line naming what
+    went.
+    The trap is the obvious spelling of the fix: "delete what targets a session
+    with no running process". It repairs the symptom and deletes the feature —
+    a dormant channel has no process BY DEFINITION, and waking it is exactly
+    what a schedule or a webhook is for. So the cleanup is keyed on the channel
+    being REMOVED: the helpers take an id and nothing else, and nothing that
+    merely ends a process (`destroySession`, the idle reclaim, a restart, a
+    crash) may call them. `test/channel-triggers.test.ts` locks that wiring,
+    since no type would notice a new caller.
+    Three edges, each decided on purpose. **The home channel** is refused before
+    anything is deleted. **A row that was never read deletes nothing**: the
+    Telegram bridge drops the row itself before its `stop` reaches the server —
+    for `/new` on the General as much as for `/end` — so `endChannel` then cannot
+    tell a closed agent from the home base, and an irreversible delete must not
+    ride on a guess; the bridge decides instead, through `onChannelClosed`
+    (`/end`, a closed topic, a topic found gone at boot — never `/new`, which is
+    a reset, and never the home base). **The `PUT /channels` merge is NOT a
+    close**: it can drop a dormant row a client merely omitted, and a stale or
+    partial list (invariant 6) must never be able to delete schedules.
+    And because none of it can be undone, it is announced: the close
+    confirmation reads the **derived** `closes` count off `GET /channels`
+    (paused rows included — they go too), and Telegram's `/end` says what else
+    it deleted.
+
+<a id="inv-72"></a>
+
+68. **A prompt that provably did not go in is the ONLY signal of a dead
     terminal — so recovery belongs on the submit failure, and a failure the
     sender cannot act on must reach someone who can.** A `claude` process can
     stay alive and healthy — pane up, not in copy-mode, no dialog, a transcript
