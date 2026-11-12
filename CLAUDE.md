@@ -283,6 +283,7 @@ The full message + endpoint reference — every field, every refusal `code`, the
 **HTTP** (everything but `/login` sits behind the optional password gate):
 
 - usage/sessions: `/usage`, `/live`, `/sessions`, `/recover`, `/diff`
+- schedules: `/crons` (+ `/crons/:id/run` — fire now), `/timezone`
 - rooms (people only, src/rooms.ts): `/rooms` (GET/POST), `/rooms/:id` (PATCH), `/rooms/:id/{archive,read}` (POST), `/rooms/:id/messages` (GET); `/paste` takes `x-shadok-room`
 - per-dir cockpit: `/channels` (+ `/glance`), `/groups`, `/agent-folders`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
 - agents & roles: `/tweak/prepare`, `/profiles` (+ `/prompt`, `/secret`, `/restore`), `/secrets`, `/reload`, `/restart-all`, `/models`, `/backend`

@@ -1584,7 +1584,10 @@ It is pure and total: an empty prefix and an ambiguous prefix are both
 `{ok:true}` used to mean "deleted" while deleting nothing, and a bare
 `/cron del` wiped whichever cron came first (invariant #17).
 
-Surfaces: `GET`/`POST`/`DELETE /crons`, the `⏰` on a channel tab (fed by the
+Surfaces: `GET`/`POST`/`DELETE /crons`, `POST /crons/:id/run` (fire it now — the
+Schedule popin's **Run now**: same `fireCron`, guard included, but it leaves `nextRun`
+and the retry state alone and only records `lastRun`/`lastOutcome`; refused 409 while
+that cron is already in flight, same ACL as editing it), the `⏰` on a channel tab (fed by the
 **derived** `crons` field that `GET /channels` computes and never stores — see
 invariant #6), Telegram's `/cron every 30m …` / `daily HH:MM …` / `list` / `on` /
 `off` / `del`, and the `shadok-scheduler` skill.

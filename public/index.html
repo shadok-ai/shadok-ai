@@ -2483,16 +2483,37 @@
   .sec-panel :focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
   /* <select> and number fields were covered by no rule at all: they fell back to
      the browser's default rendering — light — in the middle of a dark panel. */
-  .sec-panel select, .sec-panel input[type=number], .sec-panel input[type=time] {
+  .sec-panel select, .sec-panel input[type=number], .sec-panel input[type=time], .sec-panel input[type=datetime-local] {
     padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line);
-    background: rgba(0, 0, 0, 0.25); color: inherit; font-family: inherit; font-size: inherit;
+    background: var(--bg-inset); color: inherit; font-family: inherit; font-size: inherit;
   }
   /* A clarification inside a label is NOT SHOUTED: `.label` uppercases and
      letterspaces, which made a whole sentence unreadable. */
   .label .check-hint { text-transform: none; letter-spacing: normal; font-weight: normal; }
-  #cronList { list-style: none; padding: 0; margin: 0 0 14px; }
-  #cronList li { padding: 6px 8px; border-radius: 6px; }
-  #cronList li:nth-child(odd) { background: rgba(255, 255, 255, 0.04); }
+  #cronList { list-style: none; padding: 0; margin: 0 0 14px; display: flex; flex-direction: column; gap: 8px; }
+  #cronList li.cron-empty { color: var(--text-dim); font-size: 13px; padding: 4px 0; }
+  /* One schedule = one card: when + status on top, the actions on the right,
+     the prompt below clamped to three lines (a long prompt used to fill the
+     whole popin and push the form off screen). */
+  #cronList li.cron-card { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg); }
+  #cronList li.cron-card.off { opacity: .7; }
+  .cron-head { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; }
+  .cron-when-label { font-weight: 600; font-size: 14px; }
+  .cron-tag { display: inline-block; font-size: 11px; font-weight: 500; padding: 1px 7px; margin-left: 6px; border-radius: 10px; border: 1px solid var(--line); color: var(--text-dim); vertical-align: 1px; }
+  .cron-tag.paused { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); }
+  .cron-meta { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+  .cron-meta .ok { color: var(--ok); }
+  .cron-meta .bad { color: var(--err); }
+  .cron-acts { display: flex; gap: 4px; flex: 0 0 auto; }
+  .cron-acts button { font-size: 12px; padding: 3px 9px; border-radius: 7px; line-height: 1.5; }
+  .cron-acts button.icon { padding: 3px 7px; }
+  .cron-acts button.run { border-color: color-mix(in srgb, var(--amber) 55%, transparent); color: var(--amber); }
+  .cron-acts button.run:hover { background: var(--amber-soft); }
+  .cron-acts button:disabled { opacity: .5; cursor: default; }
+  .cron-prompt { font-size: 12.5px; color: var(--text-dim); margin-top: 8px; white-space: pre-wrap; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; cursor: pointer; }
+  .cron-prompt.open { display: block; -webkit-line-clamp: unset; }
+  #cronList .cron-card .cron-skills { margin: 8px 0 0; }
   #hookList { list-style: none; padding: 0; margin: 0 0 10px; }
   #hookList li { padding: 6px 8px; border-radius: 6px; }
   #hookList li:nth-child(odd) { background: rgba(255, 255, 255, 0.04); }
@@ -2501,6 +2522,7 @@
   .hook-reveal { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin: 0 0 10px; font-size: 12px; }
   .hook-reveal pre { white-space: pre-wrap; word-break: break-all; margin: 6px 0; user-select: all; }
   .cron-form { border-top: 1px solid var(--line); padding-top: 12px; }
+  .cron-form-title { font-weight: 600; font-size: 13px; }
   .cron-form .field { margin: 12px 0; }
   .cron-form .field:last-child { margin-bottom: 0; }
   /* `.field` is a column: without straightening the direction here, the three
@@ -2514,7 +2536,7 @@
   .cron-days label:has(input:checked) { border-color: var(--amber); color: var(--text); background: color-mix(in srgb, var(--amber) 16%, transparent); }
   .cron-days label:has(input:focus-visible) { outline: 2px solid var(--amber); outline-offset: 1px; }
   .sec-panel .field { margin: 8px 0; }
-  .sec-panel textarea, .sec-panel input[type=text], .sec-panel input[type=password], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,.15); background: rgba(0,0,0,.25); color: inherit; font-family: inherit; }
+  .sec-panel textarea, .sec-panel input[type=text], .sec-panel input[type=password], .sec-panel input:not([type]) { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-inset); color: inherit; font-family: inherit; }
   #profilesList { list-style: none; padding: 0; margin: 0 0 8px; }
   #profilesList li { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
   #profilesList li:nth-child(odd) { background: rgba(255,255,255,.04); }
@@ -3633,6 +3655,7 @@
       <p class="sec-note"><b>Simplest way:</b> just ask the agent — « surveille X chaque matin et alerte-moi si Y ». It writes the check and schedules it itself.</p>
       <ul id="cronList"></ul>
       <form id="cronAdd" class="cron-form">
+        <div class="cron-form-title" id="cronFormTitle">New schedule</div>
         <div class="field">
           <span class="label">Prompt to run</span>
           <textarea id="cronPrompt" rows="2" placeholder="e.g. Write a clear alert from the anomaly the guard reported"></textarea>
@@ -14697,13 +14720,40 @@
       if (zone) el.textContent = "Scheduled times run in " + zone;
     } catch { /* the popin works perfectly well without this note */ }
   }
+  /** "next 09:25 tomorrow · last ran 2h ago → ok" under a schedule's label: the
+   *  two questions a person opens this popin to answer. null when it never ran
+   *  and has no next slot (a paused interval). */
+  function cronMeta(c) {
+    const parts = [];
+    if (c.enabled && c.nextRun) {
+      const d = new Date(c.nextRun);
+      const today = new Date();
+      const tomorrow = new Date(); tomorrow.setDate(today.getDate() + 1);
+      const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const day = d.toDateString() === today.toDateString() ? "today"
+        : d.toDateString() === tomorrow.toDateString() ? "tomorrow"
+        : d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+      parts.push(document.createTextNode("next " + day + " " + hm));
+    }
+    if (c.lastRun) {
+      if (parts.length) parts.push(document.createTextNode(" · "));
+      const last = facEl("span", { title: new Date(c.lastRun).toLocaleString(), text: "last ran " + relTime(c.lastRun) });
+      parts.push(last);
+      if (c.lastOutcome) {
+        const good = c.lastOutcome === "ok" || c.lastOutcome === "quiet";
+        parts.push(document.createTextNode(" → "));
+        parts.push(facEl("span", { class: good ? "ok" : "bad", text: c.lastOutcome, title: c.lastOutcome === "quiet" ? "The guard printed nothing: nothing to report, the agent was not woken" : "" }));
+      }
+    }
+    return parts.length ? facEl("div", { class: "cron-meta" }, parts) : null;
+  }
   async function renderCrons() {
     // A schedule added, edited or removed changes what the info panel lists.
     if ($("infopanel").classList.contains("open")) renderInfoPanel();
     const ul = $("cronList"); ul.innerHTML = "";
     await showCronTz();
     $("cronChanName").textContent = (active && (active.name || (active.sessionId || "").slice(0, 8))) || "no agent";
-    if (!active || !active.sessionId) { ul.innerHTML = '<li><span style="opacity:.6">Open an agent to schedule prompts.</span></li>'; return; }
+    if (!active || !active.sessionId) { ul.innerHTML = '<li class="cron-empty">Open an agent to schedule prompts.</li>'; return; }
     const sid = active.sessionId;
     // The skills each schedule uses, so a cron that runs a factory skill links
     // straight to it (same join as the info panel). Skills failing to load only
@@ -14715,44 +14765,53 @@
     if (!active || active.sessionId !== sid) return; // switched agent meanwhile
     ul.innerHTML = "";
     const list = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === sid);
-    if (!list.length) { ul.innerHTML = '<li><span style="opacity:.6">no schedule yet</span></li>'; return; }
+    if (!list.length) { ul.innerHTML = '<li class="cron-empty">No schedule yet.</li>'; return; }
     const { named, picked } = cronSkillUse(skills, sid);
     const closeCron = () => { $("cronOverlay").hidden = true; };
     for (const c of list) {
-      const li = document.createElement("li"); li.style.display = "block";
-      const line = document.createElement("div");
-      line.style.cssText = "display:flex;gap:8px;align-items:center;justify-content:space-between";
-      const label = document.createElement("span");
-      label.innerHTML = "<b>" + fmtSchedule(c.schedule) + "</b>" + (c.check ? " <span style='opacity:.6'>+guard</span>" : "") + (c.enabled ? "" : c.schedule && c.schedule.kind === "once" && c.lastRun ? " <span style='opacity:.5'>(fired)</span>" : " <span style='opacity:.5'>(paused)</span>");
-      const btns = document.createElement("span");
-      const edit = document.createElement("button");
-      edit.textContent = "✎"; edit.title = "Edit this schedule";
-      edit.addEventListener("click", () => loadCronIntoForm(c));
-      const toggle = document.createElement("button");
-      toggle.textContent = c.enabled ? "Pause" : "Resume";
-      toggle.addEventListener("click", async () => {
+      const spent = !c.enabled && c.schedule && c.schedule.kind === "once" && c.lastRun;
+      const li = facEl("li", { class: "cron-card" + (c.enabled ? "" : " off") });
+      const when = facEl("div", {}, [facEl("span", { class: "cron-when-label", text: fmtSchedule(c.schedule) })]);
+      if (c.check) when.appendChild(facEl("span", { class: "cron-tag", text: "guard", title: "A check command runs first; the agent only wakes when it prints something" }));
+      if (!c.enabled) when.appendChild(facEl("span", { class: "cron-tag paused", text: spent ? "fired" : "paused" }));
+      const meta = cronMeta(c);
+      const left = facEl("div", {}, meta ? [when, meta] : [when]);
+      const mk = (text, title, cls, fn) => { const b = facEl("button", { type: "button", class: cls || "", text, title }); b.addEventListener("click", fn); return b; };
+      const run = mk("▶ Run now", "Fire this schedule now (its guard first, if any) — the next scheduled run is unchanged", "run", async () => {
+        run.disabled = true; run.textContent = "Running…";
+        $("cronErr").textContent = "";
+        let r = null;
+        try { r = await fetch("/crons/" + encodeURIComponent(c.id) + "/run", { method: "POST" }); } catch { /* shown below */ }
+        if (!r || !r.ok) {
+          let j = null; try { j = r && (await r.json()); } catch { /* non-JSON */ }
+          $("cronErr").textContent = (j && j.error) || "could not run it" + (r ? " (" + r.status + ")" : "");
+          run.disabled = false; run.textContent = "▶ Run now";
+          return;
+        }
+        // The answer comes back in the conversation: show it.
+        closeCron();
+      });
+      const edit = mk("✎", "Edit this schedule", "icon", () => loadCronIntoForm(c));
+      const toggle = mk(c.enabled ? "Pause" : "Resume", c.enabled ? "Stop firing on schedule" : "Fire on schedule again", "", async () => {
         await fetch("/crons", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...c, enabled: !c.enabled }) });
         renderCrons();
       });
-      const del = document.createElement("button");
-      del.textContent = "✕"; del.title = "Delete schedule";
-      del.addEventListener("click", async () => {
+      const del = mk("✕", "Delete schedule", "icon", async () => {
+        if (!confirm("Delete this schedule?")) return;
         if (editingCronId === c.id) resetCronEditMode();
         await fetch("/crons?id=" + encodeURIComponent(c.id), { method: "DELETE" });
         renderCrons();
       });
-      btns.append(edit, toggle, del);
-      line.append(label, btns);
-      const p = document.createElement("div");
-      p.textContent = c.prompt;
-      p.style.cssText = "opacity:.75;font-size:12px;margin:3px 0 10px;white-space:pre-wrap";
-      li.append(line, p);
+      const head = facEl("div", { class: "cron-head" }, [left, facEl("div", { class: "cron-acts" }, [run, edit, toggle, del])]);
+      const p = facEl("div", { class: "cron-prompt", text: c.prompt, title: "Click to expand" });
+      p.addEventListener("click", () => { p.classList.toggle("open"); p.title = p.classList.contains("open") ? "Click to collapse" : "Click to expand"; });
+      li.append(head, p);
       const uses = named(c.id);
       if (uses.length) li.appendChild(facEl("div", { class: "cron-skills" }, [facEl("span", { style: "opacity:.6", text: "Uses " }), ...uses.map((s) => skillChip(s, closeCron))]));
       ul.appendChild(li);
     }
     if (picked.length) {
-      const li = document.createElement("li"); li.style.display = "block";
+      const li = facEl("li", { class: "cron-card" });
       li.appendChild(facEl("div", { class: "cron-skills", style: "margin:0" }, [facEl("span", { style: "opacity:.6", text: "Also called by scheduled runs: " }), ...picked.map((s) => skillChip(s, closeCron))]));
       ul.appendChild(li);
     }
@@ -14851,7 +14910,7 @@
   function resetCronEditMode() {
     editingCronId = null;
     setCronDays(null);
-    $("cronSubmit").textContent = "Add schedule";
+    $("cronSubmit").textContent = "Add schedule"; $("cronFormTitle").textContent = "New schedule";
     $("cronCancelEdit").hidden = true;
     $("cronErr").textContent = "";
   }
@@ -14881,7 +14940,7 @@
       else { $("cronEvery").value = mins; $("cronUnit").value = "1"; }
     }
     $("cronKind").dispatchEvent(new Event("change")); // show the right time fields
-    $("cronSubmit").textContent = "Save changes";
+    $("cronSubmit").textContent = "Save changes"; $("cronFormTitle").textContent = "Edit schedule";
     $("cronCancelEdit").hidden = false;
     $("cronErr").textContent = "";
     $("cronPrompt").focus();

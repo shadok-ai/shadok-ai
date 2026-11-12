@@ -3719,6 +3719,35 @@ app.delete("/crons", (req, res) => {
   removeCron(r.id);
   res.json({ ok: true, id: r.id });
 });
+// Run a schedule NOW, out of band — to test a new one without waiting for its
+// slot, or to get today's report again. Exactly a fire (guard first, then the
+// agent unless the guard stays silent), but it leaves the schedule alone: no
+// `nextRun` advance, no retry bookkeeping, a spent one-shot stays spent. Only
+// `lastRun`/`lastOutcome` move, so the list shows what the run did.
+// Same ACL as editing the cron (`mayActFor` on its agent); answered at once,
+// because the fire lasts as long as the agent's turn.
+app.post("/crons/:id/run", (req, res) => {
+  const r = resolveCronId(loadCrons().filter((c) => mayActFor(req, c.sessionId)), String(req.params.id ?? ""));
+  if (!r.ok) return res.status(r.error === "ambiguous" ? 409 : 404).json({ error: r.error === "ambiguous" ? "ambiguous id" : "no such cron" });
+  const c = loadCrons().find((x) => x.id === r.id)!;
+  // The same anti-double-fire rule as `cronTick`: one run of a cron at a time.
+  if (cronsFiring.has(c.id)) return res.status(409).json({ error: "this schedule is already running" });
+  cronsFiring.add(c.id);
+  console.log(`${cronTag(c)} run now (manual)`);
+  const note = (outcome: string) => {
+    const list = loadCrons();
+    const x = list.find((y) => y.id === c.id);
+    if (!x) return; // deleted while running
+    x.lastRun = Date.now();
+    x.lastOutcome = outcome;
+    saveCrons(list);
+  };
+  void fireCron(c)
+    .then((out) => note(out.outcome))
+    .catch((e) => { console.log(`${cronTag(c)} manual run crashed: ${e?.message ?? e}`); note("error"); })
+    .finally(() => cronsFiring.delete(c.id));
+  res.status(202).json({ ok: true, id: c.id });
+});
 app.put("/channels", (req, res) => {
   // A stale tab whose server was stopped and replaced by another instance on the
   // same port must not write its old channels into THIS instance's file. The
