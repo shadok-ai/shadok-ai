@@ -1922,7 +1922,7 @@ be every agent on the machine. The Skillsmith is a managed profile (prompt
 re-seeded from `context/skillsmith-prompt.md` at boot, `secrets: []` on
 creation) because it runs draft code nobody has reviewed yet.
 
-## Connected accounts (`src/connect-crypto.ts`, `src/connect-routes.ts`, `src/connected-accounts.ts`, `src/linkedin.ts`, `src/social-drafts.ts`, `src/account-expiry.ts`, `broker/`)
+## Connected accounts (`src/connect-crypto.ts`, `src/connect-routes.ts`, `src/connected-accounts.ts`, `src/linkedin.ts`, `src/google.ts`, `src/google-actions.ts`, `src/social-drafts.ts`, `src/account-expiry.ts`, `broker/`)
 
 An agent can publish on a LinkedIn account a person connected, without ever
 holding the credential. Design: `docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md`.
@@ -1972,22 +1972,109 @@ behaves exactly as before (404).
 
 ### The instance side
 
-`POST /connect/linkedin/start` (browser person only) makes the key pair and
+One set of routes serves every provider: `/connect/<provider>/{start,done,complete}`
+(`isConnectProvider`; LinkedIn's paths are these with `linkedin`).
+`POST /connect/<provider>/start` (browser person only) makes the key pair and
 nonce and keeps them in memory (`PendingAttempts`, 10 min TTL, single-use). The
 return URL is the page's own `location.origin`, since behind a TLS proxy the
-server does not know its public name (invariant 20). `GET /connect/linkedin/done`
-serves a nonce'd page (`context/connect-done.html`, deliberately outside
-`public/` so `express.static` cannot serve it raw) that posts the fragment to
-`/connect/linkedin/complete`; that decrypts, asks LinkedIn `userinfo` for the
-member, and stores the account — only for the person who started the attempt.
-A restart inside the ten minutes loses the pending key; the person clicks
-Connect again.
+server does not know its public name (invariant 20). `GET /connect/<provider>/done`
+serves ONE nonce'd page for all providers (`context/connect-done.html`,
+deliberately outside `public/` so `express.static` cannot serve it raw; it
+reads the provider off the path it was served at) that posts the fragment to
+`/connect/<provider>/complete`; that decrypts, asks the provider's `userinfo`
+for the identity, and stores the account — only for the person who started the
+attempt, and only at the provider the attempt was started for
+(`PendingAttempt.provider`: a LinkedIn token is never stored as a Google
+account). A restart inside the ten minutes loses the pending key; the person
+clicks Connect again.
+
+`GET /connect/status` reports what the broker's `/health` lists
+(`healthProviders`): a provider's Connect button appears only when the broker
+names it — i.e. once its secrets exist there — and `googleTesting` when the
+broker says the Google app is in Testing.
+
+### Google on the instance (`src/google.ts`, `src/google-actions.ts`)
+
+Design: `docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md`.
+What differs from LinkedIn, and why:
+
+- **The store.** `provider: "google"`, `label` = the email, `externalId` = the
+  OIDC `sub`, `scopes` = what Google GRANTED (read from the token response — a
+  person may untick an area on Google's own screen, so it is never assumed;
+  `grantedAreas` maps it back to `calendar` / `drive` / `gmail`), and
+  `policies: {mail, calendar}` instead of LinkedIn's single `policy` (both
+  `approve` at connect; a reconnect keeps them). A connect that returns no
+  refresh token is refused rather than stored: it would die within the hour.
+- **`expiresAt` is NOT the deadline.** For Google it is the hourly access
+  token's expiry; the date a person must reconnect by is `refreshExpiresAt`
+  (Google's own figure when it sends one, else 7 days from connect while the
+  broker reports Testing, else none). Everything that asks "is this account
+  dead" goes through `accountDeadline` / `accountLapsed` — the expiry watch,
+  the banner flags, the agent's account list, the row. Reading `expiresAt`
+  there would expire every Google account an hour after it was connected.
+  The watch warns 2 days ahead for Google (`GOOGLE_WARN_BEFORE_MS`): a 7-day
+  warning on a 7-day authorisation would fire at connect time.
+- **Token refresh.** `GoogleTokens.accessToken` returns the stored token, or
+  refreshes it through the broker's `POST /google/refresh` when under 5 minutes
+  are left — the client secret lives only there. One refresh per account at a
+  time (callers that arrive meanwhile await the same promise). `invalid_grant`
+  marks the account `expired`, so later calls refuse with the reconnect
+  sentence instead of asking again; a broker or network failure does not.
+- **Plain `fetch`, no client library.** Calendar (`calendar.events`), Drive /
+  Docs / Sheets on `drive.file` alone (the Docs and Sheets APIs accept it for
+  the files it covers, so their own scopes are never requested), Gmail drafts
+  and send (`gmail.compose`). Sheet cells are appended `RAW`, so an agent
+  cannot plant a formula. Disconnect revokes the grant at Google (token in the
+  form body, never the URL).
+- **The agent supplies fields, never MIME.** `mailFieldsVerdict` then
+  `buildMime` make the RFC 2822 message server-side: a CR/LF or control
+  character in a subject, an address or an attachment name is refused (it
+  would be a second header), non-ASCII header text is RFC 2047 encoded-words
+  of at most 75 characters, the body goes as base64 UTF-8 so no line of it can
+  read as a header. No `From` — Gmail sets it.
+
+**Action classes** (`GOOGLE_ACTIONS`). An agent calls `POST /google/actions`
+`{account, action, args}`; the action's CLASS — never its arguments — decides
+whether an approval setting applies, and which:
+
+| Class | Actions | Approval |
+|---|---|---|
+| read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read` | never — it leaves nothing; not logged |
+| own-write | `gmail.draft`, `doc.create`, `doc.append`, `sheet.create`, `sheet.append` | never — only the person's own drafts and files |
+| mail | `gmail.send` | `policies.mail` |
+| calendar | `calendar.create`, `calendar.update`, `calendar.delete` (with or without attendees) | `policies.calendar` |
+
+`actionVerdict` refuses an action whose area was not granted, naming who can
+reconnect and tick it. Under `approve` nothing leaves the account from the
+agent's route: `runGoogleAction` returns a `pending` outcome and the route
+stores a draft. A calendar card holds the event as it will be (for an update:
+the current event with the patch merged over it, and the patch itself is what
+is sent); a delete shows the event as it is.
+
+**Mail with approval — the Gmail draft IS the draft.** `gmail.send` creates a
+real draft in the person's Gmail and a card whose payload carries the draft id
+and a fingerprint (`mailFingerprint`: recipient addresses, subject, body modulo
+line endings, attachment names). The person may edit it in Gmail. On *Send*,
+`approveGoogleDraft` re-reads the draft (`drafts.get`, `parseGmailMessage`):
+same fingerprint → `drafts.send`; different → NOT sent, the card takes the new
+content (`edited`) and the route answers 409 *"Edited in Gmail since — send this
+version?"*, so a person always sends what they are looking at (invariant 43);
+404 → status `gone`, the card closes and the agent is told. *Discard* deletes
+the Gmail draft too. The agent cannot rewrite a draft awaiting approval
+(`gmail.draft --update` is refused for ids in `pendingGmailDraftIds`).
+Attachments are read ONCE, with the agent's rights (invariant 60), at draft
+time — the bytes live in the Gmail draft from then on, which is the snapshot
+rule for mail. `autonomous` sends directly, with no draft left behind. A send
+or an event write that got no answer is *outcome unknown* ("check before
+retrying"), never "failed".
 
 ### Files
 
 Per instance (keyed like channels and crons, mode 600) under
 `~/.shadok-ai/connected-accounts/`: `<key>.json` (accounts: owner, share,
-policy, token, expiry), `<key>.drafts.json` (posts awaiting a decision),
+policy / policies, tokens, expiry, granted scopes), `<key>.drafts.json`
+(actions awaiting a decision — a draft carries `{provider, action, payload}`;
+one without them is a LinkedIn post, the only kind there was),
 `<key>.media/` (directory 700: one snapshot per undecided draft's image,
 `<draftId>.<ext>`, deleted once the draft is decided or expires),
 `<key>.warned.json` (when each expiry DM last went out, rewritten only when it
@@ -2082,6 +2169,19 @@ people and agents alike. The profile filter applies on both.
   says so in one sentence. Multi-tenant makes it real.
 - **LinkedIn versions are sunset.** `LINKEDIN_VERSION` (`src/linkedin.ts`) pins
   the API version and must be bumped about yearly.
+- **A mail body is in the draft store, never in the log.** The card must show
+  the exact body (invariant 43), so `<key>.drafts.json` (600, server-only)
+  holds it; the log is readable by everyone who can use the account, so it
+  keeps a summary — recipients and subject, an event's title and time, a
+  file's name (`mailSummary`, `eventSummary`).
+- **A false "edited" is the safe direction.** The fingerprint ignores line
+  endings and display names, but Gmail may rewrite a draft a person merely
+  opened; then the card asks again instead of sending — one more click, never
+  a mail the person did not see.
+- **Testing means weekly reconnects.** Google issues 7-day refresh tokens to an
+  app in Testing. It is designed for (deadline on the row, 2-day warning,
+  reconnect sentence), not worked around; leaving Testing needs Google's
+  verification and, because of `gmail.compose`, the annual CASA assessment.
 - **Pages are a second app.** The Community Management API must stand alone on
   its LinkedIn app, so Company Pages (v1.1) use app B; members use app A.
 
@@ -2427,11 +2527,14 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/rooms.ts` | Rooms — channels with no agent. Own registry + append-only JSONL messages + per-account read marks (`RoomStore`); pure rules `visibleRooms`, `canSeeRoom`, `roomGroupFor`, `postRefusal`, `patchRoomIn`, `parseMessages`, `pageMessages`, `unreadCount`, `roomForTopic`, `telegramLine`. Tested in `test/rooms.test.ts`; the no-agent seams in `test/rooms-boundary.test.ts`. |
 | `src/server.ts` | HTTP + WebSocket server. Session registry (`sessions` Map), the `Live` object, the WS message handlers, all endpoints. The hub. |
 | `src/connect-crypto.ts` | Instance half of the broker hand-back: `newAttempt` (ephemeral ECDH key + nonce), `decryptPayload` (HKDF + AES-256-GCM, nonce as AAD), `PendingAttempts` (in-memory, 10 min TTL, single-use). Pure, tested. |
-| `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`. |
+| `src/connect-routes.ts` | Pure helpers for the connect routes: broker URL, fragment parser (`parseConnectHash`), outcome mapping, and the gates `connectedMember` / `connectReadAllowed`.; per provider: `brokerStartUrl` (Google sends `areas`), `healthProviders`, `connectedGoogle`. |
 | `src/connected-accounts.ts` | The account store (`~/.shadok-ai/connected-accounts/<key>.json`), `publicView` (the only projection that leaves it), `accountVisible` (the `instance` scope does not reach other people's private groups), `accountEditVerdict`. |
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
-| `src/social-drafts.ts` | Drafts (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
-| `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |
+| `src/google.ts` | Google client, twin of `linkedin.ts`: `GoogleTokens` (refresh through the broker at < 5 min, one in flight per account, `invalid_grant` → expired), plain-`fetch` calls for Calendar / Drive (`drive.file`) / Docs / Sheets / Gmail drafts+send, and the server-side RFC 2822 builder (`mailFieldsVerdict`, `buildMime`: CR/LF refused in header fields, RFC 2047) with `parseGmailMessage` / `mailFingerprint` for the approval comparison. Pure over an injected fetch, tested. |
+| `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / mail / calendar), `actionSetting` (which of the two settings governs it), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
+| `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
+| `src/social-drafts.ts` | Drafts of ACTIONS — a LinkedIn post, an email, a calendar change (`{provider, action, payload}`; `usableAccountVerdict` resolves the account per provider; `gone` = the Gmail draft was deleted) — (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
+| `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning — 2 days for a Google account, measured on `accountDeadline` —, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |
 | `broker/` | The stateless Cloudflare Worker holding the LinkedIn client secret. See `broker/README.md`. |
 | `src/live-handover.ts` | `supersedeSession(old, next)` — the ONE-`Live`-per-agent rule (invariant 55). When a resume can't attach (the old pilot `hasExited`) it makes a NEW `Live` and `sessions.set` replaces the entry; this hands the retired `Live`'s viewers to the new one and quiets the old (tail, timers, raw pipe) WITHOUT killing the pilot or clearing the shared tail position — the new `Live` may drive the same tmux pane. `HandoverLive` omits `pilot`/`cwd`/`id` on purpose, so the handover CANNOT kill the agent or reset the transcript. Pure, tested (`test/live-handover.test.ts`). |
 | `src/session.ts` | `PtyPilot` — drives `claude` in a **node-pty** PTY + `@xterm/headless`. Dies with the server. |

@@ -1,6 +1,8 @@
 # Connected accounts — Google (wave 1): Calendar, Drive files, Docs, Sheets, Gmail drafts and sending
 
-Status: design, not built. Builds on
+Status: built — the broker half (PR 1) and the instance half (PR 2). Every
+Google call was exercised against mocks only; the five "Verify first" items
+below still need a run against the real Google app. Builds on
 [`2026-11-08-connected-accounts-linkedin-design.md`](2026-11-08-connected-accounts-linkedin-design.md)
 — same broker, same crypto, same store, same share model, same approval card.
 This document only says what Google changes.
