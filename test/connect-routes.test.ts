@@ -168,13 +168,23 @@ test("areas: a non-empty list of known names, in table order; anything else is r
   assert.equal(parseAreas([1]), null);
 });
 
+const BASE = ["calendar", "drive", "gmail"];
+
+test("health: the areas a broker accepts — the first three for one that does not name them, its own list otherwise", () => {
+  assert.deepEqual(healthProviders({ providers: ["google"] }).googleAreas, BASE, "a broker deployed before reading mail existed");
+  assert.deepEqual(healthProviders({ providers: ["google"], googleAreas: ["calendar", "drive", "gmail", "gmail_read"] }).googleAreas, [...BASE, "gmail_read"]);
+  assert.deepEqual(healthProviders({ providers: ["google"], googleAreas: ["gmail_read", "youtube"] }).googleAreas, ["gmail_read"], "an area this build does not know is not offered");
+  assert.deepEqual(healthProviders({ providers: ["linkedin"], googleAreas: ["gmail_read"] }).googleAreas, [], "no Google, no area");
+  assert.deepEqual(parseAreas(["gmail_read", "calendar"]), ["calendar", "gmail_read"]);
+});
+
 test("health: a provider is offered only when the broker lists it; Testing only for a listed Google", () => {
-  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin"] }), { linkedin: true, google: false, googleTesting: false });
-  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"], testing: ["google"] }), { linkedin: true, google: true, googleTesting: true });
-  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"] }), { linkedin: true, google: true, googleTesting: false });
-  assert.deepEqual(healthProviders({ providers: ["linkedin"], testing: ["google"] }), { linkedin: true, google: false, googleTesting: false });
-  assert.deepEqual(healthProviders(null), { linkedin: false, google: false, googleTesting: false });
-  assert.deepEqual(healthProviders({ providers: "google" }), { linkedin: false, google: false, googleTesting: false });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin"] }), { linkedin: true, google: false, googleTesting: false, googleAreas: [] });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"], testing: ["google"] }), { linkedin: true, google: true, googleTesting: true, googleAreas: BASE });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"] }), { linkedin: true, google: true, googleTesting: false, googleAreas: BASE });
+  assert.deepEqual(healthProviders({ providers: ["linkedin"], testing: ["google"] }), { linkedin: true, google: false, googleTesting: false, googleAreas: [] });
+  assert.deepEqual(healthProviders(null), { linkedin: false, google: false, googleTesting: false, googleAreas: [] });
+  assert.deepEqual(healthProviders({ providers: "google" }), { linkedin: false, google: false, googleTesting: false, googleAreas: [] });
 });
 
 test("a connected Google account: email as label, sub as identity, GRANTED scopes, both settings on approve", () => {

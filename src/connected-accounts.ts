@@ -108,7 +108,12 @@ export const GOOGLE_AREA_SCOPES = {
   calendar: "https://www.googleapis.com/auth/calendar.events",
   drive: "https://www.googleapis.com/auth/drive.file",
   gmail: "https://www.googleapis.com/auth/gmail.compose",
+  // Reading mail, apart from drafts + send: granted only when ticked on purpose.
+  gmail_read: "https://www.googleapis.com/auth/gmail.readonly",
 } as const;
+/** What every broker that offers Google accepts; a broker that names its own
+ *  list on `/health` (`googleAreas`) may accept more. */
+export const GOOGLE_BASE_AREAS = ["calendar", "drive", "gmail"] as const;
 export type GoogleArea = keyof typeof GOOGLE_AREA_SCOPES;
 export const GOOGLE_AREAS = Object.keys(GOOGLE_AREA_SCOPES) as GoogleArea[];
 

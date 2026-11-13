@@ -6,7 +6,7 @@
  * Design: docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §2.
  */
 import type { TokenPayload } from "./connect-crypto.js";
-import { GOOGLE_AREAS, defaultGooglePolicies, defaultShare, type AccountProvider, type GoogleArea, type IncomingAccount } from "./connected-accounts.js";
+import { GOOGLE_AREAS, GOOGLE_BASE_AREAS, defaultGooglePolicies, defaultShare, type AccountProvider, type GoogleArea, type IncomingAccount } from "./connected-accounts.js";
 
 export const DEFAULT_CONNECT_BROKER = "https://connect.shadok.ai";
 
@@ -229,12 +229,17 @@ export function connectedGoogle(
  * app (`testing: ["google"]`). A provider is offered only when listed: an
  * unreachable or older broker offers none of the ones it does not name.
  */
-export function healthProviders(body: unknown): { linkedin: boolean; google: boolean; googleTesting: boolean } {
-  const b = body as { providers?: unknown; testing?: unknown } | null;
+export function healthProviders(body: unknown): { linkedin: boolean; google: boolean; googleTesting: boolean; googleAreas: GoogleArea[] } {
+  const b = body as { providers?: unknown; testing?: unknown; googleAreas?: unknown } | null;
   const providers = Array.isArray(b?.providers) ? b.providers : [];
   const testing = Array.isArray(b?.testing) ? b.testing : [];
   const google = providers.includes("google");
-  return { linkedin: providers.includes("linkedin"), google, googleTesting: google && testing.includes("google") };
+  // The areas the broker ACCEPTS. One deployed before it named them accepts
+  // the first three only: offering it a newer area (reading mail) would send
+  // the person to a broker error page instead of Google.
+  const named = Array.isArray(b?.googleAreas) ? b.googleAreas : null;
+  const googleAreas = !google ? [] : GOOGLE_AREAS.filter((k) => (named ? named.includes(k) : (GOOGLE_BASE_AREAS as readonly string[]).includes(k)));
+  return { linkedin: providers.includes("linkedin"), google, googleTesting: google && testing.includes("google"), googleAreas };
 }
 
 /** Broker `/health` answer → does it offer LinkedIn? */

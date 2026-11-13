@@ -562,7 +562,7 @@ import {
 import { fetchMember, createPost, uploadImage, LinkedInError } from "./linkedin.js";
 import { GoogleError, GoogleInputError, GoogleTokens, fetchUser as fetchGoogleUser, revokeToken as revokeGoogleToken } from "./google.js";
 import {
-  GOOGLE_ACTIONS,
+  actionLogged,
   actionSetting,
   actionVerdict,
   approveGoogleDraft,
@@ -602,6 +602,10 @@ import {
   snapshotPathFor,
   writeSnapshot,
   draftProvider,
+  loadOwnDrafts,
+  ownDraftsFileFor,
+  saveOwnDrafts,
+  withOwnDraft,
   usableAccountVerdict,
   EDITED_IN_GMAIL_SENTENCE,
   GONE_IN_GMAIL_SENTENCE,
@@ -5510,11 +5514,11 @@ app.get("/connect/status", async (req, res) => {
   if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
   // `available` is LinkedIn's, as before the second provider existed.
   const p = await brokerProviders(Date.now());
-  res.json({ available: p.linkedin, providers: { linkedin: p.linkedin, google: p.google }, googleTesting: p.googleTesting });
+  res.json({ available: p.linkedin, providers: { linkedin: p.linkedin, google: p.google }, googleTesting: p.googleTesting, googleAreas: p.googleAreas });
 });
 
 // One set of routes for every provider: /connect/<provider>/{start,done,complete}.
-app.post("/connect/:provider/start", (req, res) => {
+app.post("/connect/:provider/start", async (req, res) => {
   const provider = req.params.provider;
   if (!isConnectProvider(provider)) return res.status(404).json({ error: "Unknown provider." });
   if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
@@ -5527,7 +5531,12 @@ app.post("/connect/:provider/start", (req, res) => {
   let areas: GoogleArea[] = [];
   if (provider === "google") {
     const parsed = parseAreas(req.body?.areas);
-    if (!parsed) return res.status(400).json({ error: "Choose at least one of Calendar, Drive files and Gmail." });
+    if (!parsed) return res.status(400).json({ error: "Choose at least one of Calendar, Drive files, Gmail and Read Gmail." });
+    // Only what the broker accepts: a newer area on an older broker would end
+    // on the broker's error page.
+    const offered = (await brokerProviders(Date.now())).googleAreas;
+    const missing = parsed.filter((a) => !offered.includes(a));
+    if (missing.length) return res.status(409).json({ error: `The connector does not offer ${missing.join(", ")} yet — untick it, or ask the operator to update the connector.` });
     areas = parsed;
   }
   const now = Date.now();
@@ -5727,6 +5736,7 @@ app.delete("/connected-accounts/:id", (req, res) => {
 const draftsFile = () => draftsFileFor(process.cwd());
 const socialLogFile = () => socialLogFileFor(process.cwd());
 const socialMediaDir = () => mediaDirFor(process.cwd());
+const ownDraftsFile = () => ownDraftsFileFor(process.cwd());
 // Mono-tenant: no wall between agents (they all run as this process's OS user),
 // so every agent may use every connected account — `VisibilityOpts.agentsUnwalled`.
 const AGENTS_UNWALLED = DEPLOYMENT_MODE !== "multi-tenant";
@@ -5796,6 +5806,17 @@ function googleDeps(sessionId: string): GoogleDeps {
     readFile: (p) => readSessionFile(sessionId, p),
     now: () => Date.now(),
     pendingGmailDrafts: (accountId) => pendingGmailDraftIds(loadDrafts(draftsFile()), accountId),
+    ownGmailDrafts: {
+      has: (accountId, draftId) => (loadOwnDrafts(ownDraftsFile())[accountId] ?? []).includes(draftId),
+      add: (accountId, draftId) => {
+        try {
+          saveOwnDrafts(ownDraftsFile(), withOwnDraft(loadOwnDrafts(ownDraftsFile()), accountId, draftId), loadAccountsStore(accountsFile()).map((a) => a.id));
+        } catch (e) {
+          // The draft exists in Gmail either way; unrecorded, it just cannot be updated later.
+          console.log(`social: could not record a Gmail draft id (${(e as Error).message})`);
+        }
+      },
+    },
   };
 }
 
@@ -5960,7 +5981,9 @@ app.post("/google/actions", async (req, res) => {
   const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? (body.args as Record<string, unknown>) : {};
   const channel = channelLabel(loadChannels(), agent.sessionId);
   const origin = socialOrigin(agent.sessionId);
-  const logged = GOOGLE_ACTIONS[action].class !== "read";
+  // Everything but a plain read — and reading MAIL is audited too (the query,
+  // the message opened; never a body).
+  const logged = actionLogged(action);
   const approvedBy = actionSetting(account, action) === "autonomous" ? "autonomous" : "none";
   const entry = { accountId: account.id, sessionId: agent.sessionId, channel, origin, approvedBy, action };
   try {
