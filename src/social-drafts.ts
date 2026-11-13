@@ -5,25 +5,78 @@ import { createHash, randomBytes } from "node:crypto";
 import { instanceKey } from "./paths.js";
 import { isBrowserPerson } from "./agent-principal.js";
 import { isAgentViewer, type Group, type Viewer } from "./groups.js";
-import { accountVisible, resolveAccountId, type ConnectedAccount } from "./connected-accounts.js";
+import { accountDeadline, accountLapsed, accountVisible, resolveAccountId, type AccountProvider, type ConnectedAccount } from "./connected-accounts.js";
 import { LinkedInError, PostOutcomeUnknownError, postTextVerdict } from "./linkedin.js";
+import { GoogleError, GoogleInputError, GoogleOutcomeUnknownError } from "./google.js";
 
 /**
- * LinkedIn drafts, the approval gate, and the publication log. An agent asks to
- * post; under policy `approve` the server keeps a DRAFT a person must publish
- * from the browser, under `autonomous` it publishes at once. Pure rules up
+ * Drafts, the approval gate, and the publication log. An agent asks for an
+ * ACTION that leaves a connected account — a LinkedIn post, an email, a
+ * calendar change; under `approve` the server keeps a DRAFT a person must
+ * approve from the browser, under `autonomous` it acts at once. A draft
+ * carries `{provider, action, payload}` and the publish step dispatches on it;
+ * one written before those fields existed is a LinkedIn post. Pure rules up
  * top, thin fs below. The token never appears in anything this file builds.
- * Design: docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §4–5.
+ * Design: docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §4–5,
+ * docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md §4–5.
  */
 
 export const DRAFT_TTL_MS = 7 * 24 * 3600_000;
 
-export type DraftStatus = "pending" | "publishing" | "published" | "discarded" | "expired" | "failed";
+/** `gone`: the Gmail draft behind the card was deleted in Gmail — nothing left to send. */
+export type DraftStatus = "pending" | "publishing" | "published" | "discarded" | "expired" | "failed" | "gone";
+
+/** What an email approval card holds. The Gmail draft IS the draft: `gmailDraftId`
+ *  names it, `fingerprint` is the hash of what the card shows (`mailFingerprint`). */
+export interface MailPayload {
+  kind: "mail";
+  from: string;
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  body: string;
+  /** Attachment NAMES; the bytes are in the Gmail draft, read once at draft time. */
+  attachments: string[];
+  gmailDraftId: string;
+  fingerprint: string;
+  /** The person changed the draft in Gmail after the agent wrote it. */
+  edited?: boolean;
+}
+
+/** What a calendar approval card holds: the event as it will be (create,
+ *  update) or as it is (delete), and for an update the fields that change. */
+export interface EventPayload {
+  kind: "event";
+  op: "create" | "update" | "delete";
+  calendarId: string;
+  eventId?: string;
+  title: string;
+  start: string;
+  end: string;
+  timeZone?: string;
+  attendees: string[];
+  location?: string;
+  description?: string;
+  /** update only: exactly what is sent to Google. */
+  patch?: Record<string, unknown>;
+}
+
+export type DraftPayload = MailPayload | EventPayload;
+export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete";
 
 export interface Draft {
   id: string;
   sessionId: string;
   accountId: string;
+  /** Absent on a draft written before Google existed → "linkedin". */
+  provider?: AccountProvider;
+  /** Absent → "post". */
+  action?: DraftAction;
+  /** Google only: what the card shows and the publish step sends. */
+  payload?: DraftPayload;
+  /** LinkedIn: the post. Google: the one-line summary the LOG keeps (recipients
+   *  + subject, title + time) — never a mail body. */
   text: string;
   /** Where the agent's image was — kept for its NAME only. The bytes that go
    *  out are the snapshot's, never this file's (it can change after approval). */
@@ -54,25 +107,48 @@ const refuse = (status: number, reason: string): Verdict => ({ ok: false, status
 
 // ---- sentences -----------------------------------------------------------
 
+export const draftProvider = (d: Pick<Draft, "provider">): AccountProvider => (d.provider === "google" ? "google" : "linkedin");
+export const draftAction = (d: Pick<Draft, "action">): DraftAction => d.action ?? "post";
+
+/** What a draft is called in a sentence. */
+export function draftNoun(d: Pick<Draft, "provider" | "action">): string {
+  const a = draftAction(d);
+  if (a === "gmail.send") return "email";
+  if (a.startsWith("calendar.")) return "calendar change";
+  return "LinkedIn draft";
+}
+const accountNoun = (p: AccountProvider) => (p === "google" ? "Google account" : "LinkedIn account");
+
 export const DISCONNECTED_SENTENCE = "The LinkedIn account this draft was for has been disconnected.";
 export const BEING_PUBLISHED_SENTENCE = "This draft is being published.";
 export const DRAFT_EXPIRED_SENTENCE = "This draft expired after 7 days without approval — it was not published.";
-export const NOT_SHARED_WITH_APPROVER = "That LinkedIn account is not shared with you.";
-export const DRAFTER_NOT_ALLOWED = "That LinkedIn account is no longer shared with the agent that drafted this post.";
+export const notSharedWithApprover = (p: AccountProvider) => `That ${accountNoun(p)} is not shared with you.`;
+export const drafterNotAllowed = (p: AccountProvider) => `That ${accountNoun(p)} is no longer shared with the agent that drafted this${p === "google" ? "" : " post"}.`;
+export const disconnectedSentence = (p: AccountProvider) => `The ${accountNoun(p)} this draft was for has been disconnected.`;
+export const NOT_SHARED_WITH_APPROVER = notSharedWithApprover("linkedin");
+export const DRAFTER_NOT_ALLOWED = drafterNotAllowed("linkedin");
 export const NOT_SHARED_WITH_AGENT = "That account is not shared with this agent.";
 export const AGENT_CANNOT_APPROVE = "Only a person can approve a LinkedIn post, from the cockpit.";
+/** The same rule for an email or a calendar change. */
+export const AGENT_CANNOT_APPROVE_ACTION = "Only a person can approve this, from the cockpit.";
+const agentCannotApprove = (d: Pick<Draft, "provider">) => (draftProvider(d) === "google" ? AGENT_CANNOT_APPROVE_ACTION : AGENT_CANNOT_APPROVE);
 export const SESSION_NOT_VISIBLE = "This draft belongs to an agent you cannot see.";
 export const POST_OUTCOME_UNKNOWN_SENTENCE = "LinkedIn did not answer in time — check LinkedIn before retrying, the post may have gone out.";
 export const IMAGE_GONE_SENTENCE = "The draft's image is gone — ask the agent to draft again.";
+export const GOOGLE_OUTCOME_UNKNOWN_SENTENCE = "Google did not answer in time — check Gmail's Sent folder or the calendar before retrying, it may have gone through.";
+export const GOOGLE_FAILED_SENTENCE = "Google was not reached or did not answer. Try again later.";
+export const EDITED_IN_GMAIL_SENTENCE = "Edited in Gmail since — send this version?";
+export const GONE_IN_GMAIL_SENTENCE = "Draft deleted in Gmail — nothing was sent.";
 export const PUBLISH_FAILED_SENTENCE = "The post could not be published — LinkedIn was not reached or did not answer. Try again later.";
 
 function shortDate(ms: number): string {
   return new Date(ms).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 }
 
-/** Is the account unusable because its token has lapsed (by date, or LinkedIn said 401)? */
+/** Is the account unusable because its authorisation has lapsed (by date, or
+ *  the provider refused it)? For Google the date is the refresh token's. */
 export function accountExpired(a: ConnectedAccount, now: number): boolean {
-  return a.status === "expired" || now >= a.expiresAt;
+  return accountLapsed(a, now);
 }
 
 /**
@@ -81,6 +157,11 @@ export function accountExpired(a: ConnectedAccount, now: number): boolean {
  * `updatedAt` as it sets `status: "expired"` — not a date still in the future.
  */
 export function expirySentence(a: ConnectedAccount, now: number): string {
+  if (a.provider === "google") {
+    // A deadline means a Testing app: say why it lapses every week.
+    const why = accountDeadline(a) !== null ? " (test app authorisations last 7 days)" : "";
+    return `Google account '${a.label}' needs a reconnect${why} — ${a.owner} can do it in Secrets → Connected accounts.`;
+  }
   const when = a.expiresAt <= now ? a.expiresAt : Math.min(a.updatedAt, now);
   return `LinkedIn account '${a.label}' expired on ${shortDate(when)} — ${a.owner} must reconnect it in Secrets → Connected accounts.`;
 }
@@ -103,25 +184,52 @@ export function postRequestVerdict(
   agentsUnwalled = false,
   agentProfile: string | null = null,
 ): { ok: true; account: ConnectedAccount } | { ok: false; status: number; reason: string; account?: ConnectedAccount } {
-  const arg = typeof accountArg === "string" ? accountArg.trim() : "";
-  const visible = accounts.filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled, agentProfile }));
-  const hit = resolveAccountId(accounts, arg);
-  // An account the agent cannot see answers like one that does not exist — but
-  // only when it would not have matched otherwise; a hit it may not use says so.
-  if (hit === "none") return { ok: false, status: 404, reason: `No LinkedIn account matches '${arg}'. Run \`social.mjs accounts\` to list yours.` };
-  if (hit === "ambiguous") {
-    const vis = resolveAccountId(visible, arg);
-    if (vis === "none") return { ok: false, status: 404, reason: `No LinkedIn account matches '${arg}'. Run \`social.mjs accounts\` to list yours.` };
-    if (vis === "ambiguous") return { ok: false, status: 409, reason: `Several LinkedIn accounts match '${arg}' — give more characters.` };
-    return postRequestVerdict(visible, vis.id, text, viewer, groups, peerBox, now, agentsUnwalled, agentProfile);
-  }
-  if (!visible.includes(hit)) return { ok: false, status: 403, reason: NOT_SHARED_WITH_AGENT };
-  // From here on the agent may use the account, so a refusal is a refused
-  // publication on it and is logged: the account rides along for the route.
-  if (accountExpired(hit, now)) return { ok: false, status: 409, reason: expirySentence(hit, now), account: hit };
+  const u = usableAccountVerdict(accounts, "linkedin", accountArg, viewer, groups, peerBox, now, agentsUnwalled, agentProfile);
+  if (!u.ok) return u;
+  const hit = u.account;
   if (typeof text !== "string") return { ok: false, status: 400, reason: "The post is empty.", account: hit };
   const tv = postTextVerdict(text);
   if (!tv.ok) return { ok: false, status: 400, reason: tv.reason, account: hit };
+  return { ok: true, account: hit };
+}
+
+/**
+ * Which account of `provider` an agent's request names, and may it use it:
+ * resolved by unique id prefix (invariant 17), visible to the agent, alive.
+ * Only that provider's accounts are considered — a Google id handed to the
+ * LinkedIn route matches nothing. A restricted-peer agent never sees any.
+ */
+export function usableAccountVerdict(
+  all: readonly ConnectedAccount[],
+  provider: AccountProvider,
+  accountArg: unknown,
+  viewer: Viewer | null,
+  groups: readonly Group[],
+  peerBox: string | null,
+  now: number,
+  agentsUnwalled = false,
+  agentProfile: string | null = null,
+): { ok: true; account: ConnectedAccount } | { ok: false; status: number; reason: string; account?: ConnectedAccount } {
+  const label = provider === "google" ? "Google" : "LinkedIn";
+  const script = provider === "google" ? "google.mjs" : "social.mjs";
+  const accounts = all.filter((a) => a.provider === provider);
+  const arg = typeof accountArg === "string" ? accountArg.trim() : "";
+  const visible = accounts.filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled, agentProfile }));
+  let hit = resolveAccountId(accounts, arg);
+  // An account the agent cannot see answers like one that does not exist — but
+  // only when it would not have matched otherwise; a hit it may not use says so.
+  const none = { ok: false as const, status: 404, reason: `No ${label} account matches '${arg}'. Run \`${script} accounts\` to list yours.` };
+  if (hit === "none") return none;
+  if (hit === "ambiguous") {
+    const vis = resolveAccountId(visible, arg);
+    if (vis === "none") return none;
+    if (vis === "ambiguous") return { ok: false, status: 409, reason: `Several ${label} accounts match '${arg}' — give more characters.` };
+    hit = vis;
+  }
+  if (!visible.includes(hit)) return { ok: false, status: 403, reason: NOT_SHARED_WITH_AGENT };
+  // From here on the agent may use the account, so a refusal is a refused
+  // action on it and is logged: the account rides along for the route.
+  if (accountExpired(hit, now)) return { ok: false, status: 409, reason: expirySentence(hit, now), account: hit };
   return { ok: true, account: hit };
 }
 
@@ -168,7 +276,7 @@ export function approvalCaller(o: {
 function notPending(d: Draft, now: number): Verdict | null {
   switch (d.status) {
     case "published":
-      return refuse(409, `Already published: ${d.postUrl ?? ""}`.trimEnd());
+      return refuse(409, draftProvider(d) === "google" ? "Already done." : `Already published: ${d.postUrl ?? ""}`.trimEnd());
     case "publishing":
       return refuse(409, BEING_PUBLISHED_SENTENCE);
     case "discarded":
@@ -177,6 +285,8 @@ function notPending(d: Draft, now: number): Verdict | null {
       return refuse(409, DRAFT_EXPIRED_SENTENCE);
     case "failed":
       return refuse(409, `This draft could not be published${d.error ? `: ${d.error}` : "."} Ask the agent to draft it again.`);
+    case "gone":
+      return refuse(409, GONE_IN_GMAIL_SENTENCE);
   }
   if (now - d.createdAt >= DRAFT_TTL_MS) return refuse(409, DRAFT_EXPIRED_SENTENCE);
   return null;
@@ -200,17 +310,18 @@ export function publishVerdict(
   /** The drafting agent as it is now; omitted = not re-checked (tests of the person rules). */
   drafter?: { viewer: Viewer | null; peerBox: string | null; profile: string | null },
 ): Verdict {
-  if (!viewer || isAgentViewer(viewer)) return refuse(403, AGENT_CANNOT_APPROVE);
+  const provider = draftProvider(draft);
+  if (!viewer || isAgentViewer(viewer)) return refuse(403, agentCannotApprove(draft));
   if (!sessionVisible) return refuse(403, SESSION_NOT_VISIBLE);
   const np = notPending(draft, now);
   if (np) return np;
-  if (!account) return refuse(410, DISCONNECTED_SENTENCE);
+  if (!account) return refuse(410, disconnectedSentence(provider));
   // The drafting agent, read at click time: a share narrowed after the draft
   // (a group dropped, a profile filter added) refuses it.
   if (drafter && !accountVisible(account, drafter.viewer, groups, { peerBox: drafter.peerBox, agentsUnwalled, agentProfile: drafter.profile }))
-    return refuse(403, DRAFTER_NOT_ALLOWED);
+    return refuse(403, drafterNotAllowed(provider));
   // The approver is a person: `agentsUnwalled` never widens what they see.
-  if (!accountVisible(account, viewer, groups, { peerBox: null, agentsUnwalled })) return refuse(403, NOT_SHARED_WITH_APPROVER);
+  if (!accountVisible(account, viewer, groups, { peerBox: null, agentsUnwalled })) return refuse(403, notSharedWithApprover(provider));
   if (accountExpired(account, now)) return refuse(409, expirySentence(account, now));
   return { ok: true };
 }
@@ -229,12 +340,12 @@ export function discardVerdict(
   sessionVisible: boolean,
   agentsUnwalled = false,
 ): Verdict {
-  if (!viewer || isAgentViewer(viewer)) return refuse(403, AGENT_CANNOT_APPROVE);
+  if (!viewer || isAgentViewer(viewer)) return refuse(403, agentCannotApprove(draft));
   // The session is the boundary that still holds when the account is gone.
   if (!sessionVisible) return refuse(403, SESSION_NOT_VISIBLE);
   const np = notPending(draft, now);
   if (np) return np;
-  if (account && !accountVisible(account, viewer, groups, { peerBox: null, agentsUnwalled })) return refuse(403, NOT_SHARED_WITH_APPROVER);
+  if (account && !accountVisible(account, viewer, groups, { peerBox: null, agentsUnwalled })) return refuse(403, notSharedWithApprover(draftProvider(draft)));
   return { ok: true };
 }
 
@@ -245,7 +356,7 @@ export function discardVerdict(
  * person who may not see the agent — which is not logged.
  */
 export function refusalLogOutcome(draft: Draft, reason: string, now: number): "expired" | "refused" | null {
-  if (draft.status !== "pending" || reason === SESSION_NOT_VISIBLE || reason === AGENT_CANNOT_APPROVE) return null;
+  if (draft.status !== "pending" || reason === SESSION_NOT_VISIBLE || reason === AGENT_CANNOT_APPROVE || reason === AGENT_CANNOT_APPROVE_ACTION) return null;
   return now - draft.createdAt >= DRAFT_TTL_MS ? "expired" : "refused";
 }
 
@@ -290,6 +401,16 @@ export function failureOutcome(
     return { accountPatch, reason: expirySentence({ ...account, ...accountPatch }, now), httpStatus: 409 };
   }
   if (err instanceof LinkedInError) return { reason: err.message || "LinkedIn did not accept the post.", httpStatus: 502 };
+  // Google: a dead grant (`invalid_grant` at refresh, a 401 on a fresh token)
+  // marks the account expired the same way; a disconnected one (410) does not.
+  if (err instanceof GoogleError && err.expired) {
+    const accountPatch = { status: "expired" as const, updatedAt: now };
+    return { accountPatch, reason: expirySentence({ ...account, ...accountPatch }, now), httpStatus: 409 };
+  }
+  if (err instanceof GoogleError) return { reason: err.message || "Google did not accept the request.", httpStatus: err.status === 410 ? 410 : 502 };
+  if (err instanceof GoogleInputError) return { reason: err.message, httpStatus: 400 };
+  if (err instanceof GoogleOutcomeUnknownError) return { reason: GOOGLE_OUTCOME_UNKNOWN_SENTENCE, httpStatus: 502 };
+  if (account.provider === "google") return { reason: GOOGLE_FAILED_SENTENCE, httpStatus: 502 };
   if (err instanceof PublishInputError) return { reason: err.message, httpStatus: 400 };
   // Only the createPost call raises this: the post may exist, so "try again
   // later" would invite a duplicate.
@@ -310,11 +431,17 @@ export function makeDraft(o: {
   imageSha256?: string;
   origin: DraftOrigin;
   now: number;
+  provider?: AccountProvider;
+  action?: DraftAction;
+  payload?: DraftPayload;
 }): Draft {
   return {
     id: o.id,
     sessionId: o.sessionId,
     accountId: o.accountId,
+    ...(o.provider && o.provider !== "linkedin" ? { provider: o.provider } : {}),
+    ...(o.action && o.action !== "post" ? { action: o.action } : {}),
+    ...(o.payload ? { payload: o.payload } : {}),
     text: o.text,
     ...(o.imagePath ? { imagePath: o.imagePath } : {}),
     ...(o.imageSnapshot ? { imageSnapshot: o.imageSnapshot } : {}),
@@ -342,6 +469,7 @@ export function draftLogEntry(
     ...(o.channel ? { channel: o.channel } : {}),
     origin: draftOrigin(d),
     approvedBy: o.approvedBy,
+    ...(d.action && d.action !== "post" ? { action: d.action } : {}),
     text: d.text,
     outcome: o.outcome,
     ...(o.postUrl ? { postUrl: o.postUrl } : {}),
@@ -356,13 +484,39 @@ export interface DraftView {
   sessionId: string;
   accountId: string;
   account: string;
+  provider: AccountProvider;
+  action: DraftAction;
   text: string;
   image?: unknown;
+  /** Google: the email or the event the card shows — exactly what will go out. */
+  mail?: Omit<MailPayload, "kind" | "gmailDraftId" | "fingerprint">;
+  event?: Omit<EventPayload, "kind" | "patch">;
   status: DraftStatus;
   createdAt: number;
   decidedBy?: string;
   postUrl?: string;
   error?: string;
+}
+
+function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "event"> {
+  if (!p) return {};
+  if (p.kind === "mail") {
+    return { mail: { from: p.from, to: [...p.to], cc: [...p.cc], bcc: [...p.bcc], subject: p.subject, body: p.body, attachments: [...p.attachments], ...(p.edited ? { edited: true } : {}) } };
+  }
+  return {
+    event: {
+      op: p.op,
+      calendarId: p.calendarId,
+      ...(p.eventId ? { eventId: p.eventId } : {}),
+      title: p.title,
+      start: p.start,
+      end: p.end,
+      ...(p.timeZone ? { timeZone: p.timeZone } : {}),
+      attendees: [...p.attendees],
+      ...(p.location ? { location: p.location } : {}),
+      ...(p.description ? { description: p.description } : {}),
+    },
+  };
 }
 
 /**
@@ -379,7 +533,10 @@ export function draftView(d: Draft, account: Pick<ConnectedAccount, "label"> | u
     sessionId: d.sessionId,
     accountId: d.accountId,
     account: account?.label ?? "(disconnected account)",
+    provider: draftProvider(d),
+    action: draftAction(d),
     text: d.text,
+    ...payloadView(d.payload),
     ...(d.imagePath ? { image: (live && image) || path.basename(d.imagePath) } : {}),
     status: d.status,
     createdAt: d.createdAt,
@@ -392,6 +549,15 @@ export function draftView(d: Draft, account: Pick<ConnectedAccount, "label"> | u
 /** What the agent is told once a person decided (hidden prompt text, unmarked). */
 export function draftNotice(d: Draft): string | null {
   const id8 = d.id.slice(0, 8);
+  if (draftProvider(d) === "google") {
+    const what = `Your ${draftNoun(d)} ${id8} (${d.text})`;
+    const done = draftAction(d) === "gmail.send" ? "was sent" : "was applied";
+    if (d.status === "published") return `${what} ${done}${d.postUrl ? `: ${d.postUrl}` : "."}`;
+    if (d.status === "discarded") return `${what} was discarded by ${d.decidedBy ?? "someone"} — nothing left the account.`;
+    if (d.status === "failed") return `${what} could not be completed: ${d.error ?? "unknown error"}`;
+    if (d.status === "gone") return `${what}: the person deleted the draft in Gmail — it was not sent.`;
+    return null;
+  }
   if (d.status === "published") return `Your LinkedIn draft ${id8} was published: ${d.postUrl ?? ""}`.trimEnd();
   if (d.status === "discarded") return `Your LinkedIn draft ${id8} was discarded by ${d.decidedBy ?? "someone"}.`;
   if (d.status === "failed") return `Your LinkedIn draft ${id8} could not be published: ${d.error ?? "unknown error"}`;
@@ -429,8 +595,12 @@ export interface LogEntry {
   channel?: string;
   origin: "agent" | "cron" | "person";
   approvedBy: string | "autonomous";
+  /** Google: which action (`gmail.send`, `doc.append`…). Absent = a LinkedIn post. */
+  action?: string;
+  /** LinkedIn: the post. Google: a summary — never a mail body. */
   text: string;
-  outcome: "published" | "refused" | "failed" | "expired";
+  /** `done`: a Google action carried out (sent, created, appended). */
+  outcome: "published" | "done" | "refused" | "failed" | "expired";
   postUrl?: string;
   error?: string;
 }
@@ -444,6 +614,7 @@ export function serialiseLogEntry(e: LogEntry): string {
     ...(e.channel ? { channel: e.channel } : {}),
     origin: e.origin,
     approvedBy: e.approvedBy,
+    ...(e.action ? { action: e.action } : {}),
     text: e.text,
     outcome: e.outcome,
     ...(e.postUrl ? { postUrl: e.postUrl } : {}),
