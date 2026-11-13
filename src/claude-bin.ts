@@ -469,12 +469,33 @@ export interface EnsureClaudeDeps {
  * behind forever, and treating that as "in progress" would make every future
  * missing-CLI install wait out the full bound for nothing.
  */
+const REIFY_DIR = /^\.claude-code-[A-Za-z0-9]+$/;
+const REIFY_MAX_AGE_MS = 10 * 60_000;
+
 export function rewriteInProgress(
   entries: { name: string; mtimeMs: number }[],
   now: number,
-  maxAgeMs = 10 * 60_000,
+  maxAgeMs = REIFY_MAX_AGE_MS,
 ): boolean {
-  return entries.some((e) => /^\.claude-code-[A-Za-z0-9]+$/.test(e.name) && now - e.mtimeMs <= maxAgeMs);
+  return entries.some((e) => REIFY_DIR.test(e.name) && now - e.mtimeMs <= maxAgeMs);
+}
+
+/**
+ * The reify directories an install ABANDONED — the exact complement of
+ * {@link rewriteInProgress}: same name, older than the same bound. A crashed or
+ * killed `npm i -g` leaves one behind, and because npm derives the name from the
+ * path, every later install of the package renames onto it and dies on ENOTEMPTY.
+ * Nothing ever removes it: the server's own heal, the cockpit's "install the
+ * update" button and Claude Code's auto-updater all fail on it, for ever, while
+ * the launcher it left is the placeholder — measured on a live instance, where
+ * every agent stayed down until a person deleted it by hand. Pure.
+ */
+export function abandonedReifyDirs(
+  entries: { name: string; mtimeMs: number }[],
+  now: number,
+  maxAgeMs = REIFY_MAX_AGE_MS,
+): string[] {
+  return entries.filter((e) => REIFY_DIR.test(e.name) && now - e.mtimeMs > maxAgeMs).map((e) => e.name);
 }
 
 /**
@@ -490,9 +511,9 @@ export function globalScopeDirs(execPath: string, platform: NodeJS.Platform): st
   return [p.join(p.dirname(p.dirname(execPath)), "lib", "node_modules", scope)];
 }
 
-/** Live half of {@link rewriteInProgress}: reads the real global scope. */
-export function claudeInstallInProgress(): boolean {
-  const now = Date.now();
+/** The dated entries of each real global `@anthropic-ai` scope. */
+function scopeEntries(): { dir: string; entries: { name: string; mtimeMs: number }[] }[] {
+  const out: { dir: string; entries: { name: string; mtimeMs: number }[] }[] = [];
   for (const dir of globalScopeDirs(process.execPath, process.platform)) {
     let names: string[];
     try {
@@ -509,9 +530,33 @@ export function claudeInstallInProgress(): boolean {
         // but not one we can date, so it does not count
       }
     }
-    if (rewriteInProgress(entries, now)) return true;
+    out.push({ dir, entries });
   }
-  return false;
+  return out;
+}
+
+/** Live half of {@link rewriteInProgress}: reads the real global scope. */
+export function claudeInstallInProgress(): boolean {
+  const now = Date.now();
+  return scopeEntries().some(({ entries }) => rewriteInProgress(entries, now));
+}
+
+/** Live half of {@link abandonedReifyDirs}: removes them, returns their paths. */
+export function clearAbandonedClaudeReify(): string[] {
+  const now = Date.now();
+  const removed: string[] = [];
+  for (const { dir, entries } of scopeEntries()) {
+    for (const name of abandonedReifyDirs(entries, now)) {
+      const full = path.join(dir, name);
+      try {
+        fs.rmSync(full, { recursive: true, force: true });
+        removed.push(full);
+      } catch {
+        // not ours to remove (permissions): the install fails as before, and says why
+      }
+    }
+  }
+  return removed;
 }
 
 export type EnsureClaudeResult = { ok: true; path: string } | { ok: false; error: string };
