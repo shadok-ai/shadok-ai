@@ -1364,3 +1364,46 @@ export async function downloadDriveFile(
   return { file, bytes, fileName: downloadFileName(file.name, plan.ext), format: plan.ext ?? "as it is" };
 }
 
+// ---- editing content: Slides, Docs, Sheets (src/google-edits.ts) ----------
+// No scope of their own: the Slides, Docs and Sheets APIs all accept `drive`
+// and `drive.file` for the files those reach (each method's "Authorization
+// scopes", checked 2026-11-13).
+
+const SLIDES = "https://slides.googleapis.com/v1/presentations";
+
+export async function createPresentation(token: string, title: unknown, fetchFn: FetchFn): Promise<{ id: string; name: string; link: string }> {
+  const name = titleOk(title);
+  const j = await sendJson<{ presentationId?: string }>("presentation creation", "POST", SLIDES, token, { title: name }, fetchFn);
+  if (!j.presentationId) throw new GoogleError("Google created the presentation but returned no id.", 502, false);
+  return { id: j.presentationId, name, link: `https://docs.google.com/presentation/d/${j.presentationId}/edit` };
+}
+
+/** The file as the API describes it now — what an edit's requests are built
+ *  against (`slidesState` / `docState` / `sheetState`). */
+export async function getEditSource(token: string, app: "slides" | "doc" | "sheet", id: string, fetchFn: FetchFn): Promise<Record<string, unknown>> {
+  const fid = pathId(app === "slides" ? "presentation" : app === "doc" ? "document" : "spreadsheet", id);
+  const url = app === "slides" ? `${SLIDES}/${fid}` : app === "doc" ? `${DOCS}/${fid}` : `${SHEETS}/${fid}?fields=${encodeURIComponent("properties.title,sheets.properties(sheetId,title,index)")}`;
+  return getJson<Record<string, unknown>>(`${app === "sheet" ? "spreadsheet" : app === "doc" ? "document" : "presentation"} read`, url, token, fetchFn);
+}
+
+/**
+ * One `batchUpdate`: Google applies all the requests or none. For Slides and
+ * Docs `revisionId` (read moments ago with the state the requests were built
+ * from) is REQUIRED of the file, so an edit made in between refuses the batch
+ * instead of landing on shifted positions. Sheets has no such control.
+ */
+export async function sendEditBatch(
+  token: string,
+  app: "slides" | "doc" | "sheet",
+  id: string,
+  requests: readonly Record<string, unknown>[],
+  revisionId: string | undefined,
+  fetchFn: FetchFn,
+  outbound: boolean,
+): Promise<void> {
+  const fid = pathId("file", id);
+  const url = `${app === "slides" ? SLIDES : app === "doc" ? DOCS : SHEETS}/${fid}:batchUpdate`;
+  const body = { requests, ...(app !== "sheet" && revisionId ? { writeControl: { requiredRevisionId: revisionId } } : {}) };
+  await sendJson("edit", "POST", url, token, body, fetchFn, outbound);
+}
+

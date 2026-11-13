@@ -1,6 +1,6 @@
 ---
 name: shadok-google
-description: Work in a Google account the person connected in the cockpit — read and change their calendar, create and fill Google Docs and Sheets, search, read, download, edit, rename, move and bin the files of their Drive, search and read their email, write Gmail drafts and send email. Use when they ask you to schedule or move a meeting, check their agenda, find or read an email, draft or send one, find or read a file in their Drive, or write something into a Doc or a Sheet.
+description: Work in a Google account the person connected in the cockpit — read and change their calendar, create, fill and edit Google Docs, Sheets and Slides (replace text, add slides, style, tables, tabs, formulas), search, read, download, edit, rename, move and bin the files of their Drive, search and read their email, write Gmail drafts and send email. Use when they ask you to schedule or move a meeting, check their agenda, find or read an email, draft or send one, find or read a file in their Drive, write something into a Doc or a Sheet, or change a document, a spreadsheet or a presentation.
 ---
 
 # shadok-google
@@ -98,8 +98,87 @@ the file was renamed or moved in the meantime, their approval changes nothing
 and you are told — ask again.
 
 **Never possible, whatever the setting:** changing who a file is shared with,
-deleting a file for good or emptying the bin, replacing a document's content.
-Say so, and let the person do it in Drive.
+deleting a file for good or emptying the bin. Say so, and let the person do it
+in Drive.
+
+## Editing the content of a Slides deck, a Doc or a Sheet
+
+One command per file, with a JSON array of operations on stdin — at most 50,
+applied together and in order, all or nothing. Read the file first: the ids,
+headings and tab names an operation targets come from the read.
+
+```bash
+node ~/.claude/skills/shadok-google/scripts/google.mjs slides create --account <id> --title "Kickoff"
+node ~/.claude/skills/shadok-google/scripts/google.mjs slides read --account <id> --id <deck id>
+node ~/.claude/skills/shadok-google/scripts/google.mjs slides edit --account <id> --id <deck id> --stdin <<'OPS'
+[
+  {"op": "replace_text", "find": "2026", "replace": "2027", "matchCase": true},
+  {"op": "add_slide", "layout": "TITLE_AND_BODY", "title": "Next steps", "body": "Hire two engineers\nShip the API", "at": 2},
+  {"op": "insert_text", "objectId": "<element id>", "text": " (draft)"},
+  {"op": "delete_text", "objectId": "<element id>"},
+  {"op": "insert_image", "slideId": "<slide id>", "url": "https://example.org/logo.png", "x": 40, "y": 40, "w": 200, "h": 80},
+  {"op": "reorder", "slideIds": ["<slide id>"], "at": 0},
+  {"op": "delete_slide", "slideId": "<slide id>"}
+]
+OPS
+```
+
+`slides read` lists each slide with its id and layout, and each element with
+its id, type and text. Layouts: `BLANK`, `TITLE`, `TITLE_ONLY`,
+`TITLE_AND_BODY`, `SECTION_HEADER`. `at` is a 0-based position; `insert_text`
+without `at` adds at the end of the element's text. Sizes are in points.
+
+```bash
+node ~/.claude/skills/shadok-google/scripts/google.mjs doc edit --account <id> --id <doc id> --stdin <<'OPS'
+[
+  {"op": "insert_text", "text": "Budget is approved.", "at": {"after": "Risks"}},
+  {"op": "style", "find": "Budget is approved.", "bold": true},
+  {"op": "style", "find": "Open questions", "heading": "H2"},
+  {"op": "insert_table", "rows": 2, "cols": 2, "at": "end", "cells": [["Item", "Cost"], ["Hosting", "4200"]]},
+  {"op": "insert_image", "url": "https://example.org/chart.png", "at": "end"},
+  {"op": "replace_text", "find": "Q3", "replace": "Q4"},
+  {"op": "delete_text", "find": "TODO: "}
+]
+OPS
+```
+
+`at` is `"start"`, `"end"` (the default) or `{"after": "<heading text>"}` —
+`doc read` lists the headings. `style` applies to every occurrence of `find`
+(`heading`: `NORMAL`, `H1`…`H6`; `bold`, `italic`; `"bullet": true`). In ONE
+edit, `style` and inserts that are not at the end are located in the document
+as it is before the edit, so they must come before any `replace_text` /
+`delete_text` — and a `style` cannot target text the same edit inserts: send a
+second edit. `doc append` still exists for plain text at the end.
+
+```bash
+node ~/.claude/skills/shadok-google/scripts/google.mjs sheet edit --account <id> --id <sheet id> --stdin <<'OPS'
+[
+  {"op": "add_tab", "title": "2027"},
+  {"op": "update", "range": "2027!A1", "values": [["Item", "Q1", "Total"], ["Hosting", 4200, "=SUM(B2:B2)"]]},
+  {"op": "format", "range": "2027!A1:C1", "bold": true, "background": "#ffe599"},
+  {"op": "format", "range": "2027!B2:C9", "numberFormat": "#,##0.00"},
+  {"op": "insert_rows", "tab": "2027", "start": 2, "count": 1},
+  {"op": "delete_cols", "tab": "2027", "start": 4, "count": 1},
+  {"op": "clear", "range": "Sheet1!D2:D50"},
+  {"op": "rename_tab", "from": "Sheet1", "to": "2026"},
+  {"op": "delete_tab", "title": "Scratch"}
+]
+OPS
+```
+
+In `sheet edit`, a text starting with `=` IS a formula (unlike `sheet append`
+/ `sheet update`, which keep it as text); everything else is written as it is.
+Rows and columns are counted from 1; a range without a tab is on the first tab.
+
+An image is fetched by Google from its address: `https` on the public
+internet only — an internal or private address is refused.
+
+**On a file this cockpit created the edit is applied at once.** On any other
+file it follows `drive-edits`: with `approve` the person gets a card listing
+every operation, one line each with its text and values, and the command
+answers "waiting for approval". If someone changes the file before they
+approve, nothing is applied and they are asked again against the file as it
+is. An unknown operation or field is refused — nothing is silently dropped.
 
 ## Reading email — only when `areas` has `gmail_read`
 

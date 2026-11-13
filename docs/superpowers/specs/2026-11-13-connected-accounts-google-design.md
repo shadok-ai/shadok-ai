@@ -101,9 +101,66 @@ second operator decision ("full Drive access"):
   (`downloadFileName`), an existing name is never overwritten. The path comes
   back inside the untrusted fence, since it carries the file's name.
 
+**Editing content** (a third operator decision): agents can change what is
+INSIDE a Slides deck, a Doc or a Sheet — not only read and append.
+
+- **No new scope.** The Slides, Docs and Sheets APIs each list `drive` and
+  `drive.file` among the scopes their `get` / `create` / `batchUpdate` methods
+  accept (checked on each method's reference page, 2026-11-13), so the two
+  Drive areas already cover them for the files they reach.
+- **One batch per call**: `slides edit`, `doc edit`, `sheet edit` take
+  `{id, ops[]}`, at most 50 operations. Every operation is validated
+  server-side against a closed list, field by field (`editOpsVerdict`): an
+  unknown operation or an unknown field is refused, never dropped, and no raw
+  API request an agent writes ever reaches Google. The batch becomes ONE
+  `batchUpdate`, which Google applies whole or not at all.
+  - Slides: `replace_text`, `add_slide` (layout, title, body, position),
+    `delete_slide`, `insert_text`, `delete_text`, `insert_image`, `reorder`;
+    plus `slides create` (own-write) and `slides read` (slides with their ids
+    and layouts, each element's id, type and text).
+  - Docs: `replace_text`, `insert_text` (`start` / `end` / after a heading),
+    `delete_text` (every occurrence), `style` (heading level, bold, italic,
+    bullet — on every occurrence of a text), `insert_table` (with cells),
+    `insert_image`. `doc read` now lists the headings. `doc append` is kept.
+  - Sheets: `update` (a text starting with `=` is a formula), `clear`,
+    `add_tab` / `delete_tab` / `rename_tab`, `insert_rows` / `delete_rows` /
+    `insert_cols` / `delete_cols`, `format` (bold, italic, background, number
+    format). `sheet append` / `sheet update` are kept and still write `RAW`.
+- **Approval — unchanged principle.** `file-write`: a file the cockpit created
+  is edited at once; any other file follows *Drive edits* (default `approve`).
+  The card lists the operations one line each, in order, with their text and
+  values in full; the lines are derived from the very `ops` the request is
+  built from (`editOpLines` / `buildEditRequests`), so the card cannot say
+  something the request does not do. For Slides, a line also says what its
+  target IS now ("slide 2: …"), since an id means nothing to a person.
+- **"Has the file moved since the card?"** A Docs / Slides `revisionId` cannot
+  answer that: Google only guarantees it for minutes, and a card may wait
+  seven days; Sheets has none. So the card keeps the file's Drive
+  `modifiedTime`. On approval: file gone → nothing; `modifiedTime` moved → NOT
+  applied, the card is refreshed against the file as it is now and asks again
+  (the Gmail "edited since" cycle) — or fails with the reason if a target is no
+  longer there; unchanged → the file is read, the requests are built against
+  that read, and for Docs and Slides sent with
+  `writeControl.requiredRevisionId` set to the revision just read, which
+  closes the gap between the read and the write. Sheets has no such control:
+  there the check is `modifiedTime` only.
+- **Docs positions.** Operations located in the document (`style`, an insert
+  at the start or after a heading, a table with cells) are resolved against
+  the document as it is when the batch starts and sent from the end backwards,
+  so none shifts the next; they must therefore come before any
+  `replace_text` / `delete_text` of the same batch (refused otherwise, with the
+  reason).
+- **Images by URL** (`insert_image`): Google fetches the address, not this
+  server. Even so: `https` only, no credentials or port, and loopback,
+  private, link-local, metadata and bare or internal host names are refused
+  with the reason (`imageUrlVerdict`).
+- **Reads** of a deck are always handed over as untrusted content; a deck or
+  document that is not the cockpit's is audited too (file id + name).
+- **Log**: the file and the number of operations of each kind
+  (`replace_text ×2, add_slide ×1`) — never a text, a value or a formula.
+
 **Still never available, whatever the setting:** sharing or permission
-changes, permanent deletion or emptying the bin, replacing a document's
-content. The server refuses those action names with one sentence, and so does
+changes, permanent deletion or emptying the bin. The server refuses those action names with one sentence, and so does
 the skill.
 
 **Reading mail** was first left out, then added at the operator's request as a

@@ -153,10 +153,10 @@ const outbound = (calls: string[]) => calls.filter((c) => /messages\/send|drafts
 
 test("class table: exactly the spec's — reads, own-writes, file-writes, mail, calendar", () => {
   const by = (c: string) => Object.entries(GOOGLE_ACTIONS).filter(([, v]) => v.class === c).map(([k]) => k).sort();
-  assert.deepEqual(by("read"), ["calendar.list", "doc.read", "drive.download", "drive.list", "drive.read", "drive.search", "gmail.read", "gmail.search", "sheet.read"]);
+  assert.deepEqual(by("read"), ["calendar.list", "doc.read", "drive.download", "drive.list", "drive.read", "drive.search", "gmail.read", "gmail.search", "sheet.read", "slides.read"]);
   assert.deepEqual(by("file-manage"), ["drive.delete", "drive.move", "drive.rename"]);
-  assert.deepEqual(by("own-write"), ["doc.create", "gmail.draft", "sheet.create"]);
-  assert.deepEqual(by("file-write"), ["doc.append", "sheet.append", "sheet.update"]);
+  assert.deepEqual(by("own-write"), ["doc.create", "gmail.draft", "sheet.create", "slides.create"]);
+  assert.deepEqual(by("file-write"), ["doc.append", "doc.edit", "sheet.append", "sheet.edit", "sheet.update", "slides.edit"]);
   assert.deepEqual(by("mail"), ["gmail.send"]);
   assert.deepEqual(by("calendar"), ["calendar.create", "calendar.delete", "calendar.update"]);
 });

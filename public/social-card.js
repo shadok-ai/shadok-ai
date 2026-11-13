@@ -161,6 +161,26 @@ function googleCardModel(d) {
       ? "Edited in Gmail since — send this version?"
       : "Waiting for approval — nothing is sent until someone sends it. It is in Gmail's drafts too, where it can still be edited.";
     done = "Sent";
+  } else if (d.edit && typeof d.edit === "object") {
+    // A batch of content edits to a Slides deck, a Doc or a Sheet: the file,
+    // then ONE LINE PER OPERATION, in the order they are applied — the lines
+    // come from the same operations the server will send.
+    const e = d.edit;
+    const noun = e.app === "slides" ? "Google Slides deck" : e.app === "sheet" ? "Google Sheet" : "Google Doc";
+    const lines = strs(e.lines);
+    kind = "file";
+    kindLabel = "Drive edit";
+    title = "Edit a " + noun + " — " + account;
+    fields.push({ label: "File", value: typeof e.name === "string" && e.name ? e.name : "(unnamed file)" });
+    if (safeUrl(e.link)) fields.push({ label: "Link", value: e.link, href: safeUrl(e.link) });
+    if (strs(e.owners).length) fields.push({ label: "Owner", value: strs(e.owners).join(", ") });
+    fields.push({ label: "Change", value: lines.length + (lines.length === 1 ? " operation" : " operations, applied together in this order") });
+    text = lines.map((l, i) => i + 1 + ". " + l).join("\n");
+    go = lines.length === 1 ? "Apply the edit" : "Apply the edits";
+    wait = e.moved
+      ? "This file changed since the card was made — the operations above would now apply to it as it is. Apply them?"
+      : "Waiting for approval — the file is not changed until someone approves it. Other people may have access to this file.";
+    done = "Edits applied";
   } else if (d.file && typeof d.file === "object") {
     // An edit to a Drive file the cockpit did not create: which file, and
     // exactly what goes into it.
