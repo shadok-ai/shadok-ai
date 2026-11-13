@@ -235,6 +235,7 @@ import {
   statAsUserArgv,
   parseStatOutput,
   readAsUserArgv,
+  writeNewAsUserArgv,
   sameOfferedFile,
   type FileIdentity,
 } from "./group-exec.js";
@@ -5816,11 +5817,42 @@ const ownDriveFiles: GoogleDeps["ownFiles"] = {
   },
 };
 
+/**
+ * A Drive download, written into `<the agent's working directory>/drive-downloads/`
+ * AS the agent's OS user in multi-tenant (invariant 60) — never with the
+ * server's rights, never at a path the agent named. `name` is already a single
+ * safe segment (`downloadFileName`); a name that exists gets a numbered twin
+ * rather than being overwritten.
+ */
+async function writeSessionDownload(sessionId: string, name: string, bytes: Buffer): Promise<string> {
+  const who = sessionOsUser(sessionId);
+  if (!who.ok) throw new Error("unknown agent");
+  if (path.basename(name) !== name || name.startsWith(".")) throw new Error("unsafe file name");
+  const dir = path.join(resolveSessionTarget(loadChannels(), sessionId, process.cwd()).cwd, "drive-downloads");
+  const ext = path.extname(name);
+  const stem = name.slice(0, name.length - ext.length);
+  for (let i = 1; i <= 50; i++) {
+    const candidate = i === 1 ? name : `${stem} (${i})${ext}`;
+    const { cmd, argv } = writeNewAsUserArgv(who.user, dir, candidate);
+    const ok = await new Promise<boolean>((resolve) => {
+      const child = execFile(cmd, argv, { timeout: 60_000 }, (err) => resolve(!err));
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(bytes);
+    });
+    if (ok) return path.join(dir, candidate);
+    // Taken (or not writable): try the next name; a directory that cannot be
+    // written at all fails all fifty and is reported as such.
+    if (i === 3 && !fs.existsSync(dir)) break;
+  }
+  throw new Error("could not write the download");
+}
+
 /** What a Google action is given: the token source, the network, and — for an
  *  attachment — a read with the rights of the agent that asked (invariant 60). */
 function googleDeps(sessionId: string): GoogleDeps {
   return {
     ownFiles: ownDriveFiles,
+    writeFile: (name, bytes) => writeSessionDownload(sessionId, name, bytes),
     fetchFn: fetch,
     token: (accountId) => googleTokens.accessToken(accountId),
     readFile: (p) => readSessionFile(sessionId, p),

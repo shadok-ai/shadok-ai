@@ -20,7 +20,7 @@ export const GOOGLE_AREA_CHOICES = [
   // Off by default: opening a mailbox to agents is a choice made on purpose.
   { key: "gmail_read", label: "Read Gmail", hint: "search and read the mailbox", defaultOn: false },
   // Off by default too: every file of the Drive, the shared ones included.
-  { key: "drive_all", label: "All of Drive", hint: "search, read and edit every file of the Drive, shared ones included — edits to files the cockpit did not create ask first", defaultOn: false },
+  { key: "drive_all", label: "All of Drive", hint: "search, read, download, edit, rename, move and bin every file of the Drive, shared ones included — changes ask first", defaultOn: false },
 ];
 
 /**
@@ -111,7 +111,11 @@ const FILE_OPS = {
   "doc.append": { head: "Add text to a Google Doc", go: "Add to the document", done: "Added to the document", what: "Text added at the end" },
   "sheet.append": { head: "Add rows to a Google Sheet", go: "Add the rows", done: "Rows added", what: "Rows added" },
   "sheet.update": { head: "Overwrite cells of a Google Sheet", go: "Overwrite the cells", done: "Cells overwritten", what: "New content of the range" },
+  "drive.delete": { head: "Move a Drive file to the bin", go: "Move to the bin", done: "Moved to the bin", what: "Moved to the bin — it can be restored from there for about 30 days, then Google deletes it" },
+  "drive.move": { head: "Move a Drive file", go: "Move the file", done: "File moved", what: "Moved to another folder" },
+  "drive.rename": { head: "Rename a Drive file", go: "Rename the file", done: "File renamed", what: "Renamed" },
 };
+const FILE_MANAGE = ["drive.delete", "drive.move", "drive.rename"];
 
 /** Rows exactly as they will be written: one JSON array per line. */
 function rowsText(rows) {
@@ -168,11 +172,19 @@ function googleCardModel(d) {
     fields.push({ label: "File", value: typeof f.name === "string" && f.name ? f.name : "(unnamed file)" });
     if (safeUrl(f.link)) fields.push({ label: "Link", value: f.link, href: safeUrl(f.link) });
     if (strs(f.owners).length) fields.push({ label: "Owner", value: strs(f.owners).join(", ") });
-    if (f.op !== "doc.append") fields.push({ label: "Range", value: f.range ? String(f.range) : "after the last row" });
+    const manage = FILE_MANAGE.includes(f.op);
+    if (manage) {
+      // Where it is and what it is called NOW, then exactly what happens to it.
+      fields.push({ label: "In folder", value: f.parentName ? String(f.parentName) : f.parentId ? String(f.parentId) : "(none — shared with this account)" });
+      if (f.op === "drive.move") fields.push({ label: "Moves to", value: (f.toName ? String(f.toName) : "") + (f.toId ? ` (${f.toId})` : "") });
+      if (f.op === "drive.rename") fields.push({ label: "New name", value: typeof f.newName === "string" ? f.newName : "" });
+    } else if (f.op !== "doc.append") fields.push({ label: "Range", value: f.range ? String(f.range) : "after the last row" });
     fields.push({ label: "Change", value: op.what });
-    text = f.op === "doc.append" ? (typeof f.text === "string" ? f.text : "") : rowsText(f.rows);
+    text = manage ? "" : f.op === "doc.append" ? (typeof f.text === "string" ? f.text : "") : rowsText(f.rows);
     go = op.go;
-    wait = "Waiting for approval — the file is not changed until someone approves it. Other people may have access to this file.";
+    wait = manage
+      ? "Waiting for approval — the file stays as it is until someone approves it. Other people may have access to this file."
+      : "Waiting for approval — the file is not changed until someone approves it. Other people may have access to this file.";
     done = op.done;
   } else {
     const e = d.event && typeof d.event === "object" ? d.event : {};
@@ -297,14 +309,14 @@ export function googleAutonomousConfirmText(account, setting, groups) {
   const a = account || {};
   const who = a.label || "this account";
   const scope = scopeText(a.share, groups);
-  if (setting === "drive") return `Agents in ${scope} will be able to edit any file in ${who}'s Drive — files shared with other people included — without asking anyone.`;
+  if (setting === "drive") return `Agents in ${scope} will be able to edit, rename, move and bin files in ${who}'s Drive — files shared with other people included — without asking anyone.`;
   return setting === "calendar"
     ? `Agents in ${scope} will be able to add, change and delete events in ${who}'s calendar without asking anyone.`
     : `Agents in ${scope} will be able to send email as ${who} without asking anyone.`;
 }
 
 /** A Google account's approval settings as chip rows (`mail`, `calendar`, and
- *  `drive` once the account holds the whole Drive — it governs nothing before). */
+ *  `drive` once the account holds a Drive area — it governs nothing before). */
 export function googlePolicyRows(account) {
   const p = (account && account.policies) || {};
   const row = (key, label, hint, ask, auto) => {
@@ -319,12 +331,13 @@ export function googlePolicyRows(account) {
       ],
     };
   };
-  const wholeDrive = Array.isArray(account && account.areas) && account.areas.map(String).includes("drive_all");
+  const held = Array.isArray(account && account.areas) ? account.areas.map(String) : [];
+  const wholeDrive = held.includes("drive_all") || held.includes("drive");
   return [
     row("mail", "Mail", "Whether a person approves each email on a card in the chat", "Ask before sending", "Send on its own"),
     row("calendar", "Events", "Whether a person approves each event added, changed or deleted", "Ask before changing", "Change on its own"),
     ...(wholeDrive
-      ? [row("drive", "Drive edits", "Whether a person approves each edit to a file the cockpit did not create — files it created are never asked about", "Ask before editing", "Edit on its own")]
+      ? [row("drive", "Drive edits", "Whether a person approves each file moved to the bin, moved or renamed — and each edit to a file the cockpit did not create", "Ask before editing", "Edit on its own")]
       : []),
   ];
 }
@@ -419,7 +432,7 @@ export function accountRowModel(account, now = Date.now(), groups = []) {
     shareText: "Shared with " + scopeText(a.share, groups),
     policyText: google
       ? `Mail: ${pol.mail === "autonomous" ? "automatic" : "with approval"} · Events: ${pol.calendar === "autonomous" ? "automatic" : "with approval"}` +
-        (granted.includes("drive_all") ? ` · Drive edits: ${pol.drive === "autonomous" ? "automatic" : "with approval"}` : "")
+        (granted.includes("drive_all") || granted.includes("drive") ? ` · Drive edits: ${pol.drive === "autonomous" ? "automatic" : "with approval"}` : "")
       : a.policy === "autonomous" ? "Posts without approval" : "Every post needs approval",
     // Google: which areas the person granted (they may untick one on Google's
     // own screen), and — while the app is in Testing — the weekly deadline.

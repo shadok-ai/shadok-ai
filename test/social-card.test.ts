@@ -371,14 +371,16 @@ test("All of Drive: offered only when the broker names it, unticked by default, 
   assert.equal(row.policyText, "Mail: with approval · Events: with approval · Drive edits: automatic");
 });
 
-test("the Drive edits setting: a third row only on an account that holds the whole Drive, with its own confirmation", () => {
+test("the Drive edits setting: a third row only on an account that holds a Drive area, with its own confirmation", () => {
   assert.deepEqual(googlePolicyRows(gaccount()).map((r: { key: string }) => r.key), ["mail", "calendar"]);
+  assert.deepEqual(googlePolicyRows(gaccount({ areas: ["drive"] })).map((r: { key: string }) => r.key), ["mail", "calendar", "drive"], "bin, move and rename reach the cockpit's own files");
+  assert.match(googlePolicyRows(gaccount({ areas: ["drive"] }))[2].hint, /moved to the bin, moved or renamed/);
   const rows = googlePolicyRows(gaccount({ areas: ["drive_all"], policies: { mail: "approve", calendar: "approve" } }));
   assert.deepEqual(rows.map((r: { key: string; label: string }) => [r.key, r.label]), [["mail", "Mail"], ["calendar", "Events"], ["drive", "Drive edits"]]);
   assert.deepEqual(rows[2].choices, [{ key: "approve", label: "Ask before editing", checked: true }, { key: "autonomous", label: "Edit on its own", checked: false }], "a missing setting reads as asking");
   assert.equal(
     googleAutonomousConfirmText(gaccount(), "drive", []),
-    "Agents in your Personal group will be able to edit any file in ana@example.org's Drive — files shared with other people included — without asking anyone.",
+    "Agents in your Personal group will be able to edit, rename, move and bin files in ana@example.org's Drive — files shared with other people included — without asking anyone.",
   );
 });
 
@@ -406,6 +408,19 @@ test("Drive edit card: the file, its link, its owner, and exactly what will be w
   assert.equal(rows.text, '["Bolt",14]\n["=SUM(A1)",true]');
   assert.equal(rows.actions[0].label, "Overwrite the cells");
   assert.equal(draftCardModel(fileDraft({ op: "sheet.append", rows: [["a"]] })).fields.find((f: { label: string }) => f.label === "Range").value, "after the last row");
+  // Bin, move, rename: where the file is now, and exactly what happens to it.
+  const bin = draftCardModel(fileDraft({ op: "drive.delete", parentId: "D1", parentName: "Projects" }));
+  assert.equal(bin.title, "Move a Drive file to the bin — ana@example.org");
+  assert.deepEqual(bin.fields.slice(-2), [{ label: "In folder", value: "Projects" }, { label: "Change", value: "Moved to the bin — it can be restored from there for about 30 days, then Google deletes it" }]);
+  assert.equal(bin.text, "");
+  assert.equal(bin.actions[0].label, "Move to the bin");
+  assert.match(bin.statusLine, /stays as it is until someone approves/);
+  const mv = draftCardModel(fileDraft({ op: "drive.move", parentId: "D1", parentName: "Projects", toId: "D2", toName: "Archive" }));
+  assert.deepEqual(mv.fields.slice(-3), [{ label: "In folder", value: "Projects" }, { label: "Moves to", value: "Archive (D2)" }, { label: "Change", value: "Moved to another folder" }]);
+  assert.equal(mv.actions[0].label, "Move the file");
+  const rn = draftCardModel(fileDraft({ op: "drive.rename", newName: "Roadmap 2027" }));
+  assert.deepEqual(rn.fields.slice(-3), [{ label: "In folder", value: "(none — shared with this account)" }, { label: "New name", value: "Roadmap 2027" }, { label: "Change", value: "Renamed" }]);
+  assert.equal(draftCardModel(fileDraft({ op: "drive.delete" }, { status: "published" })).statusLine, "Moved to the bin.");
   // A link that is not http(s) never becomes one.
   assert.equal(draftCardModel(fileDraft({ op: "doc.append", text: "x", link: "javascript:alert(1)" })).fields.some((f: { label: string }) => f.label === "Link"), false);
   assert.equal(draftCardModel(fileDraft({ op: "doc.append", text: "x" }, { status: "expired" })).statusLine, "Expired — the file was not changed.");

@@ -349,7 +349,8 @@ test("policy patch: Google takes policies.mail / policies.calendar one at a time
   assert.equal(policyPatch(gacct(), { policies: { mail: "always" } }).ok, false);
   const whole = gacct({ scopes: ["openid", GOOGLE_AREA_SCOPES.drive_all] });
   assert.deepEqual(policyPatch(whole, { policies: { drive: "autonomous" } }), { ok: true, patch: { policies: { mail: "approve", calendar: "approve", drive: "autonomous" } } });
-  assert.deepEqual(policyPatch(gacct(), { policies: { drive: "autonomous" } }), { ok: false, reason: "Drive edits can be made automatic only on an account connected with All of Drive." }, "not ahead of the grant: a later reconnect would start unasked");
+  assert.deepEqual(policyPatch(gacct(), { policies: { drive: "autonomous" } }), { ok: false, reason: "Drive edits can be made automatic only on an account connected with a Drive area." }, "not ahead of the grant");
+  assert.equal(policyPatch(gacct({ scopes: ["openid", GOOGLE_AREA_SCOPES.drive] }), { policies: { drive: "autonomous" } }).ok, true, "bin / move / rename of the cockpit's own files follow it too");
   assert.equal(policyPatch(gacct(), { policies: { drive: "approve" } }).ok, true);
   assert.equal(policyPatch(gacct(), { policies: { files: "autonomous" } }).ok, false, "there is no fourth setting");
   // An account stored before the Drive setting existed: the missing key reads as approve.

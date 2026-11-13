@@ -16,7 +16,13 @@ import {
   appendDoc,
   appendSheet,
   appendTextVerdict,
+  downloadDriveFile,
+  fileNameVerdict,
   getFileMeta,
+  MIME_FOLDER,
+  moveFile,
+  renameFile,
+  trashFile,
   rangeOk,
   readDriveFile,
   rowsVerdict,
@@ -64,11 +70,14 @@ import {
  * - `file-write`: writes into an existing Drive file. One the cockpit created
  *   is an own-write. ANY OTHER file — reachable only with the whole-Drive area
  *   — may be shared with other people: the account's DRIVE setting.
+ * - `file-manage`: moves a file to the bin, into another folder, or renames
+ *   it. ALWAYS the account's DRIVE setting, the cockpit's own files included:
+ *   a file that vanishes or changes place is felt by whoever uses it.
  * - `mail`: sends email — the account's MAIL setting.
  * - `calendar`: creates, changes or deletes an event, with or without
  *   attendees — the account's CALENDAR setting.
  */
-export type GoogleActionClass = "read" | "own-write" | "file-write" | "mail" | "calendar";
+export type GoogleActionClass = "read" | "own-write" | "file-write" | "file-manage" | "mail" | "calendar";
 
 export const GOOGLE_ACTIONS = {
   "calendar.list": { class: "read", area: "calendar" },
@@ -79,6 +88,10 @@ export const GOOGLE_ACTIONS = {
   "gmail.read": { class: "read", area: "gmail_read", audit: true },
   "drive.search": { class: "read", area: "drive_all", audit: true },
   "drive.read": { class: "read", area: "drive_all", audit: true },
+  "drive.download": { class: "read", area: "drive", audit: true },
+  "drive.delete": { class: "file-manage", area: "drive" },
+  "drive.move": { class: "file-manage", area: "drive" },
+  "drive.rename": { class: "file-manage", area: "drive" },
   "gmail.draft": { class: "own-write", area: "gmail" },
   "doc.create": { class: "own-write", area: "drive" },
   "sheet.create": { class: "own-write", area: "drive" },
@@ -107,7 +120,7 @@ export const isGoogleAction = (v: unknown): v is GoogleAction => typeof v === "s
 export function actionSetting(account: Pick<ConnectedAccount, "policies">, action: GoogleAction, foreign = false): AccountPolicy | null {
   const p = googlePolicies(account);
   const c: GoogleActionClass = GOOGLE_ACTIONS[action].class;
-  return c === "mail" ? p.mail : c === "calendar" ? p.calendar : c === "file-write" && foreign ? p.drive : null;
+  return c === "mail" ? p.mail : c === "calendar" ? p.calendar : c === "file-manage" || (c === "file-write" && foreign) ? p.drive : null;
 }
 
 const AREA_LABEL: Record<GoogleArea, string> = { calendar: "Calendar", drive: "Drive files", gmail: "Gmail", gmail_read: "Read Gmail", drive_all: "All of Drive" };
@@ -138,9 +151,9 @@ export function writesForeignFile(account: Pick<ConnectedAccount, "scopes" | "id
 
 /** What no agent may do in a Drive, whatever the account allows: asked for by
  *  name, it gets this sentence rather than "unknown action". */
-const REFUSED = /^(drive|doc|sheet|file)\.(delete|trash|remove|move|rename|share|unshare|permission|permissions|download|copy|replace)$/;
+const REFUSED = /^(drive|doc|sheet|file)\.(share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash|copy|replace)$/;
 export const DRIVE_REFUSED_SENTENCE =
-  "Not available to agents: deleting or binning a Drive file, moving or renaming it, changing who it is shared with, replacing its content, and downloading it. An agent can search, read, and add to a file — the rest is for the person to do in Drive.";
+  "Not available to agents: changing who a Drive file is shared with, deleting one for good or emptying the bin, and replacing a file's content. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 
 /** Is this an action we know, on an area Google GRANTED to this account? */
 export function actionVerdict(
@@ -171,6 +184,9 @@ export interface GoogleDeps {
   pendingGmailDrafts: (accountId: string) => ReadonlySet<string>;
   /** The Gmail drafts `gmail.draft` created for an account — the only ones it may rewrite. */
   ownGmailDrafts: { has: (accountId: string, draftId: string) => boolean; add: (accountId: string, draftId: string) => void };
+  /** Write a NEW file into the requesting agent's working directory, with
+   *  the AGENT's rights (invariant 60); returns the absolute path. */
+  writeFile: (fileName: string, bytes: Buffer) => Promise<string>;
   /** The Drive files `doc create` / `sheet create` made for an account,
    *  oldest first — what tells the cockpit's own files from the rest of a Drive. */
   ownFiles: { has: (accountId: string, fileId: string) => boolean; add: (accountId: string, fileId: string) => void; list: (accountId: string) => readonly string[] };
@@ -195,14 +211,18 @@ export function eventSummary(op: EventPayload["op"], e: Pick<EventFields, "title
   return `${op} "${e.title}" ${e.start} → ${e.end}${zone}`;
 }
 
-export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | "text" | "range" | "rows">): string {
+export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | "text" | "range" | "rows" | "toId" | "toName" | "newName">): string {
   const where = `"${p.name}" (${p.fileId})`;
+  if (p.op === "drive.delete") return `move ${where} to the bin`;
+  if (p.op === "drive.move") return `move ${where} to folder "${p.toName ?? ""}" (${p.toId ?? ""})`;
+  if (p.op === "drive.rename") return `rename ${where} to "${p.newName ?? ""}"`;
   if (p.op === "doc.append") return `append ${[...(p.text ?? "")].length} characters to ${where}`;
   const n = p.rows?.length ?? 0;
   const rows = `${n} row${n === 1 ? "" : "s"}`;
   return p.op === "sheet.update" ? `overwrite ${p.range ?? ""} of ${where} with ${rows}` : `append ${rows} to ${where}${p.range ? ` at ${p.range}` : ""}`;
 }
 
+export const FILE_CHANGED_SENTENCE = "That file was renamed or moved since this card was made — nothing was changed. Ask again if it is still wanted.";
 export const FILE_GONE_SENTENCE = "That file is no longer in the Drive (deleted, binned, or no longer shared with this account) — nothing was changed.";
 
 const ATTACH_MIME: Record<string, string> = {
@@ -280,7 +300,7 @@ async function driveRead(deps: GoogleDeps, account: ConnectedAccount, args: Reco
 }
 
 /** The write a `file-write` action stands for, with its input checked. */
-function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: Record<string, unknown>): Pick<FilePayload, "op" | "text" | "range" | "rows"> {
+function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: Record<string, unknown>): FileEdit {
   if (action === "doc.append") return { op: action, text: appendTextVerdict(args.text) };
   const rows = rowsVerdict(args.rows);
   if (action === "sheet.update") return { op: action, range: updateRangeVerdict(args.range), rows };
@@ -288,7 +308,12 @@ function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: 
   return { op: action, ...(given ? {} : { range: rangeOk(args.range) }), rows };
 }
 
-async function applyFileEdit(token: string, fileId: string, e: Pick<FilePayload, "op" | "text" | "range" | "rows">, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string }> {
+type FileEdit = Pick<FilePayload, "op" | "text" | "range" | "rows" | "parentId" | "toId" | "newName">;
+
+async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string }> {
+  if (e.op === "drive.delete") return trashFile(token, fileId, f).then(() => ({}));
+  if (e.op === "drive.rename") return renameFile(token, fileId, e.newName ?? "", f).then(() => ({}));
+  if (e.op === "drive.move") return moveFile(token, fileId, e.parentId, e.toId ?? "", f).then(() => ({}));
   if (e.op === "doc.append") {
     await appendDoc(token, fileId, e.text, f, outbound);
     return {};
@@ -389,6 +414,57 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       if (setting === "autonomous") {
         const r = await applyFileEdit(token, id, edit, f, true);
         return { kind: "result", result: { id, status: "applied", ...r }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
+      }
+      return { kind: "pending", action, payload, summary };
+    }
+    case "drive.download": {
+      const r = await downloadDriveFile(await deps.token(account.id), { id: args.id, format: args.format }, f);
+      if (!r) throw new GoogleInputError(`No file '${String(args.id ?? "").slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      let saved: string;
+      try {
+        saved = await deps.writeFile(r.fileName, r.bytes);
+      } catch {
+        throw new GoogleInputError("The file could not be written into this agent's working directory.");
+      }
+      // Audited by id and name. The path carries the file's (sanitised) name —
+      // someone else's words — so the whole answer is marked untrusted.
+      return {
+        kind: "result",
+        result: { file: r.file, kind: "download", path: saved, bytes: r.bytes.length, format: r.format, truncated: false, untrusted: true },
+        log: { summary: `download file ${r.file.id} — "${r.file.name.slice(0, 200)}" (${r.format}, ${r.bytes.length} bytes)` },
+      };
+    }
+    case "drive.delete":
+    case "drive.move":
+    case "drive.rename": {
+      const id = String(args.id ?? "");
+      const newName = action === "drive.rename" ? fileNameVerdict(args.name) : undefined;
+      const to = action === "drive.move" ? String(args.to ?? "") : undefined;
+      if (action === "drive.move" && !to) throw new GoogleInputError("Give the folder to move it to (--to <folder id>, or `root` for the top of the Drive).");
+      const token = await deps.token(account.id);
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      // Where it is now — what the card shows, and what Approve compares against.
+      const parent = meta.parentId ? await getFileMeta(token, meta.parentId, f).catch(() => null) : null;
+      let dest: DriveFileMeta | null = null;
+      if (to !== undefined) {
+        dest = await getFileMeta(token, to, f);
+        if (!dest || dest.mimeType !== MIME_FOLDER) throw new GoogleInputError(`'${to.slice(0, 60)}' is not a folder of this Drive.`);
+        if (dest.id === meta.parentId) throw new GoogleInputError("That file is already in that folder.");
+        if (dest.id === meta.id) throw new GoogleInputError("A folder cannot be moved into itself.");
+      }
+      if (newName !== undefined && newName === meta.name) throw new GoogleInputError("That is already the file's name.");
+      const payload: FilePayload = {
+        kind: "file", op: action, fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners,
+        ...(meta.parentId ? { parentId: meta.parentId } : {}),
+        ...(parent ? { parentName: parent.name } : {}),
+        ...(dest ? { toId: dest.id, toName: dest.name } : {}),
+        ...(newName !== undefined ? { newName } : {}),
+      };
+      const summary = fileEditSummary(payload);
+      if (setting === "autonomous") {
+        await applyFileEdit(token, meta.id, payload, f, true);
+        return { kind: "result", result: { id: meta.id, status: action === "drive.delete" ? "binned" : action === "drive.move" ? "moved" : "renamed" }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
       }
       return { kind: "pending", action, payload, summary };
     }
@@ -515,6 +591,10 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
   }
   if (p.kind === "file") {
     if (!file) throw new GoogleInputError(FILE_GONE_SENTENCE);
+    // A bin / move / rename is for the file AS THE CARD SHOWED IT: renamed or
+    // moved since, the person approved something else.
+    const manage = p.op === "drive.delete" || p.op === "drive.move" || p.op === "drive.rename";
+    if (manage && (file.name !== p.name || (file.parentId ?? "") !== (p.parentId ?? ""))) throw new GoogleInputError(FILE_CHANGED_SENTENCE);
     await applyFileEdit(token, p.fileId, p, deps.fetchFn, true);
     const link = file.link ?? p.link;
     return { kind: "done", ...(link ? { link } : {}) };

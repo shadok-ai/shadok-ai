@@ -674,17 +674,25 @@ Enter to skip; you can add it later from the web UI).
   those files, that follows a third setting, **Drive edits** — *ask first* by
   default, with an approval card showing the file, its link and owner, and the
   exact text or rows. Files the cockpit created are still edited at once.
-  Deleting, moving, renaming, sharing and downloading are never available.
+  An agent can also `drive download` a file into its own working directory
+  (Docs, Sheets and Slides exported as `docx`/`xlsx`/`pptx`, or `pdf`/`csv`
+  with `--format`; 50 MB at most; logged), and `drive delete` (to the **bin**
+  only — restorable for about 30 days, never a permanent delete), `drive move`
+  and `drive rename` a file. Those three ask first under *Drive edits* on ANY
+  file, the cockpit's own included; the card shows the file, where it is now
+  and exactly what will happen, and approving does nothing if the file was
+  renamed or moved in the meantime. Sharing, permanent deletion and replacing
+  a document's content are never available.
   The account row
   shows the areas Google actually granted, the same *Shared with* / *Profiles*
   chips as LinkedIn, and **its own settings** instead of one posting policy:
   **Mail** (sending email), **Events** (any event added, changed or
-  deleted, with or without attendees) and — on an account that holds *All of
-  Drive* — **Drive edits**, each *ask first* (the default) or *on
+  deleted, with or without attendees) and — on an account that holds a Drive
+  area — **Drive edits**, each *ask first* (the default) or *on
   its own* — only the account's owner can switch one to automatic, after a
   confirmation that says what it means. The agent uses the seeded
   `shadok-google` skill (`google.mjs accounts`, `calendar list|create|update|delete`,
-  `drive list|search|read`, `doc create|read|append`, `sheet create|read|append|update`,
+  `drive list|search|read|download|delete|move|rename`, `doc create|read|append`, `sheet create|read|append|update`,
   `gmail search|read|draft|send` — content on stdin, never argv) and never sees the token.
   What it may do falls in four classes: **reads** and **writes in your own
   files and drafts** (a Gmail draft, a Doc, a Sheet) are done at once;

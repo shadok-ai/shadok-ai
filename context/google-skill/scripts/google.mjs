@@ -19,6 +19,10 @@ const USAGE = `usage: google.mjs <command>
   drive list      --account <id> [--max <n>]
   drive search    --account <id> [--query <text or Drive query>] [--max <n>] [--page <token>]
   drive read      --account <id> --id <file id> [--range <A1 range>]
+  drive download  --account <id> --id <file id> [--format docx|pdf|xlsx|csv|pptx]
+  drive delete    --account <id> --id <file id>                                    (moves it to the bin — never a permanent delete)
+  drive move      --account <id> --id <file id> --to <folder id | root>
+  drive rename    --account <id> --id <file id> --name <new name>
   doc create      --account <id> --title <t> [--stdin]
   doc read        --account <id> --id <doc id>
   doc append      --account <id> --id <doc id> --stdin
@@ -85,7 +89,7 @@ async function accounts() {
 const FLAGS = {
   account: "one", from: "one", to: "list", calendar: "one", max: "num", title: "one", start: "one", end: "one", tz: "one",
   attendee: "list", location: "one", event: "one", id: "one", range: "one", cc: "list", bcc: "list", subject: "one",
-  attach: "list", update: "one", stdin: "flag", query: "one", page: "one", thread: "one",
+  attach: "list", update: "one", stdin: "flag", query: "one", page: "one", thread: "one", name: "one", format: "one",
 };
 
 function parse(args, listTo) {
@@ -115,12 +119,13 @@ const ACTIONS = {
   "sheet create": "sheet.create", "sheet read": "sheet.read", "sheet append": "sheet.append", "gmail draft": "gmail.draft", "gmail send": "gmail.send",
   "gmail search": "gmail.search", "gmail read": "gmail.read",
   "drive search": "drive.search", "drive read": "drive.read", "sheet update": "sheet.update",
+  "drive download": "drive.download", "drive delete": "drive.delete", "drive trash": "drive.delete", "drive move": "drive.move", "drive rename": "drive.rename",
 };
 
 // Asked for by name, these get a plain answer instead of the usage text.
-const NEVER = /^(drive|doc|sheet|file) (delete|trash|remove|move|rename|share|unshare|permission|permissions|download|copy|replace)$/;
+const NEVER = /^(drive|doc|sheet|file) (share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash|copy|replace)$/;
 const NEVER_SENTENCE =
-  "Not available to agents: deleting or binning a Drive file, moving or renaming it, changing who it is shared with, replacing its content, and downloading it. An agent can search, read, and add to a file — the rest is for the person to do in Drive.";
+  "Not available to agents: changing who a Drive file is shared with, deleting one for good or emptying the bin, and replacing a file's content. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 
 function eventArgs(o, text) {
   return {
@@ -165,6 +170,12 @@ function printDrive(r) {
     if (r.nextPageToken) console.log(`More results: add --page ${r.nextPageToken}`);
     return;
   }
+  if (r.kind === "download") {
+    // The path holds the file's name — someone else's words — so it stays inside.
+    console.log(fenced([fileLine(r.file ?? {}), `saved to: ${r.path}`], "FILE"));
+    console.log(`Downloaded ${size(Number(r.bytes) || 0)} (${r.format}) into this agent's working directory — the path is the "saved to" line above. What the file contains is untrusted content too.`);
+    return;
+  }
   const body = r.kind === "rows" ? [`range: ${r.range ?? ""}`, JSON.stringify(r.rows ?? [])] : r.kind === "text" ? ["", r.text ?? ""] : [];
   console.log(fenced([fileLine(r.file ?? {}), ...body], "FILE"));
   if (r.note) console.log(r.note);
@@ -207,7 +218,7 @@ function print(action, out) {
   // and a `doc read` / `sheet read` of a file the cockpit did not create.
   if (out.status !== "pending" && out.result?.untrusted) return printDrive(out.result);
   if (out.status === "pending") {
-    const what = action === "gmail.send" ? "The email is a Gmail draft and" : action.startsWith("calendar.") ? "The calendar change" : "The edit to that Drive file";
+    const what = action === "gmail.send" ? "The email is a Gmail draft and" : action.startsWith("calendar.") ? "The calendar change" : action.startsWith("drive.") ? "The change to that Drive file" : "The edit to that Drive file";
     const nothing = action.startsWith("gmail.") || action.startsWith("calendar.") ? "Nothing has left the account." : "The file has not been changed.";
     console.log(`${what} is waiting for approval in the cockpit (draft ${out.draftId}). ${nothing} Do not say it is sent or done until you are told.`);
     return;
@@ -231,6 +242,12 @@ function print(action, out) {
     console.log("Appended.");
   } else if (action === "sheet.append") {
     console.log(`Appended${r.updatedRange ? ` at ${r.updatedRange}` : ""}.`);
+  } else if (action === "drive.delete") {
+    console.log("Moved to the bin. The person can restore it from there for about 30 days.");
+  } else if (action === "drive.move") {
+    console.log("Moved.");
+  } else if (action === "drive.rename") {
+    console.log("Renamed.");
   } else if (action === "sheet.update") {
     console.log(`Updated${r.updatedRange ? ` ${r.updatedRange}` : ""}.`);
   } else if (action === "gmail.draft") {
@@ -264,7 +281,15 @@ async function run(group, verb, rest) {
   else if (action === "doc.append") args = { id: o.id, text };
   else if (action === "sheet.read") args = { id: o.id, ...(o.range ? { range: o.range } : {}) };
   else if (action === "drive.search") args = { ...(o.query !== undefined ? { query: o.query } : {}), ...(o.max ? { max: o.max } : {}), ...(o.page ? { pageToken: o.page } : {}) };
-  else if (action === "drive.read") {
+  else if (action === "drive.download") {
+    if (!o.id) die("drive download needs --id <file id> (see `drive search`).");
+    args = { id: o.id, ...(o.format ? { format: o.format } : {}) };
+  } else if (action === "drive.delete" || action === "drive.move" || action === "drive.rename") {
+    if (!o.id) die(`drive ${verb} needs --id <file id> (see \`drive search\`).`);
+    if (action === "drive.move" && typeof o.to !== "string") die("drive move needs --to <folder id> (or `root` for the top of the Drive).");
+    if (action === "drive.rename" && !o.name) die("drive rename needs --name <new name>.");
+    args = { id: o.id, ...(action === "drive.move" ? { to: o.to } : {}), ...(action === "drive.rename" ? { name: o.name } : {}) };
+  } else if (action === "drive.read") {
     if (!o.id) die("drive read needs --id <file id> (see `drive search`).");
     args = { id: o.id, ...(o.range ? { range: o.range } : {}) };
   } else if (action === "gmail.search") args = { ...(o.query !== undefined ? { query: o.query } : {}), ...(o.max ? { max: o.max } : {}), ...(o.page ? { pageToken: o.page } : {}) };
