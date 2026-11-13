@@ -139,19 +139,66 @@ export const SHADOK_DIR = path.join(os.homedir(), ".shadok-ai");
 const CONFIG_FILE = path.join(SHADOK_DIR, "config.json");
 const LEGACY_ENV = path.join(SHADOK_DIR, "telegram.env");
 
-export function loadConfig(): Config {
+/**
+ * Read a config file. `unreadable` = the file EXISTS but is not a JSON object —
+ * which is not the same thing as "no config", and must never be written over.
+ */
+export function readConfigFile(file: string): { cfg: Config; unreadable: boolean } {
+  let raw: string;
   try {
-    const v = JSON.parse(fs.readFileSync(CONFIG_FILE, "utf8"));
-    return v && typeof v === "object" ? v : {};
-  } catch {
-    return {};
+    raw = fs.readFileSync(file, "utf8");
+  } catch (e) {
+    // Absent is the fresh-install case: an empty config, safe to write.
+    return { cfg: {}, unreadable: (e as NodeJS.ErrnoException).code !== "ENOENT" };
   }
+  try {
+    const v = JSON.parse(raw);
+    if (v && typeof v === "object" && !Array.isArray(v)) return { cfg: v, unreadable: false };
+  } catch {
+    /* fall through */
+  }
+  return { cfg: {}, unreadable: true };
+}
+
+/**
+ * Write a config file ATOMICALLY (temp file + rename), and never over a file
+ * that exists but does not parse. Returns false when the write was refused.
+ *
+ * Both halves close the same hole, the one that made every Telegram token, the
+ * GUI password and the per-directory settings vanish at once. The old write was
+ * `writeFileSync` in place: it truncates first, then fills. A read landing in
+ * that window — the supervisor, a side-by-side build sharing the HOME, the
+ * server's own next request — or a machine stopping mid-write saw an empty or
+ * half file; `loadConfig` read that as `{}`, and the next ordinary save (a
+ * title, a mute, an instance context) persisted `{}` plus its one field over
+ * the real config. The rename makes a torn file impossible; the refusal keeps a
+ * file corrupted any other way (a bad hand edit) from being replaced by an
+ * almost-empty one — invariant 6's rule, for the config.
+ */
+export function writeConfigFile(file: string, cfg: Config): boolean {
+  if (readConfigFile(file).unreadable) {
+    console.error(`config: ${file} exists but cannot be read as JSON — NOT overwritten; fix or remove it`);
+    return false;
+  }
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+    fs.chmodSync(tmp, 0o600); // the token is a secret; enforce 600 even under a loose umask
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+  return true;
+}
+
+export function loadConfig(): Config {
+  return readConfigFile(CONFIG_FILE).cfg;
 }
 
 export function saveConfig(cfg: Config): void {
-  fs.mkdirSync(SHADOK_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-  fs.chmodSync(CONFIG_FILE, 0o600); // the token is a secret; enforce 600
+  writeConfigFile(CONFIG_FILE, cfg);
 }
 
 /** This directory's token entry (undefined = never asked). */
