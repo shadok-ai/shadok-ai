@@ -118,3 +118,40 @@ test("agentAuthForCwd: 'login' only for this dir's explicit 'login', else 'token
   // A malformed value never silently switches auth away from the safe default.
   assert.equal(agentAuthForCwd({ agentAuth: { "/x": "bogus" as "token" } }, "/x"), "token");
 });
+
+// ── The config file is never torn, and never replaced over an unreadable one ──
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { readConfigFile, writeConfigFile } from "../src/config.js";
+
+const tmpConfig = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "shadok-cfg-")), "config.json");
+
+test("readConfigFile: absent is an empty config, safe to write", () => {
+  assert.deepEqual(readConfigFile(tmpConfig()), { cfg: {}, unreadable: false });
+});
+
+test("readConfigFile: an empty, torn or non-object file is UNREADABLE, not empty", () => {
+  for (const body of ["", '{"tokens": {"/x": "1:a"', "[]", "null"]) {
+    const f = tmpConfig();
+    fs.writeFileSync(f, body);
+    assert.equal(readConfigFile(f).unreadable, true, JSON.stringify(body));
+  }
+});
+
+test("writeConfigFile: refuses to replace an unreadable file with an almost-empty config", () => {
+  // The wipe: a torn read became `{}`, and the next ordinary save wrote `{}` + one
+  // field over every token. The bytes on disk must survive instead.
+  const f = tmpConfig();
+  fs.writeFileSync(f, '{"tokens": {"/x": "1:a"}');
+  assert.equal(writeConfigFile(f, { cockpitTitle: { "/x": "T" } }), false);
+  assert.equal(fs.readFileSync(f, "utf8"), '{"tokens": {"/x": "1:a"}');
+});
+
+test("writeConfigFile: writes 600 through a rename, leaving no temp file behind", () => {
+  const f = tmpConfig();
+  assert.equal(writeConfigFile(f, { tokens: { "/x": "1:a" } }), true);
+  assert.deepEqual(readConfigFile(f), { cfg: { tokens: { "/x": "1:a" } }, unreadable: false });
+  assert.equal(fs.statSync(f).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(path.dirname(f)), ["config.json"]);
+});
