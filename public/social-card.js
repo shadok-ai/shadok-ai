@@ -207,6 +207,7 @@ function googleCardModel(d) {
     const who = strs(e.attendees);
     if (who.length) fields.push({ label: "Attendees", value: who.join(", ") + " — Google will email them" });
     if (e.location) fields.push({ label: "Location", value: String(e.location) });
+    if (e.color) fields.push({ label: "Colour", value: e.color === "default" ? "the calendar's colour" : String(e.color) });
     if (e.calendarId && e.calendarId !== "primary") fields.push({ label: "Calendar", value: String(e.calendarId) });
     text = typeof e.description === "string" ? e.description : "";
     go = op.go;

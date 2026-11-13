@@ -260,6 +260,12 @@ test("event card: title, start and end with their time zone as written, the atte
   assert.equal(m.actions[0].label, "Add to calendar");
 });
 
+test("event card: an own colour is named, a reset says the calendar's colour", () => {
+  assert.equal(fieldMap(draftCardModel(event({}, { color: "Tomato" }))).Colour, "Tomato");
+  assert.equal(fieldMap(draftCardModel(event({}, { color: "default" }))).Colour, "the calendar's colour");
+  assert.equal(fieldMap(draftCardModel(event())).Colour, undefined);
+});
+
 test("event card: an offset is shown as the event says it, an all-day date stays a date, no attendee row without attendees", () => {
   const off = fieldMap(draftCardModel(event({}, { start: "2026-11-20T10:00:00+01:00", end: "2026-11-20T11:00:00Z", timeZone: undefined })));
   assert.equal(off.Starts, "2026-11-20 10:00 (UTC+01:00)");
