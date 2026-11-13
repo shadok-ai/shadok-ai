@@ -2001,7 +2001,7 @@ What differs from LinkedIn, and why:
 - **The store.** `provider: "google"`, `label` = the email, `externalId` = the
   OIDC `sub`, `scopes` = what Google GRANTED (read from the token response — a
   person may untick an area on Google's own screen, so it is never assumed;
-  `grantedAreas` maps it back to `calendar` / `drive` / `gmail`), and
+  `grantedAreas` maps it back to `calendar` / `drive` / `gmail` / `gmail_read`), and
   `policies: {mail, calendar}` instead of LinkedIn's single `policy` (both
   `approve` at connect; a reconnect keeps them). A connect that returns no
   refresh token is refused rather than stored: it would die within the hour.
@@ -2040,9 +2040,29 @@ whether an approval setting applies, and which:
 | Class | Actions | Approval |
 |---|---|---|
 | read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read` | never — it leaves nothing; not logged |
+| read, audited | `gmail.search`, `gmail.read` (area `gmail_read`) | never — but logged: the query and result count, the message id and subject; never a body or a snippet (`actionLogged`) |
 | own-write | `gmail.draft`, `doc.create`, `doc.append`, `sheet.create`, `sheet.append` | never — only the person's own drafts and files |
 | mail | `gmail.send` | `policies.mail` |
 | calendar | `calendar.create`, `calendar.update`, `calendar.delete` (with or without attendees) | `policies.calendar` |
+
+**Reading mail** is a fourth area, `gmail_read` (`gmail.readonly`), apart from
+`gmail` (drafts + send) and unticked by default on the Connect dialog. Three
+things follow from mail being written by strangers. (1) It reaches the agent
+as text only — `mailMessageView` takes the text/plain part, else `htmlToText`
+(markup, `<style>`/`<script>` content and comments dropped), cut at
+`MAX_BODY_CHARS` with a marker; attachments are names and sizes. (2) The skill
+prints everything from the mailbox inside a fence saying it is data, closed by
+a marker with a per-run random tag, so a mail cannot fake the fence's end.
+(3) Reading never reaches an outbound call: sending still goes through
+`gmail.send` and `policies.mail`. Because a newer instance may talk to an
+older broker, the broker's `/health` names the areas it accepts
+(`googleAreas`); the instance offers and forwards only those (an older broker
+that names none gets the first three).
+
+`gmail.draft --update` rewrites only a draft `gmail.draft` created for that
+account: the ids are recorded in `<key>.gmail-drafts.json`
+(`ownGmailDrafts`), since Gmail's `drafts.update` would take any draft of the
+mailbox, the person's own included.
 
 `actionVerdict` refuses an action whose area was not granted, naming who can
 reconnect and tick it. Under `approve` nothing leaves the account from the
