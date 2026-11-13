@@ -662,15 +662,29 @@ Enter to skip; you can add it later from the web UI).
   hands it to the agent inside a fence saying it is data, never instructions,
   and replying still goes through the Mail setting. Every search (its query)
   and every message opened (its id and subject, never its content) is written
-  to the account's log. The account row
+  to the account's log. **All of Drive** is a fifth chip, also **unticked by
+  default** and shown once the broker offers it: with it an agent can
+  `drive search` every file you can reach (yours and those shared with you) and
+  `drive read` one — a Doc or a Slides deck as text, a Sheet as rows, a small
+  text file as it is; a PDF or another binary shows its details only, nothing
+  is downloaded. File content is untrusted like email (same fence) and every
+  search and file opened is logged (query, file id and name — never content).
+  It can also **add to files the cockpit did not create** (`doc append`,
+  `sheet append`, `sheet update` of a range): because other people may see
+  those files, that follows a third setting, **Drive edits** — *ask first* by
+  default, with an approval card showing the file, its link and owner, and the
+  exact text or rows. Files the cockpit created are still edited at once.
+  Deleting, moving, renaming, sharing and downloading are never available.
+  The account row
   shows the areas Google actually granted, the same *Shared with* / *Profiles*
-  chips as LinkedIn, and **two settings** instead of one posting policy:
-  **Mail** (sending email) and **Events** (any event added, changed or
-  deleted, with or without attendees), each *ask first* (the default) or *on
+  chips as LinkedIn, and **its own settings** instead of one posting policy:
+  **Mail** (sending email), **Events** (any event added, changed or
+  deleted, with or without attendees) and — on an account that holds *All of
+  Drive* — **Drive edits**, each *ask first* (the default) or *on
   its own* — only the account's owner can switch one to automatic, after a
   confirmation that says what it means. The agent uses the seeded
   `shadok-google` skill (`google.mjs accounts`, `calendar list|create|update|delete`,
-  `drive list`, `doc create|read|append`, `sheet create|read|append`,
+  `drive list|search|read`, `doc create|read|append`, `sheet create|read|append|update`,
   `gmail search|read|draft|send` — content on stdin, never argv) and never sees the token.
   What it may do falls in four classes: **reads** and **writes in your own
   files and drafts** (a Gmail draft, a Doc, a Sheet) are done at once;
@@ -1521,14 +1535,14 @@ googleTesting}`: what the broker offers; `available` is LinkedIn's),
 `/connect/<provider>/start` · `/connect/<provider>/complete` (POST, browser
 person only — the OAuth hand-back, `<provider>` = `linkedin` or `google`;
 Google's `start` also takes `areas`, a list among `calendar`, `drive`, `gmail`,
-`gmail_read` — only those `/connect/status` → `googleAreas` says the broker accepts;
+`gmail_read`, `drive_all` — only those `/connect/status` → `googleAreas` says the broker accepts;
 `/connect/<provider>/done` (GET) is the page the broker returns the browser
 to), `/connected-accounts` (GET — the accounts you may use, never a token, plus
 `softLayer`; a Google account carries `areas`, `policies` and
 `refreshExpiresAt`; your own accounts also carry `expiringSoon` / `expired`,
 for the banner; `GET /:id/log` — that account's last 50 log entries, newest
 first; `PUT /:id` changes `share`, LinkedIn's `policy` or Google's
-`policies.mail` / `policies.calendar`; `DELETE /:id` disconnects, and revokes
+`policies.mail` / `policies.calendar` / `policies.drive`; `DELETE /:id` disconnects, and revokes
 a Google grant at Google — owner or admin, browser only),
 `/social/accounts` (GET), `/social/posts` (POST) and `/google/actions` (POST
 `{account, action, args}`) — the **agent** side, authenticated by
