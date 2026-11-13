@@ -385,7 +385,7 @@ The FULL text — every war story, every "measured on …", the reason each rule
 
 - **68.** A prompt that provably did not go in is the ONLY signal of a dead terminal — recover on the submit failure (one enforced restart, one re-delivery, never a watchdog), and a failure the sender cannot act on must reach an admin. · [detail](docs/invariants.md#inv-72)
 
-- **69.** A periodic poll must be UNABLE to accumulate: every timer-driven fetch in the web client goes through `pollFetch` (deadline + in-flight guard) — one sick instance otherwise fills the browser's shared socket pool and strands every OTHER cockpit's WebSocket. Never a blanket timeout: legitimately long requests keep `fetch`. · [detail](docs/invariants.md#inv-73)
+- **69.** A periodic poll must be UNABLE to accumulate: every timer-driven fetch in the web client goes through `pollFetch` (deadline + in-flight guard) — against an endpoint that never answers, a bare one either adds a stuck request per tick (a handful occupies the browser's few connections to that host) or, in a self-rescheduling loop, silently stops for good. Never a blanket timeout: legitimately long requests keep `fetch`. · [detail](docs/invariants.md#inv-73)
 
 ## Conventions
 

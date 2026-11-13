@@ -4762,12 +4762,14 @@
   }
   // ── Poll guard (invariant 69) ─────────────────────────────────
   // A periodic poll must be UNABLE to accumulate. A bare `fetch` in a timer has
-  // no deadline, so when a server stops answering one endpoint every tick adds a
-  // request that never settles. Nothing bounds that pile, and it does not stay
-  // this page's problem: the browser's socket pool is shared, so once it is full
-  // any NEW connection queues — and a WebSocket needs a new one. Another, healthy
-  // cockpit open in a different tab then shows every agent on "connecting…" for
-  // ever while its page keeps working (it reuses sockets it already holds).
+  // no deadline and no memory of the previous tick. Against an endpoint that
+  // accepts a request and never answers, that fails in one of two ways. A fixed
+  // interval (the usage poll) adds a request that never settles on every tick —
+  // each one holding one of the half-dozen connections a browser opens to a
+  // host, so a handful is enough to freeze the page's other requests to it. A
+  // self-rescheduling loop (the channel reconciliation) awaits for ever and
+  // simply STOPS: the agent list quietly ceases to update, with nothing on
+  // screen to say so.
   //
   // Two halves, and each is needed. The deadline frees the socket; without the
   // in-flight guard there is still one stuck request per tick until it fires.
