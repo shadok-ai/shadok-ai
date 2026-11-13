@@ -48,6 +48,7 @@ import {
   UNRESPONSIVE_REPORT_TITLE,
   unresponsiveReportBody,
 } from "./submit-recovery.js";
+import { busyLatchVerdict, busyLatchLog, BUSY_LATCH_GRACE_MS } from "./busy-latch.js";
 import { autoReloadVerdict, autoReloadEnabled } from "./auto-reload.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted,
@@ -9412,6 +9413,20 @@ interface Live {
    *  mid-turn show the real thinking time instead of restarting at zero. */
   turnStartedAt: number | null;
   /**
+   * How many `finishTurn` calls are awaiting the end of this agent's turn.
+   *
+   * It is the answer to "is anyone actually behind `busy`?" — a question the
+   * flag itself cannot answer, and the one `busyLatchVerdict` needs: `busy`
+   * is a belief, and a belief that latches ON makes the agent unreachable in
+   * silence (`src/busy-latch.ts`). A counter rather than a boolean so it can
+   * only ever be wrong by being too HIGH, which keeps the flag up — the safe
+   * side of this decision.
+   */
+  turnWaiters: number;
+  /** When `busy` was first seen with none of its legitimate holders behind
+   *  it, or null. The window `busyLatchVerdict` measures. */
+  busyLatchSince?: number | null;
+  /**
    * When the user pressed the interrupt key during this turn, or null.
    *
    * A turn normally ends on an absence of change, proved over two seconds. That
@@ -10060,6 +10075,7 @@ async function createSession(
     effort: effort ?? undefined,
     clients: new Set(),
     busy: false,
+    turnWaiters: 0,
     lastPrompt: "",
     screenTimer: null,
     lastScreen: "",
@@ -10346,7 +10362,38 @@ async function attachPilot(s: Live): Promise<void> {
     // Spontaneous resume: work restarting without a client prompt (e.g. a
     // background agent completing and waking the model). No handler called
     // finishTurn, so watch for it here and signal the turn like any other.
-    if (settled && !s.busy && pilot.isWorking()) finishTurn(s).catch(() => {});
+    // SAY it when that fails: this is the one `finishTurn` call with nobody to
+    // report to, and swallowing it is how a flag left up here stayed invisible.
+    if (settled && !s.busy && pilot.isWorking())
+      finishTurn(s).catch((e) =>
+        console.error(`[sk-${s.id}] finishTurn (spontaneous resume) failed — ${e instanceof Error ? e.message : e}`),
+      );
+    // Is `busy` still held by anyone? A flag that latches ON makes the agent
+    // refuse every later prompt, for as long as the process lives, with
+    // nothing on screen or in the log to say so — see `src/busy-latch.ts`.
+    if (settled) {
+      const heldByUs = s.turnWaiters > 0 || !!s.submitting || !!s.recovering || !!s.restarting;
+      const now = Date.now();
+      const verdict = busyLatchVerdict({
+        busy: s.busy,
+        turnInFlight: s.turnWaiters > 0,
+        submitting: !!s.submitting,
+        recovering: !!s.recovering,
+        restarting: !!s.restarting,
+        // Read only when it can change the answer: this runs every 300 ms on
+        // every live agent, and `isWorking` scans the whole screen.
+        working: s.busy && !heldByUs ? pilot.isWorking() : false,
+        since: s.busyLatchSince ?? null,
+        now,
+        graceMs: BUSY_LATCH_GRACE_MS,
+      });
+      if (verdict.action === "watch") s.busyLatchSince = verdict.since;
+      else {
+        const heldSince = s.busyLatchSince;
+        s.busyLatchSince = null;
+        if (verdict.action === "clear") releaseBusyLatch(s, now - (heldSince ?? now));
+      }
+    }
     // Every ~15 s (50 × 300 ms): if the pane's process moved to a different
     // transcript (Claude Code forked the session on a context overflow), follow
     // it so the chat doesn't freeze on the old, dead transcript.
@@ -10560,16 +10607,51 @@ function escalateUnresponsive(s: Live, why: string, restarted: boolean): void {
   }
 }
 
+/**
+ * Take `busy` back when nothing is behind it any more.
+ *
+ * Deliberately NOT an interrupt: there is no turn to stop — that is the whole
+ * finding. It undoes the belief and nothing else, then says the turn is over
+ * so every client leaves its "working" state. `turn-done` is also what the
+ * Telegram bridge waits on to replay the message it preempted, so the message
+ * that hit the latch is delivered instead of being lost (`shouldPreempt`).
+ *
+ * `flushParentInbox` for the same reason as in `finishTurn`: a notification
+ * queued while the flag was up ("parent busy") would otherwise sit there for
+ * the life of the process.
+ */
+function releaseBusyLatch(s: Live, heldMs: number): void {
+  console.error(busyLatchLog(s.id, heldMs));
+  s.busy = false;
+  s.interruptedAt = null;
+  s.turnStartedAt = null;
+  s.lastActivityAt = Date.now();
+  // The flag was up, so the watcher's dialog detection was off the whole time:
+  // whatever is on screen now has never been announced. Forget the dedup key
+  // and let the next poll publish it.
+  s.lastDialogKey = null;
+  broadcast(s, { type: "turn-done", sessionId: s.id });
+  flushParentInbox(s.id);
+}
+
 async function finishTurn(s: Live) {
   s.busy = true;
-  // Turn found already running (not started by us): typically after a server
-  // restart, the tmux agent having carried on without it. `turnStartedAt` lives
-  // in memory, so restarting from `now` reset the stopwatch while the agent had
-  // been thinking for ten minutes; the transcript, though, survived.
-  if (!s.turnStartedAt) s.turnStartedAt = resumedTurnStart(Date.now(), lastPromptAt(s.cwd, s.id, s.transcriptHome));
-  s.errorsAtTurnStart = findTransientErrors(s.pilot.screen());
-  broadcast(s, workingMessage(s));
+  // Everything from here is INSIDE the try, including the three statements
+  // that used to sit between raising `busy` and entering it. A throw there —
+  // a transcript read, a screen read, a broadcast — left the flag up with no
+  // `finally` to lower it, and the spontaneous-resume caller below swallows
+  // what it throws: an agent refusing every later prompt, in silence. The
+  // watcher now takes the flag back on its own (`src/busy-latch.ts`); this
+  // just stops handing it that work.
+  s.turnWaiters++;
   try {
+    // Turn found already running (not started by us): typically after a server
+    // restart, the tmux agent having carried on without it. `turnStartedAt` lives
+    // in memory, so restarting from `now` reset the stopwatch while the agent had
+    // been thinking for ten minutes; the transcript, though, survived.
+    if (!s.turnStartedAt) s.turnStartedAt = resumedTurnStart(Date.now(), lastPromptAt(s.cwd, s.id, s.transcriptHome));
+    s.errorsAtTurnStart = findTransientErrors(s.pilot.screen());
+    broadcast(s, workingMessage(s));
     // Read on every poll, so an interrupt arriving mid-wait takes effect at
     // once instead of at the next turn.
     await s.pilot.waitForIdle({
@@ -10610,7 +10692,9 @@ async function finishTurn(s: Live) {
       notifyParent(s, { kind: "done", summary: s.recentTexts[s.recentTexts.length - 1], silent: s.lastTurnSilent });
     }
   } finally {
+    s.turnWaiters = Math.max(0, s.turnWaiters - 1);
     s.busy = false;
+    s.busyLatchSince = null;
     s.interruptedAt = null;
     s.lastActivityAt = Date.now();
     // Remember how long it took: a dialog suspends the turn and a completion
@@ -10819,13 +10903,22 @@ function maybeScheduleRetry(s: Live) {
     s.turnStartedAt = Date.now();
     broadcast(s, workingMessage(s));
     try {
-      await s.pilot.submit("continue");
+      // Through `submitGuarded`, like every other submit. It holds an interrupt
+      // that lands mid-typing — which would delete the text instead of stopping
+      // anything — and it is what says someone IS behind `busy` while a slow
+      // paste is in flight, so the latch watcher does not mistake a retry being
+      // typed for a flag nobody holds (`src/busy-latch.ts`).
+      await submitGuarded(s, "continue");
     } catch {
       return; // TUI unreachable: give the user back the controls
     } finally {
       s.busy = false;
     }
-    await finishTurn(s).catch(() => {});
+    // Same reason as the spontaneous resume: nobody is waiting on this call,
+    // so a throw it swallows leaves no trace anywhere.
+    await finishTurn(s).catch((e) =>
+      console.error(`[sk-${s.id}] finishTurn (auto-retry) failed — ${e instanceof Error ? e.message : e}`),
+    );
   };
   s.retryTimer = setTimeout(fire, delayMs);
 }

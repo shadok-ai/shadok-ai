@@ -2271,3 +2271,58 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     own change), and the server-side `fetch`es, which have their own deadlines.
     The Telegram bridge learned this same lesson from the other end — a call
     that never settles holds everything behind it.
+
+<a id="inv-74"></a>
+
+70. **A flag that gates every door must be unable to LATCH — `busy` is a
+    belief, so something has to be able to take it back.** `Live.busy` means
+    "a turn is running on this agent", and every way in reads it first: a
+    second prompt is refused `busy`, a cron slot is skipped, the auto-reload
+    stands down, a parent's notification is queued. It is raised when a prompt
+    is accepted and lowered in `finishTurn`'s `finally` — so a path that raises
+    it and never reaches that `finally` does not lose one message, it makes the
+    agent **unreachable for the life of the process**. And it does so in
+    silence: the pane sits at an empty prompt, the transcript is quiet, nothing
+    is logged, and only `/live` (`busy: true` beside an idle screen) tells the
+    two apart. Same family as invariants 7 and 23 — the failure is an absence.
+    Measured on a live instance. A message arrived while that agent's TUI had
+    stopped taking input; the submit recovery (invariant 68) respawned it and
+    delivered the message, the answer came back, and the flag stayed up
+    afterwards. **Forty minutes later** the turn stopwatch still read from that
+    message — `turnStartedAt` had never been cleared either, which is what
+    proves no `finally` ran — every later message was refused, and the one
+    thing that cleared it was a human clicking *Reload agent*.
+    What made it read as a dead end rather than a bug is the TELEGRAM side. A
+    `busy` refusal there is answered with an Escape and a wait for `turn-done`
+    (`shouldPreempt`), so the sender is told *"couldn't take the hand back —
+    try /stop, then send it again"*. But `/stop` IS that Escape, and an Escape
+    interrupts a turn: it cannot lower a flag no turn is holding. Every retry
+    therefore reproduced the message word for word.
+    The fix is not to hunt the path that leaked — that one is still unpinned,
+    and the next would be somewhere else. `busy` is legitimately held by
+    exactly four things, each of which the server already knows about: a
+    `finishTurn` awaiting the turn's end (`Live.turnWaiters`, a counter so it
+    can only ever be wrong by keeping the flag UP), a prompt being typed
+    (`submitting`), a failed submit being recovered (`recovering`), a process
+    being swapped (`restarting`). When none of them holds it **and** the pane
+    shows no work, the flag is stale whatever raised it, and the screen watcher
+    takes it back (`busyLatchVerdict`, `src/busy-latch.ts`).
+    Four details are load-bearing. The pane's `isWorking()` may only ever KEEP
+    the flag up, never bring it down on its own — it is the fragile heuristic of
+    invariant 2. The window is **continuous**: the four facts are read off a
+    300 ms timer, so a verdict taken on a single poll would race the gaps
+    between them, and the clock starts at the first poll that SAW the state,
+    never at an instant nobody observed. It has to outlast the slowest
+    legitimate stretch, which is why every submit that holds `busy` now goes
+    through `submitGuarded` — the auto-retry's `continue` was typing with a bare
+    `pilot.submit`, i.e. up to ~20 s of `typeIntoBox` retries with nothing
+    saying a submit was in flight. And the release broadcasts `turn-done`
+    rather than pressing anything: there is no turn to interrupt, and
+    `turn-done` is also what the Telegram bridge waits on to replay the message
+    it preempted — so the message that hit the latch is delivered instead of
+    being lost.
+    Two things stop the next one being invisible. `finishTurn` now enters its
+    `try` immediately: the three statements that sat between `s.busy = true`
+    and the `try` (a transcript read, a screen read, a broadcast) could each
+    throw into the gap. And neither `finishTurn` caller that nobody awaits —
+    the spontaneous resume, the auto-retry — swallows its error any more.
