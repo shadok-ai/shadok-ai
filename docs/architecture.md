@@ -1961,7 +1961,12 @@ refreshing needs the client secret, so the broker gains its only POST route,
 `/google/refresh`: the instance's server sends the refresh token, the broker
 adds the secret, returns the new access token, and forgets both — an
 `invalid_grant` (revoked, or the 7-day expiry of a Testing app) comes back as a
-400 meaning "reconnect".
+400 meaning "reconnect". An optional second Google app (`GOOGLE_ALT_*`) is
+served to the hosts listed in `GOOGLE_ALT_HOSTS` — chosen from the validated
+return URL / signed state, never a header — so one app can stay in Testing for
+every instance while another is verified on a demo instance; the refresh route
+tries the default app then the alternative, since the instance never knows
+which one minted its token.
 
 The hostname is shared with a separate site Worker (landing page, waitlist):
 every path the broker does not own — anything but `/health` and

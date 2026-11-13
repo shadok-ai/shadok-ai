@@ -11,6 +11,10 @@ routes = [{ pattern = "connect.shadok.ai", custom_domain = true }]
 # "1" while the Google OAuth app is in Testing (refresh tokens expire after 7 days).
 [vars]
 GOOGLE_TESTING = "1"
+# Hosts served by the ALTERNATIVE Google app (secrets GOOGLE_ALT_CLIENT_ID /
+# GOOGLE_ALT_CLIENT_SECRET): the app going through Google's verification, shown
+# on the demo instance, while every other instance uses the default (Testing) app.
+GOOGLE_ALT_HOSTS = "demo.shadok.ai"
 
 # Paths the broker does not own (/, /waitlist, ...) are forwarded to the site
 # Worker, deployed separately. Deploy that Worker first: a binding to a

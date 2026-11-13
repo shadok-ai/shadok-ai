@@ -27,7 +27,17 @@ to offer a new one**, and declare the scope on the Google consent screen) and as
 offline access with `prompt=consent`, so a refresh token comes back on every
 connect. `POST /google/refresh` `{refresh_token}` adds the client secret and
 returns `{access_token, expires_in, scope}`; `invalid_grant` comes back as a
-400 so the instance can ask for a reconnect. The refresh token is never logged
+400 so the instance can ask for a reconnect.
+
+**Two Google apps.** With `GOOGLE_ALT_CLIENT_ID` / `GOOGLE_ALT_CLIENT_SECRET`
+set and hostnames listed in `GOOGLE_ALT_HOSTS` (a `wrangler.toml` var), those
+hosts are served the alternative app and every other host the default one —
+e.g. an app kept in Testing for everyone while another goes through Google's
+verification on a demo instance. The host is read from the validated return
+URL at start and from the signed state at the callback. `/google/refresh`
+does not know which app minted a token, so it tries the default app, then the
+alternative; `invalid_grant` from either still means "reconnect". Both apps
+need the same redirect URI and scopes. The refresh token is never logged
 or echoed.
 
 Every other path (`/`, `/waitlist`, …, any method) is forwarded to the site
@@ -45,6 +55,8 @@ npx wrangler secret put LINKEDIN_CLIENT_SECRET
 npx wrangler secret put STATE_KEY        # long random string, signs the OAuth state
 npx wrangler secret put GOOGLE_CLIENT_ID      # optional: Google is offered only with both
 npx wrangler secret put GOOGLE_CLIENT_SECRET
+npx wrangler secret put GOOGLE_ALT_CLIENT_ID      # optional: a second Google app for GOOGLE_ALT_HOSTS
+npx wrangler secret put GOOGLE_ALT_CLIENT_SECRET
 ```
 
 ## Develop

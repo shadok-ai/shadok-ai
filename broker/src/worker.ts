@@ -26,6 +26,13 @@ export interface Env {
   // "1" while the Google app is in Testing (refresh tokens last 7 days); the
   // instance reads it off /health to warn about weekly reconnects.
   GOOGLE_TESTING?: string;
+  // A second Google OAuth app, served only to the hosts in GOOGLE_ALT_HOSTS
+  // (comma-separated hostnames, e.g. "demo.shadok.ai"). Lets one app stay in
+  // Testing for every instance while another goes through Google's
+  // verification on a demo instance. Optional: without all three, one app.
+  GOOGLE_ALT_CLIENT_ID?: string;
+  GOOGLE_ALT_CLIENT_SECRET?: string;
+  GOOGLE_ALT_HOSTS?: string;
   // The site served on the same hostname (landing page, waitlist), deployed
   // as its own Worker from another repo. Optional: without the binding the
   // broker answers 404 for every path it does not own, as before.
@@ -46,6 +53,13 @@ interface Provider {
   refresh?: boolean;
   clientId: (env: Env) => string;
   clientSecret: (env: Env) => string;
+  /** An alternative app for some hosts (Google), or null. */
+  alt?: (env: Env) => (OAuthApp & { hosts: string[] }) | null;
+}
+
+interface OAuthApp {
+  id: string;
+  secret: string;
 }
 
 // A second provider (or a second LinkedIn app) is one more entry here.
@@ -72,12 +86,31 @@ const PROVIDERS: Record<ProviderId, Provider> = {
     refresh: true,
     clientId: (e) => e.GOOGLE_CLIENT_ID ?? "",
     clientSecret: (e) => e.GOOGLE_CLIENT_SECRET ?? "",
+    alt: (e) => {
+      const hosts = (e.GOOGLE_ALT_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
+      return e.GOOGLE_ALT_CLIENT_ID && e.GOOGLE_ALT_CLIENT_SECRET && hosts.length ? { id: e.GOOGLE_ALT_CLIENT_ID, secret: e.GOOGLE_ALT_CLIENT_SECRET, hosts } : null;
+    },
   },
 };
 
 /** A provider is offered only once its secrets exist: a deploy before the
  *  Google app is set up must not show a Connect button that leads nowhere. */
 const available = (p: Provider, env: Env) => !!p.clientId(env) && !!p.clientSecret(env);
+
+/** The app that serves this instance: the alternative one when its host is
+ *  listed, the default one otherwise. The host comes from the validated return
+ *  URL (start) or the signed state (callback), never from a header. */
+function appFor(p: Provider, env: Env, host: string): OAuthApp {
+  const alt = p.alt?.(env);
+  if (alt && alt.hosts.includes(host.toLowerCase())) return alt;
+  return { id: p.clientId(env), secret: p.clientSecret(env) };
+}
+
+/** Every app a refresh token may belong to: the default first, then the alternative. */
+function appsOf(p: Provider, env: Env): OAuthApp[] {
+  const alt = p.alt?.(env);
+  return [{ id: p.clientId(env), secret: p.clientSecret(env) }, ...(alt ? [alt] : [])];
+}
 const providerOf = (id: string): Provider | undefined => (Object.hasOwn(PROVIDERS, id) ? PROVIDERS[id as ProviderId] : undefined);
 
 const esc = (s: string) =>
@@ -123,7 +156,7 @@ async function start(url: URL, env: Env, p: Provider): Promise<Response> {
   const state = await signState(st, env.STATE_KEY);
   const q = new URLSearchParams({
     response_type: "code",
-    client_id: p.clientId(env),
+    client_id: appFor(p, env, v.url.hostname).id,
     redirect_uri: `${url.origin}/${p.id}/callback`,
     scope: p.scope(st),
     ...(p.extra ?? {}),
@@ -154,6 +187,8 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
   const code = url.searchParams.get("code");
   if (!code) return bad("Missing authorization code.");
 
+  // The same app as at start: the code was issued to it.
+  const app = appFor(p, env, v.url.hostname);
   const failed = (sentence: string) =>
     page(200, "Connection failed", `<p>${esc(sentence)}</p><a class="b" href="${esc(link(returnUrl, st.nonce, "error=token_exchange_failed"))}">Back to ${esc(host)}</a>`);
   let res: Response;
@@ -165,8 +200,8 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
         grant_type: "authorization_code",
         code,
         redirect_uri: `${url.origin}/${p.id}/callback`,
-        client_id: p.clientId(env),
-        client_secret: p.clientSecret(env),
+        client_id: app.id,
+        client_secret: app.secret,
       }),
     });
   } catch {
@@ -231,29 +266,41 @@ async function refresh(req: Request, env: Env, p: Provider): Promise<Response> {
   }
   const rt = body?.refresh_token;
   if (typeof rt !== "string" || !rt || rt.length > MAX_REFRESH_TOKEN) return json(400, { error: "invalid_request" });
-  let res: Response;
-  try {
-    res = await fetch(p.tokenUrl, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: rt, client_id: p.clientId(env), client_secret: p.clientSecret(env) }),
-    });
-  } catch {
-    return json(502, { error: "unreachable" });
+  // The instance does not say which app minted its token (it never knew), so
+  // each app is tried in turn: a token from the other app is refused with an
+  // error and the next one is asked. A token every app refuses as
+  // `invalid_grant` is revoked or expired: the instance must reconnect.
+  let last: Response = json(502, { error: "unreachable" });
+  let revoked = false;
+  for (const app of appsOf(p, env)) {
+    let res: Response;
+    try {
+      res = await fetch(p.tokenUrl, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: rt, client_id: app.id, client_secret: app.secret }),
+      });
+    } catch {
+      last = json(502, { error: "unreachable" });
+      continue;
+    }
+    let j: Record<string, unknown> = {};
+    try {
+      j = (await res.json()) as Record<string, unknown>;
+    } catch {
+      /* a non-JSON answer is handled below as an unexpected one */
+    }
+    if (!res.ok) {
+      const code = typeof j.error === "string" && ERROR_CODE_RE.test(j.error) ? j.error : "refresh_failed";
+      if (code === "invalid_grant") revoked = true;
+      // 400 for what the caller must act on (reconnect); 502 for the provider's trouble.
+      last = json(code === "invalid_grant" ? 400 : 502, { error: code, status: res.status });
+      continue;
+    }
+    if (typeof j.access_token !== "string" || !j.access_token) return json(502, { error: "unexpected_answer" });
+    return json(200, { access_token: j.access_token, expires_in: j.expires_in, scope: j.scope });
   }
-  let j: Record<string, unknown> = {};
-  try {
-    j = (await res.json()) as Record<string, unknown>;
-  } catch {
-    /* a non-JSON answer is handled below as an unexpected one */
-  }
-  if (!res.ok) {
-    const code = typeof j.error === "string" && ERROR_CODE_RE.test(j.error) ? j.error : "refresh_failed";
-    // 400 for what the caller must act on (reconnect); 502 for the provider's trouble.
-    return json(code === "invalid_grant" ? 400 : 502, { error: code, status: res.status });
-  }
-  if (typeof j.access_token !== "string" || !j.access_token) return json(502, { error: "unexpected_answer" });
-  return json(200, { access_token: j.access_token, expires_in: j.expires_in, scope: j.scope });
+  return revoked ? json(400, { error: "invalid_grant", status: 400 }) : last;
 }
 
 function health(env: Env): Response {
