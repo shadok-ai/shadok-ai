@@ -26,6 +26,9 @@ export const GOOGLE_AREAS = {
   calendar: ["https://www.googleapis.com/auth/calendar.events"],
   drive: ["https://www.googleapis.com/auth/drive.file"],
   gmail: ["https://www.googleapis.com/auth/gmail.compose"],
+  // Reading the mailbox is its own area, apart from drafts + send: a person
+  // can grant drafts without opening their mail. Restricted scope.
+  gmail_read: ["https://www.googleapis.com/auth/gmail.readonly"],
 } as const;
 export type GoogleArea = keyof typeof GOOGLE_AREAS;
 const GOOGLE_IDENTITY = ["openid", "email", "profile"];

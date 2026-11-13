@@ -5,6 +5,7 @@
 
 import {
   encryptForInstance,
+  GOOGLE_AREAS,
   googleScope,
   parseGoogleAreas,
   signState,
@@ -115,7 +116,7 @@ async function start(url: URL, env: Env, p: Provider): Promise<Response> {
   let areas: ConnectState["areas"];
   if (p.id === "google") {
     const parsed = parseGoogleAreas(url.searchParams.get("areas") ?? "");
-    if (!parsed) return bad("Choose at least one Google area (calendar, drive, gmail).");
+    if (!parsed) return bad(`Choose at least one Google area (${Object.keys(GOOGLE_AREAS).join(", ")}).`);
     areas = parsed;
   }
   const st: ConnectState = { v: 1, provider: p.id, returnUrl: v.url.toString(), pub, nonce, iat: Date.now(), ...(areas ? { areas } : {}) };
@@ -257,7 +258,15 @@ async function refresh(req: Request, env: Env, p: Provider): Promise<Response> {
 
 function health(env: Env): Response {
   const providers = Object.values(PROVIDERS).filter((p) => available(p, env)).map((p) => p.id);
-  return Response.json({ ok: true, providers, ...(env.GOOGLE_TESTING === "1" && providers.includes("google") ? { testing: ["google"] } : {}) });
+  const google = providers.includes("google");
+  // `googleAreas`: the areas THIS deploy accepts at /google/start. An instance
+  // newer than the broker would otherwise offer an area the broker refuses.
+  return Response.json({
+    ok: true,
+    providers,
+    ...(env.GOOGLE_TESTING === "1" && google ? { testing: ["google"] } : {}),
+    ...(google ? { googleAreas: Object.keys(GOOGLE_AREAS) } : {}),
+  });
 }
 
 export default {

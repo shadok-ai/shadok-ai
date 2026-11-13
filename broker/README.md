@@ -16,8 +16,12 @@ Redirect URLs to register: LinkedIn app →
 application*) → `https://connect.shadok.ai/google/callback`.
 
 Google specifics (spec `docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md`):
-`/google/start` takes `areas=calendar,drive,gmail` (a fixed table in
-`src/core.ts`, never raw scopes; carried in the signed state) and asks for
+`/google/start` takes `areas=` among `calendar`, `drive`, `gmail` (drafts +
+send) and `gmail_read` (`gmail.readonly` — reading mail, its own area so drafts
+can be granted without it) (a fixed table in `src/core.ts`, never raw scopes;
+carried in the signed state; `/health` lists them as `googleAreas`, so an
+instance never offers an area this deploy would refuse — **redeploy the broker
+to offer a new one**, and declare the scope on the Google consent screen) and asks for
 offline access with `prompt=consent`, so a refresh token comes back on every
 connect. `POST /google/refresh` `{refresh_token}` adds the client secret and
 returns `{access_token, expires_in, scope}`; `invalid_grant` comes back as a
