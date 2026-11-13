@@ -326,3 +326,64 @@ test("/google/refresh refuses a bad body and a non-POST, and LinkedIn has no ref
   assert.equal((await refreshReq(null, genv, "GET")).status, 405);
   assert.equal((await worker.fetch(new Request(BASE + "/linkedin/refresh", { method: "POST", body: "{}" }), genv)).status, 404);
 });
+
+// ── Google: a second app for some hosts (GOOGLE_ALT_*) ──
+
+const aenv: Env = { ...genv, GOOGLE_ALT_CLIENT_ID: "alt-cid", GOOGLE_ALT_CLIENT_SECRET: "alt-sekret", GOOGLE_ALT_HOSTS: " Demo.Example.com , other.example.com" };
+const DEMO_RETURN = "https://demo.example.com/connect/google/done";
+
+async function startClient(ret: string, e: Env): Promise<string | null> {
+  const { pub } = await keypair();
+  const r = await gget(`/google/start?return=${encodeURIComponent(ret)}&pub=${pub}&nonce=${nonce}&areas=drive`, e);
+  return new URL(r.headers.get("location")!).searchParams.get("client_id");
+}
+
+test("a listed host gets the alternative app at start; every other host the default one", async () => {
+  assert.equal(await startClient(DEMO_RETURN, aenv), "alt-cid");
+  assert.equal(await startClient("https://other.example.com/connect/google/done", aenv), "alt-cid");
+  assert.equal(await startClient(GRETURN, aenv), "gcid");
+  assert.equal(await startClient(DEMO_RETURN, genv), "gcid", "no alternative configured: one app for all");
+  assert.equal(await startClient(DEMO_RETURN, { ...aenv, GOOGLE_ALT_HOSTS: "" }), "gcid", "no hosts listed: the alternative is unused");
+});
+
+test("the callback exchanges the code with the app the host was given at start", async () => {
+  const { pub } = await keypair();
+  const sent: string[] = [];
+  globalThis.fetch = (async (_u: string, init: RequestInit) => {
+    const b = new URLSearchParams(String(init.body));
+    sent.push(`${b.get("client_id")}/${b.get("client_secret")}`);
+    return Response.json({ access_token: "a", expires_in: 3599, scope: "s", refresh_token: "r" });
+  }) as typeof fetch;
+  for (const ret of [DEMO_RETURN, GRETURN]) {
+    const state = await signState(mkState(pub, { provider: "google", areas: ["drive"], returnUrl: ret }), env.STATE_KEY);
+    assert.equal((await gget(`/google/callback?code=c&state=${encodeURIComponent(state)}`, aenv)).status, 200);
+  }
+  assert.deepEqual(sent, ["alt-cid/alt-sekret", "gcid/gsekret"]);
+});
+
+test("refresh tries the default app, then the alternative one", async () => {
+  const tried: string[] = [];
+  globalThis.fetch = (async (_u: string, init: RequestInit) => {
+    const id = new URLSearchParams(String(init.body)).get("client_id")!;
+    tried.push(id);
+    return id === "alt-cid" ? Response.json({ access_token: "from-alt", expires_in: 3599, scope: "s" }) : Response.json({ error: "unauthorized_client" }, { status: 401 });
+  }) as typeof fetch;
+  const r = await refreshReq({ refresh_token: "rt" }, aenv);
+  assert.equal(r.status, 200);
+  assert.equal((await r.json()).access_token, "from-alt");
+  assert.deepEqual(tried, ["gcid", "alt-cid"]);
+});
+
+test("refresh stops at the first app that answers, and says invalid_grant when one app reports it", async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => (calls++, Response.json({ access_token: "ok", expires_in: 1, scope: "s" }))) as typeof fetch;
+  assert.equal((await refreshReq({ refresh_token: "rt" }, aenv)).status, 200);
+  assert.equal(calls, 1, "the default app's own tokens never reach the alternative");
+  globalThis.fetch = (async (_u: string, init: RequestInit) =>
+    new URLSearchParams(String(init.body)).get("client_id") === "gcid"
+      ? Response.json({ error: "invalid_grant" }, { status: 400 })
+      : Response.json({ error: "unauthorized_client" }, { status: 401 })) as typeof fetch;
+  const r = await refreshReq({ refresh_token: "rt" }, aenv);
+  assert.equal(r.status, 400);
+  assert.deepEqual(await r.json(), { error: "invalid_grant", status: 400 });
+});
