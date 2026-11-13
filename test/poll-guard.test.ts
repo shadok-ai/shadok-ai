@@ -20,10 +20,10 @@ const INDEX = fs.readFileSync(path.join(HERE, "..", "public", "index.html"), "ut
  * 2. A SCAN: nothing a timer drives may reach a bare `fetch(`.
  *
  * Why it earns a test: the failure needs a server that stops answering, which
- * no developer setup ever has. With one, every tick adds a request that never
- * settles, the browser's shared socket pool fills, and the damage lands on a
- * DIFFERENT cockpit in another tab — its agents sit on "connecting…" while its
- * page keeps working. Nothing in the page that caused it looks wrong.
+ * no developer setup ever has. With one, a fixed-interval poll adds a request
+ * that never settles on every tick — a handful occupies the few connections a
+ * browser opens to a host — and a self-rescheduling loop awaits for ever and
+ * silently stops, so the agent list ceases to update with nothing saying so.
  */
 
 // ── 1. the guard's logic ─────────────────────────────────────────────────

@@ -2199,28 +2199,35 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
 <a id="inv-73"></a>
 
 69. **A periodic poll must be UNABLE to accumulate — a deadline AND an
-    in-flight guard, because the pile lands on someone else.** The web client
-    had no `AbortController` and no `AbortSignal.timeout` anywhere: every poll
-    was a bare `fetch` in a timer. That is invisible for as long as the server
-    answers, which on a developer's machine is always. Then one instance stopped
-    answering a single polling endpoint — accepting the request, never
-    replying — and each tick added a request that would never settle. Measured:
-    in-flight requests to that instance doubled in a few minutes and kept
-    climbing, and one browser was holding around 160 TCP connections to it.
-    **The damage does not stay in the page that caused it.** A browser's socket
-    pool is shared, and once it is full any NEW connection queues. A WebSocket
-    needs a new connection, so a *different*, perfectly healthy cockpit open in
-    another tab showed every agent on "connecting…" for ever — the upgrade
-    request never left the browser (no `/ws` line in that instance's proxy log
-    from that client), while the same tab's `/channels` polls kept returning
-    200, because a poll reuses a socket that already exists. **The page fine,
-    every agent stuck: that mismatch is the symptom to recognise**, and nothing
-    about it points at the tab that is actually at fault.
+    in-flight guard, or an endpoint that never answers takes the poll with
+    it.** The web client had no `AbortController` and no `AbortSignal.timeout`
+    anywhere: every poll was a bare `fetch` in a timer, with no memory of the
+    previous tick. That is invisible for as long as the server answers, which on
+    a developer's machine is always. Against an endpoint that accepts a request
+    and never replies, it fails in one of two ways, decided by how the timer is
+    written.
+    **A fixed interval trickles.** `refreshUsage` runs on a `setInterval`, so
+    each tick adds a request that never settles — one a minute, each holding a
+    connection in the browser, on the proxy and on the server. A browser opens
+    only about six HTTP/1.1 connections per host, so this does not grow into
+    hundreds of sockets: the requests queue inside the browser. But a handful is
+    enough to occupy that host's connections, and from then on every other
+    request the page makes to it waits behind them.
+    **A self-rescheduling loop stops.** `syncLoop` awaits its fetches before
+    arming the next pass, so it can never pile up — it waits for the answer that
+    never comes and is gone for the life of the page. This is the failure a
+    person actually meets: the agent list quietly ceases to update, a channel
+    created elsewhere never appears, and nothing on screen says so.
+    **What this is NOT:** the cause of a full socket pool. A cockpit holds one
+    long-lived WebSocket per agent tab, and that fan-out is what can exhaust a
+    browser's connections; it is a separate matter and nothing here addresses
+    it. An earlier version of this entry attributed that symptom to polls —
+    the measurement behind it was a count taken twice and sockets that were not
+    polls at all. Do not reason from it.
     Both halves of the fix are needed. A deadline alone still leaves one stuck
     request per tick until it fires. An in-flight guard alone holds one socket
-    for ever and freezes that poll for the life of the page — which is what the
-    self-rescheduling `syncLoop` already did on its own: it never piled up, it
-    simply stopped, and with it every channel discovery, in silence. So
+    for ever and freezes that poll for the life of the page — the `syncLoop`
+    failure above, made universal. So
     `pollFetch` (`public/index.html`) does both: `POLL_TIMEOUT_MS` (15 s) aborts
     the request, and a tick that finds its endpoint in flight **sends nothing**
     and joins the pending answer.

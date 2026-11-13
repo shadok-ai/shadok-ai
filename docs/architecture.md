@@ -439,11 +439,14 @@ own:
 - **an in-flight guard, per endpoint** — a tick that finds the previous request
   still pending sends nothing and joins its answer.
 
-Without them a server that accepts a request and never replies collects one
-stuck request per tick, with no bound. The cost is not local: the browser's
-socket pool is shared across tabs, and a full pool queues every new connection —
-which is what a WebSocket needs. A healthy cockpit in another tab then shows its
-agents on "connecting…" while its own page keeps working. The 15 s figure is a
+Without them, an endpoint that accepts a request and never replies breaks a
+poll in one of two ways, depending on how its timer is written. A fixed interval
+(`/usage`, once a minute) adds a request that never settles on every tick; a
+browser opens only about six HTTP/1.1 connections per host, so a handful of them
+is enough to hold up every other request the page makes to that host. A
+self-rescheduling loop (`syncLoop`) cannot pile up — it awaits the answer that
+never comes and **stops**, so the agent list quietly ceases to update, with
+nothing on screen to say so. The 15 s figure is a
 trade: long enough that a slow answer from a busy server is still an answer,
 short enough that a dead endpoint costs one socket for a quarter of a minute
 rather than one per tick for ever.
