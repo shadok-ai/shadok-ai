@@ -3472,8 +3472,10 @@
        setup-token cannot read usage). Hidden until /auth says it applies. -->
   <div class="vm-row" id="vmGaugeRow" hidden><span class="vm-label">Usage gauge</span><span id="vmGauge">—</span></div>
   <button class="vm-btn" id="gaugeLoginBtn" type="button" hidden>📊 Usage gauge login…</button>
-  <!-- Re-login to Claude without waiting for the token to lapse. Shown only
-       when signed in (when signed out the sign-in card opens on its own). -->
+  <!-- Re-login to Claude without waiting for the token to lapse. Shown when
+       signed in (signed out, the sign-in card opens on its own) — and on a
+       migrated multi-tenant instance whenever the AGENTS' credential is known,
+       whatever the server's own sign-in says (agentCredentialRows). -->
   <button class="vm-btn" id="reloginBtn" type="button" hidden>↻ Re-login to Claude</button>
   <!-- Rotate the long-lived subscription token group agents authenticate with
        (multi-tenant + admin only). Shown by renderAuthRows when a token is held. -->
@@ -4641,12 +4643,13 @@
   window.toggleProfile = toggleProfile;
   window.accountBanners = accountBanners;
   window.logEntryLine = logEntryLine;
-  import { fmtExpiry, expiryWarning, accountExpiryLine, gaugeWarning, gaugeLine } from "/auth-expiry.js?v=__ASSET_V__";
+  import { fmtExpiry, expiryWarning, accountExpiryLine, gaugeWarning, gaugeLine, agentCredentialRows } from "/auth-expiry.js?v=__ASSET_V__";
   window.fmtExpiry = fmtExpiry;
   window.expiryWarning = expiryWarning;
   window.gaugeWarning = gaugeWarning;
   window.gaugeLine = gaugeLine;
   window.accountExpiryLine = accountExpiryLine;
+  window.agentCredentialRows = agentCredentialRows;
   import { filterLedger, ledgerFacets, ledgerAge, LEDGER_AGES, LEDGER_SORTS } from "/ledger-view.js?v=__ASSET_V__";
   window.filterLedger = filterLedger;
   window.ledgerFacets = ledgerFacets;
@@ -4800,6 +4803,7 @@
     gaugeWarning: () => null,
     gaugeLine: () => null,
     accountExpiryLine: () => null,
+    agentCredentialRows: () => null,
     // Before the module lands, never open the Connect card on a guess.
     connectCardPlan: () => ({ open: false, step: null, flow: null, user: null, dismissable: false }),
     sameConnectTarget: () => false,
@@ -10250,6 +10254,18 @@
     // even when the account row bails (signed-out, custom backend, unknown).
     const aaBtn = document.getElementById("agentAuthBtn");
     if (aaBtn) aaBtn.hidden = !(a && a.multiTenant && me && me.role === "admin");
+    // A migrated multi-tenant instance: describe what the AGENTS authenticate
+    // with, not the server's own sign-in (agentCredentialRows says why).
+    const ag = window.agentCredentialRows(a, !me || me.role === "admin");
+    if (ag) {
+      accEl.textContent = ag.account; accEl.title = "";
+      tokEl.textContent = ag.token; tokEl.title = "";
+      tokEl.style.color = ag.tokenTone === "err" ? "var(--err)" : ag.tokenTone === "warn" ? "var(--amber)" : "";
+      if (relBtn) { relBtn.hidden = !ag.relogin; if (ag.relogin) relBtn.textContent = ag.relogin; }
+      if (mtBtn) mtBtn.hidden = !ag.replaceToken;
+      return;
+    }
+    if (relBtn) relBtn.textContent = "↻ Re-login to Claude";
     if (a && a.backend === "custom" && a.state !== "signed-in") {
       accEl.textContent = a.backendModel ? a.backendModel + " · custom backend" : "custom model backend";
       accEl.title = "";

@@ -80,6 +80,51 @@ export function accountExpiryLine(auth, now = Date.now()) {
   return null;
 }
 
+/**
+ * The version menu's Account / Token rows and re-login buttons on a migrated
+ * MULTI-TENANT instance, or null when they do not apply (mono-tenant, a
+ * not-yet-migrated instance, a custom backend).
+ *
+ * There the agents run as their group's OS user, on the long-lived token or on
+ * that user's own claude.ai login (`connect`), and the SERVER's own sign-in —
+ * what `state`/`email` describe — is irrelevant to them and usually absent. The
+ * menu used to describe that root sign-in anyway: it read "signed out", and the
+ * early return on it hid "Re-login" AND "Replace subscription token", leaving an
+ * admin no button at all to renew what the agents actually use.
+ *
+ * @param {{backend?: string, longLived?: boolean,
+ *          connect?: {state: string, multiTenant: boolean, agentAuth: string, user: string|null, expiresAt: number|null}}|null} auth
+ * @param {boolean} isAdmin
+ * @param {number} [now]
+ * @returns {{account: string, token: string, tokenTone: ""|"warn"|"err", relogin: string|null, replaceToken: boolean}|null}
+ */
+export function agentCredentialRows(auth, isAdmin, now = Date.now()) {
+  const c = auth && auth.connect;
+  if (!c || !c.multiTenant || c.user == null || auth.backend === "custom") return null;
+  const login = c.agentAuth === "login";
+  const account =
+    c.state === "yes" ? "agents · " + (login ? "claude.ai login" : "long-lived token")
+    : c.state === "no" ? "agents not connected"
+    : "—";
+  let token = "—";
+  let tokenTone = "";
+  const ts = c.expiresAt;
+  if (c.state === "yes" && typeof ts === "number" && Number.isFinite(ts)) {
+    if (login) {
+      token = fmtExpiry(ts, now);
+      const ms = ts - now;
+      tokenTone = ms <= 0 ? "err" : ms < 3 * 86400000 ? "warn" : "";
+    } else {
+      const dt = new Date(ts);
+      token = "expires ≈ " + MONTHS[dt.getMonth()] + " " + dt.getFullYear();
+    }
+  }
+  // "unknown" is a failed probe, not a state to act on (invariant 27).
+  const relogin = !isAdmin || c.state === "unknown" ? null
+    : c.state === "no" ? "🔌 Connect Claude…" : "↻ Re-login to Claude";
+  return { account, token, tokenTone, relogin, replaceToken: isAdmin && !!auth.longLived && !login };
+}
+
 /** 5 days: the usage-gauge login is a month-long credential whose renewal needs
  *  the human's browser, so it gets more notice than the instance login. Kept in
  *  step with GAUGE_WARN_MS in src/gauge-login.ts (the server derives `state`). */

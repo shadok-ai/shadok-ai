@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fmtExpiry, expiryWarning, accountExpiryLine, EXPIRY_WARN_MS } from "../public/auth-expiry.js";
+import { fmtExpiry, expiryWarning, accountExpiryLine, agentCredentialRows, EXPIRY_WARN_MS } from "../public/auth-expiry.js";
 
 const NOW = 1_800_000_000_000; // a fixed "now" so the clock is deterministic
 const h = (n: number) => n * 3600_000;
@@ -119,4 +119,48 @@ test("gaugeLine: hidden when unsupported, honest about each state", () => {
     "a@b.c · sign-in lasts in 20 days",
   );
   assert.match(gaugeLine({ supported: true, state: "ok", email: "a@b.c", lastRefresh: { ok: false } }, now)!, /refresh failing/);
+});
+
+// ── agentCredentialRows: the version menu on a migrated multi-tenant instance ──
+// The server's own sign-in is irrelevant to dropped agents and usually absent;
+// describing it ("signed out") hid every re-login button.
+const mt = (connect: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+  state: "signed-out",
+  loggedIn: false,
+  ...extra,
+  connect: { state: "yes", multiTenant: true, agentAuth: "token", user: "main", expiresAt: null, ...connect },
+});
+
+test("agentCredentialRows: a root signed out does not hide the agents' re-login", () => {
+  const r = agentCredentialRows(mt({}, { longLived: true }), true, NOW)!;
+  assert.equal(r.account, "agents · long-lived token");
+  assert.equal(r.relogin, "↻ Re-login to Claude");
+  assert.equal(r.replaceToken, true);
+});
+
+test("agentCredentialRows: a login-mode space shows its expiry and tone", () => {
+  const r = agentCredentialRows(mt({ agentAuth: "login", expiresAt: NOW + d(2) }), true, NOW)!;
+  assert.equal(r.account, "agents · claude.ai login");
+  assert.equal(r.token, "in 2 days");
+  assert.equal(r.tokenTone, "warn");
+  assert.equal(r.replaceToken, false, "no token to replace in login mode");
+  assert.equal(agentCredentialRows(mt({ agentAuth: "login", expiresAt: NOW - 1 }), true, NOW)!.tokenTone, "err");
+});
+
+test("agentCredentialRows: not connected offers Connect; unknown offers nothing", () => {
+  assert.equal(agentCredentialRows(mt({ state: "no" }), true, NOW)!.relogin, "🔌 Connect Claude…");
+  assert.equal(agentCredentialRows(mt({ state: "unknown" }), true, NOW)!.relogin, null);
+});
+
+test("agentCredentialRows: members get the rows but no button", () => {
+  const r = agentCredentialRows(mt({}, { longLived: true }), false, NOW)!;
+  assert.equal(r.relogin, null);
+  assert.equal(r.replaceToken, false);
+});
+
+test("agentCredentialRows: null where the server's own sign-in IS what agents use", () => {
+  assert.equal(agentCredentialRows(mt({ user: null }), true, NOW), null, "not migrated: agents run as the server");
+  assert.equal(agentCredentialRows(mt({ multiTenant: false, user: null }), true, NOW), null);
+  assert.equal(agentCredentialRows(mt({}, { backend: "custom" }), true, NOW), null);
+  assert.equal(agentCredentialRows(null, true, NOW), null);
 });
