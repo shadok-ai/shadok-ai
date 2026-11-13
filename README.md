@@ -171,7 +171,10 @@ Enter to skip; you can add it later from the web UI).
   Claude** button right there signs you in again without waiting for the lapse,
   and in the last **48 hours** (or once it has lapsed) a reminder **banner**
   carries the same one-click re-login — so your agents never quietly start
-  hitting `401` because nobody renewed the session.
+  hitting `401` because nobody renewed the session. On a multi-tenant instance
+  the rows describe what the **agents** authenticate with (the long-lived token
+  or their space's claude.ai login, and its expiry) rather than the server's own
+  sign-in, and the re-login button renews that credential.
 - **Secret vault** — stored under `~/.shadok-ai`, never in your repo, injected
   as env vars into the agents that need them. Add or **update** a secret from the
   panel, tick the **profiles** it should feed right there, and reload the running
