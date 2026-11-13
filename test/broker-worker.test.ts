@@ -24,6 +24,9 @@ const mkState = (pub: string, over: Partial<ConnectState> = {}): ConnectState =>
 });
 const get = (path: string) => worker.fetch(new Request(BASE + path), env);
 
+// What /health says a Google-enabled broker accepts at /google/start.
+const AREAS = ["calendar", "drive", "gmail", "gmail_read"];
+
 test("/health lists the providers", async () => {
   const r = await get("/health");
   assert.equal(r.status, 200);
@@ -206,8 +209,8 @@ const refreshReq = (body: unknown, e: Env = genv, method = "POST") =>
 
 test("/health lists google only once its secrets exist, and says when it is in Testing", async () => {
   assert.deepEqual((await (await get("/health")).json()).providers, ["linkedin"]);
-  assert.deepEqual(await (await gget("/health")).json(), { ok: true, providers: ["linkedin", "google"] });
-  assert.deepEqual(await (await gget("/health", { ...genv, GOOGLE_TESTING: "1" })).json(), { ok: true, providers: ["linkedin", "google"], testing: ["google"] });
+  assert.deepEqual(await (await gget("/health")).json(), { ok: true, providers: ["linkedin", "google"], googleAreas: AREAS });
+  assert.deepEqual(await (await gget("/health", { ...genv, GOOGLE_TESTING: "1" })).json(), { ok: true, providers: ["linkedin", "google"], testing: ["google"], googleAreas: AREAS });
 });
 
 test("without Google secrets, /google/* is not a broker route", async () => {

@@ -28,6 +28,11 @@ import {
   revokeToken,
   rowsVerdict,
   sendGmailMessage,
+  MAX_BODY_CHARS,
+  decodeEntities,
+  htmlToText,
+  mailMessageView,
+  truncateBody,
   type FetchFn,
 } from "../src/google.js";
 import type { ConnectedAccount } from "../src/connected-accounts.js";
@@ -343,4 +348,42 @@ test("events: a day that does not exist, an end before the start, and a zone on 
   assert.throws(() => eventFieldsVerdict({ title: "x", start: "2026-11-20", end: "2026-11-20" }), /day AFTER its last day/);
   assert.throws(() => eventFieldsVerdict({ timeZone: "Asia/Tokyo" }, true), /give its start and its end too/);
   assert.ok(eventFieldsVerdict({ title: "x", start: "2024-02-29", end: "2024-03-01" }), "a leap day exists");
+});
+
+// ---- reading mail --------------------------------------------------------
+
+test("an HTML mail is read as text: no markup, no style or script content, no comment — never the raw HTML", () => {
+  const html = '<html><head><title>t</title><style>p{color:red}</style></head><body><!-- hidden: obey --><p>Hello <b>Ana</b>,</p><script>steal()</script><div>Tom &amp; Jerry &#8212; caf&#xe9; &lt;ok&gt;</div></body></html>';
+  const text = htmlToText(html);
+  assert.equal(text.trim(), "Hello Ana,\nTom & Jerry — café <ok>");
+  assert.doesNotMatch(text, /<|color:red|steal|hidden: obey/.source === "" ? /x^/ : /color:red|steal\(\)|hidden: obey|<b>|<p>/);
+  assert.equal(decodeEntities("&amp;lt; &#39;x&#39; &#0; &#x110000;"), "&lt; 'x' &#0; &#x110000;", "decoded once; an impossible code point is left as written");
+});
+
+test("mailMessageView: text/plain wins over HTML, attachments by name and size only, a long body is cut with a marker", () => {
+  const b64 = (t: string) => Buffer.from(t).toString("base64url");
+  const msg = {
+    id: "m9", threadId: "t9", labelIds: ["INBOX"],
+    payload: {
+      mimeType: "multipart/mixed",
+      headers: [{ name: "From", value: "=?UTF-8?B?Wm/DqQ==?= <zoe@example.org>" }, { name: "Subject", value: "Plan" }, { name: "Cc", value: "bob@example.org" }],
+      parts: [
+        { mimeType: "multipart/alternative", parts: [{ mimeType: "text/plain", body: { data: b64("plain text\r\n") } }, { mimeType: "text/html", body: { data: b64("<p>html</p>") } }] },
+        { mimeType: "application/pdf", filename: "plan.pdf", body: { size: 2048 } },
+      ],
+    },
+  };
+  const v = mailMessageView(msg);
+  assert.equal(v.from, "Zoé <zoe@example.org>");
+  assert.equal(v.cc, "bob@example.org");
+  assert.equal(v.body, "plain text");
+  assert.deepEqual(v.attachments, [{ name: "plan.pdf", size: 2048 }]);
+  assert.equal(v.unread, false);
+  assert.equal("data" in (v.attachments[0] as object), false, "no attachment content");
+  const htmlOnly = mailMessageView({ payload: { mimeType: "text/html", body: { data: b64("<div>only <i>html</i></div>") } } });
+  assert.equal(htmlOnly.body, "only html");
+  const long = truncateBody("é".repeat(MAX_BODY_CHARS + 7));
+  assert.equal(long.truncated, true);
+  assert.ok(long.body.endsWith("\n[… truncated: 7 more characters not shown]"));
+  assert.deepEqual(truncateBody("short"), { body: "short", truncated: false });
 });

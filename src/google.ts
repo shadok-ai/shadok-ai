@@ -439,16 +439,31 @@ interface GmailPart {
   parts?: GmailPart[];
 }
 
-function htmlToText(html: string): string {
-  return html
-    .replace(/<(br|\/div|\/p)\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
+/** HTML character references back to text (`&amp;` last, so `&amp;lt;` stays `&lt;`). */
+export function decodeEntities(s: string): string {
+  const cp = (n: number, whole: string) => (Number.isInteger(n) && n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : whole);
+  return s
+    .replace(/&#x([0-9a-f]{1,6});/gi, (w, h: string) => cp(parseInt(h, 16), w))
+    .replace(/&#(\d{1,7});/g, (w, d: string) => cp(Number(d), w))
     .replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
     .replace(/&amp;/g, "&");
+}
+
+/** An HTML mail body as plain text: no markup, no style or script content.
+ *  Never the raw HTML — it is what an agent reads, and hidden markup is where
+ *  a hostile mail would put what the person never saw. */
+export function htmlToText(html: string): string {
+  return decodeEntities(
+    html
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/<(style|script|head|title)\b[\s\S]*?<\/\1\s*>/gi, "")
+      .replace(/<(br|\/div|\/p|\/tr|\/li|\/h[1-6])\s*\/?>/gi, "\n")
+      .replace(/<[^>]+>/g, ""),
+  ).replace(/\n{3,}/g, "\n\n");
 }
 
 /**
@@ -544,6 +559,160 @@ export async function deleteGmailDraft(token: string, draftId: string, fetchFn: 
 export async function sendGmailMessage(token: string, raw: string, fetchFn: FetchFn): Promise<{ id: string }> {
   const j = await sendJson<{ id?: string }>("send", "POST", `${GMAIL}/messages/send`, token, { raw }, fetchFn, true);
   return { id: j.id ?? "" };
+}
+
+// ---- Gmail, reading (the `gmail_read` area: gmail.readonly) --------------
+
+export const SEARCH_DEFAULT = 20;
+export const SEARCH_MAX = 50;
+/** A body longer than this is cut, with a marker that says so. */
+export const MAX_BODY_CHARS = 20_000;
+/** A thread longer than this is cut to its most recent messages. */
+export const MAX_THREAD_MESSAGES = 20;
+
+export interface MailListItem {
+  id: string;
+  threadId: string;
+  from: string;
+  to: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  unread: boolean;
+  labels: string[];
+}
+
+export interface MailMessageView {
+  id: string;
+  threadId: string;
+  from: string;
+  to: string;
+  cc: string;
+  date: string;
+  subject: string;
+  /** Plain text: the text/plain part, else the HTML stripped to text. */
+  body: string;
+  truncated: boolean;
+  attachments: { name: string; size: number }[];
+  unread: boolean;
+  labels: string[];
+}
+
+interface GmailMessage {
+  id?: string;
+  threadId?: string;
+  snippet?: string;
+  labelIds?: string[];
+  payload?: GmailPart;
+}
+
+const headerOf = (m: GmailMessage, name: string) =>
+  decodeWords((m.payload?.headers ?? []).find((h) => (h.name ?? "").toLowerCase() === name)?.value ?? "").replace(/\s+/g, " ").trim();
+const labelsOf = (m: GmailMessage) => (Array.isArray(m.labelIds) ? m.labelIds.filter((l): l is string => typeof l === "string") : []);
+
+export function mailListItem(m: GmailMessage): MailListItem {
+  const labels = labelsOf(m);
+  return {
+    id: m.id ?? "",
+    threadId: m.threadId ?? "",
+    from: headerOf(m, "from"),
+    to: headerOf(m, "to"),
+    subject: headerOf(m, "subject"),
+    date: headerOf(m, "date"),
+    // Gmail hands the snippet HTML-escaped.
+    snippet: decodeEntities(m.snippet ?? "").replace(/\s+/g, " ").trim(),
+    unread: labels.includes("UNREAD"),
+    labels,
+  };
+}
+
+/** Cut at `max` characters, saying how much is missing — never silently. */
+export function truncateBody(body: string, max = MAX_BODY_CHARS): { body: string; truncated: boolean } {
+  const chars = [...body];
+  if (chars.length <= max) return { body, truncated: false };
+  return { body: `${chars.slice(0, max).join("")}\n[… truncated: ${chars.length - max} more characters not shown]`, truncated: true };
+}
+
+export function mailMessageView(m: GmailMessage, maxBody = MAX_BODY_CHARS): MailMessageView {
+  let plain: string | null = null;
+  let html: string | null = null;
+  const attachments: { name: string; size: number }[] = [];
+  const walk = (p: GmailPart | undefined) => {
+    if (!p) return;
+    if (p.filename) {
+      attachments.push({ name: p.filename, size: Number(p.body?.size) || 0 });
+      return;
+    }
+    const data = p.body?.data ? Buffer.from(p.body.data, "base64url").toString("utf8") : null;
+    if (p.mimeType === "text/plain" && data !== null && plain === null) plain = data;
+    else if (p.mimeType === "text/html" && data !== null && html === null) html = data;
+    for (const c of p.parts ?? []) walk(c);
+  };
+  walk(m.payload);
+  const labels = labelsOf(m);
+  const text = normBody(plain ?? (html !== null ? htmlToText(html) : ""));
+  return {
+    id: m.id ?? "",
+    threadId: m.threadId ?? "",
+    from: headerOf(m, "from"),
+    to: headerOf(m, "to"),
+    cc: headerOf(m, "cc"),
+    date: headerOf(m, "date"),
+    subject: headerOf(m, "subject"),
+    ...truncateBody(text, maxBody),
+    attachments,
+    unread: labels.includes("UNREAD"),
+    labels,
+  };
+}
+
+/** A Gmail search query: text, bounded, no control character. Empty = the most recent mail. */
+export function searchQueryVerdict(v: unknown): string {
+  if (v === undefined || v === null) return "";
+  if (typeof v !== "string" || CONTROL.test(v) || v.length > 500) throw new GoogleInputError("The search query must be one line of at most 500 characters (Gmail search syntax).");
+  return v.trim();
+}
+
+export async function searchGmail(
+  token: string,
+  o: { query?: unknown; max?: unknown; pageToken?: unknown },
+  fetchFn: FetchFn,
+): Promise<{ messages: MailListItem[]; nextPageToken?: string; query: string }> {
+  const query = searchQueryVerdict(o.query);
+  const max = Math.min(Math.max(Math.trunc(typeof o.max === "number" ? o.max : SEARCH_DEFAULT) || SEARCH_DEFAULT, 1), SEARCH_MAX);
+  const q = new URLSearchParams({ maxResults: String(max) });
+  if (query) q.set("q", query);
+  if (o.pageToken !== undefined && o.pageToken !== null && o.pageToken !== "") {
+    if (typeof o.pageToken !== "string" || !/^[A-Za-z0-9_-]{1,512}$/.test(o.pageToken)) throw new GoogleInputError("That is not a valid page token.");
+    q.set("pageToken", o.pageToken);
+  }
+  const list = await getJson<{ messages?: { id?: string }[]; nextPageToken?: string }>("mail search", `${GMAIL}/messages?${q}`, token, fetchFn);
+  const ids = (list.messages ?? []).map((m) => m.id ?? "").filter(Boolean).slice(0, max);
+  const meta = "format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date";
+  const messages: MailListItem[] = [];
+  // Ten at a time: enough to be quick, few enough not to trip Gmail's per-user rate.
+  for (let i = 0; i < ids.length; i += 10) {
+    const batch = await Promise.all(ids.slice(i, i + 10).map((id) => getJson<GmailMessage>("mail lookup", `${GMAIL}/messages/${pathId("message", id)}?${meta}`, token, fetchFn)));
+    messages.push(...batch.map(mailListItem));
+  }
+  return { messages, ...(list.nextPageToken ? { nextPageToken: list.nextPageToken } : {}), query };
+}
+
+/** One message, or a whole thread (oldest first, cut to its most recent messages). */
+export async function readGmail(
+  token: string,
+  o: { id?: unknown; threadId?: unknown },
+  fetchFn: FetchFn,
+): Promise<{ messages: MailMessageView[]; omitted: number }> {
+  if (typeof o.threadId === "string" && o.threadId) {
+    const t = await getJson<{ messages?: GmailMessage[] }>("thread read", `${GMAIL}/threads/${pathId("thread", o.threadId)}?format=full`, token, fetchFn);
+    const all = t.messages ?? [];
+    const kept = all.slice(-MAX_THREAD_MESSAGES);
+    return { messages: kept.map((m) => mailMessageView(m)), omitted: all.length - kept.length };
+  }
+  if (typeof o.id !== "string" || !o.id) throw new GoogleInputError("Give a message id (--id) or a thread id (--thread).");
+  const m = await getJson<GmailMessage>("mail read", `${GMAIL}/messages/${pathId("message", o.id)}?format=full`, token, fetchFn);
+  return { messages: [mailMessageView(m)], omitted: 0 };
 }
 
 // ---- Calendar ------------------------------------------------------------

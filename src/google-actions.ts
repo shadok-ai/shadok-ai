@@ -31,6 +31,8 @@ import {
   patchEvent,
   rawMessage,
   readDoc,
+  readGmail,
+  searchGmail,
   readSheet,
   sendGmailDraft,
   sendGmailMessage,
@@ -43,7 +45,9 @@ import {
 } from "./google.js";
 
 /**
- * - `read`: leaves nothing — never asks.
+ * - `read`: leaves nothing — never asks. Reading MAIL is a read too, but an
+ *   audited one (`audit`): what was searched and which message was opened is
+ *   logged — never a body or a snippet.
  * - `own-write`: changes only the person's own drafts and files (Drive keeps
  *   history) — never asks in wave 1.
  * - `mail`: sends email — the account's MAIL setting.
@@ -57,6 +61,8 @@ export const GOOGLE_ACTIONS = {
   "drive.list": { class: "read", area: "drive" },
   "doc.read": { class: "read", area: "drive" },
   "sheet.read": { class: "read", area: "drive" },
+  "gmail.search": { class: "read", area: "gmail_read", audit: true },
+  "gmail.read": { class: "read", area: "gmail_read", audit: true },
   "gmail.draft": { class: "own-write", area: "gmail" },
   "doc.create": { class: "own-write", area: "drive" },
   "doc.append": { class: "own-write", area: "drive" },
@@ -66,7 +72,13 @@ export const GOOGLE_ACTIONS = {
   "calendar.create": { class: "calendar", area: "calendar" },
   "calendar.update": { class: "calendar", area: "calendar" },
   "calendar.delete": { class: "calendar", area: "calendar" },
-} as const satisfies Record<string, { class: GoogleActionClass; area: GoogleArea }>;
+} as const satisfies Record<string, { class: GoogleActionClass; area: GoogleArea; audit?: boolean }>;
+
+/** Does this action go in the account's log? Everything but a plain read. */
+export function actionLogged(action: GoogleAction): boolean {
+  const a: { class: GoogleActionClass; audit?: boolean } = GOOGLE_ACTIONS[action];
+  return a.class !== "read" || a.audit === true;
+}
 
 export type GoogleAction = keyof typeof GOOGLE_ACTIONS;
 export const isGoogleAction = (v: unknown): v is GoogleAction => typeof v === "string" && Object.hasOwn(GOOGLE_ACTIONS, v);
@@ -79,7 +91,7 @@ export function actionSetting(account: Pick<ConnectedAccount, "policies">, actio
   return c === "mail" ? p.mail : c === "calendar" ? p.calendar : null;
 }
 
-const AREA_LABEL: Record<GoogleArea, string> = { calendar: "Calendar", drive: "Drive files", gmail: "Gmail" };
+const AREA_LABEL: Record<GoogleArea, string> = { calendar: "Calendar", drive: "Drive files", gmail: "Gmail", gmail_read: "Read Gmail" };
 
 /** Is this an action we know, on an area Google GRANTED to this account? */
 export function actionVerdict(
@@ -107,10 +119,12 @@ export interface GoogleDeps {
   now: () => number;
   /** The Gmail draft ids that are waiting on an approval card for this account. */
   pendingGmailDrafts: (accountId: string) => ReadonlySet<string>;
+  /** The Gmail drafts `gmail.draft` created for an account — the only ones it may rewrite. */
+  ownGmailDrafts: { has: (accountId: string, draftId: string) => boolean; add: (accountId: string, draftId: string) => void };
 }
 
 export type ActionOutcome =
-  /** Done at once. `log` is absent for a read (it leaves nothing). */
+  /** Done at once. `log` is absent for a plain read (it leaves nothing). */
   | { kind: "result"; result: Record<string, unknown>; log?: { summary: string; link?: string } }
   /** Waiting for a person: the route stores a draft and shows a card. */
   | { kind: "pending"; action: DraftAction; payload: DraftPayload; summary: string };
@@ -212,6 +226,18 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       return { kind: "result", result: await readDoc(await deps.token(account.id), String(args.id ?? ""), f) };
     case "sheet.read":
       return { kind: "result", result: await readSheet(await deps.token(account.id), String(args.id ?? ""), args.range, f) };
+    case "gmail.search": {
+      const r = await searchGmail(await deps.token(account.id), { query: args.query, max: args.max, pageToken: args.pageToken }, f);
+      // Audited: the query and how many came back — never a subject or a snippet.
+      return { kind: "result", result: { ...r, untrusted: true }, log: { summary: `search ${JSON.stringify(r.query)} — ${r.messages.length} result${r.messages.length === 1 ? "" : "s"}` } };
+    }
+    case "gmail.read": {
+      const r = await readGmail(await deps.token(account.id), { id: args.id, threadId: args.threadId }, f);
+      const first = r.messages[0];
+      const what = typeof args.threadId === "string" && args.threadId ? `thread ${args.threadId} (${r.messages.length + r.omitted} messages)` : `message ${first?.id ?? ""}`;
+      // Audited: which message, by id and subject — never its body.
+      return { kind: "result", result: { ...r, untrusted: true }, log: { summary: `${what} — "${(first?.subject ?? "").slice(0, 200)}"` } };
+    }
     case "doc.create": {
       const token = await deps.token(account.id);
       const doc = await createDoc(token, args.title, f);
@@ -241,6 +267,12 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       if (replace && deps.pendingGmailDrafts(account.id).has(replace)) {
         throw new GoogleInputError("That Gmail draft is waiting for approval in the cockpit — it cannot be changed. Ask the person to discard its card, or send a new one.");
       }
+      // …and only a draft `gmail draft` made here: `drafts.update` would
+      // otherwise rewrite ANY draft of the mailbox — one the person is
+      // writing themselves included.
+      if (replace && !deps.ownGmailDrafts.has(account.id, replace)) {
+        throw new GoogleInputError("That Gmail draft was not created by this cockpit for this account, so it cannot be rewritten — make a new one with `gmail draft`.");
+      }
       const attachments = await readAttachments(deps, args.attachments);
       const names = attachments.map((a) => a.name);
       const raw = rawMessage(buildMime(fields, attachments));
@@ -248,6 +280,7 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       const token = await deps.token(account.id);
       if (action === "gmail.draft") {
         const d = replace ? await updateGmailDraft(token, replace, raw, f) : await createGmailDraft(token, raw, f);
+        if (!replace) deps.ownGmailDrafts.add(account.id, d.id);
         return { kind: "result", result: { draftId: d.id, status: "draft" }, log: { summary: `draft ${summary}` } };
       }
       if (setting === "autonomous") {

@@ -4663,7 +4663,8 @@
   window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
-  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine, googleAutonomousConfirmText, googlePolicyRows, accountBannerKey, GOOGLE_AREA_CHOICES } from "/social-card.js?v=__ASSET_V__";
+  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine, googleAutonomousConfirmText, googlePolicyRows, accountBannerKey, GOOGLE_AREA_CHOICES, googleAreaChips } from "/social-card.js?v=__ASSET_V__";
+  window.googleAreaChips = googleAreaChips;
   window.googleAutonomousConfirmText = googleAutonomousConfirmText;
   window.googlePolicyRows = googlePolicyRows;
   window.accountBannerKey = accountBannerKey;
@@ -4904,6 +4905,8 @@
     accountRowModel: (a) => ({ provider: (a && a.provider) || "linkedin", label: (a && a.label) || "", via: "", expiryText: "", tone: "ok", shareText: "", policyText: "", areas: [], testNote: "", shareHint: "", disconnectText: "" }),
     // No setting chips until the module lands: a stub must never PUT a guess.
     googlePolicyRows: () => [],
+    // No area chip until the module lands; the dialog opens on a click, long after.
+    googleAreaChips: () => [],
     googleAutonomousConfirmText: (a) => `Agents will be able to act as ${(a && a.label) || "this account"} without asking anyone.`,
     accountBannerKey: (a) => String(a && a.id) + ":" + String(a && (a.provider === "google" ? a.refreshExpiresAt : a.expiresAt)),
     autonomousConfirmText: (a) => `Agents will be able to post as ${(a && a.label) || "this account"} without asking anyone.`,
@@ -13055,7 +13058,7 @@
   // ── Connected accounts (LinkedIn, Google) ──────────────────────────
   // GET /connect/status probes the broker (up to 5s on a cold cache), so the
   // section loads on its own and never holds the vault panel back.
-  let caState = { available: false, google: false, googleTesting: false, accounts: [], softLayer: false, loaded: false };
+  let caState = { available: false, google: false, googleTesting: false, googleAreas: [], accounts: [], softLayer: false, loaded: false };
   async function loadConnectedAccounts() {
     const [st, ac] = await Promise.all([
       fetch("/connect/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -13066,6 +13069,7 @@
       // A provider is offered only when the broker lists it (its secrets exist there).
       google: !!(st && st.providers && st.providers.google),
       googleTesting: !!(st && st.googleTesting),
+      googleAreas: st && Array.isArray(st.googleAreas) ? st.googleAreas : [],
       accounts: ac && Array.isArray(ac.accounts) ? ac.accounts : [],
       softLayer: !!(ac && ac.softLayer),
       loaded: true,
@@ -13309,12 +13313,13 @@
   $("caConnect").addEventListener("click", () => startLinkedInConnect($("caConnect")));
 
   /** Connect Google: the person picks the areas FIRST (Calendar, Drive files,
-   *  Gmail — all on by default), then leaves for Google's consent screen. The
+   *  Gmail — on by default; Read Gmail — off until ticked), then leaves for Google's consent screen. The
    *  broker carries the picked areas in its signed state. */
   function openGoogleDialog(preset) {
     const box = $("caGoogleAreas");
     box.textContent = "";
-    const choices = window.GOOGLE_AREA_CHOICES || [];
+    // Only what the broker accepts; reading mail is offered unticked.
+    const choices = window.googleAreaChips(caState.googleAreas, preset);
     for (const c of choices) {
       const lab = document.createElement("label");
       lab.className = "sec-chip";
@@ -13322,7 +13327,7 @@
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.value = c.key;
-      cb.checked = !preset || !preset.length || preset.includes(c.key);
+      cb.checked = c.checked;
       cb.addEventListener("change", syncGoogleDialog);
       const span = document.createElement("span");
       span.textContent = c.label;

@@ -16,8 +16,27 @@ export const GOOGLE_EXPIRY_SOON_MS = 2 * DAY_MS;
 export const GOOGLE_AREA_CHOICES = [
   { key: "calendar", label: "Calendar", hint: "read, add, change and delete events" },
   { key: "drive", label: "Drive files", hint: "the Docs and Sheets the cockpit creates — never the rest of the Drive" },
-  { key: "gmail", label: "Gmail", hint: "write drafts and send email — never read the mailbox" },
+  { key: "gmail", label: "Gmail", hint: "write drafts and send email — reading mail is a separate choice" },
+  // Off by default: opening a mailbox to agents is a choice made on purpose.
+  { key: "gmail_read", label: "Read Gmail", hint: "search and read the mailbox", defaultOn: false },
 ];
+
+/**
+ * The chips of the Connect Google dialog. `offered` is what the broker accepts
+ * (`/connect/status` → `googleAreas`): an area it does not name is not shown.
+ * `preset` is what the account holds today (a Reconnect): exactly those are
+ * ticked; without one, each area's own default — everything but reading mail.
+ */
+export function googleAreaChips(offered, preset) {
+  const ok = Array.isArray(offered) ? offered.map(String) : [];
+  const held = Array.isArray(preset) && preset.length ? preset.map(String) : null;
+  return GOOGLE_AREA_CHOICES.filter((c) => ok.includes(c.key)).map((c) => ({
+    key: c.key,
+    label: c.label,
+    hint: c.hint,
+    checked: held ? held.includes(c.key) : c.defaultOn !== false,
+  }));
+}
 
 /**
  * When the account stops working unless reconnected, or null when no date is
@@ -367,7 +386,11 @@ export function accountRowModel(account, now = Date.now(), groups = []) {
       : a.policy === "autonomous" ? "Posts without approval" : "Every post needs approval",
     // Google: which areas the person granted (they may untick one on Google's
     // own screen), and — while the app is in Testing — the weekly deadline.
-    areas: google ? GOOGLE_AREA_CHOICES.map((c) => ({ key: c.key, label: c.label, granted: granted.includes(c.key) })) : [],
+    // An opt-in area (reading mail) that was never asked for is not a missing
+    // grant: it is simply absent, not struck out.
+    areas: google
+      ? GOOGLE_AREA_CHOICES.filter((c) => c.defaultOn !== false || granted.includes(c.key)).map((c) => ({ key: c.key, label: c.label, granted: granted.includes(c.key) }))
+      : [],
     testNote: google && deadline !== null ? "Test app — reconnect weekly" : "",
     shareHint: google ? "Whose agents may work in this account — any combination" : "Whose agents may post as this account — any combination",
     disconnectText: google ? "Agents will no longer be able to work in this account." : "Agents will no longer be able to post as this account.",

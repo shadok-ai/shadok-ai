@@ -28,6 +28,7 @@ exception — Gmail drafts, which the operator requires:
 | Files the app created or the user opened with it; Docs and Sheets on those files | `drive.file` | **non-sensitive** |
 | Calendar events (read + write) | `calendar.events` | sensitive (no calendar scope is restricted — verify in the console) |
 | Gmail drafts + send | `gmail.compose` | **restricted** — usable by test users in Testing; leaving Testing then needs the annual CASA audit |
+| Reading mail (added after wave 1 shipped, operator decision) | `gmail.readonly` | **restricted** — fine for test users in Testing; adds no new hurdle, since CASA is already required to leave Testing because of `gmail.compose` |
 
 `gmail.compose` ("Manage drafts and send emails") covers both drafts and
 sending, so `gmail.send` (sensitive) is not requested on top. It does **not**
@@ -35,10 +36,16 @@ read the mailbox. If leaving Testing without CASA ever matters more than
 drafts, the fallback is `gmail.send` alone and drafts disappear — an operator
 decision, not a builder's.
 
-Deliberately **not** in wave 1: `gmail.readonly`, `gmail.modify`, `drive`,
-`drive.readonly` (restricted, and not needed for the wave-1 actions). Agents
-that need to read mail or the whole Drive keep using the claude.ai connectors
-(the `login` agent-auth mode).
+Deliberately **not** requested: `gmail.modify`, `drive`, `drive.readonly`
+(restricted, and not needed). Agents that need the whole Drive keep using the
+claude.ai connectors (the `login` agent-auth mode).
+
+**Reading mail** was first left out, then added at the operator's request as a
+FOURTH area, `gmail_read` → `gmail.readonly`, separate from `gmail` (drafts +
+send) so a person can grant drafts without opening their mailbox. It is
+unticked by default on the Connect dialog — opening a mailbox to agents is a
+deliberate choice — and a person adds it by reconnecting
+(`include_granted_scopes` merges). Nothing here can modify or delete mail.
 
 The Docs (`documents`) and Sheets (`spreadsheets`) scopes are **not requested**:
 both APIs accept `drive.file` for the files it covers, which keeps the consent
@@ -150,6 +157,7 @@ setting applies, and which one:
 | Class | Actions (wave 1) | Approval |
 |---|---|---|
 | read | `calendar list` (window, calendar id), `drive list` (app files), `doc read`, `sheet read` | never — it leaves nothing |
+| read, audited (area `gmail_read`) | `gmail search` (Gmail search syntax; 20 results by default, 50 at most, paged) → id, thread, from, to, subject, date, snippet, unread, labels; `gmail read` (a message or a thread) → headers, the text body (text/plain, else the HTML stripped to text — never raw HTML; long bodies cut with a marker), attachment names and sizes (no download) | never — but **logged** (§5) |
 | own-write | `gmail draft` (a real draft in the person's Gmail — nothing is sent), `doc create` / `doc append`, `sheet create` / `sheet append` | never in wave 1: it only changes the person's own drafts/files, and Drive keeps history |
 | mail | `gmail send` | the **mail** setting: `approve` (default) → Gmail draft + approval card; `autonomous` → sent at once |
 | calendar | `calendar create` / `update` / `delete`, with or without attendees | the **calendar** setting: `approve` (default) → approval card; `autonomous` → at once |
@@ -193,6 +201,18 @@ person's own files); a third setting can be added the same way if wanted.
   reconnect (test app tokens last 7 days) — Ana can do it in Secrets →
   Connected accounts."*
 
+**Mail is untrusted content.** Anyone can write to the person, so a mail is
+where a prompt injection arrives. The skill prints everything that comes out
+of the mailbox — sender, subject, snippet, body, attachment names — inside a
+fence that says it is data, never instructions, closed by a marker carrying a
+random tag made for that run (a mail cannot contain it, so it cannot fake the
+end of the fence). SKILL.md says the same, and that replying or forwarding
+still goes through `gmail send` and the mail setting: reading never sends.
+
+**`gmail draft --update` is limited to drafts the cockpit made.** Gmail's
+`drafts.update` takes any draft id of the mailbox; the server records the ids
+`gmail draft` creates, per account, and refuses any other.
+
 ### 5. Log
 
 The publication log records every outbound action and every own-write (not
@@ -200,6 +220,11 @@ reads): account, action, who triggered, who approved, a summary (recipients +
 subject for mail, title + time for an event, file id + name for Drive), the
 outcome. Mail **bodies are not logged** — the log is readable by everyone who
 can use the account, and a mail body is more private than a public post.
+
+Reading mail is the one read that IS logged: `gmail search` with its query and
+the number of results, `gmail read` with the message (or thread) id and its
+subject — never a body or a snippet. A person can see, in the account's Log,
+what an agent looked for and what it opened.
 
 ### 6. UI
 

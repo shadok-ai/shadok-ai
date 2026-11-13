@@ -652,8 +652,17 @@ Enter to skip; you can add it later from the web UI).
   (shown only when the broker offers Google) opens a small dialog where you
   tick what agents may work with — **Calendar** (read, add, change and delete
   events), **Drive files** (the Docs and Sheets the cockpit creates — never the
-  rest of your Drive) and **Gmail** (write drafts and send email — never read
-  your mailbox) — then Google asks you to confirm each one. The account row
+  rest of your Drive), **Gmail** (write drafts and send email) and **Read
+  Gmail** (search and read your mailbox — a separate chip, **unticked by
+  default**, shown once the broker offers it; add it later with *Reconnect*) —
+  then Google asks you to confirm each one. With *Read Gmail* an agent can
+  `gmail search` (Gmail's own search syntax, 50 results at most) and
+  `gmail read` a message or a thread as plain text; it cannot change or delete
+  mail, nor download attachments. Email is **untrusted content**: the skill
+  hands it to the agent inside a fence saying it is data, never instructions,
+  and replying still goes through the Mail setting. Every search (its query)
+  and every message opened (its id and subject, never its content) is written
+  to the account's log. The account row
   shows the areas Google actually granted, the same *Shared with* / *Profiles*
   chips as LinkedIn, and **two settings** instead of one posting policy:
   **Mail** (sending email) and **Events** (any event added, changed or
@@ -662,7 +671,7 @@ Enter to skip; you can add it later from the web UI).
   confirmation that says what it means. The agent uses the seeded
   `shadok-google` skill (`google.mjs accounts`, `calendar list|create|update|delete`,
   `drive list`, `doc create|read|append`, `sheet create|read|append`,
-  `gmail draft|send` — content on stdin, never argv) and never sees the token.
+  `gmail search|read|draft|send` — content on stdin, never argv) and never sees the token.
   What it may do falls in four classes: **reads** and **writes in your own
   files and drafts** (a Gmail draft, a Doc, a Sheet) are done at once;
   **sending mail** follows the Mail setting and **calendar changes** the Events
@@ -681,9 +690,9 @@ Enter to skip; you can add it later from the web UI).
   Google accounts on the app's test list can connect, and Google makes the
   authorisation last **7 days**: the row says *Test app — reconnect weekly*
   with the deadline, the owner is warned 2 days ahead, and an expired account
-  refuses with *"needs a reconnect"*. Reading mail or the whole Drive is
-  deliberately not offered here; agents that need it use the claude.ai
-  connectors (the `login` agent-auth mode). Operator setup for Google (Cloud
+  refuses with *"needs a reconnect"*. The whole Drive is deliberately not
+  offered here; agents that need it use the claude.ai connectors (the `login`
+  agent-auth mode). Operator setup for Google (Cloud
   project, consent screen, the two broker secrets) is in
   [`broker/README.md`](broker/README.md).
 - **Self-update** — polls npm and can update and reload itself in place.
@@ -1511,7 +1520,8 @@ right now), `/version`, `/autoupdate`,
 googleTesting}`: what the broker offers; `available` is LinkedIn's),
 `/connect/<provider>/start` · `/connect/<provider>/complete` (POST, browser
 person only — the OAuth hand-back, `<provider>` = `linkedin` or `google`;
-Google's `start` also takes `areas`, a list among `calendar`, `drive`, `gmail`;
+Google's `start` also takes `areas`, a list among `calendar`, `drive`, `gmail`,
+`gmail_read` — only those `/connect/status` → `googleAreas` says the broker accepts;
 `/connect/<provider>/done` (GET) is the page the broker returns the browser
 to), `/connected-accounts` (GET — the accounts you may use, never a token, plus
 `softLayer`; a Google account carries `areas`, `policies` and

@@ -136,3 +136,11 @@ test("verifyState accepts a google state with its areas and refuses an unknown p
   const bogus = { ...s, provider: "myspace" } as unknown as ConnectState;
   assert.equal(await verifyState(await signState(bogus, key), key), null);
 });
+
+test("reading mail is its own area: gmail.readonly, never implied by gmail (drafts + send)", () => {
+  assert.deepEqual(parseGoogleAreas("gmail_read,gmail"), ["gmail", "gmail_read"]);
+  assert.doesNotMatch(googleScope(["gmail"]), /gmail\.readonly/, "drafts + send does not open the mailbox");
+  assert.equal(googleScope(["gmail_read"]), `openid email profile ${GOOGLE_AREAS.gmail_read[0]}`);
+  assert.equal(GOOGLE_AREAS.gmail_read[0], "https://www.googleapis.com/auth/gmail.readonly");
+  assert.doesNotMatch(googleScope(["calendar", "drive", "gmail", "gmail_read"]), /gmail\.modify|mail\.google\.com/, "never a scope that can change or delete mail");
+});

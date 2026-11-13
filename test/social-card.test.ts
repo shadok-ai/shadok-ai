@@ -18,6 +18,7 @@ import {
   googleAutonomousConfirmText,
   googlePolicyRows,
   GOOGLE_AREA_CHOICES,
+  googleAreaChips,
 } from "../public/social-card.js";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -336,7 +337,7 @@ test("Google settings: two rows, each its own; the confirmation spells out what 
 });
 
 test("the Connect Google dialog offers the three areas, in the broker's order", () => {
-  assert.deepEqual(GOOGLE_AREA_CHOICES.map((c: { key: string; label: string }) => [c.key, c.label]), [["calendar", "Calendar"], ["drive", "Drive files"], ["gmail", "Gmail"]]);
+  assert.deepEqual(GOOGLE_AREA_CHOICES.map((c: { key: string; label: string }) => [c.key, c.label]), [["calendar", "Calendar"], ["drive", "Drive files"], ["gmail", "Gmail"], ["gmail_read", "Read Gmail"]]);
 });
 
 test("Google banner: named Google, dated by the deadline, and its dismissal key survives the hourly token renewal", () => {
@@ -351,4 +352,37 @@ test("Google banner: named Google, dated by the deadline, and its dismissal key 
 test("log line: a Google entry names its action; nothing but the summary is there to show", () => {
   const line = logEntryLine({ at: NOW, accountId: "a2", origin: "agent", channel: "general", approvedBy: "ana", action: "gmail.send", text: 'to bob@example.org — "Numbers"', outcome: "done" });
   assert.equal(line, '2026-11-08 12:00 UTC · gmail.send · done · general (agent) · approved by ana · to bob@example.org — "Numbers"');
+});
+
+// ---- Read Gmail: an area ticked on purpose ---------------------------------
+
+const ALL_AREAS = ["calendar", "drive", "gmail", "gmail_read"];
+const ticked = (chips: { key: string; checked: boolean }[]) => chips.filter((c) => c.checked).map((c) => c.key);
+
+test("Connect dialog: Read Gmail is offered UNTICKED — opening a mailbox is a deliberate choice", () => {
+  const chips = googleAreaChips(ALL_AREAS, null);
+  assert.deepEqual(chips.map((c: { key: string; label: string }) => [c.key, c.label]), [["calendar", "Calendar"], ["drive", "Drive files"], ["gmail", "Gmail"], ["gmail_read", "Read Gmail"]]);
+  assert.deepEqual(ticked(chips), ["calendar", "drive", "gmail"]);
+  assert.deepEqual(ticked(googleAreaChips(ALL_AREAS, [])), ["calendar", "drive", "gmail"]);
+});
+
+test("Connect dialog: a broker that does not accept reading mail is not offered it; a Reconnect ticks exactly what is held", () => {
+  assert.deepEqual(googleAreaChips(["calendar", "drive", "gmail"], null).map((c: { key: string }) => c.key), ["calendar", "drive", "gmail"]);
+  assert.deepEqual(googleAreaChips(undefined, null), []);
+  assert.deepEqual(ticked(googleAreaChips(ALL_AREAS, ["calendar", "gmail_read"])), ["calendar", "gmail_read"]);
+  assert.deepEqual(ticked(googleAreaChips(ALL_AREAS, ["gmail"])), ["gmail"], "a reconnect does not quietly add reading mail");
+});
+
+test("account row: Read Gmail shows as a chip once granted, and is simply absent — not struck out — when never asked for", () => {
+  const with_ = accountRowModel(gaccount({ areas: ["calendar", "gmail", "gmail_read"] }), NOW).areas;
+  assert.deepEqual(with_.at(-1), { key: "gmail_read", label: "Read Gmail", granted: true });
+  const without = accountRowModel(gaccount({ areas: ["calendar", "gmail"] }), NOW).areas;
+  assert.deepEqual(without.map((a: { key: string }) => a.key), ["calendar", "drive", "gmail"]);
+});
+
+test("log line: a mail search and a mail read are shown like the rest", () => {
+  assert.equal(
+    logEntryLine({ at: NOW, accountId: "a2", origin: "agent", channel: "general", approvedBy: "none", action: "gmail.search", text: 'search "is:unread" — 3 results', outcome: "done" }),
+    '2026-11-08 12:00 UTC · gmail.search · done · general (agent) · search "is:unread" — 3 results',
+  );
 });

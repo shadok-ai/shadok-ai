@@ -751,6 +751,46 @@ export function socialLogFileFor(cwd: string): string {
   return path.join(storeDir(), `${instanceKey(cwd)}.log.jsonl`);
 }
 
+// ---- the Gmail drafts an agent made (`gmail draft`) -----------------------
+// `gmail draft --update <id>` may only rewrite one of these: Gmail's
+// `drafts.update` takes any draft id of the mailbox, the person's own included.
+
+export const OWN_DRAFTS_KEPT = 200;
+
+export function ownDraftsFileFor(cwd: string): string {
+  return path.join(storeDir(), `${instanceKey(cwd)}.gmail-drafts.json`);
+}
+
+/** accountId → Gmail draft ids, oldest first. Missing or unparseable → {}. */
+export function loadOwnDrafts(file: string): Record<string, string[]> {
+  try {
+    const p = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!p || typeof p !== "object" || Array.isArray(p)) return {};
+    const out: Record<string, string[]> = {};
+    for (const [k, v] of Object.entries(p)) if (Array.isArray(v)) out[k] = v.filter((x): x is string => typeof x === "string");
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** The map with one more id for that account, capped to the most recent. */
+export function withOwnDraft(map: Readonly<Record<string, string[]>>, accountId: string, draftId: string): Record<string, string[]> {
+  const cur = (map[accountId] ?? []).filter((x) => x !== draftId);
+  return { ...map, [accountId]: [...cur, draftId].slice(-OWN_DRAFTS_KEPT) };
+}
+
+/** Atomic (tmp + rename), mode 600; ids of accounts no longer connected are dropped. */
+export function saveOwnDrafts(file: string, map: Readonly<Record<string, string[]>>, liveAccountIds: readonly string[]): void {
+  const keep: Record<string, string[]> = {};
+  for (const id of liveAccountIds) if (map[id]?.length) keep[id] = map[id];
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(keep, null, 2), { mode: 0o600 });
+  fs.chmodSync(tmp, 0o600);
+  fs.renameSync(tmp, file);
+}
+
 /** Missing or unparseable file → []. Never throws. */
 export function loadDrafts(file: string): Draft[] {
   try {
