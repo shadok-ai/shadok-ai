@@ -1074,7 +1074,8 @@ travels over `/ws`, and the page itself is static HTML, so a proxy that drops
 connects. In nginx:
 
 ```nginx
-location / {
+# The WebSocket — the ONLY path that upgrades, and the only one that may wait.
+location = /ws {
     proxy_pass http://127.0.0.1:3789;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
@@ -1082,9 +1083,28 @@ location / {
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # see below
     proxy_set_header X-Forwarded-Proto $scheme;                   # Secure cookies
+    # proxy_read_timeout 3600s;   # optional, and ONLY here — see "Idle timeout"
+}
+
+# Everything else: ordinary requests, ordinary (default, 60s) read timeout.
+location / {
+    proxy_pass http://127.0.0.1:3789;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;  # see below
+    proxy_set_header X-Forwarded-Proto $scheme;                   # Secure cookies
     client_max_body_size 50m;   # match the server's paste limit
 }
 ```
+
+Two locations, because the two kinds of traffic want opposite things from the
+proxy: `/ws` is one long-lived socket that may legitimately stay quiet, and
+everything under `/` is a short request that should fail fast when the server
+does not answer. `/ws` is the only WebSocket path the server has, so the
+`Upgrade`/`Connection` headers — and any long timeout — belong there and nowhere
+else. Both locations carry the `Host` / `X-Forwarded-*` lines on purpose: each
+`location` is configured on its own, and the server needs the client address
+and scheme on the socket as much as on a plain request.
 
 **Forward the client address.** An agent authenticates to its own server with a
 session key that never expires, so the server accepts that key **only from this
@@ -1119,8 +1139,19 @@ idle-close a quiet socket (nginx `proxy_read_timeout`, 60s by default;
 Cloudflare ~100s) — the symptom is a cockpit that keeps flashing
 "reconnecting…" even though nothing is wrong. The server sends a WebSocket ping
 every 25s (tunable with `SHADOK_WS_PING_MS`) to keep the connection warm, so no
-proxy change is normally needed; if your proxy still cuts it, raise
-`proxy_read_timeout` above the ping interval.
+proxy change is normally needed — nginx's default 60s is already more than
+twice the ping interval. If your proxy still cuts it, raise `proxy_read_timeout`
+above the ping interval **in `location = /ws` only, never in `location /`**.
+
+A long read timeout is right for a resting agent's silent socket and wrong for
+everything else. On a plain `GET`, it is how long the proxy keeps holding a
+request the server is not answering: with an hour there, an instance that stops
+responding turns every poll the page makes into a connection held for an hour.
+They pile up by the hundred, and they fill the browser's socket pool — at which
+point a *different*, perfectly healthy cockpit open in another tab can no longer
+open its own WebSocket, and every one of its agents sits on "connecting…". If
+your `location /` carries a raised `proxy_read_timeout` today, move it to
+`location = /ws`.
 
 **Sleep / wake / network blips.** When the machine comes back (an `online`
 event, the tab becoming visible, a back/forward-cache restore), the cockpit
