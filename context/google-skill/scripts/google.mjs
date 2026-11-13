@@ -13,8 +13,8 @@ import { randomBytes } from "node:crypto";
 const USAGE = `usage: google.mjs <command>
   accounts
   calendar list   --account <id> [--from <date>] [--to <date>] [--calendar <id>] [--max <n>]
-  calendar create --account <id> --title <t> --start <when> --end <when> [--tz <zone>] [--attendee <email>]... [--location <l>] [--calendar <id>] [--stdin]
-  calendar update --account <id> --event <id> [--title <t>] [--start <when> --end <when>] [--tz <zone>] [--attendee <email>]... [--location <l>] [--calendar <id>] [--stdin]
+  calendar create --account <id> --title <t> --start <when> --end <when> [--tz <zone>] [--attendee <email>]... [--location <l>] [--color <name>] [--calendar <id>] [--stdin]
+  calendar update --account <id> --event <id> [--title <t>] [--start <when> --end <when>] [--tz <zone>] [--attendee <email>]... [--location <l>] [--color <name>] [--calendar <id>] [--stdin]
   calendar delete --account <id> --event <id> [--calendar <id>]
   drive list      --account <id> [--max <n>]
   drive search    --account <id> [--query <text or Drive query>] [--max <n>] [--page <token>]
@@ -93,7 +93,7 @@ async function accounts() {
 // Which flags each command takes: name → kind. "list" flags may repeat.
 const FLAGS = {
   account: "one", from: "one", to: "list", calendar: "one", max: "num", title: "one", start: "one", end: "one", tz: "one",
-  attendee: "list", location: "one", event: "one", id: "one", range: "one", cc: "list", bcc: "list", subject: "one",
+  attendee: "list", location: "one", color: "one", event: "one", id: "one", range: "one", cc: "list", bcc: "list", subject: "one",
   attach: "list", update: "one", stdin: "flag", query: "one", page: "one", thread: "one", name: "one", format: "one",
 };
 
@@ -143,6 +143,7 @@ function eventArgs(o, text) {
     ...(o.tz ? { timeZone: o.tz } : {}),
     ...(o.attendee ? { attendees: o.attendee } : {}),
     ...(o.location !== undefined ? { location: o.location } : {}),
+    ...(o.color !== undefined ? { color: o.color } : {}),
     ...(text !== null ? { description: text } : {}),
   };
 }
@@ -254,7 +255,7 @@ function print(action, out) {
   if (action === "calendar.list") {
     if (!r.events?.length) return console.log("No event in that window.");
     for (const e of r.events) {
-      console.log(`${e.id}  ${e.start} → ${e.end}${e.timeZone ? ` (${e.timeZone})` : ""}  ${e.title}${e.attendees?.length ? `  [${e.attendees.join(", ")}]` : ""}${e.location ? `  @ ${e.location}` : ""}`);
+      console.log(`${e.id}  ${e.start} → ${e.end}${e.timeZone ? ` (${e.timeZone})` : ""}  ${e.title}${e.attendees?.length ? `  [${e.attendees.join(", ")}]` : ""}${e.location ? `  @ ${e.location}` : ""}${e.color ? `  colour=${e.color}` : ""}`);
     }
   } else if (action === "drive.list") {
     if (!r.files?.length) return console.log("No file yet. Only files created through this cockpit are visible (not the person's whole Drive).");

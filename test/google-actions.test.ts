@@ -357,6 +357,30 @@ test("approving a calendar card applies exactly what it showed: create, the patc
   assert.equal(g.events.size, 0);
 });
 
+test("event colour: set on create, changed and cleared on update — Google gets colorId, the card names the colour", async () => {
+  const { g, deps } = setup();
+  const account = acct();
+  const c = await runGoogleAction(deps, account, "calendar.create", { ...EVENT, color: "tomato" });
+  if (c.kind !== "pending" || c.payload.kind !== "event") throw new Error("expected pending");
+  assert.equal(c.payload.color, "Tomato");
+  await approveGoogleDraft(deps, account, { payload: c.payload });
+  const id = [...g.events.keys()][0];
+  assert.equal((g.events.get(id) as { colorId: string }).colorId, "11");
+  const u = await runGoogleAction(deps, account, "calendar.update", { event: id, color: "Sage" });
+  if (u.kind !== "pending" || u.payload.kind !== "event") throw new Error("expected pending");
+  assert.equal(u.payload.color, "Sage");
+  await approveGoogleDraft(deps, account, { payload: u.payload });
+  assert.equal((g.events.get(id) as { colorId: string }).colorId, "2");
+  const r = await runGoogleAction(deps, account, "calendar.update", { event: id, color: "default" });
+  if (r.kind !== "pending" || r.payload.kind !== "event") throw new Error("expected pending");
+  assert.equal(r.payload.color, "default", "a reset is shown on the card");
+  await approveGoogleDraft(deps, account, { payload: r.payload });
+  assert.equal((g.events.get(id) as { colorId: unknown }).colorId, null, "null in a PATCH clears it");
+  const t = await runGoogleAction(deps, account, "calendar.update", { event: id, title: "Renamed" });
+  if (t.kind !== "pending" || t.payload.kind !== "event") throw new Error("expected pending");
+  assert.equal(t.payload.color, undefined, "no colour of its own, untouched: the card says nothing about it");
+});
+
 // ---- reads and own-writes ------------------------------------------------
 
 test("reads return data and are not logged; own-writes are done at once and logged by summary", async () => {

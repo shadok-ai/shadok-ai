@@ -15,6 +15,8 @@ import {
   decodeWords,
   encodeHeaderText,
   eventFieldsVerdict,
+  eventView,
+  eventColorName,
   fetchUser,
   getGmailDraft,
   insertEvent,
@@ -386,4 +388,20 @@ test("mailMessageView: text/plain wins over HTML, attachments by name and size o
   assert.equal(long.truncated, true);
   assert.ok(long.body.endsWith("\n[… truncated: 7 more characters not shown]"));
   assert.deepEqual(truncateBody("short"), { body: "short", truncated: false });
+});
+
+test("event colour: Google's colorId is named, an event without one takes its calendar's colour", () => {
+  assert.equal(eventColorName("11"), "Tomato");
+  assert.equal(eventColorName("1"), "Lavender");
+  assert.equal(eventColorName("12"), undefined);
+  assert.equal(eventColorName(undefined), undefined);
+  assert.equal(eventView({ id: "e", summary: "x", colorId: "2", start: { date: "2026-11-20" }, end: { date: "2026-11-21" } }).color, "Sage");
+  assert.equal(eventView({ id: "e", summary: "x", start: { date: "2026-11-20" }, end: { date: "2026-11-21" } }).color, "default");
+});
+
+test("event colour: written by name (any case) or number, 'default' clears it, anything else is refused", () => {
+  assert.deepEqual(eventFieldsVerdict({ color: "tomato" }, true), { color: "Tomato" });
+  assert.deepEqual(eventFieldsVerdict({ color: "9" }, true), { color: "Blueberry" });
+  assert.deepEqual(eventFieldsVerdict({ color: "Default" }, true), { color: "default" });
+  assert.throws(() => eventFieldsVerdict({ color: "mauve" }, true), /not an event colour/);
 });

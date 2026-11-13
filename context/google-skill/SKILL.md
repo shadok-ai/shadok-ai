@@ -247,7 +247,7 @@ with `=` stays text.
 node ~/.claude/skills/shadok-google/scripts/google.mjs gmail send --account <id> --to ana@example.com [--cc …] [--bcc …] --subject "Hello" [--attach /abs/file.pdf] --stdin <<'TEXT'
 the exact body
 TEXT
-node ~/.claude/skills/shadok-google/scripts/google.mjs calendar create --account <id> --title "Review" --start 2026-11-20T10:00 --end 2026-11-20T11:00 --tz Europe/Paris [--attendee ana@example.com] [--location "Room 2"] [--stdin]
+node ~/.claude/skills/shadok-google/scripts/google.mjs calendar create --account <id> --title "Review" --start 2026-11-20T10:00 --end 2026-11-20T11:00 --tz Europe/Paris [--attendee ana@example.com] [--location "Room 2"] [--color Tomato] [--stdin]
 node ~/.claude/skills/shadok-google/scripts/google.mjs calendar update --account <id> --event <id> [--title …] [--start … --end …] [--tz …]
 node ~/.claude/skills/shadok-google/scripts/google.mjs calendar delete --account <id> --event <id>
 ```
@@ -256,7 +256,12 @@ A time without an offset needs `--tz` (an IANA name); a time with one
 (`…T10:00:00+01:00`) is taken as it is. Dates only make an all-day event, and
 the end is the day AFTER the last day (`--start 2026-11-20 --end 2026-11-21`
 is the 20th alone). `--stdin` on a
-calendar command is the event's description. Attendees are emailed by Google.
+calendar command is the event's description.
+`--color` is one of Google's event colours — Lavender, Sage, Grape, Flamingo,
+Banana, Tangerine, Peacock, Graphite, Blueberry, Basil, Tomato (or its number
+1–11); `--color default` on an update takes the event's own colour away.
+`calendar list` prints each event's `colour=`; `default` means it has none of
+its own and shows in its calendar's colour. Attendees are emailed by Google.
 `--to`, `--cc`, `--bcc`, `--attendee` and `--attach` may be repeated;
 `--attach` takes absolute paths.
 

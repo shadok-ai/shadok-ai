@@ -728,12 +728,39 @@ export interface EventFields {
   attendees: string[];
   location?: string;
   description?: string;
+  /** One of `EVENT_COLORS` (an event's own colour), or `"default"` — no colour
+   *  of its own, so Google paints it in its calendar's colour. */
+  color?: string;
 }
 
 export interface EventView extends EventFields {
   id: string;
   allDay: boolean;
   link?: string;
+}
+
+/**
+ * Google Calendar's event palette: `colorId` "1"…"11", named as Google's own
+ * UI names them. The API speaks only in numbers; an agent (and the person it
+ * answers) speaks in colours, so the numbers never leave this module.
+ */
+export const EVENT_COLORS = ["Lavender", "Sage", "Grape", "Flamingo", "Banana", "Tangerine", "Peacock", "Graphite", "Blueberry", "Basil", "Tomato"] as const;
+
+/** The colour name for a `colorId`; undefined when absent or unknown. */
+export function eventColorName(colorId: unknown): string | undefined {
+  const n = typeof colorId === "string" && /^\d{1,2}$/.test(colorId) ? Number(colorId) : NaN;
+  return EVENT_COLORS[n - 1];
+}
+
+/** A colour as written by an agent — a name (any case) or its number — to
+ *  the canonical name, or `"default"`. Throws `GoogleInputError`. */
+function eventColorVerdict(v: unknown): string {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : typeof v === "number" ? String(v) : "";
+  if (s === "default" || s === "none") return "default";
+  const byNumber = eventColorName(s);
+  const name = byNumber ?? EVENT_COLORS.find((c) => c.toLowerCase() === s);
+  if (!name) throw new GoogleInputError(`'${String(v).slice(0, 40)}' is not an event colour (use ${EVENT_COLORS.join(", ")}, or default).`);
+  return name;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -792,6 +819,7 @@ export function eventFieldsVerdict(raw: Record<string, unknown>, partial = false
   text("title", 500);
   text("location", 500);
   text("description", 8000);
+  if (raw.color !== undefined && raw.color !== null) out.color = eventColorVerdict(raw.color);
   if (raw.timeZone !== undefined && raw.timeZone !== null) {
     if (typeof raw.timeZone !== "string" || !timeZoneOk(raw.timeZone)) throw new GoogleInputError(`'${String(raw.timeZone).slice(0, 60)}' is not a time zone (use an IANA name such as Europe/Paris).`);
     out.timeZone = raw.timeZone;
@@ -840,6 +868,12 @@ function eventBody(f: Partial<EventFields>): Record<string, unknown> {
   if (f.start !== undefined) b.start = eventTime("start", f.start, f.timeZone);
   if (f.end !== undefined) b.end = eventTime("end", f.end, f.timeZone);
   if (f.attendees !== undefined) b.attendees = f.attendees.map((email) => ({ email }));
+  // `null` in a PATCH clears the field: the event goes back to its calendar's
+  // colour. On a create, "default" is simply no colour.
+  if (f.color !== undefined) {
+    const id = EVENT_COLORS.indexOf(f.color as (typeof EVENT_COLORS)[number]) + 1;
+    b.colorId = id > 0 ? String(id) : null;
+  }
   return b;
 }
 
@@ -849,6 +883,7 @@ interface GEvent {
   location?: string;
   description?: string;
   htmlLink?: string;
+  colorId?: string;
   start?: { date?: string; dateTime?: string; timeZone?: string };
   end?: { date?: string; dateTime?: string; timeZone?: string };
   attendees?: { email?: string }[];
@@ -867,6 +902,7 @@ export function eventView(e: GEvent): EventView {
     ...(e.location ? { location: e.location } : {}),
     ...(e.description ? { description: e.description } : {}),
     ...(e.htmlLink ? { link: e.htmlLink } : {}),
+    color: eventColorName(e.colorId) ?? "default",
   };
 }
 

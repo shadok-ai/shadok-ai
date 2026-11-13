@@ -714,7 +714,8 @@ Enter to skip; you can add it later from the web UI).
   card and tells the agent; *Discard* deletes the Gmail draft too; the agent
   cannot rewrite a draft that is waiting for you. An event card shows title,
   start and end with their time zone, the attendees Google will email,
-  location and description. The log keeps a line per action — recipients and
+  location, the colour it will have, and description. Agents read and set an
+  event's colour by name (Lavender … Tomato, Google's own palette). The log keeps a line per action — recipients and
   subject, an event's title and time, a file's name — and **never a mail
   body**. **While the shadok Google app is in Testing** (it is, for now) only
   Google accounts on the app's test list can connect, and Google makes the
