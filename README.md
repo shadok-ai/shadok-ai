@@ -1145,13 +1145,13 @@ above the ping interval **in `location = /ws` only, never in `location /`**.
 
 A long read timeout is right for a resting agent's silent socket and wrong for
 everything else. On a plain `GET`, it is how long the proxy keeps holding a
-request the server is not answering: with an hour there, an instance that stops
-responding turns every poll the page makes into a connection held for an hour.
-They pile up by the hundred, and they fill the browser's socket pool — at which
-point a *different*, perfectly healthy cockpit open in another tab can no longer
-open its own WebSocket, and every one of its agents sits on "connecting…". If
-your `location /` carries a raised `proxy_read_timeout` today, move it to
-`location = /ws`.
+request the server never answers — and the browser holds its end for just as
+long. A browser opens only about six HTTP/1.1 connections to one host, so a
+handful of unanswered requests is enough to occupy them all and freeze that
+cockpit's own updates for the whole timeout, while the proxy and the server
+keep those connections open too. With the default, the same failure clears in a
+minute. If your `location /` carries a raised `proxy_read_timeout` today, move
+it to `location = /ws`.
 
 **Sleep / wake / network blips.** When the machine comes back (an `online`
 event, the tab becoming visible, a back/forward-cache restore), the cockpit
