@@ -195,3 +195,131 @@ test("a 200 with a malformed body says LinkedIn answered unexpectedly, not 'refu
   assert.ok(!html.includes("refused"));
   assert.ok(html.includes(`#n=${nonce}&amp;error=token_exchange_failed"`));
 });
+
+// ── Google ──
+
+const genv: Env = { ...env, GOOGLE_CLIENT_ID: "gcid", GOOGLE_CLIENT_SECRET: "gsekret" };
+const GRETURN = `https://cockpit.acme.com/connect/google/done`;
+const gget = (path: string, e: Env = genv) => worker.fetch(new Request(BASE + path), e);
+const refreshReq = (body: unknown, e: Env = genv, method = "POST") =>
+  worker.fetch(new Request(BASE + "/google/refresh", { method, ...(method === "POST" ? { body: JSON.stringify(body), headers: { "content-type": "application/json" } } : {}) }), e);
+
+test("/health lists google only once its secrets exist, and says when it is in Testing", async () => {
+  assert.deepEqual((await (await get("/health")).json()).providers, ["linkedin"]);
+  assert.deepEqual(await (await gget("/health")).json(), { ok: true, providers: ["linkedin", "google"] });
+  assert.deepEqual(await (await gget("/health", { ...genv, GOOGLE_TESTING: "1" })).json(), { ok: true, providers: ["linkedin", "google"], testing: ["google"] });
+});
+
+test("without Google secrets, /google/* is not a broker route", async () => {
+  assert.equal((await gget(`/google/start?return=${encodeURIComponent(GRETURN)}`, env)).status, 404);
+  assert.equal((await refreshReq({ refresh_token: "x" }, env)).status, 404);
+});
+
+test("/google/start asks for offline access with the ticked areas only, carried in the signed state", async () => {
+  const { pub } = await keypair();
+  const r = await gget(`/google/start?return=${encodeURIComponent(GRETURN)}&pub=${pub}&nonce=${nonce}&areas=gmail,calendar`);
+  assert.equal(r.status, 302);
+  const loc = new URL(r.headers.get("location")!);
+  assert.equal(loc.origin + loc.pathname, "https://accounts.google.com/o/oauth2/v2/auth");
+  assert.equal(loc.searchParams.get("client_id"), "gcid");
+  assert.equal(loc.searchParams.get("redirect_uri"), `${BASE}/google/callback`);
+  assert.equal(loc.searchParams.get("access_type"), "offline");
+  assert.equal(loc.searchParams.get("prompt"), "consent");
+  assert.equal(loc.searchParams.get("include_granted_scopes"), "true");
+  const scope = loc.searchParams.get("scope")!;
+  assert.match(scope, /^openid email profile /);
+  assert.match(scope, /calendar\.events/);
+  assert.match(scope, /gmail\.compose/);
+  assert.doesNotMatch(scope, /drive/);
+  const st = await verifyState(loc.searchParams.get("state")!, genv.STATE_KEY);
+  assert.equal(st?.provider, "google");
+  assert.deepEqual(st?.areas, ["calendar", "gmail"]);
+});
+
+test("/google/start refuses no area, an unknown area, and LinkedIn's return path", async () => {
+  const { pub } = await keypair();
+  const base = `return=${encodeURIComponent(GRETURN)}&pub=${pub}&nonce=${nonce}`;
+  assert.equal((await gget(`/google/start?${base}`)).status, 400);
+  assert.equal((await gget(`/google/start?${base}&areas=calendar,contacts`)).status, 400);
+  assert.equal((await gget(`/google/start?return=${encodeURIComponent(RETURN)}&pub=${pub}&nonce=${nonce}&areas=drive`)).status, 400);
+});
+
+test("a LinkedIn state is never redeemed at the Google callback, nor the reverse", async () => {
+  const { pub } = await keypair();
+  globalThis.fetch = (async () => assert.fail("no token call for a cross-provider state")) as typeof fetch;
+  const li = await signState(mkState(pub), env.STATE_KEY);
+  assert.equal((await gget(`/google/callback?code=c&state=${encodeURIComponent(li)}`)).status, 400);
+  const g = await signState(mkState(pub, { provider: "google", areas: ["drive"], returnUrl: GRETURN }), env.STATE_KEY);
+  assert.equal((await gget(`/linkedin/callback?code=c&state=${encodeURIComponent(g)}`)).status, 400);
+});
+
+test("the Google callback exchanges the code with Google's secret and hands back the refresh token", async () => {
+  const { kp, pub } = await keypair();
+  const state = await signState(mkState(pub, { provider: "google", areas: ["drive"], returnUrl: GRETURN }), env.STATE_KEY);
+  let sent: URLSearchParams | undefined;
+  let to = "";
+  globalThis.fetch = (async (u: string, init: RequestInit) => {
+    to = u;
+    sent = new URLSearchParams(String(init.body));
+    return Response.json({ access_token: "ga", expires_in: 3599, scope: "openid drive.file", refresh_token: "gr", id_token: "never-forwarded" });
+  }) as typeof fetch;
+  const r = await gget(`/google/callback?code=thecode&state=${encodeURIComponent(state)}`);
+  assert.equal(r.status, 200);
+  assert.equal(to, "https://oauth2.googleapis.com/token");
+  assert.equal(sent?.get("client_secret"), "gsekret");
+  assert.equal(sent?.get("redirect_uri"), `${BASE}/google/callback`);
+  const html = await r.text();
+  assert.match(html, /Connect Google/);
+  const href = /href="([^"]+#n=[^"]+&amp;c=[^"]+)"/.exec(html)![1].replace(/&amp;/g, "&");
+  assert.ok(href.startsWith(GRETURN + "#"));
+  const c = new URLSearchParams(href.split("#")[1]).get("c")!;
+  const [bp, iv, ct] = c.split(".").map(unb64u);
+  const brokerPub = await crypto.subtle.importKey("raw", bp, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const bits = await crypto.subtle.deriveBits({ name: "ECDH", public: brokerPub }, kp.privateKey, 256);
+  const hk = await crypto.subtle.importKey("raw", bits, "HKDF", false, ["deriveKey"]);
+  const aes = await crypto.subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: new Uint8Array(0), info: new TextEncoder().encode("shadok-connect-v1") }, hk, { name: "AES-GCM", length: 256 }, false, ["decrypt"]);
+  const pt = JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({ name: "AES-GCM", iv, additionalData: unb64u(nonce) }, aes, ct)));
+  assert.equal(pt.refresh_token, "gr");
+  assert.equal(pt.access_token, "ga");
+  assert.equal(pt.id_token, undefined);
+});
+
+test("/google/refresh adds the client secret and returns only the new access token", async () => {
+  let sent: URLSearchParams | undefined;
+  globalThis.fetch = (async (_u: string, init: RequestInit) => {
+    sent = new URLSearchParams(String(init.body));
+    return Response.json({ access_token: "new", expires_in: 3599, scope: "s", token_type: "Bearer" });
+  }) as typeof fetch;
+  const r = await refreshReq({ refresh_token: "rt" });
+  assert.equal(r.status, 200);
+  assert.deepEqual(await r.json(), { access_token: "new", expires_in: 3599, scope: "s" });
+  assert.equal(sent?.get("grant_type"), "refresh_token");
+  assert.equal(sent?.get("refresh_token"), "rt");
+  assert.equal(sent?.get("client_secret"), "gsekret");
+});
+
+test("/google/refresh passes invalid_grant through as a 400 and never echoes the token", async () => {
+  globalThis.fetch = (async () => Response.json({ error: "invalid_grant", error_description: "Token has been expired or revoked." }, { status: 400 })) as typeof fetch;
+  const r = await refreshReq({ refresh_token: "secret-rt" });
+  assert.equal(r.status, 400);
+  const body = await r.text();
+  assert.deepEqual(JSON.parse(body), { error: "invalid_grant", status: 400 });
+  assert.doesNotMatch(body, /secret-rt/);
+});
+
+test("/google/refresh: provider trouble is a 502 with a sanitised code", async () => {
+  globalThis.fetch = (async () => new Response("<html>oops</html>", { status: 503 })) as typeof fetch;
+  assert.deepEqual(await (await refreshReq({ refresh_token: "rt" })).json(), { error: "refresh_failed", status: 503 });
+  globalThis.fetch = (async () => Response.json({ error: "Weird <b>code</b>" }, { status: 401 })) as typeof fetch;
+  assert.deepEqual(await (await refreshReq({ refresh_token: "rt" })).json(), { error: "refresh_failed", status: 401 });
+  globalThis.fetch = (async () => { throw new Error("down"); }) as typeof fetch;
+  assert.equal((await refreshReq({ refresh_token: "rt" })).status, 502);
+});
+
+test("/google/refresh refuses a bad body and a non-POST, and LinkedIn has no refresh route", async () => {
+  globalThis.fetch = (async () => assert.fail("no Google call")) as typeof fetch;
+  assert.equal((await refreshReq({})).status, 400);
+  assert.equal((await refreshReq({ refresh_token: "x".repeat(3000) })).status, 400);
+  assert.equal((await refreshReq(null, genv, "GET")).status, 405);
+  assert.equal((await worker.fetch(new Request(BASE + "/linkedin/refresh", { method: "POST", body: "{}" }), genv)).status, 404);
+});

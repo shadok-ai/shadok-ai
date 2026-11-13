@@ -6,8 +6,23 @@ and hands the token back **through the browser, encrypted for the instance**
 (ECDH P-256 -> HKDF-SHA256 -> AES-256-GCM, see `src/core.ts`). It stores
 nothing and logs no token.
 
-Routes: `GET /health`, `GET /linkedin/start`, `GET /linkedin/callback`.
-The LinkedIn app's redirect URL must be `https://connect.shadok.ai/linkedin/callback`.
+Routes: `GET /health`, `GET /<provider>/start`, `GET /<provider>/callback`,
+and `POST /google/refresh`. Providers: `linkedin`, and `google` once its two
+secrets are set (`/health` lists only the providers whose secrets exist, plus
+`testing: ["google"]` while `GOOGLE_TESTING=1`).
+
+Redirect URLs to register: LinkedIn app →
+`https://connect.shadok.ai/linkedin/callback`; Google OAuth client (type *Web
+application*) → `https://connect.shadok.ai/google/callback`.
+
+Google specifics (spec `docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md`):
+`/google/start` takes `areas=calendar,drive,gmail` (a fixed table in
+`src/core.ts`, never raw scopes; carried in the signed state) and asks for
+offline access with `prompt=consent`, so a refresh token comes back on every
+connect. `POST /google/refresh` `{refresh_token}` adds the client secret and
+returns `{access_token, expires_in, scope}`; `invalid_grant` comes back as a
+400 so the instance can ask for a reconnect. The refresh token is never logged
+or echoed.
 
 Every other path (`/`, `/waitlist`, …, any method) is forwarded to the site
 Worker `shadok-connect-site` through the `SITE` service binding
@@ -22,6 +37,8 @@ cd broker
 npx wrangler secret put LINKEDIN_CLIENT_ID
 npx wrangler secret put LINKEDIN_CLIENT_SECRET
 npx wrangler secret put STATE_KEY        # long random string, signs the OAuth state
+npx wrangler secret put GOOGLE_CLIENT_ID      # optional: Google is offered only with both
+npx wrangler secret put GOOGLE_CLIENT_SECRET
 ```
 
 ## Develop

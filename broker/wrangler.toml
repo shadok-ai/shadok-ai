@@ -5,7 +5,12 @@ compatibility_date = "2025-01-01"
 # certificate itself, so the hostname needs no pre-existing proxied record.
 routes = [{ pattern = "connect.shadok.ai", custom_domain = true }]
 
-# Secrets (never in this file): LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, STATE_KEY
+# Secrets (never in this file): LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, STATE_KEY,
+# and optionally GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Google is offered only with both).
+
+# "1" while the Google OAuth app is in Testing (refresh tokens expire after 7 days).
+[vars]
+GOOGLE_TESTING = "1"
 
 # Paths the broker does not own (/, /waitlist, ...) are forwarded to the site
 # Worker, deployed separately. Deploy that Worker first: a binding to a
