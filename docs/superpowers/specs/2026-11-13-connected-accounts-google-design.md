@@ -71,9 +71,40 @@ cockpit's own files, so ticking it alone is enough for them. What it changes:
 - `doc read` / `sheet read` of a file that is not the cockpit's become an
   audited, untrusted read too (same path as `drive read`).
 
-**Never available, whatever the setting:** delete, bin, move, rename, share or
-permission changes, replacing a document's content, downloading a binary. The
-server refuses those action names with one sentence, and so does the skill.
+**Bin, move, rename, download** were first refused outright, then added by a
+second operator decision ("full Drive access"):
+
+- `drive delete` moves a file to the **bin** only (`files.update` with
+  `trashed: true`, recoverable for about 30 days). `files.delete` and emptying
+  the bin are never called.
+- `drive move` (another parent folder) and `drive rename`, on any file the
+  account can edit.
+- All three are a class of their own, `file-manage`, which follows the *Drive
+  edits* setting on ANY file — the cockpit's own included: a file that
+  vanishes or changes place is felt by whoever uses it. The card shows the
+  file's name and link, the folder it is in now, and exactly what will happen
+  (to the bin / the destination folder / the new name). On approval the file
+  is re-read: gone → nothing happens; **renamed or moved since the card** →
+  nothing happens either and the agent is told to ask again, so a person never
+  approves a change to something other than what the card showed. Because the
+  setting now reaches the cockpit's own files, it is shown on any account that
+  holds a Drive area (`drive` or `drive_all`), and its confirmation reads
+  "edit, rename, move and bin files … shared with other people included".
+- `drive download` is a read, audited (file id + name, never content): a
+  Google-native file is exported (Doc → `docx`|`pdf`, Sheet → `xlsx`|`csv`,
+  Slides → `pptx`|`pdf`, chosen with `--format`), any other file comes as it
+  is; 50 MB at most (refused on the announced size, and cut off while reading
+  if the size was wrong). The bytes are written into
+  `<the agent's working directory>/drive-downloads/` **with the agent's
+  rights** (invariant 60 — as its OS user in multi-tenant), never at a path the
+  agent or the file chose: the Drive name is reduced to one safe segment
+  (`downloadFileName`), an existing name is never overwritten. The path comes
+  back inside the untrusted fence, since it carries the file's name.
+
+**Still never available, whatever the setting:** sharing or permission
+changes, permanent deletion or emptying the bin, replacing a document's
+content. The server refuses those action names with one sentence, and so does
+the skill.
 
 **Reading mail** was first left out, then added at the operator's request as a
 FOURTH area, `gmail_read` → `gmail.readonly`, separate from `gmail` (drafts +
@@ -194,8 +225,10 @@ setting applies, and which one:
 | read | `calendar list` (window, calendar id), `drive list` (app files), `doc read`, `sheet read` | never — it leaves nothing |
 | read, audited (area `gmail_read`) | `gmail search` (Gmail search syntax; 20 results by default, 50 at most, paged) → id, thread, from, to, subject, date, snippet, unread, labels; `gmail read` (a message or a thread) → headers, the text body (text/plain, else the HTML stripped to text — never raw HTML; long bodies cut with a marker), attachment names and sizes (no download) | never — but **logged** (§5) |
 | read, audited (area `drive_all`) | `drive search`, `drive read` — any file of the Drive | never — but **logged** (§5), and fenced as untrusted |
+| read, audited (area `drive`) | `drive download` — exported or as it is, into the agent's working directory | never — but **logged** (§5), and fenced as untrusted |
 | own-write | `gmail draft` (a real draft in the person's Gmail — nothing is sent), `doc create`, `sheet create` | never: it only changes the person's own drafts/files, and Drive keeps history |
 | file-write | `doc append`, `sheet append`, `sheet update` (overwrite a named range) | a file the cockpit created: never (an own-write). ANY OTHER file (reachable only with `drive_all`): the **Drive edits** setting — `approve` (default) → approval card naming the file (name, link, owner) and the exact text or rows; applied on approval after re-checking the file is still there; `autonomous` → at once |
+| file-manage | `drive delete` (to the bin), `drive move`, `drive rename` — any file, the cockpit's own included | ALWAYS the **Drive edits** setting: `approve` (default) → approval card (file, current folder, exactly what happens); applied only if the file is still there AND still has the name and folder the card showed |
 | mail | `gmail send` | the **mail** setting: `approve` (default) → Gmail draft + approval card; `autonomous` → sent at once |
 | calendar | `calendar create` / `update` / `delete`, with or without attendees | the **calendar** setting: `approve` (default) → approval card; `autonomous` → at once |
 
@@ -262,7 +295,8 @@ Reading the whole Drive is logged the same way: `drive search` with its query
 and the number of results, `drive read` (and a `doc read` / `sheet read` of a
 file that is not the cockpit's) with the file's id and name — never content.
 A Drive edit is logged by a summary (file, how many characters or rows),
-never the text or the rows.
+never the text or the rows; a bin / move / rename by the file and the change;
+a download by the file's id and name, the format and the size.
 
 Reading mail is the first read that IS logged: `gmail search` with its query and
 the number of results, `gmail read` with the message (or thread) id and its
@@ -280,9 +314,10 @@ automatic* and *Events: with approval / automatic*. *Read Gmail* and *All of
 Drive* are two more chips of the dialog, both off by default and shown only
 when the broker's `/health` names the area. An account that holds *All of
 Drive* gets a third setting, *Drive edits: with approval / automatic* — owner
-only, behind a confirmation that says agents will be able to edit any file of
-the Drive, shared ones included, without asking. The setting is not shown on
-an account without that area: it would govern nothing there.
+only, behind a confirmation that says agents will be able to edit, rename,
+move and bin files of the Drive, shared ones included, without asking. The
+setting is shown on an account that holds a Drive area (`drive` or
+`drive_all`) and not otherwise: it would govern nothing there.
 
 ## Operator tasks (outside the code)
 

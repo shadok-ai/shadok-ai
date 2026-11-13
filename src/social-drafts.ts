@@ -67,11 +67,20 @@ export interface EventPayload {
  *  for a file the cockpit did not create — its own files are edited at once. */
 export interface FilePayload {
   kind: "file";
-  op: "doc.append" | "sheet.append" | "sheet.update";
+  op: "doc.append" | "sheet.append" | "sheet.update" | "drive.delete" | "drive.move" | "drive.rename";
   fileId: string;
+  /** The file's name and folder WHEN THE CARD WAS MADE; a bin / move / rename
+   *  is applied only if both are still the same. */
   name: string;
   link?: string;
   owners: string[];
+  parentId?: string;
+  parentName?: string;
+  /** drive.move: where it goes. */
+  toId?: string;
+  toName?: string;
+  /** drive.rename: what it becomes. */
+  newName?: string;
   /** doc.append: the text added at the end. */
   text?: string;
   /** sheet.*: the range asked for (absent = the sheet's end) and the rows. */
@@ -80,8 +89,8 @@ export interface FilePayload {
 }
 
 export type DraftPayload = MailPayload | EventPayload | FilePayload;
-export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | "doc.append" | "sheet.append" | "sheet.update";
-const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update"];
+export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | FilePayload["op"];
+const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename"];
 export const isFileAction = (a: DraftAction): boolean => FILE_ACTIONS.includes(a);
 
 export interface Draft {
@@ -531,6 +540,11 @@ function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "eve
         name: p.name,
         ...(p.link ? { link: p.link } : {}),
         owners: [...p.owners],
+        ...(p.parentId ? { parentId: p.parentId } : {}),
+        ...(p.parentName ? { parentName: p.parentName } : {}),
+        ...(p.toId ? { toId: p.toId } : {}),
+        ...(p.toName ? { toName: p.toName } : {}),
+        ...(p.newName ? { newName: p.newName } : {}),
         ...(p.text !== undefined ? { text: p.text } : {}),
         ...(p.range ? { range: p.range } : {}),
         ...(p.rows ? { rows: p.rows.map((r) => [...r]) } : {}),

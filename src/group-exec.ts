@@ -241,6 +241,17 @@ export function readAsUserArgv(
 }
 
 /**
+ * Write a NEW file AS the drop user, bytes on stdin: the directory is made and
+ * the file created with that user's rights, so a download lands only where the
+ * agent itself could write — and `conv=excl` refuses a name that already
+ * exists (a symlink planted there included) instead of writing through it.
+ */
+export function writeNewAsUserArgv(user: string | null, dir: string, name: string): { cmd: string; argv: string[] } {
+  const args = ["-c", 'mkdir -p -- "$1" && exec dd "of=$1/$2" conv=excl bs=65536 status=none', "sh", dir, name];
+  return user ? dropArgv(user, "sh", args) : { cmd: "sh", argv: args };
+}
+
+/**
  * Is the file about to be served the one that was OFFERED? An offer records
  * device + inode; a later symlink swap, rename or replacement changes them.
  * An offer from before this check (no identity recorded) is not refused.

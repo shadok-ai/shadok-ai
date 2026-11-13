@@ -1073,6 +1073,8 @@ export interface DriveFileMeta {
   owners: string[];
   link?: string;
   size?: number;
+  /** The folder it sits in; absent for a file merely shared with the account. */
+  parentId?: string;
 }
 
 interface GFile {
@@ -1083,9 +1085,10 @@ interface GFile {
   webViewLink?: string;
   size?: string | number;
   trashed?: boolean;
+  parents?: string[];
   owners?: { displayName?: string; emailAddress?: string }[];
 }
-const FILE_FIELDS = "id,name,mimeType,modifiedTime,webViewLink,size,trashed,owners(displayName,emailAddress)";
+const FILE_FIELDS = "id,name,mimeType,modifiedTime,webViewLink,size,trashed,parents,owners(displayName,emailAddress)";
 
 export function driveFileMeta(f: GFile): DriveFileMeta {
   const size = Number(f.size);
@@ -1097,6 +1100,7 @@ export function driveFileMeta(f: GFile): DriveFileMeta {
     owners: (f.owners ?? []).map((o) => o.emailAddress || o.displayName || "").filter(Boolean),
     ...(f.webViewLink ? { link: f.webViewLink } : {}),
     ...(Number.isFinite(size) && f.size !== undefined ? { size } : {}),
+    ...(typeof f.parents?.[0] === "string" && f.parents[0] ? { parentId: f.parents[0] } : {}),
   };
 }
 
@@ -1234,3 +1238,129 @@ export async function readDriveFile(token: string, o: { id?: unknown; range?: un
   }
   return none("This is a binary file: files are not downloaded — only its details are shown.");
 }
+
+// ---- bin, move, rename (never a permanent delete, never a share) ----------
+
+const fileUrl = (id: string, extra: Record<string, string> = {}) => `${DRIVE}/${pathId("file", id)}?${new URLSearchParams({ supportsAllDrives: "true", fields: "id", ...extra })}`;
+
+/** To the BIN — `trashed: true`, which the person can undo for about 30 days.
+ *  `files.delete` (permanent) and emptying the bin are not called anywhere. */
+export async function trashFile(token: string, id: string, fetchFn: FetchFn): Promise<void> {
+  await sendJson("file removal", "PATCH", fileUrl(id), token, { trashed: true }, fetchFn, true);
+}
+
+export function fileNameVerdict(v: unknown): string {
+  if (typeof v !== "string" || !v.trim()) throw new GoogleInputError("A new name is required.");
+  if (CONTROL.test(v) || [...v].length > 300) throw new GoogleInputError("The new name is too long or contains a line break.");
+  return v.trim();
+}
+
+export async function renameFile(token: string, id: string, name: string, fetchFn: FetchFn): Promise<void> {
+  await sendJson("file rename", "PATCH", fileUrl(id), token, { name: fileNameVerdict(name) }, fetchFn, true);
+}
+
+/** Into another folder: one parent added, the current one (if any) removed. */
+export async function moveFile(token: string, id: string, from: string | undefined, to: string, fetchFn: FetchFn): Promise<void> {
+  const extra = { addParents: pathId("folder", to), ...(from ? { removeParents: pathId("folder", from) } : {}) };
+  await sendJson("file move", "PATCH", fileUrl(id, extra), token, {}, fetchFn, true);
+}
+
+// ---- download ---------------------------------------------------------------
+
+export const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 80_000;
+
+const OFFICE = {
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  pdf: "application/pdf",
+  csv: "text/csv",
+} as const;
+/** What a Google-native file can be exported as; the first is the default. */
+const EXPORTS: Record<string, (keyof typeof OFFICE)[]> = {
+  [MIME_DOC]: ["docx", "pdf"],
+  [MIME_SHEET]: ["xlsx", "csv"],
+  [MIME_SLIDES]: ["pptx", "pdf"],
+};
+
+/** How a file is fetched: an export (Google-native) or its own bytes. Refused
+ *  before any byte moves: a folder, a native type with no export, a format
+ *  that does not apply, a file known to be over the cap. */
+export function downloadPlan(file: Pick<DriveFileMeta, "mimeType" | "size">, format: unknown): { exportMime?: string; ext?: string } {
+  if (format !== undefined && format !== null && typeof format !== "string") throw new GoogleInputError("--format must be a word (docx, pdf, xlsx, csv, pptx).");
+  const fmt = typeof format === "string" && format ? format.toLowerCase() : undefined;
+  const choices = EXPORTS[file.mimeType];
+  if (choices) {
+    const pick = (fmt ?? choices[0]) as keyof typeof OFFICE;
+    if (!choices.includes(pick)) throw new GoogleInputError(`This file can be downloaded as ${choices.join(" or ")}, not '${String(fmt).slice(0, 20)}'.`);
+    return { exportMime: OFFICE[pick], ext: pick };
+  }
+  if (file.mimeType === MIME_FOLDER) throw new GoogleInputError("A folder cannot be downloaded — download its files one by one.");
+  if (file.mimeType.startsWith("application/vnd.google-apps.")) throw new GoogleInputError("This kind of Google file cannot be downloaded.");
+  if (fmt) throw new GoogleInputError("--format applies to Google Docs, Sheets and Slides only; any other file is downloaded as it is.");
+  if (file.size !== undefined && file.size > MAX_DOWNLOAD_BYTES) throw new GoogleInputError(`That file is over ${MAX_DOWNLOAD_BYTES / 1024 / 1024} MB — too large to download here.`);
+  return {};
+}
+
+/**
+ * A Drive file's name as a LOCAL file name. The name is whatever someone
+ * typed: it becomes a single path segment of letters, digits, spaces and
+ * `._()-` — no separator, no leading dot, no control character — so it can
+ * never leave the directory it is written to. `ext` (an export) is appended
+ * unless the name already ends with it.
+ */
+export function downloadFileName(name: string, ext?: string): string {
+  let n = name
+    .normalize("NFC")
+    .replace(/[^\p{L}\p{N} ._()-]+/gu, "_")
+    .replace(/\s+/g, " ")
+    .replace(/^[ ._-]+/, "")
+    .trim();
+  n = [...n].slice(0, 120).join("").replace(/[ .]+$/, "");
+  if (!n) n = "file";
+  if (ext && !n.toLowerCase().endsWith(`.${ext}`)) n = `${n}.${ext}`;
+  return n;
+}
+
+/** The body, refused the moment it passes the cap — never buffered beyond it. */
+async function cappedBytes(res: Response, cap: number): Promise<Buffer> {
+  const over = () => new GoogleInputError(`That file is over ${cap / 1024 / 1024} MB — too large to download here.`);
+  if (Number(res.headers.get("content-length")) > cap) throw over();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = res.body?.getReader();
+  if (!reader) return Buffer.alloc(0);
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => {});
+      throw over();
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** A file's bytes — exported for a Google-native file, as they are otherwise.
+ *  Null when the file is not there. */
+export async function downloadDriveFile(
+  token: string,
+  o: { id?: unknown; format?: unknown },
+  fetchFn: FetchFn,
+  cap = MAX_DOWNLOAD_BYTES,
+): Promise<{ file: DriveFileMeta; bytes: Buffer; fileName: string; format: string } | null> {
+  const file = await getFileMeta(token, o.id, fetchFn);
+  if (!file) return null;
+  const plan = downloadPlan(file, o.format);
+  const url = plan.exportMime
+    ? `${DRIVE}/${file.id}/export?mimeType=${encodeURIComponent(plan.exportMime)}`
+    : `${DRIVE}/${file.id}?alt=media&supportsAllDrives=true`;
+  const res = await fetchFn(url, { headers: bearer(token), signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
+  if (!res.ok) throw await failure("file download", res);
+  const bytes = await cappedBytes(res, cap);
+  return { file, bytes, fileName: downloadFileName(file.name, plan.ext), format: plan.ext ?? "as it is" };
+}
+

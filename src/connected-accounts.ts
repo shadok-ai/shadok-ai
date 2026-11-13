@@ -442,11 +442,11 @@ export function policyPatch(
     const p = policies as Record<string, unknown>;
     const keys = Object.keys(p);
     if (!keys.length || keys.some((k) => !(GOOGLE_POLICY_KEYS as readonly string[]).includes(k)) || keys.some((k) => !isPolicy(p[k]))) return { ok: false, reason: "invalid policies" };
-    // Drive edits can only become automatic on an account that HOLDS the whole
-    // Drive: set beforehand, a later reconnect that ticks it would start with
-    // edits to other people's files already unasked.
-    if (p.drive === "autonomous" && !grantedAreas(a).includes("drive_all")) {
-      return { ok: false, reason: "Drive edits can be made automatic only on an account connected with All of Drive." };
+    // Drive edits can only become automatic on an account that HOLDS a Drive
+    // area — never ahead of the grant. (The confirmation the owner reads
+    // already speaks of every file of the Drive, shared ones included.)
+    if (p.drive === "autonomous" && !grantedAreas(a).some((k) => k === "drive" || k === "drive_all")) {
+      return { ok: false, reason: "Drive edits can be made automatic only on an account connected with a Drive area." };
     }
     return { ok: true, patch: { policies: { ...googlePolicies(a), ...(p as Partial<GooglePolicies>) } } };
   }

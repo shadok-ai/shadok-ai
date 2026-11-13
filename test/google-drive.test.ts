@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DRIVE_REFUSED_SENTENCE,
+  FILE_CHANGED_SENTENCE,
   FILE_GONE_SENTENCE,
   GOOGLE_ACTIONS,
   RETRY_SENTENCE,
@@ -16,7 +17,12 @@ import {
   type GoogleAction,
   type GoogleDeps,
 } from "../src/google-actions.js";
-import { GoogleInputError, GoogleOutcomeUnknownError, MAX_FILE_CHARS, MIME_DOC, MIME_FOLDER, MIME_SHEET, MIME_SLIDES, driveQuery, truncateRows, type FetchFn } from "../src/google.js";
+import { GoogleInputError, GoogleOutcomeUnknownError, MAX_DOWNLOAD_BYTES, MAX_FILE_CHARS, MIME_DOC, MIME_FOLDER, MIME_SHEET, MIME_SLIDES, downloadDriveFile, downloadFileName, downloadPlan, driveQuery, truncateRows, type FetchFn } from "../src/google.js";
+import { writeNewAsUserArgv } from "../src/group-exec.js";
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { GOOGLE_AREA_SCOPES, type ConnectedAccount, type GooglePolicies } from "../src/connected-accounts.js";
 import { OWN_FILES_KEPT, draftLogEntry, draftNotice, draftNoun, draftView, makeDraft, serialiseLogEntry, withOwnDraft, type Draft, type FilePayload } from "../src/social-drafts.js";
 import { pendingDraftText } from "../src/account-expiry.js";
@@ -40,12 +46,18 @@ interface FakeFile {
   rows?: unknown[][];
   size?: number;
   trashed?: boolean;
+  parents?: string[];
+  bytes?: Buffer;
 }
 
 /** A Drive that remembers: files, what was appended to them, every request. */
 function fakeDrive() {
   const files = new Map<string, FakeFile>([
     ["BOBDOC", { name: "Team roadmap", mimeType: MIME_DOC, owners: ["bob@example.org"], text: "Roadmap SECRET-CONTENT-ONE\nQ4: ship.\n" }],
+    ["PLAN", { name: "Plan 2027", mimeType: MIME_DOC, owners: ["ana@example.org"], text: "plan", parents: ["DIR"] }],
+    ["ARCHIVE", { name: "Archive", mimeType: MIME_FOLDER, parents: ["ROOT"] }],
+    ["ROOT", { name: "My Drive", mimeType: MIME_FOLDER }],
+    ["ZIP", { name: "../../etc/pass wd\n.zip", mimeType: "application/zip", size: 6, bytes: Buffer.from([1, 2, 3, 4, 5, 6]) }],
     ["BOBSHEET", { name: "Budget 2026", mimeType: MIME_SHEET, owners: ["bob@example.org"], rows: [["Item", "Cost"], ["Bolt", 12]] }],
     ["DECK", { name: "Kickoff", mimeType: MIME_SLIDES, owners: ["ana@example.org"], text: "Slide one\nSlide two" }],
     ["NOTES", { name: "notes.txt", mimeType: "text/plain", owners: ["ana@example.org"], text: "plain notes", size: 11 }],
@@ -59,13 +71,14 @@ function fakeDrive() {
   const calls: string[] = [];
   const queries: URLSearchParams[] = [];
   const writes: { id: string; kind: string; body: any }[] = [];
+  const exports: string[] = [];
   let seq = 0;
   let down = false;
   let silent = false;
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
   const meta = (id: string, f: FakeFile) => ({
     id, name: f.name, mimeType: f.mimeType, modifiedTime: "2026-11-12T08:00:00.000Z", webViewLink: `https://drive.example/${id}`,
-    ...(f.size !== undefined ? { size: String(f.size) } : {}), ...(f.trashed ? { trashed: true } : {}), owners: (f.owners ?? []).map((emailAddress) => ({ emailAddress })),
+    ...(f.size !== undefined ? { size: String(f.size) } : {}), ...(f.trashed ? { trashed: true } : {}), ...(f.parents ? { parents: f.parents } : {}), owners: (f.owners ?? []).map((emailAddress) => ({ emailAddress })),
   });
   const fetchFn = (async (input: unknown, init: RequestInit = {}) => {
     const url = new URL(String(input));
@@ -87,12 +100,26 @@ function fakeDrive() {
     }
     if ((m = /^\/drive\/v3\/files\/([^/]+)\/export$/.exec(p))) {
       const f = files.get(m[1]);
-      return f ? new Response(`﻿${f.text ?? ""}`.replace(/\n/g, "\r\n"), { status: 200 }) : json(404, { error: { message: "File not found" } });
+      if (!f) return json(404, { error: { message: "File not found" } });
+      const as = url.searchParams.get("mimeType") ?? "";
+      exports.push(`${m[1]} ${as}`);
+      if (as !== "text/plain") return new Response(Buffer.from(`EXPORT:${as}:${f.name}`), { status: 200 });
+      return new Response(`\uFEFF${f.text ?? ""}`.replace(/\n/g, "\r\n"), { status: 200 });
+    }
+    if ((m = /^\/drive\/v3\/files\/([^/]+)$/.exec(p)) && method === "PATCH") {
+      const f = files.get(m[1]);
+      if (!f) return json(404, { error: { message: "File not found" } });
+      assert.equal(url.searchParams.get("supportsAllDrives"), "true");
+      writes.push({ id: m[1], kind: "patch", body: { ...body, add: url.searchParams.get("addParents"), remove: url.searchParams.get("removeParents") } });
+      if (body.trashed) f.trashed = true;
+      if (body.name) f.name = body.name;
+      if (url.searchParams.get("addParents")) f.parents = [url.searchParams.get("addParents")!];
+      return json(200, { id: m[1] });
     }
     if ((m = /^\/drive\/v3\/files\/([^/]+)$/.exec(p)) && method === "GET") {
       const f = files.get(m[1]);
       if (!f) return json(404, { error: { message: "File not found" } });
-      return url.searchParams.get("alt") === "media" ? new Response(f.text ?? "", { status: 200 }) : json(200, meta(m[1], f));
+      return url.searchParams.get("alt") === "media" ? new Response(f.bytes ?? f.text ?? "", { status: 200 }) : json(200, meta(m[1], f));
     }
     if (p === "/v1/documents" && method === "POST") {
       const id = `NEWDOC${++seq}`;
@@ -128,12 +155,13 @@ function fakeDrive() {
     }
     return json(500, { error: { message: `unexpected ${method} ${p}` } });
   }) as FetchFn;
-  return { fetchFn, files, calls, queries, writes, down: (v: boolean) => (down = v), silent: (v: boolean) => (silent = v) };
+  return { fetchFn, files, calls, queries, writes, exports, down: (v: boolean) => (down = v), silent: (v: boolean) => (silent = v) };
 }
 
 function setup() {
   const g = fakeDrive();
   const own = new Map<string, string[]>();
+  const saved: { name: string; bytes: Buffer }[] = [];
   const ownFiles: GoogleDeps["ownFiles"] = {
     has: (a, f) => (own.get(a) ?? []).includes(f),
     add: (a, f) => void own.set(a, [...(own.get(a) ?? []), f]),
@@ -147,8 +175,12 @@ function setup() {
     pendingGmailDrafts: () => new Set(),
     ownGmailDrafts: { has: () => false, add: () => {} },
     ownFiles,
+    writeFile: async (name, bytes) => {
+      saved.push({ name, bytes });
+      return `/work/agent/drive-downloads/${name}`;
+    },
   };
-  return { g, deps, own, ownFiles };
+  return { g, deps, own, ownFiles, saved };
 }
 const result = (o: Awaited<ReturnType<typeof runGoogleAction>>) => {
   if (o.kind !== "result") throw new Error(`expected a result, got ${o.kind}`);
@@ -177,13 +209,13 @@ test("the whole Drive is its own area: Drive files alone opens neither search no
 
 test("what no agent may do in a Drive is refused by name, whatever the account holds or allows", () => {
   const all = acct([S.drive, S.drive_all], { drive: "autonomous" });
-  for (const a of ["drive.delete", "drive.trash", "drive.move", "drive.rename", "drive.share", "drive.permissions", "drive.download", "doc.delete", "doc.replace", "sheet.delete", "file.copy"]) {
+  for (const a of ["drive.share", "drive.unshare", "drive.permissions", "drive.purge", "drive.emptytrash", "doc.replace", "file.copy"]) {
     assert.deepEqual(actionVerdict(all, a), { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE }, a);
   }
-  assert.match(DRIVE_REFUSED_SENTENCE, /deleting or binning.*moving or renaming.*shared with.*downloading/);
+  assert.match(DRIVE_REFUSED_SENTENCE, /shared with.*for good or emptying the bin.*replacing/);
   assert.equal((actionVerdict(all, "drive.frobnicate") as { status: number }).status, 400, "anything else is simply unknown");
-  // …and nothing in the table can do it either.
-  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /delete|trash|move|rename|share|download/.test(k) && !k.startsWith("calendar.")), false);
+  // …and nothing in the table shares, copies or deletes for good.
+  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /share|permission|purge|copy|replace/.test(k)), false);
 });
 
 // ---- own vs someone else's file --------------------------------------------
@@ -479,4 +511,179 @@ test("a Drive edit draft: the client gets the file and the content, the log gets
   assert.equal(draftNotice({ ...d, status: "published", postUrl: "https://drive.example/BOBDOC" }), 'Your Drive edit d0000001 (append 14 characters to "Team roadmap" (BOBDOC)) was applied: https://drive.example/BOBDOC');
   assert.match(draftNotice({ ...d, status: "failed", error: FILE_GONE_SENTENCE }) ?? "", /could not be completed: That file is no longer in the Drive/);
   assert.equal(pendingDraftText("general", d), "general has a Drive edit waiting for your approval in the cockpit.");
+});
+
+// ---- bin, move, rename ------------------------------------------------------
+
+test("bin, move and rename follow the Drive setting on ANY file — the cockpit's own included — and need only a Drive area", () => {
+  const ask = acct([S.drive], { mail: "autonomous", calendar: "autonomous" });
+  const auto = acct([S.drive], { drive: "autonomous" });
+  for (const a of ["drive.delete", "drive.move", "drive.rename"] as GoogleAction[]) {
+    assert.equal(GOOGLE_ACTIONS[a].class, "file-manage");
+    assert.equal(actionSetting(ask, a, false), "approve", `${a}: an own file asks too`);
+    assert.equal(actionSetting(ask, a, true), "approve");
+    assert.equal(actionSetting(auto, a, false), "autonomous");
+    assert.equal(actionLogged(a), true);
+    assert.equal(actionVerdict(ask, a).ok, true);
+    assert.equal(actionVerdict(acct([S.gmail]), a).ok, false);
+  }
+});
+
+test("drive delete waits on a card that says where the file is and that it goes to the BIN; nothing is touched", async () => {
+  const { g, deps, ownFiles } = setup();
+  ownFiles.add("g0000001", "PLAN");
+  const out = await runGoogleAction(deps, acct(), "drive.delete", { id: "PLAN" });
+  if (out.kind !== "pending") throw new Error("expected a card — even for the cockpit's own file");
+  assert.equal(out.action, "drive.delete");
+  assert.deepEqual(out.payload, { kind: "file", op: "drive.delete", fileId: "PLAN", name: "Plan 2027", link: "https://drive.example/PLAN", owners: ["ana@example.org"], parentId: "DIR", parentName: "Projects" });
+  assert.equal(out.summary, 'move "Plan 2027" (PLAN) to the bin');
+  assert.deepEqual(writesTo(g.calls), []);
+});
+
+test("drive move and rename: the card holds the current folder and name and exactly what changes; bad requests are refused before anyone is asked", async () => {
+  const { g, deps } = setup();
+  const a = acct();
+  const mv = await runGoogleAction(deps, a, "drive.move", { id: "PLAN", to: "ARCHIVE" });
+  if (mv.kind !== "pending" || mv.payload.kind !== "file") throw new Error("expected a card");
+  assert.deepEqual([mv.payload.parentId, mv.payload.parentName, mv.payload.toId, mv.payload.toName], ["DIR", "Projects", "ARCHIVE", "Archive"]);
+  assert.equal(mv.summary, 'move "Plan 2027" (PLAN) to folder "Archive" (ARCHIVE)');
+  const rn = await runGoogleAction(deps, a, "drive.rename", { id: "BOBDOC", name: "  Team roadmap 2027 " });
+  if (rn.kind !== "pending" || rn.payload.kind !== "file") throw new Error("expected a card");
+  assert.equal(rn.payload.newName, "Team roadmap 2027");
+  assert.equal(rn.payload.parentId, undefined, "a file merely shared has no folder here");
+  assert.equal(rn.summary, 'rename "Team roadmap" (BOBDOC) to "Team roadmap 2027"');
+  await assert.rejects(runGoogleAction(deps, a, "drive.move", { id: "PLAN", to: "BOBDOC" }), /is not a folder/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.move", { id: "PLAN", to: "NOPE" }), /is not a folder/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.move", { id: "PLAN", to: "DIR" }), /already in that folder/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.move", { id: "PLAN" }), /Give the folder/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.rename", { id: "PLAN", name: "Plan 2027" }), /already the file's name/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.rename", { id: "PLAN", name: "a\nb" }), GoogleInputError);
+  await assert.rejects(runGoogleAction(deps, a, "drive.rename", { id: "PLAN", name: "" }), /new name is required/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.delete", { id: "NOPE" }), /No file 'NOPE'/);
+  await assert.rejects(runGoogleAction(deps, a, "drive.delete", { id: "../x" }), GoogleInputError);
+  assert.deepEqual(writesTo(g.calls), []);
+});
+
+test("with Drive edits automatic: binned (never deleted for good), moved, renamed at once — one PATCH each, no DELETE ever", async () => {
+  const { g, deps } = setup();
+  const a = acct([S.drive, S.drive_all], { drive: "autonomous" });
+  const del = result(await runGoogleAction(deps, a, "drive.delete", { id: "PLAN" }));
+  assert.equal(del.result.status, "binned");
+  assert.deepEqual(del.log, { summary: 'move "Plan 2027" (PLAN) to the bin', link: "https://drive.example/PLAN" });
+  assert.deepEqual(g.writes.at(-1), { id: "PLAN", kind: "patch", body: { trashed: true, add: null, remove: null } });
+  await runGoogleAction(deps, a, "drive.move", { id: "ARCHIVE", to: "DIR" });
+  assert.deepEqual(g.writes.at(-1), { id: "ARCHIVE", kind: "patch", body: { add: "DIR", remove: "ROOT" } });
+  await runGoogleAction(deps, a, "drive.rename", { id: "BOBDOC", name: "Roadmap" });
+  assert.deepEqual(g.writes.at(-1), { id: "BOBDOC", kind: "patch", body: { name: "Roadmap", add: null, remove: null } });
+  assert.equal(g.calls.some((c) => c.startsWith("DELETE ")), false);
+});
+
+const manage = (over: Partial<FilePayload>): FilePayload => ({ kind: "file", op: "drive.delete", fileId: "PLAN", name: "Plan 2027", link: "https://drive.example/PLAN", owners: ["ana@example.org"], parentId: "DIR", parentName: "Projects", ...over });
+
+test("Approve applies a bin / move / rename only to the file as the card showed it", async () => {
+  const { g, deps } = setup();
+  assert.deepEqual(await approveGoogleDraft(deps, acct(), fileDraft(manage({ op: "drive.rename", newName: "Plan 2028" }))), { kind: "done", link: "https://drive.example/PLAN" });
+  assert.equal(g.files.get("PLAN")!.name, "Plan 2028");
+  // The card for the bin was made when it was still "Plan 2027": renamed since → nothing happens.
+  await assert.rejects(approveGoogleDraft(deps, acct(), fileDraft(manage({}))), (e: unknown) => e instanceof GoogleInputError && e.message === FILE_CHANGED_SENTENCE);
+  assert.equal(g.files.get("PLAN")!.trashed, undefined);
+  // Moved since the card → a move card for the old place changes nothing either.
+  g.files.get("PLAN")!.parents = ["ROOT"];
+  await assert.rejects(approveGoogleDraft(deps, acct(), fileDraft(manage({ op: "drive.move", name: "Plan 2028", toId: "ARCHIVE", toName: "Archive" }))), /renamed or moved since/);
+  assert.equal(g.writes.length, 1);
+  // Unchanged → applied: moved out of the folder the card named, then binned.
+  await approveGoogleDraft(deps, acct(), fileDraft(manage({ op: "drive.move", name: "Plan 2028", parentId: "ROOT", toId: "ARCHIVE", toName: "Archive" })));
+  assert.deepEqual(g.writes.at(-1)!.body, { add: "ARCHIVE", remove: "ROOT" });
+  await approveGoogleDraft(deps, acct(), fileDraft(manage({ name: "Plan 2028", parentId: "ARCHIVE" })));
+  assert.equal(g.files.get("PLAN")!.trashed, true);
+  await assert.rejects(approveGoogleDraft(deps, acct(), fileDraft(manage({ name: "Plan 2028", parentId: "ARCHIVE" }))), (e: unknown) => e instanceof GoogleInputError && e.message === FILE_GONE_SENTENCE, "already in the bin: gone");
+});
+
+// ---- download ---------------------------------------------------------------
+
+test("download plan: Google files are exported (docx|pdf, xlsx|csv, pptx|pdf), others come as they are; refused before a byte moves", () => {
+  assert.equal(downloadPlan({ mimeType: MIME_DOC }, undefined).ext, "docx");
+  assert.deepEqual(downloadPlan({ mimeType: MIME_DOC }, "PDF"), { exportMime: "application/pdf", ext: "pdf" });
+  assert.equal(downloadPlan({ mimeType: MIME_SHEET }, undefined).ext, "xlsx");
+  assert.equal(downloadPlan({ mimeType: MIME_SHEET }, "csv").exportMime, "text/csv");
+  assert.equal(downloadPlan({ mimeType: MIME_SLIDES }, undefined).ext, "pptx");
+  assert.deepEqual(downloadPlan({ mimeType: "application/zip", size: 10 }, undefined), {});
+  assert.throws(() => downloadPlan({ mimeType: MIME_DOC }, "xlsx"), /docx or pdf/);
+  assert.throws(() => downloadPlan({ mimeType: "application/zip" }, "pdf"), /applies to Google Docs, Sheets and Slides only/);
+  assert.throws(() => downloadPlan({ mimeType: MIME_FOLDER }, undefined), /folder cannot be downloaded/);
+  assert.throws(() => downloadPlan({ mimeType: "application/vnd.google-apps.form" }, undefined), /cannot be downloaded/);
+  assert.throws(() => downloadPlan({ mimeType: "video/mp4", size: MAX_DOWNLOAD_BYTES + 1 }, undefined), /over 50 MB/);
+  assert.throws(() => downloadPlan({ mimeType: MIME_DOC }, 5), GoogleInputError);
+});
+
+test("a Drive file's name becomes ONE safe local name: no separator, no leading dot, no control character, bounded", () => {
+  assert.equal(downloadFileName("Team roadmap", "docx"), "Team roadmap.docx");
+  assert.equal(downloadFileName("Report.PDF", "pdf"), "Report.PDF", "the extension is not doubled");
+  assert.equal(downloadFileName("../../etc/passwd"), "etc_passwd");
+  assert.equal(downloadFileName("..\\..\\boot.ini"), "boot.ini");
+  assert.equal(downloadFileName(".bashrc"), "bashrc");
+  assert.equal(downloadFileName("a\nb\u0000c‮d.txt"), "a_b_c_d.txt");
+  assert.equal(downloadFileName("Budget été (v2).xlsx"), "Budget été (v2).xlsx");
+  assert.equal(downloadFileName("///"), "file");
+  assert.equal(downloadFileName("  "), "file");
+  assert.equal([...downloadFileName("x".repeat(500), "pdf")].length, 124);
+  for (const hostile of ["../../etc/passwd", "/abs/path", "a/b", "..", ".", "~/.ssh/id", "con\\aux", "-rf", "$(id)", "`id`"]) {
+    const n = downloadFileName(hostile);
+    assert.equal(path.basename(n), n, hostile);
+    assert.doesNotMatch(n, /^[.\-]|[\/\\$`]/, hostile);
+  }
+});
+
+test("drive.download: exported or as it is, handed to the agent-rights writer under the safe name, logged by id and name", async () => {
+  const { g, deps, saved } = setup();
+  const doc = result(await runGoogleAction(deps, acct(), "drive.download", { id: "BOBDOC", format: "pdf" }));
+  assert.deepEqual(g.exports, ["BOBDOC application/pdf"]);
+  assert.equal(saved[0].name, "Team roadmap.pdf");
+  assert.equal(saved[0].bytes.toString(), "EXPORT:application/pdf:Team roadmap");
+  assert.equal(doc.result.path, "/work/agent/drive-downloads/Team roadmap.pdf", "the path the writer returned — never one the agent named");
+  assert.equal(doc.result.untrusted, true);
+  assert.deepEqual(doc.log, { summary: 'download file BOBDOC — "Team roadmap" (pdf, 35 bytes)' });
+  await runGoogleAction(deps, acct(), "drive.download", { id: "BOBSHEET" });
+  assert.equal(saved[1].name, "Budget 2026.xlsx");
+  const zip = result(await runGoogleAction(deps, acct(), "drive.download", { id: "ZIP", path: "/etc/cron.d/x", name: "../x" }));
+  assert.equal(path.basename(saved[2].name), saved[2].name, "a hostile name cannot leave the directory, and no argument chooses the place");
+  assert.equal(saved[2].name, "etc_pass wd_.zip");
+  assert.deepEqual([...saved[2].bytes], [1, 2, 3, 4, 5, 6]);
+  assert.equal(zip.result.bytes, 6);
+  assert.equal(actionSetting(acct([S.drive], { drive: "approve" }), "drive.download"), null, "a read: never asks");
+  assert.equal(actionLogged("drive.download"), true);
+  await assert.rejects(runGoogleAction(deps, acct(), "drive.download", { id: "NOPE" }), /No file 'NOPE'/);
+  await assert.rejects(runGoogleAction(deps, acct(), "drive.download", { id: "DIR" }), /folder cannot be downloaded/);
+  assert.deepEqual(writesTo(g.calls), [], "a download changes nothing in the Drive");
+  deps.writeFile = async () => { throw new Error("EACCES /root/secret"); };
+  await assert.rejects(runGoogleAction(deps, acct(), "drive.download", { id: "ZIP" }), (e: unknown) => e instanceof GoogleInputError && !/root/.test(e.message));
+});
+
+test("a download is cut off at the cap even when the size was not announced", async () => {
+  const { g, deps } = setup();
+  g.files.set("LIAR", { name: "liar.bin", mimeType: "application/octet-stream", size: 3, bytes: Buffer.alloc(4096) });
+  await assert.rejects(downloadDriveFile("ACCESS-TOKEN", { id: "LIAR" }, deps.fetchFn, 1024), /too large to download/);
+  assert.equal((await downloadDriveFile("ACCESS-TOKEN", { id: "LIAR" }, deps.fetchFn, 8192))!.bytes.length, 4096);
+});
+
+test("writeNewAsUserArgv: real sh + dd create the directory and the file, and refuse to write over an existing name or through a symlink", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "dl-"));
+  try {
+    assert.equal(writeNewAsUserArgv("sk-a", "/x", "f").cmd, "setpriv", "as the agent's user when there is one");
+    const target = path.join(dir, "drive-downloads");
+    const run = (name: string, input: string) => {
+      const { cmd, argv } = writeNewAsUserArgv(null, target, name);
+      return execFileSync(cmd, argv, { input, stdio: ["pipe", "pipe", "pipe"] });
+    };
+    run("a b=c (2).txt", "hello");
+    assert.equal(fs.readFileSync(path.join(target, "a b=c (2).txt"), "utf8"), "hello");
+    assert.throws(() => run("a b=c (2).txt", "again"), "an existing file is never overwritten");
+    assert.equal(fs.readFileSync(path.join(target, "a b=c (2).txt"), "utf8"), "hello");
+    fs.writeFileSync(path.join(dir, "victim"), "keep");
+    fs.symlinkSync(path.join(dir, "victim"), path.join(target, "link.txt"));
+    assert.throws(() => run("link.txt", "pwned"));
+    assert.equal(fs.readFileSync(path.join(dir, "victim"), "utf8"), "keep");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
