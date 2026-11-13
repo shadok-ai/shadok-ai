@@ -2059,7 +2059,13 @@ line endings, attachment names). The person may edit it in Gmail. On *Send*,
 same fingerprint → `drafts.send`; different → NOT sent, the card takes the new
 content (`edited`) and the route answers 409 *"Edited in Gmail since — send this
 version?"*, so a person always sends what they are looking at (invariant 43);
-404 → status `gone`, the card closes and the agent is told. *Discard* deletes
+404 → status `gone`, the card closes and the agent is told — worded as "no
+longer in Gmail: deleted there, or sent from Gmail", because Gmail answers the
+same for both and "deleted, not sent" would have an agent send a second copy.
+A failure BEFORE the outbound call (the token renewal, `drafts.get`) that a
+second click may get past comes back as `retry`: the draft returns to pending
+(503) instead of dying as `failed` — the hourly refresh alone makes such a
+failure likely, and nothing has left the account. *Discard* deletes
 the Gmail draft too. The agent cannot rewrite a draft awaiting approval
 (`gmail.draft --update` is refused for ids in `pendingGmailDraftIds`).
 Attachments are read ONCE, with the agent's rights (invariant 60), at draft
@@ -2067,6 +2073,14 @@ time — the bytes live in the Gmail draft from then on, which is the snapshot
 rule for mail. `autonomous` sends directly, with no draft left behind. A send
 or an event write that got no answer is *outcome unknown* ("check before
 retrying"), never "failed".
+
+**An event's time is shown as it is sent.** A time carrying its own offset is
+an instant: it is sent without a `timeZone` and the card labels it with that
+offset; a wall-clock time is sent with the zone and labelled with it. Sending
+both let the card say "10:00 (America/New_York)" for an event created at
+another hour. A day that does not exist, an end not after the start and a
+zone given alone are refused when the agent drafts, not when a person
+approves; an all-day card names the LAST day (Google's end date is exclusive).
 
 ### Files
 

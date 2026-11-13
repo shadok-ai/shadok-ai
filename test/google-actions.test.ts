@@ -7,11 +7,13 @@ import {
   approveGoogleDraft,
   discardGoogleDraft,
   pendingGmailDraftIds,
+  RETRY_SENTENCE,
   runGoogleAction,
   type GoogleAction,
   type GoogleDeps,
 } from "../src/google-actions.js";
-import { GoogleInputError, type FetchFn } from "../src/google.js";
+import { GoogleError, GoogleInputError, type FetchFn } from "../src/google.js";
+import { draftCardModel } from "../public/social-card.js";
 import { GOOGLE_AREA_SCOPES, type ConnectedAccount } from "../src/connected-accounts.js";
 import { draftLogEntry, draftView, makeDraft, serialiseLogEntry, type Draft, type MailPayload } from "../src/social-drafts.js";
 import { gmailPayloadFromRaw, type FakePart } from "./fixtures/fake-gmail.js";
@@ -363,4 +365,43 @@ test("the mail body is on the card and NEVER in the log; no token, Gmail draft i
   assert.match(line, /bob@example\.org/);
   assert.doesNotMatch(line, /Here they are|Hi Bob/, "the body is not");
   assert.doesNotMatch(line, /ACCESS-TOKEN|REFRESH-SECRET/);
+});
+
+// ---- regressions from review ---------------------------------------------
+
+test("a failure BEFORE anything is sent keeps the card: the broker or Gmail being down is 'retry', not a dead draft", async () => {
+  const { g, deps, account, draft } = await pendingMail();
+  const brokerDown: GoogleDeps = { ...deps, token: async () => { throw new GoogleError("The connector could not be reached to renew Google access — try again in a moment.", 502, false); } };
+  assert.deepEqual(await approveGoogleDraft(brokerDown, account, draft), { kind: "retry", reason: RETRY_SENTENCE });
+  const gmailDown: GoogleDeps = { ...deps, fetchFn: (async () => new Response("{}", { status: 503 })) as FetchFn };
+  assert.equal((await approveGoogleDraft(gmailDown, account, draft)).kind, "retry");
+  const offline: GoogleDeps = { ...deps, fetchFn: (async () => { throw new Error("ECONNRESET"); }) as FetchFn };
+  assert.equal((await approveGoogleDraft(offline, account, draft)).kind, "retry");
+  assert.equal(g.sent.length, 0);
+  assert.equal(g.drafts.size, 1, "the Gmail draft is still there");
+  // The same card, clicked again once Google is back, sends.
+  assert.deepEqual(await approveGoogleDraft(deps, account, draft), { kind: "done" });
+  assert.equal(g.sent.length, 1);
+});
+
+test("a dead grant or a disconnected account is NOT a retry: it fails for good, with its reason", async () => {
+  const { deps, account, draft } = await pendingMail();
+  const dead: GoogleDeps = { ...deps, token: async () => { throw new GoogleError("Google no longer accepts this account's authorisation.", 401, true); } };
+  await assert.rejects(approveGoogleDraft(dead, account, draft), (e: unknown) => e instanceof GoogleError && e.expired);
+  const gone: GoogleDeps = { ...deps, token: async () => { throw new GoogleError("That Google account is no longer connected.", 410, false); } };
+  await assert.rejects(approveGoogleDraft(gone, account, draft), GoogleError);
+});
+
+test("an update that moves an event by an instant shows that instant's own offset, not the event's old zone", async () => {
+  const { g, deps } = setup(acct({ policies: { mail: "approve", calendar: "autonomous" } }));
+  await runGoogleAction(deps, acct({ policies: { mail: "approve", calendar: "autonomous" } }), "calendar.create", EVENT);
+  const id = [...g.events.keys()][0];
+  const upd = await runGoogleAction(deps, acct(), "calendar.update", { event: id, start: "2026-11-20T15:00:00Z", end: "2026-11-20T16:00:00Z" });
+  assert.equal(upd.kind, "pending");
+  if (upd.kind !== "pending" || upd.payload.kind !== "event") return;
+  assert.equal(upd.payload.start, "2026-11-20T15:00:00Z");
+  assert.doesNotMatch(upd.summary, /Europe\/Paris/, "the log does not label a UTC instant with the old zone");
+  const m = draftCardModel(draftView(makeDraft({ id: "ab", sessionId: "s", accountId: "g0000001", text: upd.summary, origin: "agent", now: NOW, provider: "google", action: "calendar.update", payload: upd.payload }), acct()));
+  assert.equal(m.fields.find((f: { label: string }) => f.label === "Starts").value, "2026-11-20 15:00 (UTC)");
+  assert.deepEqual(upd.payload.patch, { start: "2026-11-20T15:00:00Z", end: "2026-11-20T16:00:00Z" });
 });

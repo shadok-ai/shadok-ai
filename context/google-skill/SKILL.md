@@ -68,8 +68,10 @@ node ~/.claude/skills/shadok-google/scripts/google.mjs calendar update --account
 node ~/.claude/skills/shadok-google/scripts/google.mjs calendar delete --account <id> --event <id>
 ```
 
-A time without an offset needs `--tz` (an IANA name). Dates only
-(`--start 2026-11-20 --end 2026-11-21`) make an all-day event. `--stdin` on a
+A time without an offset needs `--tz` (an IANA name); a time with one
+(`…T10:00:00+01:00`) is taken as it is. Dates only make an all-day event, and
+the end is the day AFTER the last day (`--start 2026-11-20 --end 2026-11-21`
+is the 20th alone). `--stdin` on a
 calendar command is the event's description. Attendees are emailed by Google.
 `--to`, `--cc`, `--bcc`, `--attendee` and `--attach` may be repeated;
 `--attach` takes absolute paths.
@@ -84,7 +86,9 @@ Gmail drafts and shows an approval card in the cockpit. With `events=approve` a
 calendar change waits on a card the same way. The command says so ("waiting
 for approval"). Do not say it is sent or done: a hidden notice reaches you
 when the person approves or discards it. The person may edit the draft in
-Gmail before sending — what goes out is their version. You cannot change or
+Gmail before sending — what goes out is their version. If you are told the
+draft "is no longer in Gmail", they deleted it or sent it from Gmail
+themselves: ask before sending it again. You cannot change or
 delete an email that is waiting for approval; a new `gmail send` makes a new
 card. Only "Sent." / "Created event …" means it already happened.
 

@@ -44,7 +44,8 @@ async function call(method, route, payload) {
 const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
 async function accounts() {
-  const { accounts: list = [] } = await call("GET", "/social/accounts");
+  // The route lists every connected account; Google's belong to shadok-google.
+  const list = ((await call("GET", "/social/accounts")).accounts ?? []).filter((a) => a.provider !== "google");
   if (!list.length) {
     console.log("No LinkedIn account is available to this agent. Ask the person to connect one in Secrets → Connected accounts, or to share theirs with this agent's group.");
     return;

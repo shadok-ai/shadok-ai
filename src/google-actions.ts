@@ -8,6 +8,7 @@ import path from "node:path";
 import { defaultGooglePolicies, grantedAreas, type AccountPolicy, type ConnectedAccount, type GoogleArea } from "./connected-accounts.js";
 import type { Draft, DraftAction, DraftPayload, EventPayload, MailPayload } from "./social-drafts.js";
 import {
+  GoogleError,
   GoogleInputError,
   MAX_ATTACHMENTS_BYTES,
   appendDoc,
@@ -122,7 +123,9 @@ export function mailSummary(m: Pick<MailContent, "to" | "cc" | "bcc" | "subject"
 }
 
 export function eventSummary(op: EventPayload["op"], e: Pick<EventFields, "title" | "start" | "end" | "timeZone">): string {
-  return `${op} "${e.title}" ${e.start} → ${e.end}${e.timeZone ? ` (${e.timeZone})` : ""}`;
+  // The zone is named only for a wall-clock time; one with an offset says its own.
+  const zone = e.timeZone && !/(Z|[+-]\d{2}:\d{2})$/.test(e.start) ? ` (${e.timeZone})` : "";
+  return `${op} "${e.title}" ${e.start} → ${e.end}${zone}`;
 }
 
 const ATTACH_MIME: Record<string, string> = {
@@ -298,10 +301,25 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
 
 export type ApprovalOutcome =
   | { kind: "done"; link?: string }
+  /** Nothing was attempted — the token could not be renewed, or Gmail could not
+   *  be read — so nothing left the account: the card stays, to be clicked again. */
+  | { kind: "retry"; reason: string }
   /** The Gmail draft is not what the card showed: the card is refreshed and asks again. */
   | { kind: "changed"; payload: MailPayload; summary: string }
-  /** The Gmail draft was deleted in Gmail: nothing left to send. */
+  /** The Gmail draft is no longer there — deleted in Gmail, or sent from
+   *  Gmail by the person: the two are not told apart. Nothing left to send. */
   | { kind: "gone" };
+
+export const RETRY_SENTENCE = "Google could not be reached, so nothing was sent or changed — try again in a moment.";
+
+/** A failure BEFORE the outbound call that a second click may well get past
+ *  (an outage at the broker or at Google). A dead grant, a disconnected
+ *  account or a refusal of the request itself is not one. */
+function retryable(e: unknown): boolean {
+  if (e instanceof GoogleInputError) return false;
+  if (e instanceof GoogleError) return !e.expired && e.status >= 500;
+  return true;
+}
 
 /**
  * A person clicked Send / Apply on a Google card. For an email the Gmail draft
@@ -313,9 +331,19 @@ export type ApprovalOutcome =
 export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAccount, draft: Pick<Draft, "payload">): Promise<ApprovalOutcome> {
   const p = draft.payload;
   if (!p) throw new GoogleInputError("This draft has nothing to send.");
-  const token = await deps.token(account.id);
+  // Everything up to the outbound call leaves the account untouched, so a
+  // passing failure there must not kill the card (the hourly token renewal
+  // alone makes one likely): it comes back as `retry`.
+  let token: string;
+  let now: MailContent | null = null;
+  try {
+    token = await deps.token(account.id);
+    if (p.kind === "mail") now = await getGmailDraft(token, p.gmailDraftId, deps.fetchFn);
+  } catch (e) {
+    if (retryable(e)) return { kind: "retry", reason: RETRY_SENTENCE };
+    throw e;
+  }
   if (p.kind === "mail") {
-    const now = await getGmailDraft(token, p.gmailDraftId, deps.fetchFn);
     if (!now) return { kind: "gone" };
     const fingerprint = mailFingerprint(now);
     if (fingerprint !== p.fingerprint) {

@@ -138,7 +138,9 @@ export const IMAGE_GONE_SENTENCE = "The draft's image is gone — ask the agent 
 export const GOOGLE_OUTCOME_UNKNOWN_SENTENCE = "Google did not answer in time — check Gmail's Sent folder or the calendar before retrying, it may have gone through.";
 export const GOOGLE_FAILED_SENTENCE = "Google was not reached or did not answer. Try again later.";
 export const EDITED_IN_GMAIL_SENTENCE = "Edited in Gmail since — send this version?";
-export const GONE_IN_GMAIL_SENTENCE = "Draft deleted in Gmail — nothing was sent.";
+// A draft that is no longer there was deleted in Gmail OR sent from Gmail by
+// the person: Gmail answers the same for both, so the sentence claims neither.
+export const GONE_IN_GMAIL_SENTENCE = "This draft is no longer in Gmail — deleted there, or already sent from Gmail. The cockpit sent nothing.";
 export const PUBLISH_FAILED_SENTENCE = "The post could not be published — LinkedIn was not reached or did not answer. Try again later.";
 
 function shortDate(ms: number): string {
@@ -555,7 +557,7 @@ export function draftNotice(d: Draft): string | null {
     if (d.status === "published") return `${what} ${done}${d.postUrl ? `: ${d.postUrl}` : "."}`;
     if (d.status === "discarded") return `${what} was discarded by ${d.decidedBy ?? "someone"} — nothing left the account.`;
     if (d.status === "failed") return `${what} could not be completed: ${d.error ?? "unknown error"}`;
-    if (d.status === "gone") return `${what}: the person deleted the draft in Gmail — it was not sent.`;
+    if (d.status === "gone") return `${what} is no longer in Gmail: the person deleted it there, or sent it from Gmail themselves. The cockpit sent nothing — ask them before sending it again.`;
     return null;
   }
   if (d.status === "published") return `Your LinkedIn draft ${id8} was published: ${d.postUrl ?? ""}`.trimEnd();

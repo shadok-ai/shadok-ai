@@ -240,7 +240,7 @@ test("email card: edited in Gmail asks again; sent, deleted in Gmail and discard
   const sent = draftCardModel(mail({ status: "published" }));
   assert.deepEqual(sent.actions, []);
   assert.equal(sent.statusLine, "Sent.");
-  assert.equal(draftCardModel(mail({ status: "gone" })).statusLine, "Draft deleted in Gmail — nothing was sent.");
+  assert.equal(draftCardModel(mail({ status: "gone" })).statusLine, "This draft is no longer in Gmail — deleted there, or already sent from Gmail. The cockpit sent nothing.");
   assert.deepEqual(draftCardModel(mail({ status: "gone" })).actions, []);
   assert.equal(draftCardModel(mail({ status: "discarded", decidedBy: "ana" })).statusLine, "Discarded by ana — nothing left the account.");
   assert.equal(draftCardModel(mail({ status: "publishing" })).statusLine, "Sending…");
@@ -263,8 +263,15 @@ test("event card: an offset is shown as the event says it, an all-day date stays
   const off = fieldMap(draftCardModel(event({}, { start: "2026-11-20T10:00:00+01:00", end: "2026-11-20T11:00:00Z", timeZone: undefined })));
   assert.equal(off.Starts, "2026-11-20 10:00 (UTC+01:00)");
   assert.equal(off.Ends, "2026-11-20 11:00 (UTC)");
+  // A time with its own offset is labelled by it even when a zone rides along:
+  // "10:00 (America/New_York)" would name a time the event does not happen at.
+  const both = fieldMap(draftCardModel(event({}, { start: "2026-11-20T10:00:00+01:00", end: "2026-11-20T11:00:00+01:00", timeZone: "America/New_York" })));
+  assert.equal(both.Starts, "2026-11-20 10:00 (UTC+01:00)");
+  // All day: Google's end date is the day after the last one; the card names the last day.
   const day = fieldMap(draftCardModel(event({}, { start: "2026-11-20", end: "2026-11-21", timeZone: undefined, attendees: [] })));
-  assert.equal(day.Starts, "2026-11-20");
+  assert.equal(day.Starts, "2026-11-20 (all day)");
+  assert.equal(day.Ends, "2026-11-20 (all day, last day)");
+  assert.equal(fieldMap(draftCardModel(event({}, { start: "2026-11-20", end: "2026-11-23" }))).Ends, "2026-11-22 (all day, last day)");
   assert.equal("Attendees" in day, false);
   assert.equal(fieldMap(draftCardModel(event({}, { calendarId: "team@group.calendar.google.com" }))).Calendar, "team@group.calendar.google.com");
 });

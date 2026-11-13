@@ -457,10 +457,8 @@ function htmlToText(html: string): string {
  * body; a draft Gmail rewrote as HTML only falls back to its text.
  */
 export function parseGmailMessage(payload: GmailPart | undefined): MailContent {
-  const header = (name: string) => {
-    const h = (payload?.headers ?? []).find((x) => (x.name ?? "").toLowerCase() === name);
-    return decodeWords(h?.value ?? "");
-  };
+  const rawHeader = (name: string) => (payload?.headers ?? []).find((x) => (x.name ?? "").toLowerCase() === name)?.value ?? "";
+  const header = (name: string) => decodeWords(rawHeader(name));
   const split = (v: string) => {
     const out: string[] = [];
     let quoted = false;
@@ -496,12 +494,15 @@ export function parseGmailMessage(payload: GmailPart | undefined): MailContent {
   const body = plain ?? (html !== null ? htmlToText(html) : "");
   // Shown the way the card shows an agent's own fields (`Name <addr>`), not
   // with the quoting the raw header happens to carry.
-  const shown = (v: string) =>
-    split(v).map((x) => {
+  // Split on the RAW header, decoded afterwards: an encoded name may hold a
+  // comma ("Dupré, Jean"), which decoded first would read as two recipients.
+  const shown = (name: string) =>
+    split(rawHeader(name)).map((raw) => {
+      const x = decodeWords(raw);
       const a = parseAddress(x);
       return a ? formatDisplay(a) : x;
     });
-  return { to: shown(header("to")), cc: shown(header("cc")), bcc: shown(header("bcc")), subject: header("subject"), body: normBody(body), attachments };
+  return { to: shown("to"), cc: shown("cc"), bcc: shown("bcc"), subject: header("subject"), body: normBody(body), attachments };
 }
 
 // ---- Gmail ---------------------------------------------------------------
@@ -581,13 +582,28 @@ function timeZoneOk(tz: string): boolean {
 
 /** One event time, checked: a date (all day) or a date-time that says which
  *  zone it is in — by its own offset or by `timeZone`. */
+/** Is the calendar day of `v` (its first 10 characters) a day that exists?
+ *  `Date.parse` accepts 2026-02-31 and rolls it over; Google refuses it. */
+function realDay(v: string): boolean {
+  const [y, m, d] = v.slice(0, 10).split("-").map(Number);
+  const t = new Date(Date.UTC(y, m - 1, d));
+  return t.getUTCFullYear() === y && t.getUTCMonth() === m - 1 && t.getUTCDate() === d;
+}
+
+/** A comparable instant; a wall-clock time is read as UTC, which orders two
+ *  times of the same zone correctly. */
+const roughInstant = (v: string) => Date.parse(DATE_RE.test(v) ? `${v}T00:00:00Z` : hasOffset(v) ? v : `${v}Z`);
+
 function eventTime(what: string, v: unknown, tz: string | undefined): { date: string } | { dateTime: string; timeZone?: string } {
-  if (typeof v !== "string" || !(DATE_RE.test(v) || DATETIME_RE.test(v)) || Number.isNaN(Date.parse(DATE_RE.test(v) ? `${v}T00:00:00Z` : hasOffset(v) ? v : `${v}Z`)))
+  if (typeof v !== "string" || !(DATE_RE.test(v) || DATETIME_RE.test(v)) || !realDay(v) || Number.isNaN(roughInstant(v)))
     throw new GoogleInputError(`The event's ${what} must be a date (YYYY-MM-DD) or a date-time (YYYY-MM-DDTHH:MM, with an offset or a time zone).`);
   if (DATE_RE.test(v)) return { date: v };
   if (!hasOffset(v) && !tz) throw new GoogleInputError(`The event's ${what} has no offset: give a time zone (e.g. Europe/Paris).`);
   const dateTime = /T\d{2}:\d{2}($|Z|[+-])/.test(v) ? v.replace(/(T\d{2}:\d{2})/, "$1:00") : v;
-  return { dateTime, ...(tz ? { timeZone: tz } : {}) };
+  // A time that carries its own offset IS an instant: a zone sent beside it
+  // would not move it, only make the card's "(zone)" label a lie. The zone is
+  // sent only for a wall-clock time, where it is what fixes the instant.
+  return hasOffset(v) ? { dateTime } : { dateTime, timeZone: tz };
 }
 
 /**
@@ -629,8 +645,19 @@ export function eventFieldsVerdict(raw: Record<string, unknown>, partial = false
   }
   if (out.start && out.end) {
     if (DATE_RE.test(out.start) !== DATE_RE.test(out.end)) throw new GoogleInputError("The event's start and end must both be dates, or both date-times.");
+    // Compared only when both say the same kind of time (two offsets, or two
+    // wall-clock times of the one zone); a mix is left to Google.
+    if (hasOffset(out.start) === hasOffset(out.end) && roughInstant(out.end) <= roughInstant(out.start)) {
+      throw new GoogleInputError(
+        DATE_RE.test(out.start) ? "An all-day event's end is the day AFTER its last day (a one-day event on the 20th ends on the 21st)." : "The event ends before it starts.",
+      );
+    }
   } else if (partial && (out.start || out.end)) {
     throw new GoogleInputError("To move an event give both its start and its end.");
+  } else if (partial && out.timeZone) {
+    // A zone alone changes nothing Google is sent: the card would show a
+    // change and the event would stay as it was.
+    throw new GoogleInputError("To change an event's time zone give its start and its end too.");
   }
   if (partial && Object.keys(out).length === 0) throw new GoogleInputError("Nothing to change: give at least one field.");
   return out;

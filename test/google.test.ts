@@ -316,3 +316,31 @@ test("neither Google module reads or writes the process environment: a token can
     assert.doesNotMatch(fs.readFileSync(path.join(src, f), "utf8"), /process\.env/, `${f} touches process.env`);
   }
 });
+
+// ---- regressions from review ---------------------------------------------
+
+test("an encoded display name holding a comma is still ONE recipient when Gmail hands the draft back", () => {
+  const f = mailFieldsVerdict({ to: ["Dupré, Jean <jean@example.org>", "bob@example.org"], subject: "S", body: "b" });
+  const back = parseGmailMessage(gmailPayloadFromMime(buildMime(f)));
+  assert.deepEqual(back.to, ['"Dupré, Jean" <jean@example.org>', "bob@example.org"]);
+  assert.equal(mailFingerprint(back), mailFingerprint({ ...f, attachments: [] }), "no false 'edited in Gmail'");
+});
+
+test("a time with its own offset is sent as that instant, with no zone beside it to contradict the card", async () => {
+  const r = recorder(() => json(200, { id: "e" }));
+  const f = eventFieldsVerdict({ title: "x", start: "2026-11-20T10:00:00+01:00", end: "2026-11-20T11:00:00+01:00", timeZone: "America/New_York" });
+  await insertEvent("T", "primary", f as never, r.fetchFn);
+  const body = JSON.parse(String(r.seen[0].init.body));
+  assert.deepEqual(body.start, { dateTime: "2026-11-20T10:00:00+01:00" });
+  assert.deepEqual(body.end, { dateTime: "2026-11-20T11:00:00+01:00" });
+});
+
+test("events: a day that does not exist, an end before the start, and a zone on its own are refused when drafted — not when a person approves", () => {
+  assert.throws(() => eventFieldsVerdict({ title: "x", start: "2026-02-31T10:00:00Z", end: "2026-03-01T10:00:00Z" }), /must be a date/);
+  assert.throws(() => eventFieldsVerdict({ title: "x", start: "2026-02-30", end: "2026-03-02" }), /must be a date/);
+  assert.throws(() => eventFieldsVerdict({ title: "x", start: "2026-11-20T11:00:00Z", end: "2026-11-20T10:00:00Z" }), /ends before it starts/);
+  assert.throws(() => eventFieldsVerdict({ title: "x", start: "2026-11-20T10:00", end: "2026-11-20T10:00", timeZone: "Europe/Paris" }), /ends before it starts/);
+  assert.throws(() => eventFieldsVerdict({ title: "x", start: "2026-11-20", end: "2026-11-20" }), /day AFTER its last day/);
+  assert.throws(() => eventFieldsVerdict({ timeZone: "Asia/Tokyo" }, true), /give its start and its end too/);
+  assert.ok(eventFieldsVerdict({ title: "x", start: "2024-02-29", end: "2024-03-01" }), "a leap day exists");
+});

@@ -491,7 +491,11 @@ test("what a Google draft tells its agent: sent, discarded, failed, deleted in G
   const d = mailDraft();
   assert.equal(draftNotice({ ...d, status: "published" }), 'Your email d0d0d0d0 (to bob@example.org — "Hello") was sent.');
   assert.equal(draftNotice({ ...d, status: "discarded", decidedBy: "Paul" }), 'Your email d0d0d0d0 (to bob@example.org — "Hello") was discarded by Paul — nothing left the account.');
-  assert.equal(draftNotice({ ...d, status: "gone" }), 'Your email d0d0d0d0 (to bob@example.org — "Hello"): the person deleted the draft in Gmail — it was not sent.');
+  // Deleted in Gmail and sent from Gmail look the same to us: the notice claims neither, and says to ask.
+  assert.equal(
+    draftNotice({ ...d, status: "gone" }),
+    'Your email d0d0d0d0 (to bob@example.org — "Hello") is no longer in Gmail: the person deleted it there, or sent it from Gmail themselves. The cockpit sent nothing — ask them before sending it again.',
+  );
   assert.match(draftNotice({ ...d, status: "failed", error: "boom" }) ?? "", /could not be completed: boom/);
   assert.equal(draftNotice(d), null);
   const ev = draft({ provider: "google", action: "calendar.create", text: 'create "Review" a → b', status: "published", postUrl: "https://calendar.google.com/e/1" });

@@ -80,7 +80,9 @@ function eventWhen(v, tz) {
   const s = typeof v === "string" ? v : "";
   const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/.exec(s);
   if (!m) return s;
-  const zone = tz || (m[3] === "Z" ? "UTC" : m[3] ? "UTC" + m[3] : "");
+  // A time with its own offset is labelled by that offset, never by the
+  // zone beside it: the offset is what fixes when the event happens.
+  const zone = m[3] === "Z" ? "UTC" : m[3] ? "UTC" + m[3] : tz || "";
   return `${m[1]} ${m[2]}${zone ? ` (${zone})` : ""}`;
 }
 
@@ -130,8 +132,17 @@ function googleCardModel(d) {
     kindLabel = "Calendar event";
     title = op.head + " — " + account;
     fields.push({ label: "Title", value: typeof e.title === "string" ? e.title : "" });
-    fields.push({ label: "Starts", value: eventWhen(e.start, e.timeZone) });
-    fields.push({ label: "Ends", value: eventWhen(e.end, e.timeZone) });
+    const DAY = /^\d{4}-\d{2}-\d{2}$/;
+    if (DAY.test(e.start) && DAY.test(e.end)) {
+      // All day: Google's end date is the day AFTER the last one, so the card
+      // names the last day itself rather than a day the event does not cover.
+      const last = new Date(Date.parse(e.end + "T00:00:00Z") - DAY_MS).toISOString().slice(0, 10);
+      fields.push({ label: "Starts", value: e.start + " (all day)" });
+      fields.push({ label: "Ends", value: (last < e.start ? e.start : last) + " (all day, last day)" });
+    } else {
+      fields.push({ label: "Starts", value: eventWhen(e.start, e.timeZone) });
+      fields.push({ label: "Ends", value: eventWhen(e.end, e.timeZone) });
+    }
     const who = strs(e.attendees);
     if (who.length) fields.push({ label: "Attendees", value: who.join(", ") + " — Google will email them" });
     if (e.location) fields.push({ label: "Location", value: String(e.location) });
@@ -147,7 +158,7 @@ function googleCardModel(d) {
   else if (status === "published") statusLine = done + (link ? " — " + link : ".");
   else if (status === "discarded") statusLine = "Discarded by " + (d.decidedBy || "someone") + " — nothing left the account.";
   else if (status === "expired") statusLine = kind === "mail" ? "Expired — this email was never sent." : "Expired — the calendar was not changed.";
-  else if (status === "gone") statusLine = "Draft deleted in Gmail — nothing was sent.";
+  else if (status === "gone") statusLine = "This draft is no longer in Gmail — deleted there, or already sent from Gmail. The cockpit sent nothing.";
   else if (status === "failed") statusLine = d.error || "This could not be completed.";
   else statusLine = status;
   return {

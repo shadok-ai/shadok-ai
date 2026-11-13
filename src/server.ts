@@ -6150,13 +6150,20 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
         console.log(`social: draft ${hit.id} was edited in Gmail — card refreshed, not sent`);
         return res.status(409).json({ error: EDITED_IN_GMAIL_SENTENCE, draft: draftCard(refreshed) });
       }
+      if (out.kind === "retry") {
+        // Nothing was attempted: back to pending, the card stays clickable.
+        storeDraft(hit);
+        broadcastDraft(hit);
+        console.log(`social: draft ${hit.id} not attempted (Google unreachable) — still pending`);
+        return res.status(503).json({ error: out.reason, draft: draftCard(hit) });
+      }
       if (out.kind === "gone") {
         const gone: Draft = { ...publishing, status: "gone" };
         storeDraft(gone);
         logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "refused", error: GONE_IN_GMAIL_SENTENCE }));
         broadcastDraft(gone);
         notifyDraftAgent(gone);
-        console.log(`social: draft ${hit.id} was deleted in Gmail — card closed`);
+        console.log(`social: draft ${hit.id} is no longer in Gmail — card closed`);
         return res.status(410).json({ error: GONE_IN_GMAIL_SENTENCE, draft: draftCard(gone) });
       }
       done = { ...publishing, status: "published", ...(out.link ? { postUrl: out.link } : {}) };
