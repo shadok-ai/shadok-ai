@@ -15,6 +15,8 @@ import {
   saveWarned,
   STALE_PUBLISHING_MS,
   STALE_PUBLISHING_SENTENCE,
+  STALE_GOOGLE_SENTENCE,
+  GOOGLE_WARN_BEFORE_MS,
 } from "../src/account-expiry.js";
 import { DRAFT_TTL_MS, type Draft } from "../src/social-drafts.js";
 import type { ConnectedAccount } from "../src/connected-accounts.js";
@@ -120,4 +122,47 @@ test("ownerExpiryFlags: only the owner gets them; soon at ≤7 days, expired by 
   assert.deepEqual(ownerExpiryFlags(acct({ status: "expired" }), "admin", NOW), { expiringSoon: false, expired: true });
   assert.deepEqual(ownerExpiryFlags(acct({ expiresAt: NOW + DAY }), "bob", NOW), {});
   assert.deepEqual(ownerExpiryFlags(acct({ expiresAt: NOW + DAY }), null, NOW), {});
+});
+
+// ---- Google (Testing app: 7-day authorisations) --------------------------
+
+const gacct = (o: Partial<ConnectedAccount> = {}): ConnectedAccount =>
+  acct({ id: "g0000001", provider: "google", label: "ada@example.org", externalId: "sub", expiresAt: NOW + 3600_000, refreshExpiresAt: NOW + 7 * DAY, ...o });
+
+test("Google in Testing warns 2 days before, not 7 — a 7-day warning would fire the moment it is connected", () => {
+  assert.equal(expiryActions([gacct()], [], NOW, {}).warn.length, 0, "freshly connected: 7 days left, no warning");
+  assert.equal(expiryActions([gacct({ refreshExpiresAt: NOW + 2 * DAY + 1 })], [], NOW, {}).warn.length, 0);
+  assert.equal(expiryActions([gacct({ refreshExpiresAt: NOW + 2 * DAY })], [], NOW, {}).warn.length, 1);
+  assert.equal(GOOGLE_WARN_BEFORE_MS, 2 * DAY);
+});
+
+test("a Google account expires at its refresh deadline, never at the hourly access token's", () => {
+  const stale = gacct({ expiresAt: NOW - DAY });
+  assert.deepEqual(expiryActions([stale], [], NOW, {}), { warn: [], expire: [], expiredDrafts: [] });
+  assert.equal(expiryActions([gacct({ refreshExpiresAt: NOW })], [], NOW, {}).expire.length, 1);
+  // No known deadline (an app out of Testing): neither warned nor expired by date.
+  assert.deepEqual(expiryActions([gacct({ refreshExpiresAt: undefined, expiresAt: NOW - DAY })], [], NOW, {}), { warn: [], expire: [], expiredDrafts: [] });
+});
+
+test("owner flags and the warning text follow the Google deadline", () => {
+  assert.deepEqual(ownerExpiryFlags(gacct(), "admin", NOW), { expiringSoon: false, expired: false });
+  assert.deepEqual(ownerExpiryFlags(gacct({ refreshExpiresAt: NOW + DAY }), "admin", NOW), { expiringSoon: true, expired: false });
+  assert.deepEqual(ownerExpiryFlags(gacct({ refreshExpiresAt: NOW - 1 }), "admin", NOW), { expiringSoon: false, expired: true });
+  assert.deepEqual(ownerExpiryFlags(gacct({ refreshExpiresAt: NOW + DAY }), "someone-else", NOW), {});
+  assert.equal(
+    expiryWarningText(gacct({ refreshExpiresAt: Date.UTC(2026, 10, 15) })),
+    "Your Google connection 'ada@example.org' must be reconnected by 2026-11-15 (test app authorisations last 7 days). Reconnect it in Secrets → Connected accounts so agents keep working in it.",
+  );
+});
+
+test("notices name what is waiting: an email, a calendar change, a LinkedIn post", () => {
+  assert.equal(pendingDraftText("general", { provider: "google", action: "gmail.send" }), "general has an email waiting for your approval in the cockpit.");
+  assert.equal(pendingDraftText("general", { provider: "google", action: "calendar.delete" }), "general has a calendar change waiting for your approval in the cockpit.");
+  assert.equal(pendingDraftText("general"), "general has a LinkedIn post waiting for your approval in the cockpit.");
+  assert.equal(draftExpiredNotice(draft({ provider: "google", action: "gmail.send" })), "Your email d1d2d3d4 expired after 7 days without approval — nothing left the account.");
+});
+
+test("a Google send orphaned by a restart says to check Gmail and the calendar, not LinkedIn", () => {
+  const d = draft({ provider: "google", action: "gmail.send", status: "publishing", publishingAt: NOW - STALE_PUBLISHING_MS });
+  assert.equal(stalePublishing([d], NOW).failed[0].error, STALE_GOOGLE_SENTENCE);
 });

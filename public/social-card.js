@@ -1,13 +1,34 @@
-// Connected accounts (LinkedIn) as pure view models, shared by the browser and
+// Connected accounts (LinkedIn, Google) as pure view models, shared by the browser and
 // the tests — like public/profile-card.js. Nothing here touches the DOM: the
 // page renders what these return, and renders the draft's TEXT with
 // textContent only (invariant 13) — it is whatever the agent wrote, so this
 // module passes it through untouched rather than "cleaning" it.
-// Design: docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md.
+// Design: docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md,
+// docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md.
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Same threshold as the server's expiry warning (7 days before `expiresAt`). */
 export const EXPIRY_SOON_MS = 7 * DAY_MS;
+/** Google in Testing lasts 7 days in all, so it warns 2 days ahead (server: GOOGLE_WARN_BEFORE_MS). */
+export const GOOGLE_EXPIRY_SOON_MS = 2 * DAY_MS;
+
+/** The areas of the Connect Google dialog, in the broker's order. */
+export const GOOGLE_AREA_CHOICES = [
+  { key: "calendar", label: "Calendar", hint: "read, add, change and delete events" },
+  { key: "drive", label: "Drive files", hint: "the Docs and Sheets the cockpit creates — never the rest of the Drive" },
+  { key: "gmail", label: "Gmail", hint: "write drafts and send email — never read the mailbox" },
+];
+
+/**
+ * When the account stops working unless reconnected, or null when no date is
+ * known. LinkedIn: `expiresAt`. Google: `refreshExpiresAt` — its `expiresAt`
+ * is the hourly access token's, which the server renews by itself.
+ */
+export function accountDeadline(account) {
+  const a = account || {};
+  if (a.provider !== "google") return Number(a.expiresAt) || 0;
+  return typeof a.refreshExpiresAt === "number" ? a.refreshExpiresAt : null;
+}
 
 /** Only an http(s) address becomes a link; anything else stays text. */
 function safeUrl(u) {
@@ -21,6 +42,7 @@ function safeUrl(u) {
  */
 export function draftCardModel(draft) {
   const d = draft && typeof draft === "object" ? draft : {};
+  if (d.provider === "google") return googleCardModel(d);
   const status = typeof d.status === "string" ? d.status : "pending";
   const pending = status === "pending";
   const link = status === "published" ? safeUrl(d.postUrl) : null;
@@ -34,12 +56,121 @@ export function draftCardModel(draft) {
   else statusLine = status;
   return {
     title: "LinkedIn post as " + (d.account || "(disconnected account)"),
+    kind: "post",
+    kindLabel: "LinkedIn post",
+    fields: [],
+    attachments: [],
     text: typeof d.text === "string" ? d.text : "",
     image: d.image && typeof d.image === "object" ? d.image : null,
     actions: pending
       ? [{ action: "publish", label: "Publish" }, { action: "discard", label: "Discard" }]
       : [],
     statusLine: statusLine.trimEnd(),
+    link,
+    pending,
+  };
+}
+
+const strs = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string" && x) : []);
+
+/** `2026-11-20T10:00:00+01:00` → `2026-11-20 10:00`; an all-day date stays as is.
+ *  The wall-clock time is shown AS WRITTEN, next to its zone — never converted
+ *  to the browser's, which would show a time the event does not say. */
+function eventWhen(v, tz) {
+  const s = typeof v === "string" ? v : "";
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}:\d{2})?$/.exec(s);
+  if (!m) return s;
+  // A time with its own offset is labelled by that offset, never by the
+  // zone beside it: the offset is what fixes when the event happens.
+  const zone = m[3] === "Z" ? "UTC" : m[3] ? "UTC" + m[3] : tz || "";
+  return `${m[1]} ${m[2]}${zone ? ` (${zone})` : ""}`;
+}
+
+const EVENT_OPS = {
+  create: { head: "New calendar event", go: "Add to calendar", wait: "nothing is added until someone approves it", done: "Added to the calendar" },
+  update: { head: "Change to a calendar event", go: "Apply the change", wait: "nothing changes until someone approves it", done: "Event changed" },
+  delete: { head: "Delete a calendar event", go: "Delete the event", wait: "the event stays until someone approves it", done: "Event deleted" },
+};
+
+/**
+ * The approval card of a Google action: an EMAIL (from, to/cc/bcc, subject,
+ * the exact body, attachments by name) or a calendar EVENT (title, start/end
+ * with its time zone, the attendees Google will email, location, description).
+ * Invariant 43: the card shows exactly what will go out — every field the
+ * server sends, none summarised. Same shape as the LinkedIn model; `fields`
+ * are label/value rows and `text` is the body or the description, both the
+ * agent's (or Gmail's) words, rendered with textContent only.
+ */
+function googleCardModel(d) {
+  const status = typeof d.status === "string" ? d.status : "pending";
+  const pending = status === "pending";
+  const link = status === "published" ? safeUrl(d.postUrl) : null;
+  const account = d.account || "(disconnected account)";
+  const fields = [];
+  let title, kind, kindLabel, text, go, wait, done, attachments = [];
+  if (d.mail && typeof d.mail === "object") {
+    const m = d.mail;
+    kind = "mail";
+    kindLabel = "Email";
+    title = "Email from " + (m.from || account);
+    fields.push({ label: "From", value: m.from || account });
+    fields.push({ label: "To", value: strs(m.to).join(", ") || "(nobody)" });
+    if (strs(m.cc).length) fields.push({ label: "Cc", value: strs(m.cc).join(", ") });
+    if (strs(m.bcc).length) fields.push({ label: "Bcc", value: strs(m.bcc).join(", ") });
+    fields.push({ label: "Subject", value: typeof m.subject === "string" ? m.subject : "" });
+    attachments = strs(m.attachments);
+    text = typeof m.body === "string" ? m.body : "";
+    go = "Send";
+    wait = m.edited
+      ? "Edited in Gmail since — send this version?"
+      : "Waiting for approval — nothing is sent until someone sends it. It is in Gmail's drafts too, where it can still be edited.";
+    done = "Sent";
+  } else {
+    const e = d.event && typeof d.event === "object" ? d.event : {};
+    const op = EVENT_OPS[e.op] || EVENT_OPS.create;
+    kind = "event";
+    kindLabel = "Calendar event";
+    title = op.head + " — " + account;
+    fields.push({ label: "Title", value: typeof e.title === "string" ? e.title : "" });
+    const DAY = /^\d{4}-\d{2}-\d{2}$/;
+    if (DAY.test(e.start) && DAY.test(e.end)) {
+      // All day: Google's end date is the day AFTER the last one, so the card
+      // names the last day itself rather than a day the event does not cover.
+      const last = new Date(Date.parse(e.end + "T00:00:00Z") - DAY_MS).toISOString().slice(0, 10);
+      fields.push({ label: "Starts", value: e.start + " (all day)" });
+      fields.push({ label: "Ends", value: (last < e.start ? e.start : last) + " (all day, last day)" });
+    } else {
+      fields.push({ label: "Starts", value: eventWhen(e.start, e.timeZone) });
+      fields.push({ label: "Ends", value: eventWhen(e.end, e.timeZone) });
+    }
+    const who = strs(e.attendees);
+    if (who.length) fields.push({ label: "Attendees", value: who.join(", ") + " — Google will email them" });
+    if (e.location) fields.push({ label: "Location", value: String(e.location) });
+    if (e.calendarId && e.calendarId !== "primary") fields.push({ label: "Calendar", value: String(e.calendarId) });
+    text = typeof e.description === "string" ? e.description : "";
+    go = op.go;
+    wait = "Waiting for approval — " + op.wait + ".";
+    done = op.done;
+  }
+  let statusLine;
+  if (pending) statusLine = wait;
+  else if (status === "publishing") statusLine = kind === "mail" ? "Sending…" : "Applying…";
+  else if (status === "published") statusLine = done + (link ? " — " + link : ".");
+  else if (status === "discarded") statusLine = "Discarded by " + (d.decidedBy || "someone") + " — nothing left the account.";
+  else if (status === "expired") statusLine = kind === "mail" ? "Expired — this email was never sent." : "Expired — the calendar was not changed.";
+  else if (status === "gone") statusLine = "This draft is no longer in Gmail — deleted there, or already sent from Gmail. The cockpit sent nothing.";
+  else if (status === "failed") statusLine = d.error || "This could not be completed.";
+  else statusLine = status;
+  return {
+    title,
+    kind,
+    kindLabel,
+    fields,
+    attachments,
+    text,
+    image: null,
+    actions: pending ? [{ action: "publish", label: go }, { action: "discard", label: "Discard" }] : [],
+    statusLine,
     link,
     pending,
   };
@@ -110,6 +241,40 @@ export function autonomousConfirmText(account, groups) {
 }
 
 /**
+ * The sentence a person confirms before switching one of a Google account's
+ * two settings to automatic. `setting` is `mail` or `calendar`.
+ */
+export function googleAutonomousConfirmText(account, setting, groups) {
+  const a = account || {};
+  const who = a.label || "this account";
+  const scope = scopeText(a.share, groups);
+  return setting === "calendar"
+    ? `Agents in ${scope} will be able to add, change and delete events in ${who}'s calendar without asking anyone.`
+    : `Agents in ${scope} will be able to send email as ${who} without asking anyone.`;
+}
+
+/** A Google account's two approval settings as chip rows (`mail`, `calendar`). */
+export function googlePolicyRows(account) {
+  const p = (account && account.policies) || {};
+  const row = (key, label, hint, ask, auto) => {
+    const autonomous = p[key] === "autonomous";
+    return {
+      key,
+      label,
+      hint,
+      choices: [
+        { key: "approve", label: ask, checked: !autonomous },
+        { key: "autonomous", label: auto, checked: autonomous },
+      ],
+    };
+  };
+  return [
+    row("mail", "Mail", "Whether a person approves each email on a card in the chat", "Ask before sending", "Send on its own"),
+    row("calendar", "Events", "Whether a person approves each event added, changed or deleted", "Ask before changing", "Change on its own"),
+  ];
+}
+
+/**
  * The "Shared with" chips, in order: Public (Main and every public group — one
  * commons), Personal (the owner's own), then each restricted group the person
  * can share into — any combination. `groups` is what GET /groups returned. A stored group the list no longer carries keeps its box,
@@ -175,21 +340,37 @@ export function toggleProfile(share, key, on, groups = []) {
 /** One row of the Connected accounts list (`publicView`, src/connected-accounts.ts). */
 export function accountRowModel(account, now = Date.now(), groups = []) {
   const a = account || {};
-  const left = (Number(a.expiresAt) || 0) - now;
+  const google = a.provider === "google";
+  const deadline = accountDeadline(a);
+  // A Google account with no known deadline (a published app) simply lasts.
+  const left = deadline === null ? Infinity : deadline - now;
   const expired = a.status === "expired" || left <= 0;
-  const tone = expired ? "expired" : left < EXPIRY_SOON_MS ? "soon" : "ok";
+  const tone = expired ? "expired" : left < (google ? GOOGLE_EXPIRY_SOON_MS : EXPIRY_SOON_MS) ? "soon" : "ok";
+  const verb = google ? "reconnect in " : "expires in ";
   let expiryText;
-  if (expired) expiryText = "expired — reconnect to keep posting";
-  else if (left >= 2 * DAY_MS) expiryText = "expires in " + Math.round(left / DAY_MS) + " days";
-  else if (left >= 2 * 60 * 60 * 1000) expiryText = "expires in " + Math.round(left / 3_600_000) + " h";
-  else expiryText = "expires in " + Math.max(1, Math.round(left / 60_000)) + " min";
+  if (expired) expiryText = google ? "expired — reconnect to keep it working" : "expired — reconnect to keep posting";
+  else if (left === Infinity) expiryText = "connected";
+  else if (left >= 2 * DAY_MS) expiryText = verb + Math.round(left / DAY_MS) + " days";
+  else if (left >= 2 * 60 * 60 * 1000) expiryText = verb + Math.round(left / 3_600_000) + " h";
+  else expiryText = verb + Math.max(1, Math.round(left / 60_000)) + " min";
+  const granted = Array.isArray(a.areas) ? a.areas.map(String) : [];
+  const pol = a.policies || {};
   return {
+    provider: google ? "google" : "linkedin",
     label: a.label || "(unnamed account)",
-    via: "LinkedIn" + (a.connectedVia ? " · connected by " + a.connectedVia : ""),
+    via: (google ? "Google" : "LinkedIn") + (a.connectedVia ? " · connected by " + a.connectedVia : ""),
     expiryText,
     tone,
     shareText: "Shared with " + scopeText(a.share, groups),
-    policyText: a.policy === "autonomous" ? "Posts without approval" : "Every post needs approval",
+    policyText: google
+      ? `Mail: ${pol.mail === "autonomous" ? "automatic" : "with approval"} · Events: ${pol.calendar === "autonomous" ? "automatic" : "with approval"}`
+      : a.policy === "autonomous" ? "Posts without approval" : "Every post needs approval",
+    // Google: which areas the person granted (they may untick one on Google's
+    // own screen), and — while the app is in Testing — the weekly deadline.
+    areas: google ? GOOGLE_AREA_CHOICES.map((c) => ({ key: c.key, label: c.label, granted: granted.includes(c.key) })) : [],
+    testNote: google && deadline !== null ? "Test app — reconnect weekly" : "",
+    shareHint: google ? "Whose agents may work in this account — any combination" : "Whose agents may post as this account — any combination",
+    disconnectText: google ? "Agents will no longer be able to work in this account." : "Agents will no longer be able to post as this account.",
   };
 }
 
@@ -203,16 +384,23 @@ function isoDay(ms) {
  * operator alone, so for every other owner this is the only warning. `key`
  * changes with `expiresAt`, so a dismissal does not outlive a reconnect.
  */
+export function accountBannerKey(a) {
+  // The DEADLINE, not `expiresAt`: a Google account's access token is renewed
+  // every hour, and a dismissal must not come back with each renewal.
+  return String(a && a.id) + ":" + String(accountDeadline(a));
+}
+
 export function accountBanners(accounts) {
   const out = [];
   for (const a of Array.isArray(accounts) ? accounts : []) {
     if (!a || typeof a !== "object") continue;
     const label = a.label || "(unnamed account)";
-    const key = String(a.id) + ":" + String(a.expiresAt);
+    const key = accountBannerKey(a);
+    const name = a.provider === "google" ? "Google" : "LinkedIn";
     if (a.expired === true) {
-      out.push({ key, text: `Your LinkedIn connection '${label}' has expired — reconnect it in Secrets → Connected accounts.` });
+      out.push({ key, text: `Your ${name} connection '${label}' has expired — reconnect it in Secrets → Connected accounts.` });
     } else if (a.expiringSoon === true) {
-      out.push({ key, text: `Your LinkedIn connection '${label}' expires on ${isoDay(a.expiresAt)} — reconnect it in Secrets → Connected accounts.` });
+      out.push({ key, text: `Your ${name} connection '${label}' expires on ${isoDay(accountDeadline(a))} — reconnect it in Secrets → Connected accounts.` });
     }
   }
   return out;
@@ -223,10 +411,10 @@ export function logEntryLine(e) {
   const x = e && typeof e === "object" ? e : {};
   const when = new Date(Number(x.at) || 0).toISOString().slice(0, 16).replace("T", " ") + " UTC";
   const who = x.channel ? `${x.channel} (${x.origin || "agent"})` : String(x.origin || "agent");
-  const parts = [when, String(x.outcome || ""), who];
+  const parts = [when, x.action ? String(x.action) : "", String(x.outcome || ""), who];
   if (x.approvedBy === "autonomous") parts.push("without approval");
   else if (x.approvedBy && x.approvedBy !== "none" && x.approvedBy !== "system") parts.push("approved by " + x.approvedBy);
-  if (x.outcome === "published" && x.postUrl) parts.push(String(x.postUrl));
+  if ((x.outcome === "published" || x.outcome === "done") && x.postUrl) parts.push(String(x.postUrl));
   else if (x.error) parts.push(String(x.error));
   const text = typeof x.text === "string" ? x.text.replace(/\s+/g, " ").trim() : "";
   parts.push(text.length > 80 ? text.slice(0, 79) + "…" : text);

@@ -1158,7 +1158,22 @@
   .turn.social-draft .sd-status { font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
   .turn.social-draft .sd-status a { color: var(--amber); }
   .turn.social-draft.decided .bubble { border-top-color: var(--line); }
-  .turn.social-draft.decided .bubble::before { content: "LinkedIn post"; color: var(--text-dim); }
+  .turn.social-draft.decided .bubble::before { content: attr(data-kind-label); color: var(--text-dim); }
+  /* An email or a calendar event: its fields as label/value rows above the body. */
+  .turn.social-draft .sd-fields { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 0; font-size: 13px; }
+  .turn.social-draft .sd-fields dt { color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding-top: 2px; }
+  .turn.social-draft .sd-fields dd { margin: 0; overflow-wrap: anywhere; }
+  .turn.social-draft .sd-attach { font-size: 12.5px; color: var(--text-dim); overflow-wrap: anywhere; }
+  /* Connect Google: the areas to grant, picked before leaving for Google. */
+  .ca-head .ca-connects { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  #caGoogleDialog { margin: 8px 0; padding: 12px 14px; border: 1px solid var(--amber); border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
+  #caGoogleDialog[hidden] { display: none; }
+  #caGoogleDialog .sec-note { margin: 0; }
+  #caGoogleDialog .ca-dialog-foot { display: flex; gap: 8px; justify-content: flex-end; }
+  .ca-list .ca-areas { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .ca-list .ca-area { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--text); }
+  .ca-list .ca-area.missing { color: var(--text-dim); text-decoration: line-through; opacity: .7; }
+  .ca-list .ca-test { font-size: 11px; color: var(--amber); }
   #secretsList li.sec-ro code { opacity: .85; }
   #secretsList li.sec-row { flex-wrap: wrap; }
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
@@ -3537,9 +3552,25 @@
       <section id="connectedAccounts" class="ca-section" aria-labelledby="caTitle">
         <div class="ca-head">
           <strong id="caTitle">Connected accounts</strong>
-          <button type="button" id="caConnect" hidden>Connect LinkedIn</button>
+          <span class="ca-connects">
+            <button type="button" id="caConnect" hidden>Connect LinkedIn</button>
+            <button type="button" id="caConnectGoogle" hidden>Connect Google</button>
+          </span>
         </div>
-        <p id="caUnavailable" class="sec-note" hidden>LinkedIn connection is unavailable right now.</p>
+        <p id="caUnavailable" class="sec-note" hidden>Account connection is unavailable right now.</p>
+        <!-- Connect Google: which areas to ask Google for. The chips are built
+             from GOOGLE_AREA_CHOICES (public/social-card.js). -->
+        <div id="caGoogleDialog" role="group" aria-labelledby="caGoogleTitle" hidden>
+          <strong id="caGoogleTitle">Connect Google</strong>
+          <p class="sec-note">Choose what agents may work with in this Google account. Google then asks you to confirm each one.</p>
+          <div id="caGoogleAreas" class="sec-chips"></div>
+          <p id="caGoogleHints" class="sec-note"></p>
+          <p id="caGoogleTesting" class="sec-note warn" hidden>Test app — only Google accounts on the app's test list can connect, and a connection lasts 7 days: you will be asked to reconnect weekly.</p>
+          <div class="ca-dialog-foot">
+            <button type="button" id="caGoogleCancel">Cancel</button>
+            <button type="button" id="caGoogleGo" class="primary">Continue to Google</button>
+          </div>
+        </div>
         <p id="caSoftLayer" class="sec-note warn" hidden>On this instance agents run as the same system user as the cockpit: approval protects against mistakes, not against an agent that tries to work around it.</p>
         <p id="caErr" class="sec-err" role="alert" hidden></p>
         <ul id="caList" class="ca-list"></ul>
@@ -4632,7 +4663,11 @@
   window.SPAWN_HINT = SPAWN_HINT;
   import { uploadFailure } from "/upload.js?v=__ASSET_V__";
   window.uploadFailure = uploadFailure;
-  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine } from "/social-card.js?v=__ASSET_V__";
+  import { draftCardModel, accountRowModel, hasPendingDraft, autonomousConfirmText, shareChoices, toggleShare, profileChoices, toggleProfile, accountBanners, logEntryLine, googleAutonomousConfirmText, googlePolicyRows, accountBannerKey, GOOGLE_AREA_CHOICES } from "/social-card.js?v=__ASSET_V__";
+  window.googleAutonomousConfirmText = googleAutonomousConfirmText;
+  window.googlePolicyRows = googlePolicyRows;
+  window.accountBannerKey = accountBannerKey;
+  window.GOOGLE_AREA_CHOICES = GOOGLE_AREA_CHOICES;
   window.draftCardModel = draftCardModel;
   window.accountRowModel = accountRowModel;
   window.hasPendingDraft = hasPendingDraft;
@@ -4857,13 +4892,20 @@
     draftCardModel: (d) => {
       const pending = !d || !d.status || d.status === "pending";
       const actions = pending ? [{ action: "publish", label: "Publish" }, { action: "discard", label: "Discard" }] : [];
-      const title = "LinkedIn post as " + ((d && d.account) || "(disconnected account)");
-      const text = d && typeof d.text === "string" ? d.text : "";
-      return { title, text, image: null, actions, statusLine: pending ? "" : String((d && d.status) || ""), link: null, pending };
+      // A Google card names nothing it cannot yet draw: no fields, no body,
+      // until the module lands and `repaintDraftCards` shows the real thing.
+      const google = !!d && d.provider === "google";
+      const title = google ? "Approval requested" : "LinkedIn post as " + ((d && d.account) || "(disconnected account)");
+      const text = !google && d && typeof d.text === "string" ? d.text : "";
+      return { title, kind: "post", kindLabel: "", fields: [], attachments: [], text, image: null, actions, statusLine: pending ? "" : String((d && d.status) || ""), link: null, pending };
     },
     hasPendingDraft: (drafts) => [...(drafts || [])].some((d) => d && d.status === "pending"),
     // The panel opens on a click, long after the module lands; neutral rows.
-    accountRowModel: (a) => ({ label: (a && a.label) || "", via: "", expiryText: "", tone: "ok", shareText: "", policyText: "" }),
+    accountRowModel: (a) => ({ provider: (a && a.provider) || "linkedin", label: (a && a.label) || "", via: "", expiryText: "", tone: "ok", shareText: "", policyText: "", areas: [], testNote: "", shareHint: "", disconnectText: "" }),
+    // No setting chips until the module lands: a stub must never PUT a guess.
+    googlePolicyRows: () => [],
+    googleAutonomousConfirmText: (a) => `Agents will be able to act as ${(a && a.label) || "this account"} without asking anyone.`,
+    accountBannerKey: (a) => String(a && a.id) + ":" + String(a && (a.provider === "google" ? a.refreshExpiresAt : a.expiresAt)),
     autonomousConfirmText: (a) => `Agents will be able to post as ${(a && a.label) || "this account"} without asking anyone.`,
     // Until the module lands the row shows no share boxes at all: a stub that
     // guessed the share could PUT a wrong one on the first click.
@@ -9119,10 +9161,34 @@
     if (time) label.appendChild(time);
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    const text = document.createElement("div");
-    text.className = "sd-text";
-    text.textContent = m.text;
-    bubble.appendChild(text);
+    bubble.dataset.kindLabel = m.kindLabel || "LinkedIn post";
+    // An email's or an event's fields, then the body: all of it is the agent's
+    // (or Gmail's) text, so textContent only (invariant 13) — and all of it is
+    // shown, because the card is what the person approves by (invariant 43).
+    if (m.fields && m.fields.length) {
+      const dl = document.createElement("dl");
+      dl.className = "sd-fields";
+      for (const f of m.fields) {
+        const dt = document.createElement("dt");
+        dt.textContent = f.label;
+        const dd = document.createElement("dd");
+        dd.textContent = f.value;
+        dl.append(dt, dd);
+      }
+      bubble.appendChild(dl);
+    }
+    if (m.text || m.kind === "post") {
+      const text = document.createElement("div");
+      text.className = "sd-text";
+      text.textContent = m.text;
+      bubble.appendChild(text);
+    }
+    if (m.attachments && m.attachments.length) {
+      const at = document.createElement("div");
+      at.className = "sd-attach";
+      at.textContent = "Attachments: " + m.attachments.join(", ");
+      bubble.appendChild(at);
+    }
     if (m.image && m.image.path) {
       const url = fileDownloadUrl(tab, m.image);
       const fig = document.createElement("figure");
@@ -9171,7 +9237,8 @@
   async function decideDraft(tab, draft, action, buttons, statusEl) {
     if (buttons.some((b) => b.disabled)) return;
     buttons.forEach((b) => (b.disabled = true));
-    statusEl.textContent = action === "publish" ? "Publishing…" : "Discarding…";
+    const kind = window.draftCardModel(draft).kind;
+    statusEl.textContent = action !== "publish" ? "Discarding…" : kind === "mail" ? "Sending…" : kind === "event" ? "Applying…" : "Publishing…";
     let r = null, j = {};
     try {
       r = await fetch("/social/drafts/" + encodeURIComponent(draft.id) + "/" + action, { method: "POST" });
@@ -12985,10 +13052,10 @@
   }
   // profileCache feeds the "no profile uses it" warning: it must be fresh when
   // the panel opens, or we would show a stale diagnosis.
-  // ── Connected accounts (LinkedIn) ──────────────────────────────────
+  // ── Connected accounts (LinkedIn, Google) ──────────────────────────
   // GET /connect/status probes the broker (up to 5s on a cold cache), so the
   // section loads on its own and never holds the vault panel back.
-  let caState = { available: false, accounts: [], softLayer: false, loaded: false };
+  let caState = { available: false, google: false, googleTesting: false, accounts: [], softLayer: false, loaded: false };
   async function loadConnectedAccounts() {
     const [st, ac] = await Promise.all([
       fetch("/connect/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -12996,6 +13063,9 @@
     ]);
     caState = {
       available: !!(st && st.available),
+      // A provider is offered only when the broker lists it (its secrets exist there).
+      google: !!(st && st.providers && st.providers.google),
+      googleTesting: !!(st && st.googleTesting),
       accounts: ac && Array.isArray(ac.accounts) ? ac.accounts : [],
       softLayer: !!(ac && ac.softLayer),
       loaded: true,
@@ -13010,7 +13080,9 @@
   }
   function renderConnectedAccounts() {
     $("caConnect").hidden = !caState.loaded || !caState.available;
-    $("caUnavailable").hidden = !caState.loaded || caState.available;
+    $("caConnectGoogle").hidden = !caState.loaded || !caState.google;
+    if (!caState.google) $("caGoogleDialog").hidden = true;
+    $("caUnavailable").hidden = !caState.loaded || caState.available || caState.google;
     $("caSoftLayer").hidden = !caState.softLayer;
     const ul = $("caList");
     ul.textContent = "";
@@ -13029,6 +13101,18 @@
     const head = el("div", "ca-card-head");
     const title = el("div", "ca-title");
     title.append(el("span", "ca-label", m.label), el("span", "ca-via", m.via));
+    // Google: what the person granted (an area unticked on Google's own screen
+    // shows struck out), and the weekly deadline while the app is in Testing.
+    if (m.areas.length) {
+      const areas = el("div", "ca-areas");
+      for (const ar of m.areas) {
+        const chip = el("span", "ca-area" + (ar.granted ? "" : " missing"), ar.label);
+        chip.title = ar.granted ? "Granted" : "Not granted — reconnect and tick it to add it";
+        areas.appendChild(chip);
+      }
+      if (m.testNote) areas.appendChild(el("span", "ca-test", m.testNote));
+      title.appendChild(areas);
+    }
     head.append(title, el("span", "ca-exp " + m.tone, m.expiryText));
 
     // A row of chips (the vault's own `.sec-chip`: click the name, no box).
@@ -13060,7 +13144,7 @@
       return row;
     };
     const fields = el("div", "sec-ctl");
-    fields.appendChild(chipRow("Shared with", "Whose agents may post as this account — any combination",
+    fields.appendChild(chipRow("Shared with", m.shareHint || "Whose agents may use this account — any combination",
       window.shareChoices(vaultGroups, a.share),
       (key, on) => ({ share: window.toggleShare(a.share, key, on, vaultGroups) })));
     const pickable = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n)));
@@ -13070,17 +13154,29 @@
         profiles,
         (key, on) => (key === "*" && !on ? null : { share: window.toggleProfile(a.share, key, on, vaultGroups) })));
     }
-    const autonomous = a.policy === "autonomous";
-    fields.appendChild(chipRow("Posting", "Whether a person approves each post on a card in the chat",
-      [
-        { key: "approve", label: "Ask before posting", checked: !autonomous },
-        { key: "autonomous", label: "Post on its own", checked: autonomous },
-      ],
-      (key, on) => {
-        if (!on) return null; // one of the two is always lit: click the other
-        if (key === "autonomous" && !confirm(window.autonomousConfirmText(a, vaultGroups))) return null;
-        return { policy: key };
-      }));
+    if (m.provider === "google") {
+      // Two settings, each governing only its own kind of action: sending
+      // mail, and any event added, changed or deleted.
+      for (const row of window.googlePolicyRows(a)) {
+        fields.appendChild(chipRow(row.label, row.hint, row.choices, (key, on) => {
+          if (!on) return null; // one of the two is always lit: click the other
+          if (key === "autonomous" && !confirm(window.googleAutonomousConfirmText(a, row.key, vaultGroups))) return null;
+          return { policies: { [row.key]: key } };
+        }));
+      }
+    } else {
+      const autonomous = a.policy === "autonomous";
+      fields.appendChild(chipRow("Posting", "Whether a person approves each post on a card in the chat",
+        [
+          { key: "approve", label: "Ask before posting", checked: !autonomous },
+          { key: "autonomous", label: "Post on its own", checked: autonomous },
+        ],
+        (key, on) => {
+          if (!on) return null; // one of the two is always lit: click the other
+          if (key === "autonomous" && !confirm(window.autonomousConfirmText(a, vaultGroups))) return null;
+          return { policy: key };
+        }));
+    }
 
     // Actions: the log, then reconnect / disconnect.
     const foot = el("div", "ca-foot");
@@ -13105,16 +13201,20 @@
     });
     foot.appendChild(logBtn);
     foot.appendChild(el("span", "ca-spacer"));
-    if (caState.available) {
+    if (m.provider === "google" ? caState.google : caState.available) {
       const re = el("button", "ca-btn", "Reconnect");
       re.type = "button";
-      re.addEventListener("click", () => startLinkedInConnect(re));
+      // Google: back through the area dialog, with what is granted today
+      // pre-ticked — a reconnect is also how an area is added.
+      re.addEventListener("click", () => (m.provider === "google"
+        ? openGoogleDialog(m.areas.filter((x) => x.granted).map((x) => x.key))
+        : startLinkedInConnect(re)));
       foot.appendChild(re);
     }
     const dis = el("button", "ca-btn danger", "Disconnect");
     dis.type = "button";
     dis.addEventListener("click", async () => {
-      if (!confirm("Disconnect " + m.label + "?\n\nAgents will no longer be able to post as this account.")) return;
+      if (!confirm("Disconnect " + m.label + "?\n\n" + (m.disconnectText || "Agents will no longer be able to use this account."))) return;
       dis.disabled = true;
       const r = await fetch("/connected-accounts/" + encodeURIComponent(a.id), { method: "DELETE" }).catch(() => null);
       const j = r ? await r.json().catch(() => ({})) : {};
@@ -13162,7 +13262,7 @@
       x.textContent = "Dismiss";
       x.addEventListener("click", () => {
         try { sessionStorage.setItem(CA_DISMISSED, JSON.stringify([...caDismissed(), b.key])); } catch { /* private mode: dismiss for this page only */ }
-        caBannerAccounts = caBannerAccounts.filter((a) => String(a.id) + ":" + String(a.expiresAt) !== b.key);
+        caBannerAccounts = caBannerAccounts.filter((a) => window.accountBannerKey(a) !== b.key);
         paintAccountBanner();
       });
       row.append(span, x);
@@ -13207,6 +13307,52 @@
     showCaError(j.error || "The cockpit did not answer.");
   }
   $("caConnect").addEventListener("click", () => startLinkedInConnect($("caConnect")));
+
+  /** Connect Google: the person picks the areas FIRST (Calendar, Drive files,
+   *  Gmail — all on by default), then leaves for Google's consent screen. The
+   *  broker carries the picked areas in its signed state. */
+  function openGoogleDialog(preset) {
+    const box = $("caGoogleAreas");
+    box.textContent = "";
+    const choices = window.GOOGLE_AREA_CHOICES || [];
+    for (const c of choices) {
+      const lab = document.createElement("label");
+      lab.className = "sec-chip";
+      lab.title = c.hint;
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.value = c.key;
+      cb.checked = !preset || !preset.length || preset.includes(c.key);
+      cb.addEventListener("change", syncGoogleDialog);
+      const span = document.createElement("span");
+      span.textContent = c.label;
+      lab.append(cb, span);
+      box.appendChild(lab);
+    }
+    $("caGoogleHints").textContent = choices.map((c) => c.label + ": " + c.hint).join(". ") + (choices.length ? "." : "");
+    $("caGoogleTesting").hidden = !caState.googleTesting;
+    $("caGoogleDialog").hidden = false;
+    syncGoogleDialog();
+    $("caGoogleDialog").scrollIntoView({ block: "nearest" });
+  }
+  const googleAreasPicked = () => [...$("caGoogleAreas").querySelectorAll("input:checked")].map((x) => x.value);
+  function syncGoogleDialog() { $("caGoogleGo").disabled = googleAreasPicked().length === 0; }
+  async function startGoogleConnect() {
+    const btn = $("caGoogleGo");
+    btn.disabled = true;
+    const r = await fetch("/connect/google/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ origin: location.origin, areas: googleAreasPicked() }),
+    }).catch(() => null);
+    const j = r ? await r.json().catch(() => ({})) : {};
+    if (r && r.ok && j.url) { location.href = j.url; return; }
+    btn.disabled = false;
+    showCaError(j.error || "The cockpit did not answer.");
+  }
+  $("caConnectGoogle").addEventListener("click", () => openGoogleDialog(null));
+  $("caGoogleCancel").addEventListener("click", () => { $("caGoogleDialog").hidden = true; });
+  $("caGoogleGo").addEventListener("click", startGoogleConnect);
   // Back from the broker (or the done page) with the panel still open — a
   // bfcache restore or a tab switch: refresh, the account list has changed.
   const refreshCaIfOpen = () => { if (!$("secretsOverlay").hidden && !document.hidden) loadConnectedAccounts(); };

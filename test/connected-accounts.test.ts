@@ -17,6 +17,13 @@ import {
   upsertAccount,
   type ConnectedAccount,
   type ShareScope,
+  GOOGLE_AREA_SCOPES,
+  accountDeadline,
+  accountLapsed,
+  agentAccountView,
+  grantedAreas,
+  patchRaisesAutonomy,
+  policyPatch,
 } from "../src/connected-accounts.js";
 import type { Group, Viewer } from "../src/groups.js";
 
@@ -271,4 +278,90 @@ test("agentsUnwalled false is the walled matrix (multi-tenant unchanged)", () =>
     }
   }
   assert.equal(accountVisible(acct(sh({ personal: true })), agent(null), [], { peerBox: null, agentsUnwalled: false }), false);
+});
+
+// ---- Google accounts -----------------------------------------------------
+
+const gacct = (o: Partial<ConnectedAccount> = {}): ConnectedAccount => ({
+  id: "g0000001", provider: "google", kind: "member", label: "ann@example.org", externalId: "sub-1", owner: "ann", connectedVia: "ann",
+  share: sh({ personal: true }), policy: "approve", policies: { mail: "approve", calendar: "approve" },
+  scopes: ["openid", GOOGLE_AREA_SCOPES.calendar, GOOGLE_AREA_SCOPES.gmail], token: "ACCESS-SECRET", refreshToken: "REFRESH-SECRET",
+  expiresAt: 1_000, refreshExpiresAt: 900_000, createdAt: 1, updatedAt: 1, ...o,
+});
+
+test("the deadline of a Google account is its REFRESH token's — the hourly access token never expires the account", () => {
+  assert.equal(accountDeadline(gacct()), 900_000);
+  assert.equal(accountLapsed(gacct(), 5_000), false, "past the access token's expiry, well before the refresh token's");
+  assert.equal(accountLapsed(gacct(), 900_000), true);
+  assert.equal(accountLapsed(gacct({ status: "expired" }), 5), true);
+  // No known deadline (an app out of Testing): never lapses by date.
+  assert.equal(accountDeadline(gacct({ refreshExpiresAt: undefined })), null);
+  assert.equal(accountLapsed(gacct({ refreshExpiresAt: undefined }), Number.MAX_SAFE_INTEGER), false);
+  // LinkedIn is unchanged: expiresAt IS the deadline.
+  assert.equal(accountDeadline(acct(sh({ personal: true }))), 9);
+});
+
+test("granted areas are read from the scopes Google returned, never assumed", () => {
+  assert.deepEqual(grantedAreas(gacct()), ["calendar", "gmail"]);
+  assert.deepEqual(grantedAreas(gacct({ scopes: undefined })), []);
+  assert.deepEqual(grantedAreas(gacct({ scopes: ["https://www.googleapis.com/auth/drive"] })), [], "the full-Drive scope is not our drive.file");
+});
+
+test("a new Google account starts with both settings on approve; a reconnect keeps them and refreshes scopes and tokens", () => {
+  const { policies: _p, ...incoming } = gacct();
+  void _p;
+  const first = upsertAccount([], incoming, 5);
+  assert.deepEqual(first.account.policies, { mail: "approve", calendar: "approve" });
+  const chosen = { ...first.account, policies: { mail: "autonomous" as const, calendar: "approve" as const }, share: sh({ everyone: true }) };
+  const again = upsertAccount([chosen], { ...incoming, token: "NEW", refreshToken: "NEW-R", scopes: ["openid", GOOGLE_AREA_SCOPES.drive], refreshExpiresAt: 2_000_000 }, 9);
+  assert.equal(again.list.length, 1);
+  assert.equal(again.account.id, first.account.id);
+  assert.deepEqual(again.account.policies, { mail: "autonomous", calendar: "approve" }, "a reconnect never resets a setting");
+  assert.equal(again.account.share.everyone, true);
+  assert.deepEqual(again.account.scopes, ["openid", GOOGLE_AREA_SCOPES.drive]);
+  assert.equal(again.account.token, "NEW");
+  assert.equal(again.account.refreshToken, "NEW-R");
+  assert.equal(again.account.refreshExpiresAt, 2_000_000);
+  // A LinkedIn account never grows the Google field.
+  assert.equal("policies" in upsertAccount([], acct(sh({ personal: true })), 1).account, false);
+});
+
+test("what an agent is told about an account carries no token, and the deadline rather than the access expiry", () => {
+  const v = agentAccountView(gacct(), 5_000);
+  assert.deepEqual(v, {
+    id: "g0000001", label: "ann@example.org", provider: "google", kind: "member",
+    policies: { mail: "approve", calendar: "approve" }, areas: ["calendar", "gmail"], expiresAt: 900_000, status: "ok",
+  });
+  assert.doesNotMatch(JSON.stringify(v), /SECRET|token|scopes/i);
+  const li = agentAccountView(acct(sh({ personal: true })), 5);
+  assert.deepEqual(li, { id: "abcd1234", label: "Ann", provider: "linkedin", kind: "member", policy: "approve", expiresAt: 9, status: "ok" });
+  assert.doesNotMatch(JSON.stringify(publicView(gacct())), /SECRET/);
+});
+
+test("policy patch: Google takes policies.mail / policies.calendar one at a time; LinkedIn takes policy; neither takes the other's", () => {
+  assert.deepEqual(policyPatch(gacct(), { policies: { mail: "autonomous" } }), { ok: true, patch: { policies: { mail: "autonomous", calendar: "approve" } } });
+  assert.deepEqual(policyPatch(gacct({ policies: { mail: "autonomous", calendar: "approve" } }), { policies: { calendar: "autonomous" } }), {
+    ok: true, patch: { policies: { mail: "autonomous", calendar: "autonomous" } },
+  });
+  assert.equal(policyPatch(gacct(), { policy: "autonomous" }).ok, false, "a Google account never reads `policy`");
+  assert.equal(policyPatch(gacct(), { policies: { mail: "always" } }).ok, false);
+  assert.equal(policyPatch(gacct(), { policies: { drive: "autonomous" } }).ok, false, "there is no third setting");
+  assert.equal(policyPatch(gacct(), { policies: {} }).ok, false);
+  assert.equal(policyPatch(gacct(), { policies: [] }).ok, false);
+  assert.deepEqual(policyPatch(gacct(), {}), { ok: true, patch: null });
+  const li = acct(sh({ personal: true }));
+  assert.deepEqual(policyPatch(li, { policy: "autonomous" }), { ok: true, patch: { policy: "autonomous" } });
+  assert.equal(policyPatch(li, { policies: { mail: "autonomous" } }).ok, false);
+  assert.equal(policyPatch(li, { policy: "yes" }).ok, false);
+});
+
+test("switching a setting to automatic is the owner's alone — never an admin on someone else's account", () => {
+  const a = gacct();
+  assert.equal(patchRaisesAutonomy(a, { policies: { mail: "autonomous", calendar: "approve" } }), true);
+  assert.equal(patchRaisesAutonomy(a, { policies: { mail: "approve", calendar: "autonomous" } }), true);
+  assert.equal(patchRaisesAutonomy(gacct({ policies: { mail: "autonomous", calendar: "approve" } }), { policies: { mail: "approve", calendar: "approve" } }), false, "back to approve raises nothing");
+  assert.equal(accountEditVerdict(a, person("ann"), "policy", { policy: "autonomous" }, groups).ok, true);
+  assert.equal(accountEditVerdict(a, person("bob", "admin"), "policy", { policy: "autonomous" }, groups).ok, false);
+  assert.equal(accountEditVerdict(a, person("bob", "admin"), "policy", { policy: "approve" }, groups).ok, false, "nor may an admin change it back");
+  assert.equal(accountEditVerdict(a, agent("p-ann"), "policy", { policy: "autonomous" }, groups).ok, false, "an agent never changes a setting");
 });

@@ -135,3 +135,11 @@ test("the local post limit equals the server's MAX_COMMENTARY", async () => {
   assert.ok(local && server);
   assert.equal(local[1], server[1]);
 });
+
+test("accounts lists LinkedIn accounts only: a Google account belongs to shadok-google", async () => {
+  const s = await stub(200, { accounts: [{ id: "g1", label: "ana@example.org", provider: "google", policies: {}, expiresAt: null, status: "ok" }] });
+  const r = await run(["accounts"], s.port);
+  await s.close();
+  assert.match(r.out, /No LinkedIn account is available to this agent/);
+  assert.doesNotMatch(r.out, /ana@example\.org|undefined|1970/);
+});

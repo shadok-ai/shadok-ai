@@ -22,17 +22,20 @@ export interface PendingAttempt {
   person: string;
   privateKey: KeyObject;
   createdAt: number;
+  /** Which provider's Connect started it: an attempt is finished only at that
+   *  provider's own route. Absent = linkedin (the only one there was). */
+  provider?: string;
 }
 
 const b64u = (b: Buffer): string => b.toString("base64url");
 
-export function newAttempt(person: string, now: number): { attempt: PendingAttempt; pub: string; nonce: string } {
+export function newAttempt(person: string, now: number, provider?: string): { attempt: PendingAttempt; pub: string; nonce: string } {
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   // Raw uncompressed point (0x04||X||Y, 65 bytes): what WebCrypto importKey("raw") expects.
   const jwk = publicKey.export({ format: "jwk" });
   const raw = Buffer.concat([Buffer.from([4]), Buffer.from(jwk.x as string, "base64url"), Buffer.from(jwk.y as string, "base64url")]);
   const nonce = b64u(randomBytes(16));
-  return { attempt: { nonce, person, privateKey, createdAt: now }, pub: b64u(raw), nonce };
+  return { attempt: { nonce, person, privateKey, createdAt: now, ...(provider ? { provider } : {}) }, pub: b64u(raw), nonce };
 }
 
 /** Throws on any tamper or malformed input; messages never contain the token. */

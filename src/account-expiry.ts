@@ -3,8 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { instanceKey } from "./paths.js";
-import type { ConnectedAccount } from "./connected-accounts.js";
-import { expireDrafts, type Draft } from "./social-drafts.js";
+import { accountDeadline, accountLapsed, type ConnectedAccount } from "./connected-accounts.js";
+import { draftAction, draftNoun, draftProvider, expireDrafts, type Draft } from "./social-drafts.js";
 
 /**
  * The hourly watch over connected accounts and drafts: which accounts are close
@@ -14,9 +14,14 @@ import { expireDrafts, type Draft } from "./social-drafts.js";
  */
 
 export const WARN_BEFORE_MS = 7 * 24 * 3600_000;
+/** A Google app in Testing issues 7-day authorisations: a 7-day warning would
+ *  fire the moment the account is connected, so Google warns 2 days ahead. */
+export const GOOGLE_WARN_BEFORE_MS = 2 * 24 * 3600_000;
+export const warnBeforeMs = (a: Pick<ConnectedAccount, "provider">) => (a.provider === "google" ? GOOGLE_WARN_BEFORE_MS : WARN_BEFORE_MS);
 export const REWARN_AFTER_MS = 24 * 3600_000;
 export const STALE_PUBLISHING_MS = 10 * 60_000;
 export const STALE_PUBLISHING_SENTENCE = "The cockpit restarted while publishing; check LinkedIn before retrying.";
+export const STALE_GOOGLE_SENTENCE = "The cockpit restarted while sending; check Gmail's Sent folder or the calendar before retrying.";
 
 export interface ExpiryActions {
   warn: ConnectedAccount[];
@@ -25,9 +30,11 @@ export interface ExpiryActions {
 }
 
 /**
- * Warn once a day from 7 days before `expiresAt`; expire at `expiresAt`. An
- * account already marked expired is neither warned nor expired again. The draft
- * TTL is `expireDrafts`' — one definition.
+ * Warn once a day from 7 days (Google: 2) before the account's deadline;
+ * expire at the deadline (`accountDeadline` — for Google the refresh token's,
+ * and an account with no known deadline is never warned nor expired by date).
+ * An account already marked expired is neither warned nor expired again. The
+ * draft TTL is `expireDrafts`' — one definition.
  */
 export function expiryActions(
   accounts: readonly ConnectedAccount[],
@@ -39,12 +46,14 @@ export function expiryActions(
   const expire: ConnectedAccount[] = [];
   for (const a of accounts) {
     if (a.status === "expired") continue;
-    if (now >= a.expiresAt) {
+    const deadline = accountDeadline(a);
+    if (deadline === null) continue;
+    if (now >= deadline) {
       expire.push(a);
       continue;
     }
     const last = lastWarned[a.id];
-    if (a.expiresAt - now <= WARN_BEFORE_MS && (last === undefined || now - last >= REWARN_AFTER_MS)) warn.push(a);
+    if (deadline - now <= warnBeforeMs(a) && (last === undefined || now - last >= REWARN_AFTER_MS)) warn.push(a);
   }
   return { warn, expire, expiredDrafts: expireDrafts(drafts, now).expired };
 }
@@ -60,7 +69,7 @@ export function stalePublishing(
   const failed: Draft[] = [];
   const out = list.map((d) => {
     if (d.status !== "publishing" || inFlight.has(d.id) || now - (d.publishingAt ?? d.createdAt) < STALE_PUBLISHING_MS) return d;
-    const f: Draft = { ...d, status: "failed", error: STALE_PUBLISHING_SENTENCE };
+    const f: Draft = { ...d, status: "failed", error: draftProvider(d) === "google" ? STALE_GOOGLE_SENTENCE : STALE_PUBLISHING_SENTENCE };
     failed.push(f);
     return f;
   });
@@ -71,16 +80,23 @@ function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-export function expiryWarningText(a: Pick<ConnectedAccount, "label" | "expiresAt">): string {
+export function expiryWarningText(a: Pick<ConnectedAccount, "label" | "expiresAt"> & Partial<Pick<ConnectedAccount, "provider" | "refreshExpiresAt">>): string {
+  if (a.provider === "google") {
+    const d = accountDeadline({ provider: "google", expiresAt: a.expiresAt, refreshExpiresAt: a.refreshExpiresAt }) ?? a.expiresAt;
+    return `Your Google connection '${a.label}' must be reconnected by ${isoDay(d)} (test app authorisations last 7 days). Reconnect it in Secrets → Connected accounts so agents keep working in it.`;
+  }
   return `Your LinkedIn connection '${a.label}' expires on ${isoDay(a.expiresAt)}. Reconnect it in Secrets → Connected accounts so posts keep going out.`;
 }
 
-export function draftExpiredNotice(d: Pick<Draft, "id">): string {
+export function draftExpiredNotice(d: Pick<Draft, "id"> & Partial<Pick<Draft, "provider" | "action">>): string {
+  if (draftProvider(d) === "google") return `Your ${draftNoun(d)} ${d.id.slice(0, 8)} expired after 7 days without approval — nothing left the account.`;
   return `Your LinkedIn draft ${d.id.slice(0, 8)} expired after 7 days without approval — it was not published.`;
 }
 
-export function pendingDraftText(channel: string): string {
-  return `${channel} has a LinkedIn post waiting for your approval in the cockpit.`;
+export function pendingDraftText(channel: string, d: Partial<Pick<Draft, "provider" | "action">> = {}): string {
+  const a = draftAction(d);
+  const what = a === "gmail.send" ? "an email" : a.startsWith("calendar.") ? "a calendar change" : "a LinkedIn post";
+  return `${channel} has ${what} waiting for your approval in the cockpit.`;
 }
 
 /**
@@ -90,13 +106,15 @@ export function pendingDraftText(channel: string): string {
  * reconnecting it is not theirs to do.
  */
 export function ownerExpiryFlags(
-  a: Pick<ConnectedAccount, "owner" | "expiresAt" | "status">,
+  a: Pick<ConnectedAccount, "owner" | "expiresAt" | "status"> & Partial<Pick<ConnectedAccount, "provider" | "refreshExpiresAt">>,
   viewerName: string | null,
   now: number,
 ): { expiringSoon?: boolean; expired?: boolean } {
   if (!viewerName || viewerName !== a.owner) return {};
-  const expired = a.status === "expired" || now >= a.expiresAt;
-  return { expiringSoon: !expired && a.expiresAt - now <= WARN_BEFORE_MS, expired };
+  const full = { provider: a.provider ?? ("linkedin" as const), expiresAt: a.expiresAt, refreshExpiresAt: a.refreshExpiresAt, status: a.status };
+  const expired = accountLapsed(full, now);
+  const deadline = accountDeadline(full);
+  return { expiringSoon: !expired && deadline !== null && deadline - now <= warnBeforeMs(full), expired };
 }
 
 /** Only the instance operator (the bootstrap admin) is the Telegram DM owner. */

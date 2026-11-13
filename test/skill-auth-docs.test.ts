@@ -23,6 +23,7 @@ const SKILLS = [
   "context/secrets-skill/SKILL.md",
   "context/reload-skill/SKILL.md",
   "context/social-skill/SKILL.md",
+  "context/google-skill/SKILL.md",
 ];
 
 test("every skill that talks to the cockpit names the auth header", () => {

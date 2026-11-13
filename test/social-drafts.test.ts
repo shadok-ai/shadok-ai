@@ -44,8 +44,16 @@ import {
   snapshotDone,
   snapshotPathFor,
   writeSnapshot,
+  AGENT_CANNOT_APPROVE_ACTION,
+  GONE_IN_GMAIL_SENTENCE,
+  GOOGLE_FAILED_SENTENCE,
+  GOOGLE_OUTCOME_UNKNOWN_SENTENCE,
+  draftAction,
+  draftProvider,
+  usableAccountVerdict,
   type Draft,
 } from "../src/social-drafts.js";
+import { GoogleError, GoogleInputError, GoogleOutcomeUnknownError } from "../src/google.js";
 import { LinkedInError, PostOutcomeUnknownError } from "../src/linkedin.js";
 import type { ConnectedAccount, ShareScope } from "../src/connected-accounts.js";
 import type { Group, Viewer } from "../src/groups.js";
@@ -416,4 +424,105 @@ test("the drafting agent is re-checked at click time: group AND profile", () => 
   // Draft time: an agent on another profile does not see the account at all.
   assert.equal(postRequestVerdict([writersOnly], "abcd", "Hi", agentViewer, groups, null, NOW, false, "Dev").ok, false);
   assert.equal(postRequestVerdict([writersOnly], "abcd", "Hi", agentViewer, groups, null, NOW, false, "Writer").ok, true);
+});
+
+// ---- Google drafts: the same gate, generalised from "a post" to "an action" --
+
+const gacct = (over: Partial<ConnectedAccount> = {}, share: ShareScope = { scope: "private" }): ConnectedAccount =>
+  acct({ id: "g0000001", provider: "google", label: "paul@example.org", externalId: "sub-1", policies: { mail: "approve", calendar: "approve" }, expiresAt: NOW - DAY, refreshExpiresAt: NOW + 5 * DAY, ...over }, share);
+const mailDraft = (over: Partial<Draft> = {}): Draft =>
+  draft({
+    accountId: "g0000001", provider: "google", action: "gmail.send", text: 'to bob@example.org — "Hello"',
+    payload: { kind: "mail", from: "paul@example.org", to: ["bob@example.org"], cc: [], bcc: [], subject: "Hello", body: "The private body", attachments: ["a.pdf"], gmailDraftId: "r1", fingerprint: "ff" },
+    ...over,
+  });
+
+test("a draft without provider/action is a LinkedIn post (drafts written before Google existed)", () => {
+  assert.equal(draftProvider(draft()), "linkedin");
+  assert.equal(draftAction(draft()), "post");
+  const made = makeDraft({ id: "ab", sessionId: "s", accountId: "a", text: "t", origin: "agent", now: 1 });
+  assert.equal("provider" in made || "action" in made || "payload" in made, false, "a LinkedIn draft keeps its stored shape");
+  assert.equal(draftView(draft(), acct()).provider, "linkedin");
+  assert.equal(draftView(draft(), acct()).action, "post");
+});
+
+test("the publish gate is the same for an email: a person, never an agent — the browser-person rule is reused, not re-made", () => {
+  const live = gacct();
+  assert.deepEqual(publishVerdict(mailDraft(), live, paul, groups, NOW, true), { ok: true }, "the hourly access expiry does not block: the deadline is the refresh token's");
+  const byAgent = publishVerdict(mailDraft(), gacct({}, { scope: "instance" }), agentViewer, groups, NOW, true);
+  assert.deepEqual(byAgent, { ok: false, status: 403, reason: AGENT_CANNOT_APPROVE_ACTION });
+  assert.equal(publishVerdict(mailDraft(), live, null, groups, NOW, true).ok, false);
+  assert.equal(publishVerdict(mailDraft(), live, bob, groups, NOW, true).ok, false, "someone the account is not shared with");
+  assert.deepEqual(publishVerdict(mailDraft(), live, paul, groups, NOW, false), { ok: false, status: 403, reason: SESSION_NOT_VISIBLE });
+  const caller = { hasAgentKey: false, hasPeerToken: false, passwordSet: true, personCookie: true, sameOrigin: true, account: { name: "Paul" } };
+  assert.equal(approvalCaller(caller).ok, true);
+  assert.equal(approvalCaller({ ...caller, hasAgentKey: true }).ok, false);
+  assert.equal(approvalCaller({ ...caller, sameOrigin: false }).ok, false);
+  assert.equal(approvalCaller({ ...caller, account: { name: "x", agent: { session: "s" } } }).ok, false);
+  // A refused click by a non-person is not a refused action on the account.
+  assert.equal(refusalLogOutcome(mailDraft(), AGENT_CANNOT_APPROVE_ACTION, NOW), null);
+});
+
+test("a Google draft's refusals name Google; gone (deleted in Gmail) is decided for good", () => {
+  assert.deepEqual(publishVerdict(mailDraft(), undefined, paul, groups, NOW, true), { ok: false, status: 410, reason: "The Google account this draft was for has been disconnected." });
+  const lapsed = publishVerdict(mailDraft(), gacct({ refreshExpiresAt: NOW - 1 }), paul, groups, NOW, true);
+  assert.deepEqual(lapsed, { ok: false, status: 409, reason: "Google account 'paul@example.org' needs a reconnect (test app authorisations last 7 days) — Paul can do it in Secrets → Connected accounts." });
+  assert.deepEqual(publishVerdict(mailDraft({ status: "gone" }), gacct(), paul, groups, NOW, true), { ok: false, status: 409, reason: GONE_IN_GMAIL_SENTENCE });
+  assert.equal(discardVerdict(mailDraft({ status: "gone" }), gacct(), paul, groups, NOW, true).ok, false);
+  assert.equal(discardVerdict(mailDraft(), undefined, paul, groups, NOW, true).ok, true, "a card whose account is gone can still be thrown away");
+});
+
+test("usableAccountVerdict: each provider only sees its own accounts", () => {
+  const both = [acct({}, { scope: "instance" }), gacct({}, { scope: "instance" })];
+  const viewer: Viewer = { name: "agent:x", role: "member", agentGroup: null };
+  assert.equal(usableAccountVerdict(both, "google", "g0000001", viewer, groups, null, NOW).ok, true);
+  assert.deepEqual(usableAccountVerdict(both, "google", "abcd1234", viewer, groups, null, NOW), {
+    ok: false, status: 404, reason: "No Google account matches 'abcd1234'. Run `google.mjs accounts` to list yours.",
+  });
+  assert.equal(postRequestVerdict(both, "g0000001", "Hello", viewer, groups, null, NOW).ok, false, "a Google id is not a LinkedIn account");
+  const peer = usableAccountVerdict(both, "google", "g0000001", viewer, groups, "peer-box", NOW);
+  assert.equal(!peer.ok && peer.status, 403, "a restricted-peer agent never uses an account");
+  const expired = usableAccountVerdict([gacct({ status: "expired" }, { scope: "instance" })], "google", "g0", viewer, groups, null, NOW);
+  assert.equal(!expired.ok && expired.status, 409);
+  assert.match(!expired.ok ? expired.reason : "", /needs a reconnect/);
+});
+
+test("what a Google draft tells its agent: sent, discarded, failed, deleted in Gmail — by summary, never the body", () => {
+  const d = mailDraft();
+  assert.equal(draftNotice({ ...d, status: "published" }), 'Your email d0d0d0d0 (to bob@example.org — "Hello") was sent.');
+  assert.equal(draftNotice({ ...d, status: "discarded", decidedBy: "Paul" }), 'Your email d0d0d0d0 (to bob@example.org — "Hello") was discarded by Paul — nothing left the account.');
+  // Deleted in Gmail and sent from Gmail look the same to us: the notice claims neither, and says to ask.
+  assert.equal(
+    draftNotice({ ...d, status: "gone" }),
+    'Your email d0d0d0d0 (to bob@example.org — "Hello") is no longer in Gmail: the person deleted it there, or sent it from Gmail themselves. The cockpit sent nothing — ask them before sending it again.',
+  );
+  assert.match(draftNotice({ ...d, status: "failed", error: "boom" }) ?? "", /could not be completed: boom/);
+  assert.equal(draftNotice(d), null);
+  const ev = draft({ provider: "google", action: "calendar.create", text: 'create "Review" a → b', status: "published", postUrl: "https://calendar.google.com/e/1" });
+  assert.equal(draftNotice(ev), 'Your calendar change d0d0d0d0 (create "Review" a → b) was applied: https://calendar.google.com/e/1');
+  for (const s of ["published", "discarded", "gone", "failed"] as const) assert.doesNotMatch(draftNotice({ ...d, status: s, error: "e" }) ?? "", /The private body/);
+});
+
+test("the log of a Google action keeps the action and the summary; a smuggled body or token never lands", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "glog-"));
+  const file = path.join(dir, "log.jsonl");
+  appendLog(file, draftLogEntry(mailDraft(), { at: 5, channel: "general", approvedBy: "Paul", outcome: "done" }));
+  appendLog(file, { at: 6, accountId: "g0000001", origin: "agent", approvedBy: "none", action: "doc.append", text: "document d1", outcome: "done", body: "The private body", token: "SECRET-TOKEN" } as never);
+  const raw = fs.readFileSync(file, "utf8");
+  assert.doesNotMatch(raw, /The private body|SECRET|"payload"|gmailDraftId/);
+  const entries = accountLog(raw, "g0000001");
+  assert.deepEqual(entries.map((e) => [e.action, e.outcome, e.text]), [["doc.append", "done", "document d1"], ["gmail.send", "done", 'to bob@example.org — "Hello"']]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("failureOutcome for Google: a dead grant patches the account expired; a bad request is ours; a lost send says check first", () => {
+  const live = gacct();
+  const dead = failureOutcome(new GoogleError("Google no longer accepts this account's authorisation.", 401, true), live, NOW);
+  assert.deepEqual(dead.accountPatch, { status: "expired", updatedAt: NOW });
+  assert.equal(dead.httpStatus, 409);
+  assert.match(dead.reason, /Google account 'paul@example\.org' needs a reconnect/);
+  assert.deepEqual(failureOutcome(new GoogleError("Google send failed (403): quota", 403), live, NOW), { reason: "Google send failed (403): quota", httpStatus: 502 });
+  assert.deepEqual(failureOutcome(new GoogleInputError("The email has no subject."), live, NOW), { reason: "The email has no subject.", httpStatus: 400 });
+  assert.deepEqual(failureOutcome(new GoogleOutcomeUnknownError(), live, NOW), { reason: GOOGLE_OUTCOME_UNKNOWN_SENTENCE, httpStatus: 502 });
+  assert.deepEqual(failureOutcome(new Error("ECONNRESET SECRET-TOKEN"), live, NOW), { reason: GOOGLE_FAILED_SENTENCE, httpStatus: 502 }, "an error that is not ours is never relayed");
 });

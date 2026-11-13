@@ -1,6 +1,8 @@
 # Connected accounts — Google (wave 1): Calendar, Drive files, Docs, Sheets, Gmail drafts and sending
 
-Status: design, not built. Builds on
+Status: built — the broker half (PR 1) and the instance half (PR 2). Every
+Google call was exercised against mocks only; the five "Verify first" items
+below still need a run against the real Google app. Builds on
 [`2026-11-08-connected-accounts-linkedin-design.md`](2026-11-08-connected-accounts-linkedin-design.md)
 — same broker, same crypto, same store, same share model, same approval card.
 This document only says what Google changes.
@@ -161,8 +163,10 @@ changed in Gmail → the card is refreshed with the new content and asks again
 (*"Edited in Gmail since — send this version?"*), so a person always sends what
 they are looking at (invariant 43). The agent cannot update or delete a draft
 that is awaiting approval (the skill refuses; only a new `send` makes a new
-card). A draft deleted in Gmail turns the card into *"Draft deleted in Gmail"*
-and the agent is told. *Discard* on the card deletes the Gmail draft too.
+card). A draft that is no longer in Gmail closes the card and the agent is
+told — worded as *"no longer in Gmail — deleted there, or already sent from
+Gmail"*, since Gmail answers the same for both and an agent told "deleted, not
+sent" would send a second copy. *Discard* on the card deletes the Gmail draft too.
 Under `autonomous`, `gmail send` sends directly (no draft left behind).
 
 Switching a setting to *automatic* asks for confirmation spelling it out:
