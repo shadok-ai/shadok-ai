@@ -19,6 +19,9 @@ const MAX_TEXT = 20_000;
 const MAX_FIND = 1_000;
 const MAX_CELLS = 20_000;
 const CONTROL = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+/** What would break a one-line field out of its line on a card, or reorder it
+ *  on screen: every line break Unicode knows, tabs, and the bidi controls. */
+const LINE_BREAKERS = /[\r\n\t\u0085\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
 const bad = (m: string): never => {
   throw new GoogleInputError(m);
@@ -31,7 +34,7 @@ function text(o: Raw, key: string, where: string, opt: { max?: number; empty?: b
   if (typeof v !== "string") return bad(`${where}: '${key}' must be text.`);
   if (!opt.empty && !v) return bad(`${where}: '${key}' is empty.`);
   if (v.length > max) return bad(`${where}: '${key}' is over ${max} characters.`);
-  if (CONTROL.test(v) || (opt.oneLine && /[\r\n]/.test(v))) return bad(`${where}: '${key}' contains a control character.`);
+  if (CONTROL.test(v) || (opt.oneLine && LINE_BREAKERS.test(v))) return bad(`${where}: '${key}' contains a control character.`);
   return v;
 }
 function int(o: Raw, key: string, where: string, min: number, max: number): number {
@@ -79,6 +82,7 @@ export function imageUrlVerdict(v: unknown, where = "insert_image"): string {
   if (u.username || u.password) return bad(`${where}: an image address cannot carry a user name or a password.`);
   if (u.port && u.port !== "443") return bad(`${where}: an image address cannot name a port.`);
   const host = u.hostname.toLowerCase().replace(/\.$/, "");
+  if (!host || host.split(".").some((label) => !label)) return bad(`${where}: 'url' is not a valid address.`);
   const internal = () => bad(`${where}: '${host.slice(0, 80)}' is an internal or private address — only images on the public internet can be inserted.`);
   if (host.startsWith("[")) return internal(); // any IPv6 literal: never needed for a public image
   if (/^\d+(\.\d+){3}$/.test(host)) {
@@ -275,16 +279,21 @@ export function editOpsVerdict(app: EditApp, raw: unknown, newId: () => string =
     return app === "slides" ? slidesOp(o as Raw, w, newId) : app === "doc" ? docOp(o as Raw, w) : sheetOp(o as Raw, w);
   });
   if (app === "doc") {
-    const firstRewrite = ops.findIndex((o) => o.op === "replace_text" || o.op === "delete_text");
-    const late = ops.findIndex((o, i) => firstRewrite >= 0 && i > firstRewrite && docPositional(o));
-    if (late >= 0) bad(`operation ${late + 1}: in one edit, style / insert operations must come BEFORE replace_text and delete_text — they are located in the document as it is now. Send it in a second edit.`);
+    // Located operations are sent first (`docRequests`); listed after one
+    // that is not, the card's order would not be the order applied.
+    const firstOther = ops.findIndex((o) => !docPositional(o));
+    const late = ops.findIndex((o, i) => firstOther >= 0 && i > firstOther && docPositional(o));
+    if (late >= 0) bad(`operation ${late + 1}: in one edit, style operations and inserts placed at the start or after a heading (and a table with cells) must come FIRST — before replace_text, delete_text and anything added at the end: they are located in the document as it is now. Reorder them, or send a second edit.`);
   }
   return ops;
 }
 
 // ---- one line per operation -------------------------------------------------
 
-const q = (s: unknown) => JSON.stringify(String(s ?? ""));
+/** A text as it appears on a card line: quoted, and with every character that
+ *  could start a new line or reorder the line shown as its escape. */
+const q = (s: unknown) => JSON.stringify(String(s ?? "")).replace(/[\u0085\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+const onTab = (range: unknown) => (String(range).includes("!") ? "" : " (first tab)");
 const caseNote = (o: EditOp) => (o.matchCase === false ? " (any case)" : "");
 const atWords = (at: unknown) => (at === "start" ? "at the start" : at === "end" || at === undefined ? "at the end" : `after the heading ${q((at as { after: string }).after)}`);
 const noteOf = (o: EditOp) => (o.note ? ` — ${o.note}` : "");
@@ -300,8 +309,12 @@ export function editOpLines(app: EditApp, ops: readonly EditOp[]): string[] {
       if (o.op === "delete_slide") return `Delete slide ${o.slideId}${noteOf(o)}`;
       if (o.op === "insert_text") return `Insert ${q(o.text)} into ${o.objectId} ${o.at === undefined ? "at the end of its text" : `at character ${o.at}`}${noteOf(o)}`;
       if (o.op === "delete_text") return `Delete all the text of ${o.objectId}${noteOf(o)}`;
-      if (o.op === "insert_image") return `Insert the image ${o.url} on slide ${o.slideId}${o.w !== undefined ? ` (${o.w}×${o.h} pt${o.x !== undefined || o.y !== undefined ? ` at ${o.x ?? 0},${o.y ?? 0}` : ""})` : ""}${noteOf(o)}`;
-      return `Move slide${(o.slideIds as string[]).length === 1 ? "" : "s"} ${(o.slideIds as string[]).join(", ")} to position ${(o.at as number) + 1}${noteOf(o)}`;
+      if (o.op === "insert_image") {
+        const box = [o.w !== undefined ? `${o.w}×${o.h} pt` : "", o.x !== undefined || o.y !== undefined ? `at ${o.x ?? 0},${o.y ?? 0} pt` : ""].filter(Boolean).join(" ");
+        return `Insert the image ${o.url} on slide ${o.slideId}${box ? ` (${box})` : ""}${noteOf(o)}`;
+      }
+      // Slides counts the place BEFORE the move, so that is what is said.
+      return `Move slide${(o.slideIds as string[]).length === 1 ? "" : "s"} ${(o.slideIds as string[]).join(", ")} to just before the slide that is now number ${(o.at as number) + 1} (to the end if there is none)${noteOf(o)}`;
     }
     if (app === "doc") {
       if (o.op === "delete_text") return `Delete every ${q(o.find)}${caseNote(o)}`;
@@ -310,12 +323,12 @@ export function editOpLines(app: EditApp, ops: readonly EditOp[]): string[] {
         const what = [o.heading !== undefined ? (o.heading === "NORMAL" ? "normal text" : `heading ${String(o.heading).slice(1)}`) : "", o.bold !== undefined ? (o.bold ? "bold" : "not bold") : "", o.italic !== undefined ? (o.italic ? "italic" : "not italic") : "", o.bullet ? "a bullet list" : ""].filter(Boolean);
         return `Make every ${q(o.find)} ${what.join(", ")}${noteOf(o)}`;
       }
-      if (o.op === "insert_table") return `Insert a ${o.rows}×${o.cols} table ${atWords(o.at)}${o.cells ? ` — cells: ${(o.cells as string[][]).map((r) => JSON.stringify(r)).join(" ; ")}` : ""}`;
+      if (o.op === "insert_table") return `Insert a ${o.rows}×${o.cols} table ${atWords(o.at)}${o.cells ? ` — cells: ${(o.cells as string[][]).map((r) => `[${r.map(q).join(",")}]`).join(" ; ")}` : ""}`;
       return `Insert the image ${o.url} ${atWords(o.at)}`;
     }
     const tab = o.tab ? ` of tab ${q(o.tab)}` : " of the first tab";
-    if (o.op === "update") return `Write at ${o.range}: ${(o.values as Cell[][]).map((r) => JSON.stringify(r)).join(" ; ")}`;
-    if (o.op === "clear") return `Clear ${o.range}`;
+    if (o.op === "update") return `Write at ${o.range}${onTab(o.range)}: ${(o.values as Cell[][]).map((r) => `[${r.map((c) => (typeof c === "string" ? q(c) : String(c))).join(",")}]`).join(" ; ")}`;
+    if (o.op === "clear") return `Clear ${o.range}${onTab(o.range)}`;
     if (o.op === "add_tab") return `Add a tab ${q(o.title)}`;
     if (o.op === "delete_tab") return `Delete the tab ${q(o.title)} and everything in it`;
     if (o.op === "rename_tab") return `Rename the tab ${q(o.from)} to ${q(o.to)}`;
@@ -324,7 +337,7 @@ export function editOpLines(app: EditApp, ops: readonly EditOp[]): string[] {
     if (o.op === "insert_cols") return `Insert ${o.count} column${o.count === 1 ? "" : "s"} before column ${o.start}${tab}`;
     if (o.op === "delete_cols") return `Delete ${o.count} column${o.count === 1 ? "" : "s"} from column ${o.start}${tab}`;
     const fmt = [o.bold !== undefined ? (o.bold ? "bold" : "not bold") : "", o.italic !== undefined ? (o.italic ? "italic" : "not italic") : "", o.background ? `background ${o.background}` : "", o.numberFormat !== undefined ? `number format ${q(o.numberFormat)}` : ""].filter(Boolean);
-    return `Format ${o.range}: ${fmt.join(", ")}`;
+    return `Format ${o.range}${onTab(o.range)}: ${fmt.join(", ")}`;
   });
 }
 
@@ -429,7 +442,8 @@ const colNumber = (letters: string) => [...letters.toUpperCase()].reduce((n, c) 
  *  0-based half-open box; an open side is absent. */
 export function parseA1(range: string, where = "range"): { tab?: string; r0?: number; r1?: number; c0?: number; c1?: number } {
   const m = /^(?:(?:'((?:[^']|'')+)'|([^'!]+))!)?([A-Za-z]{0,3})(\d{0,7})(?::([A-Za-z]{0,3})(\d{0,7}))?$/.exec(range.trim());
-  if (!m || (!m[3] && !m[4])) return bad(`${where}: '${range.slice(0, 60)}' is not an A1 range (e.g. Sheet1!A2:C9).`);
+  // `A1:` (nothing after the colon) would read as "everything": refused.
+  if (!m || (!m[3] && !m[4]) || (m[5] === "" && m[6] === "") || m[4] === "0" || /^0+$/.test(m[6] ?? "x")) return bad(`${where}: '${range.slice(0, 60)}' is not an A1 range (e.g. Sheet1!A2:C9).`);
   const tab = m[1] !== undefined ? m[1].replace(/''/g, "'") : m[2];
   const single = m[5] === undefined && m[6] === undefined;
   const c0 = m[3] ? colNumber(m[3]) - 1 : undefined;
@@ -447,8 +461,9 @@ function occurrences(s: DocState, find: string, w: string): { start: number; end
   for (const p of s.paragraphs) {
     for (let i = p.text.indexOf(find); i >= 0; i = p.text.indexOf(find, i + find.length)) out.push({ start: p.start + i, end: p.start + i + find.length });
   }
-  if (!out.length) return bad(`${w}: ${q(find)} is not in the document as it is now.`);
-  if (out.length > 200) return bad(`${w}: ${q(find)} appears more than 200 times — style a more specific text.`);
+  // No text in these sentences: a refusal goes to the account's log.
+  if (!out.length) return bad(`${w}: its 'find' text is not in the document as it is now (see \`doc read\`).`);
+  if (out.length > 200) return bad(`${w}: its 'find' text appears more than 200 times — style a more specific text.`);
   return out;
 }
 
@@ -458,13 +473,13 @@ function docIndex(s: DocState, at: unknown, w: string): number | null {
   if (at === "end" || at === undefined) return null;
   const want = (at as { after: string }).after;
   const h = s.paragraphs.find((p) => /^HEADING_[1-6]$/.test(p.style) && p.text.trim() === want);
-  if (!h) return bad(`${w}: there is no heading ${q(want)} in the document as it is now (see \`doc read\`).`);
+  if (!h) return bad(`${w}: there is no heading with that exact text in the document as it is now (see \`doc read\`).`);
   // A heading that closes the document: nothing can be inserted past the last newline.
   return h.end >= s.end ? null : h.end;
 }
 
 function docRequests(ops: readonly EditOp[], s: DocState): J[] {
-  const located: { index: number; order: number; reqs: J[] }[] = [];
+  const located: { index: number; order: number; insert: boolean; reqs: J[] }[] = [];
   const sequential: J[] = [];
   ops.forEach((o, i) => {
     const w = `operation ${i + 1}`;
@@ -480,7 +495,7 @@ function docRequests(ops: readonly EditOp[], s: DocState): J[] {
         if (fields) reqs.push({ updateTextStyle: { range, textStyle, fields } });
         if (o.heading !== undefined) reqs.push({ updateParagraphStyle: { range, paragraphStyle: { namedStyleType: o.heading === "NORMAL" ? "NORMAL_TEXT" : `HEADING_${String(o.heading).slice(1)}` }, fields: "namedStyleType" } });
         if (o.bullet) reqs.push({ createParagraphBullets: { range, bulletPreset: "BULLET_DISC_CIRCLE_SQUARE" } });
-        located.push({ index: r.start, order: i, reqs });
+        located.push({ index: r.start, order: i, insert: false, reqs });
       }
     } else if (o.op === "insert_text") {
       const index = docIndex(s, o.at, w);
@@ -489,12 +504,12 @@ function docRequests(ops: readonly EditOp[], s: DocState): J[] {
         // At the end; after a closing heading the text starts on its own line.
         sequential.push({ insertText: { text: after ? `\n${o.text}` : o.text, endOfSegmentLocation: {} } });
       } else if (!after) {
-        located.push({ index, order: i, reqs: [{ insertText: { text: o.text, location: { index } } }] });
+        located.push({ index, order: i, insert: true, reqs: [{ insertText: { text: o.text, location: { index } } }] });
       } else {
         // Its own paragraph(s) under the heading, as normal text — not a
         // continuation of the heading's style.
         const t = String(o.text).endsWith("\n") ? String(o.text) : `${o.text}\n`;
-        located.push({ index, order: i, reqs: [{ insertText: { text: t, location: { index } } }, { updateParagraphStyle: { range: { startIndex: index, endIndex: index + t.length }, paragraphStyle: { namedStyleType: "NORMAL_TEXT" }, fields: "namedStyleType" } }] });
+        located.push({ index, order: i, insert: true, reqs: [{ insertText: { text: t, location: { index } } }, { updateParagraphStyle: { range: { startIndex: index, endIndex: index + t.length }, paragraphStyle: { namedStyleType: "NORMAL_TEXT" }, fields: "namedStyleType" } }] });
       }
     } else if (o.op === "insert_table") {
       const rows = Number(o.rows);
@@ -515,21 +530,24 @@ function docRequests(ops: readonly EditOp[], s: DocState): J[] {
           if (cells[r][c]) reqs.push({ insertText: { text: cells[r][c], location: { index: index + 4 + r * (2 * cols + 1) + 2 * c } } });
         }
       }
-      located.push({ index, order: i, reqs });
+      located.push({ index, order: i, insert: true, reqs });
     } else {
       const index = docIndex(s, o.at, w);
       if (index === null) sequential.push({ insertInlineImage: { uri: o.url, endOfSegmentLocation: {} } });
-      else located.push({ index, order: i, reqs: [{ insertInlineImage: { uri: o.url, location: { index } } }] });
+      else located.push({ index, order: i, insert: true, reqs: [{ insertInlineImage: { uri: o.url, location: { index } } }] });
     }
   });
-  // Located operations run first, from the END of the document backwards (and,
-  // at one same place, the later-listed first): none shifts the place of the next.
-  located.sort((a, b) => b.index - a.index || b.order - a.order);
+  // Located operations run first, from the END of the document backwards:
+  // none shifts the place of the next. At one same place a style goes before
+  // any insert (its range is the text that is there NOW — an insert made first
+  // would take it), and of two inserts the later-listed goes first.
+  located.sort((a, b) => b.index - a.index || Number(a.insert) - Number(b.insert) || b.order - a.order);
   return [...located.flatMap((l) => l.reqs), ...sequential];
 }
 
 function slidesRequests(ops: readonly EditOp[], s: SlidesState): J[] {
   const slideIds = new Set(s.slides.map((x) => x.id));
+  const order = s.slides.map((x) => x.id);
   const elements = new Map(s.slides.flatMap((x) => x.elements).map((e) => [e.id, e] as const));
   const out: J[] = [];
   ops.forEach((o, i) => {
@@ -575,8 +593,8 @@ function slidesRequests(ops: readonly EditOp[], s: SlidesState): J[] {
       });
     } else {
       const ids = (o.slideIds as string[]).map(needSlide);
+      if (ids.some((id) => !order.includes(id))) return bad(`${w}: a slide added by this same edit cannot be reordered — give add_slide its 'at' instead.`);
       // Slides wants them in the deck's own order.
-      const order = s.slides.map((x) => x.id);
       out.push({ updateSlidesPosition: { slideObjectIds: [...ids].sort((a, b) => order.indexOf(a) - order.indexOf(b)), insertionIndex: o.at } });
     }
   });
@@ -592,7 +610,7 @@ function sheetRequests(ops: readonly EditOp[], s: SheetState): J[] {
     const w = `operation ${i + 1}`;
     const tabId = (name: string | undefined) => {
       const t = name === undefined ? tabs[0] : tabs.find((x) => x.title === name);
-      return t ? t.id : bad(`${w}: there is no tab ${q(name ?? "")} in the spreadsheet as it is now.`);
+      return t ? t.id : bad(`${w}: there is no tab with that name in the spreadsheet as it is now.`);
     };
     const grid = (range: unknown) => {
       const a = parseA1(String(range), w);
@@ -604,7 +622,7 @@ function sheetRequests(ops: readonly EditOp[], s: SheetState): J[] {
       out.push({ updateCells: { start: { sheetId: tabId(a.tab), rowIndex: a.r0 ?? 0, columnIndex: a.c0 ?? 0 }, rows: (o.values as Cell[][]).map((r) => ({ values: r.map((c) => ({ userEnteredValue: value(c) })) })), fields: "userEnteredValue" } });
     } else if (o.op === "clear") out.push({ updateCells: { range: grid(o.range), fields: "userEnteredValue" } });
     else if (o.op === "add_tab") {
-      if (tabs.some((t) => t.title === o.title)) return bad(`${w}: there is already a tab ${q(o.title)}.`);
+      if (tabs.some((t) => t.title === o.title)) return bad(`${w}: there is already a tab with that name.`);
       out.push({ addSheet: { properties: { sheetId: o.sheetId, title: o.title } } });
       tabs.push({ id: Number(o.sheetId), title: String(o.title) });
     } else if (o.op === "delete_tab") {
@@ -614,7 +632,7 @@ function sheetRequests(ops: readonly EditOp[], s: SheetState): J[] {
       tabs.splice(tabs.findIndex((t) => t.id === id), 1);
     } else if (o.op === "rename_tab") {
       const id = tabId(String(o.from));
-      if (tabs.some((t) => t.title === o.to)) return bad(`${w}: there is already a tab ${q(o.to)}.`);
+      if (tabs.some((t) => t.title === o.to)) return bad(`${w}: there is already a tab with that name.`);
       out.push({ updateSheetProperties: { properties: { sheetId: id, title: o.to }, fields: "title" } });
       tabs.find((t) => t.id === id)!.title = String(o.to);
     } else if (o.op === "format") {

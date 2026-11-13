@@ -2138,8 +2138,12 @@ read→write gap is what `requiredRevisionId` closes. (2) **Docs positions.**
 `style`, inserts at the start or after a heading, and a table with cells are
 resolved in the document as read and emitted from the END backwards (later
 listed first at one same index), so none shifts the next; `replaceAllText`
-requests follow. `editOpsVerdict` therefore refuses a located operation listed
-after a `replace_text` / `delete_text`. A table's cell indices are computed
+requests follow. At one same index a style is emitted before an insert (its range is
+the text there NOW). `editOpsVerdict` therefore refuses a located operation
+listed after any operation that is not — the card's order must be the order
+applied. `q()` shows line breaks and bidi controls as escapes so a text
+cannot fake a card line, and refusal sentences carry no operation text (they
+are logged). A table's cell indices are computed
 (`index + 4 + r·(2·cols+1) + 2·c`) and filled last cell first. (3)
 **`imageUrlVerdict`**: Google fetches an image, not this server, but an agent
 must not aim any fetcher at an internal address through us — https only, no

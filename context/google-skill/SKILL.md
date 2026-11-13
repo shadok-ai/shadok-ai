@@ -125,8 +125,10 @@ OPS
 
 `slides read` lists each slide with its id and layout, and each element with
 its id, type and text. Layouts: `BLANK`, `TITLE`, `TITLE_ONLY`,
-`TITLE_AND_BODY`, `SECTION_HEADER`. `at` is a 0-based position; `insert_text`
-without `at` adds at the end of the element's text. Sizes are in points.
+`TITLE_AND_BODY`, `SECTION_HEADER`. `at` is a 0-based position; for `reorder` it is counted in the
+deck as it is BEFORE the move (the slides land just before the slide now at
+that position). `insert_text` without `at` adds at the end of the element's
+text. Sizes are in points.
 
 ```bash
 node ~/.claude/skills/shadok-google/scripts/google.mjs doc edit --account <id> --id <doc id> --stdin <<'OPS'
@@ -145,10 +147,11 @@ OPS
 `at` is `"start"`, `"end"` (the default) or `{"after": "<heading text>"}` —
 `doc read` lists the headings. `style` applies to every occurrence of `find`
 (`heading`: `NORMAL`, `H1`…`H6`; `bold`, `italic`; `"bullet": true`). In ONE
-edit, `style` and inserts that are not at the end are located in the document
-as it is before the edit, so they must come before any `replace_text` /
-`delete_text` — and a `style` cannot target text the same edit inserts: send a
-second edit. `doc append` still exists for plain text at the end.
+edit, `style`, inserts placed at the start or after a heading, and a table
+with `cells` are located in the document as it is before the edit, so list
+them FIRST — before `replace_text`, `delete_text` and anything added at the
+end — and a `style` cannot target text the same edit inserts: send a second
+edit. `doc append` still exists for plain text at the end.
 
 ```bash
 node ~/.claude/skills/shadok-google/scripts/google.mjs sheet edit --account <id> --id <sheet id> --stdin <<'OPS'

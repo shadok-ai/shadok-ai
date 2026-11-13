@@ -147,9 +147,15 @@ INSIDE a Slides deck, a Doc or a Sheet — not only read and append.
 - **Docs positions.** Operations located in the document (`style`, an insert
   at the start or after a heading, a table with cells) are resolved against
   the document as it is when the batch starts and sent from the end backwards,
-  so none shifts the next; they must therefore come before any
-  `replace_text` / `delete_text` of the same batch (refused otherwise, with the
-  reason).
+  so none shifts the next (at one same place a style is sent before an insert,
+  or it would land on the inserted text). They must therefore be listed first
+  — before `replace_text`, `delete_text` and anything added at the end — or
+  the card's order would not be the order applied (refused otherwise, with
+  the reason).
+- **Card lines are one line each, whatever the text.** Texts are quoted with
+  every line break and bidi control shown as an escape; one-line fields (a
+  range, a tab name) refuse them. A refusal sentence never repeats an
+  operation's text: refusals are logged.
 - **Images by URL** (`insert_image`): Google fetches the address, not this
   server. Even so: `https` only, no credentials or port, and loopback,
   private, link-local, metadata and bare or internal host names are refused
