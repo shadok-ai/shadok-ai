@@ -281,6 +281,10 @@ function eventPayload(op: EventPayload["op"], calendarId: string, e: Partial<Eve
     attendees: [...(e.attendees ?? [])],
     ...(e.location ? { location: e.location } : {}),
     ...(e.description ? { description: e.description } : {}),
+    // A read event is always "default" when it has no colour of its own; the
+    // card names the colour only when it says something — an own colour, or
+    // an update that takes one away.
+    ...(e.color && (e.color !== "default" || extra.patch?.color === "default") ? { color: e.color } : {}),
     ...extra,
   };
 }

@@ -58,6 +58,8 @@ export interface EventPayload {
   attendees: string[];
   location?: string;
   description?: string;
+  /** A name of `EVENT_COLORS` or "default" (the calendar's colour). */
+  color?: string;
   /** update only: exactly what is sent to Google. */
   patch?: Record<string, unknown>;
 }
@@ -566,6 +568,7 @@ function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "eve
       attendees: [...p.attendees],
       ...(p.location ? { location: p.location } : {}),
       ...(p.description ? { description: p.description } : {}),
+      ...(p.color ? { color: p.color } : {}),
     },
   };
 }
