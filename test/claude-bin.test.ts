@@ -13,6 +13,7 @@ import {
   findClaudeBin,
   findClaudeBinWithRetry,
   rewriteInProgress,
+  abandonedReifyDirs,
   globalScopeDirs,
   type BinSample,
   type ClaudeBin,
@@ -377,6 +378,23 @@ test("rewriteInProgress: only a RECENT npm reify directory counts", () => {
   // The package itself, and unrelated scope members, are not a rewrite.
   assert.equal(rewriteInProgress([{ name: "claude-code", mtimeMs: now }, { name: "sdk", mtimeMs: now }], now), false);
   assert.equal(rewriteInProgress([], now), false);
+});
+
+test("abandonedReifyDirs: only an OLD reify directory is abandoned — the exact complement of rewriteInProgress", () => {
+  const now = 1_800_000_000_000;
+  const entries = [
+    { name: ".claude-code-1devilah", mtimeMs: now - 21 * 60_000 },
+    { name: ".claude-code-fresh", mtimeMs: now - 3_000 },
+    { name: "claude-code", mtimeMs: now - 60 * 60_000 },
+    { name: ".sdk-old", mtimeMs: now - 60 * 60_000 },
+  ];
+  assert.deepEqual(abandonedReifyDirs(entries, now), [".claude-code-1devilah"]);
+  for (const e of entries) {
+    if (e.name.startsWith(".claude-code-")) {
+      assert.notEqual(abandonedReifyDirs([e], now).length > 0, rewriteInProgress([e], now), `${e.name} is either live or abandoned, never both`);
+    }
+  }
+  assert.deepEqual(abandonedReifyDirs([], now), []);
 });
 
 test("globalScopeDirs: system, nvm and Windows layouts", () => {

@@ -529,6 +529,7 @@ import { startHeartbeat } from "./heartbeat.js";
 import {
   ensureClaude,
   claudeInstallInProgress,
+  clearAbandonedClaudeReify,
   claudeCommand,
   classifyBin,
   findClaudeBinWithRetry,
@@ -9938,6 +9939,20 @@ function detach(ws: WebSocket, s: Live) {
 /** `npm i -g @anthropic-ai/claude-code`, streamed to the server log. Rejects on a
  *  non-zero exit or a spawn error (e.g. no write permission on the global dir). */
 function installClaudeCli(): Promise<void> {
+  return npmInstallClaude().catch((e) => {
+    // An install that died earlier leaves npm's reify directory behind, and
+    // every later install collides on it (ENOTEMPTY) for ever — the launcher
+    // stays the placeholder and no agent can start. Only an ABANDONED one is
+    // removed (older than the bound `rewriteInProgress` treats as live), and
+    // only after our install has actually failed; then we try once more.
+    const removed = clearAbandonedClaudeReify();
+    if (!removed.length) throw e;
+    console.log(`claude install: removed an abandoned npm directory (${removed.join(", ")}) — retrying once`);
+    return npmInstallClaude();
+  });
+}
+
+function npmInstallClaude(): Promise<void> {
   return new Promise((resolve, reject) => {
     const npm = process.platform === "win32" ? "npm.cmd" : "npm";
     const p = spawnChild(npm, ["install", "-g", "@anthropic-ai/claude-code", "--no-audit", "--no-fund"], {
