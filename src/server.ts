@@ -552,9 +552,25 @@ import {
   accountEditVerdict,
   publicView,
   type ConnectedAccount,
+  type GoogleArea,
   normalizeShare,
+  agentAccountView,
+  grantedAreas,
+  patchRaisesAutonomy,
+  policyPatch,
 } from "./connected-accounts.js";
 import { fetchMember, createPost, uploadImage, LinkedInError } from "./linkedin.js";
+import { GoogleError, GoogleInputError, GoogleTokens, fetchUser as fetchGoogleUser, revokeToken as revokeGoogleToken } from "./google.js";
+import {
+  GOOGLE_ACTIONS,
+  actionSetting,
+  actionVerdict,
+  approveGoogleDraft,
+  discardGoogleDraft,
+  pendingGmailDraftIds,
+  runGoogleAction,
+  type GoogleDeps,
+} from "./google-actions.js";
 import {
   appendLog,
   approvalCaller,
@@ -585,6 +601,10 @@ import {
   snapshotBytes,
   snapshotPathFor,
   writeSnapshot,
+  draftProvider,
+  usableAccountVerdict,
+  EDITED_IN_GMAIL_SENTENCE,
+  GONE_IN_GMAIL_SENTENCE,
   type Draft,
   type LogEntry,
 } from "./social-drafts.js";
@@ -603,10 +623,14 @@ import {
 import {
   brokerBase,
   brokerStartUrl,
+  connectedGoogle,
   connectedMember,
   connectReadAllowed,
   errorOutcome,
-  healthOffersLinkedIn,
+  healthProviders,
+  isConnectProvider,
+  parseAreas,
+  PROVIDER_LABEL,
   outcomeLabel,
   outcomeResponse,
   parseConnectHash,
@@ -4248,6 +4272,8 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   // every shipped context/*-skill is listed here.
   ["files-skill", "shadok-files"],
   ["social-skill", "shadok-social"],
+  // Acting in a connected Google account (src/google-actions.ts).
+  ["google-skill", "shadok-google"],
   // The lead's once-only write of the instance context (src/instance-context.ts).
   ["instance-context-skill", "shadok-instance-context"],
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
@@ -5433,30 +5459,35 @@ app.delete("/secrets", (req, res) => {
   res.json({ names: secretNames(ownerGroup) });
 });
 
-// Connected accounts (LinkedIn). The token comes back from the broker
+// Connected accounts (LinkedIn, Google). The token comes back from the broker
 // encrypted for a key pair made here (src/connect-crypto.ts), is stored
 // server-side, and never leaves through any route: every answer is a
 // `publicView`. Every route is browser-person only — an agent neither connects
 // nor manages an account. Design:
-// docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §2–3.
+// docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §2–3,
+// docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md.
 const CONNECT_BROKER = brokerBase(process.env.SHADOK_CONNECT_BROKER);
 const connectPending = new PendingAttempts();
 const accountsFile = () => accountsFileFor(process.cwd());
 
 // The broker's health, probed at most every 5 minutes (a failure only 1 minute,
 // so a broker that comes back shows up soon). Never throws.
-let brokerHealth: { available: boolean; at: number } | null = null;
-async function brokerAvailable(now: number): Promise<boolean> {
-  if (brokerHealth && now - brokerHealth.at < (brokerHealth.available ? 5 * 60_000 : 60_000)) return brokerHealth.available;
-  let available = false;
+// Which providers it offers (a provider appears only once its secrets exist on
+// the broker) and whether its Google app is in Testing.
+type BrokerProviders = ReturnType<typeof healthProviders>;
+let brokerHealth: { providers: BrokerProviders; at: number } | null = null;
+async function brokerProviders(now: number): Promise<BrokerProviders> {
+  const up = (p: BrokerProviders) => p.linkedin || p.google;
+  if (brokerHealth && now - brokerHealth.at < (up(brokerHealth.providers) ? 5 * 60_000 : 60_000)) return brokerHealth.providers;
+  let providers = healthProviders(null);
   try {
     const r = await fetch(`${CONNECT_BROKER}/health`, { signal: AbortSignal.timeout(5_000) });
-    available = r.ok && healthOffersLinkedIn(await r.json().catch(() => null));
+    if (r.ok) providers = healthProviders(await r.json().catch(() => null));
   } catch {
-    available = false;
+    /* unreachable: offers nothing */
   }
-  brokerHealth = { available, at: Date.now() };
-  return available;
+  brokerHealth = { providers, at: Date.now() };
+  return providers;
 }
 
 /** The person behind a browser request (`requestFromBrowser` already passed). */
@@ -5477,21 +5508,34 @@ function connectReader(req: Caller & { headers: Record<string, unknown> }): bool
 
 app.get("/connect/status", async (req, res) => {
   if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
-  res.json({ available: await brokerAvailable(Date.now()) });
+  // `available` is LinkedIn's, as before the second provider existed.
+  const p = await brokerProviders(Date.now());
+  res.json({ available: p.linkedin, providers: { linkedin: p.linkedin, google: p.google }, googleTesting: p.googleTesting });
 });
 
-app.post("/connect/linkedin/start", (req, res) => {
+// One set of routes for every provider: /connect/<provider>/{start,done,complete}.
+app.post("/connect/:provider/start", (req, res) => {
+  const provider = req.params.provider;
+  if (!isConnectProvider(provider)) return res.status(404).json({ error: "Unknown provider." });
   if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
   const person = connectPerson(req);
   if (!person) return res.status(401).json({ error: "Sign in to connect an account." });
   const origin = req.body?.origin;
   if (!startOriginOk(origin, req.headers.origin)) return res.status(400).json({ error: "origin must be this page's own origin" });
+  // Google: the areas the person ticked. The broker carries them in its signed
+  // state, so what comes back cannot have been widened on the way.
+  let areas: GoogleArea[] = [];
+  if (provider === "google") {
+    const parsed = parseAreas(req.body?.areas);
+    if (!parsed) return res.status(400).json({ error: "Choose at least one of Calendar, Drive files and Gmail." });
+    areas = parsed;
+  }
   const now = Date.now();
   connectPending.sweep(now);
-  const { attempt, pub, nonce } = newAttempt(person, now);
+  const { attempt, pub, nonce } = newAttempt(person, now, provider);
   connectPending.add(attempt);
-  console.log(`connect: linkedin started for ${person}`);
-  res.json({ url: brokerStartUrl(CONNECT_BROKER, origin as string, pub, nonce) });
+  console.log(`connect: ${provider} started for ${person}${areas.length ? ` (${areas.join(",")})` : ""}`);
+  res.json({ url: brokerStartUrl(CONNECT_BROKER, origin as string, pub, nonce, provider, areas) });
 });
 
 // The broker sends the browser back here with the encrypted token in the HASH
@@ -5499,7 +5543,8 @@ app.post("/connect/linkedin/start", (req, res) => {
 // Kept OUT of public/: express.static would serve it raw at /connect-done.html
 // with the literal nonce marker. Only this route serves it, nonce injected.
 const CONNECT_DONE_PATH = path.join(__dirname, "..", "context", "connect-done.html");
-app.get("/connect/linkedin/done", (_req, res) => {
+app.get("/connect/:provider/done", (req, res) => {
+  if (!isConnectProvider(req.params.provider)) return res.status(404).type("text").send("Unknown provider.");
   let html: string;
   try {
     html = fs.readFileSync(CONNECT_DONE_PATH, "utf8");
@@ -5512,13 +5557,15 @@ app.get("/connect/linkedin/done", (_req, res) => {
   res.type("html").send(injectNonce(html, nonce));
 });
 
-app.post("/connect/linkedin/complete", async (req, res) => {
+app.post("/connect/:provider/complete", async (req, res) => {
+  const provider = req.params.provider;
+  if (!isConnectProvider(provider)) return res.status(404).json({ error: "Unknown provider." });
   if (!requestFromBrowser(req)) return res.status(403).json({ error: "web UI only" });
   const person = connectPerson(req);
   if (!person) return res.status(401).json({ error: "Sign in to connect an account." });
   const refuse = (o: ConnectOutcome) => {
-    console.log(`connect: linkedin ${outcomeLabel(o)} for ${person}`);
-    const r = outcomeResponse(o);
+    console.log(`connect: ${provider} ${outcomeLabel(o)} for ${person}`);
+    const r = outcomeResponse(o, provider);
     return res.status(r.status).json(r.body);
   };
   const now = Date.now();
@@ -5531,23 +5578,43 @@ app.post("/connect/linkedin/complete", async (req, res) => {
   }
   const attempt = connectPending.take(h.nonce, person, now);
   if (typeof attempt === "string") return refuse(attempt);
+  // An attempt is finished only where it was started: a LinkedIn token must
+  // not be stored as a Google account, nor the reverse.
+  if ((attempt.provider ?? "linkedin") !== provider) return refuse("damaged");
   let payload: TokenPayload;
   try {
     payload = decryptPayload(attempt, h.blob);
   } catch {
     return refuse("damaged");
   }
-  let member: { sub: string; name: string };
-  try {
-    member = await fetchMember(payload.access_token, fetch);
-  } catch {
-    return refuse("profile-failed");
+  let incoming: ReturnType<typeof connectedMember>;
+  if (provider === "google") {
+    // No refresh token = an account that dies within the hour: not stored.
+    if (!payload.refresh_token) return refuse("no-refresh");
+    try {
+      const user = await fetchGoogleUser(payload.access_token, fetch);
+      incoming = connectedGoogle(person, user, payload, now, (await brokerProviders(now)).googleTesting);
+    } catch {
+      return refuse("profile-failed");
+    }
+  } else {
+    try {
+      incoming = connectedMember(person, await fetchMember(payload.access_token, fetch), payload, now);
+    } catch {
+      return refuse("profile-failed");
+    }
   }
-  const { list, account } = upsertAccount(loadAccountsStore(accountsFile()), connectedMember(person, member, payload, now), now);
+  const { list, account } = upsertAccount(loadAccountsStore(accountsFile()), incoming, now);
   saveAccountsStore(accountsFile(), list);
-  console.log(`connect: linkedin connected ${account.id} for ${person}`);
-  res.json({ account: publicView(account) });
+  console.log(`connect: ${provider} connected ${account.id} for ${person}`);
+  res.json({ account: accountRow(account, person, now) });
 });
+
+/** One account as the PAGE gets it: `publicView` (never a token), the areas
+ *  Google granted, and the owner's own banner flags (`ownerExpiryFlags`). */
+function accountRow(a: ConnectedAccount, viewerName: string | null, now: number) {
+  return { ...publicView(a), ...(a.provider === "google" ? { areas: grantedAreas(a) } : {}), ...ownerExpiryFlags(a, viewerName, now) };
+}
 
 app.get("/connected-accounts", (req, res) => {
   if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
@@ -5558,7 +5625,7 @@ app.get("/connected-accounts", (req, res) => {
   // reaches the operator alone, the page reaches every owner.
   const accounts = loadAccountsStore(accountsFile())
     .filter((a) => accountVisible(a, viewer, groups, { peerBox: null, agentsUnwalled: AGENTS_UNWALLED }))
-    .map((a) => ({ ...publicView(a), ...ownerExpiryFlags(a, viewer?.name ?? null, now) }));
+    .map((a) => accountRow(a, viewer?.name ?? null, now));
   res.json({ accounts, softLayer: DEPLOYMENT_MODE !== "multi-tenant" });
 });
 
@@ -5603,13 +5670,15 @@ function connectedAccountFor(req: express.Request, res: express.Response) {
 app.put("/connected-accounts/:id", (req, res) => {
   const found = connectedAccountFor(req, res);
   if (!found) return;
-  const { share, policy } = req.body ?? {};
-  if (share === undefined && policy === undefined) return res.status(400).json({ error: "share or policy required" });
+  const { share } = req.body ?? {};
+  // LinkedIn: `policy`. Google: `policies.mail` / `policies.calendar`.
+  const pp = policyPatch(found.account, req.body ?? {});
+  if (!pp.ok) return res.status(400).json({ error: pp.reason });
+  if (share === undefined && !pp.patch) return res.status(400).json({ error: "share, policy or policies required" });
   const groups = loadGroups();
   // The owner's own Personal group named as a group IS `personal` (normalizeShare).
   const nextShare = share === undefined ? undefined : normalizeShare(share, privateGroupFor(found.account.owner, groups)?.id ?? null, commonsGroupIdsOf(groups));
   if (share !== undefined && !nextShare) return res.status(400).json({ error: "invalid share" });
-  if (policy !== undefined && policy !== "approve" && policy !== "autonomous") return res.status(400).json({ error: "invalid policy" });
   const viewer = viewerFor(currentAccount(req));
   let next = found.account;
   if (nextShare) {
@@ -5617,14 +5686,17 @@ app.put("/connected-accounts/:id", (req, res) => {
     if (!v.ok) return res.status(403).json({ error: v.reason });
     next = { ...next, share: nextShare };
   }
-  if (policy !== undefined) {
-    const v = accountEditVerdict(found.account, viewer, "policy", { policy }, groups);
+  if (pp.patch) {
+    const raises = patchRaisesAutonomy(found.account, pp.patch);
+    const v = accountEditVerdict(found.account, viewer, "policy", { policy: raises ? "autonomous" : "approve" }, groups);
     if (!v.ok) return res.status(403).json({ error: v.reason });
-    next = { ...next, policy };
+    next = { ...next, ...pp.patch };
+    if (raises) console.log(`connect: ${next.provider} account ${next.id} set to act without approval by ${viewer?.name ?? "?"}`);
   }
-  next = { ...next, updatedAt: Date.now() };
+  const now = Date.now();
+  next = { ...next, updatedAt: now };
   saveAccountsStore(accountsFile(), found.list.map((a) => (a === found.account ? next : a)));
-  res.json({ account: publicView(next) });
+  res.json({ account: accountRow(next, viewer?.name ?? null, now) });
 });
 
 app.delete("/connected-accounts/:id", (req, res) => {
@@ -5633,14 +5705,23 @@ app.delete("/connected-accounts/:id", (req, res) => {
   const v = accountEditVerdict(found.account, viewerFor(currentAccount(req)), "disconnect", undefined, loadGroups());
   if (!v.ok) return res.status(403).json({ error: v.reason });
   saveAccountsStore(accountsFile(), found.list.filter((a) => a !== found.account));
-  console.log(`connect: linkedin disconnected ${found.account.id} by ${currentAccount(req)?.name ?? "?"}`);
+  // Google: revoke the grant there too, so the stored refresh token is dead
+  // and not merely forgotten. Best effort — the account is gone here either way.
+  if (found.account.provider === "google") {
+    const id = found.account.id;
+    void revokeGoogleToken(found.account.refreshToken ?? found.account.token, fetch).then((ok) =>
+      console.log(`connect: google account ${id} ${ok ? "revoked at Google" : "could not be revoked at Google (it lapses on its own)"}`),
+    );
+  }
+  console.log(`connect: ${found.account.provider} disconnected ${found.account.id} by ${currentAccount(req)?.name ?? "?"}`);
   res.json({ ok: true });
 });
 
-// ---- Social posting (LinkedIn): drafts, the approval gate, the log ---------
-// An agent asks to post (`POST /social/posts`, its session key); the account's
-// policy decides between a DRAFT a person publishes from the browser and an
-// immediate publish. The token is read here and only here, and never leaves:
+// ---- Acting in a connected account: drafts, the approval gate, the log -----
+// An agent asks to post (`POST /social/posts`) or to act in a Google account
+// (`POST /google/actions`), with its session key; the account's setting for
+// that kind of action decides between a DRAFT a person approves from the
+// browser and doing it at once. The token is read here and only here, and never leaves:
 // clients get `draftView`, the log gets `serialiseLogEntry`. Design:
 // docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §4–5.
 const draftsFile = () => draftsFileFor(process.cwd());
@@ -5691,7 +5772,31 @@ function patchAccount(id: string, patch: Partial<ConnectedAccount>): void {
   const hit = list.find((a) => a.id === id);
   if (!hit) return;
   saveAccountsStore(accountsFile(), list.map((a) => (a === hit ? { ...hit, ...patch } : a)));
-  console.log(`social: linkedin account ${id} refused its token (401) — marked expired`);
+  if (patch.status === "expired") console.log(`social: ${hit.provider} account ${id} had its authorisation refused — marked expired`);
+}
+
+// Google access tokens last about an hour: `googleTokens` renews one through
+// the broker when it is close to lapsing, one refresh per account at a time.
+const googleTokens = new GoogleTokens({
+  broker: CONNECT_BROKER,
+  fetchFn: fetch,
+  now: () => Date.now(),
+  store: {
+    get: (id) => loadAccountsStore(accountsFile()).find((a) => a.id === id),
+    patch: patchAccount,
+  },
+});
+
+/** What a Google action is given: the token source, the network, and — for an
+ *  attachment — a read with the rights of the agent that asked (invariant 60). */
+function googleDeps(sessionId: string): GoogleDeps {
+  return {
+    fetchFn: fetch,
+    token: (accountId) => googleTokens.accessToken(accountId),
+    readFile: (p) => readSessionFile(sessionId, p),
+    now: () => Date.now(),
+    pendingGmailDrafts: (accountId) => pendingGmailDraftIds(loadDrafts(draftsFile()), accountId),
+  };
 }
 
 /**
@@ -5783,7 +5888,7 @@ function watchConnectedAccounts(): void {
     if (expire.length) {
       const ids = new Set(expire.map((a) => a.id));
       saveAccountsStore(accountsFile(), accounts.map((a) => (ids.has(a.id) ? { ...a, status: "expired" as const, updatedAt: now } : a)));
-      for (const a of expire) console.log(`social: linkedin account ${a.id} expired`);
+      for (const a of expire) console.log(`social: ${a.provider} account ${a.id} expired`);
     }
 
     if (expiredDrafts.length || stale.failed.length) {
@@ -5820,16 +5925,73 @@ app.get("/social/accounts", (req, res) => {
   const now = Date.now();
   const accounts = loadAccountsStore(accountsFile())
     .filter((a) => accountVisible(a, viewer, groups, { peerBox, agentsUnwalled: AGENTS_UNWALLED, agentProfile: agent.profile }))
-    .map((a) => ({
-      id: a.id,
-      label: a.label,
-      provider: a.provider,
-      kind: a.kind,
-      policy: a.policy,
-      expiresAt: a.expiresAt,
-      status: a.status === "expired" || now >= a.expiresAt ? "expired" : "ok",
-    }));
+    .map((a) => agentAccountView(a, now));
   res.json({ accounts });
+});
+
+/**
+ * An agent acts in a Google account: `{account, action, args}`. The action's
+ * CLASS decides what happens (`GOOGLE_ACTIONS`): a read or an own-write is done
+ * at once; sending mail follows the account's mail setting, any event change
+ * its calendar setting — `approve` makes a draft and a card, and NOTHING leaves
+ * the account from this route. Everything but a read is logged, by summary:
+ * a mail body never reaches the log.
+ */
+app.post("/google/actions", async (req, res) => {
+  const agent = agentPrincipal(req);
+  if (!agent) return res.status(403).json({ error: "Agents only: send your x-shadok-session-key." });
+  const body = req.body ?? {};
+  const u = usableAccountVerdict(
+    loadAccountsStore(accountsFile()),
+    "google",
+    body.account,
+    viewerFor(currentAccount(req)),
+    loadGroups(),
+    restrictedBoxOf(req),
+    Date.now(),
+    AGENTS_UNWALLED,
+    agent.profile,
+  );
+  if (!u.ok) return res.status(u.status).json({ error: u.reason });
+  const account = u.account;
+  const av = actionVerdict(account, body.action);
+  if (!av.ok) return res.status(av.status).json({ error: av.reason });
+  const action = av.action;
+  const args = body.args && typeof body.args === "object" && !Array.isArray(body.args) ? (body.args as Record<string, unknown>) : {};
+  const channel = channelLabel(loadChannels(), agent.sessionId);
+  const origin = socialOrigin(agent.sessionId);
+  const logged = GOOGLE_ACTIONS[action].class !== "read";
+  const approvedBy = actionSetting(account, action) === "autonomous" ? "autonomous" : "none";
+  const entry = { accountId: account.id, sessionId: agent.sessionId, channel, origin, approvedBy, action };
+  try {
+    const out = await runGoogleAction(googleDeps(agent.sessionId), account, action, args);
+    if (out.kind === "pending") {
+      const d = makeDraft({
+        id: newDraftId(loadDrafts(draftsFile())),
+        sessionId: agent.sessionId,
+        accountId: account.id,
+        text: out.summary,
+        origin,
+        now: Date.now(),
+        provider: "google",
+        action: out.action,
+        payload: out.payload,
+      });
+      storeDraft(d);
+      broadcastDraft(d);
+      console.log(`social: draft ${d.id} (${action}) for account ${account.id} from ${agent.sessionId.slice(0, 8)} (${origin}) — waiting for approval`);
+      notifyOperator(account.owner, pendingDraftText(channel, d));
+      return res.json({ status: "pending", draftId: d.id });
+    }
+    if (out.log) logSocial({ at: Date.now(), ...entry, text: out.log.summary, outcome: "done", ...(out.log.link ? { postUrl: out.log.link } : {}) });
+    if (logged) console.log(`social: account ${account.id} ${action} from ${agent.sessionId.slice(0, 8)}${approvedBy === "autonomous" ? " (without approval)" : ""}`);
+    res.json({ status: "done", result: out.result });
+  } catch (e) {
+    const f = publishFailure(e, account, Date.now());
+    if (logged) logSocial({ at: Date.now(), ...entry, text: "", outcome: e instanceof GoogleInputError ? "refused" : "failed", error: f.reason });
+    console.log(`social: account ${account.id} ${action} failed (${e instanceof GoogleError ? e.status : e instanceof GoogleInputError ? "input" : "error"})`);
+    res.status(f.status).json({ error: f.reason });
+  }
 });
 
 app.post("/social/posts", async (req, res) => {
@@ -5894,7 +6056,7 @@ app.post("/social/posts", async (req, res) => {
     storeDraft(d);
     broadcastDraft(d);
     console.log(`social: draft ${d.id} for account ${account.id} from ${agent.sessionId.slice(0, 8)} (${origin}) — waiting for approval`);
-    notifyOperator(account.owner, pendingDraftText(channel));
+    notifyOperator(account.owner, pendingDraftText(channel, d));
     return res.json({ status: "pending", draftId: d.id });
   }
 
@@ -5916,8 +6078,8 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   const caller = approvalCaller({ ...browserPersonInputs(req), account: me });
   if (!caller.ok) return res.status(caller.status).json({ error: caller.reason });
   const hit = resolveDraftId(loadDrafts(draftsFile()), String(req.params.id ?? ""));
-  if (hit === "none") return res.status(404).json({ error: "No such LinkedIn draft." });
-  if (hit === "ambiguous") return res.status(409).json({ error: "Several LinkedIn drafts match that id — give more characters." });
+  if (hit === "none") return res.status(404).json({ error: "No such draft." });
+  if (hit === "ambiguous") return res.status(409).json({ error: "Several drafts match that id — give more characters." });
   const accounts = loadAccountsStore(accountsFile());
   const account = accounts.find((a) => a.id === hit.accountId);
   const viewer = viewerFor(me);
@@ -5948,10 +6110,16 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
     return res.status(v.status).json({ error: v.reason });
   }
 
+  const google = draftProvider(hit) === "google";
   if (action === "discard") {
+    // Claimed first (a second click sees it decided), then the Gmail draft
+    // behind an email card is deleted too — best effort, it is the person's own.
     const d: Draft = { ...hit, status: "discarded", decidedBy: caller.person };
     storeDraft(d);
     removeSnapshot(d.imageSnapshot);
+    if (google && account && !(await discardGoogleDraft(googleDeps(hit.sessionId), account, hit))) {
+      console.log(`social: draft ${d.id} discarded, but its Gmail draft could not be deleted`);
+    }
     broadcastDraft(d);
     notifyDraftAgent(d);
     console.log(`social: draft ${d.id} discarded by ${caller.person}`);
@@ -5971,15 +6139,40 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
   let failure: { status: number; reason: string } | null = null;
   publishesInFlight.add(hit.id);
   try {
-    const { url } = await publishToLinkedIn(acct, hit.text, draftImage(hit));
-    done = { ...publishing, status: "published", postUrl: url };
-    logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "published", postUrl: url }));
-    console.log(`social: draft ${hit.id} published`);
+    if (google) {
+      const out = await approveGoogleDraft(googleDeps(hit.sessionId), acct, hit);
+      if (out.kind === "changed") {
+        // Edited in Gmail since the card was drawn: NOT sent. The card takes
+        // the new content and asks again, so the person sends what they see.
+        const refreshed: Draft = { ...hit, payload: out.payload, text: out.summary };
+        storeDraft(refreshed);
+        broadcastDraft(refreshed);
+        console.log(`social: draft ${hit.id} was edited in Gmail — card refreshed, not sent`);
+        return res.status(409).json({ error: EDITED_IN_GMAIL_SENTENCE, draft: draftCard(refreshed) });
+      }
+      if (out.kind === "gone") {
+        const gone: Draft = { ...publishing, status: "gone" };
+        storeDraft(gone);
+        logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "refused", error: GONE_IN_GMAIL_SENTENCE }));
+        broadcastDraft(gone);
+        notifyDraftAgent(gone);
+        console.log(`social: draft ${hit.id} was deleted in Gmail — card closed`);
+        return res.status(410).json({ error: GONE_IN_GMAIL_SENTENCE, draft: draftCard(gone) });
+      }
+      done = { ...publishing, status: "published", ...(out.link ? { postUrl: out.link } : {}) };
+      logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "done", ...(out.link ? { postUrl: out.link } : {}) }));
+      console.log(`social: draft ${hit.id} (${hit.action}) done`);
+    } else {
+      const { url } = await publishToLinkedIn(acct, hit.text, draftImage(hit));
+      done = { ...publishing, status: "published", postUrl: url };
+      logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "published", postUrl: url }));
+      console.log(`social: draft ${hit.id} published`);
+    }
   } catch (e) {
     failure = publishFailure(e, acct, Date.now());
     done = { ...publishing, status: "failed", error: failure.reason };
     logSocial(draftLogEntry(hit, { at: Date.now(), channel, approvedBy: caller.person, outcome: "failed", error: failure.reason }));
-    console.log(`social: draft ${hit.id} failed (${e instanceof LinkedInError ? e.status : "error"})`);
+    console.log(`social: draft ${hit.id} failed (${e instanceof LinkedInError || e instanceof GoogleError ? e.status : "error"})`);
   } finally {
     publishesInFlight.delete(hit.id);
   }
@@ -12016,6 +12209,22 @@ function seedSocialSkill(): void {
   }
 }
 if (SEED_SKILLS) seedSocialSkill();
+
+/** The `shadok-google` skill — acting in a connected Google account. */
+function seedGoogleSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "google-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-google");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "google.mjs"), path.join(dst, "scripts", "google.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "google.mjs"), 0o755);
+  } catch {
+    /* best effort — a missing skill means no Google actions, not a broken boot */
+  }
+}
+if (SEED_SKILLS) seedGoogleSkill();
 // The lead agent's once-only write of the instance context: seeded to the server
 // HOME like shadok-files (a root lead reads it there), and listed in
 // SKILL_SOURCES for the machine-wide tier a dropped lead reads.
