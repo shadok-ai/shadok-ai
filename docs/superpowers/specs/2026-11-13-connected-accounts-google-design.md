@@ -51,9 +51,11 @@ screen shorter and the scope class lower.
   quota; Business Profile — API access granted by Google on request) are later.
 - The app stays in **Testing** for now: only test users added in the Google
   console can connect, and that is fine for the test phase.
-- **Gmail drafts are required** (hence `gmail.compose`), and sending follows a
-  per-account option exactly like LinkedIn posting: *with approval* (default)
-  or *automatic*.
+- **Gmail drafts are required** (hence `gmail.compose`).
+- **Two settings per Google account**, each *with approval* (default) or
+  *automatic*, like LinkedIn's posting policy: one for **sending mail**, one
+  for **adding events** (any event creation, update or deletion, with or
+  without attendees).
 
 ## Consequences of Testing mode (designed for, not worked around)
 
@@ -120,6 +122,9 @@ refresh:  instance ──(refresh_token)──▶ broker POST /google/refresh
 (people have several Google accounts; the email is what tells them apart),
 `refreshToken` set, `expiresAt` = the access token's expiry, a new
 `refreshExpiresAt` = connect time + 7 days while the broker says Testing, and
+`policies: { mail: "approve" | "autonomous"; calendar: "approve" | "autonomous" }`
+(both `approve` at connect; LinkedIn accounts keep their single `policy`, and a
+Google account never reads it), and
 `scopes: string[]` (what Google actually granted — the person may untick boxes
 on Google's consent screen, so the granted set is read from the token response,
 never assumed).
@@ -137,14 +142,15 @@ no Google client library (the package stays dependency-light).
 
 ### 4. What an agent can do (skill `shadok-google`, twin of `shadok-social`)
 
-Each action declares a **class**, and the class — not the action — decides
-whether the account's policy applies:
+Each action declares a **class**; the class decides whether an approval
+setting applies, and which one:
 
 | Class | Actions (wave 1) | Approval |
 |---|---|---|
 | read | `calendar list` (window, calendar id), `drive list` (app files), `doc read`, `sheet read` | never — it leaves nothing |
-| own-write | `gmail draft` (a real draft in the person's Gmail — nothing is sent), `doc create` / `doc append`, `sheet create` / `sheet append`, `calendar create` **without attendees** | never in wave 1: it only changes the person's own mailbox drafts/files/calendar, and nothing reaches anyone else |
-| outbound | `gmail send`, `calendar create` **with attendees** (Google mails invitations), `calendar update` / `delete` on an event that has attendees | the account's policy: `approve` (default) → approval card; `autonomous` → at once |
+| own-write | `gmail draft` (a real draft in the person's Gmail — nothing is sent), `doc create` / `doc append`, `sheet create` / `sheet append` | never in wave 1: it only changes the person's own drafts/files, and Drive keeps history |
+| mail | `gmail send` | the **mail** setting: `approve` (default) → Gmail draft + approval card; `autonomous` → sent at once |
+| calendar | `calendar create` / `update` / `delete`, with or without attendees | the **calendar** setting: `approve` (default) → approval card; `autonomous` → at once |
 
 **Mail with approval — the Gmail draft IS the draft.** Under `approve`,
 `gmail send` creates the message as a real Gmail draft *and* an approval card.
@@ -159,15 +165,14 @@ card). A draft deleted in Gmail turns the card into *"Draft deleted in Gmail"*
 and the agent is told. *Discard* on the card deletes the Gmail draft too.
 Under `autonomous`, `gmail send` sends directly (no draft left behind).
 
-Switching mail to *automatic* asks for confirmation spelling it out:
+Switching a setting to *automatic* asks for confirmation spelling it out:
 *"Agents in <scope> will be able to send email as <address> without asking
-anyone."* — the LinkedIn wording, same rule (only the owner, never an admin on
-someone else's account).
+anyone."* / *"…to add, change and delete events in <address>'s calendar
+without asking anyone."* — the LinkedIn wording, same rule (only the owner,
+never an admin on someone else's account).
 
-My call, and the one place this design is opinionated: what leaves the account
-toward other people goes through the card; what stays in it does not. A
-person who wants every write approved can still get it later with a per-class
-policy; wave 1 does not build it.
+Drive/Docs/Sheets writes have no setting in wave 1 (they stay in the
+person's own files); a third setting can be added the same way if wanted.
 
 - The **approval card** gains two renderers next to the LinkedIn post: *email*
   (from, to/cc/bcc, subject, the exact body, attachments by name) and *event*
@@ -198,8 +203,8 @@ can use the account, and a mail body is more private than a public post.
 three areas as chips (Calendar, Drive files, Gmail — all on by default) and
 the Testing note when it applies. The account row shows the granted areas as
 chips, the 7-day reconnect deadline in Testing, and the same Share / Profiles /
-Posting footer; for Google the policy chip reads *Sending: with approval /
-automatic* and covers mail and calendar invitations.
+Posting footer; for Google the footer shows two chips, *Mail: with approval /
+automatic* and *Events: with approval / automatic*.
 
 ## Operator tasks (outside the code)
 
@@ -247,7 +252,8 @@ automatic* and covers mail and calendar invitations.
   token; `/health` lists `google` only with secrets.
 - Instance: refresh at < 5 min, single in-flight refresh, `invalid_grant` →
   expired; granted scopes read from the response; action class table (an
-  attendee turns `calendar create` outbound); `approve` never sends from the
+  `calendar create` without attendees still follows the calendar setting; each
+setting governs only its own class); `approve` never sends from the
   agent route; publish is browser-person-only (reuse the LinkedIn gate tests).
 - Gmail approval: unchanged draft → sent; edited in Gmail → card refreshed,
   not sent; deleted → card closed, agent told; agent update of a pending
