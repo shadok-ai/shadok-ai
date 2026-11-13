@@ -355,7 +355,7 @@ export function editSummary(p: Pick<EditPayload, "fileId" | "name" | "ops">): st
   return `edit ${p.name ? `"${p.name.slice(0, 200)}" ` : ""}(${p.fileId}): ${editOpCounts(p.ops)}`;
 }
 
-export const FILE_MOVED_SENTENCE = "This file changed since the card was made — nothing was applied. The operations below would now apply to it as it is: apply them?";
+export const FILE_MOVED_SENTENCE = "This file changed since the card was made — nothing was applied. The operations listed would now apply to it as it is: apply them?";
 
 export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccount, action: GoogleAction, args: Record<string, unknown>): Promise<ActionOutcome> {
   const f = deps.fetchFn;

@@ -178,7 +178,7 @@ function googleCardModel(d) {
     text = lines.map((l, i) => i + 1 + ". " + l).join("\n");
     go = lines.length === 1 ? "Apply the edit" : "Apply the edits";
     wait = e.moved
-      ? "This file changed since the card was made — the operations above would now apply to it as it is. Apply them?"
+      ? "This file changed since the card was made — the operations listed would now apply to it as it is. Apply them?"
       : "Waiting for approval — the file is not changed until someone approves it. Other people may have access to this file.";
     done = "Edits applied";
   } else if (d.file && typeof d.file === "object") {
