@@ -681,8 +681,16 @@ Enter to skip; you can add it later from the web UI).
   and `drive rename` a file. Those three ask first under *Drive edits* on ANY
   file, the cockpit's own included; the card shows the file, where it is now
   and exactly what will happen, and approving does nothing if the file was
-  renamed or moved in the meantime. Sharing, permanent deletion and replacing
-  a document's content are never available.
+  renamed or moved in the meantime. It can also **edit the content** of a Slides deck, a Doc or a Sheet
+  (`slides edit`, `doc edit`, `sheet edit`): one batch of up to 50 checked
+  operations — replace or insert text, add / delete / reorder slides, style
+  text and headings, tables, images from a public `https` address, cell
+  values and formulas, tabs, rows, columns, formats — applied all together or
+  not at all. On a file the cockpit created it is applied at once; on any other
+  file it asks under *Drive edits*, with a card listing every operation on its
+  own line, text and values included. If the file changes before you approve,
+  nothing is applied and the card asks again. No new Google permission is
+  needed. Sharing and permanent deletion are never available.
   The account row
   shows the areas Google actually granted, the same *Shared with* / *Profiles*
   chips as LinkedIn, and **its own settings** instead of one posting policy:
@@ -692,7 +700,7 @@ Enter to skip; you can add it later from the web UI).
   its own* — only the account's owner can switch one to automatic, after a
   confirmation that says what it means. The agent uses the seeded
   `shadok-google` skill (`google.mjs accounts`, `calendar list|create|update|delete`,
-  `drive list|search|read|download|delete|move|rename`, `doc create|read|append`, `sheet create|read|append|update`,
+  `drive list|search|read|download|delete|move|rename`, `doc create|read|append|edit`, `sheet create|read|append|update|edit`, `slides create|read|edit`,
   `gmail search|read|draft|send` — content on stdin, never argv) and never sees the token.
   What it may do falls in four classes: **reads** and **writes in your own
   files and drafts** (a Gmail draft, a Doc, a Sheet) are done at once;

@@ -6,7 +6,8 @@
 // docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md §4.
 import path from "node:path";
 import { googlePolicies, grantedAreas, type AccountPolicy, type ConnectedAccount, type GoogleArea } from "./connected-accounts.js";
-import type { Draft, DraftAction, DraftPayload, EventPayload, FilePayload, MailPayload } from "./social-drafts.js";
+import type { Draft, DraftAction, DraftPayload, EditPayload, EventPayload, FilePayload, MailPayload } from "./social-drafts.js";
+import { annotateOps, buildEditRequests, docHeadings, docState, editOpCounts, editOpsVerdict, sheetState, slidesState, type EditApp, type EditOp, type EditState } from "./google-edits.js";
 import {
   GoogleError,
   GoogleInputError,
@@ -16,7 +17,13 @@ import {
   appendDoc,
   appendSheet,
   appendTextVerdict,
+  createPresentation,
   downloadDriveFile,
+  getEditSource,
+  MAX_FILE_CHARS,
+  MIME_SLIDES,
+  sendEditBatch,
+  truncateBody,
   fileNameVerdict,
   getFileMeta,
   MIME_FOLDER,
@@ -47,7 +54,6 @@ import {
   mailFingerprint,
   patchEvent,
   rawMessage,
-  readDoc,
   readGmail,
   searchGmail,
   readSheet,
@@ -93,6 +99,11 @@ export const GOOGLE_ACTIONS = {
   "drive.move": { class: "file-manage", area: "drive" },
   "drive.rename": { class: "file-manage", area: "drive" },
   "gmail.draft": { class: "own-write", area: "gmail" },
+  "slides.read": { class: "read", area: "drive" },
+  "slides.create": { class: "own-write", area: "drive" },
+  "slides.edit": { class: "file-write", area: "drive" },
+  "doc.edit": { class: "file-write", area: "drive" },
+  "sheet.edit": { class: "file-write", area: "drive" },
   "doc.create": { class: "own-write", area: "drive" },
   "sheet.create": { class: "own-write", area: "drive" },
   "doc.append": { class: "file-write", area: "drive" },
@@ -151,9 +162,9 @@ export function writesForeignFile(account: Pick<ConnectedAccount, "scopes" | "id
 
 /** What no agent may do in a Drive, whatever the account allows: asked for by
  *  name, it gets this sentence rather than "unknown action". */
-const REFUSED = /^(drive|doc|sheet|file)\.(share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash|copy|replace)$/;
+const REFUSED = /^(drive|doc|sheet|file)\.(share|unshare|permission|permissions|purge|destroy|erase|emptytrash|empty-trash|copy)$/;
 export const DRIVE_REFUSED_SENTENCE =
-  "Not available to agents: changing who a Drive file is shared with, deleting one for good or emptying the bin, and replacing a file's content. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
+  "Not available to agents: changing who a Drive file is shared with, and deleting one for good or emptying the bin. `drive delete` moves a file to the bin, where the person can restore it — the rest is for the person to do in Drive.";
 
 /** Is this an action we know, on an area Google GRANTED to this account? */
 export function actionVerdict(
@@ -325,6 +336,31 @@ async function applyFileEdit(token: string, fileId: string, e: FileEdit, f: Fetc
   return e.op === "sheet.update" ? updateSheet(token, fileId, e.range, e.rows, f, outbound) : appendSheet(token, fileId, e.range, e.rows, f, outbound);
 }
 
+// ---- editing content: one checked batch (src/google-edits.ts) -------------
+
+const EDIT_MIME: Record<EditApp, string> = { slides: MIME_SLIDES, doc: MIME_DOC, sheet: MIME_SHEET };
+const EDIT_NOUN: Record<EditApp, string> = { slides: "Google Slides deck", doc: "Google Doc", sheet: "Google Sheet" };
+
+async function editState(token: string, app: EditApp, id: string, f: FetchFn): Promise<EditState> {
+  const src = await getEditSource(token, app, id, f);
+  return app === "slides" ? slidesState(src) : app === "doc" ? docState(src) : sheetState(src);
+}
+
+/** Read the file, build the requests against what was just read, send them
+ *  as ONE batch that Google applies whole or not at all. */
+async function applyEdit(token: string, app: EditApp, id: string, ops: readonly EditOp[], f: FetchFn, outbound: boolean): Promise<void> {
+  const state = await editState(token, app, id, f);
+  const requests = buildEditRequests(app, ops, state);
+  await sendEditBatch(token, app, id, requests, state.app === "sheet" ? undefined : state.revisionId, f, outbound);
+}
+
+/** The log's line for a batch: the file and how many of each operation — never a text or a value. */
+export function editSummary(p: Pick<EditPayload, "fileId" | "name" | "ops">): string {
+  return `edit ${p.name ? `"${p.name.slice(0, 200)}" ` : ""}(${p.fileId}): ${editOpCounts(p.ops)}`;
+}
+
+export const FILE_MOVED_SENTENCE = "This file changed since the card was made — nothing was applied. The operations listed would now apply to it as it is: apply them?";
+
 export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccount, action: GoogleAction, args: Record<string, unknown>): Promise<ActionOutcome> {
   const f = deps.fetchFn;
   const foreign = writesForeignFile(account, deps.ownFiles, action, args);
@@ -352,10 +388,79 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       }
       return { kind: "result", result: { files } };
     }
-    case "doc.read":
-      // Someone else's document is read like any Drive file: audited, untrusted.
-      if (foreignFile(account, deps.ownFiles, String(args.id ?? ""))) return driveRead(deps, account, args);
-      return { kind: "result", result: await readDoc(await deps.token(account.id), String(args.id ?? ""), f) };
+    case "doc.read": {
+      const id = String(args.id ?? "");
+      const token = await deps.token(account.id);
+      const other = foreignFile(account, deps.ownFiles, id);
+      // Someone else's document is audited and untrusted, like any Drive file.
+      const meta = other ? await getFileMeta(token, id, f) : null;
+      if (other && !meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      if (meta && meta.mimeType !== MIME_DOC) return driveRead(deps, account, args);
+      const st = docState(await getEditSource(token, "doc", id, f));
+      // The headings are what `doc edit` can insert after.
+      const headings = docHeadings(st);
+      const text = st.paragraphs.map((p) => p.text).join("").replace(/\uFFFC/g, "");
+      if (!meta) return { kind: "result", result: { id, name: st.title, text, headings } };
+      const cut = truncateBody(text.replace(/\s+$/, ""), MAX_FILE_CHARS);
+      return { kind: "result", result: { file: meta, kind: "text", text: cut.body, headings, truncated: cut.truncated, untrusted: true }, log: { summary: `file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } };
+    }
+    case "slides.read": {
+      const id = String(args.id ?? "");
+      const token = await deps.token(account.id);
+      const other = foreignFile(account, deps.ownFiles, id);
+      const meta = other ? await getFileMeta(token, id, f) : null;
+      if (other && !meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      if (meta && meta.mimeType !== MIME_SLIDES) throw new GoogleInputError(`File '${id.slice(0, 60)}' is not a Google Slides deck.`);
+      const st = slidesState(await getEditSource(token, "slides", id, f));
+      // Bounded like any file read: element texts are cut once the budget is spent.
+      let left = MAX_FILE_CHARS;
+      let truncated = false;
+      const slides = st.slides.map((s) => ({
+        ...s,
+        elements: s.elements.map((e) => {
+          const t = e.text.replace(/\n$/, "");
+          const kept = [...t].slice(0, Math.max(0, left)).join("");
+          left -= kept.length;
+          if (kept.length < t.length) truncated = true;
+          return { ...e, text: kept };
+        }),
+      }));
+      // Always untrusted: a deck's text is whatever anyone typed into it.
+      const file = meta ?? { id, name: st.title, mimeType: MIME_SLIDES, owners: [] };
+      return { kind: "result", result: { file, kind: "slides", slides, truncated, untrusted: true }, ...(meta ? { log: { summary: `file ${meta.id} — "${meta.name.slice(0, 200)}"`, ...(meta.link ? { link: meta.link } : {}) } } : {}) };
+    }
+    case "slides.create": {
+      const deck = await createPresentation(await deps.token(account.id), args.title, f);
+      deps.ownFiles.add(account.id, deck.id);
+      return { kind: "result", result: deck, log: { summary: `presentation "${deck.name}" (${deck.id})`, link: deck.link } };
+    }
+    case "slides.edit":
+    case "doc.edit":
+    case "sheet.edit": {
+      const app = action.split(".")[0] as EditApp;
+      const id = String(args.id ?? "");
+      const ops = editOpsVerdict(app, args.ops);
+      const token = await deps.token(account.id);
+      if (!foreign) {
+        // One of the cockpit's own files: applied at once.
+        await applyEdit(token, app, id, ops, f, false);
+        return { kind: "result", result: { id, status: "applied", operations: ops.length }, log: { summary: editSummary({ fileId: id, name: "", ops }) } };
+      }
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      if (meta.mimeType !== EDIT_MIME[app]) throw new GoogleInputError(`File '${id.slice(0, 60)}' is not a ${EDIT_NOUN[app]}, so \`${action.replace(".", " ")}\` cannot edit it.`);
+      // Built once now, against the file as it is: an operation whose target
+      // is not there is refused before a person is asked anything.
+      const state = await editState(token, app, id, f);
+      buildEditRequests(app, ops, state);
+      const payload: EditPayload = { kind: "edit", app, fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners, ops: annotateOps(app, ops, state), stamp: meta.modifiedTime ?? "" };
+      const summary = editSummary(payload);
+      if (setting === "autonomous") {
+        await applyEdit(token, app, id, ops, f, true);
+        return { kind: "result", result: { id, status: "applied", operations: ops.length }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
+      }
+      return { kind: "pending", action, payload, summary };
+    }
     case "sheet.read":
       if (foreignFile(account, deps.ownFiles, String(args.id ?? ""))) return driveRead(deps, account, args);
       return { kind: "result", result: await readSheet(await deps.token(account.id), String(args.id ?? ""), args.range, f) };
@@ -552,7 +657,7 @@ export type ApprovalOutcome =
    *  be read — so nothing left the account: the card stays, to be clicked again. */
   | { kind: "retry"; reason: string }
   /** The Gmail draft is not what the card showed: the card is refreshed and asks again. */
-  | { kind: "changed"; payload: MailPayload; summary: string }
+  | { kind: "changed"; payload: MailPayload | EditPayload; summary: string; reason?: string }
   /** The Gmail draft is no longer there — deleted in Gmail, or sent from
    *  Gmail by the person: the two are not told apart. Nothing left to send. */
   | { kind: "gone" };
@@ -588,10 +693,31 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
     token = await deps.token(account.id);
     if (p.kind === "mail") now = await getGmailDraft(token, p.gmailDraftId, deps.fetchFn);
     // A Drive edit: is the file still there? Days may have passed since the card.
-    if (p.kind === "file") file = await getFileMeta(token, p.fileId, deps.fetchFn);
+    if (p.kind === "file" || p.kind === "edit") file = await getFileMeta(token, p.fileId, deps.fetchFn);
   } catch (e) {
     if (retryable(e)) return { kind: "retry", reason: RETRY_SENTENCE };
     throw e;
+  }
+  if (p.kind === "edit") {
+    if (!file) throw new GoogleInputError(FILE_GONE_SENTENCE);
+    if ((file.modifiedTime ?? "") !== p.stamp) {
+      // Someone edited the file since the card: NOT applied. The card is
+      // refreshed against the file as it is now and asks again — the same
+      // cycle as an email edited in Gmail.
+      let state: EditState;
+      try {
+        state = await editState(token, p.app, p.fileId, deps.fetchFn);
+      } catch (e) {
+        if (retryable(e)) return { kind: "retry", reason: RETRY_SENTENCE };
+        throw e;
+      }
+      buildEditRequests(p.app, p.ops, state);
+      const next: EditPayload = { ...p, name: file.name, ...(file.link ? { link: file.link } : {}), owners: file.owners, ops: annotateOps(p.app, p.ops, state), stamp: file.modifiedTime ?? "", moved: true };
+      return { kind: "changed", payload: next, summary: editSummary(next), reason: FILE_MOVED_SENTENCE };
+    }
+    await applyEdit(token, p.app, p.fileId, p.ops, deps.fetchFn, true);
+    const link = file.link ?? p.link;
+    return { kind: "done", ...(link ? { link } : {}) };
   }
   if (p.kind === "file") {
     if (!file) throw new GoogleInputError(FILE_GONE_SENTENCE);

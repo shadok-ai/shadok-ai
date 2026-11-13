@@ -2044,12 +2044,12 @@ whether an approval setting applies, and which:
 
 | Class | Actions | Approval |
 |---|---|---|
-| read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read` | never — it leaves nothing; not logged |
+| read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read`, `slides.read` | never — it leaves nothing; not logged |
 | read, audited | `gmail.search`, `gmail.read` (area `gmail_read`) | never — but logged: the query and result count, the message id and subject; never a body or a snippet (`actionLogged`) |
 | read, audited | `drive.search`, `drive.read` (area `drive_all`) | never — but logged: the query and result count, the file id and name; never content |
-| own-write | `gmail.draft`, `doc.create`, `sheet.create` | never — only the person's own drafts and files |
+| own-write | `gmail.draft`, `doc.create`, `sheet.create`, `slides.create` | never — only the person's own drafts and files |
 | read, audited | `drive.download` (area `drive`) | never — but logged: file id and name, format, size |
-| file-write | `doc.append`, `sheet.append`, `sheet.update` | a file the cockpit created: never. Any other file: `policies.drive` |
+| file-write | `doc.append`, `sheet.append`, `sheet.update`, `slides.edit`, `doc.edit`, `sheet.edit` | a file the cockpit created: never. Any other file: `policies.drive` |
 | file-manage | `drive.delete` (to the bin), `drive.move`, `drive.rename` | always `policies.drive`, the cockpit's own files included |
 | mail | `gmail.send` | `policies.mail` |
 | calendar | `calendar.create`, `calendar.update`, `calendar.delete` (with or without attendees) | `policies.calendar` |
@@ -2110,8 +2110,49 @@ it under `<agent cwd>/drive-downloads/` through `writeNewAsUserArgv`
 (`group-exec.ts`) — `sh` + `dd conv=excl` as the agent's OS user in
 multi-tenant (invariant 60), so it lands only where the agent could write and
 never over an existing name or through a symlink. `actionVerdict` still
-refuses share / permissions / purge / copy / replace by NAME
+refuses share / permissions / purge / copy by NAME
 (`DRIVE_REFUSED_SENTENCE`) — none exists in the table.
+
+**Editing content** (`slides.edit`, `doc.edit`, `sheet.edit`, class
+`file-write`; `src/google-edits.ts`, pure). An agent sends `{id, ops[]}`;
+nothing it writes reaches Google as it came. `editOpsVerdict` checks each
+operation against a closed list, field by field (an unknown op or field is
+refused; 50 at most), and draws the ids of what the batch creates, so the card
+and the request name the same objects. Two functions then read the SAME
+`ops`: `editOpLines` — one line per operation, text and values in full, what
+the person approves — and `buildEditRequests(app, ops, state)`, the API
+requests built against the file as it is (`slidesState` / `docState` /
+`sheetState` over `getEditSource`). `EditPayload` stores the ops, never the
+lines: `draftView` derives them, so the card cannot drift from what is sent.
+`applyEdit` = read → build → ONE `batchUpdate` (`sendEditBatch`), with
+`writeControl.requiredRevisionId` = the revision just read for Docs and
+Slides; Sheets has no write control. No scope was added: the three APIs accept
+`drive` and `drive.file`.
+
+Three choices behind it. (1) **The card's "moved since" stamp is Drive's
+`modifiedTime`, not a `revisionId`**: Google guarantees a revision id for
+minutes, a card may wait seven days, and Sheets has none. On approval a moved
+stamp returns `changed` (the mail cycle: card refreshed against the file as it
+is, `moved: true`, asks again — or fails if a target is gone); the short
+read→write gap is what `requiredRevisionId` closes. (2) **Docs positions.**
+`style`, inserts at the start or after a heading, and a table with cells are
+resolved in the document as read and emitted from the END backwards (later
+listed first at one same index), so none shifts the next; `replaceAllText`
+requests follow. At one same index a style is emitted before an insert (its range is
+the text there NOW). `editOpsVerdict` therefore refuses a located operation
+listed after any operation that is not — the card's order must be the order
+applied. `q()` shows line breaks and bidi controls as escapes so a text
+cannot fake a card line, and refusal sentences carry no operation text (they
+are logged). A table's cell indices are computed
+(`index + 4 + r·(2·cols+1) + 2·c`) and filled last cell first. (3)
+**`imageUrlVerdict`**: Google fetches an image, not this server, but an agent
+must not aim any fetcher at an internal address through us — https only, no
+credentials or port, loopback / private / link-local / metadata addresses and
+bare or internal names refused, with the reason. `annotateOps` adds to a
+Slides operation what its target is now ("slide 2: …"), for the card only.
+`slides.read` is always marked untrusted; a deck or doc that is not the
+cockpit's is audited by id and name. The log line is `editSummary`: the file
+and `editOpCounts` — never a text.
 
 `gmail.draft --update` rewrites only a draft `gmail.draft` created for that
 account: the ids are recorded in `<key>.gmail-drafts.json`
@@ -2620,6 +2661,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
 | `src/google.ts` | Google client, twin of `linkedin.ts`: `GoogleTokens` (refresh through the broker at < 5 min, one in flight per account, `invalid_grant` → expired), plain-`fetch` calls for Calendar / Drive (`drive.file`) / Docs / Sheets / Gmail drafts+send, and the server-side RFC 2822 builder (`mailFieldsVerdict`, `buildMime`: CR/LF refused in header fields, RFC 2047) with `parseGmailMessage` / `mailFingerprint` for the approval comparison. Pure over an injected fetch, tested. |
 | `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
+| `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only). Card lines and requests come from the same `ops`. |
 | `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
 | `src/social-drafts.ts` | Drafts of ACTIONS — a LinkedIn post, an email, a calendar change (`{provider, action, payload}`; `usableAccountVerdict` resolves the account per provider; `gone` = the Gmail draft was deleted) — (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
 | `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning — 2 days for a Google account, measured on `accountDeadline` —, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |

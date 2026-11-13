@@ -6223,8 +6223,8 @@ async function decideDraft(req: express.Request, res: express.Response, action: 
         const refreshed: Draft = { ...hit, payload: out.payload, text: out.summary };
         storeDraft(refreshed);
         broadcastDraft(refreshed);
-        console.log(`social: draft ${hit.id} was edited in Gmail — card refreshed, not sent`);
-        return res.status(409).json({ error: EDITED_IN_GMAIL_SENTENCE, draft: draftCard(refreshed) });
+        console.log(`social: draft ${hit.id} ${out.reason ? "targets a file that changed since" : "was edited in Gmail"} — card refreshed, nothing sent`);
+        return res.status(409).json({ error: out.reason ?? EDITED_IN_GMAIL_SENTENCE, draft: draftCard(refreshed) });
       }
       if (out.kind === "retry") {
         // Nothing was attempted: back to pending, the card stays clickable.

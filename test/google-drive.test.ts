@@ -209,13 +209,13 @@ test("the whole Drive is its own area: Drive files alone opens neither search no
 
 test("what no agent may do in a Drive is refused by name, whatever the account holds or allows", () => {
   const all = acct([S.drive, S.drive_all], { drive: "autonomous" });
-  for (const a of ["drive.share", "drive.unshare", "drive.permissions", "drive.purge", "drive.emptytrash", "doc.replace", "file.copy"]) {
+  for (const a of ["drive.share", "drive.unshare", "drive.permissions", "drive.purge", "drive.emptytrash", "file.copy"]) {
     assert.deepEqual(actionVerdict(all, a), { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE }, a);
   }
-  assert.match(DRIVE_REFUSED_SENTENCE, /shared with.*for good or emptying the bin.*replacing/);
+  assert.match(DRIVE_REFUSED_SENTENCE, /shared with.*for good or emptying the bin/);
   assert.equal((actionVerdict(all, "drive.frobnicate") as { status: number }).status, 400, "anything else is simply unknown");
   // …and nothing in the table shares, copies or deletes for good.
-  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /share|permission|purge|copy|replace/.test(k)), false);
+  assert.equal(Object.keys(GOOGLE_ACTIONS).some((k) => /share|permission|purge|copy/.test(k)), false);
 });
 
 // ---- own vs someone else's file --------------------------------------------

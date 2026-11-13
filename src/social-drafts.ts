@@ -8,6 +8,7 @@ import { isAgentViewer, type Group, type Viewer } from "./groups.js";
 import { accountDeadline, accountLapsed, accountVisible, resolveAccountId, type AccountProvider, type ConnectedAccount } from "./connected-accounts.js";
 import { LinkedInError, PostOutcomeUnknownError, postTextVerdict } from "./linkedin.js";
 import { GoogleError, GoogleInputError, GoogleOutcomeUnknownError } from "./google.js";
+import { editOpLines, type EditApp, type EditOp } from "./google-edits.js";
 
 /**
  * Drafts, the approval gate, and the publication log. An agent asks for an
@@ -90,9 +91,27 @@ export interface FilePayload {
   rows?: (string | number | boolean)[][];
 }
 
-export type DraftPayload = MailPayload | EventPayload | FilePayload;
-export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | FilePayload["op"];
-const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename"];
+/** What a content-edit approval card holds: the file and the BATCH of checked
+ *  operations (`editOpsVerdict`). The card's lines are derived from `ops`
+ *  (`editOpLines`) and so is the request — one cannot say what the other does
+ *  not do. `stamp` is the file's `modifiedTime` when the card was made: moved
+ *  since, the batch is not applied and the card asks again. */
+export interface EditPayload {
+  kind: "edit";
+  app: EditApp;
+  fileId: string;
+  name: string;
+  link?: string;
+  owners: string[];
+  ops: EditOp[];
+  stamp: string;
+  /** The file changed after the agent asked; the person is asked again. */
+  moved?: boolean;
+}
+
+export type DraftPayload = MailPayload | EventPayload | FilePayload | EditPayload;
+export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | FilePayload["op"] | "slides.edit" | "doc.edit" | "sheet.edit";
+const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update", "drive.delete", "drive.move", "drive.rename", "slides.edit", "doc.edit", "sheet.edit"];
 export const isFileAction = (a: DraftAction): boolean => FILE_ACTIONS.includes(a);
 
 export interface Draft {
@@ -525,6 +544,8 @@ export interface DraftView {
   mail?: Omit<MailPayload, "kind" | "gmailDraftId" | "fingerprint">;
   event?: Omit<EventPayload, "kind" | "patch">;
   file?: Omit<FilePayload, "kind">;
+  /** A content edit: the file and one line per operation, in order. */
+  edit?: { app: EditApp; fileId: string; name: string; link?: string; owners: string[]; lines: string[]; moved?: boolean };
   status: DraftStatus;
   createdAt: number;
   decidedBy?: string;
@@ -532,8 +553,11 @@ export interface DraftView {
   error?: string;
 }
 
-function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "event" | "file"> {
+function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "event" | "file" | "edit"> {
   if (!p) return {};
+  if (p.kind === "edit") {
+    return { edit: { app: p.app, fileId: p.fileId, name: p.name, ...(p.link ? { link: p.link } : {}), owners: [...p.owners], lines: editOpLines(p.app, p.ops), ...(p.moved ? { moved: true } : {}) } };
+  }
   if (p.kind === "file") {
     return {
       file: {
