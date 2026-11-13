@@ -422,6 +422,49 @@ painted immediately, `window.profileBlurb` was `undefined`, the first card threw
 and the grid stayed empty **in silence** — the call site is an unawaited async
 function. `tsc` and the tests were green; only the browser showed it.
 
+### Polling (`pollFetch`)
+
+The page keeps itself current with a handful of timers: the channel / group /
+agent-folder reconciliation (`syncLoop`, 4 s, 800 ms while a first agent is on
+its way), the rooms list (4 s), the live list while the setup popin is open
+(5 s), usage and pace (60 s), the security and agent-report badges (60 s), the
+sign-in rows (10 min) and the connected-accounts banner (30 min). The version is
+not among them — it arrives over the WebSocket.
+
+Every one of those requests goes through `pollFetch`, never a bare `fetch`
+(invariant 69). It gives a poll the two properties a timer does not have on its
+own:
+
+- **a deadline** — `POLL_TIMEOUT_MS` (15 s) aborts the request, body included;
+- **an in-flight guard, per endpoint** — a tick that finds the previous request
+  still pending sends nothing and joins its answer.
+
+Without them a server that accepts a request and never replies collects one
+stuck request per tick, with no bound. The cost is not local: the browser's
+socket pool is shared across tabs, and a full pool queues every new connection —
+which is what a WebSocket needs. A healthy cockpit in another tab then shows its
+agents on "connecting…" while its own page keeps working. The 15 s figure is a
+trade: long enough that a slow answer from a busy server is still an answer,
+short enough that a dead endpoint costs one socket for a quarter of a minute
+rather than one per tick for ever.
+
+The trade-offs, all deliberate:
+
+- **GET only.** `pollFetch` has no `init` parameter. A write must not be
+  coalesced, and a request a person triggered — an upload, a paste, a
+  transcription, a sign-in step — may legitimately outlast any polling deadline.
+  Those call `fetch` directly and are not bounded here.
+- **A snapshot, not a `Response`.** Several ticks can share one answer, and a
+  body is read once; callers get `{ok, status, json()}`, with `json()` rejecting
+  on a malformed body exactly as before.
+- **A timeout is an ordinary failure.** It rejects, so each caller's existing
+  `catch` decides — in particular `refreshUsage` still fails open on the pace
+  verdict.
+- **Inline, not a module.** Behind the ESM bridge its stub would have to be a
+  bare `fetch` or a copy of the logic. The factory (`makePollFetch`) takes its
+  environment as an argument, and `test/poll-guard.test.ts` extracts and runs
+  the page's own text.
+
 ## The Telegram bridge (`src/telegram.ts`)
 
 One board **group** per instance (`/setup <code>` binds it, the code coming from the cockpit), one **topic** per agent.
@@ -2762,7 +2805,7 @@ editor. The editor's prompt panel mirrors a background Skillsmith tab through
 | `src/admin-requests.ts` | 2FA v2's two-admin requests — `passkey-reset` (level 2), `full-reset` (level 3, effective after `FULL_RESET_DELAY_MS` or a second admin), `promote` / `demote`. Pure `askVerdict` / `approveVerdict` (a SECOND admin: never the asker, never the target) / `cancelVerdict` (asker, any admin, or the target) / `dueRequests` / `expire` / `upsertRequest` / `requestsFor`, tested. No timer: `settleRequests` (server) applies due ones on read. Routes `/2fa/recover` (levels 1–3), `/2fa/requests/approve`, `/2fa/requests/cancel`. Verified end to end with CDP virtual authenticators — run such a test with a scratch `HOME`, because turning 2FA on writes `config.json`. |
 | `src/paths.ts` | `instanceKey(cwd)` — the launch directory encoded as a filename, for anything stored per instance. |
 | `src/cli.ts` | One-shot CLI (`node dist/cli.js "prompt"`), separate from the server. |
-| `public/index.html` | The entire web client (no framework, no build). Agents (creation is a **popin**, `#setupOverlay`, profile-first: a grid of cards, the rest folded away; the channel is only born at "Start agent", see invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. A small **release-channel badge** (`beta`/`alpha`) sits next to the header version number, fed from `updateChannel` on the `version` message — honest per instance, not a hardcoded label (`alpha` is tinted amber). UI copy says **agent**; the code, endpoints and storage keys still say `channel`. The desktop uses a Teams-style SKIN (spec `docs/superpowers/specs/2026-10-29-teams-light-corporate-dark.md`): a "Teams layer" of CSS placed LAST in the stylesheet — colours, tab avatars (`paintTabAvatar`, colour derived from the name, the state LED as presence dot), bubbles and approval cards — but the **layout is the original two-column one**, not Teams' shape. The global tools stay in the header (`reflowHeaderTools` keeps them there on desktop, moves the overflow into the ⋯ menu on a phone — there is no app bar), and the groups keep their own left column (`#groupRail`). (A first Teams pass had added an `#appBar`, an `#agentSearch` box and `#chanChat`/`#chanDiff` channel tabs, and hid the rail; those were reverted — the skin stayed, the layout went back.) A group's `＋` passes its id to `openSetup(groupId)` — click handlers must call `openSetup()` with no argument, never pass it as the listener (the Event would become the group). Agent Markdown is rendered with **GFM soft line breaks ON** (`marked.setOptions({ breaks: true })`, set globally right after `/vendor/marked.js` loads): the `.jsonl` carries newlines where the agent meant them (one URL per line, a short list), and the default Markdown rule renders a lone `\n` as a word-space, so those lines glued into one wrapped run in the chat bubble while the engine-room screen and Telegram — which never go through marked — showed them correctly. One global policy covers every render site (chat bubble, compaction summary, any future one); locked by `test/md-soft-breaks.test.ts`. Motion and loading live in one CSS block at the END of the stylesheet: picking a group glides ONE `.rail-pill` to the new row (the rows themselves are rebuilt by `renderRail`, so they cannot transition) and staggers that group's agents in (`animateViewSwitch`, ≤ 200ms, stagger capped at 8); picking an agent eases its transcript in (`.chat-in`). Loading shows skeletons (`skeletonHTML`), not "loading…": a resumed tab's empty transcript until `history`/`ready`/an error (`showChatSkeleton` / `clearChatSkeleton`), the diff, the sessions list, the ledger (which now opens at once) and the profile grid. All of it is off under `prefers-reduced-motion`. |
+| `public/index.html` | The entire web client (no framework, no build). Agents (creation is a **popin**, `#setupOverlay`, profile-first: a grid of cards, the rest folded away; the channel is only born at "Start agent", see invariant 18), groups, dialogs, engine room, diff panel, pace/usage gauges, context bars. A small **release-channel badge** (`beta`/`alpha`) sits next to the header version number, fed from `updateChannel` on the `version` message — honest per instance, not a hardcoded label (`alpha` is tinted amber). UI copy says **agent**; the code, endpoints and storage keys still say `channel`. The desktop uses a Teams-style SKIN (spec `docs/superpowers/specs/2026-10-29-teams-light-corporate-dark.md`): a "Teams layer" of CSS placed LAST in the stylesheet — colours, tab avatars (`paintTabAvatar`, colour derived from the name, the state LED as presence dot), bubbles and approval cards — but the **layout is the original two-column one**, not Teams' shape. The global tools stay in the header (`reflowHeaderTools` keeps them there on desktop, moves the overflow into the ⋯ menu on a phone — there is no app bar), and the groups keep their own left column (`#groupRail`). (A first Teams pass had added an `#appBar`, an `#agentSearch` box and `#chanChat`/`#chanDiff` channel tabs, and hid the rail; those were reverted — the skin stayed, the layout went back.) A group's `＋` passes its id to `openSetup(groupId)` — click handlers must call `openSetup()` with no argument, never pass it as the listener (the Event would become the group). Agent Markdown is rendered with **GFM soft line breaks ON** (`marked.setOptions({ breaks: true })`, set globally right after `/vendor/marked.js` loads): the `.jsonl` carries newlines where the agent meant them (one URL per line, a short list), and the default Markdown rule renders a lone `\n` as a word-space, so those lines glued into one wrapped run in the chat bubble while the engine-room screen and Telegram — which never go through marked — showed them correctly. One global policy covers every render site (chat bubble, compaction summary, any future one); locked by `test/md-soft-breaks.test.ts`. Motion and loading live in one CSS block at the END of the stylesheet: picking a group glides ONE `.rail-pill` to the new row (the rows themselves are rebuilt by `renderRail`, so they cannot transition) and staggers that group's agents in (`animateViewSwitch`, ≤ 200ms, stagger capped at 8); picking an agent eases its transcript in (`.chat-in`). Loading shows skeletons (`skeletonHTML`), not "loading…": a resumed tab's empty transcript until `history`/`ready`/an error (`showChatSkeleton` / `clearChatSkeleton`), the diff, the sessions list, the ledger (which now opens at once) and the profile grid. All of it is off under `prefers-reduced-motion`. Every periodic fetch goes through `pollFetch` (deadline + in-flight guard, GET only) — see "Polling" and invariant 69. |
 | `public/live-text.js` | Pure `extractLiveText(screen)` — pulls the in-flight assistant text block from the TUI screen for the web live preview. ESM: loaded by the browser (bridged to `window.extractLiveText`) AND imported by `test/live-text.test.ts`. |
 | `src/agent-folders.ts` | **Agent folders** — a purely VISUAL arrangement of the agents INSIDE a group (folders hold agents and folders, `MAX_FOLDER_DEPTH` 8), never an ACL. Each folder belongs to one group (`group`, null = Main) and is visible exactly where that group is. Stored per launch dir (`<enc>-folders.json`, `loadFolders`/`saveFolders` in `channels.ts`); an agent's cosmetic `folder` rides `PUT /channels` (omitted = kept, like `group`; `channelFolder` refuses a folder of another group). `sanitizeFolders` re-roots dangling or cross-group parents, loops and over-deep chains; `foldersForViewer` filters the read; `mergeFoldersPut` filters the write the same way (invariant 58) and pins a folder's group; `refileItems` keeps a removed folder's agents — even ones the deleter can't see — from pointing at a dead id. The fold state is per browser (`cp.folderCollapsed`). Spec: `docs/superpowers/specs/2026-11-10-agent-folders-design.md`. Tested in `test/agent-folders.test.ts`. |
 | `public/agent-folders.js` | The client half: `folderChildren` (a group's tree, sorted by name), `effectiveFolder` (a stale id never hides an agent), `canMoveFolder` (not into itself, another group, or past the cap), `removeFolder` (contents move up), `newFolderId`. The column nests its DOM from these (`layoutFolders` in `index.html`: a no-op when the column already matches, so it runs on every repaint). ESM: bridged with flat stubs (no folders drawn before it lands) AND imported by the tests. |
