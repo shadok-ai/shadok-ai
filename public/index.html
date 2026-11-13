@@ -4760,6 +4760,89 @@
       }
     });
   }
+  // ── Poll guard (invariant 69) ─────────────────────────────────
+  // A periodic poll must be UNABLE to accumulate. A bare `fetch` in a timer has
+  // no deadline, so when a server stops answering one endpoint every tick adds a
+  // request that never settles. Nothing bounds that pile, and it does not stay
+  // this page's problem: the browser's socket pool is shared, so once it is full
+  // any NEW connection queues — and a WebSocket needs a new one. Another, healthy
+  // cockpit open in a different tab then shows every agent on "connecting…" for
+  // ever while its page keeps working (it reuses sockets it already holds).
+  //
+  // Two halves, and each is needed. The deadline frees the socket; without the
+  // in-flight guard there is still one stuck request per tick until it fires.
+  // The guard alone would hold one socket for ever and freeze that poll.
+  //
+  // A tick that finds its endpoint in flight sends NOTHING and joins the pending
+  // answer, which is why the result is a snapshot ({ok, status, json()}) and not
+  // the Response: a body can be read once, a snapshot by every caller. The body
+  // is read INSIDE the deadline — headers that arrive and a body that stalls is
+  // the same hang one step later.
+  //
+  // GET only, by signature: there is no `init`. Coalescing a write would drop
+  // one, and a deliberate, legitimately long request (an upload, a paste, a
+  // transcription, a sign-in step) must never inherit a polling deadline — those
+  // keep calling `fetch` directly.
+  //
+  // Kept inline rather than in an ESM module: a module reaches this script
+  // through the deferred bridge (invariant 10), and the stub covering the gap
+  // would have to be either a bare fetch — the bug, back exactly when the page
+  // is already degraded — or a copy of this logic. The factory takes its
+  // environment as an argument so test/poll-guard.test.ts can lift the text
+  // between the two markers out of this file and run THIS code on fake timers.
+  // poll-guard:start
+  const POLL_TIMEOUT_MS = 15000;
+  function makePollFetch(env) {
+    const inFlight = new Map();
+    return function pollFetch(url, opts) {
+      const key = (opts && opts.key) || url;
+      const pending = inFlight.get(key);
+      if (pending) return pending;
+      const timeoutMs = (opts && opts.timeoutMs) || env.timeoutMs;
+      const ctl = new env.AbortController();
+      let timer;
+      // Raced as well as aborted: the slot must come back at the deadline even
+      // if something underneath ignores the signal.
+      const deadline = new Promise((_, reject) => {
+        timer = env.setTimeout(() => {
+          const err = new Error("poll timed out after " + timeoutMs + "ms: " + url);
+          err.name = "TimeoutError";
+          reject(err);
+          ctl.abort();
+        }, timeoutMs);
+      });
+      // Started one microtask late so the slot is registered BEFORE anything can
+      // settle: a fetch that throws synchronously would otherwise run `finally`
+      // first and leave a dead promise in the map — that endpoint silenced for
+      // the life of the page.
+      const run = Promise.resolve()
+        .then(() => Promise.race([
+          (async () => {
+            const res = await env.fetch(url, { signal: ctl.signal });
+            const text = await res.text();
+            return { ok: res.ok, status: res.status, json: async () => JSON.parse(text) };
+          })(),
+          deadline,
+        ]))
+        .finally(() => {
+          env.clearTimeout(timer);
+          if (inFlight.get(key) === run) inFlight.delete(key);
+        });
+      inFlight.set(key, run);
+      return run;
+    };
+  }
+  // poll-guard:end
+  // `fetch` is looked up at call time, so the 401 → login wrapper installed in
+  // the first inline script stays on the path.
+  const pollFetch = makePollFetch({
+    fetch: (url, init) => fetch(url, init),
+    AbortController,
+    setTimeout: (fn, ms) => setTimeout(fn, ms),
+    clearTimeout: (id) => clearTimeout(id),
+    timeoutMs: POLL_TIMEOUT_MS,
+  });
+
   // ── Bouchons du pont ESM (invariant 10) ─────────────────────────────────
   // Le bloc module ci-dessus est DIFFÉRÉ : il s'exécute après le parsing,
   // alors que ce script-ci tourne PENDANT et câble déjà les boutons.
@@ -7490,9 +7573,9 @@
     let chans, srvGroups, srvFolders;
     try {
       [chans, srvGroups, srvFolders] = await Promise.all([
-        fetch("/channels").then((r) => r.json()),
-        fetch("/groups").then((r) => r.json()).catch(() => null),
-        fetch("/agent-folders").then((r) => r.json()).catch(() => null),
+        pollFetch("/channels").then((r) => r.json()),
+        pollFetch("/groups").then((r) => r.json()).catch(() => null),
+        pollFetch("/agent-folders").then((r) => r.json()).catch(() => null),
       ]);
     } catch { return; }
     adoptFolders(srvFolders);
@@ -7645,7 +7728,7 @@
   let firstAgentStep = null;
   async function syncFirstAgent() {
     let st;
-    try { st = await (await fetch("/first-agent")).json(); } catch { return; }
+    try { st = await (await pollFetch("/first-agent")).json(); } catch { return; }
     const now = !!(st && st.pending);
     // The lead's spawn reports the same real steps as a tab (src/first-agent.ts),
     // plus "Saying hello" while its greeting is under way.
@@ -9880,7 +9963,7 @@
     const listEl = $("liveList");
     let live = [];
     try {
-      live = await (await fetch("/live")).json();
+      live = await (await pollFetch("/live")).json();
     } catch { live = []; }
     if (!Array.isArray(live) || live.length === 0) { field.hidden = true; return; }
     field.hidden = false;
@@ -10379,7 +10462,7 @@
     }
   }
   async function refreshAuthRows() {
-    try { lastAuth = await (await fetch("/auth")).json(); }
+    try { lastAuth = await (await pollFetch("/auth")).json(); }
     catch { lastAuth = null; }
     if (!verMenu.hidden) renderAuthRows();
     updateExpiryBanner();   // the banner must track the clock even menu-closed
@@ -11542,7 +11625,7 @@
     if (restoring || swapped) return;
     let list;
     try {
-      const r = await fetch("/rooms");
+      const r = await pollFetch("/rooms");
       if (!r.ok) return;
       list = await r.json();
     } catch { return; }
@@ -13281,7 +13364,7 @@
     }
   }
   async function refreshAccountBanner() {
-    const r = await fetch("/connected-accounts").catch(() => null);
+    const r = await pollFetch("/connected-accounts").catch(() => null);
     const j = r && r.ok ? await r.json().catch(() => null) : null;
     // A failed fetch keeps what is shown: an unreachable server is not a reconnect.
     if (j && Array.isArray(j.accounts)) caBannerAccounts = j.accounts;
@@ -16015,7 +16098,7 @@
 
   // ── Security panel ──────────────────────────────────────
   async function securityInbox() {
-    try { const r = await fetch("/2fa/inbox"); return r.ok ? await r.json() : null; } catch { return null; }
+    try { const r = await pollFetch("/2fa/inbox"); return r.ok ? await r.json() : null; } catch { return null; }
   }
   async function refreshSecurityBadge() {
     if ($("securityBtn").hidden) return;
@@ -16125,7 +16208,7 @@
 
   // ── Agent reports panel ─────────────────────────────────
   async function reportsInbox() {
-    try { const r = await fetch("/reports"); return r.ok ? await r.json() : null; } catch { return null; }
+    try { const r = await pollFetch("/reports"); return r.ok ? await r.json() : null; } catch { return null; }
   }
   async function refreshReportsBadge() {
     if ($("reportsBtn").hidden) return;
@@ -17488,12 +17571,14 @@
 
   async function refreshUsage() {
     try {
-      const u = await (await fetch("/usage")).json();
+      const u = await (await pollFetch("/usage")).json();
       paintGauge($("quota5h"), u.fiveHour);
       paintGauge($("quota7d"), u.sevenDay);
       paceBlocked = !!u.blocked;
       paceReason = u.reason || null;
     } catch {
+      // A poll that timed out lands here too (pollFetch rejects on abort) — the
+      // same branch on purpose, never a path around it.
       // Leave the gauges on their last values, but not the verdict: a stuck
       // `true` would make the client demand confirmation forever where the
       // server would let the send through. The server re-checks and is the

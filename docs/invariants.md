@@ -2195,3 +2195,72 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     **Left out on purpose:** the auto-retry's own `continue` and the `run`
     shell-mode submit still report a failure the old way — neither carries a
     message someone is waiting on an answer to.
+
+<a id="inv-73"></a>
+
+69. **A periodic poll must be UNABLE to accumulate — a deadline AND an
+    in-flight guard, because the pile lands on someone else.** The web client
+    had no `AbortController` and no `AbortSignal.timeout` anywhere: every poll
+    was a bare `fetch` in a timer. That is invisible for as long as the server
+    answers, which on a developer's machine is always. Then one instance stopped
+    answering a single polling endpoint — accepting the request, never
+    replying — and each tick added a request that would never settle. Measured:
+    in-flight requests to that instance doubled in a few minutes and kept
+    climbing, and one browser was holding around 160 TCP connections to it.
+    **The damage does not stay in the page that caused it.** A browser's socket
+    pool is shared, and once it is full any NEW connection queues. A WebSocket
+    needs a new connection, so a *different*, perfectly healthy cockpit open in
+    another tab showed every agent on "connecting…" for ever — the upgrade
+    request never left the browser (no `/ws` line in that instance's proxy log
+    from that client), while the same tab's `/channels` polls kept returning
+    200, because a poll reuses a socket that already exists. **The page fine,
+    every agent stuck: that mismatch is the symptom to recognise**, and nothing
+    about it points at the tab that is actually at fault.
+    Both halves of the fix are needed. A deadline alone still leaves one stuck
+    request per tick until it fires. An in-flight guard alone holds one socket
+    for ever and freezes that poll for the life of the page — which is what the
+    self-rescheduling `syncLoop` already did on its own: it never piled up, it
+    simply stopped, and with it every channel discovery, in silence. So
+    `pollFetch` (`public/index.html`) does both: `POLL_TIMEOUT_MS` (15 s) aborts
+    the request, and a tick that finds its endpoint in flight **sends nothing**
+    and joins the pending answer.
+    Four details are load-bearing. **The body is read inside the deadline** —
+    headers that arrive and a body that stalls is the same hang one step later —
+    which is why callers get a snapshot (`{ok, status, json()}`) instead of the
+    `Response`: a body can be read once, a snapshot by every tick that joined.
+    **The slot is registered before the request can settle** (the request starts
+    one microtask late): a `fetch` that throws synchronously would otherwise run
+    its `finally` first and leave a dead promise in the map, silencing that
+    endpoint for good. **The deadline is raced as well as aborted**, so the slot
+    comes back even if something underneath ignores the signal. And **a failure
+    must land where failures already landed**: `refreshUsage`'s `catch` fails
+    OPEN on the pace verdict on purpose (a stuck `true` would demand
+    confirmation for ever where the server, which re-checks, would let the send
+    through) — a timeout rejects, so it reaches that branch rather than a path
+    around it.
+    **The trap in the fix is the blanket version.** A timeout on every `fetch`
+    in the file would break the requests that are legitimately long: an upload,
+    a paste, a transcription, a sign-in step, an install. `pollFetch` therefore
+    takes no `init` at all — it can only issue a GET, so a write can neither be
+    coalesced (one would be dropped) nor inherit a polling deadline — and
+    everything a person triggers keeps calling `fetch` directly.
+    It stays INLINE in `index.html`, deliberately. As an ESM module it would
+    reach the classic script through the deferred bridge (invariant 10), and the
+    stub covering that gap would have to be either a bare `fetch` — the bug,
+    back exactly when the page is already degraded — or a second copy of the
+    logic. The factory takes its environment as an argument instead, and
+    `test/poll-guard.test.ts` lifts the text between the `poll-guard:start` /
+    `poll-guard:end` markers out of the page and runs THAT code on fake timers.
+    The same file scans the page: nothing a `setInterval` or a self-rescheduling
+    `setTimeout` drives, down to the helpers it calls directly, may reach a bare
+    `fetch(`. The scan refuses to pass if its own lexer loses its footing, and
+    proves it can go red by reverting one poll in memory.
+    Verified in a browser against a build on a free port, with two endpoints
+    made to hang: thirty ticks of the usage poll produced ONE request, aborted
+    at the deadline, the pace verdict failed open, and the channel loop was
+    still polling afterwards and recovered on the first answer.
+    **Left out on purpose:** the boot restore's parallel batch (a one-shot,
+    whose failure path is the cache fallback of invariant 34 and deserves its
+    own change), and the server-side `fetch`es, which have their own deadlines.
+    The Telegram bridge learned this same lesson from the other end — a call
+    that never settles holds everything behind it.
