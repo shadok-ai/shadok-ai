@@ -17,8 +17,10 @@ application*) → `https://connect.shadok.ai/google/callback`.
 
 Google specifics (spec `docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md`):
 `/google/start` takes `areas=` among `calendar`, `drive`, `gmail` (drafts +
-send) and `gmail_read` (`gmail.readonly` — reading mail, its own area so drafts
-can be granted without it) (a fixed table in `src/core.ts`, never raw scopes;
+send), `gmail_read` (`gmail.readonly` — reading mail, its own area so drafts
+can be granted without it) and `drive_all` (`drive` — the whole Drive, read
+and write, apart from `drive` = `drive.file`; restricted, part of the CASA
+scope set at publication) (a fixed table in `src/core.ts`, never raw scopes;
 carried in the signed state; `/health` lists them as `googleAreas`, so an
 instance never offers an area this deploy would refuse — **redeploy the broker
 to offer a new one**, and declare the scope on the Google consent screen) and asks for

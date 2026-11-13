@@ -143,4 +143,9 @@ test("reading mail is its own area: gmail.readonly, never implied by gmail (draf
   assert.equal(googleScope(["gmail_read"]), `openid email profile ${GOOGLE_AREAS.gmail_read[0]}`);
   assert.equal(GOOGLE_AREAS.gmail_read[0], "https://www.googleapis.com/auth/gmail.readonly");
   assert.doesNotMatch(googleScope(["calendar", "drive", "gmail", "gmail_read"]), /gmail\.modify|mail\.google\.com/, "never a scope that can change or delete mail");
+  // The whole Drive is its own area: `drive` (drive.file) never asks for it.
+  assert.equal(GOOGLE_AREAS.drive_all[0], "https://www.googleapis.com/auth/drive");
+  assert.deepEqual(parseGoogleAreas("drive_all,calendar"), ["calendar", "drive_all"]);
+  assert.equal(googleScope(["drive_all"]), "openid email profile https://www.googleapis.com/auth/drive");
+  assert.doesNotMatch(googleScope(["calendar", "drive", "gmail", "gmail_read"]), /auth\/drive( |$)/, "not ticked, not asked for");
 });
