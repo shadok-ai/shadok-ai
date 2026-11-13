@@ -2006,7 +2006,7 @@ What differs from LinkedIn, and why:
 - **The store.** `provider: "google"`, `label` = the email, `externalId` = the
   OIDC `sub`, `scopes` = what Google GRANTED (read from the token response — a
   person may untick an area on Google's own screen, so it is never assumed;
-  `grantedAreas` maps it back to `calendar` / `drive` / `gmail` / `gmail_read`), and
+  `grantedAreas` maps it back to `calendar` / `drive` / `gmail` / `gmail_read` / `drive_all`), and
   `policies: {mail, calendar}` instead of LinkedIn's single `policy` (both
   `approve` at connect; a reconnect keeps them). A connect that returns no
   refresh token is refused rather than stored: it would die within the hour.
@@ -2046,7 +2046,9 @@ whether an approval setting applies, and which:
 |---|---|---|
 | read | `calendar.list`, `drive.list`, `doc.read`, `sheet.read` | never — it leaves nothing; not logged |
 | read, audited | `gmail.search`, `gmail.read` (area `gmail_read`) | never — but logged: the query and result count, the message id and subject; never a body or a snippet (`actionLogged`) |
-| own-write | `gmail.draft`, `doc.create`, `doc.append`, `sheet.create`, `sheet.append` | never — only the person's own drafts and files |
+| read, audited | `drive.search`, `drive.read` (area `drive_all`) | never — but logged: the query and result count, the file id and name; never content |
+| own-write | `gmail.draft`, `doc.create`, `sheet.create` | never — only the person's own drafts and files |
+| file-write | `doc.append`, `sheet.append`, `sheet.update` | a file the cockpit created: never. Any other file: `policies.drive` |
 | mail | `gmail.send` | `policies.mail` |
 | calendar | `calendar.create`, `calendar.update`, `calendar.delete` (with or without attendees) | `policies.calendar` |
 
@@ -2063,6 +2065,35 @@ a marker with a per-run random tag, so a mail cannot fake the fence's end.
 older broker, the broker's `/health` names the areas it accepts
 (`googleAreas`); the instance offers and forwards only those (an older broker
 that names none gets the first three).
+
+**The whole Drive** is a fifth area, `drive_all` (the `drive` scope), apart
+from `drive` (`drive.file`) and unticked by default; `areaHeld` lets it stand
+in for `drive`, never the reverse. It breaks the one assumption the Drive code
+relied on — that Google only shows the cockpit its own files — so "ours" is now
+a RECORD: `doc.create` / `sheet.create` store the id per account
+(`<key>.drive-files.json`, `ownFiles`), and `foreignFile` is "the account holds
+the whole Drive AND the id is not recorded". Four things hang on it. (1)
+`file-write` is the one class whose setting depends on the target:
+`actionSetting(account, action, foreign)` returns `policies.drive` only for a
+foreign file; under `approve`, `runGoogleAction` looks the file up
+(`getFileMeta` — which also refuses a Doc command on a Sheet before anyone is
+asked) and returns a `pending` outcome with a `FilePayload` (file id, name,
+link, owners, and the exact text or rows); `approveGoogleDraft` re-checks the
+file is still there (`FILE_GONE_SENTENCE` otherwise) and writes with
+`outbound` set, so an unanswered request is "check before retrying". (2)
+`drive.list` is rebuilt from the record instead of listing the whole Drive.
+(3) `doc.read` / `sheet.read` of a foreign file go through `driveRead`, like
+`drive.read`: audited and marked `untrusted`, which the skill fences
+(`UNTRUSTED-FILE`, same per-run tag as mail). (4) A file created before the
+record existed is foreign once the whole Drive is granted — it asks, it never
+writes unasked. `readDriveFile` never downloads a binary: Docs and Slides
+through Drive's `text/plain` export, Sheets through values (`truncateRows`),
+`text/*` under 1 MB, everything else metadata plus a sentence.
+`driveQuery` turns plain words into a `fullText contains` (quotes escaped),
+passes Drive's own query language through inside parentheses, and adds
+`trashed = false` unless the query names `trashed`. `actionVerdict` refuses
+delete / trash / move / rename / share / download / replace by NAME
+(`DRIVE_REFUSED_SENTENCE`) — none exists in the table.
 
 `gmail.draft --update` rewrites only a draft `gmail.draft` created for that
 account: the ids are recorded in `<key>.gmail-drafts.json`
@@ -2570,7 +2601,7 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/connected-accounts.ts` | The account store (`~/.shadok-ai/connected-accounts/<key>.json`), `publicView` (the only projection that leaves it), `accountVisible` (the `instance` scope does not reach other people's private groups), `accountEditVerdict`. |
 | `src/linkedin.ts` | LinkedIn calls (`userinfo`, post, image upload) and `LINKEDIN_VERSION`, to bump about yearly. |
 | `src/google.ts` | Google client, twin of `linkedin.ts`: `GoogleTokens` (refresh through the broker at < 5 min, one in flight per account, `invalid_grant` → expired), plain-`fetch` calls for Calendar / Drive (`drive.file`) / Docs / Sheets / Gmail drafts+send, and the server-side RFC 2822 builder (`mailFieldsVerdict`, `buildMime`: CR/LF refused in header fields, RFC 2047) with `parseGmailMessage` / `mailFingerprint` for the approval comparison. Pure over an injected fetch, tested. |
-| `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / mail / calendar), `actionSetting` (which of the two settings governs it), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
+| `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
 | `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
 | `src/social-drafts.ts` | Drafts of ACTIONS — a LinkedIn post, an email, a calendar change (`{provider, action, payload}`; `usableAccountVerdict` resolves the account per provider; `gone` = the Gmail draft was deleted) — (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
 | `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning — 2 days for a Google account, measured on `accountDeadline` —, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |

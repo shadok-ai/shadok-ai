@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { instanceKey } from "./paths.js";
 import { accountDeadline, accountLapsed, type ConnectedAccount } from "./connected-accounts.js";
-import { draftAction, draftNoun, draftProvider, expireDrafts, type Draft } from "./social-drafts.js";
+import { draftAction, draftNoun, isFileAction, draftProvider, expireDrafts, type Draft } from "./social-drafts.js";
 
 /**
  * The hourly watch over connected accounts and drafts: which accounts are close
@@ -95,7 +95,7 @@ export function draftExpiredNotice(d: Pick<Draft, "id"> & Partial<Pick<Draft, "p
 
 export function pendingDraftText(channel: string, d: Partial<Pick<Draft, "provider" | "action">> = {}): string {
   const a = draftAction(d);
-  const what = a === "gmail.send" ? "an email" : a.startsWith("calendar.") ? "a calendar change" : "a LinkedIn post";
+  const what = a === "gmail.send" ? "an email" : a.startsWith("calendar.") ? "a calendar change" : isFileAction(a) ? "a Drive edit" : "a LinkedIn post";
   return `${channel} has ${what} waiting for your approval in the cockpit.`;
 }
 

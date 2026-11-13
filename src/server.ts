@@ -569,6 +569,7 @@ import {
   discardGoogleDraft,
   pendingGmailDraftIds,
   runGoogleAction,
+  writesForeignFile,
   type GoogleDeps,
 } from "./google-actions.js";
 import {
@@ -603,6 +604,8 @@ import {
   writeSnapshot,
   draftProvider,
   loadOwnDrafts,
+  OWN_FILES_KEPT,
+  ownFilesFileFor,
   ownDraftsFileFor,
   saveOwnDrafts,
   withOwnDraft,
@@ -5680,7 +5683,7 @@ app.put("/connected-accounts/:id", (req, res) => {
   const found = connectedAccountFor(req, res);
   if (!found) return;
   const { share } = req.body ?? {};
-  // LinkedIn: `policy`. Google: `policies.mail` / `policies.calendar`.
+  // LinkedIn: `policy`. Google: `policies.mail` / `.calendar` / `.drive`.
   const pp = policyPatch(found.account, req.body ?? {});
   if (!pp.ok) return res.status(400).json({ error: pp.reason });
   if (share === undefined && !pp.patch) return res.status(400).json({ error: "share, policy or policies required" });
@@ -5797,10 +5800,27 @@ const googleTokens = new GoogleTokens({
   },
 });
 
+const ownFilesFile = () => ownFilesFileFor(process.cwd());
+/** The Drive files the cockpit created, per account (`doc create`, `sheet create`). */
+const ownDriveFiles: GoogleDeps["ownFiles"] = {
+  has: (accountId, fileId) => (loadOwnDrafts(ownFilesFile())[accountId] ?? []).includes(fileId),
+  list: (accountId) => loadOwnDrafts(ownFilesFile())[accountId] ?? [],
+  add: (accountId, fileId) => {
+    try {
+      saveOwnDrafts(ownFilesFile(), withOwnDraft(loadOwnDrafts(ownFilesFile()), accountId, fileId, OWN_FILES_KEPT), loadAccountsStore(accountsFile()).map((a) => a.id));
+    } catch (e) {
+      // The file exists in Drive either way; unrecorded, it is treated as
+      // someone else's on an account that holds the whole Drive (it asks).
+      console.log(`social: could not record a created Drive file id (${(e as Error).message})`);
+    }
+  },
+};
+
 /** What a Google action is given: the token source, the network, and — for an
  *  attachment — a read with the rights of the agent that asked (invariant 60). */
 function googleDeps(sessionId: string): GoogleDeps {
   return {
+    ownFiles: ownDriveFiles,
     fetchFn: fetch,
     token: (accountId) => googleTokens.accessToken(accountId),
     readFile: (p) => readSessionFile(sessionId, p),
@@ -5984,7 +6004,8 @@ app.post("/google/actions", async (req, res) => {
   // Everything but a plain read — and reading MAIL is audited too (the query,
   // the message opened; never a body).
   const logged = actionLogged(action);
-  const approvedBy = actionSetting(account, action) === "autonomous" ? "autonomous" : "none";
+  // A write into a file the cockpit did not create follows the DRIVE setting.
+  const approvedBy = actionSetting(account, action, writesForeignFile(account, ownDriveFiles, action, args)) === "autonomous" ? "autonomous" : "none";
   const entry = { accountId: account.id, sessionId: agent.sessionId, channel, origin, approvedBy, action };
   try {
     const out = await runGoogleAction(googleDeps(agent.sessionId), account, action, args);

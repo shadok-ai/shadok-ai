@@ -29,6 +29,7 @@ exception — Gmail drafts, which the operator requires:
 | Calendar events (read + write) | `calendar.events` | sensitive (no calendar scope is restricted — verify in the console) |
 | Gmail drafts + send | `gmail.compose` | **restricted** — usable by test users in Testing; leaving Testing then needs the annual CASA audit |
 | Reading mail (added after wave 1 shipped, operator decision) | `gmail.readonly` | **restricted** — fine for test users in Testing; adds no new hurdle, since CASA is already required to leave Testing because of `gmail.compose` |
+| The whole Drive, read and write (added after reading mail, operator decision) | `drive` | **restricted** — fine for test users in Testing; part of the CASA scope set at publication, alongside the two Gmail scopes |
 
 `gmail.compose` ("Manage drafts and send emails") covers both drafts and
 sending, so `gmail.send` (sensitive) is not requested on top. It does **not**
@@ -36,9 +37,43 @@ read the mailbox. If leaving Testing without CASA ever matters more than
 drafts, the fallback is `gmail.send` alone and drafts disappear — an operator
 decision, not a builder's.
 
-Deliberately **not** requested: `gmail.modify`, `drive`, `drive.readonly`
-(restricted, and not needed). Agents that need the whole Drive keep using the
-claude.ai connectors (the `login` agent-auth mode).
+Deliberately **not** requested: `gmail.modify`, `drive.readonly`. Wave 1 also
+left out `drive`; it was added afterwards as an opt-in area (below).
+
+**The whole Drive** was first left to the claude.ai connectors, then added at
+the operator's request as a FIFTH area, `drive_all` → `drive` (read AND
+write), separate from `drive` (`drive.file`: only what the cockpit created) and
+unticked by default on the Connect dialog (*All of Drive*). It includes the
+cockpit's own files, so ticking it alone is enough for them. What it changes:
+
+- **Reads of any file** — `drive search` (plain words → a full-text search, or
+  Drive's own query language passed through; own files and those shared with
+  the person; 20 results by default, 50 at most, paged) and `drive read` (a
+  Doc or a Slides deck through Drive's plain-text export, a Sheet as values, a
+  small text file as it is; a PDF or any other binary gives its metadata and a
+  sentence — no PDF parser, no download). Content is cut at a fixed size with a
+  marker. Both are **audited** like mail reads (§5) and their output is
+  **untrusted content** (§4): a shared document can carry a prompt injection
+  exactly as an email can.
+- **Writes to a file the cockpit did not create** follow a THIRD approval
+  setting, `policies.drive` (*Drive edits*), default `approve`: such a file may
+  be shared with other people. Writes to files the cockpit created stay
+  own-writes, as before.
+- **"Created by the cockpit" is a record, not a guess**: the ids `doc create` /
+  `sheet create` return are stored per account (`<key>.drive-files.json`, the
+  pattern of the Gmail drafts record) — never inferred from `appProperties` or
+  ownership. A file created before the record existed therefore counts as
+  someone else's once the whole Drive is granted: its edits ask first. On an
+  account WITHOUT the whole Drive nothing is foreign — Google itself only
+  shows `drive.file` its own files — so nothing changes there.
+- `drive list` stays "the cockpit's own files": with the whole Drive it is
+  rebuilt from that record instead of listing everything.
+- `doc read` / `sheet read` of a file that is not the cockpit's become an
+  audited, untrusted read too (same path as `drive read`).
+
+**Never available, whatever the setting:** delete, bin, move, rename, share or
+permission changes, replacing a document's content, downloading a binary. The
+server refuses those action names with one sentence, and so does the skill.
 
 **Reading mail** was first left out, then added at the operator's request as a
 FOURTH area, `gmail_read` → `gmail.readonly`, separate from `gmail` (drafts +
@@ -158,7 +193,9 @@ setting applies, and which one:
 |---|---|---|
 | read | `calendar list` (window, calendar id), `drive list` (app files), `doc read`, `sheet read` | never — it leaves nothing |
 | read, audited (area `gmail_read`) | `gmail search` (Gmail search syntax; 20 results by default, 50 at most, paged) → id, thread, from, to, subject, date, snippet, unread, labels; `gmail read` (a message or a thread) → headers, the text body (text/plain, else the HTML stripped to text — never raw HTML; long bodies cut with a marker), attachment names and sizes (no download) | never — but **logged** (§5) |
-| own-write | `gmail draft` (a real draft in the person's Gmail — nothing is sent), `doc create` / `doc append`, `sheet create` / `sheet append` | never in wave 1: it only changes the person's own drafts/files, and Drive keeps history |
+| read, audited (area `drive_all`) | `drive search`, `drive read` — any file of the Drive | never — but **logged** (§5), and fenced as untrusted |
+| own-write | `gmail draft` (a real draft in the person's Gmail — nothing is sent), `doc create`, `sheet create` | never: it only changes the person's own drafts/files, and Drive keeps history |
+| file-write | `doc append`, `sheet append`, `sheet update` (overwrite a named range) | a file the cockpit created: never (an own-write). ANY OTHER file (reachable only with `drive_all`): the **Drive edits** setting — `approve` (default) → approval card naming the file (name, link, owner) and the exact text or rows; applied on approval after re-checking the file is still there; `autonomous` → at once |
 | mail | `gmail send` | the **mail** setting: `approve` (default) → Gmail draft + approval card; `autonomous` → sent at once |
 | calendar | `calendar create` / `update` / `delete`, with or without attendees | the **calendar** setting: `approve` (default) → approval card; `autonomous` → at once |
 
@@ -221,7 +258,13 @@ subject for mail, title + time for an event, file id + name for Drive), the
 outcome. Mail **bodies are not logged** — the log is readable by everyone who
 can use the account, and a mail body is more private than a public post.
 
-Reading mail is the one read that IS logged: `gmail search` with its query and
+Reading the whole Drive is logged the same way: `drive search` with its query
+and the number of results, `drive read` (and a `doc read` / `sheet read` of a
+file that is not the cockpit's) with the file's id and name — never content.
+A Drive edit is logged by a summary (file, how many characters or rows),
+never the text or the rows.
+
+Reading mail is the first read that IS logged: `gmail search` with its query and
 the number of results, `gmail read` with the message (or thread) id and its
 subject — never a body or a snippet. A person can see, in the account's Log,
 what an agent looked for and what it opened.
@@ -233,7 +276,13 @@ three areas as chips (Calendar, Drive files, Gmail — all on by default) and
 the Testing note when it applies. The account row shows the granted areas as
 chips, the 7-day reconnect deadline in Testing, and the same Share / Profiles /
 Posting footer; for Google the footer shows two chips, *Mail: with approval /
-automatic* and *Events: with approval / automatic*.
+automatic* and *Events: with approval / automatic*. *Read Gmail* and *All of
+Drive* are two more chips of the dialog, both off by default and shown only
+when the broker's `/health` names the area. An account that holds *All of
+Drive* gets a third setting, *Drive edits: with approval / automatic* — owner
+only, behind a confirmation that says agents will be able to edit any file of
+the Drive, shared ones included, without asking. The setting is not shown on
+an account without that area: it would govern nothing there.
 
 ## Operator tasks (outside the code)
 
@@ -241,7 +290,8 @@ automatic* and *Events: with approval / automatic*.
    and Sheets APIs.
 2. OAuth consent screen: External, **Testing**; app name, logo, support email,
    home page and privacy policy on a verified domain (needed for verification
-   later, harmless now); declare the four scopes; add the test users.
+   later, harmless now); declare the scopes (the four of wave 1, then `gmail.readonly` and `drive` as
+   those areas were added); add the test users.
 3. An OAuth client of type **Web application**, authorised redirect URI
    `https://connect.shadok.ai/google/callback`.
 4. `wrangler secret put GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` on the broker.

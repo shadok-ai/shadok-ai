@@ -337,7 +337,7 @@ test("Google settings: two rows, each its own; the confirmation spells out what 
 });
 
 test("the Connect Google dialog offers the three areas, in the broker's order", () => {
-  assert.deepEqual(GOOGLE_AREA_CHOICES.map((c: { key: string; label: string }) => [c.key, c.label]), [["calendar", "Calendar"], ["drive", "Drive files"], ["gmail", "Gmail"], ["gmail_read", "Read Gmail"]]);
+  assert.deepEqual(GOOGLE_AREA_CHOICES.map((c: { key: string; label: string }) => [c.key, c.label]), [["calendar", "Calendar"], ["drive", "Drive files"], ["gmail", "Gmail"], ["gmail_read", "Read Gmail"], ["drive_all", "All of Drive"]]);
 });
 
 test("Google banner: named Google, dated by the deadline, and its dismissal key survives the hourly token renewal", () => {
@@ -357,6 +357,60 @@ test("log line: a Google entry names its action; nothing but the summary is ther
 // ---- Read Gmail: an area ticked on purpose ---------------------------------
 
 const ALL_AREAS = ["calendar", "drive", "gmail", "gmail_read"];
+
+test("All of Drive: offered only when the broker names it, unticked by default, a chip on the row once granted", () => {
+  assert.equal(googleAreaChips(ALL_AREAS).some((c: { key: string }) => c.key === "drive_all"), false, "an older broker: no chip");
+  const chips = googleAreaChips([...ALL_AREAS, "drive_all"]);
+  assert.deepEqual(chips.at(-1), { key: "drive_all", label: "All of Drive", hint: chips.at(-1).hint, checked: false });
+  assert.match(chips.at(-1).hint, /every file of the Drive, shared ones included/);
+  assert.equal(googleAreaChips([...ALL_AREAS, "drive_all"], ["calendar", "drive_all"]).at(-1).checked, true, "a Reconnect pre-ticks what is held");
+  assert.equal(accountRowModel(gaccount(), NOW).areas.some((a: { key: string }) => a.key === "drive_all"), false, "never asked for: absent, not struck out");
+  const row = accountRowModel(gaccount({ areas: ["calendar", "drive_all"], policies: { mail: "approve", calendar: "approve", drive: "autonomous" } }), NOW);
+  assert.deepEqual(row.areas.at(-1), { key: "drive_all", label: "All of Drive", granted: true });
+  assert.deepEqual(row.areas.find((a: { key: string }) => a.key === "drive"), { key: "drive", label: "Drive files", granted: true }, "the whole Drive includes the cockpit's own files");
+  assert.equal(row.policyText, "Mail: with approval · Events: with approval · Drive edits: automatic");
+});
+
+test("the Drive edits setting: a third row only on an account that holds the whole Drive, with its own confirmation", () => {
+  assert.deepEqual(googlePolicyRows(gaccount()).map((r: { key: string }) => r.key), ["mail", "calendar"]);
+  const rows = googlePolicyRows(gaccount({ areas: ["drive_all"], policies: { mail: "approve", calendar: "approve" } }));
+  assert.deepEqual(rows.map((r: { key: string; label: string }) => [r.key, r.label]), [["mail", "Mail"], ["calendar", "Events"], ["drive", "Drive edits"]]);
+  assert.deepEqual(rows[2].choices, [{ key: "approve", label: "Ask before editing", checked: true }, { key: "autonomous", label: "Edit on its own", checked: false }], "a missing setting reads as asking");
+  assert.equal(
+    googleAutonomousConfirmText(gaccount(), "drive", []),
+    "Agents in your Personal group will be able to edit any file in ana@example.org's Drive — files shared with other people included — without asking anyone.",
+  );
+});
+
+const fileDraft = (file: Record<string, unknown>, over: Record<string, unknown> = {}) => ({
+  id: "d9", sessionId: "s1", accountId: "a2", account: "ana@example.org", provider: "google", action: file.op, text: "summary", status: "pending", createdAt: NOW,
+  file: { fileId: "F1", name: "Team roadmap", link: "https://docs.google.com/document/d/F1/edit", owners: ["bob@example.org"], ...file }, ...over,
+});
+
+test("Drive edit card: the file, its link, its owner, and exactly what will be written", () => {
+  const m = draftCardModel(fileDraft({ op: "doc.append", text: "\nDecision: ship on Friday.\n" }));
+  assert.equal(m.kind, "file");
+  assert.equal(m.kindLabel, "Drive edit");
+  assert.equal(m.title, "Add text to a Google Doc — ana@example.org");
+  assert.deepEqual(m.fields, [
+    { label: "File", value: "Team roadmap" },
+    { label: "Link", value: "https://docs.google.com/document/d/F1/edit", href: "https://docs.google.com/document/d/F1/edit" },
+    { label: "Owner", value: "bob@example.org" },
+    { label: "Change", value: "Text added at the end" },
+  ]);
+  assert.equal(m.text, "\nDecision: ship on Friday.\n", "the text untouched");
+  assert.deepEqual(m.actions.map((a: { label: string }) => a.label), ["Add to the document", "Discard"]);
+  assert.match(m.statusLine, /not changed until someone approves it\. Other people may have access/);
+  const rows = draftCardModel(fileDraft({ op: "sheet.update", range: "Sheet1!A2:B3", rows: [["Bolt", 14], ["=SUM(A1)", true]] }));
+  assert.deepEqual(rows.fields.slice(-2), [{ label: "Range", value: "Sheet1!A2:B3" }, { label: "Change", value: "New content of the range" }]);
+  assert.equal(rows.text, '["Bolt",14]\n["=SUM(A1)",true]');
+  assert.equal(rows.actions[0].label, "Overwrite the cells");
+  assert.equal(draftCardModel(fileDraft({ op: "sheet.append", rows: [["a"]] })).fields.find((f: { label: string }) => f.label === "Range").value, "after the last row");
+  // A link that is not http(s) never becomes one.
+  assert.equal(draftCardModel(fileDraft({ op: "doc.append", text: "x", link: "javascript:alert(1)" })).fields.some((f: { label: string }) => f.label === "Link"), false);
+  assert.equal(draftCardModel(fileDraft({ op: "doc.append", text: "x" }, { status: "expired" })).statusLine, "Expired — the file was not changed.");
+  assert.equal(draftCardModel(fileDraft({ op: "doc.append", text: "x" }, { status: "published", postUrl: "https://docs.google.com/document/d/F1/edit" })).statusLine, "Added to the document — https://docs.google.com/document/d/F1/edit");
+});
 const ticked = (chips: { key: string; checked: boolean }[]) => chips.filter((c) => c.checked).map((c) => c.key);
 
 test("Connect dialog: Read Gmail is offered UNTICKED — opening a mailbox is a deliberate choice", () => {

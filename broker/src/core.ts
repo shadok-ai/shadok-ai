@@ -29,6 +29,9 @@ export const GOOGLE_AREAS = {
   // Reading the mailbox is its own area, apart from drafts + send: a person
   // can grant drafts without opening their mail. Restricted scope.
   gmail_read: ["https://www.googleapis.com/auth/gmail.readonly"],
+  // The WHOLE Drive, read and write — apart from `drive` (drive.file, only
+  // the files the cockpit created). Restricted scope: ticked on purpose.
+  drive_all: ["https://www.googleapis.com/auth/drive"],
 } as const;
 export type GoogleArea = keyof typeof GOOGLE_AREAS;
 const GOOGLE_IDENTITY = ["openid", "email", "profile"];

@@ -5,14 +5,25 @@
 // Gmail approval cycle are tested against a fake fetch. Design:
 // docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md §4.
 import path from "node:path";
-import { defaultGooglePolicies, grantedAreas, type AccountPolicy, type ConnectedAccount, type GoogleArea } from "./connected-accounts.js";
-import type { Draft, DraftAction, DraftPayload, EventPayload, MailPayload } from "./social-drafts.js";
+import { googlePolicies, grantedAreas, type AccountPolicy, type ConnectedAccount, type GoogleArea } from "./connected-accounts.js";
+import type { Draft, DraftAction, DraftPayload, EventPayload, FilePayload, MailPayload } from "./social-drafts.js";
 import {
   GoogleError,
   GoogleInputError,
   MAX_ATTACHMENTS_BYTES,
+  MIME_DOC,
+  MIME_SHEET,
   appendDoc,
   appendSheet,
+  appendTextVerdict,
+  getFileMeta,
+  rangeOk,
+  readDriveFile,
+  rowsVerdict,
+  searchDrive,
+  updateRangeVerdict,
+  updateSheet,
+  type DriveFileMeta,
   attachmentName,
   buildMime,
   createDoc,
@@ -48,13 +59,16 @@ import {
  * - `read`: leaves nothing — never asks. Reading MAIL is a read too, but an
  *   audited one (`audit`): what was searched and which message was opened is
  *   logged — never a body or a snippet.
- * - `own-write`: changes only the person's own drafts and files (Drive keeps
- *   history) — never asks in wave 1.
+ * - `own-write`: changes only the person's own drafts and the files the
+ *   cockpit created (Drive keeps history) — never asks.
+ * - `file-write`: writes into an existing Drive file. One the cockpit created
+ *   is an own-write. ANY OTHER file — reachable only with the whole-Drive area
+ *   — may be shared with other people: the account's DRIVE setting.
  * - `mail`: sends email — the account's MAIL setting.
  * - `calendar`: creates, changes or deletes an event, with or without
  *   attendees — the account's CALENDAR setting.
  */
-export type GoogleActionClass = "read" | "own-write" | "mail" | "calendar";
+export type GoogleActionClass = "read" | "own-write" | "file-write" | "mail" | "calendar";
 
 export const GOOGLE_ACTIONS = {
   "calendar.list": { class: "read", area: "calendar" },
@@ -63,11 +77,14 @@ export const GOOGLE_ACTIONS = {
   "sheet.read": { class: "read", area: "drive" },
   "gmail.search": { class: "read", area: "gmail_read", audit: true },
   "gmail.read": { class: "read", area: "gmail_read", audit: true },
+  "drive.search": { class: "read", area: "drive_all", audit: true },
+  "drive.read": { class: "read", area: "drive_all", audit: true },
   "gmail.draft": { class: "own-write", area: "gmail" },
   "doc.create": { class: "own-write", area: "drive" },
-  "doc.append": { class: "own-write", area: "drive" },
   "sheet.create": { class: "own-write", area: "drive" },
-  "sheet.append": { class: "own-write", area: "drive" },
+  "doc.append": { class: "file-write", area: "drive" },
+  "sheet.append": { class: "file-write", area: "drive" },
+  "sheet.update": { class: "file-write", area: "drive" },
   "gmail.send": { class: "mail", area: "gmail" },
   "calendar.create": { class: "calendar", area: "calendar" },
   "calendar.update": { class: "calendar", area: "calendar" },
@@ -84,23 +101,56 @@ export type GoogleAction = keyof typeof GOOGLE_ACTIONS;
 export const isGoogleAction = (v: unknown): v is GoogleAction => typeof v === "string" && Object.hasOwn(GOOGLE_ACTIONS, v);
 
 /** The setting that governs this action on this account, or null when none
- *  does (a read, an own-write). Each setting governs only its own class. */
-export function actionSetting(account: Pick<ConnectedAccount, "policies">, action: GoogleAction): AccountPolicy | null {
-  const p = account.policies ?? defaultGooglePolicies();
+ *  does (a read, an own-write). Each setting governs only its own class.
+ *  `foreign`: the file written to is not one the cockpit created
+ *  (`foreignFile`) — the only case where a `file-write` has a setting. */
+export function actionSetting(account: Pick<ConnectedAccount, "policies">, action: GoogleAction, foreign = false): AccountPolicy | null {
+  const p = googlePolicies(account);
   const c: GoogleActionClass = GOOGLE_ACTIONS[action].class;
-  return c === "mail" ? p.mail : c === "calendar" ? p.calendar : null;
+  return c === "mail" ? p.mail : c === "calendar" ? p.calendar : c === "file-write" && foreign ? p.drive : null;
 }
 
-const AREA_LABEL: Record<GoogleArea, string> = { calendar: "Calendar", drive: "Drive files", gmail: "Gmail", gmail_read: "Read Gmail" };
+const AREA_LABEL: Record<GoogleArea, string> = { calendar: "Calendar", drive: "Drive files", gmail: "Gmail", gmail_read: "Read Gmail", drive_all: "All of Drive" };
+
+/** Does the account hold this area? The whole Drive includes the cockpit's own files. */
+export function areaHeld(account: Pick<ConnectedAccount, "scopes">, area: GoogleArea): boolean {
+  const g = grantedAreas(account);
+  return g.includes(area) || (area === "drive" && g.includes("drive_all"));
+}
+
+/**
+ * Is `fileId` a file the cockpit did NOT create for this account? Only an
+ * account holding the whole Drive can reach one: with `drive.file` alone
+ * Google itself shows nothing but the cockpit's files, so nothing is foreign.
+ * Decided by the record of created ids — a file created before the record
+ * existed counts as foreign once the whole Drive is granted (it asks; it never
+ * writes unasked).
+ */
+export function foreignFile(account: Pick<ConnectedAccount, "scopes" | "id">, own: Pick<GoogleDeps["ownFiles"], "has">, fileId: string): boolean {
+  return grantedAreas(account).includes("drive_all") && !own.has(account.id, fileId);
+}
+
+/** Does this request write into a file the cockpit did not create? */
+export function writesForeignFile(account: Pick<ConnectedAccount, "scopes" | "id">, own: Pick<GoogleDeps["ownFiles"], "has">, action: GoogleAction, args: Record<string, unknown>): boolean {
+  const c: GoogleActionClass = GOOGLE_ACTIONS[action].class;
+  return c === "file-write" && foreignFile(account, own, String(args.id ?? ""));
+}
+
+/** What no agent may do in a Drive, whatever the account allows: asked for by
+ *  name, it gets this sentence rather than "unknown action". */
+const REFUSED = /^(drive|doc|sheet|file)\.(delete|trash|remove|move|rename|share|unshare|permission|permissions|download|copy|replace)$/;
+export const DRIVE_REFUSED_SENTENCE =
+  "Not available to agents: deleting or binning a Drive file, moving or renaming it, changing who it is shared with, replacing its content, and downloading it. An agent can search, read, and add to a file — the rest is for the person to do in Drive.";
 
 /** Is this an action we know, on an area Google GRANTED to this account? */
 export function actionVerdict(
   account: Pick<ConnectedAccount, "scopes" | "label" | "owner">,
   action: unknown,
 ): { ok: true; action: GoogleAction } | { ok: false; status: number; reason: string } {
+  if (typeof action === "string" && REFUSED.test(action)) return { ok: false, status: 403, reason: DRIVE_REFUSED_SENTENCE };
   if (!isGoogleAction(action)) return { ok: false, status: 400, reason: `Unknown Google action '${String(action).slice(0, 40)}'.` };
   const area = GOOGLE_ACTIONS[action].area;
-  if (!grantedAreas(account).includes(area)) {
+  if (!areaHeld(account, area)) {
     return {
       ok: false,
       status: 403,
@@ -121,6 +171,9 @@ export interface GoogleDeps {
   pendingGmailDrafts: (accountId: string) => ReadonlySet<string>;
   /** The Gmail drafts `gmail.draft` created for an account — the only ones it may rewrite. */
   ownGmailDrafts: { has: (accountId: string, draftId: string) => boolean; add: (accountId: string, draftId: string) => void };
+  /** The Drive files `doc create` / `sheet create` made for an account,
+   *  oldest first — what tells the cockpit's own files from the rest of a Drive. */
+  ownFiles: { has: (accountId: string, fileId: string) => boolean; add: (accountId: string, fileId: string) => void; list: (accountId: string) => readonly string[] };
 }
 
 export type ActionOutcome =
@@ -141,6 +194,16 @@ export function eventSummary(op: EventPayload["op"], e: Pick<EventFields, "title
   const zone = e.timeZone && !/(Z|[+-]\d{2}:\d{2})$/.test(e.start) ? ` (${e.timeZone})` : "";
   return `${op} "${e.title}" ${e.start} → ${e.end}${zone}`;
 }
+
+export function fileEditSummary(p: Pick<FilePayload, "op" | "name" | "fileId" | "text" | "range" | "rows">): string {
+  const where = `"${p.name}" (${p.fileId})`;
+  if (p.op === "doc.append") return `append ${[...(p.text ?? "")].length} characters to ${where}`;
+  const n = p.rows?.length ?? 0;
+  const rows = `${n} row${n === 1 ? "" : "s"}`;
+  return p.op === "sheet.update" ? `overwrite ${p.range ?? ""} of ${where} with ${rows}` : `append ${rows} to ${where}${p.range ? ` at ${p.range}` : ""}`;
+}
+
+export const FILE_GONE_SENTENCE = "That file is no longer in the Drive (deleted, binned, or no longer shared with this account) — nothing was changed.";
 
 const ATTACH_MIME: Record<string, string> = {
   ".pdf": "application/pdf",
@@ -208,9 +271,36 @@ function eventPayload(op: EventPayload["op"], calendarId: string, e: Partial<Eve
  * (`actionVerdict`). Throws `GoogleInputError` / `GoogleError` /
  * `GoogleOutcomeUnknownError`; `failureOutcome` turns them into sentences.
  */
+/** Read any file as text (`readDriveFile`): audited by id and name — never by
+ *  content — and marked untrusted, since anyone may have written it. */
+async function driveRead(deps: GoogleDeps, account: ConnectedAccount, args: Record<string, unknown>): Promise<ActionOutcome> {
+  const r = await readDriveFile(await deps.token(account.id), { id: args.id, range: args.range }, deps.fetchFn);
+  if (!r) throw new GoogleInputError(`No file '${String(args.id ?? "").slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+  return { kind: "result", result: { ...r, untrusted: true }, log: { summary: `file ${r.file.id} — "${r.file.name.slice(0, 200)}"`, ...(r.file.link ? { link: r.file.link } : {}) } };
+}
+
+/** The write a `file-write` action stands for, with its input checked. */
+function fileEdit(action: "doc.append" | "sheet.append" | "sheet.update", args: Record<string, unknown>): Pick<FilePayload, "op" | "text" | "range" | "rows"> {
+  if (action === "doc.append") return { op: action, text: appendTextVerdict(args.text) };
+  const rows = rowsVerdict(args.rows);
+  if (action === "sheet.update") return { op: action, range: updateRangeVerdict(args.range), rows };
+  const given = args.range === undefined || args.range === null || args.range === "";
+  return { op: action, ...(given ? {} : { range: rangeOk(args.range) }), rows };
+}
+
+async function applyFileEdit(token: string, fileId: string, e: Pick<FilePayload, "op" | "text" | "range" | "rows">, f: FetchFn, outbound: boolean): Promise<{ updatedRange?: string }> {
+  if (e.op === "doc.append") {
+    await appendDoc(token, fileId, e.text, f, outbound);
+    return {};
+  }
+  return e.op === "sheet.update" ? updateSheet(token, fileId, e.range, e.rows, f, outbound) : appendSheet(token, fileId, e.range, e.rows, f, outbound);
+}
+
 export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccount, action: GoogleAction, args: Record<string, unknown>): Promise<ActionOutcome> {
   const f = deps.fetchFn;
-  const setting = actionSetting(account, action);
+  const foreign = writesForeignFile(account, deps.ownFiles, action, args);
+  const setting = actionSetting(account, action, foreign);
+  const wholeDrive = grantedAreas(account).includes("drive_all");
   // Input is checked BEFORE a token is fetched: a refused request costs nothing.
   switch (action) {
     case "calendar.list": {
@@ -219,13 +309,34 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       return { kind: "result", result: { events } };
     }
     case "drive.list": {
-      const files = await listFiles(await deps.token(account.id), { max: typeof args.max === "number" ? args.max : undefined }, f);
+      const token = await deps.token(account.id);
+      const max = typeof args.max === "number" ? args.max : undefined;
+      // `drive list` is the cockpit's OWN files. With `drive.file` Google
+      // returns nothing else; with the whole Drive it would return everything,
+      // so the list is rebuilt from the record of created ids instead.
+      if (!wholeDrive) return { kind: "result", result: { files: await listFiles(token, { max }, f) } };
+      const ids = [...deps.ownFiles.list(account.id)].reverse().slice(0, Math.min(Math.max(Math.trunc(max ?? 50) || 50, 1), 200));
+      const files: DriveFileMeta[] = [];
+      for (let i = 0; i < ids.length; i += 10) {
+        const batch = await Promise.all(ids.slice(i, i + 10).map((id) => getFileMeta(token, id, f).catch(() => null)));
+        files.push(...batch.filter((m): m is DriveFileMeta => m !== null));
+      }
       return { kind: "result", result: { files } };
     }
     case "doc.read":
+      // Someone else's document is read like any Drive file: audited, untrusted.
+      if (foreignFile(account, deps.ownFiles, String(args.id ?? ""))) return driveRead(deps, account, args);
       return { kind: "result", result: await readDoc(await deps.token(account.id), String(args.id ?? ""), f) };
     case "sheet.read":
+      if (foreignFile(account, deps.ownFiles, String(args.id ?? ""))) return driveRead(deps, account, args);
       return { kind: "result", result: await readSheet(await deps.token(account.id), String(args.id ?? ""), args.range, f) };
+    case "drive.read":
+      return driveRead(deps, account, args);
+    case "drive.search": {
+      const r = await searchDrive(await deps.token(account.id), { query: args.query, max: args.max, pageToken: args.pageToken }, f);
+      // Audited: the query and how many came back — never a file name.
+      return { kind: "result", result: { ...r, untrusted: true }, log: { summary: `search ${JSON.stringify(r.query)} — ${r.files.length} result${r.files.length === 1 ? "" : "s"}` } };
+    }
     case "gmail.search": {
       const r = await searchGmail(await deps.token(account.id), { query: args.query, max: args.max, pageToken: args.pageToken }, f);
       // Audited: the query and how many came back — never a subject or a snippet.
@@ -241,22 +352,45 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
     case "doc.create": {
       const token = await deps.token(account.id);
       const doc = await createDoc(token, args.title, f);
+      // Recorded BEFORE anything else: an unrecorded file is treated as
+      // someone else's on an account that holds the whole Drive.
+      deps.ownFiles.add(account.id, doc.id);
       if (typeof args.text === "string" && args.text) await appendDoc(token, doc.id, args.text, f);
       return { kind: "result", result: doc, log: { summary: `document "${doc.name}" (${doc.id})`, link: doc.link } };
     }
-    case "doc.append": {
-      const id = String(args.id ?? "");
-      await appendDoc(await deps.token(account.id), id, args.text, f);
-      return { kind: "result", result: { id, appended: true }, log: { summary: `document ${id}` } };
-    }
     case "sheet.create": {
       const sheet = await createSheet(await deps.token(account.id), args.title, f);
+      deps.ownFiles.add(account.id, sheet.id);
       return { kind: "result", result: sheet, log: { summary: `spreadsheet "${sheet.name}" (${sheet.id})`, link: sheet.link } };
     }
-    case "sheet.append": {
+    case "doc.append":
+    case "sheet.append":
+    case "sheet.update": {
       const id = String(args.id ?? "");
-      const r = await appendSheet(await deps.token(account.id), id, args.range, args.rows, f);
-      return { kind: "result", result: { id, ...r }, log: { summary: `spreadsheet ${id}${r.updatedRange ? ` ${r.updatedRange}` : ""}` } };
+      const edit = fileEdit(action, args);
+      const token = await deps.token(account.id);
+      if (!foreign) {
+        // One of the cockpit's own files: done at once, as before.
+        const r = await applyFileEdit(token, id, edit, f, false);
+        const what = action === "doc.append" ? `document ${id}` : `spreadsheet ${id}${r.updatedRange ? ` ${r.updatedRange}` : ""}`;
+        return { kind: "result", result: action === "doc.append" ? { id, appended: true } : { id, ...r }, log: { summary: what } };
+      }
+      // Someone's file — possibly one other people read. The card must name
+      // it, so it is looked up now; that also refuses the wrong kind of file
+      // before a person is asked anything.
+      const meta = await getFileMeta(token, id, f);
+      if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
+      const want = action === "doc.append" ? MIME_DOC : MIME_SHEET;
+      // The file's NAME stays out of the sentence: it is someone else's
+      // words, and an error is printed to the agent outside any fence.
+      if (meta.mimeType !== want) throw new GoogleInputError(`File '${id.slice(0, 60)}' is not a Google ${action === "doc.append" ? "Doc" : "Sheet"}, so \`${action.replace(".", " ")}\` cannot write to it.`);
+      const payload: FilePayload = { kind: "file", ...edit, fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners };
+      const summary = fileEditSummary(payload);
+      if (setting === "autonomous") {
+        const r = await applyFileEdit(token, id, edit, f, true);
+        return { kind: "result", result: { id, status: "applied", ...r }, log: { summary, ...(meta.link ? { link: meta.link } : {}) } };
+      }
+      return { kind: "pending", action, payload, summary };
     }
     case "gmail.draft":
     case "gmail.send": {
@@ -369,12 +503,21 @@ export async function approveGoogleDraft(deps: GoogleDeps, account: ConnectedAcc
   // alone makes one likely): it comes back as `retry`.
   let token: string;
   let now: MailContent | null = null;
+  let file: DriveFileMeta | null = null;
   try {
     token = await deps.token(account.id);
     if (p.kind === "mail") now = await getGmailDraft(token, p.gmailDraftId, deps.fetchFn);
+    // A Drive edit: is the file still there? Days may have passed since the card.
+    if (p.kind === "file") file = await getFileMeta(token, p.fileId, deps.fetchFn);
   } catch (e) {
     if (retryable(e)) return { kind: "retry", reason: RETRY_SENTENCE };
     throw e;
+  }
+  if (p.kind === "file") {
+    if (!file) throw new GoogleInputError(FILE_GONE_SENTENCE);
+    await applyFileEdit(token, p.fileId, p, deps.fetchFn, true);
+    const link = file.link ?? p.link;
+    return { kind: "done", ...(link ? { link } : {}) };
   }
   if (p.kind === "mail") {
     if (!now) return { kind: "gone" };
