@@ -6,7 +6,12 @@ import { fileURLToPath } from "node:url";
 import {
   brokerBase,
   brokerStartUrl,
+  connectedGoogle,
   connectedMember,
+  healthProviders,
+  isConnectProvider,
+  parseAreas,
+  returnPathFor,
   connectReadAllowed,
   errorOutcome,
   healthOffersLinkedIn,
@@ -109,7 +114,9 @@ test("connect-done.html: every inline script carries the nonce, no inline handle
   for (const o of opens) assert.match(o, /nonce="__CSP_NONCE__"/);
   assert.doesNotMatch(html, /\son[a-z]+\s*=/i);
   assert.doesNotMatch(html, /(ws|http)s?:\/\//);
-  assert.match(html, /fetch\("connect\/linkedin\/complete"|fetch\("\/connect\/linkedin\/complete"/);
+  // One page for every provider: the completion route is built from the path it was served at.
+  assert.match(html, /fetch\("\/connect\/" \+ provider \+ "\/complete"/);
+  assert.match(html, /\/\^\\\/connect\\\/\(\[a-z\]\+\)\\\/done\$\//);
 });
 
 test("read gate: a person's GET passes with no Origin at all", () => {
@@ -132,4 +139,72 @@ test("read gate: an agent key, a peer token, the bridge cookie or an agent accou
 test("connect-done.html lives outside public/, so express.static cannot serve it raw", () => {
   assert.equal(fs.existsSync(path.join(HERE, "..", "public", "connect-done.html")), false);
   assert.ok(fs.existsSync(DONE));
+});
+
+// ---- Google (the second provider) ----------------------------------------
+
+test("start URL per provider: Google's carries its own return path and the ticked areas; LinkedIn's is unchanged", () => {
+  const li = new URL(brokerStartUrl("https://b.test", "https://cockpit.test", "PUB", "NONCE"));
+  assert.equal(li.pathname, "/linkedin/start");
+  assert.equal(li.searchParams.get("return"), "https://cockpit.test/connect/linkedin/done");
+  assert.equal(li.searchParams.has("areas"), false);
+  const g = new URL(brokerStartUrl("https://b.test", "https://cockpit.test", "PUB", "NONCE", "google", ["calendar", "gmail"]));
+  assert.equal(g.pathname, "/google/start");
+  assert.equal(g.searchParams.get("return"), "https://cockpit.test/connect/google/done");
+  assert.equal(g.searchParams.get("areas"), "calendar,gmail");
+  assert.equal(returnPathFor("google"), "/connect/google/done");
+  assert.equal(isConnectProvider("google"), true);
+  assert.equal(isConnectProvider("x"), false);
+  assert.equal(isConnectProvider("__proto__"), false);
+});
+
+test("areas: a non-empty list of known names, in table order; anything else is refused, never silently dropped", () => {
+  assert.deepEqual(parseAreas(["gmail", "calendar", "gmail"]), ["calendar", "gmail"]);
+  assert.deepEqual(parseAreas(["drive"]), ["drive"]);
+  assert.equal(parseAreas([]), null);
+  assert.equal(parseAreas(["calendar", "youtube"]), null);
+  assert.equal(parseAreas("calendar"), null);
+  assert.equal(parseAreas(undefined), null);
+  assert.equal(parseAreas([1]), null);
+});
+
+test("health: a provider is offered only when the broker lists it; Testing only for a listed Google", () => {
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin"] }), { linkedin: true, google: false, googleTesting: false });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"], testing: ["google"] }), { linkedin: true, google: true, googleTesting: true });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"] }), { linkedin: true, google: true, googleTesting: false });
+  assert.deepEqual(healthProviders({ providers: ["linkedin"], testing: ["google"] }), { linkedin: true, google: false, googleTesting: false });
+  assert.deepEqual(healthProviders(null), { linkedin: false, google: false, googleTesting: false });
+  assert.deepEqual(healthProviders({ providers: "google" }), { linkedin: false, google: false, googleTesting: false });
+});
+
+test("a connected Google account: email as label, sub as identity, GRANTED scopes, both settings on approve", () => {
+  const payload = { access_token: "AT", expires_in: 3599, scope: "openid email https://www.googleapis.com/auth/calendar.events", refresh_token: "RT" };
+  const a = connectedGoogle("ana", { sub: "1098", email: "ana@example.org" }, payload, 1_000, true);
+  assert.equal(a.provider, "google");
+  assert.equal(a.label, "ana@example.org");
+  assert.equal(a.externalId, "1098");
+  assert.deepEqual(a.scopes, ["openid", "email", "https://www.googleapis.com/auth/calendar.events"], "what Google granted, not what was asked");
+  assert.deepEqual(a.policies, { mail: "approve", calendar: "approve" });
+  assert.equal(a.refreshToken, "RT");
+  assert.equal(a.expiresAt, 1_000 + 3_599_000, "the access token's expiry");
+  assert.equal(a.refreshExpiresAt, 1_000 + 7 * 24 * 3600_000, "Testing: 7 days from connect");
+});
+
+test("the reconnect deadline: Google's own figure when it sends one, none when the app is not in Testing", () => {
+  const base = { access_token: "AT", expires_in: 3600, scope: "openid", refresh_token: "RT" };
+  assert.equal(connectedGoogle("ana", { sub: "1", email: "" }, { ...base, refresh_token_expires_in: 600 }, 1_000, true).refreshExpiresAt, 601_000);
+  const live = connectedGoogle("ana", { sub: "1", email: "" }, base, 1_000, false);
+  assert.equal(live.refreshExpiresAt, undefined);
+  assert.equal(live.label, "1", "no email → the id, never an empty label");
+});
+
+test("outcomes name the provider; Google's access_denied names the test list", () => {
+  assert.deepEqual(outcomeResponse("expired", "google"), { status: 410, body: { error: "This connection attempt expired — click Connect Google again." } });
+  assert.deepEqual(outcomeResponse("expired"), { status: 410, body: { error: "This connection attempt expired — click Connect LinkedIn again." } });
+  assert.deepEqual(outcomeResponse({ providerError: "server_error" }, "google"), { status: 502, body: { error: "Google connection failed (server_error)." } });
+  const denied = outcomeResponse(errorOutcome("access_denied"), "google");
+  assert.equal(denied.status, 403);
+  assert.match(String(denied.body.error), /not on the test list of the shadok app — ask the instance operator/);
+  assert.equal(outcomeResponse(errorOutcome("access_denied")).status, 502, "LinkedIn's is an ordinary provider error");
+  assert.match(String(outcomeResponse("no-refresh", "google").body.error), /long-lived authorisation/);
 });

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Connect LinkedIn</title>
+<title>Connect an account</title>
 <style>
   body { font: 16px/1.5 system-ui, sans-serif; background: #0f1115; color: #e6e6e6; display: grid; place-items: center; min-height: 100vh; margin: 0; }
   main { max-width: 28rem; padding: 2rem; text-align: center; }
@@ -12,27 +12,34 @@
 </head>
 <body>
 <main>
-  <p id="msg">Finishing the LinkedIn connection…</p>
+  <p id="msg">Finishing the connection…</p>
   <p><a href="/">Back to the cockpit</a></p>
 </main>
-<!-- Served by GET /connect/linkedin/done with a per-request nonce (invariant 12).
-     Every URL is path-relative so it works behind a TLS proxy (invariant 20). -->
+<!-- Served by GET /connect/<provider>/done with a per-request nonce (invariant 12).
+     One page for every provider: which one is read off the path it was served
+     at. Every URL is path-relative so it works behind a TLS proxy (invariant 20). -->
 <script nonce="__CSP_NONCE__">
 (async () => {
   const msg = document.getElementById("msg");
+  const LABELS = { linkedin: "LinkedIn", google: "Google" };
+  const m = /^\/connect\/([a-z]+)\/done$/.exec(location.pathname);
+  const provider = m && LABELS[m[1]] ? m[1] : "linkedin";
+  const label = LABELS[provider];
+  document.title = "Connect " + label;
+  msg.textContent = "Finishing the " + label + " connection…";
   const hash = location.hash;
   // Drop the encrypted token from the address bar and the history at once.
   history.replaceState(null, "", location.pathname + location.search);
-  let text = "The connection could not be finished — click Connect LinkedIn again.";
+  let text = "The connection could not be finished — click Connect " + label + " again.";
   try {
-    const r = await fetch("/connect/linkedin/complete", {
+    const r = await fetch("/connect/" + provider + "/complete", {
       method: "POST",
       headers: { "content-type": "application/json" },
       credentials: "same-origin",
       body: JSON.stringify({ hash }),
     });
     const j = await r.json().catch(() => ({}));
-    if (r.ok && j.account) text = "LinkedIn connected as " + (j.account.label || "your account") + ".";
+    if (r.ok && j.account) text = label + " connected as " + (j.account.label || "your account") + ".";
     else if (j.message) text = j.message;
     else if (j.error) text = j.error;
   } catch { /* keep the generic sentence */ }

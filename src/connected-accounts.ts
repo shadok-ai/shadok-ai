@@ -14,7 +14,7 @@ import {
 } from "./groups.js";
 
 /**
- * Connected accounts (LinkedIn): a credential produced by a Connect flow, owned
+ * Connected accounts (LinkedIn, Google): a credential produced by a Connect flow, owned
  * by one person, shared under a scope and used under a policy. Server-owned,
  * NOT the secret vault — its entries are never injected into an agent's env.
  * Pure rules up top, thin fs below. Design:
@@ -88,20 +88,59 @@ export function profileAllowed(share: ShareScope, profile: string | null | undef
   return profiles.length === 0 || (!!profile && profiles.includes(profile));
 }
 
+export type AccountProvider = "linkedin" | "google";
+export type AccountPolicy = "approve" | "autonomous";
+
+/** A Google account's two approval settings: sending mail, and any calendar
+ *  event creation, update or deletion. Each governs only its own class. */
+export interface GooglePolicies {
+  mail: AccountPolicy;
+  calendar: AccountPolicy;
+}
+
+export function defaultGooglePolicies(): GooglePolicies {
+  return { mail: "approve", calendar: "approve" };
+}
+
+/** The areas a person ticks on the Connect Google dialog, and the scope each
+ *  one stands for — the broker's own table (broker/src/core.ts `GOOGLE_AREAS`). */
+export const GOOGLE_AREA_SCOPES = {
+  calendar: "https://www.googleapis.com/auth/calendar.events",
+  drive: "https://www.googleapis.com/auth/drive.file",
+  gmail: "https://www.googleapis.com/auth/gmail.compose",
+} as const;
+export type GoogleArea = keyof typeof GOOGLE_AREA_SCOPES;
+export const GOOGLE_AREAS = Object.keys(GOOGLE_AREA_SCOPES) as GoogleArea[];
+
+/** The areas Google actually GRANTED, read from the stored scopes — a person
+ *  may untick a box on Google's consent screen, so this is never assumed. */
+export function grantedAreas(a: Pick<ConnectedAccount, "scopes">): GoogleArea[] {
+  const scopes = Array.isArray(a.scopes) ? a.scopes : [];
+  return GOOGLE_AREAS.filter((k) => scopes.includes(GOOGLE_AREA_SCOPES[k]));
+}
+
 export interface ConnectedAccount {
   id: string;
-  provider: "linkedin";
+  provider: AccountProvider;
   kind: "member" | "organization";
   label: string;
   externalId: string;
   owner: string;
   connectedVia: string;
   share: ShareScope;
-  policy: "approve" | "autonomous";
+  /** LinkedIn's posting policy. A Google account never reads it (`policies`). */
+  policy: AccountPolicy;
+  /** Google only: the two approval settings. */
+  policies?: GooglePolicies;
+  /** Google only: the scopes Google granted, from the token response. */
+  scopes?: string[];
   /** Never leaves the server: every route returns `publicView`. */
   token: string;
+  /** LinkedIn: when the account stops working. Google: when the ACCESS token
+   *  lapses (about an hour) — it is refreshed, so see `accountDeadline`. */
   expiresAt: number;
   refreshToken?: string;
+  /** Google: when the refresh token lapses (7 days while the app is in Testing). */
   refreshExpiresAt?: number;
   status?: "ok" | "expired";
   createdAt: number;
@@ -116,6 +155,44 @@ export function publicView(a: ConnectedAccount): PublicAccount {
   void _t;
   void _r;
   return rest;
+}
+
+/**
+ * When the account stops working unless a person reconnects it, or null when
+ * no such date is known. LinkedIn: `expiresAt`. Google: the REFRESH token's
+ * expiry — its `expiresAt` is the hourly access token's, which the server
+ * renews by itself, so reading it as the deadline would expire every Google
+ * account one hour after it was connected.
+ */
+export function accountDeadline(a: Pick<ConnectedAccount, "provider" | "expiresAt" | "refreshExpiresAt">): number | null {
+  if (a.provider !== "google") return a.expiresAt;
+  return typeof a.refreshExpiresAt === "number" ? a.refreshExpiresAt : null;
+}
+
+/** Past its deadline, or marked expired (the provider refused the token). */
+export function accountLapsed(a: Pick<ConnectedAccount, "provider" | "expiresAt" | "refreshExpiresAt" | "status">, now: number): boolean {
+  if (a.status === "expired") return true;
+  const d = accountDeadline(a);
+  return d !== null && now >= d;
+}
+
+/**
+ * What an AGENT is told about an account (`GET /social/accounts`). Built field
+ * by field, so neither token can ride along; `expiresAt` is the reconnect
+ * deadline (null = none known), never the hourly access token's.
+ */
+export function agentAccountView(a: ConnectedAccount, now: number) {
+  return {
+    id: a.id,
+    label: a.label,
+    provider: a.provider,
+    kind: a.kind,
+    ...(a.provider === "google"
+      ? { policies: { ...(a.policies ?? defaultGooglePolicies()) }, areas: grantedAreas(a) }
+      : { policy: a.policy }),
+    expiresAt: accountDeadline(a),
+    status: accountLapsed(a, now) ? ("expired" as const) : ("ok" as const),
+  };
 }
 
 // ---- store ---------------------------------------------------------------
@@ -162,7 +239,8 @@ export type IncomingAccount = Omit<
 
 /**
  * Identity is provider + externalId. A reconnect supersedes token, expiry,
- * connectedVia and label IN PLACE and keeps id, owner, share and policy.
+ * connectedVia, label and the granted scopes IN PLACE and keeps id, owner,
+ * share and the approval settings (`policy`, `policies`).
  */
 export function upsertAccount(
   list: readonly ConnectedAccount[],
@@ -179,6 +257,7 @@ export function upsertAccount(
       refreshExpiresAt: incoming.refreshExpiresAt,
       connectedVia: incoming.connectedVia,
       label: incoming.label,
+      ...(incoming.scopes ? { scopes: incoming.scopes } : {}),
       status: "ok",
       updatedAt: now,
     };
@@ -189,6 +268,7 @@ export function upsertAccount(
     id: newAccountId(list),
     share: incoming.share ?? defaultShare(),
     policy: incoming.policy ?? "approve",
+    ...(incoming.provider === "google" ? { policies: incoming.policies ?? defaultGooglePolicies() } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -284,7 +364,7 @@ export function accountEditVerdict(
   a: ConnectedAccount,
   viewer: Viewer | null,
   change: AccountChange,
-  next?: { share?: ShareScope; policy?: "approve" | "autonomous" },
+  next?: { share?: ShareScope; policy?: AccountPolicy },
   groups: readonly Group[] = [],
   profileNames: readonly string[] | null = null,
 ): { ok: true } | { ok: false; reason: string } {
@@ -319,4 +399,42 @@ export function accountEditVerdict(
     }
   }
   return { ok: true };
+}
+
+/**
+ * The approval settings a `PUT /connected-accounts/:id` body asks for, checked
+ * against the account's provider: LinkedIn has one `policy`, Google has
+ * `policies.mail` / `policies.calendar` and never the other's field. A Google
+ * body may name one setting; the other keeps its value. Null patch = the body
+ * names no setting at all.
+ */
+export function policyPatch(
+  a: Pick<ConnectedAccount, "provider" | "policy" | "policies">,
+  body: { policy?: unknown; policies?: unknown },
+): { ok: true; patch: { policy?: AccountPolicy; policies?: GooglePolicies } | null } | { ok: false; reason: string } {
+  const isPolicy = (v: unknown): v is AccountPolicy => v === "approve" || v === "autonomous";
+  const { policy, policies } = body ?? {};
+  if (policy === undefined && policies === undefined) return { ok: true, patch: null };
+  if (a.provider === "google") {
+    if (policy !== undefined) return { ok: false, reason: "A Google account has two settings: policies.mail and policies.calendar." };
+    if (!policies || typeof policies !== "object" || Array.isArray(policies)) return { ok: false, reason: "invalid policies" };
+    const p = policies as Record<string, unknown>;
+    const keys = Object.keys(p);
+    if (!keys.length || keys.some((k) => k !== "mail" && k !== "calendar") || keys.some((k) => !isPolicy(p[k]))) return { ok: false, reason: "invalid policies" };
+    return { ok: true, patch: { policies: { ...(a.policies ?? defaultGooglePolicies()), ...(p as Partial<GooglePolicies>) } } };
+  }
+  if (policies !== undefined) return { ok: false, reason: "This account has a single posting policy." };
+  if (!isPolicy(policy)) return { ok: false, reason: "invalid policy" };
+  return { ok: true, patch: { policy } };
+}
+
+/** Does this patch switch any setting from `approve` to `autonomous`? That is
+ *  the change only the owner may make (`accountEditVerdict`). */
+export function patchRaisesAutonomy(
+  a: Pick<ConnectedAccount, "policy" | "policies">,
+  patch: { policy?: AccountPolicy; policies?: GooglePolicies },
+): boolean {
+  if (patch.policy === "autonomous" && a.policy !== "autonomous") return true;
+  const cur = a.policies ?? defaultGooglePolicies();
+  return !!patch.policies && ((patch.policies.mail === "autonomous" && cur.mail !== "autonomous") || (patch.policies.calendar === "autonomous" && cur.calendar !== "autonomous"));
 }
