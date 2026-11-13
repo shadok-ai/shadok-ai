@@ -1,4 +1,4 @@
-# Connected accounts — Google (wave 1): Calendar, Drive files, Docs, Sheets, sending mail
+# Connected accounts — Google (wave 1): Calendar, Drive files, Docs, Sheets, Gmail drafts and sending
 
 Status: design, not built. Builds on
 [`2026-11-08-connected-accounts-linkedin-design.md`](2026-11-08-connected-accounts-linkedin-design.md)
@@ -17,19 +17,26 @@ the app owner paying for every instance's usage — does not apply, and the
 browser hand-back of the LinkedIn flow is kept as is.
 
 What Google costs instead is **app verification**, and it depends entirely on
-the scopes. Wave 1 is cut to the scopes that need **no security audit**:
+the scopes. Wave 1 takes the lowest class for each need, with one deliberate
+exception — Gmail drafts, which the operator requires:
 
 | Need | Scope | Google's class (verified 2026-11-13) |
 |---|---|---|
 | Identity | `openid email profile` | non-sensitive |
 | Files the app created or the user opened with it; Docs and Sheets on those files | `drive.file` | **non-sensitive** |
 | Calendar events (read + write) | `calendar.events` | sensitive (no calendar scope is restricted — verify in the console) |
-| Send mail | `gmail.send` | **sensitive** |
+| Gmail drafts + send | `gmail.compose` | **restricted** — usable by test users in Testing; leaving Testing then needs the annual CASA audit |
 
-Deliberately **not** in wave 1, because they are *restricted* (annual CASA
-audit by an approved assessor): `gmail.readonly`, `gmail.compose` (drafts),
-`gmail.modify`, `drive`, `drive.readonly`. Agents that need to read mail or the
-whole Drive keep using the claude.ai connectors (the `login` agent-auth mode).
+`gmail.compose` ("Manage drafts and send emails") covers both drafts and
+sending, so `gmail.send` (sensitive) is not requested on top. It does **not**
+read the mailbox. If leaving Testing without CASA ever matters more than
+drafts, the fallback is `gmail.send` alone and drafts disappear — an operator
+decision, not a builder's.
+
+Deliberately **not** in wave 1: `gmail.readonly`, `gmail.modify`, `drive`,
+`drive.readonly` (restricted, and not needed for the wave-1 actions). Agents
+that need to read mail or the whole Drive keep using the claude.ai connectors
+(the `login` agent-auth mode).
 
 The Docs (`documents`) and Sheets (`spreadsheets`) scopes are **not requested**:
 both APIs accept `drive.file` for the files it covers, which keeps the consent
@@ -44,6 +51,9 @@ screen shorter and the scope class lower.
   quota; Business Profile — API access granted by Google on request) are later.
 - The app stays in **Testing** for now: only test users added in the Google
   console can connect, and that is fine for the test phase.
+- **Gmail drafts are required** (hence `gmail.compose`), and sending follows a
+  per-account option exactly like LinkedIn posting: *with approval* (default)
+  or *automatic*.
 
 ## Consequences of Testing mode (designed for, not worked around)
 
@@ -84,7 +94,7 @@ refresh:  instance ──(refresh_token)──▶ broker POST /google/refresh
   the first grant otherwise), `include_granted_scopes=true`. Secrets
   `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`; var `GOOGLE_TESTING=1`.
 - **Requested scopes come from the instance**, from a fixed allowlist
-  (`calendar`, `drive`, `gmail_send` → the scopes above). The person ticks the
+  (`calendar`, `drive`, `gmail` → the scopes above). The person ticks the
   areas on the Connect dialog; an unknown name is refused at `/google/start`.
   They are carried in the signed state, so the callback cannot be fed others.
 - The return path stops being LinkedIn's: `RETURN_PATH` becomes
@@ -133,8 +143,26 @@ whether the account's policy applies:
 | Class | Actions (wave 1) | Approval |
 |---|---|---|
 | read | `calendar list` (window, calendar id), `drive list` (app files), `doc read`, `sheet read` | never — it leaves nothing |
-| own-write | `doc create` / `doc append`, `sheet create` / `sheet append`, `calendar create` **without attendees** | never in wave 1: it only changes the person's own files/calendar, and Drive/Calendar keep history |
+| own-write | `gmail draft` (a real draft in the person's Gmail — nothing is sent), `doc create` / `doc append`, `sheet create` / `sheet append`, `calendar create` **without attendees** | never in wave 1: it only changes the person's own mailbox drafts/files/calendar, and nothing reaches anyone else |
 | outbound | `gmail send`, `calendar create` **with attendees** (Google mails invitations), `calendar update` / `delete` on an event that has attendees | the account's policy: `approve` (default) → approval card; `autonomous` → at once |
+
+**Mail with approval — the Gmail draft IS the draft.** Under `approve`,
+`gmail send` creates the message as a real Gmail draft *and* an approval card.
+The person may open Gmail and edit it before approving. On *Send* the server
+re-reads the draft (`drafts.get`) and compares it with the card's snapshot
+(hash of recipients, subject, body, attachment names): unchanged → `drafts.send`;
+changed in Gmail → the card is refreshed with the new content and asks again
+(*"Edited in Gmail since — send this version?"*), so a person always sends what
+they are looking at (invariant 43). The agent cannot update or delete a draft
+that is awaiting approval (the skill refuses; only a new `send` makes a new
+card). A draft deleted in Gmail turns the card into *"Draft deleted in Gmail"*
+and the agent is told. *Discard* on the card deletes the Gmail draft too.
+Under `autonomous`, `gmail send` sends directly (no draft left behind).
+
+Switching mail to *automatic* asks for confirmation spelling it out:
+*"Agents in <scope> will be able to send email as <address> without asking
+anyone."* — the LinkedIn wording, same rule (only the owner, never an admin on
+someone else's account).
 
 My call, and the one place this design is opinionated: what leaves the account
 toward other people goes through the card; what stays in it does not. A
@@ -167,10 +195,11 @@ can use the account, and a mail body is more private than a public post.
 ### 6. UI
 
 *Connect Google* beside *Connect LinkedIn*, opening a small dialog with the
-three areas as chips (Calendar, Drive files, Send mail — all on by default) and
+three areas as chips (Calendar, Drive files, Gmail — all on by default) and
 the Testing note when it applies. The account row shows the granted areas as
 chips, the 7-day reconnect deadline in Testing, and the same Share / Profiles /
-Posting footer (the "Posting" label becomes "Outbound actions" for Google).
+Posting footer; for Google the policy chip reads *Sending: with approval /
+automatic* and covers mail and calendar invitations.
 
 ## Operator tasks (outside the code)
 
@@ -182,9 +211,10 @@ Posting footer (the "Posting" label becomes "Outbound actions" for Google).
 3. An OAuth client of type **Web application**, authorised redirect URI
    `https://connect.shadok.ai/google/callback`.
 4. `wrangler secret put GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` on the broker.
-5. Later, to leave Testing: brand verification, then sensitive-scope
-   verification (justification per scope + demo video; Google quotes up to 10
-   days). No CASA for wave 1.
+5. Later, to leave Testing: brand verification, sensitive-scope verification
+   (justification per scope + demo video; Google quotes up to 10 days), **and,
+   because of `gmail.compose`, restricted-scope verification with the annual
+   CASA security assessment** by an approved assessor (paid, renewed yearly).
 
 ## Rollout
 
@@ -204,7 +234,8 @@ Posting footer (the "Posting" label becomes "Outbound actions" for Google).
    `include_granted_scopes` merges correctly on a reconnect that adds one.
 4. That `refresh_token_expires_in` is present in Testing (else use the 7-day
    rule from connect time).
-5. Gmail `users.messages.send` with a base64url RFC 2822 message: header
+5. Gmail `drafts.create` / `drafts.get` / `drafts.send` with a base64url RFC
+   2822 message, and what `drafts.send` does when the draft changed or vanished; header
    encoding of non-ASCII subjects and names (RFC 2047) — the likeliest source
    of "the mail came out mangled".
 
@@ -218,6 +249,10 @@ Posting footer (the "Posting" label becomes "Outbound actions" for Google).
   expired; granted scopes read from the response; action class table (an
   attendee turns `calendar create` outbound); `approve` never sends from the
   agent route; publish is browser-person-only (reuse the LinkedIn gate tests).
+- Gmail approval: unchanged draft → sent; edited in Gmail → card refreshed,
+  not sent; deleted → card closed, agent told; agent update of a pending
+  draft refused; Discard deletes the Gmail draft; `autonomous` sends with no
+  draft.
 - MIME builder: header injection via CR/LF in subject/to refused; RFC 2047
   encoding; body never on argv, never in the log.
 - Token never in: skill output, `GET /social/accounts`, the log, the env.
