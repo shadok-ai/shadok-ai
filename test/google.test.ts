@@ -41,7 +41,7 @@ import { gmailPayloadFromMime } from "./fixtures/fake-gmail.js";
 const NOW = Date.UTC(2026, 10, 13, 12);
 const acct = (o: Partial<ConnectedAccount> = {}): ConnectedAccount => ({
   id: "g0000001", provider: "google", kind: "member", label: "ana@example.org", externalId: "sub-1", owner: "ana", connectedVia: "ana",
-  share: { personal: true, groups: [], everyone: false, profiles: [] }, policy: "approve", policies: { mail: "approve", calendar: "approve" },
+  share: { personal: true, groups: [], everyone: false, profiles: [] }, policy: "approve", policies: { mail: "approve", calendar: "approve", drive: "approve" },
   scopes: ["openid"], token: "ACCESS-OLD", refreshToken: "REFRESH-SECRET", expiresAt: NOW + 3600_000, createdAt: 1, updatedAt: 1, ...o,
 });
 

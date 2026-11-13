@@ -429,7 +429,7 @@ test("the drafting agent is re-checked at click time: group AND profile", () => 
 // ---- Google drafts: the same gate, generalised from "a post" to "an action" --
 
 const gacct = (over: Partial<ConnectedAccount> = {}, share: ShareScope = { scope: "private" }): ConnectedAccount =>
-  acct({ id: "g0000001", provider: "google", label: "paul@example.org", externalId: "sub-1", policies: { mail: "approve", calendar: "approve" }, expiresAt: NOW - DAY, refreshExpiresAt: NOW + 5 * DAY, ...over }, share);
+  acct({ id: "g0000001", provider: "google", label: "paul@example.org", externalId: "sub-1", policies: { mail: "approve", calendar: "approve", drive: "approve" }, expiresAt: NOW - DAY, refreshExpiresAt: NOW + 5 * DAY, ...over }, share);
 const mailDraft = (over: Partial<Draft> = {}): Draft =>
   draft({
     accountId: "g0000001", provider: "google", action: "gmail.send", text: 'to bob@example.org — "Hello"',

@@ -91,15 +91,27 @@ export function profileAllowed(share: ShareScope, profile: string | null | undef
 export type AccountProvider = "linkedin" | "google";
 export type AccountPolicy = "approve" | "autonomous";
 
-/** A Google account's two approval settings: sending mail, and any calendar
- *  event creation, update or deletion. Each governs only its own class. */
+/** A Google account's three approval settings: sending mail; any calendar
+ *  event creation, update or deletion; and an edit to a Drive file the cockpit
+ *  did not create (one other people may see). Each governs only its own class. */
 export interface GooglePolicies {
   mail: AccountPolicy;
   calendar: AccountPolicy;
+  drive: AccountPolicy;
 }
+export const GOOGLE_POLICY_KEYS = ["mail", "calendar", "drive"] as const;
 
 export function defaultGooglePolicies(): GooglePolicies {
-  return { mail: "approve", calendar: "approve" };
+  return { mail: "approve", calendar: "approve", drive: "approve" };
+}
+
+/** The account's settings, whole: one stored before a setting existed reads
+ *  that setting as `approve` — a missing key never means "automatic". */
+export function googlePolicies(a: Pick<ConnectedAccount, "policies">): GooglePolicies {
+  const p = (a.policies ?? {}) as Partial<GooglePolicies>;
+  const d = defaultGooglePolicies();
+  for (const k of GOOGLE_POLICY_KEYS) if (p[k] === "autonomous") d[k] = "autonomous";
+  return d;
 }
 
 /** The areas a person ticks on the Connect Google dialog, and the scope each
@@ -110,6 +122,8 @@ export const GOOGLE_AREA_SCOPES = {
   gmail: "https://www.googleapis.com/auth/gmail.compose",
   // Reading mail, apart from drafts + send: granted only when ticked on purpose.
   gmail_read: "https://www.googleapis.com/auth/gmail.readonly",
+  // The whole Drive, read and write — never implied by `drive` (drive.file).
+  drive_all: "https://www.googleapis.com/auth/drive",
 } as const;
 /** What every broker that offers Google accepts; a broker that names its own
  *  list on `/health` (`googleAreas`) may accept more. */
@@ -159,7 +173,9 @@ export function publicView(a: ConnectedAccount): PublicAccount {
   const { token: _t, refreshToken: _r, ...rest } = a;
   void _t;
   void _r;
-  return rest;
+  // A Google account always shows its three settings, one stored before the
+  // Drive setting existed included.
+  return a.provider === "google" ? { ...rest, policies: googlePolicies(a) } : rest;
 }
 
 /**
@@ -193,7 +209,7 @@ export function agentAccountView(a: ConnectedAccount, now: number) {
     provider: a.provider,
     kind: a.kind,
     ...(a.provider === "google"
-      ? { policies: { ...(a.policies ?? defaultGooglePolicies()) }, areas: grantedAreas(a) }
+      ? { policies: googlePolicies(a), areas: grantedAreas(a) }
       : { policy: a.policy }),
     expiresAt: accountDeadline(a),
     status: accountLapsed(a, now) ? ("expired" as const) : ("ok" as const),
@@ -421,12 +437,12 @@ export function policyPatch(
   const { policy, policies } = body ?? {};
   if (policy === undefined && policies === undefined) return { ok: true, patch: null };
   if (a.provider === "google") {
-    if (policy !== undefined) return { ok: false, reason: "A Google account has two settings: policies.mail and policies.calendar." };
+    if (policy !== undefined) return { ok: false, reason: "A Google account has three settings: policies.mail, policies.calendar and policies.drive." };
     if (!policies || typeof policies !== "object" || Array.isArray(policies)) return { ok: false, reason: "invalid policies" };
     const p = policies as Record<string, unknown>;
     const keys = Object.keys(p);
-    if (!keys.length || keys.some((k) => k !== "mail" && k !== "calendar") || keys.some((k) => !isPolicy(p[k]))) return { ok: false, reason: "invalid policies" };
-    return { ok: true, patch: { policies: { ...(a.policies ?? defaultGooglePolicies()), ...(p as Partial<GooglePolicies>) } } };
+    if (!keys.length || keys.some((k) => !(GOOGLE_POLICY_KEYS as readonly string[]).includes(k)) || keys.some((k) => !isPolicy(p[k]))) return { ok: false, reason: "invalid policies" };
+    return { ok: true, patch: { policies: { ...googlePolicies(a), ...(p as Partial<GooglePolicies>) } } };
   }
   if (policies !== undefined) return { ok: false, reason: "This account has a single posting policy." };
   if (!isPolicy(policy)) return { ok: false, reason: "invalid policy" };
@@ -440,6 +456,7 @@ export function patchRaisesAutonomy(
   patch: { policy?: AccountPolicy; policies?: GooglePolicies },
 ): boolean {
   if (patch.policy === "autonomous" && a.policy !== "autonomous") return true;
-  const cur = a.policies ?? defaultGooglePolicies();
-  return !!patch.policies && ((patch.policies.mail === "autonomous" && cur.mail !== "autonomous") || (patch.policies.calendar === "autonomous" && cur.calendar !== "autonomous"));
+  const cur = googlePolicies(a);
+  const next = patch.policies;
+  return !!next && GOOGLE_POLICY_KEYS.some((k) => next[k] === "autonomous" && cur[k] !== "autonomous");
 }

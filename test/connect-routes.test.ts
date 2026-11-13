@@ -176,6 +176,11 @@ test("health: the areas a broker accepts — the first three for one that does n
   assert.deepEqual(healthProviders({ providers: ["google"], googleAreas: ["gmail_read", "youtube"] }).googleAreas, ["gmail_read"], "an area this build does not know is not offered");
   assert.deepEqual(healthProviders({ providers: ["linkedin"], googleAreas: ["gmail_read"] }).googleAreas, [], "no Google, no area");
   assert.deepEqual(parseAreas(["gmail_read", "calendar"]), ["calendar", "gmail_read"]);
+  // The whole Drive: offered only by a broker that names it — one deployed
+  // before it existed keeps the dialog without the chip.
+  assert.deepEqual(healthProviders({ providers: ["google"], googleAreas: ["calendar", "drive", "gmail", "gmail_read", "drive_all"] }).googleAreas, [...BASE, "gmail_read", "drive_all"]);
+  assert.equal(healthProviders({ providers: ["google"], googleAreas: ["calendar", "drive", "gmail", "gmail_read"] }).googleAreas.includes("drive_all" as never), false);
+  assert.deepEqual(parseAreas(["drive_all", "drive"]), ["drive", "drive_all"]);
 });
 
 test("health: a provider is offered only when the broker lists it; Testing only for a listed Google", () => {
@@ -194,7 +199,7 @@ test("a connected Google account: email as label, sub as identity, GRANTED scope
   assert.equal(a.label, "ana@example.org");
   assert.equal(a.externalId, "1098");
   assert.deepEqual(a.scopes, ["openid", "email", "https://www.googleapis.com/auth/calendar.events"], "what Google granted, not what was asked");
-  assert.deepEqual(a.policies, { mail: "approve", calendar: "approve" });
+  assert.deepEqual(a.policies, { mail: "approve", calendar: "approve", drive: "approve" });
   assert.equal(a.refreshToken, "RT");
   assert.equal(a.expiresAt, 1_000 + 3_599_000, "the access token's expiry");
   assert.equal(a.refreshExpiresAt, 1_000 + 7 * 24 * 3600_000, "Testing: 7 days from connect");

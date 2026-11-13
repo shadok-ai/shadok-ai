@@ -23,10 +23,12 @@ import path from "node:path";
 import { gmailPayloadFromRaw, type FakePart } from "./fixtures/fake-gmail.js";
 
 const NOW = Date.UTC(2026, 10, 13, 12);
-const ALL_SCOPES = ["openid", "email", ...Object.values(GOOGLE_AREA_SCOPES)];
+// Every area but the whole Drive: with it, a file is "ours" only when recorded
+// (test/google-drive.test.ts covers that account).
+const ALL_SCOPES = ["openid", "email", ...Object.values(GOOGLE_AREA_SCOPES).filter((s) => s !== GOOGLE_AREA_SCOPES.drive_all)];
 const acct = (o: Partial<ConnectedAccount> = {}): ConnectedAccount => ({
   id: "g0000001", provider: "google", kind: "member", label: "ana@example.org", externalId: "sub-1", owner: "ana", connectedVia: "ana",
-  share: { personal: true, groups: [], everyone: false, profiles: [] }, policy: "approve", policies: { mail: "approve", calendar: "approve" },
+  share: { personal: true, groups: [], everyone: false, profiles: [] }, policy: "approve", policies: { mail: "approve", calendar: "approve", drive: "approve" },
   scopes: ALL_SCOPES, token: "ACCESS-TOKEN", refreshToken: "REFRESH-SECRET", expiresAt: NOW + 3600_000, createdAt: 1, updatedAt: 1, ...o,
 });
 
@@ -137,6 +139,7 @@ function setup(account = acct(), pending: Draft[] = []) {
     now: () => NOW,
     pendingGmailDrafts: (id) => pendingGmailDraftIds(pending, id),
     ownGmailDrafts: { has: (a, d) => own.has(`${a}/${d}`), add: (a, d) => void own.add(`${a}/${d}`) },
+    ownFiles: { has: (a, d) => own.has(`f/${a}/${d}`), add: (a, d) => void own.add(`f/${a}/${d}`), list: () => [] },
   };
   return { g, deps, account, files, pending, own };
 }
@@ -147,17 +150,18 @@ const outbound = (calls: string[]) => calls.filter((c) => /messages\/send|drafts
 
 // ---- the class table -----------------------------------------------------
 
-test("class table: exactly the spec's — reads, own-writes, mail, calendar", () => {
+test("class table: exactly the spec's — reads, own-writes, file-writes, mail, calendar", () => {
   const by = (c: string) => Object.entries(GOOGLE_ACTIONS).filter(([, v]) => v.class === c).map(([k]) => k).sort();
-  assert.deepEqual(by("read"), ["calendar.list", "doc.read", "drive.list", "gmail.read", "gmail.search", "sheet.read"]);
-  assert.deepEqual(by("own-write"), ["doc.append", "doc.create", "gmail.draft", "sheet.append", "sheet.create"]);
+  assert.deepEqual(by("read"), ["calendar.list", "doc.read", "drive.list", "drive.read", "drive.search", "gmail.read", "gmail.search", "sheet.read"]);
+  assert.deepEqual(by("own-write"), ["doc.create", "gmail.draft", "sheet.create"]);
+  assert.deepEqual(by("file-write"), ["doc.append", "sheet.append", "sheet.update"]);
   assert.deepEqual(by("mail"), ["gmail.send"]);
   assert.deepEqual(by("calendar"), ["calendar.create", "calendar.delete", "calendar.update"]);
 });
 
 test("each setting governs only its own class; reads and own-writes have none", () => {
-  const mailAuto = acct({ policies: { mail: "autonomous", calendar: "approve" } });
-  const calAuto = acct({ policies: { mail: "approve", calendar: "autonomous" } });
+  const mailAuto = acct({ policies: { mail: "autonomous", calendar: "approve", drive: "approve" } });
+  const calAuto = acct({ policies: { mail: "approve", calendar: "autonomous", drive: "approve" } });
   assert.equal(actionSetting(mailAuto, "gmail.send"), "autonomous");
   for (const a of ["calendar.create", "calendar.update", "calendar.delete"] as GoogleAction[]) {
     assert.equal(actionSetting(mailAuto, a), "approve", `${a} must not follow the mail setting`);
@@ -165,7 +169,7 @@ test("each setting governs only its own class; reads and own-writes have none", 
   }
   assert.equal(actionSetting(calAuto, "gmail.send"), "approve", "mail must not follow the calendar setting");
   for (const a of ["calendar.list", "drive.list", "doc.read", "sheet.read", "gmail.draft", "doc.create", "doc.append", "sheet.create", "sheet.append"] as GoogleAction[]) {
-    assert.equal(actionSetting(acct({ policies: { mail: "autonomous", calendar: "autonomous" } }), a), null);
+    assert.equal(actionSetting(acct({ policies: { mail: "autonomous", calendar: "autonomous", drive: "approve" } }), a), null);
   }
   // An account stored without the field (it cannot happen through connect, but
   // a hand-edited store can): both settings read as approve, never as automatic.
@@ -210,7 +214,7 @@ test("approve: a calendar create WITHOUT attendees still waits for approval, and
 });
 
 test("approve: update and delete of an event wait too — the card shows the event as it will be / as it is", async () => {
-  const { g, deps, account } = setup(acct({ policies: { mail: "approve", calendar: "autonomous" } }));
+  const { g, deps, account } = setup(acct({ policies: { mail: "approve", calendar: "autonomous", drive: "approve" } }));
   const made = await runGoogleAction(deps, account, "calendar.create", { ...EVENT, attendees: ["bob@example.org"] });
   assert.equal(made.kind, "result");
   const id = [...g.events.keys()][0];
@@ -232,7 +236,7 @@ test("approve: update and delete of an event wait too — the card shows the eve
 // ---- automatic -----------------------------------------------------------
 
 test("autonomous mail: sent at once, with NO draft left behind", async () => {
-  const { g, deps, account } = setup(acct({ policies: { mail: "autonomous", calendar: "approve" } }));
+  const { g, deps, account } = setup(acct({ policies: { mail: "autonomous", calendar: "approve", drive: "approve" } }));
   const out = await runGoogleAction(deps, account, "gmail.send", MAIL);
   assert.equal(out.kind, "result");
   assert.equal(g.sent.length, 1);
@@ -243,7 +247,7 @@ test("autonomous mail: sent at once, with NO draft left behind", async () => {
 });
 
 test("autonomous calendar: created at once; mail on the same account still asks", async () => {
-  const { g, deps, account } = setup(acct({ policies: { mail: "approve", calendar: "autonomous" } }));
+  const { g, deps, account } = setup(acct({ policies: { mail: "approve", calendar: "autonomous", drive: "approve" } }));
   const out = await runGoogleAction(deps, account, "calendar.create", EVENT);
   assert.equal(out.kind, "result");
   assert.equal(g.events.size, 1);
@@ -423,8 +427,8 @@ test("a dead grant or a disconnected account is NOT a retry: it fails for good, 
 });
 
 test("an update that moves an event by an instant shows that instant's own offset, not the event's old zone", async () => {
-  const { g, deps } = setup(acct({ policies: { mail: "approve", calendar: "autonomous" } }));
-  await runGoogleAction(deps, acct({ policies: { mail: "approve", calendar: "autonomous" } }), "calendar.create", EVENT);
+  const { g, deps } = setup(acct({ policies: { mail: "approve", calendar: "autonomous", drive: "approve" } }));
+  await runGoogleAction(deps, acct({ policies: { mail: "approve", calendar: "autonomous", drive: "approve" } }), "calendar.create", EVENT);
   const id = [...g.events.keys()][0];
   const upd = await runGoogleAction(deps, acct(), "calendar.update", { event: id, start: "2026-11-20T15:00:00Z", end: "2026-11-20T16:00:00Z" });
   assert.equal(upd.kind, "pending");
@@ -453,7 +457,7 @@ test("reading mail needs the Read Gmail area: drafts + send alone does not open 
 test("mail reads are reads (no approval setting) but AUDITED; the other reads are still not logged", () => {
   for (const a of ["gmail.search", "gmail.read"] as GoogleAction[]) {
     assert.equal(GOOGLE_ACTIONS[a].class, "read");
-    assert.equal(actionSetting(acct({ policies: { mail: "approve", calendar: "approve" } }), a), null);
+    assert.equal(actionSetting(acct({ policies: { mail: "approve", calendar: "approve", drive: "approve" } }), a), null);
     assert.equal(actionLogged(a), true);
   }
   for (const a of ["calendar.list", "drive.list", "doc.read", "sheet.read"] as GoogleAction[]) assert.equal(actionLogged(a), false);
@@ -511,7 +515,7 @@ test("gmail.read: headers, the text body, and a log line naming the message — 
 });
 
 test("a hostile mail is returned as data and sends nothing: reading never reaches an outbound call", async () => {
-  const { g, deps, account } = setup(acct({ policies: { mail: "autonomous", calendar: "autonomous" } }));
+  const { g, deps, account } = setup(acct({ policies: { mail: "autonomous", calendar: "autonomous", drive: "approve" } }));
   const out = await runGoogleAction(deps, account, "gmail.read", { id: "m3" });
   if (out.kind !== "result") throw new Error("expected a result");
   const [m] = (out.result as { messages: { subject: string; body: string }[] }).messages;

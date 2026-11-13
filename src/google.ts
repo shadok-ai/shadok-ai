@@ -928,7 +928,11 @@ export async function deleteEvent(token: string, calendarId: string, eventId: st
   if (!res.ok && res.status !== 404 && res.status !== 410) throw await failure("event deletion", res);
 }
 
-// ---- Drive, Docs, Sheets (drive.file: the app's own files only) ----------
+// ---- Drive, Docs, Sheets ---------------------------------------------------
+// With `drive.file` Google itself shows only the files the cockpit created.
+// With the whole-Drive scope (`drive_all`) every call below reaches ANY file,
+// so "is this one of ours" is decided by the caller (src/google-actions.ts),
+// never assumed here.
 
 export interface DriveFile {
   id: string;
@@ -987,9 +991,16 @@ export async function readDoc(token: string, id: string, fetchFn: FetchFn): Prom
   return { id, name: j.title ?? "", text };
 }
 
-export async function appendDoc(token: string, id: string, text: unknown, fetchFn: FetchFn): Promise<void> {
+export function appendTextVerdict(text: unknown): string {
   if (typeof text !== "string" || !text) throw new GoogleInputError("There is no text to append.");
-  await sendJson("document update", "POST", `${DOCS}/${pathId("document", id)}:batchUpdate`, token, { requests: [{ insertText: { text, endOfSegmentLocation: {} } }] }, fetchFn);
+  return text;
+}
+
+/** `outbound`: the edit lands in a file other people may see — an unanswered
+ *  request is then "check before retrying", never "it failed". */
+export async function appendDoc(token: string, id: string, text: unknown, fetchFn: FetchFn, outbound = false): Promise<void> {
+  const t = appendTextVerdict(text);
+  await sendJson("document update", "POST", `${DOCS}/${pathId("document", id)}:batchUpdate`, token, { requests: [{ insertText: { text: t, endOfSegmentLocation: {} } }] }, fetchFn, outbound);
 }
 
 export async function createSheet(token: string, title: unknown, fetchFn: FetchFn): Promise<{ id: string; name: string; link: string }> {
@@ -999,7 +1010,7 @@ export async function createSheet(token: string, title: unknown, fetchFn: FetchF
   return { id: j.spreadsheetId, name, link: `https://docs.google.com/spreadsheets/d/${j.spreadsheetId}/edit` };
 }
 
-function rangeOk(v: unknown): string {
+export function rangeOk(v: unknown): string {
   if (v === undefined || v === null || v === "") return "A1:Z1000";
   if (typeof v !== "string" || CONTROL.test(v) || v.length > 200) throw new GoogleInputError("That is not a valid range (use A1 notation, e.g. Sheet1!A1:D20).");
   return v;
@@ -1020,9 +1031,195 @@ export function rowsVerdict(v: unknown): (string | number | boolean)[][] {
   return v as (string | number | boolean)[][];
 }
 
-export async function appendSheet(token: string, id: string, range: unknown, rows: unknown, fetchFn: FetchFn): Promise<{ updatedRange: string }> {
+export async function appendSheet(token: string, id: string, range: unknown, rows: unknown, fetchFn: FetchFn, outbound = false): Promise<{ updatedRange: string }> {
   const values = rowsVerdict(rows);
   const url = `${SHEETS}/${pathId("spreadsheet", id)}/values/${encodeURIComponent(rangeOk(range))}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
-  const j = await sendJson<{ updates?: { updatedRange?: string } }>("spreadsheet append", "POST", url, token, { values }, fetchFn);
+  const j = await sendJson<{ updates?: { updatedRange?: string } }>("spreadsheet append", "POST", url, token, { values }, fetchFn, outbound);
   return { updatedRange: j.updates?.updatedRange ?? "" };
+}
+
+/** Overwrite a range with rows (RAW, like an append). The range is required:
+ *  an overwrite never lands on a default. */
+export function updateRangeVerdict(range: unknown): string {
+  if (typeof range !== "string" || !range) throw new GoogleInputError("A range is required to overwrite cells (A1 notation, e.g. Sheet1!A2:C2).");
+  return rangeOk(range);
+}
+
+export async function updateSheet(token: string, id: string, range: unknown, rows: unknown, fetchFn: FetchFn, outbound = false): Promise<{ updatedRange: string }> {
+  const values = rowsVerdict(rows);
+  updateRangeVerdict(range);
+  const url = `${SHEETS}/${pathId("spreadsheet", id)}/values/${encodeURIComponent(rangeOk(range))}?valueInputOption=RAW`;
+  const j = await sendJson<{ updatedRange?: string }>("spreadsheet update", "PUT", url, token, { values }, fetchFn, outbound);
+  return { updatedRange: j.updatedRange ?? "" };
+}
+
+// ---- the whole Drive (the `drive_all` area) -------------------------------
+
+const DRIVE = "https://www.googleapis.com/drive/v3/files";
+export const MIME_DOC = "application/vnd.google-apps.document";
+export const MIME_SHEET = "application/vnd.google-apps.spreadsheet";
+export const MIME_SLIDES = "application/vnd.google-apps.presentation";
+export const MIME_FOLDER = "application/vnd.google-apps.folder";
+/** A file's text, as handed to an agent, is cut here. */
+export const MAX_FILE_CHARS = 50_000;
+/** A plain-text file larger than this is not fetched at all. */
+export const MAX_TEXT_FILE_BYTES = 1024 * 1024;
+
+export interface DriveFileMeta {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  owners: string[];
+  link?: string;
+  size?: number;
+}
+
+interface GFile {
+  id?: string;
+  name?: string;
+  mimeType?: string;
+  modifiedTime?: string;
+  webViewLink?: string;
+  size?: string | number;
+  trashed?: boolean;
+  owners?: { displayName?: string; emailAddress?: string }[];
+}
+const FILE_FIELDS = "id,name,mimeType,modifiedTime,webViewLink,size,trashed,owners(displayName,emailAddress)";
+
+export function driveFileMeta(f: GFile): DriveFileMeta {
+  const size = Number(f.size);
+  return {
+    id: f.id ?? "",
+    name: f.name ?? "",
+    mimeType: f.mimeType ?? "",
+    ...(f.modifiedTime ? { modifiedTime: f.modifiedTime } : {}),
+    owners: (f.owners ?? []).map((o) => o.emailAddress || o.displayName || "").filter(Boolean),
+    ...(f.webViewLink ? { link: f.webViewLink } : {}),
+    ...(Number.isFinite(size) && f.size !== undefined ? { size } : {}),
+  };
+}
+
+/** One file's metadata; null when it is not there (deleted, in the bin, or
+ *  not reachable by this account). */
+export async function getFileMeta(token: string, id: unknown, fetchFn: FetchFn): Promise<DriveFileMeta | null> {
+  const url = `${DRIVE}/${pathId("file", id)}?${new URLSearchParams({ fields: FILE_FIELDS, supportsAllDrives: "true" })}`;
+  const res = await fetchFn(url, { headers: bearer(token), signal: deadline() });
+  if (res.status === 404) return null;
+  if (!res.ok) throw await failure("file lookup", res);
+  const f = (await res.json()) as GFile;
+  return f.trashed ? null : driveFileMeta(f);
+}
+
+const Q_SYNTAX =
+  /\b(name|fullText|mimeType|modifiedTime|createdTime|viewedByMeTime|sharedWithMe|starred|trashed|visibility)\s*(=|!=|<=|>=|<|>|contains\b)|'[^']*'\s+in\s+(parents|owners|writers|readers)\b|^\s*(not\s+)?sharedWithMe\s*$/;
+
+/**
+ * What goes into Drive's `q`. Text that already reads as Drive's query
+ * language (`name contains 'x'`, `mimeType = '…'`, `'<id>' in parents`) is
+ * passed as it is; anything else is a full-text search for those words. Files
+ * in the bin are left out unless the query speaks of `trashed` itself. Empty =
+ * the most recently changed files.
+ */
+export function driveQuery(v: unknown): { q: string; fullText: boolean; query: string } {
+  if (v !== undefined && v !== null && (typeof v !== "string" || CONTROL.test(v) || v.length > 500)) {
+    throw new GoogleInputError("The search query must be one line of at most 500 characters.");
+  }
+  const query = typeof v === "string" ? v.trim() : "";
+  if (!query) return { q: "trashed = false", fullText: false, query };
+  if (Q_SYNTAX.test(query)) {
+    return { q: /\btrashed\b/.test(query) ? query : `(${query}) and trashed = false`, fullText: /\bfullText\b/.test(query), query };
+  }
+  const quoted = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  return { q: `fullText contains '${quoted}' and trashed = false`, fullText: true, query };
+}
+
+/** Search the WHOLE Drive: the person's own files and those shared with them. */
+export async function searchDrive(
+  token: string,
+  o: { query?: unknown; max?: unknown; pageToken?: unknown },
+  fetchFn: FetchFn,
+): Promise<{ files: DriveFileMeta[]; nextPageToken?: string; query: string }> {
+  const { q, fullText, query } = driveQuery(o.query);
+  const max = Math.min(Math.max(Math.trunc(typeof o.max === "number" ? o.max : SEARCH_DEFAULT) || SEARCH_DEFAULT, 1), SEARCH_MAX);
+  const p = new URLSearchParams({
+    q,
+    pageSize: String(max),
+    corpora: "user",
+    includeItemsFromAllDrives: "true",
+    supportsAllDrives: "true",
+    fields: `nextPageToken,files(${FILE_FIELDS})`,
+  });
+  // Drive refuses an explicit order on a full-text query (it ranks by relevance).
+  if (!fullText) p.set("orderBy", "modifiedTime desc");
+  if (o.pageToken !== undefined && o.pageToken !== null && o.pageToken !== "") {
+    if (typeof o.pageToken !== "string" || !/^[A-Za-z0-9_~.=+/-]{1,2048}$/.test(o.pageToken)) throw new GoogleInputError("That is not a valid page token.");
+    p.set("pageToken", o.pageToken);
+  }
+  const j = await getJson<{ files?: GFile[]; nextPageToken?: string }>("Drive search", `${DRIVE}?${p}`, token, fetchFn);
+  return { files: (j.files ?? []).slice(0, max).map(driveFileMeta), ...(j.nextPageToken ? { nextPageToken: j.nextPageToken } : {}), query };
+}
+
+async function getText(what: string, url: string, token: string, fetchFn: FetchFn): Promise<string> {
+  const res = await fetchFn(url, { headers: bearer(token), signal: deadline() });
+  if (!res.ok) throw await failure(what, res);
+  return (await res.text()).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+}
+
+const TEXT_MIME = /^(text\/|application\/(json|xml|x-yaml|yaml|javascript|x-sh|sql|x-ndjson)$)/;
+
+/** Rows cut so that what an agent receives stays under `max` characters. */
+export function truncateRows(rows: unknown[][], max = MAX_FILE_CHARS): { rows: unknown[][]; truncated: boolean; omitted: number } {
+  let used = 0;
+  const kept: unknown[][] = [];
+  for (const r of rows) {
+    used += JSON.stringify(r).length;
+    if (used > max && kept.length) break;
+    kept.push(r);
+  }
+  return { rows: kept, truncated: kept.length < rows.length, omitted: rows.length - kept.length };
+}
+
+export interface DriveReadResult {
+  file: DriveFileMeta;
+  /** `text`: `text` holds it. `rows`: a spreadsheet's values. `none`: nothing readable — `note` says why. */
+  kind: "text" | "rows" | "none";
+  text?: string;
+  rows?: unknown[][];
+  range?: string;
+  truncated: boolean;
+  note?: string;
+}
+
+/**
+ * Read ANY file of the Drive as text: a Doc or a Slides deck through Drive's
+ * plain-text export, a Sheet through its values, a small text file as it is.
+ * A PDF or any other binary gives its metadata and a sentence — nothing here
+ * downloads or parses a binary. Null when the file is not there.
+ */
+export async function readDriveFile(token: string, o: { id?: unknown; range?: unknown }, fetchFn: FetchFn): Promise<DriveReadResult | null> {
+  const file = await getFileMeta(token, o.id, fetchFn);
+  if (!file) return null;
+  const none = (note: string): DriveReadResult => ({ file, kind: "none", truncated: false, note });
+  const mt = file.mimeType;
+  if (mt === MIME_SHEET) {
+    const s = await readSheet(token, file.id, o.range, fetchFn);
+    const cut = truncateRows(s.rows);
+    return { file, kind: "rows", rows: cut.rows, range: s.range, truncated: cut.truncated, ...(cut.truncated ? { note: `${cut.omitted} more rows not shown — read a narrower --range.` } : {}) };
+  }
+  if (mt === MIME_DOC || mt === MIME_SLIDES) {
+    const raw = await getText("file export", `${DRIVE}/${file.id}/export?mimeType=${encodeURIComponent("text/plain")}`, token, fetchFn);
+    const cut = truncateBody(raw.replace(/\s+$/, ""), MAX_FILE_CHARS);
+    return { file, kind: "text", text: cut.body, truncated: cut.truncated };
+  }
+  if (mt === MIME_FOLDER) return none(`This is a folder. List what it holds with: drive search --query "'${file.id}' in parents"`);
+  if (mt === "application/pdf") return none("This is a PDF: Drive has no text export for it, and files are not downloaded — only its details are shown.");
+  if (mt.startsWith("application/vnd.google-apps.")) return none("This kind of Google file has no text export — only its details are shown.");
+  if (TEXT_MIME.test(mt)) {
+    if (file.size === undefined || file.size > MAX_TEXT_FILE_BYTES) return none(`This text file is too large to read here (over ${MAX_TEXT_FILE_BYTES / 1024 / 1024} MB) — only its details are shown.`);
+    const raw = await getText("file read", `${DRIVE}/${file.id}?alt=media&supportsAllDrives=true`, token, fetchFn);
+    const cut = truncateBody(raw.replace(/\s+$/, ""), MAX_FILE_CHARS);
+    return { file, kind: "text", text: cut.body, truncated: cut.truncated };
+  }
+  return none("This is a binary file: files are not downloaded — only its details are shown.");
 }

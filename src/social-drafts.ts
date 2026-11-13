@@ -62,8 +62,27 @@ export interface EventPayload {
   patch?: Record<string, unknown>;
 }
 
-export type DraftPayload = MailPayload | EventPayload;
-export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete";
+/** What a Drive-edit approval card holds: the file (name and link as they
+ *  were when the agent asked) and EXACTLY what will be written into it. Only
+ *  for a file the cockpit did not create — its own files are edited at once. */
+export interface FilePayload {
+  kind: "file";
+  op: "doc.append" | "sheet.append" | "sheet.update";
+  fileId: string;
+  name: string;
+  link?: string;
+  owners: string[];
+  /** doc.append: the text added at the end. */
+  text?: string;
+  /** sheet.*: the range asked for (absent = the sheet's end) and the rows. */
+  range?: string;
+  rows?: (string | number | boolean)[][];
+}
+
+export type DraftPayload = MailPayload | EventPayload | FilePayload;
+export type DraftAction = "post" | "gmail.send" | "calendar.create" | "calendar.update" | "calendar.delete" | "doc.append" | "sheet.append" | "sheet.update";
+const FILE_ACTIONS: readonly DraftAction[] = ["doc.append", "sheet.append", "sheet.update"];
+export const isFileAction = (a: DraftAction): boolean => FILE_ACTIONS.includes(a);
 
 export interface Draft {
   id: string;
@@ -115,6 +134,7 @@ export function draftNoun(d: Pick<Draft, "provider" | "action">): string {
   const a = draftAction(d);
   if (a === "gmail.send") return "email";
   if (a.startsWith("calendar.")) return "calendar change";
+  if (isFileAction(a)) return "Drive edit";
   return "LinkedIn draft";
 }
 const accountNoun = (p: AccountProvider) => (p === "google" ? "Google account" : "LinkedIn account");
@@ -493,6 +513,7 @@ export interface DraftView {
   /** Google: the email or the event the card shows — exactly what will go out. */
   mail?: Omit<MailPayload, "kind" | "gmailDraftId" | "fingerprint">;
   event?: Omit<EventPayload, "kind" | "patch">;
+  file?: Omit<FilePayload, "kind">;
   status: DraftStatus;
   createdAt: number;
   decidedBy?: string;
@@ -500,8 +521,22 @@ export interface DraftView {
   error?: string;
 }
 
-function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "event"> {
+function payloadView(p: DraftPayload | undefined): Pick<DraftView, "mail" | "event" | "file"> {
   if (!p) return {};
+  if (p.kind === "file") {
+    return {
+      file: {
+        op: p.op,
+        fileId: p.fileId,
+        name: p.name,
+        ...(p.link ? { link: p.link } : {}),
+        owners: [...p.owners],
+        ...(p.text !== undefined ? { text: p.text } : {}),
+        ...(p.range ? { range: p.range } : {}),
+        ...(p.rows ? { rows: p.rows.map((r) => [...r]) } : {}),
+      },
+    };
+  }
   if (p.kind === "mail") {
     return { mail: { from: p.from, to: [...p.to], cc: [...p.cc], bcc: [...p.bcc], subject: p.subject, body: p.body, attachments: [...p.attachments], ...(p.edited ? { edited: true } : {}) } };
   }
@@ -751,6 +786,18 @@ export function socialLogFileFor(cwd: string): string {
   return path.join(storeDir(), `${instanceKey(cwd)}.log.jsonl`);
 }
 
+// ---- the Drive files the cockpit created (`doc create`, `sheet create`) ---
+// Same shape as the Gmail drafts below (accountId → ids). On an account that
+// holds the WHOLE Drive, this record — never a guess from the file's own
+// properties — is what tells "ours, edited at once" from "someone's file,
+// edited under the Drive setting".
+
+export const OWN_FILES_KEPT = 5000;
+
+export function ownFilesFileFor(cwd: string): string {
+  return path.join(storeDir(), `${instanceKey(cwd)}.drive-files.json`);
+}
+
 // ---- the Gmail drafts an agent made (`gmail draft`) -----------------------
 // `gmail draft --update <id>` may only rewrite one of these: Gmail's
 // `drafts.update` takes any draft id of the mailbox, the person's own included.
@@ -775,9 +822,9 @@ export function loadOwnDrafts(file: string): Record<string, string[]> {
 }
 
 /** The map with one more id for that account, capped to the most recent. */
-export function withOwnDraft(map: Readonly<Record<string, string[]>>, accountId: string, draftId: string): Record<string, string[]> {
+export function withOwnDraft(map: Readonly<Record<string, string[]>>, accountId: string, draftId: string, kept = OWN_DRAFTS_KEPT): Record<string, string[]> {
   const cur = (map[accountId] ?? []).filter((x) => x !== draftId);
-  return { ...map, [accountId]: [...cur, draftId].slice(-OWN_DRAFTS_KEPT) };
+  return { ...map, [accountId]: [...cur, draftId].slice(-kept) };
 }
 
 /** Atomic (tmp + rename), mode 600; ids of accounts no longer connected are dropped. */

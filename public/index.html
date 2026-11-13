@@ -9175,7 +9175,13 @@
         const dt = document.createElement("dt");
         dt.textContent = f.label;
         const dd = document.createElement("dd");
-        dd.textContent = f.value;
+        if (f.href) {
+          // Only ever an http(s) address (`safeUrl` in social-card.js).
+          const a = document.createElement("a");
+          a.href = f.href; a.target = "_blank"; a.rel = "noopener noreferrer";
+          a.textContent = f.value;
+          dd.appendChild(a);
+        } else dd.textContent = f.value;
         dl.append(dt, dd);
       }
       bubble.appendChild(dl);
@@ -9241,7 +9247,7 @@
     if (buttons.some((b) => b.disabled)) return;
     buttons.forEach((b) => (b.disabled = true));
     const kind = window.draftCardModel(draft).kind;
-    statusEl.textContent = action !== "publish" ? "Discarding…" : kind === "mail" ? "Sending…" : kind === "event" ? "Applying…" : "Publishing…";
+    statusEl.textContent = action !== "publish" ? "Discarding…" : kind === "mail" ? "Sending…" : kind === "event" || kind === "file" ? "Applying…" : "Publishing…";
     let r = null, j = {};
     try {
       r = await fetch("/social/drafts/" + encodeURIComponent(draft.id) + "/" + action, { method: "POST" });
@@ -13159,8 +13165,9 @@
         (key, on) => (key === "*" && !on ? null : { share: window.toggleProfile(a.share, key, on, vaultGroups) })));
     }
     if (m.provider === "google") {
-      // Two settings, each governing only its own kind of action: sending
-      // mail, and any event added, changed or deleted.
+      // One setting per kind of action: sending mail, any event added,
+      // changed or deleted, and — once the whole Drive is granted — an edit to
+      // a file the cockpit did not create.
       for (const row of window.googlePolicyRows(a)) {
         fields.appendChild(chipRow(row.label, row.hint, row.choices, (key, on) => {
           if (!on) return null; // one of the two is always lit: click the other
