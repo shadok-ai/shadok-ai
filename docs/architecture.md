@@ -1949,6 +1949,20 @@ back, an **anti-phishing interstitial** names the host the token is about to be
 handed to: a stranger's link made with the stranger's key would otherwise
 deliver the victim's token to the stranger after an ordinary consent screen.
 
+**Google** (spec `2026-11-13-connected-accounts-google-design.md`) is a second
+entry in the same `PROVIDERS` table, offered only once its secrets exist. Two
+things differ. The scopes are not fixed: the person ticks *areas* (`calendar`,
+`drive`, `gmail` → `calendar.events`, `drive.file`, `gmail.compose`, a table in
+`core.ts`), validated at `/google/start` and carried in the signed state, so
+the callback cannot widen them; and the return path is per provider
+(`/connect/<provider>/done`), with a state minted for one provider refused at
+the other's callback. And Google access tokens last about an hour while
+refreshing needs the client secret, so the broker gains its only POST route,
+`/google/refresh`: the instance's server sends the refresh token, the broker
+adds the secret, returns the new access token, and forgets both — an
+`invalid_grant` (revoked, or the 7-day expiry of a Testing app) comes back as a
+400 meaning "reconnect".
+
 The hostname is shared with a separate site Worker (landing page, waitlist):
 every path the broker does not own — anything but `/health` and
 `/<provider>/{start,callback}` — is forwarded to it through the optional `SITE`

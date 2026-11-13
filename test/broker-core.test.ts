@@ -101,3 +101,38 @@ test("encryptForInstance output decrypts with WebCrypto (format contract for the
 test("encryptForInstance refuses a bad public key", async () => {
   await assert.rejects(encryptForInstance("AAAA", b64u(new Uint8Array(16)), { access_token: "x", expires_in: 1, scope: "" }));
 });
+
+// ── Google (spec 2026-11-13-connected-accounts-google-design.md) ──
+
+import { GOOGLE_AREAS, googleScope, parseGoogleAreas, returnPathFor } from "../broker/src/core.js";
+
+test("parseGoogleAreas keeps known areas in table order and refuses anything else", () => {
+  assert.deepEqual(parseGoogleAreas("gmail,calendar"), ["calendar", "gmail"]);
+  assert.deepEqual(parseGoogleAreas(" drive , drive "), ["drive"]);
+  assert.equal(parseGoogleAreas(""), null);
+  assert.equal(parseGoogleAreas("calendar,contacts"), null, "one unknown name refuses the lot");
+  assert.equal(parseGoogleAreas("https://www.googleapis.com/auth/drive"), null, "a raw scope is not an area");
+});
+
+test("googleScope always asks for identity, then only the ticked areas", () => {
+  assert.equal(googleScope(["drive"]), `openid email profile ${GOOGLE_AREAS.drive[0]}`);
+  const all = googleScope(["calendar", "drive", "gmail"]);
+  assert.match(all, /calendar\.events/);
+  assert.match(all, /drive\.file/);
+  assert.match(all, /gmail\.compose/);
+  assert.doesNotMatch(all, /auth\/drive( |$)/, "never the restricted full-Drive scope");
+});
+
+test("validateReturnUrl pins the path to the provider", () => {
+  assert.equal(validateReturnUrl(`https://c.example.com${returnPathFor("google")}`, "google").ok, true);
+  assert.equal(validateReturnUrl(`https://c.example.com${returnPathFor("linkedin")}`, "google").ok, false);
+  assert.equal(validateReturnUrl(`https://c.example.com${returnPathFor("google")}`).ok, false, "the default stays LinkedIn's");
+});
+
+test("verifyState accepts a google state with its areas and refuses an unknown provider", async () => {
+  const key = "k";
+  const s: ConnectState = { v: 1, provider: "google", areas: ["calendar"], returnUrl: "https://c.example.com/connect/google/done", pub: "p", nonce: "n", iat: Date.now() };
+  assert.deepEqual(await verifyState(await signState(s, key), key), s);
+  const bogus = { ...s, provider: "myspace" } as unknown as ConnectState;
+  assert.equal(await verifyState(await signState(bogus, key), key), null);
+});
