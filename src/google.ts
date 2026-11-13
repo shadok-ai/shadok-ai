@@ -1128,7 +1128,18 @@ export function driveQuery(v: unknown): { q: string; fullText: boolean; query: s
   const query = typeof v === "string" ? v.trim() : "";
   if (!query) return { q: "trashed = false", fullText: false, query };
   if (Q_SYNTAX.test(query)) {
-    return { q: /\btrashed\b/.test(query) ? query : `(${query}) and trashed = false`, fullText: /\bfullText\b/.test(query), query };
+    // Judged on the query WITHOUT its quoted strings: a word inside a literal
+    // (`name contains 'trashed'`) is not the operator, and a parenthesis
+    // inside one does not count.
+    const bare = query.replace(/'(?:[^'\\]|\\.)*'/g, "''");
+    let depth = 0;
+    for (const ch of bare) {
+      if (ch === "(") depth++;
+      else if (ch === ")" && --depth < 0) break;
+    }
+    // Unbalanced, the wrapping below would not hold the bin filter on the whole query.
+    if (depth !== 0 || bare.replace(/''/g, "").includes("'")) throw new GoogleInputError("That Drive query has an unbalanced parenthesis or quote.");
+    return { q: /\btrashed\b/.test(bare) ? query : `(${query}) and trashed = false`, fullText: /\bfullText\b/.test(bare), query };
   }
   const quoted = query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   return { q: `fullText contains '${quoted}' and trashed = false`, fullText: true, query };

@@ -430,7 +430,7 @@ export function accountEditVerdict(
  * names no setting at all.
  */
 export function policyPatch(
-  a: Pick<ConnectedAccount, "provider" | "policy" | "policies">,
+  a: Pick<ConnectedAccount, "provider" | "policy" | "policies" | "scopes">,
   body: { policy?: unknown; policies?: unknown },
 ): { ok: true; patch: { policy?: AccountPolicy; policies?: GooglePolicies } | null } | { ok: false; reason: string } {
   const isPolicy = (v: unknown): v is AccountPolicy => v === "approve" || v === "autonomous";
@@ -442,6 +442,12 @@ export function policyPatch(
     const p = policies as Record<string, unknown>;
     const keys = Object.keys(p);
     if (!keys.length || keys.some((k) => !(GOOGLE_POLICY_KEYS as readonly string[]).includes(k)) || keys.some((k) => !isPolicy(p[k]))) return { ok: false, reason: "invalid policies" };
+    // Drive edits can only become automatic on an account that HOLDS the whole
+    // Drive: set beforehand, a later reconnect that ticks it would start with
+    // edits to other people's files already unasked.
+    if (p.drive === "autonomous" && !grantedAreas(a).includes("drive_all")) {
+      return { ok: false, reason: "Drive edits can be made automatic only on an account connected with All of Drive." };
+    }
     return { ok: true, patch: { policies: { ...googlePolicies(a), ...(p as Partial<GooglePolicies>) } } };
   }
   if (policies !== undefined) return { ok: false, reason: "This account has a single posting policy." };

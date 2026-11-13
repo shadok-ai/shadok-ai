@@ -381,7 +381,9 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       const meta = await getFileMeta(token, id, f);
       if (!meta) throw new GoogleInputError(`No file '${id.slice(0, 60)}' in this Drive. Run \`drive search\` to find its id.`);
       const want = action === "doc.append" ? MIME_DOC : MIME_SHEET;
-      if (meta.mimeType !== want) throw new GoogleInputError(`"${meta.name.slice(0, 120)}" is not a Google ${action === "doc.append" ? "Doc" : "Sheet"}, so \`${action.replace(".", " ")}\` cannot write to it.`);
+      // The file's NAME stays out of the sentence: it is someone else's
+      // words, and an error is printed to the agent outside any fence.
+      if (meta.mimeType !== want) throw new GoogleInputError(`File '${id.slice(0, 60)}' is not a Google ${action === "doc.append" ? "Doc" : "Sheet"}, so \`${action.replace(".", " ")}\` cannot write to it.`);
       const payload: FilePayload = { kind: "file", ...edit, fileId: meta.id, name: meta.name, ...(meta.link ? { link: meta.link } : {}), owners: meta.owners };
       const summary = fileEditSummary(payload);
       if (setting === "autonomous") {
