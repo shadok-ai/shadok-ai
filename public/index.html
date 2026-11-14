@@ -281,7 +281,11 @@
     position: fixed; top: 42px; left: 12px; z-index: 1001;
     background: var(--menu-bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 10px 12px; font-family: var(--sans); font-size: 12px;
-    min-width: 210px; box-shadow: 0 6px 20px rgba(0,0,0,0.5);
+    /* Cap the width: without it, this fixed box shrink-to-fits to its content
+       and the accrued rows/hints/selects stretch it across the viewport. The
+       cap keeps a normal dropdown width and lets the hint lines wrap. */
+    min-width: 210px; max-width: min(360px, calc(100vw - 24px));
+    box-shadow: 0 6px 20px rgba(0,0,0,0.5);
   }
   #verMenu .vm-row { display: flex; justify-content: space-between; gap: 16px; margin-bottom: 4px; }
   #verMenu .vm-label { color: var(--text-dim); }
