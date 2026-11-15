@@ -1,0 +1,42 @@
+{
+  "name": "shadok-ai-desktop",
+  "productName": "Shadok-AI",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop client for shadok-ai: several cockpit instances in one window",
+  "license": "AGPL-3.0-only",
+  "author": "shadok-ai-dev",
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^45.3.2",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "ai.shadok.desktop",
+    "productName": "Shadok-AI",
+    "files": [
+      "main.mjs",
+      "preload.cjs",
+      "lib/**",
+      "shell/**"
+    ],
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }]
+    },
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64", "arm64"] }]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    }
+  }
+}

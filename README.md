@@ -1246,6 +1246,16 @@ invited person), and a container per instance stays the real boundary (see
 *Exposing it beyond this machine*). Even a member cannot read secret **values**
 (`/secrets` returns names only) — the vault's floor holds.
 
+### Desktop app (macOS, Windows, Linux)
+
+`desktop/` holds an Electron app that shows several cockpits in one window: a
+sidebar of instances (local or remote, any mix), and the selected cockpit
+beside it. Each instance keeps its own login and storage. A hidden instance
+stays connected, and when one of its agents is waiting its dot turns red, the
+Dock or taskbar signals it, and a notification appears. It wraps the web page
+as it is, so the server needs no change. `cd desktop && npm install && npm start`;
+packaging and shortcuts are in [`desktop/README.md`](desktop/README.md).
+
 ### Signing in to Claude
 
 A fresh machine — most often a fresh container — has two things in its way, and

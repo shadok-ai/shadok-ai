@@ -1,0 +1,99 @@
+:root {
+  /* Dark, like the cockpit beside it: a light sidebar next to a dark page
+     reads as two applications glued together. */
+  --sidebar-w: 232px; /* must match SIDEBAR_W in main.mjs */
+  --bg: #14161a;
+  --side: #1b1e23;
+  --fg: #e6e7e9;
+  --muted: #8b9098;
+  --line: #2b2f36;
+  --hover: #252930;
+  --active: #2d323a;
+  --accent: #f0a848;
+  --red: #e07a6a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  user-select: none;
+}
+#sidebar {
+  width: var(--sidebar-w);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--side);
+  border-right: 1px solid var(--line);
+}
+#brand {
+  padding: 14px 14px 10px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--muted);
+}
+#list { list-style: none; margin: 0; padding: 0 6px; flex: 1; overflow-y: auto; }
+#list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: default;
+}
+#list li:hover { background: var(--hover); }
+#list li.active { background: var(--active); box-shadow: 0 0 0 1px var(--line) inset; }
+#list li.drag-over { box-shadow: 0 -2px 0 var(--accent) inset; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: transparent; border: 1px solid var(--muted); }
+.dot.attention { background: var(--red); border-color: var(--red); }
+.dot.error { background: transparent; border-color: var(--red); border-style: dashed; }
+.dot.loading { border-color: var(--accent); }
+.label { flex: 1; min-width: 0; }
+.name, .sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sub { color: var(--muted); font-size: 11px; }
+.key { color: var(--muted); font-size: 11px; }
+.tools { display: none; gap: 2px; }
+#list li:hover .tools { display: flex; }
+#list li:hover .key { display: none; }
+.tools button {
+  border: 0; background: transparent; color: var(--muted);
+  width: 22px; height: 22px; border-radius: 4px; padding: 0; font-size: 13px;
+}
+.tools button:hover { background: var(--line); color: var(--fg); }
+.rename { width: 100%; font: inherit; padding: 1px 4px; border: 1px solid var(--accent); border-radius: 4px; background: var(--bg); color: var(--fg); }
+#addBtn {
+  margin: 8px; padding: 8px; border: 1px dashed var(--line); border-radius: 6px;
+  background: transparent; color: var(--muted); font: inherit; text-align: left;
+}
+#addBtn:hover { color: var(--fg); border-color: var(--muted); }
+#content { flex: 1; display: grid; place-items: center; padding: 32px; }
+#content section { max-width: 440px; text-align: center; }
+#content h1 { font-size: 18px; font-weight: 600; }
+#content p { color: var(--muted); user-select: text; }
+.mono, code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.muted { color: var(--muted); }
+button { font: inherit; }
+#content button, .actions button {
+  padding: 7px 14px; border-radius: 6px; border: 1px solid var(--line);
+  background: var(--active); color: var(--fg);
+}
+button.primary, #content button { background: var(--accent); border-color: var(--accent); color: #1b1e23; font-weight: 600; }
+dialog {
+  border: 1px solid var(--line); border-radius: 10px; padding: 20px; width: 380px;
+  background: var(--bg); color: var(--fg);
+}
+dialog::backdrop { background: rgba(0, 0, 0, .35); }
+dialog h2 { margin: 0 0 14px; font-size: 15px; }
+dialog label { display: block; margin-bottom: 12px; color: var(--muted); }
+dialog input {
+  display: block; width: 100%; margin-top: 4px; padding: 7px 8px; font: inherit;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--active); color: var(--fg);
+  user-select: text;
+}
+dialog input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.error { color: var(--red); min-height: 1.4em; margin: 0 0 8px; }
+.actions { display: flex; justify-content: flex-end; gap: 8px; }
