@@ -4612,7 +4612,7 @@
     defaultAgentName,
     hasReadonlyPreset,
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers, secretDeleteConfirmText } from "/profile-card.js?v=__ASSET_V__";
-  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick } from "/secrets-panel.js?v=__ASSET_V__";
+  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick, secretReceivers, plusReloadPlan } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
@@ -4719,6 +4719,8 @@
   window.keyGroups = keyGroups;
   window.shareTargets = shareTargets;
   window.secretChipPick = secretChipPick;
+  window.secretReceivers = secretReceivers;
+  window.plusReloadPlan = plusReloadPlan;
   window.auditLine = auditLine;
   window.profileSaveBody = profileSaveBody;
   window.isManagedProfile = isManagedProfile;
@@ -4882,6 +4884,12 @@
     // GRANT something: before the module lands, every click resolves to the set
     // already confirmed — the tick springs back and nothing widens.
     secretChipPick: (current) => (Array.isArray(current) ? current : []),
+    // Before the module lands: no known receiver and nothing automatic. The
+    // panel then offers nothing rather than restarting an agent on a guess —
+    // and `reloadCandidates` is only ever reached from a click, by which time
+    // the module is long loaded.
+    secretReceivers: () => ({ profiles: [], any: false }),
+    plusReloadPlan: () => ({ action: "none" }),
     extractLiveText: () => "",
     livePreviewDecision: () => null,
     echoAuthor: () => "",
@@ -12796,6 +12804,10 @@
   let vaultSecrets = [];   // the server's tagged list: {name, source, ownerGroup?, audit…}
   let vaultGroups = [];    // GET /groups — decides flat vs grouped
   let panelGroup = null;   // the group the panel is scoped to (null = the caller's own view)
+  // The agent whose "+" opened the panel, or null (opened by hand). Read ONCE,
+  // by `settleSecretWrite`: it decides whether writing the secret also reloads
+  // that agent, the only way a value reaches a running process.
+  let envAskTab = null;
   async function loadVault() {
     try {
       const [v, g] = await Promise.all([
@@ -12861,10 +12873,19 @@
     }
     // Who receives it. Bridge guard (invariant 10): no module, no mention,
     // rather than an exception that would empty the list.
-    const users = !ro && window.secretUsers ? window.secretUsers(profileCache, k) : null;
-    if (users && !grouped) {
+    // Both ends of the link (`secretReceivers`), or an "Any profile" binding —
+    // which no profile's own list carries — would read as "no profile uses it"
+    // while every agent receives it.
+    const recv = !ro && window.secretReceivers ? window.secretReceivers(profileCache, vaultSecrets, k) : null;
+    const users = recv ? recv.profiles : null;
+    if (recv && !grouped) {
       const tag = document.createElement("span");
-      if (users.length) {
+      if (recv.any) {
+        tag.className = "sec-users";
+        tag.textContent = "→ any profile";
+        tag.title = "Injected as an environment variable into every agent that can read it, whatever its profile"
+          + (users.length ? " (and listed on: " + users.join(", ") + ")" : "");
+      } else if (users.length) {
         tag.className = "sec-users";
         tag.textContent = "→ " + users.join(", ");
         tag.title = users.length === 1
@@ -12943,7 +12964,7 @@
       if (err) { status.className = "sec-status err"; status.textContent = "Not saved: " + err; save.disabled = false; return; }
       showVaultError("");
       await loadVault(); renderSecrets();
-      offerReload(sec.name); // the new value reaches an agent only at spawn
+      settleSecretWrite(sec.name); // the new value reaches an agent only at spawn
     };
     save.addEventListener("click", submit);
     cancel.addEventListener("click", close);
@@ -13183,25 +13204,84 @@
     if (changed.length) await loadProfilesInto();
     return changed;
   }
-  /** Offer to reload the LIVE agents whose profile now feeds this secret — the
-   *  value only reaches a process at spawn, so a running one needs a respawn. */
-  function offerReload(secretName) {
-    const users = new Set(window.secretUsers ? window.secretUsers(profileCache, secretName) : []);
-    // Only LIVE agents: a stopped one will get the value when it next launches.
-    const agents = tabs.filter((t) => users.has(t.profile) && t.ws && t.ws.readyState === WebSocket.OPEN);
+  /** The live agents that would pick this secret up on a respawn, from both
+   *  ends of the link (`secretReceivers`) — a value only reaches a process at
+   *  spawn. `skip` leaves out one already being reloaded. */
+  function reloadCandidates(secretName, skip) {
+    const r = window.secretReceivers(profileCache, vaultSecrets, secretName);
+    return tabs.filter((t) =>
+      t !== skip && t.ws && t.ws.readyState === WebSocket.OPEN &&
+      (r.any || (t.profile && r.profiles.includes(t.profile))));
+  }
+  /** The banner under the vault form: what just happened (`note`), and an offer
+   *  to reload the agents that now feed on this secret. ONE span, because
+   *  `.sec-reload` is a flex row whose span takes the width. */
+  function offerReload(secretName, note, skip) {
+    const agents = reloadCandidates(secretName, skip);
     const box = $("secretsReload");
     box.replaceChildren();
-    if (!agents.length) { box.hidden = true; return; }
-    const txt = document.createElement("span");
-    txt.textContent =
-      agents.length === 1
+    const parts = note ? [note] : [];
+    if (agents.length) {
+      const working = agents.filter((t) => t.status === "busy").length;
+      parts.push(agents.length === 1
         ? `1 running agent (${agents[0].nameEl.textContent}) uses “${secretName}”. Reload it to pick up the new value?`
-        : `${agents.length} running agents use “${secretName}”. Reload them to pick up the new value?`;
-    const go = document.createElement("button");
-    go.type = "button"; go.textContent = "Reload " + (agents.length === 1 ? "it" : "all");
-    go.addEventListener("click", () => { agents.forEach(reloadTab); box.hidden = true; });
-    box.append(txt, go);
+        : `${agents.length} running agents use “${secretName}”. Reload them to pick up the new value?`);
+      // Reloading is a respawn: history is kept, a turn in flight is not. The
+      // profile switch says the same thing rather than forbidding it — catching
+      // an agent mid-track is a use case.
+      if (working) parts.push(working === agents.length
+        ? (working === 1 ? "It is mid-turn: reloading cuts that turn short." : "They are mid-turn: reloading cuts those turns short.")
+        : `${working} of them ${working === 1 ? "is" : "are"} mid-turn: reloading cuts ${working === 1 ? "that turn" : "those turns"} short.`);
+    }
+    if (!parts.length) { box.hidden = true; return; }
+    const txt = document.createElement("span");
+    txt.textContent = parts.join(" ");
+    box.appendChild(txt);
+    if (agents.length) {
+      const go = document.createElement("button");
+      go.type = "button"; go.textContent = "Reload " + (agents.length === 1 ? "it" : "all");
+      go.addEventListener("click", () => { agents.forEach(reloadTab); box.hidden = true; });
+      box.appendChild(go);
+    }
     box.hidden = false;
+  }
+  /**
+   * After a secret is written from the form: the agent that asked for it
+   * through a "+" is reloaded on the spot, since that is the only way a value
+   * reaches a running process, and the click already told us which agent and
+   * which name. Everything the plan refuses to do automatically falls back to
+   * the offer — `plusReloadPlan` (pure) carries the why.
+   *
+   * `envAskTab` is consumed here, once: the panel stays open after an Add, and
+   * a second secret typed into it has nothing to do with the agent that asked
+   * for the first.
+   */
+  function settleSecretWrite(secretName) {
+    const tab = envAskTab;
+    envAskTab = null;
+    const receivers = window.secretReceivers(profileCache, vaultSecrets, secretName);
+    const plan = window.plusReloadPlan(
+      tab ? { profile: tab.profile, live: !!(tab.ws && tab.ws.readyState === WebSocket.OPEN), busy: tab.status === "busy" } : null,
+      receivers,
+    );
+    const who = tab && tab.nameEl ? tab.nameEl.textContent : "the agent";
+    if (plan.action === "reload") {
+      reloadTab(tab);   // writes its own line in the agent's thread
+      offerReload(secretName, `Reloaded ${who} — it now has “${secretName}” in its environment.`, tab);
+      return;
+    }
+    if (plan.action === "unbound") {
+      // No binding feeds it, so a respawn would change nothing: name the fix
+      // instead of restarting the agent for free. Not "tick the box below":
+      // where that tick lives differs by mode (the form's ticks in flat mode,
+      // the card's chips in grouped), and pointing at the wrong widget is worse
+      // than naming the profile.
+      offerReload(secretName, tab && tab.profile
+        ? `${who} runs “${tab.profile}”, which does not receive “${secretName}” — attach it to that profile, then reload.`
+        : `${who} has no profile, so only “Any profile” would reach it.`, null);
+      return;
+    }
+    offerReload(secretName);
   }
   // profileCache feeds the "no profile uses it" warning: it must be fresh when
   // the panel opens, or we would show a stale diagnosis.
@@ -13540,6 +13620,7 @@
   document.addEventListener("visibilitychange", refreshCaIfOpen);
 
   async function openSecretsPanel(groupId) {
+    envAskTab = null;    // opened by hand: no agent is waiting on this write
     panelGroup = groupId == null ? null : String(groupId);
     showCaError("");
     loadConnectedAccounts();
@@ -13714,6 +13795,7 @@
    *  value actually reaches it, the cursor on the value. Saving then goes through
    *  the ordinary submit — and its reload offer, since a value lands at spawn. */
   async function openSecretFor(tab, name) {
+    envAskTab = tab || null;
     await Promise.all([loadVault(), loadProfilesInto()]);
     renderSecrets();
     $("secretsReload").hidden = true;
@@ -14878,7 +14960,7 @@
       if (e) showVaultError(name + " was saved, but not attached to its profiles: " + e);
     }
     await loadVault(); renderSecrets();
-    offerReload(name); // propose reloading the live agents that now feed on it
+    settleSecretWrite(name); // reload the agent that asked; offer the others
     resetSecretForm();
     $("secretKey").focus();
   });
