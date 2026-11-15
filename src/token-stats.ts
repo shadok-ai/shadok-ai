@@ -58,6 +58,24 @@ export function messageCostUSD(model: string, u: TokenUsage): number | null {
   );
 }
 
+/** Pure: the RESOLVED model name of the most recent message in `samples`, or ""
+ *  when none carries one. This is the only place an agent's real model is
+ *  observable — the transcript records it per message — as opposed to the
+ *  `--model` SETTING, which is empty for the default. "Most recent" is by
+ *  timestamp (`at`), so it survives out-of-order iteration; a sample with no
+ *  model is ignored rather than winning with a blank. */
+export function latestModel(samples: Iterable<MsgSample>): string {
+  let model = "";
+  let at = -Infinity;
+  for (const s of samples) {
+    if (s.model && s.at > at) {
+      at = s.at;
+      model = s.model;
+    }
+  }
+  return model;
+}
+
 /** A window's totals: the four token classes, their sum, and the notional cost.
  *  `costPartial` is true when at least one message in the window had an unknown
  *  price (so `costUSD` is a floor, not the whole). */
