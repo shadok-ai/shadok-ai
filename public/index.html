@@ -358,6 +358,17 @@
     display: block; margin-top: 3px; opacity: 0.8;
     white-space: normal; line-height: 1.45;
   }
+  /* The context-window gauge, moved off the tab into this header: a tiny inline
+     track after the "📊 Context NN%" label. Same colour thresholds as the old
+     tab bar (green → amber → red) so the meaning is unchanged. */
+  #tabMenu .tm-ctxbar {
+    display: inline-block; vertical-align: middle; margin-left: 4px;
+    width: 92px; height: 4px; border-radius: 2px; overflow: hidden;
+    background: var(--line);
+  }
+  #tabMenu .tm-ctxfill { display: block; height: 100%; width: 0%; background: var(--ok); }
+  #tabMenu .tm-ctxfill.warn { background: var(--amber); }
+  #tabMenu .tm-ctxfill.crit { background: var(--err); }
   /* Top banners sit ABOVE the header, not over it: they are flow items at the
      very top of the fixed flex chassis (inserted as body's first child), so they
      push the header and everything below down instead of overlapping it. A
@@ -585,25 +596,6 @@
      tab in JS (ageOpacity) — bright when fresh, nearly gone when old. The
      transition makes the 30s refresh a fade rather than a step. */
   .tab .lastat { font-size: 9px; color: var(--text); flex: none; line-height: 1.1; font-variant-numeric: tabular-nums; transition: opacity 0.6s ease; }
-  .tab .ctxbar {
-    position: absolute;
-    left: 10px;
-    right: 10px;
-    bottom: 3px;
-    height: 2px;
-    background: transparent;
-    border-radius: 1px;
-    overflow: hidden;
-  }
-  .tab .ctxfill {
-    display: block;
-    height: 100%;
-    width: 0%;
-    background: var(--ok);
-    transition: width 0.4s ease;
-  }
-  .tab .ctxfill.warn { background: var(--amber); }
-  .tab .ctxfill.crit { background: var(--err); }
   .tab:hover { color: var(--text); background: var(--bg-inset); }
   /* Active (selected) tab. Deliberately WITHOUT a background: the background is
      reserved for the session's state (.working/.needs-answer/.unread), or a
@@ -626,12 +618,12 @@
   /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
      glance lands (paintGlance) — a quick cascade top to bottom instead of one
      late burst. --gi is the row's rank, capped so the tail never drags. */
-  .tab.glance-in .tab-row2, .tab.glance-in .ctxbar {
+  .tab.glance-in .tab-row2 {
     animation: glance-in 0.28s ease-out both;
     animation-delay: calc(var(--gi, 0) * 35ms);
   }
   @keyframes glance-in { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
-  @media (prefers-reduced-motion: reduce) { .tab.glance-in .tab-row2, .tab.glance-in .ctxbar { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { .tab.glance-in .tab-row2 { animation: none; } }
   .tab .name {
     flex: 1;
     min-width: 0;
@@ -3003,7 +2995,6 @@
   }
   .tab > .tav { grid-row: 1 / 3; }
   .tab-row1, .tab-row2 { grid-column: 2; min-width: 0; }
-  .tab .ctxbar { left: 50px; right: 8px; }
   .tab .lastat, .tab .ctxnum { font-size: 11px; color: var(--text-dim); }
   .tab.active { border-left: 0; border-radius: 6px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1); background: var(--bg-raised); font-weight: 600; }
   :root:not([data-mode="light"]) .tab.active { background: var(--bg-inset); box-shadow: inset 0 0 0 1px var(--line); }
@@ -3355,7 +3346,7 @@
   .tab.room .tav > span:first-child, body.room-active #chanAvatar { font-size: 0; }
   .tab.room .tav::before, body.room-active #chanAvatar::before { content: "💬"; font-size: 15px; line-height: 1; }
   body.room-active #chanAvatar::before { font-size: 18px; }
-  .tab.room .tav .led, .tab.room .ctxbar, .tab.room .timer { display: none; }
+  .tab.room .tav .led, .tab.room .timer { display: none; }
   .tab.room .name { font-style: italic; }
   .tab.room .kind { color: var(--text-dim); font-size: 11px; }
   /* A room's chat has none of an agent's machinery. */
@@ -5385,13 +5376,8 @@
     row2.className = "tab-row2";
     row2.append(lastAt, ctxNum);
     btn.append(avatar, row1, row2);
-    // Context-window usage: a thin progress bar at the bottom of the tab.
-    const ctxBar = document.createElement("div");
-    ctxBar.className = "ctxbar";
-    const ctxFill = document.createElement("span");
-    ctxFill.className = "ctxfill";
-    ctxBar.appendChild(ctxFill);
-    btn.appendChild(ctxBar);
+    // Context-window usage no longer paints on the tab — it lives in the agent
+    // menu now (tm-ctxbar), kept as `tab.contextPct` and read when the menu opens.
     const group = groupId != null && groups.find((g) => String(g.id) === String(groupId));
     (group ? group.bodyEl : ungroupedEl).appendChild(btn);
 
@@ -5417,7 +5403,7 @@
       updateState: null, // Claude Code update: "restart" (reload to apply) | "failed" (install then reload) | null
       staleReasons: [],  // server-side "reload to apply" reasons: prompt/guardrails/skills/secrets changed, auth token expired, claude binary updated
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, ctxFillEl: ctxFill, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, linkEl: link,
+      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, linkEl: link,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -6018,6 +6004,20 @@
     tabMenuOpenedAt = Date.now();
   }
 
+  // The resolved model of this agent's LAST message, as a display label — read
+  // from the same /channels/stats the Stats panel uses (the resolved name only
+  // lives in the transcript). "" when nothing has been answered yet or on any
+  // error, so the caller just keeps the setting-only line.
+  async function lastRunModel(tab) {
+    if (!tab.sessionId) return "";
+    try {
+      const r = await fetch("/channels/stats?id=" + encodeURIComponent(tab.sessionId));
+      if (!r.ok) return "";
+      const data = await r.json();
+      return resolvedModelLabel(data.lastModel);
+    } catch { return ""; }
+  }
+
   function openTabMenu(tab, x, y) {
     tabMenu.replaceChildren();
     if (tab.roomId) return openRoomMenu(tab, x, y);
@@ -6038,11 +6038,36 @@
       head.appendChild(pend);
     }
     // The model this agent runs on — the thing the user asked to be able to see.
+    // The SETTING is known synchronously (the --model arg, "profile default"
+    // when unset); the model that actually produced the LAST message — the only
+    // observable "real" model — needs the transcript, so we fetch it and upgrade
+    // the line to "set → actual (last message)" in place (the same datum the
+    // Stats panel shows, surfaced here so it is one click closer).
     if (tab.sessionId) {
       const ms = document.createElement("span");
       ms.className = "tm-sub";
-      ms.textContent = "🧠 " + modelLabel(tab.model);
+      const setLabel = modelLabel(tab.model);
+      ms.textContent = "🧠 " + setLabel;
       head.appendChild(ms);
+      lastRunModel(tab).then((ran) => {
+        // Bail if the menu was torn down (replaceChildren) before the answer.
+        if (ran && ms.isConnected) ms.textContent = "🧠 " + setLabel + " → " + ran + " (last message)";
+      });
+    }
+    // The context-window gauge, moved here off the tab: "📊 Context NN%" + a tiny
+    // track. Snapshot of `tab.contextPct` at open (the menu is short-lived).
+    if (tab.sessionId && tab.contextPct != null) {
+      const p = tab.contextPct;
+      const cx = document.createElement("span");
+      cx.className = "tm-sub";
+      const bar = document.createElement("span");
+      bar.className = "tm-ctxbar";
+      const fill = document.createElement("span");
+      fill.className = "tm-ctxfill" + (p >= 85 ? " crit" : p >= 60 ? " warn" : "");
+      fill.style.width = Math.min(100, p) + "%";
+      bar.appendChild(fill);
+      cx.append("📊 Context " + p + "%", bar);
+      head.appendChild(cx);
     }
     if (tab.crons && tab.crons.length) {
       const sub = document.createElement("span");
@@ -8487,20 +8512,6 @@
     screenEl.textContent = t.screenText;
   }
 
-  /** Paints a channel's context-window usage bar + tiny number in its tab. */
-  function renderContext(tab) {
-    const p = tab.contextPct;
-    if (p == null) {
-      tab.ctxNumEl.textContent = "";
-      tab.ctxFillEl.style.width = "0%";
-      return;
-    }
-    tab.ctxNumEl.textContent = p + "%";
-    tab.ctxFillEl.style.width = Math.min(100, p) + "%";
-    tab.ctxFillEl.classList.toggle("warn", p >= 60 && p < 85);
-    tab.ctxFillEl.classList.toggle("crit", p >= 85);
-  }
-
   // Re-pins the view to the bottom ONLY when the user is already there (a flag
   // driven by their own scrolls). Otherwise we leave their position alone — no
   // more scroll flying around while the live text fills in.
@@ -8645,7 +8656,6 @@
       }
       if (t.contextPct == null && Number.isFinite(g.contextPct)) {
         t.contextPct = g.contextPct;
-        renderContext(t);
         painted = true;
       }
       // Only rows on screen take a rank: a hidden group's rows must not push
@@ -11067,7 +11077,6 @@
         break;
       case "context":
         t.contextPct = msg.pct;
-        renderContext(t);
         break;
       case "prompt-id":
         // The transcript now holds a prompt this tab showed early: give the
