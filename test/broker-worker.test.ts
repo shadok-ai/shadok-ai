@@ -387,3 +387,77 @@ test("refresh stops at the first app that answers, and says invalid_grant when o
   assert.equal(r.status, 400);
   assert.deepEqual(await r.json(), { error: "invalid_grant", status: 400 });
 });
+
+// ── GitHub (a GitHub App: no scopes, errors in HTTP 200, rotating refresh tokens) ──
+
+const ghenv: Env = { ...env, GITHUB_CLIENT_ID: "Iv-cid", GITHUB_CLIENT_SECRET: "ghsekret", GITHUB_APP_SLUG: "my-app" };
+const GHRETURN = `https://cockpit.acme.com/connect/github/done`;
+const ghget = (path: string, e: Env = ghenv) => worker.fetch(new Request(BASE + path), e);
+const ghRefresh = (body: unknown) =>
+  worker.fetch(new Request(BASE + "/github/refresh", { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json" } }), ghenv);
+
+test("/health lists github once its secrets exist, with the installation page", async () => {
+  assert.deepEqual(await (await ghget("/health")).json(), { ok: true, providers: ["linkedin", "github"], githubInstallUrl: "https://github.com/apps/my-app/installations/new" });
+  // No slug (or a malformed one): GitHub is offered, but no install link is made up.
+  assert.deepEqual(await (await ghget("/health", { ...ghenv, GITHUB_APP_SLUG: "x/../y" })).json(), { ok: true, providers: ["linkedin", "github"] });
+  assert.equal((await ghget(`/github/start?return=${encodeURIComponent(GHRETURN)}`, env)).status, 404);
+  assert.equal((await ghget("/github/setup", env)).status, 404);
+});
+
+test("/github/start sends no scope, and the callback asks GitHub for JSON", async () => {
+  const { kp, pub } = await keypair();
+  const r = await ghget(`/github/start?return=${encodeURIComponent(GHRETURN)}&pub=${pub}&nonce=${nonce}`);
+  assert.equal(r.status, 302);
+  const loc = new URL(r.headers.get("location")!);
+  assert.equal(loc.origin + loc.pathname, "https://github.com/login/oauth/authorize");
+  assert.equal(loc.searchParams.get("client_id"), "Iv-cid");
+  assert.equal(loc.searchParams.get("redirect_uri"), `${BASE}/github/callback`);
+  assert.equal(loc.searchParams.has("scope"), false);
+  const state = loc.searchParams.get("state")!;
+  assert.equal((await verifyState(state, env.STATE_KEY))?.provider, "github");
+
+  let accept = "";
+  let sent: URLSearchParams | undefined;
+  globalThis.fetch = (async (_u: string, init: RequestInit) => {
+    accept = (init.headers as Record<string, string>).accept;
+    sent = new URLSearchParams(String(init.body));
+    return Response.json({ access_token: "ghu_a", expires_in: 28800, refresh_token: "ghr_r", refresh_token_expires_in: 15897600, scope: "", token_type: "bearer" });
+  }) as typeof fetch;
+  const cb = await ghget(`/github/callback?code=c&state=${encodeURIComponent(state)}`);
+  assert.equal(cb.status, 200);
+  assert.equal(accept, "application/json");
+  assert.equal(sent?.get("client_secret"), "ghsekret");
+  const html = await cb.text();
+  assert.match(html, /Connect GitHub/);
+  assert.ok(kp);
+});
+
+test("a GitHub refusal in HTTP 200 is a refusal, not a token", async () => {
+  const { pub } = await keypair();
+  const state = await signState(mkState(pub, { provider: "github", returnUrl: GHRETURN }), env.STATE_KEY);
+  globalThis.fetch = (async () => Response.json({ error: "bad_verification_code", error_description: "The code passed is incorrect or expired." })) as typeof fetch;
+  const html = await (await ghget(`/github/callback?code=c&state=${encodeURIComponent(state)}`)).text();
+  assert.match(html, /refused the connection \(bad_verification_code\)/);
+  assert.match(html, /error=token_exchange_failed/);
+  assert.doesNotMatch(html, /c=/);
+});
+
+test("/github/refresh returns the ROTATED refresh token, and maps bad_refresh_token to invalid_grant", async () => {
+  globalThis.fetch = (async () => Response.json({ access_token: "ghu_new", expires_in: 28800, refresh_token: "ghr_new", refresh_token_expires_in: 15897600, scope: "" })) as typeof fetch;
+  assert.deepEqual(await (await ghRefresh({ refresh_token: "ghr_old" })).json(), {
+    access_token: "ghu_new", expires_in: 28800, scope: "", refresh_token: "ghr_new", refresh_token_expires_in: 15897600,
+  });
+  globalThis.fetch = (async () => Response.json({ error: "bad_refresh_token" })) as typeof fetch;
+  const r = await ghRefresh({ refresh_token: "ghr_dead" });
+  assert.equal(r.status, 400);
+  assert.deepEqual(await r.json(), { error: "invalid_grant", status: 400 });
+  globalThis.fetch = (async () => Response.json({ error: "incorrect_client_credentials" })) as typeof fetch;
+  assert.equal((await ghRefresh({ refresh_token: "x" })).status, 502);
+});
+
+test("/github/setup is a plain 'close this tab' page; other providers have none", async () => {
+  const r = await ghget("/github/setup?installation_id=1&setup_action=install");
+  assert.equal(r.status, 200);
+  assert.match(await r.text(), /Repositories updated/);
+  assert.equal((await gget("/google/setup")).status, 404);
+});
