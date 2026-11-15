@@ -7,6 +7,7 @@ import {
   profileBadges,
   defaultAgentName,
   secretUsers,
+  secretDeleteConfirmText,
   profileSaveBody,
   isManagedProfile,
   hasReadonlyPreset,
@@ -266,4 +267,14 @@ test("secretUsers: un rôle MASQUÉ du panneau compte quand même", () => {
 test("secretUsers: entrées bancales ignorées, pas de plantage", () => {
   assert.deepEqual(secretUsers([null, { secrets: ["X"] }, { name: "OK", secrets: ["X"] }], "X"), ["OK"]);
   assert.deepEqual(secretUsers(null, "X"), []);
+});
+
+test("secretDeleteConfirmText: names the secret, says it cannot be recovered, and which profiles lose it", () => {
+  const none = secretDeleteConfirmText("GA4", []);
+  assert.match(none, /Remove the secret GA4 from the vault\?/);
+  assert.match(none, /cannot be recovered/);
+  assert.doesNotMatch(none, /profile/);
+  assert.match(secretDeleteConfirmText("GA4", ["Shadok-Content"]), /the profile Shadok-Content will no longer receive it/);
+  assert.match(secretDeleteConfirmText("GA4", ["A", "B"]), /these profiles: A, B will no longer receive it/);
+  assert.equal(secretDeleteConfirmText("GA4", null), none);
 });

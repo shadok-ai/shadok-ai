@@ -228,3 +228,18 @@ export function secretUsers(profiles, name) {
     .map((p) => p.name)
     .sort();
 }
+
+/**
+ * What the vault asks before removing a secret. The vault is write-only, so a
+ * removed value cannot be read back from anywhere: one stray click on the row's
+ * ✕ used to delete it with no question at all. Naming the profiles that inject
+ * it says what actually breaks — their agents stop receiving it at the next
+ * spawn or reload.
+ */
+export function secretDeleteConfirmText(name, users) {
+  const list = Array.isArray(users) ? users.filter((u) => typeof u === "string" && u) : [];
+  const head = "Remove the secret " + name + " from the vault?\n\nIts value cannot be recovered afterwards.";
+  if (!list.length) return head;
+  return head + "\n\nAgents running " + (list.length === 1 ? "the profile " + list[0] : "these profiles: " + list.join(", ")) +
+    " will no longer receive it once they restart.";
+}
