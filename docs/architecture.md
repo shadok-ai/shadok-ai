@@ -2464,7 +2464,12 @@ Scope is the **current** session file, which is why it cannot drag (no
 cross-session sweep). It also returns `upSince` (the transcript's first timestamp —
 session age, stable across restarts) and `lastRespawn` (the running process's
 start: a tmux pane's `session_created`, which survives a server restart, else the
-`Live`'s build time for node-pty). `GET /instance/stats` (header ⋯ menu) is the
+`Live`'s build time for node-pty). It also returns `lastModel` — the RESOLVED
+model name of the agent's most recent message (`latestModel`, pure: newest OWN
+sample by `at`, subagents excluded), which is the only place the real model is
+observable (the `--model` SETTING is empty for the default). The Stats view
+shows it as `set → actual (last message)`, so an agent on "Claude Code's own
+default" still reveals which model it resolved to. `GET /instance/stats` (header ⋯ menu) is the
 fleet total: the same windows summed over `visibleChannels` for the caller
 (member → their groups, admin → all). A live agent is summed from its in-memory
 `usageSamples`; a dormant one is read with `scanUsageSamplesAsync` (off the event
