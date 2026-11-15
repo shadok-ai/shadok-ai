@@ -4620,7 +4620,7 @@
     profileBadges,
     defaultAgentName,
     hasReadonlyPreset,
-    applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
+    applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers, secretDeleteConfirmText } from "/profile-card.js?v=__ASSET_V__";
   import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
@@ -4720,6 +4720,7 @@
   window.profileBadges = profileBadges;
   window.defaultAgentName = defaultAgentName;
   window.secretUsers = secretUsers;
+  window.secretDeleteConfirmText = secretDeleteConfirmText;
   window.secretsPanelMode = secretsPanelMode;
   window.secretSections = secretSections;
   window.panelGroupOptions = panelGroupOptions;
@@ -4877,6 +4878,7 @@
     isManagedProfile: () => false,
     profileSaveBody: (form) => ({ ...form }),
     secretUsers: () => [],
+    secretDeleteConfirmText: (name) => "Remove the secret " + name + " from the vault?",
     // Before the module lands: the flat list (today's look) and no groups.
     secretsPanelMode: () => "flat",
     secretSections: () => ({ own: [], sharedIn: [], inheritedMain: [] }),
@@ -12874,6 +12876,7 @@
         actionBtn("s-edit", "✎", "Replace this secret's value (its profiles are the chips below)", () =>
           grouped ? startInlineEdit(li, sec) : startEditSecret(k, null)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
+          if (!confirm(window.secretDeleteConfirmText(k, users || []))) return;
           // The row's OWNER group, not the panel's write target (see secretControls).
           const g = grouped && sec.ownerGroup != null ? String(sec.ownerGroup) : secretWriteGroup();
           const r = await fetch("/secrets?name=" + encodeURIComponent(k) + (g ? "&group=" + encodeURIComponent(g) : ""), { method: "DELETE" });
