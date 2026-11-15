@@ -7,7 +7,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const subtle = globalThis.crypto.subtle;
 
-export const PROVIDER_IDS = ["linkedin", "google"] as const;
+export const PROVIDER_IDS = ["linkedin", "google", "github"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 export const isProviderId = (v: unknown): v is ProviderId => typeof v === "string" && (PROVIDER_IDS as readonly string[]).includes(v);
 

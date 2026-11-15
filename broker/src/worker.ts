@@ -33,6 +33,13 @@ export interface Env {
   GOOGLE_ALT_CLIENT_ID?: string;
   GOOGLE_ALT_CLIENT_SECRET?: string;
   GOOGLE_ALT_HOSTS?: string;
+  // GitHub is optional too: a GitHub App (not an OAuth App) — the person picks
+  // the repositories it reaches, and user tokens expire (8 h, refresh 6 months).
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
+  // The app's slug (github.com/apps/<slug>): /health turns it into the link
+  // where a person picks or changes the repositories the app may reach.
+  GITHUB_APP_SLUG?: string;
   // The site served on the same hostname (landing page, waitlist), deployed
   // as its own Worker from another repo. Optional: without the binding the
   // broker answers 404 for every path it does not own, as before.
@@ -53,6 +60,9 @@ interface Provider {
   refresh?: boolean;
   clientId: (env: Env) => string;
   clientSecret: (env: Env) => string;
+  /** GitHub: `GET /<id>/setup` exists, the page GitHub's "Setup URL" lands on
+   *  after a person picks repositories. */
+  setup?: boolean;
   /** An alternative app for some hosts (Google), or null. */
   alt?: (env: Env) => (OAuthApp & { hosts: string[] }) | null;
 }
@@ -90,6 +100,19 @@ const PROVIDERS: Record<ProviderId, Provider> = {
       const hosts = (e.GOOGLE_ALT_HOSTS ?? "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean);
       return e.GOOGLE_ALT_CLIENT_ID && e.GOOGLE_ALT_CLIENT_SECRET && hosts.length ? { id: e.GOOGLE_ALT_CLIENT_ID, secret: e.GOOGLE_ALT_CLIENT_SECRET, hosts } : null;
     },
+  },
+  github: {
+    id: "github",
+    label: "GitHub",
+    authorizeUrl: "https://github.com/login/oauth/authorize",
+    tokenUrl: "https://github.com/login/oauth/access_token",
+    // A GitHub App takes no scopes: what the token reaches is the app's
+    // permissions on the repositories the person installed it on.
+    scope: () => "",
+    refresh: true,
+    setup: true,
+    clientId: (e) => e.GITHUB_CLIENT_ID ?? "",
+    clientSecret: (e) => e.GITHUB_CLIENT_SECRET ?? "",
   },
 };
 
@@ -135,6 +158,20 @@ function page(status: number, title: string, body: string): Response {
 const NONCE_RE = /^[A-Za-z0-9_-]{22}$/;
 const PUB_RE = /^[A-Za-z0-9_-]{87}$/;
 
+// GitHub answers its token endpoint in form encoding unless asked for JSON;
+// Google and LinkedIn answer JSON either way.
+const TOKEN_HEADERS = { "content-type": "application/x-www-form-urlencoded", accept: "application/json" };
+// Provider error codes are short snake_case words; anything else is not echoed.
+const ERROR_CODE_RE = /^[a-z_]{1,64}$/;
+/** The codes that mean "this refresh token is dead, reconnect" — Google's
+ *  `invalid_grant`, GitHub's `bad_refresh_token` — all reported to the
+ *  instance as `invalid_grant`, so it needs no per-provider table. */
+const REVOKED_CODES = new Set(["invalid_grant", "bad_refresh_token"]);
+const errorCode = (j: Record<string, unknown>, fallback: string) => {
+  const raw = typeof j.error === "string" && ERROR_CODE_RE.test(j.error) ? j.error : fallback;
+  return REVOKED_CODES.has(raw) ? "invalid_grant" : raw;
+};
+
 const bad = (msg: string) => page(400, "Cannot connect", `<p>${esc(msg)}</p>`);
 const link = (returnUrl: string, nonce: string, tail: string) => `${returnUrl}#n=${nonce}&${tail}`;
 
@@ -158,7 +195,7 @@ async function start(url: URL, env: Env, p: Provider): Promise<Response> {
     response_type: "code",
     client_id: appFor(p, env, v.url.hostname).id,
     redirect_uri: `${url.origin}/${p.id}/callback`,
-    scope: p.scope(st),
+    ...(p.scope(st) ? { scope: p.scope(st) } : {}),
     ...(p.extra ?? {}),
     state,
   });
@@ -195,7 +232,7 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
   try {
     res = await fetch(p.tokenUrl, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: TOKEN_HEADERS,
       body: new URLSearchParams({
         grant_type: "authorization_code",
         code,
@@ -216,7 +253,10 @@ async function callback(url: URL, env: Env, p: Provider): Promise<Response> {
   }
   let token: TokenPayload;
   try {
-    const j = (await res.json()) as TokenPayload;
+    const j = (await res.json()) as TokenPayload & { error?: unknown };
+    // GitHub refuses with HTTP 200 and an `error` field (a used or expired
+    // code, a wrong secret): a refusal, said as one, the code sanitised.
+    if (j.error !== undefined) return failed(`${p.label} refused the connection (${errorCode(j as unknown as Record<string, unknown>, "error")}).`);
     if (typeof j.access_token !== "string" || !j.access_token) throw new Error("no token");
     token = {
       access_token: j.access_token,
@@ -246,8 +286,6 @@ const json = (status: number, body: unknown) =>
 
 // A refresh token is opaque but bounded; anything larger is not one.
 const MAX_REFRESH_TOKEN = 2048;
-// Google's error codes are short snake_case words; anything else is not echoed.
-const ERROR_CODE_RE = /^[a-z_]{1,64}$/;
 
 /**
  * `POST /<provider>/refresh` `{refresh_token}` → `{access_token, expires_in,
@@ -255,7 +293,8 @@ const ERROR_CODE_RE = /^[a-z_]{1,64}$/;
  * client secret, which only the broker holds; the instance's SERVER calls this
  * (outbound, so it works behind NAT). Stateless: the refresh token is used and
  * forgotten, never logged, never echoed. `invalid_grant` (revoked, expired —
- * 7 days in Testing) is passed through so the instance can say "reconnect".
+ * 7 days in Testing; GitHub's `bad_refresh_token`) is passed through so the
+ * instance can say "reconnect". A rotated refresh token (GitHub) is returned.
  */
 async function refresh(req: Request, env: Env, p: Provider): Promise<Response> {
   let body: { refresh_token?: unknown };
@@ -277,7 +316,7 @@ async function refresh(req: Request, env: Env, p: Provider): Promise<Response> {
     try {
       res = await fetch(p.tokenUrl, {
         method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
+        headers: TOKEN_HEADERS,
         body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: rt, client_id: app.id, client_secret: app.secret }),
       });
     } catch {
@@ -290,22 +329,36 @@ async function refresh(req: Request, env: Env, p: Provider): Promise<Response> {
     } catch {
       /* a non-JSON answer is handled below as an unexpected one */
     }
-    if (!res.ok) {
-      const code = typeof j.error === "string" && ERROR_CODE_RE.test(j.error) ? j.error : "refresh_failed";
+    // GitHub refuses with HTTP 200 and an `error` field, Google with a 400.
+    if (!res.ok || j.error !== undefined) {
+      const code = errorCode(j, "refresh_failed");
       if (code === "invalid_grant") revoked = true;
       // 400 for what the caller must act on (reconnect); 502 for the provider's trouble.
-      last = json(code === "invalid_grant" ? 400 : 502, { error: code, status: res.status });
+      last = json(code === "invalid_grant" ? 400 : 502, { error: code, status: res.ok ? 400 : res.status });
       continue;
     }
     if (typeof j.access_token !== "string" || !j.access_token) return json(502, { error: "unexpected_answer" });
-    return json(200, { access_token: j.access_token, expires_in: j.expires_in, scope: j.scope });
+    // GitHub ROTATES the refresh token: the one just used is dead, so the new
+    // one must reach the instance or the next refresh fails. Google keeps it.
+    const rotated = typeof j.refresh_token === "string" && j.refresh_token ? { refresh_token: j.refresh_token, refresh_token_expires_in: j.refresh_token_expires_in } : {};
+    return json(200, { access_token: j.access_token, expires_in: j.expires_in, scope: j.scope, ...rotated });
   }
   return revoked ? json(400, { error: "invalid_grant", status: 400 }) : last;
+}
+
+/** GitHub's "Setup URL": where the browser lands after a person picks or
+ *  changes the repositories. GitHub carries no state through that page, so it
+ *  cannot send anyone back to a cockpit — and need not: a user token reaches
+ *  newly-picked repositories at once, without reconnecting. */
+function setupDone(p: Provider): Response {
+  return page(200, "Repositories updated", `<p>${esc(p.label)} has saved your choice of repositories. You can close this tab and go back to your cockpit: your agents can use them right away.</p>`);
 }
 
 function health(env: Env): Response {
   const providers = Object.values(PROVIDERS).filter((p) => available(p, env)).map((p) => p.id);
   const google = providers.includes("google");
+  const slug = (env.GITHUB_APP_SLUG ?? "").trim();
+  const github = providers.includes("github") && /^[a-z0-9-]{1,64}$/.test(slug);
   // `googleAreas`: the areas THIS deploy accepts at /google/start. An instance
   // newer than the broker would otherwise offer an area the broker refuses.
   return Response.json({
@@ -313,15 +366,18 @@ function health(env: Env): Response {
     providers,
     ...(env.GOOGLE_TESTING === "1" && google ? { testing: ["google"] } : {}),
     ...(google ? { googleAreas: Object.keys(GOOGLE_AREAS) } : {}),
+    // Where a person picks (or changes) the repositories the GitHub App
+    // reaches. Authorizing alone grants no repository: installing does.
+    ...(github ? { githubInstallUrl: `https://github.com/apps/${slug}/installations/new` } : {}),
   });
 }
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const url = new URL(req.url);
-    const m = /^\/([a-z]+)\/(start|callback|refresh)$/.exec(url.pathname);
+    const m = /^\/([a-z]+)\/(start|callback|refresh|setup)$/.exec(url.pathname);
     const p = m ? providerOf(m[1]) : undefined;
-    const route = m && p && available(p, env) && (m[2] !== "refresh" || p.refresh) ? m[2] : undefined;
+    const route = m && p && available(p, env) && (m[2] !== "refresh" || p.refresh) && (m[2] !== "setup" || p.setup) ? m[2] : undefined;
     const ours = url.pathname === "/health" || route !== undefined;
     // Every path the broker does not own goes to the site, whatever the method
     // (the waitlist is a POST). The broker's own routes never do.
@@ -329,6 +385,7 @@ export default {
     if (route === "refresh") return req.method === "POST" ? refresh(req, env, p!) : new Response("Method not allowed", { status: 405 });
     if (req.method !== "GET") return new Response("Method not allowed", { status: 405 });
     if (url.pathname === "/health") return health(env);
+    if (route === "setup") return setupDone(p!);
     return route === "start" ? start(url, env, p!) : callback(url, env, p!);
   },
 };
