@@ -9,6 +9,7 @@ import {
   refusalReason,
   FLOOD_BUDGET_MS,
   shouldReattachBridge,
+  topicReconcilePlan,
   senderName,
   replyContext,
   shouldPreempt,
@@ -1217,4 +1218,60 @@ test("dialogText: an oversized body is cut, never the question the buttons answe
   const t = dialogText({ question: "Do you want to proceed?", body: "x".repeat(5000) }, 100);
   assert.ok(t.length <= 100, String(t.length));
   assert.ok(t.endsWith("…\n\nDo you want to proceed?"), t);
+});
+
+test("topicReconcilePlan: a claimed topic whose probe FAILED is never swept as an orphan", () => {
+  // The chain that made a live agent vanish: probe "unknown" → swept as
+  // channel-less → topic deleted → next boot finds it gone → agent deleted.
+  const plan = topicReconcilePlan({
+    probed: [
+      { sessionId: "a", threadId: 10, status: "exists" },
+      { sessionId: "b", threadId: 20, status: "unknown" },
+    ],
+    claimed: [10, 20],
+    tracked: [10, 20, 30],
+    roomThreads: [],
+  });
+  assert.deepEqual(plan.sweep, [30]); // only the topic NO channel claims
+  assert.deepEqual(plan.keep, [10, 20]); // an unconfirmed topic stays tracked
+  assert.deepEqual(plan.reattachable, [10]); // but only a confirmed one gets a bridge
+  assert.deepEqual(plan.unbind, []);
+});
+
+test("topicReconcilePlan: a topic that is gone unbinds its channel and is not probed again", () => {
+  const plan = topicReconcilePlan({
+    probed: [{ sessionId: "a", threadId: 10, status: "gone" }],
+    claimed: [10],
+    tracked: [10],
+    roomThreads: [],
+  });
+  assert.deepEqual(plan.unbind, ["a"]);
+  assert.deepEqual(plan.sweep, []); // gone already: nothing to delete
+  assert.deepEqual(plan.keep, []);
+});
+
+test("topicReconcilePlan: a topic claimed after the probes ran is not an orphan", () => {
+  // The pass takes a while; an agent born meanwhile has a topic no probe saw.
+  const plan = topicReconcilePlan({ probed: [], claimed: [40], tracked: [40, 50], roomThreads: [] });
+  assert.deepEqual(plan.sweep, [50]);
+  assert.deepEqual(plan.keep, [40]);
+});
+
+test("topicReconcilePlan: a room's topic is neither swept nor tracked", () => {
+  const plan = topicReconcilePlan({ probed: [], claimed: [], tracked: [60, 70], roomThreads: [60] });
+  assert.deepEqual(plan.sweep, [70]);
+  assert.deepEqual(plan.keep, []);
+});
+
+test("the boot reconcile never deletes a channel over a missing topic", () => {
+  // Locks the wiring: the plan is pure, but the caller is what once called
+  // removeChannel. A missing topic is an inference, and an agent is not ended
+  // on one.
+  const src = fs.readFileSync(new URL("../src/telegram.ts", import.meta.url), "utf8");
+  const start = src.indexOf("const reconcileOnBoot = async");
+  const body = src.slice(start, src.indexOf("\n  };\n", start));
+  assert.ok(start > 0 && body.length > 500);
+  assert.ok(!body.includes("removeChannel("));
+  assert.ok(!body.includes("onChannelClosed"));
+  assert.ok(body.includes("topicReconcilePlan("));
 });
