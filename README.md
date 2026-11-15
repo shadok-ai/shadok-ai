@@ -308,6 +308,16 @@ every 25s (tunable with `SHADOK_WS_PING_MS`) to keep the connection warm, so no
 proxy change is normally needed; if your proxy still cuts it, raise
 `proxy_read_timeout` above the ping interval.
 
+### Desktop app (macOS, Windows, Linux)
+
+`desktop/` holds an Electron app that shows several cockpits in one window: a
+sidebar of instances (local or remote, any mix), and the selected cockpit
+beside it. Each instance keeps its own login and storage. A hidden instance
+stays connected, and when one of its agents is waiting its dot turns red, the
+Dock or taskbar signals it, and a notification appears. It wraps the web page
+as it is, so the server needs no change. `cd desktop && npm install && npm start`;
+packaging and shortcuts are in [`desktop/README.md`](desktop/README.md).
+
 ### Signing in to Claude
 
 A fresh machine — most often a fresh container — has two things in its way, and

@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Local page with a bridge into the main process: nothing remote, nothing inline. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'">
+  <title>Shadok-AI</title>
+  <link rel="stylesheet" href="shell.css">
+</head>
+<body>
+  <aside id="sidebar">
+    <header id="brand">Shadok-AI</header>
+    <ul id="list" aria-label="Instances"></ul>
+    <button id="addBtn" type="button">+ Add instance</button>
+  </aside>
+
+  <!-- The content area. Normally covered by the active instance's own view;
+       visible only when there is nothing to cover it with. -->
+  <main id="content">
+    <section id="empty" hidden>
+      <h1>No cockpit yet</h1>
+      <p>Add the address of a shadok-ai instance — <code>http://localhost:3789</code>
+         for the one on this machine, or the HTTPS address of a remote one.</p>
+      <button id="emptyAdd" type="button">Add an instance</button>
+    </section>
+    <section id="failed" hidden>
+      <h1>Could not reach <span id="failedName"></span></h1>
+      <p id="failedUrl" class="mono"></p>
+      <p id="failedWhy" class="muted"></p>
+      <button id="retry" type="button">Try again</button>
+    </section>
+  </main>
+
+  <dialog id="addDialog">
+    <form id="addForm" method="dialog">
+      <h2>Add an instance</h2>
+      <label>Address
+        <input id="addUrl" name="url" placeholder="http://localhost:3789" autocomplete="off" spellcheck="false" required>
+      </label>
+      <label>Name <span class="muted">(optional)</span>
+        <input id="addName" name="name" placeholder="defaults to the host" autocomplete="off">
+      </label>
+      <p id="addError" class="error" role="alert"></p>
+      <div class="actions">
+        <button type="button" id="addCancel">Cancel</button>
+        <button type="submit" id="addOk" class="primary">Add</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="shell.js"></script>
+</body>
+</html>
