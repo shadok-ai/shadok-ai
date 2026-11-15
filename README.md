@@ -248,7 +248,12 @@ Enter to skip; you can add it later from the web UI).
   actually produced its **last message** (`set → actual`), read from the
   transcript. That last-message model is the only place the real model is
   observable: the *setting* is empty for "Claude Code's own default", so an agent
-  on the default shows which model it resolved to only here. The
+  on the default shows which model it resolved to only this way. For a glance
+  without opening Stats, the agent's **⋯ menu header** shows the same
+  `set → actual (last message)` on its 🧠 line, together with the
+  **context-window gauge** (`📊 Context NN%` + a bar) — the gauge used to sit as a
+  thin line on the channel row and now lives in the menu, where there is room for
+  a number beside it. The
   figures are the **real** per-message counts the API reported (only the *cost* is
   notional), and they include the agent's **subagents** — the Task-tool children
   write their own transcripts, so a delegating agent's true total is mostly there;
