@@ -394,6 +394,8 @@ The FULL text — every war story, every "measured on …", the reason each rule
 
 - **71.** A control that writes without a Save must put the screen back when the server refuses (the last CONFIRMED set, not the ticks on screen) and must be unable to race itself — the Save was also the moment screen and server were known to agree. · [detail](docs/invariants.md#inv-75)
 
+- **72.** A missing Telegram topic never ends an agent, and a topic a channel claims is never an orphan: the boot reconcile UNBINDS on an inferred absence (`topicReconcilePlan`), because one failed probe once deleted a live agent's topic and the next boot then deleted the agent, leaving its process running with no row. · [detail](docs/invariants.md#inv-76)
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).

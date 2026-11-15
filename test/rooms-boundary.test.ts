@@ -32,7 +32,9 @@ test("telegram: the rooms' mirror loop never opens a bridge nor tracks its topic
   assert.ok(!r.includes("openBridge("), "reconcileRooms must never open a bridge");
   assert.ok(!r.includes("addTgTopic("), "a room topic in the tracked list is swept as an orphan once the room closes");
   const boot = body(tg, "const reconcileOnBoot = async", "\n  };\n");
-  assert.match(boot, /bound\.has\(th\) \|\| roomThreads\.has\(th\)/, "the orphan sweep must skip room topics");
+  // The skip itself lives in `topicReconcilePlan` (covered in telegram.test.ts);
+  // what can still be lost here is handing it the rooms' topics.
+  assert.match(boot, /topicReconcilePlan\(\{[^}]*roomThreads: \[\.\.\.roomThreads\]/, "the orphan sweep must skip room topics");
 });
 
 test("server: a socket is an agent link OR a room link, never both", () => {

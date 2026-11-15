@@ -199,6 +199,51 @@ export function shouldReattachBridge(o: {
   return o.sessionAlive;
 }
 
+/** What a probe of a forum topic can say. `unknown` is a check that FAILED
+ *  (rate limit, network, bot momentarily not admin) — never evidence of anything. */
+export type TopicProbe = "exists" | "gone" | "unknown";
+
+/**
+ * What the boot reconcile does with the topics it knows about. Pure — unit tested.
+ *
+ * Two rules, each the fix for one link of the same chain. A boot pass once
+ * probed a live agent's topic, got `unknown`, and the orphan sweep — which asked
+ * "did a probe CONFIRM this topic" instead of "does a channel CLAIM it" — deleted
+ * that topic as channel-less. The next boot found the topic gone and deleted the
+ * AGENT: its row vanished from every interface while its process kept running.
+ *
+ *  - **A topic a channel claims is never an orphan**, whatever its probe said.
+ *    `claimed` must be read from the registry AT SWEEP TIME, not from the
+ *    snapshot the probes were made from: the pass takes a minute on a busy
+ *    board, and a topic created meanwhile would otherwise be swept too.
+ *  - **A topic that is gone unbinds its channel; it never deletes it.** Bot API
+ *    has no "topic deleted" update, so a missing topic is only ever INFERRED
+ *    here, late — and ending an agent (its schedules, its webhooks, its tab) is
+ *    not something to do on an inference. The agent stays, as a web agent.
+ */
+export function topicReconcilePlan(o: {
+  /** One entry per channel bound to a topic, with what its probe answered. */
+  probed: { sessionId: string; threadId: number; status: TopicProbe }[];
+  /** Thread ids a channel row claims right now (a fresh registry read). */
+  claimed: number[];
+  /** The tracked-topic list: the topics shadok believes it created. */
+  tracked: number[];
+  /** Topics that belong to rooms — never orphans, never tracked here. */
+  roomThreads: number[];
+}): { unbind: string[]; reattachable: number[]; sweep: number[]; keep: number[] } {
+  const gone = new Set(o.probed.filter((p) => p.status === "gone").map((p) => p.threadId));
+  const rooms = new Set(o.roomThreads);
+  // Claimed and not known gone: `exists` and `unknown` alike stay tracked.
+  const keep = [...new Set(o.claimed)].filter((th) => !gone.has(th) && !rooms.has(th));
+  const kept = new Set(keep);
+  return {
+    unbind: o.probed.filter((p) => p.status === "gone").map((p) => p.sessionId),
+    reattachable: o.probed.filter((p) => p.status === "exists").map((p) => p.threadId),
+    sweep: [...new Set(o.tracked)].filter((th) => !kept.has(th) && !gone.has(th) && !rooms.has(th)),
+    keep,
+  };
+}
+
 /**
  * The display name of whoever sent a Telegram message, for the web cockpit's
  * author label. Telegram guarantees none of these fields, so the caller must be
@@ -3066,12 +3111,6 @@ export function startTelegram(
     (await topicStatus(chatId, threadId)) === "exists";
 
   /**
-   * Self-heal after a crash: (1) a registry channel bound to a topic that no
-   * longer exists → drop the channel (its topic is gone; the web tab was a
-   * zombie); (2) a tracked topic with no channel → an orphan we delete. Keeps
-   * web ⟷ Telegram from drifting across reboots. Runs once at connect.
-   */
-  /**
    * Adopt the owner of an installation ALREADY in service. Without this, the
    * update would open a window: the first to write after the deployment claims
    * DMs — a stranger could lock the legitimate user out. A private chat has a
@@ -3100,25 +3139,31 @@ export function startTelegram(
     // a stranger, who was then handed the DMs on top.
   };
 
+  /**
+   * Self-heal after a restart: (1) a channel bound to a topic that no longer
+   * exists loses its BINDING — never its row, see `topicReconcilePlan`; (2) a
+   * tracked topic no channel claims is an orphan we delete. Keeps web ⟷
+   * Telegram from drifting across reboots. Runs once at connect.
+   */
   const reconcileOnBoot = async () => {
     await adoptOwnerFromBindings();
     reattachDmBridges();
     const group = loadTgGroup();
     if (group === null) return;
-    const bound = new Set<number>();
+    const probed: { sessionId: string; threadId: number; status: TopicProbe }[] = [];
     for (const c of loadChannels()) {
       const th = c.telegram?.threadId;
       if (!th) continue;
-      const st = await topicStatus(c.telegram!.chatId, th);
-      if (st === "exists") bound.add(th);
-      else if (st === "gone") {
-        console.log(`telegram: reconcile — channel ${c.sessionId.slice(0, 8)}'s topic ${th} is gone, dropping it`);
-        removeChannel(c.sessionId);
-        // A topic deleted while we were down is the same close, seen late.
-        if (!isHomeChannel(c)) opts.onChannelClosed?.(c.sessionId);
-      }
-      // "unknown" (transient check failure) → leave the channel untouched.
+      probed.push({ sessionId: c.sessionId, threadId: th, status: await topicStatus(c.telegram!.chatId, th) });
     }
+    for (const p of probed) {
+      if (p.status !== "gone") continue; // "unknown" (a failed check) → untouched
+      // `mirror: false` with the binding, or the 5s loop would recreate a topic
+      // someone just removed (same rule as a room's, below).
+      console.log(`telegram: reconcile — channel ${p.sessionId.slice(0, 8)}'s topic ${p.threadId} is gone, unbinding it (the agent stays)`);
+      upsertChannel({ sessionId: p.sessionId, telegram: null, mirror: false });
+    }
+    const bound = new Set(probed.filter((p) => p.status === "exists").map((p) => p.threadId));
     // A room's topic is not an orphan: keep it out of the sweep below, and
     // forget the binding of one deleted on Telegram's side (with `mirror`
     // dropped too, or the loop would recreate a topic someone just removed).
@@ -3147,16 +3192,24 @@ export function startTelegram(
       if (c.telegram?.threadId && bound.has(c.telegram.threadId)) reattachLiveBridge(c);
     }
 
-    let kept = [...bound];
-    for (const th of loadTgTopics()) {
-      if (bound.has(th) || roomThreads.has(th)) continue;
+    // The registry is read AGAIN here: the probes above take a while, and what
+    // decides "orphan" is whether a channel claims the topic NOW.
+    const claimedNow = () =>
+      loadChannels().map((c) => c.telegram?.threadId).filter((th): th is number => typeof th === "number");
+    const plan = topicReconcilePlan({ probed, claimed: claimedNow(), tracked: loadTgTopics(), roomThreads: [...roomThreads] });
+    for (const th of plan.sweep) {
       if (await topicExists(group, th)) {
+        // Deleting is irreversible, and the existence probe just awaited: ask
+        // once more whether a channel took the topic in the meantime.
+        if (claimedNow().includes(th)) continue;
         console.log(`telegram: reconcile — deleting orphan topic ${th} (no channel)`);
         await tg("deleteForumTopic", { chat_id: group, message_thread_id: th });
       }
       // either way it's no longer a live tracked topic
     }
-    saveTgTopics(kept);
+    // Topics tracked DURING the sweep (an agent born meanwhile) are kept too.
+    const done = new Set([...plan.sweep, ...probed.filter((p) => p.status === "gone").map((p) => p.threadId)]);
+    saveTgTopics([...new Set([...plan.keep, ...loadTgTopics().filter((th) => !done.has(th))])]);
   };
 
   const connect = async (attempt = 0): Promise<void> => {
