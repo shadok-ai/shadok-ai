@@ -47,7 +47,8 @@ export function googleAreaChips(offered, preset) {
  */
 export function accountDeadline(account) {
   const a = account || {};
-  if (a.provider !== "google") return Number(a.expiresAt) || 0;
+  // GitHub too: its `expiresAt` is the 8-hour access token's, renewed by the server.
+  if (a.provider !== "google" && a.provider !== "github") return Number(a.expiresAt) || 0;
   return typeof a.refreshExpiresAt === "number" ? a.refreshExpiresAt : null;
 }
 
@@ -427,9 +428,31 @@ export function toggleProfile(share, key, on, groups = []) {
 }
 
 /** One row of the Connected accounts list (`publicView`, src/connected-accounts.ts). */
+/**
+ * What a GitHub account's agents can reach, as one line per installation
+ * ("all repositories of acme", "3 repositories of octo"), from
+ * `github.installations` (GET /user/installations, re-read by the server).
+ */
+export function githubReposLines(account) {
+  const list = account && account.github && Array.isArray(account.github.installations) ? account.github.installations : [];
+  return list.map((i) => {
+    const owner = String((i && i.account) || "?");
+    if (i && i.selection === "all") return "all repositories of " + owner;
+    const n = i && typeof i.repos === "number" ? i.repos : null;
+    return (n === null ? "some" : String(n)) + (n === 1 ? " repository of " : " repositories of ") + owner;
+  });
+}
+
+/** Only a github.com app-installation page is ever opened from the panel. */
+export function safeInstallUrl(u) {
+  return typeof u === "string" && /^https:\/\/github\.com\/apps\/[a-z0-9-]{1,64}\/installations\/new$/.test(u) ? u : null;
+}
+
 export function accountRowModel(account, now = Date.now(), groups = []) {
   const a = account || {};
   const google = a.provider === "google";
+  const github = a.provider === "github";
+  if (github) return githubRowModel(a, now, groups);
   const deadline = accountDeadline(a);
   // A Google account with no known deadline (a published app) simply lasts.
   const left = deadline === null ? Infinity : deadline - now;
@@ -468,6 +491,41 @@ export function accountRowModel(account, now = Date.now(), groups = []) {
   };
 }
 
+/** The GitHub row: no policy, the repositories reached, and the link to pick them. */
+function githubRowModel(a, now, groups) {
+  const deadline = accountDeadline(a);
+  const left = deadline === null ? Infinity : deadline - now;
+  const expired = a.status === "expired" || left <= 0;
+  const tone = expired ? "expired" : left < EXPIRY_SOON_MS ? "soon" : "ok";
+  let expiryText;
+  if (expired) expiryText = "expired — reconnect to keep it working";
+  else if (left === Infinity) expiryText = "connected";
+  else if (left >= 2 * DAY_MS) expiryText = "reconnect in " + Math.round(left / DAY_MS) + " days";
+  else expiryText = "reconnect in " + Math.max(1, Math.round(left / 3_600_000)) + " h";
+  const repos = githubReposLines(a);
+  // Authorizing grants no repository: until the person picks some, agents can
+  // do nothing with the account — say it, with the button that fixes it.
+  const needsRepos = a.reachesRepos === false || repos.length === 0;
+  return {
+    provider: "github",
+    label: a.label || "(unnamed account)",
+    via: "GitHub" + (a.connectedVia ? " · connected by " + a.connectedVia : ""),
+    expiryText,
+    tone,
+    shareText: "Shared with " + scopeText(a.share, groups),
+    policyText: "",
+    areas: [],
+    testNote: "",
+    repos,
+    needsRepos,
+    reposText: needsRepos ? "No repository chosen yet — agents cannot reach any." : "Agents reach: " + repos.join(", "),
+    installUrl: safeInstallUrl(a.installUrl),
+    installLabel: needsRepos ? "Choose repositories" : "Manage repositories",
+    shareHint: "Whose agents may clone, push and use gh with this account — any combination",
+    disconnectText: "Agents will no longer be able to reach these repositories. To revoke it on GitHub too: GitHub → Settings → Applications → Authorized GitHub Apps.",
+  };
+}
+
 function isoDay(ms) {
   return new Date(Number(ms) || 0).toISOString().slice(0, 10);
 }
@@ -490,7 +548,7 @@ export function accountBanners(accounts) {
     if (!a || typeof a !== "object") continue;
     const label = a.label || "(unnamed account)";
     const key = accountBannerKey(a);
-    const name = a.provider === "google" ? "Google" : "LinkedIn";
+    const name = a.provider === "google" ? "Google" : a.provider === "github" ? "GitHub" : "LinkedIn";
     if (a.expired === true) {
       out.push({ key, text: `Your ${name} connection '${label}' has expired — reconnect it in Secrets → Connected accounts.` });
     } else if (a.expiringSoon === true) {

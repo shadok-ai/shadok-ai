@@ -209,6 +209,7 @@ export function accountExpired(a: ConnectedAccount, now: number): boolean {
  * `updatedAt` as it sets `status: "expired"` — not a date still in the future.
  */
 export function expirySentence(a: ConnectedAccount, now: number): string {
+  if (a.provider === "github") return `GitHub account '${a.label}' needs a reconnect — ${a.owner} can do it in Secrets → Connected accounts.`;
   if (a.provider === "google") {
     // A deadline means a Testing app: say why it lapses every week.
     const why = accountDeadline(a) !== null ? " (test app authorisations last 7 days)" : "";

@@ -31,7 +31,7 @@ export interface ExpiryActions {
 
 /**
  * Warn once a day from 7 days (Google: 2) before the account's deadline;
- * expire at the deadline (`accountDeadline` — for Google the refresh token's,
+ * expire at the deadline (`accountDeadline` — for Google and GitHub the refresh token's,
  * and an account with no known deadline is never warned nor expired by date).
  * An account already marked expired is neither warned nor expired again. The
  * draft TTL is `expireDrafts`' — one definition.
@@ -81,6 +81,12 @@ function isoDay(ms: number): string {
 }
 
 export function expiryWarningText(a: Pick<ConnectedAccount, "label" | "expiresAt"> & Partial<Pick<ConnectedAccount, "provider" | "refreshExpiresAt">>): string {
+  if (a.provider === "github") {
+    // The watch renews a GitHub authorisation itself (`needsKeepalive`): a
+    // warning means that renewal failed.
+    const d = accountDeadline({ provider: "github", expiresAt: a.expiresAt, refreshExpiresAt: a.refreshExpiresAt }) ?? a.expiresAt;
+    return `Your GitHub connection '${a.label}' must be reconnected by ${isoDay(d)} (the cockpit could not renew it). Reconnect it in Secrets → Connected accounts so agents keep reaching your repositories.`;
+  }
   if (a.provider === "google") {
     const d = accountDeadline({ provider: "google", expiresAt: a.expiresAt, refreshExpiresAt: a.refreshExpiresAt }) ?? a.expiresAt;
     return `Your Google connection '${a.label}' must be reconnected by ${isoDay(d)} (test app authorisations last 7 days). Reconnect it in Secrets → Connected accounts so agents keep working in it.`;

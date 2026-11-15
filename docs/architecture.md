@@ -1968,7 +1968,7 @@ be every agent on the machine. The Skillsmith is a managed profile (prompt
 re-seeded from `context/skillsmith-prompt.md` at boot, `secrets: []` on
 creation) because it runs draft code nobody has reviewed yet.
 
-## Connected accounts (`src/connect-crypto.ts`, `src/connect-routes.ts`, `src/connected-accounts.ts`, `src/linkedin.ts`, `src/google.ts`, `src/google-actions.ts`, `src/social-drafts.ts`, `src/account-expiry.ts`, `broker/`)
+## Connected accounts (`src/connect-crypto.ts`, `src/connect-routes.ts`, `src/connected-accounts.ts`, `src/linkedin.ts`, `src/google.ts`, `src/google-actions.ts`, `src/github.ts`, `src/social-drafts.ts`, `src/account-expiry.ts`, `broker/`)
 
 An agent can publish on a LinkedIn account a person connected, without ever
 holding the credential. Design: `docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md`.
@@ -2043,6 +2043,55 @@ clicks Connect again.
 (`healthProviders`): a provider's Connect button appears only when the broker
 names it — i.e. once its secrets exist there — and `googleTesting` when the
 broker says the Google app is in Testing.
+
+### GitHub on the instance (`src/github.ts`, `context/github-skill/`)
+
+Design: `docs/superpowers/specs/2026-11-15-connected-accounts-github-design.md`.
+What differs from Google, and why:
+
+- **No approval layer.** No draft, no card, no policy (`policyPatch` refuses
+  one): the repositories' own protection on GitHub is the guardrail, an
+  operator decision. The share scope still decides which agents may use it.
+- **A GitHub App, so authorizing reaches nothing.** Installing the app on
+  repositories does. The account stores `github.installations`
+  (`GET /user/installations` + a repository count each); `GET
+  /connected-accounts` re-reads them when older than a minute
+  (`refreshGithubInstalls`, bounded to 5 s), because a person picks
+  repositories on github.com in another tab and comes back. `/connect/status`
+  offers GitHub only together with the broker's `githubInstallUrl` — without
+  it the account would be a dead end.
+- **The refresh token rotates** (`GithubTokens`). One refresh per account at
+  a time — a second concurrent one would send a token GitHub already
+  replaced, get `invalid_grant` and mark a healthy account expired — and the
+  new refresh token is written (sync, atomic, `patchAccount`) BEFORE the
+  access token is handed out. A refresh sent and never answered may have
+  rotated on GitHub's side: then the stored token is dead and the next use
+  says reconnect — unavoidable, logged. The hourly watch renews any account
+  within 14 days of its refresh deadline (`needsKeepalive`), so the 7-day
+  warning only fires once that keeps failing.
+- **The agent holds the token — at use time only.** git and gh must
+  authenticate themselves, so `POST /github/token` is the one route that hands
+  an agent a provider token (the 8-hour access token, never the refresh
+  token). Invariant 33 forbids putting it in the env at spawn; instead
+  `githubGitEnv` adds `credential.https://github.com.helper` through git's
+  `GIT_CONFIG_COUNT`/`KEY_n`/`VALUE_n` (appended after any already there),
+  naming `node <SKILLS_BASE>/shadok-github/scripts/github.mjs credential`. It
+  is set for EVERY agent (an account connected later works without a reload;
+  the helper is silent when none is shared), with an absolute path even
+  mono-tenant (git's shell would not expand a quoted `~`). A dropped
+  multi-tenant agent reaches the script in the machine-wide tier and needs only
+  `SHADOK_PORT` + `SHADOK_SESSION_KEY`. `credential.useHttpPath` is
+  deliberately NOT set: it would change how every other helper keys
+  github.com.
+- **Which account** (`pickGithubAccount`): the one named (`--account`,
+  `SHADOK_GITHUB_ACCOUNT`, `git config shadok.githubAccount`), else the only
+  usable one, else the one whose installations cover the repository's owner,
+  else a 409 that lists them. `github.mjs clone` picks by owner, clones with
+  `-c shadok.githubAccount=<id>`, then writes that and the commit identity
+  (login + `<id>+<login>@users.noreply.github.com`) into the repository.
+- **Disconnect forgets, does not revoke**: revoking a GitHub App user token
+  needs the client secret, which only the broker holds; the confirmation says
+  where to revoke it on GitHub.
 
 ### Google on the instance (`src/google.ts`, `src/google-actions.ts`)
 
@@ -2736,6 +2785,8 @@ The per-file index with every war story and invariant citation. `CLAUDE.md` carr
 | `src/google-actions.ts` | What an agent may do in a Google account: the class table (`GOOGLE_ACTIONS`: read / own-write / file-write / file-manage / mail / calendar), `actionSetting` (which of the three settings governs it; `foreignFile` decides a file-write), `actionVerdict` (area granted?), `runGoogleAction` (do it, or prepare a card), `approveGoogleDraft` (unchanged → sent, edited in Gmail → card refreshed, deleted → gone), `discardGoogleDraft`. Deps injected, tested against a fake Google. |
 | `src/google-edits.ts` | Editing the CONTENT of a Slides deck, a Doc or a Sheet, pure: `editOpsVerdict` (a closed list of operations, checked field by field, 50 per batch), `editOpLines` (one line per operation — what the approval card shows), `buildEditRequests` (the `batchUpdate` requests, built against the file as read), `imageUrlVerdict` (https, public hosts only). Card lines and requests come from the same `ops`. |
 | `context/google-skill/` | The `shadok-google` skill (`google.mjs`), twin of `shadok-social`: session key only, content on stdin. |
+| `src/github.ts` | GitHub client for connected GitHub accounts: `GithubTokens` (refresh through the broker with the ROTATING refresh token — one in flight per account, the new refresh token persisted before the access token is used, `invalid_grant` → expired; `needsKeepalive` for the hourly renewal), `fetchUser` / `fetchInstallations`, `noreplyEmail`, `githubGitEnv` (the credential helper's name in the spawn env, never a token), `pickGithubAccount`. Pure over an injected fetch, tested. |
+| `context/github-skill/` | The `shadok-github` skill (`github.mjs`): git's credential helper (`credential get` → `POST /github/token`), `gh` with `GH_TOKEN` for one call, `clone` / `identity` (commit as the login + noreply email), `accounts`, `token`. |
 | `src/social-drafts.ts` | Drafts of ACTIONS — a LinkedIn post, an email, a calendar change (`{provider, action, payload}`; `usableAccountVerdict` resolves the account per provider; `gone` = the Gmail draft was deleted) — (`pending`/`publishing`/`published`/`discarded`/`expired`/`failed`), `postRequestVerdict` / `publishVerdict` / `discardVerdict`, `draftView` (the only draft shape a client gets), the image snapshot (`snapshotPathFor` / `snapshotBytes` / `writeSnapshot`), and the publication log (`appendLog`, `accountLog`). |
 | `src/account-expiry.ts` | The hourly no-LLM check: `expiryActions` (7-day warning — 2 days for a Google account, measured on `accountDeadline` —, expired accounts, expired drafts), `stalePublishing` (orphaned publishes), `ownerExpiryFlags` (the banner's per-owner flags), the warned sidecar. |
 | `broker/` | The stateless Cloudflare Worker holding the LinkedIn client secret. See `broker/README.md`. |

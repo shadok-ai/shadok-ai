@@ -737,6 +737,23 @@ Enter to skip; you can add it later from the web UI).
   agent-auth mode). Operator setup for Google (Cloud
   project, consent screen, the two broker secrets) is in
   [`broker/README.md`](broker/README.md).
+- **Connected accounts (GitHub)** — **Connect GitHub** (shown when the broker
+  offers it) authorizes the shadok GitHub App for your account; then agents can
+  `git clone` / `git push` and run `gh` on the repositories you picked. Picking
+  is a separate step on github.com — authorizing alone reaches no repository —
+  so the row says *No repository chosen yet* with a **Choose repositories**
+  link until you have, then lists what agents reach (*3 repositories of acme*)
+  with **Manage repositories**; coming back to the tab refreshes it, no
+  reconnect needed. **There is no approval card**: your repositories' own
+  protection on GitHub (branch protection, required reviews) is the guardrail.
+  *Shared with* / *Profiles* decide which agents may use it, as for every
+  account. No token is ever put in an agent's environment: every agent's git
+  is configured with a credential helper (the `shadok-github` skill) that asks
+  the cockpit for the current token at each use, and `github.mjs gh …` hands
+  `gh` the token for one call. GitHub's 8-hour tokens are renewed by the
+  cockpit, and the ~6-month authorization is renewed ahead of its deadline by
+  the hourly watch; you are warned only if that fails. Commits made through
+  `github.mjs clone` are authored as your login with GitHub's noreply address.
 - **Self-update** — polls npm and can update and reload itself in place.
 
 ### Telegram (optional)
@@ -1590,22 +1607,25 @@ or door that caused it; names only, never a value; filters `secret`, `action`,
 🕘 on each secret), `/telegram`, `/defaults`, `/first-agent` (GET —
 `{pending, reason}`: whether this instance's lead agent is being started
 right now), `/version`, `/autoupdate`,
-`/connect/status` (GET — `{available, providers: {linkedin, google},
-googleTesting}`: what the broker offers; `available` is LinkedIn's),
+`/connect/status` (GET — `{available, providers: {linkedin, google, github},
+googleTesting, githubInstallUrl}`: what the broker offers; `available` is LinkedIn's),
 `/connect/<provider>/start` · `/connect/<provider>/complete` (POST, browser
-person only — the OAuth hand-back, `<provider>` = `linkedin` or `google`;
+person only — the OAuth hand-back, `<provider>` = `linkedin`, `google` or `github`;
 Google's `start` also takes `areas`, a list among `calendar`, `drive`, `gmail`,
 `gmail_read`, `drive_all` — only those `/connect/status` → `googleAreas` says the broker accepts;
 `/connect/<provider>/done` (GET) is the page the broker returns the browser
 to), `/connected-accounts` (GET — the accounts you may use, never a token, plus
 `softLayer`; a Google account carries `areas`, `policies` and
-`refreshExpiresAt`; your own accounts also carry `expiringSoon` / `expired`,
+`refreshExpiresAt`; a GitHub account `github` (login, noreply email,
+installations), `reachesRepos` and `installUrl`; your own accounts also carry `expiringSoon` / `expired`,
 for the banner; `GET /:id/log` — that account's last 50 log entries, newest
 first; `PUT /:id` changes `share`, LinkedIn's `policy` or Google's
 `policies.mail` / `policies.calendar` / `policies.drive`; `DELETE /:id` disconnects, and revokes
 a Google grant at Google — owner or admin, browser only),
 `/social/accounts` (GET), `/social/posts` (POST) and `/google/actions` (POST
-`{account, action, args}`) — the **agent** side, authenticated by
+`{account, action, args}`) and `/github/token` (POST `{account?, owner?}` →
+the CURRENT access token of a GitHub account the agent may use, for its git
+credential helper and `gh`) — the **agent** side, authenticated by
 `x-shadok-session-key` —, and `/social/drafts/:id/publish` ·
 `/social/drafts/:id/discard` (POST, browser person only — a LinkedIn post, an
 email or a calendar change alike),

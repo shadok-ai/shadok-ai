@@ -44,8 +44,8 @@ async function call(method, route, payload) {
 const day = (ms) => new Date(ms).toISOString().slice(0, 10);
 
 async function accounts() {
-  // The route lists every connected account; Google's belong to shadok-google.
-  const list = ((await call("GET", "/social/accounts")).accounts ?? []).filter((a) => a.provider !== "google");
+  // The route lists every connected account; Google's and GitHub's belong to their own skills.
+  const list = ((await call("GET", "/social/accounts")).accounts ?? []).filter((a) => a.provider === "linkedin" || a.provider === undefined);
   if (!list.length) {
     console.log("No LinkedIn account is available to this agent. Ask the person to connect one in Secrets → Connected accounts, or to share theirs with this agent's group.");
     return;
