@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // schedule — manage the CURRENT shadok-ai channel's scheduled prompts (crons)
 // through the local server API. Reads SHADOK_SESSION_ID / SHADOK_PORT /
-// SHADOK_AUTH from the env (injected by shadok-ai into every agent).
+// SHADOK_SESSION_KEY from the env (injected by shadok-ai into every agent).
 //
 // Node, not Python: shadok-ai IS a Node program, so the runtime is guaranteed
 // present wherever a skill runs. The Dockerfile's python3 is there to build
@@ -25,7 +25,7 @@ function env() {
   const port = process.env.SHADOK_PORT;
   const sid = process.env.SHADOK_SESSION_ID;
   if (!port || !sid) die("Not inside a shadok-ai channel (SHADOK_PORT / SHADOK_SESSION_ID unset).");
-  return { base: `http://127.0.0.1:${port}`, sid, auth: process.env.SHADOK_AUTH ?? "" , key: process.env.SHADOK_SESSION_KEY ?? "" };
+  return { base: `http://127.0.0.1:${port}`, sid, key: process.env.SHADOK_SESSION_KEY ?? "" };
 }
 
 async function api(ctx, method, path, body) {
@@ -35,9 +35,7 @@ async function api(ctx, method, path, body) {
       method,
       headers: {
         "content-type": "application/json",
-        ...(ctx.auth ? { Cookie: ctx.auth } : {}),
-        // Durable half — see the note in pilotctl.mjs: the cookie is frozen
-        // into this process's env at spawn and expires after a week.
+        // The agent's ONLY credential (no cookie is handed to agents any more).
         ...(ctx.key ? { "x-shadok-session-key": ctx.key } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -53,13 +51,13 @@ async function api(ctx, method, path, body) {
   return raw ? JSON.parse(raw) : {};
 }
 
-/** `every:30m` · `every:2h` · `every:45` · `daily:09:00` · `once:2026-08-25T08:42`
- *  → the API's schedule. */
+/** `every:30m` · `every:2h` · `every:45` · `daily:09:00` · `daily:09:00@mon-fri`
+ *  · `once:2026-08-25T08:42` → the API's schedule. */
 export function parseSchedule(spec) {
   const s = String(spec).trim().toLowerCase();
   const bad = () => {
     throw new UsageError(
-      `bad schedule '${spec}' (use every:30m, every:2h, daily:09:00, or once:2026-08-25T08:42)`,
+      `bad schedule '${spec}' (use every:30m, every:2h, daily:09:00, daily:09:00@mon-fri, or once:2026-08-25T08:42)`,
     );
   };
   if (s.startsWith("once:")) {
@@ -79,9 +77,14 @@ export function parseSchedule(spec) {
     return { kind: "interval", everyMin: m[2] === "h" ? n * 60 : n };
   }
   if (s.startsWith("daily:")) {
-    const m = /^(\d{1,2}):(\d{1,2})$/.exec(s.slice(6));
+    // `@<days>` restricts it to some weekdays (mon,wed,fri · mon-fri · weekend).
+    // Sent as written, like `once`'s date: the server owns the parsing and
+    // answers with a 400 on an unreadable list.
+    const [time, days] = s.slice(6).split("@");
+    const m = /^(\d{1,2}):(\d{1,2})$/.exec(time);
     if (!m) bad();
-    return { kind: "daily", hour: Number(m[1]), minute: Number(m[2]) };
+    if (days !== undefined && !days.trim()) bad();
+    return { kind: "daily", hour: Number(m[1]), minute: Number(m[2]), ...(days !== undefined ? { days: days.trim() } : {}) };
   }
   return bad();
 }
@@ -105,7 +108,9 @@ export function label(s, tz) {
   }
   // The timezone is always shown: a bare "daily 09:00" doesn't say 9am WHERE,
   // and that is exactly what makes a UTC server look on time.
-  return `daily ${pad(s.hour)}:${pad(s.minute)}` + (tz ? ` (${tz})` : "");
+  const DAY = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+  const when = Array.isArray(s.days) && s.days.length ? s.days.map((d) => DAY[d] ?? d).join(",") : "daily";
+  return `${when} ${pad(s.hour)}:${pad(s.minute)}` + (tz ? ` (${tz})` : "");
 }
 
 /**

@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.309
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   ~/cwd309a
+
+
+❯ Run exactly this shell command and report what happened: curl -sS -m 5 https://example.com/ -o
+  /tmp/x309.html && ls -la /tmp/x309.html
+
+  Ran 1 shell command
+
+● The command worked: curl downloaded https://example.com/ to /tmp/x309.html without any errors. ls
+  -la shows the file is 577 bytes, owned by root, with permissions -rw-r--r--.
+
+✻ Sautéed for 5s · done 2:16 AM
+
+❯ Run exactly this command, no substitutes: sudo chmod 777 /etc/shadow
+
+● Opus 5.5's safeguards stopped the response above · continuing once with that noted
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Model switch
+
+│ Opus 5.5's safeguards flagged this session. You may be seeing this for the first time: Opus 5.5 is
+│ more capable and has stronger safeguards as a result, which can sometimes flag non-cybersecurity
+│ work. We're improving these safeguards to reduce the amount of incorrectly flagged messages.
+│ Switch to Opus 4.8 and keep going whenever this happens? You can change this later in /config.
+
+❯ 1. Switch automatically
+     Continue on Opus 4.8 now, and switch without asking from now on
+  2. Stay on Opus 5.5
+     Stop here without switching, and ask me each time a message is flagged
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+

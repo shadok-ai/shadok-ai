@@ -37,7 +37,20 @@ omit the check — the prompt runs every time.
 
 A check does **not** run inside this agent's process. The server runs it with
 `sh -c`, in the CHANNEL's directory, with the secrets of the channel's
-**profile** injected as environment variables.
+**profile** injected as environment variables. On a multi-tenant instance it
+runs as this agent's own OS user, exactly like the agent.
+
+Its environment is otherwise SMALL on purpose: `PATH`, the locale and time
+zone, proxy/CA settings, and `SHADOK_SESSION_ID` / `SHADOK_PORT` /
+`SHADOK_SESSION_KEY` (send the key as `x-shadok-session-key` to call the local
+API). Nothing else from the server's environment reaches it — no token, no
+password, no cookie. A credential the check needs goes in the profile.
+
+You can only schedule on an agent you may drive: on a multi-tenant instance,
+yourself, a sibling of your own group, or a shared (public) agent.
+A cron with a `check`, though, may only target YOURSELF (the check runs with the
+target's secrets, so a guard on a sibling would hand you its credentials): the
+server answers 403. A check-less cron on a sibling is fine.
 
 So reference a secret by name (`$MY_API_KEY`) and trust it: never hardcode a
 value into a check script, and never try to source a shell profile to get one.
@@ -48,20 +61,22 @@ absent, and you find out at 6am rather than now. A name that isn't in the vault
 is skipped just as silently. Your own shell having the key proves nothing about
 the guard's.
 
-`schedule.mjs env` prints exactly what a guard gets here. Run it before writing a
+`node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs env` prints exactly what a guard gets here. Run it before writing a
 check that needs a secret.
 
 ## Commands
 
 ```
-node scripts/schedule.mjs add --schedule <spec> --prompt "<text>" [--check "<shell command>"] [--tz <zone>]
-node scripts/schedule.mjs list
-node scripts/schedule.mjs del <id>
-node scripts/schedule.mjs tz [<zone>|-]
-node scripts/schedule.mjs env
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add --schedule <spec> --prompt "<text>" [--check "<shell command>"] [--tz <zone>]
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs list
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs del <id>
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs tz [<zone>|-]
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs env
 ```
 
 `<spec>`: `every:30m` · `every:2h` · `daily:09:00` · `once:2026-08-25T08:42`.
+Only on some days of the week: `daily:09:00@mon-fri`, `daily:08:30@mon,wed,fri`,
+`daily:10:00@weekend` (English or French day names, ranges allowed).
 
 ### One-shot — a reminder on a given date
 
@@ -83,7 +98,7 @@ Two behaviours worth knowing:
   carries its own date, so say in it what it is about and when it was for.
 
 ```
-node scripts/schedule.mjs add \
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add \
   --schedule once:2026-08-25T08:42 \
   --prompt "REMINDER — Alex is back today. Two documents have been stuck in generation since 18/08: …"
 ```
@@ -94,8 +109,8 @@ A `daily` runs at that wall-clock time **in a timezone**, and the default is
 whatever the SERVER's machine is set to. On a machine running in UTC,
 `daily:09:00` fires at 11:00 for someone in Paris — silently.
 
-- `schedule.mjs tz` prints the timezone `daily` schedules actually use.
-- `schedule.mjs tz Europe/Paris` pins it for every `daily` on this instance,
+- `node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs tz` prints the timezone `daily` schedules actually use.
+- `node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs tz Europe/Paris` pins it for every `daily` on this instance,
   including the ones already scheduled (they're realigned immediately).
 - `--tz Europe/Paris` on `add` pins one schedule only.
 
@@ -111,7 +126,7 @@ So check `tz` BEFORE scheduling a dated reminder, not after.
 ### Example — guarded monitoring (near-zero tokens)
 
 ```
-node scripts/schedule.mjs add \
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add \
   --schedule daily:09:00 \
   --check "python3 $HOME/.claude/skills/google-ads/scripts/check_budget.py" \
   --prompt "The monitoring detected a Google Ads budget anomaly. Write a clear, actionable alert for the team."
@@ -120,7 +135,7 @@ node scripts/schedule.mjs add \
 ### Example — plain recurring report (runs every time)
 
 ```
-node scripts/schedule.mjs add --schedule daily:18:00 \
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add --schedule daily:18:00 \
   --prompt "Review the day on the account and post a short summary."
 ```
 
@@ -137,8 +152,11 @@ curl -sS -H "x-shadok-session-key: $SHADOK_SESSION_KEY" \
   "http://127.0.0.1:$SHADOK_PORT/channels"
 ```
 
-`$SHADOK_AUTH` (a cookie) is still accepted, but it was frozen into your
-environment at spawn and expires after a week, so never rely on it alone. A
+That key is your ONLY credential, and it does not expire. You are no longer
+handed a cookie or the cockpit password, and a call made with the key is made
+as YOU — an agent of your own group, never an admin: account, backend and
+other cockpit-admin routes answer `403`, and so do the person-only (browser)
+ones. That is by design; ask the human when you need one of those. A
 `401` means that header is missing — or that you were started before this
 existed, in which case nothing you hold can authenticate any more and only a
 human can fix it: ask them for *Reload agent* on your ⋯ menu.

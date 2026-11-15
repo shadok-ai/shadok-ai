@@ -24,3 +24,27 @@ export function echoAuthor(msg) {
   // from another of your tabs; a single cockpit has one human.
   return place || "you";
 }
+
+/**
+ * Is this prompt the viewer's OWN? Decides the side of the bubble: yours on the
+ * right, anyone else's — a teammate on the web, a Telegram sender, a cron, the
+ * auto-retry — on the left, still tinted as a human message (only the agent is
+ * white).
+ *
+ * Only a web prompt can be yours: another platform is another person, or nobody.
+ * Without a name it is a prompt from this browser or a cockpit with no accounts
+ * — yours. While `me` is not known yet (`/me` still in flight), a named web
+ * prompt is taken as yours too: guessing "someone else" would flash your own
+ * history to the left on every reload.
+ *
+ * @param {{from?: string, origin?: string, auto?: boolean}} msg
+ * @param {string | null | undefined} me the signed-in account's name, if known
+ */
+export function isOwnPrompt(msg, me) {
+  if (msg?.auto) return false;
+  const origin = (msg?.origin ?? "").trim();
+  if (origin && origin !== "web") return false;
+  const from = (msg?.from ?? "").trim();
+  if (!from || !me) return true;
+  return from === me;
+}

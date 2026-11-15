@@ -7,7 +7,7 @@
 // leaks. There is deliberately no way to read a value back out — `list` prints
 // names only, and there is no `get`.
 //
-// Reads SHADOK_PORT / SHADOK_AUTH from the env (injected into every agent).
+// Reads SHADOK_PORT / SHADOK_SESSION_KEY from the env (injected into every agent).
 //
 // Node, not Python: shadok-ai IS a Node program, so the runtime is guaranteed
 // present wherever a skill runs — the image's python3 exists to build native
@@ -29,7 +29,7 @@ class UsageError extends Error {}
 function env() {
   const port = process.env.SHADOK_PORT;
   if (!port) die("Not inside a shadok-ai agent (SHADOK_PORT unset).");
-  return { base: `http://127.0.0.1:${port}`, auth: process.env.SHADOK_AUTH ?? "" , key: process.env.SHADOK_SESSION_KEY ?? "" };
+  return { base: `http://127.0.0.1:${port}`, key: process.env.SHADOK_SESSION_KEY ?? "" };
 }
 
 async function api(ctx, method, path, body) {
@@ -39,9 +39,7 @@ async function api(ctx, method, path, body) {
       method,
       headers: {
         "content-type": "application/json",
-        ...(ctx.auth ? { Cookie: ctx.auth } : {}),
-        // Durable half — see the note in pilotctl.mjs: the cookie is frozen
-        // into this process's env at spawn and expires after a week.
+        // The agent's ONLY credential (no cookie is handed to agents any more).
         ...(ctx.key ? { "x-shadok-session-key": ctx.key } : {}),
       },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -77,8 +75,10 @@ export function parseArgs(argv) {
   }
   let name;
   let stdin = false;
+  let attach = false;
   for (const a of rest) {
     if (a === "--stdin") stdin = true;
+    else if (a === "--attach") attach = true;
     else if (a.startsWith("-")) throw new UsageError(`secret set: unrecognized argument ${a}`);
     else if (name === undefined) name = a;
     else throw new UsageError(`secret set: unrecognized arguments: ${a}`);
@@ -89,7 +89,33 @@ export function parseArgs(argv) {
       "secret set: the following arguments are required: --stdin (the value is read from stdin, never from argv)",
     );
   }
-  return { cmd, name };
+  return { cmd, name, attach };
+}
+
+/** Like `api`, but hands the refusal back instead of exiting on it. */
+async function apiSoft(ctx, method, path, body) {
+  let res;
+  try {
+    res = await fetch(ctx.base + path, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        ...(ctx.key ? { "x-shadok-session-key": ctx.key } : {}),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (e) {
+    return { ok: false, error: `cannot reach the cockpit: ${e.message}` };
+  }
+  const raw = await res.text();
+  let parsed = {};
+  try {
+    parsed = raw ? JSON.parse(raw) : {};
+  } catch {
+    /* a non-JSON body is still a refusal we can report */
+  }
+  return res.ok ? { ok: true, body: parsed } : { ok: false, error: parsed.error ?? raw.slice(0, 200) };
 }
 
 function readStdin() {
@@ -125,7 +151,22 @@ export async function main(argv) {
   // Never echo the value back: this output lands in the transcript, and may be
   // mirrored to Telegram.
   console.log(`stored ${parsed.name} in the vault`);
-  console.log("It reaches an agent only once attached to a profile (web Profiles panel).");
+  if (!parsed.attach) {
+    console.log("It reaches an agent only once attached to a profile (web Profiles panel,");
+    console.log("or re-run with --attach to attach it to your own profile).");
+    return;
+  }
+  // The vault write already succeeded, so a refusal here must not read as
+  // "nothing was stored" — say both halves, and still exit non-zero so the
+  // agent notices it did not get what it asked for.
+  const att = await apiSoft(ctx, "PUT", "/profiles/secret", { name: parsed.name });
+  if (!att.ok) {
+    process.stderr.write(`stored, but NOT attached: ${att.error}\n`);
+    process.exit(1);
+  }
+  console.log(`attached to your profile (${att.body.profile}).`);
+  console.log("It is injected as an environment variable at your next reload, not in this");
+  console.log("process: node ~/.claude/skills/shadok-reload/reload.mjs");
 }
 
 // Importable by the tests, executable by the agents: only run when invoked

@@ -160,3 +160,29 @@ test("freetext passes n and the text", async () => {
     await mock.close();
   }
 });
+
+test("callerOrigin: inside a piloted session we are an agent, in a shell the CLI", async () => {
+  const { callerOrigin } = await import("../pilotctl.mjs");
+  assert.equal(callerOrigin({ SHADOK_SESSION_ID: "abc-123" }), "agent");
+  assert.equal(callerOrigin({}), "cli");
+});
+
+test("a prompt says WHERE it comes from", async () => {
+  // Without this the server's echo carried neither origin nor name, and the
+  // cockpit's documented fallback for "nobody introduced themselves" is the
+  // human driving it — so one agent prompting another showed up as the user's
+  // own message, on their side of the chat.
+  const mock = await startMockServer({ start: [READY], prompt: [{ type: "turn-done", sessionId: "abc" }] });
+  useMock(mock);
+  const saved = process.env.SHADOK_SESSION_ID;
+  process.env.SHADOK_SESSION_ID = "deadbeef-0000";
+  try {
+    await run(["prompt", "abc", "va voir"]);
+    assert.equal(mock.received[0].type, "start");
+    assert.equal(mock.received[0].origin, "agent");
+  } finally {
+    if (saved === undefined) delete process.env.SHADOK_SESSION_ID;
+    else process.env.SHADOK_SESSION_ID = saved;
+    await mock.close();
+  }
+});

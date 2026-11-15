@@ -30,25 +30,62 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
 export const port = () => Number(process.env.SHADOK_PORT ?? 3789);
-export const httpBase = () => `http://localhost:${port()}`;
-export const wsUrl = () => `ws://localhost:${port()}/ws`;
-// When a GUI password is set, the server injects SHADOK_AUTH=sk_auth=<token>
-// into every agent's env; loopback HTTP + WS calls must present it as the cookie
-// or the password gate 401s them — exactly what secret.py / schedule.py and the
-// Telegram bridge already do. Empty when no password is set → no change.
-// The session key is the DURABLE half and is sent whenever it is set.
-// SHADOK_AUTH is a dated cookie frozen into this process's environment at
-// spawn, so it expires after a week and nothing can refresh it — an agent
-// older than that got 401 on every call here. The key is derived from the
-// session id, verifies for as long as the agent runs, and grants exactly what
-// the cookie did. Both are sent: the cookie still works, and an older server
-// that does not know the header simply ignores it.
-export const authHeaders = () => ({
-  ...(process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {}),
-  ...(process.env.SHADOK_SESSION_KEY
-    ? { "x-shadok-session-key": process.env.SHADOK_SESSION_KEY }
-    : {}),
-});
+
+// A REMOTE peer to target for this command, set from `--peer <alias>` (or
+// `--peer-url`/`--peer-token`). When set, every call goes to the peer's URL and
+// authenticates with `x-shadok-peer` instead of the local session key — an agent
+// on THIS instance driving an agent on ANOTHER. Null = the local server, as ever.
+let PEER = null; // { url, token }
+export function setPeer(p) { PEER = p; }
+
+export const httpBase = () => (PEER ? PEER.url : `http://localhost:${port()}`);
+export const wsUrl = () =>
+  PEER ? PEER.url.replace(/^http/, "ws") + "/ws" : `ws://localhost:${port()}/ws`;
+
+// The per-instance outbound-peers file the server hands us as SHADOK_PEERS_FILE
+// (a plain agent's cwd is a worktree, so it cannot derive its launch dir). A
+// hand-run pilotctl with no such env falls back to a machine-global file.
+export const peersFile = () =>
+  (process.env.SHADOK_PEERS_FILE || "").trim() ||
+  path.join(os.homedir(), ".shadok-ai", "peers-out.json");
+export function loadPeersOut() {
+  try {
+    const j = JSON.parse(fs.readFileSync(peersFile(), "utf8"));
+    return j && typeof j === "object" ? j : {};
+  } catch {
+    return {};
+  }
+}
+export function savePeersOut(map) {
+  fs.mkdirSync(path.dirname(peersFile()), { recursive: true });
+  const tmp = peersFile() + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(map, null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, peersFile());
+}
+/** Pure: the {url, token} for an alias, or null. Trailing slashes trimmed so
+ *  `${url}/ws` and `${url}/diff` never double up. */
+export function resolvePeer(peersOut, alias) {
+  const p = peersOut && peersOut[alias];
+  if (!p || typeof p.url !== "string" || typeof p.token !== "string" || !p.url || !p.token) return null;
+  return { url: p.url.replace(/\/+$/, ""), token: p.token };
+}
+// An agent authenticates with its own session key (SHADOK_SESSION_KEY) — its
+// ONLY credential: the server no longer hands agents a cookie or the cockpit
+// password. The key is derived from the session id, verifies for as long as the
+// agent runs, and makes the caller THIS AGENT (its own group's agents, never an
+// admin). A human running pilotctl by hand has no key; on a password-protected
+// cockpit they can export SHADOK_AUTH (their own `sk_auth=…` cookie) instead.
+export const authHeaders = () =>
+  PEER
+    ? // Targeting a remote peer: the ONLY credential it accepts is the peer token.
+      // Never leak the local cookie/session key to another instance.
+      { "x-shadok-peer": PEER.token }
+    : {
+        ...(process.env.SHADOK_AUTH ? { cookie: process.env.SHADOK_AUTH } : {}),
+        ...(process.env.SHADOK_SESSION_KEY
+          ? { "x-shadok-session-key": process.env.SHADOK_SESSION_KEY }
+          : {}),
+      };
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // The built-in WebSocket is WHATWG (addEventListener + event.data); the rest of
@@ -58,7 +95,7 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // `ws` already has them, so it is returned untouched.
 //
 // Both accept the non-standard `{ headers }` option, which is what carries the
-// SHADOK_AUTH cookie past the password gate — verified against a real upgrade
+// auth headers past the password gate — verified against a real upgrade
 // handler on the built-in, not assumed.
 function makeWS(url, opts) {
   if (!WS)
@@ -113,10 +150,22 @@ export function parseArgs(argv) {
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (a === "--worktree" || a === "--continue" || a === "--readonly") flags[a.slice(2)] = true;
-    else if (a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent") flags[a.slice(2)] = rest[++i];
+    else if (
+      a === "--cwd" || a === "--resume" || a === "--timeout" || a === "--profile" || a === "--parent" ||
+      a === "--name" || a === "--peer" || a === "--peer-url" || a === "--peer-token"
+    ) flags[a.slice(2)] = rest[++i];
+    // Repeatable: a Skill Factory skill the new agent is born with, `name` or `name@N`.
+    else if (a === "--skill") (flags.skill ||= []).push(rest[++i]);
     else pos.push(a);
   }
   return { cmd, pos, flags };
+}
+
+// Normalise the `set-parent` target: `none`/`null`/empty mean DETACH (report to
+// nobody), anything else is the parent session id. Pure, so the rule is
+// testable without a server.
+export function parseParentArg(arg) {
+  return arg && arg !== "none" && arg !== "null" ? arg : null;
 }
 
 function connect() {
@@ -125,6 +174,23 @@ function connect() {
     ws.once("open", () => resolve(ws));
     ws.once("error", reject);
   });
+}
+
+/**
+ * WHERE this client speaks from, travelling with every prompt it sends.
+ *
+ * It is what lets the cockpit say who spoke: a prompt that declares no origin
+ * and no name is read as the human's own — the label falls back to "you" and
+ * the bubble sits on your side — so an agent driving another used to appear as
+ * the person who owns the cockpit, in the chat AND in the receiving agent's
+ * transcript. `SHADOK_SESSION_ID` is set by the server on every piloted
+ * session, the same signal `buildStartMsg` links a parent with: inside one we
+ * are an agent, in a human's shell we are the CLI.
+ *
+ * Pure, so the rule is testable without a server.
+ */
+export function callerOrigin(env = process.env) {
+  return env.SHADOK_SESSION_ID ? "agent" : "cli";
 }
 
 // Attaches to (or starts) a session; resolves once the server says `ready`.
@@ -170,7 +236,9 @@ export async function openSession(startMsg) {
         listeners.add(l);
       }),
   };
-  client.send({ type: "start", ...startMsg });
+  // The caller may override it (nothing does today); otherwise we introduce
+  // ourselves. Spread last so an explicit origin wins.
+  client.send({ type: "start", origin: callerOrigin(), ...startMsg });
   const ready = await client.waitFor(["ready", "error"], 90_000);
   if (ready.type !== "ready") {
     ws.close();
@@ -221,6 +289,10 @@ async function serverUp() {
 }
 
 export async function ensureServer() {
+  // Targeting a remote peer (`--peer`): it is someone else's server — never probe
+  // or auto-start a local one. If the peer is unreachable the connection fails
+  // with a clear error, which is the honest outcome.
+  if (PEER) return;
   if (await serverUp()) return;
   if (process.env.SHADOK_NO_AUTOSTART)
     throw new Error(`shadok-ai server unreachable on :${port()}`);
@@ -263,7 +335,10 @@ export async function ensureHolder(id, cwd) {
   const child = spawnChild(process.execPath, args, {
     detached: true,
     stdio: ["ignore", "pipe", "ignore"],
-    env: process.env,
+    // A holder for a REMOTE agent must connect to the peer, not the local server.
+    // The detached child gets no `--peer` flag, so carry it in the ENV (never
+    // argv — a token in argv is world-readable via `ps`); `run()` reads it back.
+    env: PEER ? { ...process.env, SHADOK_PEER_URL: PEER.url, SHADOK_PEER_TOKEN: PEER.token } : process.env,
   });
   try {
     await new Promise((resolve, reject) => {
@@ -305,6 +380,14 @@ export function buildStartMsg(flags, env = process.env) {
   // guardrail, no secrets. The server only applies it to new sessions (not on a
   // resume).
   if (flags.profile) startMsg.profile = flags.profile;
+  // The tab name for the new agent. Applied by the server only on a spawn, so a
+  // later resume never overwrites a rename made in the cockpit. Omitted → the
+  // cockpit derives a default from the profile/directory.
+  if (flags.name) startMsg.name = flags.name;
+  // A factory skill is not given to an agent: every agent its sharing covers
+  // runs it. The flag is still parsed so an old command line does not fail.
+  if (flags.skill?.length)
+    process.stderr.write("pilotctl: --skill is ignored — a factory skill runs on every agent it is shared with (set that in the Skills panel)\n");
   // "none" is the escape hatch: spawn something deliberately unlinked.
   if (flags.parent === "none") startMsg.parent = null;
   else if (flags.parent) startMsg.parent = flags.parent;
@@ -372,7 +455,40 @@ async function cmdDialog(id, flags) {
   return r;
 }
 
+/**
+ * `list` against a REMOTE peer. The local half of a plain `list` — pilotctl's
+ * own state files, a `holderPid` and a local `pidAlive` — describes THIS
+ * machine, so over a peer link it is not "less precise", it is another
+ * machine's answer to the question (issue #423: a full, plausible list of the
+ * caller's own sessions came back with nothing to say so). Ask the peer for
+ * the agents running on IT (`GET /live`, which it scopes to what we may see),
+ * and say WHICH machine answered. `resumable` is keyed by a directory: the
+ * caller's cwd generally does not exist over there, and an empty answer would
+ * read as "nothing resumable" — so it is queried only for a `--cwd` the caller
+ * named, and otherwise left out rather than filled with a meaningless `[]`.
+ */
+async function cmdListPeer(flags) {
+  const live = await fetch(`${httpBase()}/live`, { headers: authHeaders() });
+  if (live.status === 401 || live.status === 403)
+    throw Object.assign(
+      new Error(
+        `peer-scope: ${httpBase()} refused to list its agents (HTTP ${live.status}) — ` +
+          "a restricted peer may only drive the agents it spawned; track their ids from `spawn`",
+      ),
+      { code: "peer-scope" },
+    );
+  if (!live.ok) throw new Error(`peer ${httpBase()} answered HTTP ${live.status} to /live`);
+  const agents = (await live.json()).map((a) => ({ sessionId: a.id, ...a }));
+  const out = { peer: httpBase(), agents };
+  if (flags.cwd) {
+    const r = await fetch(`${httpBase()}/sessions?cwd=${encodeURIComponent(flags.cwd)}`, { headers: authHeaders() });
+    if (r.ok) out.resumable = await r.json();
+  }
+  return out;
+}
+
 async function cmdList(flags) {
+  if (PEER) return cmdListPeer(flags);
   await ensureServer();
   const cwd = flags.cwd ?? process.cwd();
   const r = await fetch(`${httpBase()}/sessions?cwd=${encodeURIComponent(cwd)}`, { headers: authHeaders() });
@@ -421,6 +537,32 @@ async function cmdDiff(id) {
     branch: st.branch ?? null,
     fallback: true,
   };
+}
+
+// Attach an agent under another, or detach it with `none`. The link is what
+// makes the parent hear when this agent finishes, blocks or dies — set
+// automatically at spawn, flipped by hand here (e.g. to stop reporting to a
+// lead once a side task is done). `parent` is SERVER_OWNED on the channel, so
+// this WS message is the only legitimate path, exactly like the web menu's
+// "Detach from…". The server validates the link (cycle/depth/fan-out) and
+// refuses out loud; detaching (`none`) is always allowed.
+async function cmdSetParent(id, parentArg, flags) {
+  if (!id) throw new Error("usage: pilotctl set-parent <id> <parent-id|none>");
+  await ensureServer();
+  const st = readState(id);
+  // cwd may be unknown for a session we did not spawn; the server resolves the
+  // target from its own registry (it is the authority on where a session lives).
+  const cwd = flags.cwd ?? st?.cwd ?? undefined;
+  const parent = parseParentArg(parentArg);
+  const client = await openSession({ resume: id, cwd });
+  client.send({ type: "set-parent", parent });
+  // The server echoes the new link with a `parent` broadcast; a refused link
+  // comes back as `error` (code "link-refused").
+  const r = await client.waitFor(["parent", "error"], 15_000);
+  client.ws.close();
+  if (r.type === "error") throw new Error(r.message || "set-parent refused");
+  if (r.type === "timeout") throw new Error("set-parent not confirmed within 15s");
+  return { sessionId: id, parent: r.parent ?? null };
 }
 
 async function cmdStop(id) {
@@ -492,6 +634,50 @@ async function cmdProfilePrompt(text, flags) {
   return out;
 }
 
+// Cross-group TALK: send another agent a one-way LETTER, the sanctioned
+// server-mediated channel (there is no native SendMessage). This is NOT a drive:
+// the recipient reads the message in its OWN context under its own guardrails,
+// and you never receive its transcript/stream back — the call returns only that
+// the letter was accepted and dispatched.
+//
+// ACL (enforced server-side): a PUBLIC-group agent is messageable freely; an
+// agent in another RESTRICTED group only if you hold its HANDLE (an opaque token
+// it shared — there is no roster to browse); a PRIVATE group is SEALED inbound.
+// A private-group agent may still send OUTWARD.
+//
+// `handle` identifies the recipient. Get your OWN handle to share with
+// `pilotctl talk-handle`; obtaining someone else's is out of band (a human or a
+// prompt relays it) — pilotctl deliberately offers no way to enumerate handles.
+async function cmdTalk(handle, message) {
+  const key = process.env.SHADOK_SESSION_KEY;
+  if (!key) throw new Error("no SHADOK_SESSION_KEY in env — not running as a piloted agent");
+  if (!handle) throw new Error("usage: pilotctl talk <handle> <message>");
+  if (!message || !message.trim()) throw new Error("a message is required");
+  const r = await fetch(`${httpBase()}/talk`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ key, handle, message }),
+  });
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error ?? `HTTP ${r.status}`);
+  return out;
+}
+
+// Your OWN talk handle — the "here is a handle to me" an agent shares so another
+// agent can send it a letter. Scoped to yourself by the session key: there is no
+// way to mint or look up someone else's.
+async function cmdTalkHandle() {
+  const key = process.env.SHADOK_SESSION_KEY;
+  if (!key) throw new Error("no SHADOK_SESSION_KEY in env — not running as a piloted agent");
+  const r = await fetch(`${httpBase()}/talk/handle`, {
+    method: "GET",
+    headers: { ...authHeaders() },
+  });
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error ?? `HTTP ${r.status}`);
+  return out;
+}
+
 async function cmdScreen(id, flags) {
   await ensureServer();
   const st = readState(id);
@@ -504,10 +690,91 @@ async function cmdScreen(id, flags) {
 }
 
 const HELP =
-  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|screen|profile-prompt> …";
+  "usage: pilotctl <spawn|prompt|dialog|choose|toggle|confirm|freetext|list|diff|stop|set-parent|screen|profile-prompt|talk|talk-handle|peer> …\n" +
+  "       pilotctl set-parent <id> <parent-id|none>   # re-link or detach an agent from its parent\n" +
+  "       add --peer <alias> to any command to run it against another instance's agents\n" +
+  "       pilotctl peer <add <alias> <url> <ticket> [--token]|list|rm <alias>>";
+
+/**
+ * Manage the outbound-peers file: aliases → { url, token }.
+ *
+ * `add` takes the single-use TICKET from the invitation and ENROLS with it: it
+ * posts the ticket to the remote `POST /peers/enrol`, which consumes it and
+ * returns the durable token stored here. So the credential we keep is one this
+ * side obtained itself — the invitation, which gets pasted into a session and
+ * lives on in a transcript, only ever held something that dies on first use.
+ *
+ * A ticket that has already been redeemed, expired or never existed is refused
+ * by the remote with one indistinguishable message, and we store NOTHING: a
+ * saved credential that does not authenticate is worse than a clear error.
+ *
+ * `--token` skips the exchange and stores the value as a durable token, for a
+ * credential issued some other way. `list` never prints either.
+ */
+export async function cmdPeer(pos, flags = {}) {
+  const [sub, alias, url, secret] = pos;
+  const map = loadPeersOut();
+  if (sub === "add") {
+    if (!alias || !url || !secret)
+      throw new Error("usage: pilotctl peer add <alias> <url> <ticket> [--token]");
+    const base = String(url).replace(/\/+$/, "");
+    let token = secret;
+    if (!flags.token) {
+      const r = await fetch(`${base}/peers/enrol`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ticket: secret }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j?.token) throw new Error(j?.error || `enrolment refused (HTTP ${r.status})`);
+      token = j.token;
+    }
+    map[alias] = { url: base, token };
+    savePeersOut(map);
+    return { ok: true, alias, url: base, enrolled: !flags.token };
+  }
+  if (sub === "rm") {
+    if (!alias) throw new Error("usage: pilotctl peer rm <alias>");
+    delete map[alias];
+    savePeersOut(map);
+    return { ok: true, alias };
+  }
+  if (sub === "list" || sub === undefined)
+    return { peers: Object.entries(map).map(([a, p]) => ({ alias: a, url: p?.url })) };
+  throw new Error("usage: pilotctl peer <add|rm|list> …");
+}
 
 export async function run(argv) {
   const { cmd, pos, flags } = parseArgs(argv);
+  // Manage the outbound-peers file (local, no server).
+  if (cmd === "peer") return cmdPeer(pos, flags);
+  // Target a REMOTE peer for this command — every call then goes to its URL with
+  // the peer token instead of the local session key. `--peer <alias>` resolves
+  // the outbound file; `--peer-url/--peer-token` is a one-off; SHADOK_PEER_URL/
+  // _TOKEN in the env is how a detached holder child inherits the peer.
+  if (flags.peer || flags["peer-url"] || process.env.SHADOK_PEER_URL) {
+    const target = flags["peer-url"]
+      ? flags["peer-token"]
+        ? { url: flags["peer-url"].replace(/\/+$/, ""), token: flags["peer-token"] }
+        : null
+      : flags.peer
+        ? resolvePeer(loadPeersOut(), flags.peer)
+        : process.env.SHADOK_PEER_URL && process.env.SHADOK_PEER_TOKEN
+          ? { url: process.env.SHADOK_PEER_URL.replace(/\/+$/, ""), token: process.env.SHADOK_PEER_TOKEN }
+          : null;
+    if (!target)
+      throw new Error(
+        flags["peer-url"]
+          ? "--peer-url needs a --peer-token"
+          : `unknown peer "${flags.peer}" — add it with: pilotctl peer add <alias> <url> <token>`,
+      );
+    setPeer(target);
+  } else {
+    // No peer asked for THIS call: target the local server. `PEER` is module
+    // state, so without this a peer chosen by an earlier `run()` in the same
+    // process (an importer, the tests) would silently retarget this one.
+    setPeer(null);
+  }
   switch (cmd) {
     case "spawn":
       return cmdSpawn(flags);
@@ -531,10 +798,16 @@ export async function run(argv) {
       return cmdDiff(pos[0]);
     case "stop":
       return cmdStop(pos[0]);
+    case "set-parent":
+      return cmdSetParent(pos[0], pos[1], flags);
     case "screen":
       return cmdScreen(pos[0], flags);
     case "profile-prompt":
       return cmdProfilePrompt(pos[0], flags);
+    case "talk":
+      return cmdTalk(pos[0], pos[1]);
+    case "talk-handle":
+      return cmdTalkHandle();
     default:
       throw new Error(HELP);
   }

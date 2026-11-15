@@ -1,0 +1,28 @@
+name = "shadok-connect"
+main = "src/worker.ts"
+compatibility_date = "2025-01-01"
+# A custom domain, not a zone route: wrangler creates the DNS record and the
+# certificate itself, so the hostname needs no pre-existing proxied record.
+routes = [{ pattern = "connect.shadok.ai", custom_domain = true }]
+
+# Secrets (never in this file): LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET, STATE_KEY,
+# and optionally GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET (Google is offered only with both),
+# GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET (GitHub likewise).
+
+# "1" while the Google OAuth app is in Testing (refresh tokens expire after 7 days).
+[vars]
+GOOGLE_TESTING = "1"
+# Hosts served by the ALTERNATIVE Google app (secrets GOOGLE_ALT_CLIENT_ID /
+# GOOGLE_ALT_CLIENT_SECRET): the app going through Google's verification, shown
+# on the demo instance, while every other instance uses the default (Testing) app.
+GOOGLE_ALT_HOSTS = "demo.shadok.ai"
+# The GitHub App's slug (github.com/apps/<slug>): /health advertises its
+# installation page, where a person picks the repositories it reaches.
+GITHUB_APP_SLUG = "shadok-ai"
+
+# Paths the broker does not own (/, /waitlist, ...) are forwarded to the site
+# Worker, deployed separately. Deploy that Worker first: a binding to a
+# service that does not exist fails the deploy.
+[[services]]
+binding = "SITE"
+service = "shadok-connect-site"

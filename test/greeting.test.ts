@@ -186,3 +186,23 @@ test("the brief forbids reading the project before offering to read it", () => {
   const brief = homeGreetingBrief({ ground: NODE_CI, profiles: DEFAULT_PROFILES, dirName: "shadok-ai" });
   assert.ok(/do NOT go and read the project now/i.test(brief), brief);
 });
+
+test("an empty instance context: the lead asks two or three questions, deduces the language, writes it once", async () => {
+  const { instanceContextInterviewBrief } = await import("../src/greeting.js");
+  const base = { ground: NODE_CI, profiles: [], dirName: "x" };
+  const empty = homeGreetingBrief({ ...base, instanceContextEmpty: true });
+  assert.match(empty, /shadok-instance-context/);
+  assert.match(empty, /language/i);
+  assert.match(empty, /two or three/i);
+  // Nothing waits on the answer: ignoring the questions must leave a working cockpit.
+  assert.match(empty, /never ask a question they have to answer before anything works/);
+  assert.match(empty, /THE ONE OFFER/);
+  // The interview paragraph is shared with the cockpit's "Ask general to draft it".
+  assert.ok(empty.includes(instanceContextInterviewBrief()));
+});
+
+test("a filled instance context leaves the greeting exactly as before", () => {
+  const base = { ground: NODE_CI, profiles: [], dirName: "x" };
+  assert.equal(homeGreetingBrief({ ...base, instanceContextEmpty: false }), homeGreetingBrief(base));
+  assert.doesNotMatch(homeGreetingBrief(base), /shadok-instance-context/);
+});

@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gitIn } from "./git-exec.js";
 
 /**
  * A working copy of shadok-ai's own source, so a user who installed the cockpit
@@ -12,9 +13,17 @@ import path from "node:path";
  */
 export const SELF_REPO_URL = "https://github.com/shadok-ai/shadok-ai.git";
 
-/** Our own copy, never the directory the running server was launched from. */
-export function selfRepoDir(): string {
-  return path.join(os.homedir(), ".shadok-ai", "self", "shadok-ai");
+/**
+ * Our own copy, never the directory the running server was launched from.
+ * `stateHome` defaults to the server's own home (mono-tenant / commons before
+ * migration), but is the DROPPED agent's home (`/home/<user>`) once agents run
+ * as a non-root OS user: the server's `/root` is mode 0700 and un-traversable by
+ * that user, so a clone there strands the Tweak agent — same reason as
+ * `worktreeDir` in `worktree.ts`. The caller makes the clone writable by the
+ * drop user; this only fixes WHERE it lands.
+ */
+export function selfRepoDir(stateHome: string = os.homedir()): string {
+  return path.join(stateHome, ".shadok-ai", "self", "shadok-ai");
 }
 
 export type SelfRepoPlan = "clone" | "update" | "reclone";
@@ -45,12 +54,18 @@ export interface SelfRepoResult {
 }
 
 function git(args: string[], cwd?: string): void {
-  execFileSync("git", cwd ? ["-C", cwd, ...args] : args, {
-    encoding: "utf8",
+  const opts = {
     // A cold clone over a slow link is minutes, not seconds.
     timeout: 180_000,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+    stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
+  };
+  // An existing clone is chowned to the commons drop user under multi-tenant, so
+  // the refresh goes through `gitIn`, which re-runs it as that owner when git
+  // refuses root for "dubious ownership" (src/git-exec.ts) — never by
+  // whitelisting the directory, which would let an agent's `.git/config` run
+  // commands as root.
+  if (cwd) gitIn(cwd, args, opts);
+  else execFileSync("git", args, { ...opts, encoding: "utf8" });
 }
 
 /**
@@ -59,8 +74,8 @@ function git(args: string[], cwd?: string): void {
  * worktrees a tweak session owns are separate checkouts and are never touched —
  * refreshing under a live agent is how you lose its work.
  */
-export function ensureSelfRepo(): SelfRepoResult {
-  const dir = selfRepoDir();
+export function ensureSelfRepo(stateHome: string = os.homedir()): SelfRepoResult {
+  const dir = selfRepoDir(stateHome);
   const plan = selfRepoPlan(fs.existsSync(dir), fs.existsSync(path.join(dir, ".git")));
   try {
     if (plan === "reclone") fs.rmSync(dir, { recursive: true, force: true });

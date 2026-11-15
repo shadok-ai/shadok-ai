@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession } from "../src/tmux.js";
+import { TmuxPilot, isServerExitRace, tmuxAvailable, tmuxHasSession, tmuxKillSession } from "../src/tmux.js";
 
 /**
  * `stop()` must kill the pane even when the graceful path cannot work.
@@ -50,4 +50,44 @@ test("stop() is safe once the pane is already gone", { skip: !HAVE_TMUX }, async
 test("tmuxKillSession on a name that does not exist is a no-op", () => {
   // The server calls this defensively before respawning; it must never throw.
   assert.doesNotThrow(() => tmuxKillSession("sk-definitely-not-a-session-" + process.pid));
+});
+
+// A start whose TUI never comes up must not leave a watcher behind — see
+// `TmuxPilot.abandon`. `sleep` stands in for the wedged screen again.
+test("abandon() kills a pane this pilot created", { skip: !HAVE_TMUX }, () => {
+  const pilot = new TmuxPilot({ tmuxName: NAME, cwd: process.cwd(), args: ["300"], claudePath: "sleep" });
+  try {
+    pilot.start();
+    pilot.abandon();
+    assert.equal(tmuxHasSession(NAME), false);
+    assert.equal(pilot.hasExited, true);
+  } finally {
+    tmuxKillSession(NAME);
+  }
+});
+
+test("abandon() stops watching an ADOPTED pane but leaves it running", { skip: !HAVE_TMUX }, () => {
+  const owner = new TmuxPilot({ tmuxName: NAME, cwd: process.cwd(), args: ["300"], claudePath: "sleep" });
+  const adopter = new TmuxPilot({ tmuxName: NAME, cwd: process.cwd(), args: ["300"], claudePath: "sleep" });
+  try {
+    owner.start();
+    adopter.start();
+    assert.equal(adopter.attached, true);
+    adopter.abandon();
+    assert.equal(tmuxHasSession(NAME), true, "an adopted pane may be a live agent — never killed on a timeout");
+    assert.equal(adopter.hasExited, true, "but this pilot no longer polls it");
+  } finally {
+    owner.kill();
+    tmuxKillSession(NAME);
+  }
+});
+
+test("only a new-session that met a dying tmux server is retried", () => {
+  const race = "server exited unexpectedly\n";
+  assert.equal(isServerExitRace(["new-session", "-d", "-s", "x"], race), true);
+  assert.equal(isServerExitRace(["new-session"], Buffer.from(race)), true);
+  // Anything else is a real failure, or a call whose effect may already be done.
+  assert.equal(isServerExitRace(["send-keys", "-t", "x", "hi"], race), false);
+  assert.equal(isServerExitRace(["new-session"], "duplicate session: x"), false);
+  assert.equal(isServerExitRace(["new-session"], undefined), false);
 });

@@ -109,11 +109,23 @@ test("the tour shows the scheduled-prompt guard, and shows it on its own", () =>
   assert.match(step.body, /without the model/i);
 });
 
-test("it follows the step that introduced the menu it lives in", () => {
-  // "Schedule" is inside an agent's ⋯ menu, so it only makes sense once that
-  // menu has been pointed at. Order is the only thing that carries that here.
+test("it follows the steps that introduced the agent's own controls", () => {
+  // A schedule belongs to ONE agent, so it only makes sense once that agent's
+  // bar and menu have been pointed at. Order is the only thing that carries
+  // that here.
   const ids = TOUR_STEPS.map((s) => s.id);
   assert.equal(ids.indexOf("schedule"), ids.indexOf("tab") + 1);
+  assert.ok(ids.indexOf("bar") < ids.indexOf("schedule"));
+});
+
+test("the schedule step points at the schedule, not at a menu that also has it", () => {
+  // It read "in that same ⋯ menu" and framed the menu long after the bar had
+  // grown a button for it: true, and a detour past the control in plain sight.
+  const step = TOUR_STEPS.find((s) => s.id === "schedule");
+  assert.ok(step.target.includes("#chanCron"));
+  assert.doesNotMatch(step.body, /⋯/);
+  // The webhook is the same promise from outside, and lives beside it.
+  assert.match(step.body, /webhook/i);
 });
 
 test("the toolbar step no longer repeats it", () => {
@@ -187,4 +199,85 @@ test("no step describes a landmark by where it sits on the page", () => {
   for (const s of TOUR_STEPS) {
     assert.doesNotMatch(s.body, /at the (top|bottom)\b/i, `${s.id} points at a position`);
   }
+});
+
+test("the tour names what the cockpit has grown since it was written", () => {
+  // The drift this file exists to stop, in its plainest form: the tour sat at
+  // six steps while the page gained groups, rooms, the Skill Factory, webhooks,
+  // a composer with three buttons, accounts and a settings menu — and nothing
+  // went red, because every selector it DID point at still existed. A landmark
+  // the tour never mentions fails no selector check. So the list is held here,
+  // one line per landmark: adding one to the page means adding one to this map.
+  const mentions: Record<string, RegExp[]> = {
+    groups: [/group/i],
+    agents: [/room/i, /home agent/i],
+    bar: [/gallery/i, /skills/i, /terminal/i],
+    tab: [/model/i, /stats/i, /profile/i],
+    composer: [/attach/i, /skill/i, /dictate/i, /download/i],
+    tools: [/secret/i, /ledger/i, /skill factory/i, /profiles/i, /telegram/i, /stats/i, /light or dark/i],
+    people: [/users/i, /two-factor/i, /reports/i, /security/i],
+    quota: [/5h/i, /7d/i, /pace/i],
+    settings: [/sign-in expires/i, /permission mode/i, /default model/i, /instance context/i],
+  };
+  for (const [id, patterns] of Object.entries(mentions)) {
+    const step = TOUR_STEPS.find((s) => s.id === id);
+    assert.ok(step, `the tour lost its "${id}" step`);
+    for (const re of patterns) assert.match(step.body, re, `"${id}" no longer mentions ${re}`);
+  }
+});
+
+test("every header tool and every agent-bar button is inside some spotlight", () => {
+  // The other half, and this one the page CAN tell us: a button added to the
+  // header or to an agent's bar that no step frames is a control the tour
+  // walks past. `#factoryBtn` was exactly that for months.
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const targets = new Set(TOUR_STEPS.flatMap((s) => (s.target === null ? [] : [s.target].flat())));
+  const header = html.slice(html.indexOf('<div class="hdr-tools">'), html.indexOf('id="moreMenu"'));
+  const bar = html.slice(html.indexOf('id="chanGallery"') - 200, html.indexOf('id="chanMenu"') + 20);
+  const ids = [...(header + bar).matchAll(/<button id="([\w-]+)" class="icon"/g)].map((m) => m[1]);
+  assert.ok(ids.length >= 12, `expected the header and bar buttons, found ${ids.length}`);
+  // A reload nudge that only exists while an update is pending: not a landmark.
+  const transient = new Set(["chanUpdate"]);
+  for (const id of ids) {
+    if (transient.has(id)) continue;
+    assert.ok(targets.has("#" + id), `#${id} is on the page and in no tour step`);
+  }
+});
+
+test("a role-dependent control gets a step that can be dropped, not a clause", () => {
+  // Users / Reports / Security start hidden and show by role. Named inside the
+  // toolbar body, they were promised to everyone who does not have them.
+  const tools = TOUR_STEPS.find((s) => s.id === "tools");
+  assert.doesNotMatch(tools.body, /\busers\b|reports|two-factor/i);
+  const people = TOUR_STEPS.find((s) => s.id === "people");
+  assert.match(people.body, /depends on your role/i);
+  // The lone admin of a no-password instance sees them too, and has no accounts.
+  assert.doesNotMatch(people.body, /has accounts/i);
+});
+
+test("a full-height column gets its bubble beside it, not on top of it", () => {
+  // Measured on the groups column: hole 6,51 202x793 in a 1280x850 viewport.
+  // Nothing fits below, nothing fits above, and the clamp used to settle the
+  // bubble at 12,12 — over the group names the step was pointing at.
+  const column = { top: 57, left: 12, width: 190, height: 781 };
+  const p = bubblePlacement({ target: column, bubble: BUBBLE, viewport: { width: 1280, height: 850 } });
+  assert.equal(p.side, "right");
+  assert.ok(p.left >= column.left + column.width, "the bubble must clear the column");
+  assert.equal(p.top, column.top);
+});
+
+test("a column against the right edge puts the bubble on its left", () => {
+  const column = { top: 57, left: 1000, width: 268, height: 781 };
+  const p = bubblePlacement({ target: column, bubble: BUBBLE, viewport: { width: 1280, height: 850 } });
+  assert.equal(p.side, "left");
+  assert.ok(p.left + BUBBLE.width <= column.left);
+});
+
+test("with no room on either side the bubble still lands on screen", () => {
+  // A phone-wide target that is also too tall: covering part of it beats
+  // leaving the viewport, so the clamp remains the last resort.
+  const vp = { width: 390, height: 844 };
+  const p = bubblePlacement({ target: { top: 20, left: 0, width: 390, height: 800 }, bubble: BUBBLE, viewport: vp });
+  assert.ok(p.left >= 12 && p.left + BUBBLE.width <= vp.width - 12);
+  assert.ok(p.top >= 12 && p.top + BUBBLE.height <= vp.height - 12);
 });

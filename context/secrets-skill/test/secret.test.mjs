@@ -27,7 +27,9 @@ test("set reads the value from stdin and sends it in the body", async () => {
   await srv.close();
   assert.equal(res.code, 0, res.err);
   assert.deepEqual(srv.seen.body, { name: "A", value: "s3cr3t" });
-  assert.equal(srv.seen.cookie, "sk_auth=tok");
+  // No cookie any more, even if one sits in the env: the session key is an
+  // agent's only credential.
+  assert.equal(srv.seen.cookie, undefined);
   // The value must never be echoed back — the reply lands in the transcript.
   assert.doesNotMatch(res.out, /s3cr3t/);
   // And the user has to be told the secret is inert until attached.

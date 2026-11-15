@@ -30,6 +30,45 @@ test("list combines resumable sessions and local agents", async () => {
   }
 });
 
+test("list --peer asks the PEER for its agents, never the local state (#423)", async () => {
+  const mock = await startMockServer({
+    live: [{ id: "remote-1", cwd: "/workspace", branch: null, busy: false, clients: 1, lastPrompt: "hi" }],
+    sessions: [{ id: "old-remote", mtime: 1 }],
+  });
+  // A local state file that a plain `list` would report: it must NOT leak in.
+  writeState("local-only", { sessionId: "local-only", cwd: "/only/on/caller", holderPid: process.pid });
+  const url = `http://127.0.0.1:${mock.port}`;
+  try {
+    const r = await run(["list", "--peer-url", url, "--peer-token", "tok"]);
+    assert.equal(r.peer, url);
+    assert.deepEqual(r.agents.map((a) => a.sessionId), ["remote-1"]);
+    assert.ok(r.agents.every((a) => !("holderPid" in a) && !("live" in a)), "no local-only fields");
+    // No --cwd: the caller's cwd means nothing over there, so no resumable list.
+    assert.ok(!("resumable" in r));
+    const live = mock.http.find((h) => h.url === "/live");
+    assert.equal(live.peer, "tok");
+    assert.ok(!mock.http.some((h) => h.url.startsWith("/sessions")));
+    // An explicit --cwd is a path on the peer: queried there.
+    const r2 = await run(["list", "--peer-url", url, "--peer-token", "tok", "--cwd", "/workspace"]);
+    assert.deepEqual(r2.resumable, [{ id: "old-remote", mtime: 1 }]);
+    assert.ok(mock.http.some((h) => h.url === "/sessions?cwd=%2Fworkspace" && h.peer === "tok"));
+  } finally {
+    await mock.close();
+  }
+});
+
+test("list --peer refused by the peer → an explicit peer-scope error, not a local list", async () => {
+  const mock = await startMockServer({ liveStatus: 401, live: { error: "unauthorized" } });
+  try {
+    await assert.rejects(
+      () => run(["list", "--peer-url", `http://127.0.0.1:${mock.port}`, "--peer-token", "tok"]),
+      /peer-scope/,
+    );
+  } finally {
+    await mock.close();
+  }
+});
+
 test("diff goes through the server while the session is live", async () => {
   const mock = await startMockServer({
     diff: { status: "M x.txt", diff: "--- a/x.txt", branch: "shadok-ai/abc" },

@@ -25,7 +25,7 @@ as it becomes history.
 |---|---|---|---|
 | output | one tool call + its result | folded | `→ Read public/index.html` |
 | run | consecutive calls to the same tool | folded when ≥2 calls | `→ Read ×4 ▸` |
-| activity block | consecutive tool events between two texts | open during the turn, folded at `turn-done` | `▸ 12 operations` |
+| activity block | consecutive tool events between two texts | open during the turn, folded at `turn-done` (even on error) | `▸ 12 operations · 1 error` |
 
 An **activity block** is a maximal run of tool events uninterrupted by assistant
 text. A turn with `text → tools → text → tools` yields two blocks, preserving the
@@ -33,13 +33,24 @@ real interleaving; folding never reorders the transcript.
 
 Assistant text is never folded. It belongs to the turn, not to any block.
 
-### Errors are exempt at every level
+### Errors are exempt INSIDE the block, flagged ON it
 
-`isError` propagates upward: an errored result stays open, the run containing it
-refuses to condense, and its activity block resists the `turn-done` fold. A
-folded turn that contained a failure still shows that failure in the clear.
+`isError` propagates upward and keeps the two inner levels open: an errored
+result stays open, and the run containing it refuses to condense. The activity
+block itself, though, folds at `turn-done` like any other — its summary line
+reads `· N errors` and its head carries `.has-err` (a red marker), so the
+failure is announced, not buried. Expand the one-line block and its errored run
+and output are already unfolded underneath: the failure is one click away, in
+the clear.
 
-Hiding an error is hiding the one thing worth scrolling back for.
+Hiding an error is hiding the one thing worth scrolling back for — so the error
+is flagged on the collapsed summary and revealed in full on expand, never
+collapsed into something indistinguishable from a clean run.
+
+*Refinement (2026-11-05):* the block used to resist the fold entirely, which
+left a long errored run permanently expanded and noisy. Folding it to a flagged
+summary keeps the signal while giving back the quiet; only the block level
+changed, the run and output stay error-exempt.
 
 ### Pairing outputs to calls
 
@@ -70,7 +81,8 @@ A single `activityLog` module owns all fold state, exposing four operations:
 - `addText(text)` — closes the current activity block, appends a text bubble
 - `addTool(msg)` — appends to the current block, opening one if needed
 - `addResult(msg)` — attaches output to its call by id
-- `sealTurn()` — folds every block of the turn that contains no error
+- `sealTurn()` — folds every block of the turn to its summary line (errored
+  blocks included, flagged `.has-err`; their inner run/output stay open)
 
 The WebSocket dispatch stays flat: each `case` is one call. All grouping,
 counting and folding logic lives behind that interface, testable without a

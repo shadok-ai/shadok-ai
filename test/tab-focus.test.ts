@@ -27,15 +27,19 @@ test("a channel DISCOVERED on the server never steals the view", () => {
   // machine must not move the user mid-sentence.
   assert.match(
     html,
-    /const nt = createTab\(c\.group, \{ focus: !active \}\)/,
+    /const nt = createTab\(foldCommons\(c\.group\), \{ focus: !active \}\)/,
     "syncChannels must pass an explicit focus, tied to there being nothing active",
   );
 });
 
 test("the callers that ARE the user asking still take the view", () => {
-  // Start-agent, the phone's "new agent" entry and the Tweak CTA call createTab
-  // with no options, so they keep the default. If one of them ever passes
-  // focus:false the button would silently do nothing visible.
-  const bare = html.match(/createTab\(\)/g) ?? [];
-  assert.ok(bare.length >= 3, `expected the user-driven callers to keep the default, saw ${bare.length}`);
+  // Start-agent and the Tweak CTA call createTab with no options, so they keep
+  // the default. If one ever passes focus:false the button would silently do
+  // nothing visible. (The phone's "new agent" no longer has its own createTab():
+  // it goes through the same setup overlay → Start-agent as the desktop, so the
+  // count is 2, not 3 — the old native <select>'s redundant createTab() is gone.)
+  // Start-agent passes the group on screen (the groups column's ＋) — still no
+  // options, so still the default focus.
+  const bare = html.match(/createTab\((?:viewGroupId\(\))?\)/g) ?? [];
+  assert.ok(bare.length >= 2, `expected the user-driven callers to keep the default, saw ${bare.length}`);
 });

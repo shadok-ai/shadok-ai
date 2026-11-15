@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseAuthStatus, parseLoginOutcome, parseLoginUrl } from "../src/claude-auth.js";
+import { parseAuthStatus, parseLoginOutcome, parseLoginUrl, probeWith } from "../src/claude-auth.js";
 
 const URL_ =
   "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e" +
@@ -76,4 +76,55 @@ test("parseLoginOutcome recognises the refusal the CLI actually prints", () => {
   );
   assert.equal(parseLoginOutcome("Paste code here if prompted > "), null);
   assert.equal(parseLoginOutcome(""), null);
+});
+
+
+/** What `execFile` throws when the kernel refuses to run a binary being
+ *  rewritten. Node builds this one as a SYNCHRONOUS throw, not a callback
+ *  error — which is how it escaped every `catch` on the spawn path. */
+const etxtbsy = () => Object.assign(new Error("spawn ETXTBSY"), { code: "ETXTBSY" });
+
+test("a binary caught mid-upgrade is waited out, not reported", async () => {
+  // Every claude-code release rewrites a ~214 MB native binary in place, so the
+  // window is seconds wide and a machine that follows releases meets it often.
+  let calls = 0;
+  const s = await probeWith(
+    async () => {
+      if (++calls < 3) throw etxtbsy();
+      return '{"loggedIn":true,"authMethod":"claude.ai"}';
+    },
+    { sleep: async () => {} },
+  );
+  assert.equal(s.state, "signed-in");
+  assert.equal(calls, 3);
+});
+
+test("a probe that could not run is unknown — it NEVER throws", async () => {
+  // The whole point of the three-valued state (invariant 27). A throw is not a
+  // fourth state, it is the harshest one: the `start` handler lets `unknown`
+  // spawn anyway, but a throw never reaches that decision — it cancels the
+  // spawn, and the user reads `⚠️ spawn ETXTBSY` with no agent and no reason.
+  const s = await probeWith(async () => { throw etxtbsy(); }, { sleep: async () => {} });
+  assert.equal(s.state, "unknown");
+  assert.equal(s.loggedIn, false);
+});
+
+test("a failure that will not pass on its own is not retried six times", async () => {
+  // A missing binary does not get better by being asked again, and burying it
+  // under seconds of retries would only delay the message that says what broke.
+  let calls = 0;
+  const s = await probeWith(
+    async () => {
+      calls++;
+      throw Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" });
+    },
+    { sleep: async () => {} },
+  );
+  assert.equal(s.state, "unknown");
+  assert.equal(calls, 1);
+});
+
+test("unreadable output is still unknown, not signed out", async () => {
+  const s = await probeWith(async () => "not json at all", { sleep: async () => {} });
+  assert.equal(s.state, "unknown");
 });

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseSkillMeta, prepromptParts } from "../src/preprompt.js";
+import {
+  parseSkillMeta, prepromptParts, prepromptFingerprint, stalenessReasons, LEGACY_FINGERPRINT,
+} from "../src/preprompt.js";
 
 test("an agent with nothing added shows nothing", () => {
   // A bare spawn has no role, no guardrails and no cockpit prompt: the panel
@@ -79,4 +81,72 @@ test("parseSkillMeta reads the frontmatter, and tolerates a broken one", () => {
   assert.deepEqual(parseSkillMeta(md), { name: "shadok-reload", description: "Reload your own session." });
   // A skill we cannot parse is still installed: better listed bare than hidden.
   assert.deepEqual(parseSkillMeta("# no frontmatter"), {});
+});
+
+test("prepromptFingerprint changes iff any section's content changes", () => {
+  const a = prepromptParts({ role: "dev", pilotPrompt: "cockpit" });
+  const b = prepromptParts({ role: "dev", pilotPrompt: "cockpit" });
+  assert.equal(prepromptFingerprint(a), prepromptFingerprint(b), "same content → same fingerprint");
+  const c = prepromptParts({ role: "dev", pilotPrompt: "cockpit v2" });
+  assert.notEqual(prepromptFingerprint(a), prepromptFingerprint(c), "changed pilot prompt → different");
+  const d = prepromptParts({ role: "dev", deny: ["Bash(git push:*)"], pilotPrompt: "cockpit" });
+  assert.notEqual(prepromptFingerprint(a), prepromptFingerprint(d), "added guardrail → different");
+});
+
+const baseInput = {
+  spawnFp: "aaa",
+  currentFp: "aaa",
+  hasPassword: true,
+  spawnedAt: 1000,
+  now: 1000,
+  authTtlMs: 7 * 24 * 3600 * 1000,
+  spawnClaudeVersion: "2.1.250",
+  currentClaudeVersion: "2.1.250",
+};
+
+test("a fresh, up-to-date agent has no stale reasons", () => {
+  assert.deepEqual(stalenessReasons(baseInput), []);
+});
+
+test("a changed preprompt fingerprint is a reload reason", () => {
+  const r = stalenessReasons({ ...baseInput, currentFp: "bbb" });
+  assert.equal(r.length, 1);
+  assert.equal(r[0].kind, "preprompt");
+});
+
+test("a legacy (pre-feature) agent reads as stale with its own wording", () => {
+  const r = stalenessReasons({ ...baseInput, spawnFp: LEGACY_FINGERPRINT, currentFp: "bbb" });
+  assert.equal(r[0].kind, "preprompt");
+  assert.match(r[0].label, /before this cockpit version/);
+});
+
+test("no anchor yet (null fingerprint) never flags — a brand-new agent isn't stale", () => {
+  assert.deepEqual(stalenessReasons({ ...baseInput, spawnFp: null, currentFp: "bbb" }), []);
+});
+
+test("an auth cookie past its TTL flags, but only when a password is set", () => {
+  const past = { ...baseInput, now: baseInput.spawnedAt + baseInput.authTtlMs + 1 };
+  assert.ok(stalenessReasons(past).some((r) => r.kind === "auth"));
+  assert.ok(!stalenessReasons({ ...past, hasPassword: false }).some((r) => r.kind === "auth"));
+});
+
+test("an unknown spawn time never flags auth (we don't guess it's expired)", () => {
+  assert.ok(!stalenessReasons({ ...baseInput, spawnedAt: null }).some((r) => r.kind === "auth"));
+});
+
+test("a moved claude binary flags, but an unknown version never does", () => {
+  assert.ok(stalenessReasons({ ...baseInput, currentClaudeVersion: "2.1.260" }).some((r) => r.kind === "claude"));
+  // A failed probe (null) must not read as a change — no false reload hint.
+  assert.ok(!stalenessReasons({ ...baseInput, currentClaudeVersion: null }).some((r) => r.kind === "claude"));
+  assert.ok(!stalenessReasons({ ...baseInput, spawnClaudeVersion: null, currentClaudeVersion: "2.1.260" }).some((r) => r.kind === "claude"));
+});
+
+test("reasons stack: everything stale at once lists all three", () => {
+  const r = stalenessReasons({
+    ...baseInput,
+    currentFp: "bbb",
+    now: baseInput.spawnedAt + baseInput.authTtlMs + 1,
+    currentClaudeVersion: "2.1.260",
+  });
+  assert.deepEqual(r.map((x) => x.kind).sort(), ["auth", "claude", "preprompt"]);
 });

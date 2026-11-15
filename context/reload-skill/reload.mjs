@@ -6,7 +6,6 @@ import http from "node:http";
 
 const key = process.env.SHADOK_SESSION_KEY;
 const port = process.env.SHADOK_PORT || "3789";
-const cookie = process.env.SHADOK_AUTH; // "sk_auth=…" when a GUI password is set
 
 if (!key) {
   console.error("SHADOK_SESSION_KEY is not set — not running under the shadok-ai cockpit?");
@@ -23,9 +22,8 @@ const req = http.request(
     headers: {
       "content-type": "application/json",
       "content-length": Buffer.byteLength(body),
-      ...(cookie ? { cookie } : {}),
-      // The key authenticates too, and unlike the cookie it cannot age out —
-      // which matters most here: an expired cookie left the agent unable to
+      // The agent's only credential, and it cannot age out — which matters
+      // most here: an expired cookie once left an agent unable to
       // reach the one endpoint that would have repaired it.
       "x-shadok-session-key": key,
     },

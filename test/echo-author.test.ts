@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { echoAuthor } from "../public/echo-author.js";
+import { echoAuthor, isOwnPrompt } from "../public/echo-author.js";
 
 test("echoAuthor: a Telegram sender is named", () => {
   assert.equal(echoAuthor({ from: "Alexandre Cognard", origin: "telegram" }), "Alexandre Cognard · telegram");
@@ -32,4 +32,38 @@ test("echoAuthor: the pace guard's auto-continue is nobody", () => {
 test("echoAuthor: blank fields never produce a blank author", () => {
   // An empty label above a bubble reads as a bug, not as "unknown".
   assert.equal(echoAuthor({ from: "   ", origin: "  " }), "you");
+});
+
+test("isOwnPrompt: only a web prompt from the signed-in person is yours", () => {
+  assert.equal(isOwnPrompt({ origin: "web", from: "admin" }, "admin"), true);
+  assert.equal(isOwnPrompt({ origin: "web", from: "Ada" }, "admin"), false);
+  assert.equal(isOwnPrompt({}, "admin"), true);
+  assert.equal(isOwnPrompt({ origin: "web" }, "admin"), true);
+});
+
+test("isOwnPrompt: another platform, a cron or the auto-retry is never yours", () => {
+  assert.equal(isOwnPrompt({ origin: "telegram", from: "admin" }, "admin"), false);
+  assert.equal(isOwnPrompt({ origin: "cron" }, "admin"), false);
+  assert.equal(isOwnPrompt({ auto: true }, "admin"), false);
+});
+
+test("isOwnPrompt: before /me answers, a named web prompt stays on your side", () => {
+  // Guessing "someone else" would flash your own history to the left on reload.
+  assert.equal(isOwnPrompt({ origin: "web", from: "admin" }, null), true);
+});
+
+test("echoAuthor: a sibling agent is named, and says it is an agent", () => {
+  // The bug this closes: a prompt sent by one agent to another carried neither
+  // name nor origin, so it fell through to "you" — the human was shown as the
+  // author of a message they never wrote.
+  assert.equal(echoAuthor({ from: "Shadok-Boss", origin: "agent" }), "Shadok-Boss · agent");
+  // Nameless (a session with no tab name yet) still beats "you".
+  assert.equal(echoAuthor({ origin: "agent" }), "agent");
+});
+
+test("isOwnPrompt: a sibling agent's prompt is not yours", () => {
+  // Left side, like Telegram and the crons: it is someone else talking.
+  assert.equal(isOwnPrompt({ origin: "agent", from: "Shadok-Boss" }, "admin"), false);
+  // Even if the agent's tab happens to be named like the signed-in human.
+  assert.equal(isOwnPrompt({ origin: "agent", from: "admin" }, "admin"), false);
 });

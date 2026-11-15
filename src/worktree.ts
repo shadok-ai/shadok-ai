@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { listSessions } from "./extract.js";
+import { foreignOwner, gitIn } from "./git-exec.js";
 
 export interface Worktree {
   /** Working directory of the isolated checkout. */
@@ -13,9 +13,10 @@ export interface Worktree {
   repo: string;
 }
 
+// Through `gitIn`: under multi-tenant the server is root and these checkouts
+// belong to a drop user, which git refuses as "dubious ownership" (src/git-exec.ts).
 function git(cwd: string, args: string[]): string {
-  return execFileSync("git", ["-C", cwd, ...args], {
-    encoding: "utf8",
+  return gitIn(cwd, args, {
     timeout: 15_000,
     maxBuffer: 16 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
@@ -55,18 +56,48 @@ function forkPoint(cwd: string, repo: string, ref: string): string {
 }
 
 /**
+ * The directory a repo's worktree for `tag` lives in — ONE definition shared by
+ * create / prune / list so they can never disagree, and PARAMETERISED on the
+ * state home. `stateHome` is the server's own home in mono-tenant (and for the
+ * commons before migration), but the DROPPED agent's own home (`/home/<user>`)
+ * once agents run as a non-root OS user: the server's home is `/root` (mode
+ * 0700), which that user cannot even TRAVERSE, so a worktree created there
+ * strands the agent on Claude Code's invalid-settings screen — every
+ * Tweak-Shadok-AI agent, and any dropped agent given a worktree. Pure. See
+ * CLAUDE.md invariant on dropped-agent state homes.
+ */
+export function worktreeDir(stateHome: string, repo: string, tag: string): string {
+  const repoName = path.basename(path.resolve(repo)).replace(/[^a-zA-Z0-9._-]/g, "-");
+  return path.join(stateHome, ".shadok-ai", "worktrees", `${repoName}-${tag}`);
+}
+
+/**
  * Creates an isolated git worktree off the repo's current HEAD, on a fresh
  * branch, so an agent's edits stay contained until the user merges them.
- * The checkout lives under ~/.shadok-ai/worktrees to avoid polluting the repo.
+ * The checkout lives under `<stateHome>/.shadok-ai/worktrees` (see `worktreeDir`
+ * for why that is the DROP USER's home, not always the server's) to avoid
+ * polluting the repo. The caller owns making the result writable by the drop
+ * user (git runs here as the server); `worktreeDir` only fixes WHERE it lands.
  */
-export function createWorktree(repo: string, tag: string): Worktree {
+export function createWorktree(repo: string, tag: string, stateHome: string = os.homedir()): Worktree {
   // Resolve HEAD instead of forking off the symbolic name: a commit landing in
   // the repo between these two calls must not move the fork point.
   const head = git(repo, ["rev-parse", "HEAD"]);
-  const repoName = path.basename(path.resolve(repo)).replace(/[^a-zA-Z0-9._-]/g, "-");
   const branch = `shadok-ai/${tag}`;
-  const dir = path.join(os.homedir(), ".shadok-ai", "worktrees", `${repoName}-${tag}`);
-  fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const dir = worktreeDir(stateHome, repo, tag);
+  const created = fs.mkdirSync(path.dirname(dir), { recursive: true });
+  // A repo another user owns is driven AS that user (`gitIn`), so the parent the
+  // root server just made must be theirs too, or `worktree add` dies on
+  // "could not create leading directories … Permission denied". Only what THIS
+  // call created, and only when the repo is not root's: a root-owned repo keeps
+  // today's path (the caller chowns the finished checkout).
+  const owner = created ? foreignOwner(repo) : null;
+  if (created && owner) {
+    for (let d = path.dirname(dir); ; d = path.dirname(d)) {
+      fs.chownSync(d, owner.uid, owner.gid);
+      if (d === created || d === path.dirname(d)) break;
+    }
+  }
   git(repo, ["worktree", "add", "-b", branch, dir, head]);
   return { path: dir, branch, repo };
 }
@@ -93,11 +124,10 @@ export function removeWorktreeIfClean(wt: Worktree): void {
  * Returns what happened, for logging. A repo-root session (no `shadok-ai/`
  * branch) is a no-op.
  */
-export function pruneWorktree(repo: string, branch: string | null | undefined): "removed" | "kept" | "none" {
+export function pruneWorktree(repo: string, branch: string | null | undefined, stateHome: string = os.homedir()): "removed" | "kept" | "none" {
   if (!branch || !branch.startsWith("shadok-ai/")) return "none";
   const tag = branch.replace(/^shadok-ai\//, "");
-  const repoName = path.basename(path.resolve(repo)).replace(/[^a-zA-Z0-9._-]/g, "-");
-  const dir = path.join(os.homedir(), ".shadok-ai", "worktrees", `${repoName}-${tag}`);
+  const dir = worktreeDir(stateHome, repo, tag);
   // 1) Remove the checkout, but only if it's clean (no uncommitted changes).
   if (fs.existsSync(dir)) {
     try {
@@ -164,7 +194,7 @@ export interface PastSession {
  * their branch even if the checkout was reclaimed — newest first, so
  * unfinished work can be reopened and continued.
  */
-export function listPastSessions(repo: string): PastSession[] {
+export function listPastSessions(repo: string, stateHome: string = os.homedir()): PastSession[] {
   let base: string;
   try {
     base = baseRef(repo);
@@ -179,11 +209,10 @@ export function listPastSessions(repo: string): PastSession[] {
   } catch {
     return [];
   }
-  const repoName = path.basename(path.resolve(repo)).replace(/[^a-zA-Z0-9._-]/g, "-");
   const out: PastSession[] = [];
   for (const branch of branches) {
     const tag = branch.replace(/^shadok-ai\//, "");
-    const cwd = path.join(os.homedir(), ".shadok-ai", "worktrees", `${repoName}-${tag}`);
+    const cwd = worktreeDir(stateHome, repo, tag);
     // The transcript lives in the worktree's project dir even if the checkout
     // was removed — read the full session id and preview from there.
     const sess = listSessions(cwd)[0] ?? null;

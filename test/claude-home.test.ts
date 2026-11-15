@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseClaudeVersion, seedPlan, settingsPlan } from "../src/claude-home.js";
+import { parseClaudeVersion, seedPlan, seedPlanForCwds, settingsPlan } from "../src/claude-home.js";
 
 test("parseClaudeVersion pulls the semver out of the CLI banner", () => {
   assert.equal(parseClaudeVersion("2.1.226 (Claude Code)\n"), "2.1.226");
@@ -20,6 +20,7 @@ test("a virgin file gets every global key plus the project entry", () => {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
     autoModeEnvSetup: { dismissed: true },
+    resumeReturnDismissed: true,
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -33,6 +34,7 @@ test("an already-onboarded file needs no write at all", () => {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.0.0",
     autoModeEnvSetup: { dismissed: true },
+    resumeReturnDismissed: true,
     projects: {
       "/w/agent-1": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
     },
@@ -45,6 +47,60 @@ test("a present value is NEVER overwritten", () => {
   const out = seedPlan({ lastOnboardingVersion: "1.0.0" }, { version: "2.1.226" });
   assert.equal(out?.lastOnboardingVersion, "1.0.0");
   assert.equal(out?.hasCompletedOnboarding, true);
+});
+
+test("seedPlanForCwds trusts EVERY cwd in a single object (one atomic write)", () => {
+  // The fix for the shared-group-HOME trust race: a group HOME is seeded for
+  // ALL its channels' cwds in ONE write, not one racy write per spawn. The
+  // result is a single object carrying the globals plus every cwd's trust.
+  const out = seedPlanForCwds({}, { version: "2.1.226", cwds: ["/w/a", "/w/b", "/w/c"] });
+  assert.equal(out?.hasCompletedOnboarding, true);
+  assert.equal(out?.lastOnboardingVersion, "2.1.226");
+  const projects = out?.projects as Record<string, { hasTrustDialogAccepted?: boolean }>;
+  assert.equal(projects["/w/a"].hasTrustDialogAccepted, true);
+  assert.equal(projects["/w/b"].hasTrustDialogAccepted, true);
+  assert.equal(projects["/w/c"].hasTrustDialogAccepted, true);
+});
+
+test("seedPlanForCwds needs no write when every cwd is already trusted", () => {
+  // Same no-op guarantee as seedPlan: a complete file is never rewritten.
+  const existing = {
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.226",
+    autoModeEnvSetup: { dismissed: true },
+    resumeReturnDismissed: true,
+    projects: {
+      "/w/a": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
+      "/w/b": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true },
+    },
+  };
+  assert.equal(seedPlanForCwds(existing, { version: "2.1.226", cwds: ["/w/a", "/w/b"] }), null);
+});
+
+test("seedPlanForCwds adds only the missing cwd and preserves the rest", () => {
+  // The race's exact shape: a sibling's trust is already present, one cwd is
+  // missing. The seed must ADD the missing one without disturbing the others.
+  const existing = {
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.226",
+    autoModeEnvSetup: { dismissed: true },
+    resumeReturnDismissed: true,
+    projects: {
+      "/w/a": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true, someUserField: 7 },
+    },
+  };
+  const out = seedPlanForCwds(existing, { version: "2.1.226", cwds: ["/w/a", "/w/darts"] });
+  const projects = out?.projects as Record<string, Record<string, unknown>>;
+  assert.equal(projects["/w/darts"].hasTrustDialogAccepted, true);
+  // the sibling entry is untouched, including its own fields
+  assert.equal(projects["/w/a"].hasTrustDialogAccepted, true);
+  assert.equal(projects["/w/a"].someUserField, 7);
+});
+
+test("seedPlanForCwds with no cwds still seeds the globals (and only them)", () => {
+  const out = seedPlanForCwds({}, { version: "2.1.226", cwds: [] });
+  assert.equal(out?.hasCompletedOnboarding, true);
+  assert.equal("projects" in (out ?? {}), false);
 });
 
 test("no theme is ever written", () => {
@@ -114,6 +170,7 @@ test("a directory already trusted needs no write", () => {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.226",
     autoModeEnvSetup: { dismissed: true },
+    resumeReturnDismissed: true,
     projects: { "/w/a": { hasTrustDialogAccepted: true, hasCompletedProjectOnboarding: true } },
   };
   assert.equal(seedPlan(existing, { version: "2.1.226", cwd: "/w/a" }), null);
@@ -166,6 +223,46 @@ test("an instance already dismissed needs no write", () => {
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.241",
     autoModeEnvSetup: { dismissed: true },
+    resumeReturnDismissed: true,
   };
   assert.equal(seedPlan(existing, { version: "2.1.241" }), null);
+});
+
+test("the resume quota dialog is dismissed on a fresh instance", () => {
+  // "Resume this conversation? … will use N% of your 5-hour limit" blocks
+  // every resume of a large agent — reconcileOnBoot, Reload agent, /reload —
+  // and a cron-driven cockpit has nobody to answer it.
+  const out = seedPlan({}, { version: "2.1.304" });
+  assert.equal(out?.resumeReturnDismissed, true);
+});
+
+test("the resume quota flag is global — never written into a project entry", () => {
+  const out = seedPlan({}, { version: "2.1.304", cwd: "/w/a" });
+  assert.equal("resumeReturnDismissed" in (out?.projects?.["/w/a"] ?? {}), false);
+});
+
+test("an explicit resume quota choice is never overridden", () => {
+  // `false` is a user who wants the warning back; `true` needs nothing.
+  const wanted = seedPlan({ resumeReturnDismissed: false }, { version: "2.1.304" });
+  assert.equal(wanted?.resumeReturnDismissed, false);
+  const existing = {
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.304",
+    autoModeEnvSetup: { dismissed: true },
+    resumeReturnDismissed: false,
+  };
+  assert.equal(seedPlan(existing, { version: "2.1.304" }), null);
+});
+
+test("a file missing ONLY the resume quota flag still gets it", () => {
+  // Every instance seeded before this key existed is exactly this shape.
+  const existing = {
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.304",
+    autoModeEnvSetup: { dismissed: true },
+  };
+  assert.deepEqual(seedPlan(existing, { version: "2.1.304" }), {
+    ...existing,
+    resumeReturnDismissed: true,
+  });
 });

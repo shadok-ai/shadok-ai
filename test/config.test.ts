@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch, titleForCwd, themeForCwd } from "../src/config.js";
+import { effectiveToken, parseLegacyToken, telegramConfig, applyTelegramPatch, titleForCwd, themeForCwd, mutedForCwd, agentAuthForCwd } from "../src/config.js";
 
 test("effectiveToken: an explicit env var always wins", () => {
   assert.equal(
@@ -101,4 +101,57 @@ test("themeForCwd: default, unknown, or unset resolve to null", () => {
   assert.equal(themeForCwd({}, "/x"), null);
   assert.equal(themeForCwd({ cockpitTheme: { "/x": "amber" } }, "/x"), null); // default stored as absent
   assert.equal(themeForCwd({ cockpitTheme: { "/x": "chartreuse" } }, "/x"), null); // unknown ignored
+});
+
+test("mutedForCwd: true only for this dir's explicit true", () => {
+  assert.equal(mutedForCwd({ cockpitMuted: { "/x": true } }, "/x"), true);
+  assert.equal(mutedForCwd({ cockpitMuted: { "/x": true } }, "/other"), false); // per dir
+  assert.equal(mutedForCwd({}, "/x"), false); // unset = not muted
+  assert.equal(mutedForCwd({ cockpitMuted: { "/x": false } }, "/x"), false); // explicit false
+});
+
+test("agentAuthForCwd: 'login' only for this dir's explicit 'login', else 'token'", () => {
+  assert.equal(agentAuthForCwd({ agentAuth: { "/x": "login" } }, "/x"), "login");
+  assert.equal(agentAuthForCwd({ agentAuth: { "/x": "login" } }, "/other"), "token"); // per dir
+  assert.equal(agentAuthForCwd({}, "/x"), "token"); // unset = default token
+  assert.equal(agentAuthForCwd({ agentAuth: { "/x": "token" } }, "/x"), "token"); // explicit default
+  // A malformed value never silently switches auth away from the safe default.
+  assert.equal(agentAuthForCwd({ agentAuth: { "/x": "bogus" as "token" } }, "/x"), "token");
+});
+
+// ── The config file is never torn, and never replaced over an unreadable one ──
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { readConfigFile, writeConfigFile } from "../src/config.js";
+
+const tmpConfig = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "shadok-cfg-")), "config.json");
+
+test("readConfigFile: absent is an empty config, safe to write", () => {
+  assert.deepEqual(readConfigFile(tmpConfig()), { cfg: {}, unreadable: false });
+});
+
+test("readConfigFile: an empty, torn or non-object file is UNREADABLE, not empty", () => {
+  for (const body of ["", '{"tokens": {"/x": "1:a"', "[]", "null"]) {
+    const f = tmpConfig();
+    fs.writeFileSync(f, body);
+    assert.equal(readConfigFile(f).unreadable, true, JSON.stringify(body));
+  }
+});
+
+test("writeConfigFile: refuses to replace an unreadable file with an almost-empty config", () => {
+  // The wipe: a torn read became `{}`, and the next ordinary save wrote `{}` + one
+  // field over every token. The bytes on disk must survive instead.
+  const f = tmpConfig();
+  fs.writeFileSync(f, '{"tokens": {"/x": "1:a"}');
+  assert.equal(writeConfigFile(f, { cockpitTitle: { "/x": "T" } }), false);
+  assert.equal(fs.readFileSync(f, "utf8"), '{"tokens": {"/x": "1:a"}');
+});
+
+test("writeConfigFile: writes 600 through a rename, leaving no temp file behind", () => {
+  const f = tmpConfig();
+  assert.equal(writeConfigFile(f, { tokens: { "/x": "1:a" } }), true);
+  assert.deepEqual(readConfigFile(f), { cfg: { tokens: { "/x": "1:a" } }, unreadable: false });
+  assert.equal(fs.statSync(f).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(path.dirname(f)), ["config.json"]);
 });

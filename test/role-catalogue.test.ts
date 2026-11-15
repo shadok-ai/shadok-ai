@@ -99,8 +99,16 @@ test("each new role carries a guardrail shape no other shipped role has", () => 
 test("Shadok-QA may write tests and may not edit the source it is testing", () => {
   const deny = denyOf("Shadok-QA");
   assert.ok(
-    deny.some((d) => /^Write\(/.test(d)) && deny.some((d) => /^Edit\(/.test(d)),
+    deny.some((d) => /^Edit\(/.test(d)),
     "the source directories must be write-protected — that is the whole shape of this role",
+  );
+  // `Edit(<glob>)` is what blocks the Write tool too. A path-scoped
+  // `Write(<glob>)` never matches (measured on Claude Code 2.1.311, which warns
+  // about each one at startup), so adding it back for symmetry only buys warning
+  // rows on every spawn.
+  assert.ok(
+    !deny.some((d) => /^Write\(/.test(d)),
+    "a path-scoped Write(...) deny is inert — use Edit(...), which covers both tools",
   );
   // Its deliverable is a branch carrying a failing test, so git must stay open
   // to it. Reusing READONLY_DENY here would block exactly the wrong half.

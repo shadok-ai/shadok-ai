@@ -30,6 +30,14 @@ Grouped deliberately: a spotlight can frame a **region**, not just one control,
 which covers nine landmarks in four stops. A tour with a step per button is a
 tour people abandon.
 
+> **Update, 2026-11-12.** The step list above is the original one. The tour now
+> has up to eleven stops — groups, agents and rooms, an agent's bar, its menu,
+> schedules and webhooks, the composer, the toolbar, the people buttons, the
+> quota bars, the name and settings menu — because the cockpit grew all of
+> those while the tour stood still. The grouping rule is unchanged (regions,
+> never a step per button); `public/tour-steps.js` is the list of record, and
+> its tests now hold what each step must name.
+
 | # | Screen | Target |
 |---|---|---|
 | 1 | **Welcome** — every agent is a real Claude Code session, in its own directory and branch, driven from here or from Telegram | `null` (centred card) |

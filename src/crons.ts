@@ -13,7 +13,14 @@ import { loadConfig } from "./config.js";
 
 export type CronSchedule =
   | { kind: "interval"; everyMin: number } // every N minutes
-  | { kind: "daily"; hour: number; minute: number } // daily at HH:MM, in the cron's time zone
+  /**
+   * Daily at HH:MM, in the cron's time zone. `days` restricts it to some days
+   * of the WEEK (0 = Sunday … 6 = Saturday, sorted, unique); absent = every
+   * day. Never stored empty or with all seven: `normalizeSchedule` folds both
+   * to "absent", so there is ONE spelling of "every day" and old crons (no
+   * field) mean exactly what they always did.
+   */
+  | { kind: "daily"; hour: number; minute: number; days?: number[] }
   /**
    * One-shot: fires once at an ABSOLUTE instant, then the cron is spent.
    *
@@ -157,23 +164,79 @@ export function nextRunFor(s: CronSchedule, fromMs: number, tz?: string | null):
     const step = Math.max(1, Math.floor(s.everyMin)) * 60_000;
     return fromMs + step;
   }
+  // Allowed weekdays (0 = Sunday). Every day when absent — the historical rule.
+  const allowed = (wd: number) => !s.days || s.days.length === 0 || s.days.includes(wd);
+  // Walk calendar days from today: the first allowed day whose HH:MM is still
+  // ahead. 8 steps cover any non-empty day set (today may be allowed but past).
   if (!tz || !isValidTimeZone(tz)) {
     // Machine zone. `setHours` on a local Date follows daylight-saving shifts
     // on its own (09:00 stays 09:00), which is why this path is kept as is.
     const next = new Date(fromMs);
     next.setHours(s.hour, s.minute, 0, 0);
-    if (next.getTime() <= fromMs) next.setDate(next.getDate() + 1);
-    return next.getTime();
+    for (let k = 0; k < 8; k++) {
+      if (next.getTime() > fromMs && allowed(next.getDay())) return next.getTime();
+      next.setDate(next.getDate() + 1);
+    }
+    return next.getTime(); // unreachable with a valid day set
   }
   const today = calendarDayIn(tz, fromMs);
-  let t = instantOfWallClock(tz, today.y, today.mo, today.d, s.hour, s.minute);
-  if (t <= fromMs) {
+  let t = 0;
+  for (let k = 0; k < 8; k++) {
     // Next CALENDAR day (not +24h: a daylight-saving switch day lasts 23 or
     // 25 hours, and the schedule must stay at HH:MM).
-    const nd = new Date(Date.UTC(today.y, today.mo - 1, today.d) + 86_400_000);
+    const nd = new Date(Date.UTC(today.y, today.mo - 1, today.d) + k * 86_400_000);
     t = instantOfWallClock(tz, nd.getUTCFullYear(), nd.getUTCMonth() + 1, nd.getUTCDate(), s.hour, s.minute);
+    if (t > fromMs && allowed(nd.getUTCDay())) return t;
   }
-  return t;
+  return t; // unreachable with a valid day set
+}
+
+/** Day names accepted in a day list, English and French (3 letters or full). */
+const DAY_NAMES: Record<string, number> = {
+  sun: 0, sunday: 0, dim: 0, dimanche: 0,
+  mon: 1, monday: 1, lun: 1, lundi: 1,
+  tue: 2, tuesday: 2, mar: 2, mardi: 2,
+  wed: 3, wednesday: 3, mer: 3, mercredi: 3,
+  thu: 4, thursday: 4, jeu: 4, jeudi: 4,
+  fri: 5, friday: 5, ven: 5, vendredi: 5,
+  sat: 6, saturday: 6, sam: 6, samedi: 6,
+};
+const DAY_SHORT = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/**
+ * Parse a day list — `mon,wed,fri`, `mon-fri`, `sat-sun`, `weekdays`,
+ * `weekend`, French names too — into sorted weekday numbers; null when any
+ * part is unreadable (never a silently shorter list). A range wraps
+ * (`fri-mon` = fri, sat, sun, mon). Shared by Telegram's `/cron` and mirrored
+ * by the scheduler skill.
+ */
+export function parseDays(spec: string): number[] | null {
+  const parts = String(spec).toLowerCase().split(",").map((x) => x.trim()).filter(Boolean);
+  if (!parts.length) return null;
+  const out = new Set<number>();
+  for (const p of parts) {
+    if (p === "weekdays" || p === "semaine") { [1, 2, 3, 4, 5].forEach((d) => out.add(d)); continue; }
+    if (p === "weekend" || p === "week-end") { out.add(6); out.add(0); continue; }
+    const r = /^([a-z]+)-([a-z]+)$/.exec(p);
+    if (r) {
+      const a = DAY_NAMES[r[1]], b = DAY_NAMES[r[2]];
+      if (a === undefined || b === undefined) return null;
+      for (let d = a; ; d = (d + 1) % 7) { out.add(d); if (d === b) break; }
+      continue;
+    }
+    const d = DAY_NAMES[p];
+    if (d === undefined) return null;
+    out.add(d);
+  }
+  return [...out].sort((x, y) => x - y);
+}
+
+/** `mon-fri`, `sat,sun`, `mon,wed,fri` — the compact form of a day set. */
+export function daysLabel(days: readonly number[]): string {
+  const set = [...new Set(days)].sort((a, b) => a - b);
+  if (set.join() === "1,2,3,4,5") return "mon-fri";
+  if (set.join() === "0,6") return "sat,sun";
+  return set.map((d) => DAY_SHORT[d]).join(",");
 }
 
 /**
@@ -302,7 +365,16 @@ export function normalizeSchedule(raw: any): CronSchedule | null {
     const minute = Number(raw.minute);
     if (!Number.isInteger(hour) || hour < 0 || hour > 23) return null;
     if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
-    return { kind: "daily", hour, minute };
+    if (raw.days === undefined || raw.days === null) return { kind: "daily", hour, minute };
+    // A day list may arrive as WRITTEN ("mon-fri") — the scheduler skill sends
+    // it that way so the parsing has one home, here, like `once`'s date.
+    const rawDays: unknown = typeof raw.days === "string" ? parseDays(raw.days) : raw.days;
+    if (!Array.isArray(rawDays)) return null;
+    const days = [...new Set(rawDays.map((x) => Number(x)))].sort((a, b) => a - b);
+    if (days.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) return null;
+    // Empty or all seven = every day: stored WITHOUT the field (one spelling).
+    if (days.length === 0 || days.length === 7) return { kind: "daily", hour, minute };
+    return { kind: "daily", hour, minute, days };
   }
   return null;
 }
@@ -350,7 +422,8 @@ export function scheduleLabel(s: CronSchedule, tz?: string): string {
     return `every ${s.everyMin}m`;
   }
   const hhmm = `${String(s.hour).padStart(2, "0")}:${String(s.minute).padStart(2, "0")}`;
-  return `daily at ${hhmm} (${tz || systemTimeZone()})`;
+  const when = s.days && s.days.length ? `${daysLabel(s.days)} at` : "daily at";
+  return `${when} ${hhmm} (${tz || systemTimeZone()})`;
 }
 
 function storeFile(): string {

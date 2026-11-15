@@ -1,7 +1,9 @@
+import { MAIN_GROUP_ID } from "./groups.js";
 import WebSocket from "ws";
 import { loadChannels } from "./channels.js";
-import { authStatus, type AuthState } from "./claude-auth.js";
+import type { Connected } from "./connect-gate.js";
 import { BOSS_PROFILE_NAME } from "./profiles.js";
+import { isSpawnStep, type SpawnStep } from "./spawn-steps.js";
 
 /**
  * The lead agent an instance starts life with.
@@ -17,7 +19,25 @@ import { BOSS_PROFILE_NAME } from "./profiles.js";
  */
 
 /** The name every instance's first channel carries. */
+/** Pure: how many channels live in the commons. A null/missing group is the
+ *  commons too (pre-groups channels), so a mono-tenant instance counts them all. */
+export function countMainChannels(channels: ReadonlyArray<{ group?: string | null }>): number {
+  return channels.filter((c) => c.group == null || c.group === MAIN_GROUP_ID).length;
+}
+
 export const FIRST_AGENT_NAME = "general";
+
+/**
+ * Pure: the `start` the lead agent is spawned with. The launch directory and no
+ * worktree — this is the main channel, not one of the isolated agents it will go
+ * on to spawn. And an EXPLICIT `group: Main`: the spawn is made over the
+ * loopback as the bootstrap admin, and on a multi-tenant instance a spawn with no
+ * group lands in its creator's private group — the lead agent then lived in the
+ * admin's Personal, where nobody else could see it. Mono-tenant ignores the field.
+ */
+export function firstAgentStartMessage(cwd: string, profile: string | undefined) {
+  return { type: "start" as const, cwd, profile, origin: "boot", group: MAIN_GROUP_ID };
+}
 
 export interface FirstAgentPlan {
   spawn: boolean;
@@ -34,13 +54,22 @@ export interface FirstAgentPlan {
  * a log line, so the reason has to be the true one.
  */
 export function firstAgentPlan(input: {
-  channelCount: number;
-  authState: AuthState;
+  /** Channels in `Main` (the commons) ONLY. Every other group starts empty and
+   *  the user launches its first agent on demand, so a brand-new private group
+   *  must never read as "no channel, spawn a lead". */
+  mainChannelCount: number;
+  /** Can the agent this spawns authenticate (src/connect-gate.ts)? */
+  connected: Connected;
+  /** The whole instance runs on a custom model backend (src/backend.ts): its
+   *  agents carry their own token, so the Claude sign-in is irrelevant. */
+  customBackend?: boolean;
 }): FirstAgentPlan {
-  if (input.channelCount > 0) return { spawn: false, reason: "channels-exist" };
+  if (input.mainChannelCount > 0) return { spawn: false, reason: "channels-exist" };
+  if (input.customBackend)
+    return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
   // "unknown" is not "signed in": the probe failed. Waiting costs one boot,
   // guessing costs an agent with no credentials — the zombie shape (invariant 27).
-  if (input.authState !== "signed-in") return { spawn: false, reason: "not-signed-in" };
+  if (input.connected !== "yes") return { spawn: false, reason: "not-signed-in" };
   return { spawn: true, reason: "first-boot", name: FIRST_AGENT_NAME, profile: BOSS_PROFILE_NAME };
 }
 
@@ -66,9 +95,17 @@ export interface FirstAgentStatus {
   pending: boolean;
   /** Why — the plan's reason once one has been computed, before that "starting". */
   reason: FirstAgentPlan["reason"] | "starting" | "idle";
+  /** The spawn step the server last announced (src/spawn-steps.ts), so the
+   *  page's "starting" panel shows the same real progress as a tab's loader.
+   *  Null before the first one and whenever nothing is pending. */
+  step: SpawnStep | "hello" | null;
+  /** The lead's session while its FIRST turn (the greeting) is under way: the
+   *  wait stays open until it has answered, so the page keeps its loader up
+   *  instead of showing an empty chat that fills a few seconds later. */
+  greeting: string | null;
 }
 
-let status: FirstAgentStatus = { pending: false, reason: "idle" };
+let status: FirstAgentStatus = { pending: false, reason: "idle", step: null, greeting: null };
 
 /** A copy, so no caller can hold a handle on the state and edit it. */
 export function firstAgentStatus(): FirstAgentStatus {
@@ -90,13 +127,38 @@ export function firstAgentStatus(): FirstAgentStatus {
 export function announceFirstAgent(channelCount: number): void {
   status =
     channelCount > 0
-      ? { pending: false, reason: "channels-exist" }
-      : { pending: true, reason: "starting" };
+      ? { pending: false, reason: "channels-exist", step: null, greeting: null }
+      : { pending: true, reason: "starting", step: null, greeting: null };
+}
+
+/** Record the step the lead's spawn has reached. Ignored once the wait is over
+ *  (a late message must not put a step back on a settled status) and for
+ *  anything that is not a known step. */
+export function noteFirstAgentStep(step: unknown): void {
+  if (!status.pending || !isSpawnStep(step)) return;
+  status = { ...status, step };
 }
 
 /** The one way out of `pending`. Never conditional: every reason ends the wait. */
 export function settleFirstAgent(reason: FirstAgentPlan["reason"]): void {
-  status = { pending: false, reason };
+  status = { pending: false, reason, step: null, greeting: null };
+}
+
+/** The lead was born and is being greeted: keep the wait open on its behalf
+ *  (step "hello"). Never reopens a settled wait. */
+export function greetFirstAgent(sessionId: string): void {
+  if (!status.pending) return;
+  status = { ...status, step: "hello", greeting: sessionId };
+}
+
+/** The greeting of THIS session is over (answered, failed, or the guard fired). */
+export function endFirstAgentGreeting(sessionId: string): void {
+  if (status.greeting === sessionId) settleFirstAgent("first-boot");
+}
+
+/** The spawn's own exit: settles the wait unless a greeting now owns it. */
+export function settleAfterSpawn(): void {
+  if (status.greeting === null) settleFirstAgent("first-boot");
 }
 
 /** Guards the two callers (boot, sign-in) against firing at the same moment. */
@@ -113,13 +175,24 @@ export async function ensureFirstAgent(deps: {
   port: number;
   cookie?: string;
   cwd: string;
+  /** The instance runs on a custom model backend (src/backend.ts) — decided by
+   *  the server, which owns both the env and the saved choice. */
+  customBackend?: boolean;
+  /** Whether the commons' first agent could authenticate (src/connect-gate.ts),
+   *  computed by the server, which owns the facts (auth mode, token, logins). */
+  connected: () => Promise<Connected>;
   /** Called with the new session id once the server reports it ready. */
   onReady: (sessionId: string, name: string) => void;
 }): Promise<FirstAgentPlan["reason"]> {
   if (inFlight) return "channels-exist";
+  // Instance-wide only: the lead agent's profile is not consulted, so a custom
+  // backend reaches it through the instance's source (env or saved choice).
+  const customBackend = deps.customBackend ?? false;
   const plan = firstAgentPlan({
-    channelCount: loadChannels().length,
-    authState: (await authStatus()).state,
+    mainChannelCount: countMainChannels(loadChannels()),
+    // No probe when it cannot change the answer (~850ms, and a process spawn).
+    connected: customBackend ? "unknown" : await deps.connected(),
+    customBackend,
   });
   if (!plan.spawn) {
     settleFirstAgent(plan.reason);
@@ -152,20 +225,15 @@ export async function ensureFirstAgent(deps: {
       guard.unref?.();
       ws.on("open", () =>
         ws.send(
-          JSON.stringify({
-            type: "start",
-            // The launch directory, and no worktree: this is the main channel,
-            // not one of the isolated agents it will go on to spawn.
-            cwd: deps.cwd,
-            profile: plan.profile,
-            origin: "boot",
-          }),
+          JSON.stringify(firstAgentStartMessage(deps.cwd, plan.profile)),
         ),
       );
       ws.on("message", (raw) => {
-        let m: { type?: string; sessionId?: string };
+        let m: { type?: string; sessionId?: string; step?: unknown };
         try { m = JSON.parse(String(raw)); } catch { return; }
-        if (m.type === "ready" && m.sessionId) {
+        if (m.type === "starting") {
+          noteFirstAgentStep(m.step);
+        } else if (m.type === "ready" && m.sessionId) {
           deps.onReady(m.sessionId, plan.name!);
           finish();
         } else if (m.type === "error" || m.type === "exited") {
@@ -181,7 +249,9 @@ export async function ensureFirstAgent(deps: {
     // on `exited`, on a socket failure and on the 60s guard, and every one of
     // them has to end the "starting…" status. `onReady` has already written the
     // channel by now, so the client sees the tab and the cleared flag together.
-    settleFirstAgent("first-boot");
+    // …unless `onReady` handed the wait to the greeting (greetFirstAgent), which
+    // ends it itself when the lead has answered.
+    settleAfterSpawn();
   }
   return "first-boot";
 }
