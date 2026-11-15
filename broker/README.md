@@ -7,13 +7,15 @@ and hands the token back **through the browser, encrypted for the instance**
 nothing and logs no token.
 
 Routes: `GET /health`, `GET /<provider>/start`, `GET /<provider>/callback`,
-and `POST /google/refresh`. Providers: `linkedin`, and `google` once its two
-secrets are set (`/health` lists only the providers whose secrets exist, plus
+`POST /google/refresh`, `POST /github/refresh` and `GET /github/setup`.
+Providers: `linkedin`, and `google` / `github` once their two secrets are set (`/health` lists only the providers whose secrets exist, plus
 `testing: ["google"]` while `GOOGLE_TESTING=1`).
 
 Redirect URLs to register: LinkedIn app →
 `https://connect.shadok.ai/linkedin/callback`; Google OAuth client (type *Web
-application*) → `https://connect.shadok.ai/google/callback`.
+application*) → `https://connect.shadok.ai/google/callback`; GitHub App →
+callback `https://connect.shadok.ai/github/callback`, Setup URL
+`https://connect.shadok.ai/github/setup` (with *Redirect on update*).
 
 Google specifics (spec `docs/superpowers/specs/2026-11-13-connected-accounts-google-design.md`):
 `/google/start` takes `areas=` among `calendar`, `drive`, `gmail` (drafts +
@@ -40,6 +42,20 @@ alternative; `invalid_grant` from either still means "reconnect". Both apps
 need the same redirect URI and scopes. The refresh token is never logged
 or echoed.
 
+**GitHub** is a GitHub App, not an OAuth App: it takes no scopes, and what a
+token reaches is the app's permissions on the repositories the person
+installed it on. Authorizing grants no repository by itself — installing does,
+so `/health` advertises `githubInstallUrl` (from the `GITHUB_APP_SLUG` var).
+Leave *Request user authorization during installation* OFF: GitHub then
+redirects to the callback without our `state`, and the broker refuses it. The
+Setup URL lands on `/github/setup`, a plain "close this tab" page — GitHub
+carries no state there, and a user token reaches newly picked repositories
+without reconnecting. GitHub's token endpoint refuses with HTTP 200 and an
+`error` field (the broker treats it as a refusal), user tokens last 8 h, and
+the refresh token ROTATES: `/github/refresh` returns the new `refresh_token`,
+which the instance must keep. `bad_refresh_token` is reported as
+`invalid_grant`, like Google's.
+
 Every other path (`/`, `/waitlist`, …, any method) is forwarded to the site
 Worker `shadok-connect-site` through the `SITE` service binding
 (`wrangler.toml`). That Worker is deployed separately and must exist before
@@ -57,6 +73,8 @@ npx wrangler secret put GOOGLE_CLIENT_ID      # optional: Google is offered only
 npx wrangler secret put GOOGLE_CLIENT_SECRET
 npx wrangler secret put GOOGLE_ALT_CLIENT_ID      # optional: a second Google app for GOOGLE_ALT_HOSTS
 npx wrangler secret put GOOGLE_ALT_CLIENT_SECRET
+npx wrangler secret put GITHUB_CLIENT_ID      # optional: GitHub is offered only with both
+npx wrangler secret put GITHUB_CLIENT_SECRET
 ```
 
 ## Develop

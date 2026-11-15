@@ -109,7 +109,7 @@ import {
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd, tmuxSessionCreated } from "./tmux.js";
 import { scanUsageSamples, scanUsageSamplesAsync, subagentDirFor, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
-import { windowStats, type MsgSample, type TokenStats } from "./token-stats.js";
+import { windowStats, latestModel, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
 import { computePace, paceBlock, WINDOW_SEC } from "./pace.js";
@@ -3537,7 +3537,13 @@ app.get("/channels/stats", async (req, res) => {
   // delegating agent reads far cheaper than it was.
   const subs = await subagentSamples(mainFile);
   const windows: TokenStats = windowStats([...mainSamples, ...subs], Date.now());
-  res.json({ windows, upSince, lastRespawn, model });
+  // The model that produced this agent's most recent message — the resolved
+  // name (e.g. "claude-opus-4-8"), the only place the REAL model is observable.
+  // `model` above is just the --model setting (empty for the default). Computed
+  // from the agent's OWN samples, never the subagents' (a child's model is not
+  // the agent's). Reflects the last message as of this request — see the client.
+  const lastModel = latestModel(mainSamples);
+  res.json({ windows, upSince, lastRespawn, model, lastModel });
 });
 
 // The instance-wide total, for the header ⋯ menu's "Instance stats". A dormant

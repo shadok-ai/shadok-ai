@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { messageCostUSD, windowStats, MODEL_PRICING, type MsgSample } from "../src/token-stats.js";
+import { messageCostUSD, windowStats, latestModel, MODEL_PRICING, type MsgSample } from "../src/token-stats.js";
 import { scanUsageSamples, scanUsageSamplesAsync, subagentDirFor } from "../src/tail.js";
 
 const u = (input: number, output: number, cacheCreation: number, cacheRead: number) => ({
@@ -29,6 +29,24 @@ test("messageCostUSD: an unknown model (or the synthetic marker) has no price â†
 const MIN = 60 * 1000;
 const HOUR = 60 * MIN;
 const DAY = 24 * HOUR;
+
+const smpl = (at: number, model: string): MsgSample => ({ at, model, usage: u(1, 1, 0, 0) });
+
+test("latestModel: the most recent sample's model wins, by timestamp not order", () => {
+  assert.equal(
+    latestModel([smpl(100, "claude-sonnet-4-6"), smpl(300, "claude-opus-4-8"), smpl(200, "claude-haiku-4-5")]),
+    "claude-opus-4-8",
+  );
+});
+
+test("latestModel: a blank model never wins, even when it is the newest line", () => {
+  assert.equal(latestModel([smpl(100, "claude-opus-4-8"), smpl(500, "")]), "claude-opus-4-8");
+});
+
+test("latestModel: no samples (or none with a model) â†’ empty string", () => {
+  assert.equal(latestModel([]), "");
+  assert.equal(latestModel([smpl(10, ""), smpl(20, "")]), "");
+});
 
 test("windowStats: a message counts in every window wider than its age (nesting)", () => {
   const now = 1_000 * DAY;

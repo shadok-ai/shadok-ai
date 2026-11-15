@@ -242,7 +242,13 @@ Enter to skip; you can add it later from the web UI).
   API, so nothing is billed per token; the figure is what those tokens would cost
   at Anthropic API list prices, a way to compare agents rather than an invoice. It
   also shows how long the agent has been **up** (session age, which survives
-  restarts) and when it **last respawned** (the running process's start). The
+  restarts), when it **last respawned** (the running process's start), and the
+  **model** it runs on — both what it is *set* to (the pick, the profile's, or
+  the instance default) and, after its first reply, the concrete model that
+  actually produced its **last message** (`set → actual`), read from the
+  transcript. That last-message model is the only place the real model is
+  observable: the *setting* is empty for "Claude Code's own default", so an agent
+  on the default shows which model it resolved to only here. The
   figures are the **real** per-message counts the API reported (only the *cost* is
   notional), and they include the agent's **subagents** — the Task-tool children
   write their own transcripts, so a delegating agent's true total is mostly there;

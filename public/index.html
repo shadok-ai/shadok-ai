@@ -6128,6 +6128,26 @@
     const base = choice ? choice.label : alias;
     return long ? base + " · 1M" : base;
   }
+  /** Pretty label for a RESOLVED model name from the transcript, e.g.
+   *  "claude-opus-4-8" → "Opus 4.8". Twin of modelLabel (which labels the alias
+   *  SETTING); here the name is the concrete one the running process reported.
+   *  An unrecognised shape (a custom backend id) is shown as-is — accurate beats
+   *  pretty. "" in, "" out. */
+  function resolvedModelLabel(name) {
+    const raw = String(name ?? "").trim();
+    if (!raw) return "";
+    const long = /\[1m\]/i.test(raw);
+    const bare = raw.replace(/\[1m\]/i, "").trim();
+    const m = /^claude-(opus|sonnet|haiku|fable)-(\d+)(?:-(\d+))?$/i.exec(bare);
+    let label;
+    if (m) {
+      const fam = m[1][0].toUpperCase() + m[1].slice(1).toLowerCase();
+      label = fam + " " + m[2] + (m[3] != null ? "." + m[3] : "");
+    } else {
+      label = bare;
+    }
+    return long ? label + " · 1M" : label;
+  }
   /** The per-agent thinking-effort picker, twin of the model one: `--effort` is
    *  also a spawn arg, so picking a level always restarts the agent (history
    *  kept) rather than recording a wish the running process does not carry. */
@@ -15341,7 +15361,14 @@
     const parts = [];
     if (data.upSince) parts.push("⏱ Up " + fmtDur(now - data.upSince));
     if (data.lastRespawn) parts.push("↻ respawn " + relTime(data.lastRespawn));
-    if (data.model) parts.push("🧠 " + modelLabel(data.model));
+    // Model: what it's SET to (the --model arg, "profile default" when unset),
+    // and — when a message has been written — the model that actually produced
+    // the LAST one (the resolved name, the only observable "real" model). Shown
+    // as "set → actual" so the alias you picked and the concrete model it ran as
+    // are both visible; just the setting when nothing has been answered yet.
+    const setLabel = modelLabel(data.model);
+    const ran = resolvedModelLabel(data.lastModel);
+    parts.push("🧠 " + (ran ? setLabel + " → " + ran + " (last message)" : setLabel));
     $("statsUptime").textContent = parts.join("  ·  ") || "No activity yet.";
     fillStatsRows(data.windows);
   }
