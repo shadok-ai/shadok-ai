@@ -120,7 +120,13 @@ test("an explicit account comes from SHADOK_GITHUB_ACCOUNT", async () => {
 });
 
 test("git itself gets the credential through the helper the spawn configures", async () => {
-  const s = await stub(200, { account: "a1", login: "octo", email: "", token: FAKE, expiresAt: 1_700_000_000_000 });
+  // A FUTURE expiry, and it is load-bearing: `credentialOutput` reports it as
+  // `password_expiry_utc`, and git's `fill` SKIPS a credential whose expiry has
+  // passed — it keeps the username, finds no password, and (prompts disabled)
+  // dies with "could not read Password". A fixed past instant therefore made
+  // this test assert the opposite of what it checks, on any git that honours
+  // the attribute. Production always sends a real deadline (~8 h out).
+  const s = await stub(200, { account: "a1", login: "octo", email: "", token: FAKE, expiresAt: Date.now() + 8 * 3_600_000 });
   try {
     // The exact env shape `githubGitEnv` (src/github.ts) gives every agent.
     const env = envFor(s.port, {
