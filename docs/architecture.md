@@ -2975,6 +2975,11 @@ its own — the token in token mode, its login in login mode; carries `user`) or
 or `"unresponsive"` (the agent's terminal stopped taking input and the automatic
 restart + re-delivery did not bring it back, or was not attempted — the prompt
 was NOT delivered and an agent report has been filed; `src/submit-recovery.ts`)
+or `"turn-timeout"` (a turn's screen kept changing for a whole `TURN_WAIT_MS`,
+15 min, with no work marker — a real hang; the last screen goes to the server
+log, never into the message. A turn that is merely LONG never gets this: while
+the screen still shows work, `finishTurn` waits again, `keepWaitingAfterTimeout`
+in `src/detect.ts`, and `busy` stays up so no prompt is typed into it)
 — so a machine client can classify a refusal without matching on the message
 text.
 

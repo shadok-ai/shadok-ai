@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, submitFailure, type SubmitError, type SubmitFailure, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
+import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, submitFailure, IdleTimeoutError, type SubmitError, type SubmitFailure, nextScreenDelay, typeIntoBox, SCREEN_FAST_MS } from "./detect.js";
 import { windowMs, forcedEnv } from "./session.js";
 import { dropArgv, dropEnv } from "./osusers.js";
 import { binaryBusyError } from "./claude-bin.js";
@@ -750,7 +750,7 @@ export class TmuxPilot {
       lastScreen = step.lastScreen;
       await sleep(160);
     }
-    throw new Error(`waitForIdle: timed out after ${timeoutMs} ms. Last screen:\n${this.screen()}`);
+    throw new IdleTimeoutError(timeoutMs, this.screen());
   }
 
   /** Clean shutdown: /exit, then kill the tmux session as a fallback. */
