@@ -55,6 +55,7 @@ import {
   patchEvent,
   rawMessage,
   readGmail,
+  replyTarget,
   searchGmail,
   readSheet,
   sendGmailDraft,
@@ -594,21 +595,34 @@ export async function runGoogleAction(deps: GoogleDeps, account: ConnectedAccoun
       }
       const attachments = await readAttachments(deps, args.attachments);
       const names = attachments.map((a) => a.name);
-      const raw = rawMessage(buildMime(fields, attachments));
-      const summary = mailSummary(fields);
       const token = await deps.token(account.id);
+      // A reply goes in the original's conversation. Finding the original's
+      // ids means READING a message, which only `gmail_read` may do.
+      const replyTo = str(args.replyTo);
+      let threadId: string | undefined;
+      if (replyTo) {
+        if (!areaHeld(account, "gmail_read")) {
+          throw new GoogleInputError(`Replying in a thread needs Read Gmail access, which Google account '${account.label}' was connected without — ${account.owner} can reconnect it and tick Read Gmail. Without it, send a new email instead.`);
+        }
+        const t = await replyTarget(token, replyTo, f);
+        fields.inReplyTo = t.inReplyTo;
+        fields.references = t.references;
+        threadId = t.threadId;
+      }
+      const raw = rawMessage(buildMime(fields, attachments));
+      const summary = mailSummary(fields) + (replyTo ? " (reply)" : "");
       if (action === "gmail.draft") {
-        const d = replace ? await updateGmailDraft(token, replace, raw, f) : await createGmailDraft(token, raw, f);
+        const d = replace ? await updateGmailDraft(token, replace, raw, f, threadId) : await createGmailDraft(token, raw, f, threadId);
         if (!replace) deps.ownGmailDrafts.add(account.id, d.id);
         return { kind: "result", result: { draftId: d.id, status: "draft" }, log: { summary: `draft ${summary}` } };
       }
       if (setting === "autonomous") {
-        const sent = await sendGmailMessage(token, raw, f);
+        const sent = await sendGmailMessage(token, raw, f, threadId);
         return { kind: "result", result: { status: "sent", messageId: sent.id }, log: { summary } };
       }
       // With approval, the Gmail draft IS the draft: the person may open Gmail
       // and edit it; the card's fingerprint is what Send compares against.
-      const d = await createGmailDraft(token, raw, f);
+      const d = await createGmailDraft(token, raw, f, threadId);
       const content: MailContent = { ...fields, attachments: names };
       const payload: MailPayload = { kind: "mail", from: account.label, ...content, gmailDraftId: d.id, fingerprint: mailFingerprint(content) };
       return { kind: "pending", action: "gmail.send", payload, summary };

@@ -37,8 +37,8 @@ const USAGE = `usage: google.mjs <command>
   sheet update    --account <id> --id <sheet id> --range <A1 range> --stdin        (stdin: JSON array of rows; overwrites the range)
   gmail search    --account <id> [--query <gmail search>] [--max <n>] [--page <token>]
   gmail read      --account <id> (--id <message id> | --thread <thread id>)
-  gmail draft     --account <id> --to <email>... [--cc <email>]... [--bcc <email>]... --subject <s> [--attach <abs path>]... [--update <draft id>] --stdin
-  gmail send      --account <id> --to <email>... [--cc <email>]... [--bcc <email>]... --subject <s> [--attach <abs path>]... --stdin`;
+  gmail draft     --account <id> --to <email>... [--cc <email>]... [--bcc <email>]... --subject <s> [--attach <abs path>]... [--update <draft id>] [--reply <message id>] --stdin
+  gmail send      --account <id> --to <email>... [--cc <email>]... [--bcc <email>]... --subject <s> [--attach <abs path>]... [--reply <message id>] --stdin`;
 const die = (m) => { console.error(m); process.exit(1); };
 
 async function readStdin() {
@@ -94,7 +94,7 @@ async function accounts() {
 const FLAGS = {
   account: "one", from: "one", to: "list", calendar: "one", max: "num", title: "one", start: "one", end: "one", tz: "one",
   attendee: "list", location: "one", color: "one", event: "one", id: "one", range: "one", cc: "list", bcc: "list", subject: "one",
-  attach: "list", update: "one", stdin: "flag", query: "one", page: "one", thread: "one", name: "one", format: "one",
+  attach: "list", update: "one", reply: "one", stdin: "flag", query: "one", page: "one", thread: "one", name: "one", format: "one",
 };
 
 function parse(args, listTo) {
@@ -233,7 +233,7 @@ function printMail(action, r) {
     ].join("\n"),
   );
   console.log(fenced([blocks.join("\n\n----\n\n")]));
-  console.log("Replying or forwarding still goes through `gmail send` / `gmail draft` and the account's mail setting.");
+  console.log("To reply in this thread: `gmail draft` / `gmail send` with `--reply <message id>` (the account's mail setting still applies).");
 }
 
 function print(action, out) {
@@ -344,7 +344,7 @@ async function run(group, verb, rest) {
     args = { id: o.id, rows, ...(o.range ? { range: o.range } : {}) };
   } else {
     if (!text || !text.trim()) die("The email body is empty.");
-    args = { to: o.to ?? [], cc: o.cc ?? [], bcc: o.bcc ?? [], subject: o.subject, body: text, ...(o.attach ? { attachments: o.attach } : {}), ...(o.update ? { update: o.update } : {}) };
+    args = { to: o.to ?? [], cc: o.cc ?? [], bcc: o.bcc ?? [], subject: o.subject, body: text, ...(o.attach ? { attachments: o.attach } : {}), ...(o.update ? { update: o.update } : {}), ...(o.reply ? { replyTo: o.reply } : {}) };
   }
   print(action, await call("POST", "/google/actions", { account: o.account, action, args }));
 }

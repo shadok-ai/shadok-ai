@@ -2254,6 +2254,15 @@ account: the ids are recorded in `<key>.gmail-drafts.json`
 (`ownGmailDrafts`), since Gmail's `drafts.update` would take any draft of the
 mailbox, the person's own included.
 
+`--reply <message id>` (on `gmail.draft` and `gmail.send`) files the mail in
+the original's conversation. A `threadId` alone is not enough — without
+`In-Reply-To` and `References` Gmail, and the recipient's client, start a new
+one — so `replyTarget` reads the original's `Message-ID` and `References`
+(keeping only well-formed ids, the most recent 20: the chain is someone
+else's header) and `buildMime` re-checks them before writing. Reading the
+original needs `gmail_read`; `gmail.compose` cannot, so a reply without it is
+refused rather than silently sent as a new conversation.
+
 `actionVerdict` refuses an action whose area was not granted, naming who can
 reconnect and tick it. Under `approve` nothing leaves the account from the
 agent's route: `runGoogleAction` returns a `pending` outcome and the route
