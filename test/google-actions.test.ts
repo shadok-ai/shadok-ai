@@ -592,3 +592,65 @@ test("the record of own drafts: per account, capped, 600, and forgotten with a d
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- replying in a thread (--reply) ----------------------------------------
+
+function withReplyable(g: ReturnType<typeof fakeGoogle>) {
+  g.inbox.set("m9", {
+    id: "m9", threadId: "t9", labelIds: ["INBOX"],
+    payload: { mimeType: "text/plain", headers: [
+      { name: "Subject", value: "Your request" },
+      { name: "Message-ID", value: "<orig-9@mail.example.org>" },
+      { name: "References", value: "<root-1@mail.example.org> bogus\r\nInjected: x <second-2@mail.example.org>" },
+    ], body: { data: "", size: 0 } },
+  });
+  // Record what each Gmail write was handed (the fake keeps only the raw).
+  const bodies: Record<string, any>[] = [];
+  const inner = g.fetchFn;
+  const fetchFn = (async (input: unknown, init: RequestInit = {}) => {
+    if (init.body) bodies.push(JSON.parse(String(init.body)));
+    return inner(input as string, init);
+  }) as FetchFn;
+  return { fetchFn, bodies };
+}
+
+test("gmail draft --reply files the draft in the original's thread, with In-Reply-To and References", async () => {
+  const { g, deps, account } = setup();
+  const r = withReplyable(g);
+  deps.fetchFn = r.fetchFn;
+  const out = await runGoogleAction(deps, account, "gmail.draft", { ...MAIL, subject: "Re: Your request", replyTo: "m9" });
+  assert.equal(out.kind, "result");
+  const create = r.bodies.find((b) => b.message?.raw)!;
+  assert.equal(create.message.threadId, "t9");
+  const mime = Buffer.from(create.message.raw, "base64url").toString("utf8");
+  assert.match(mime, /\r\nIn-Reply-To: <orig-9@mail\.example\.org>\r\n/);
+  // The chain keeps only well-formed ids, ends with the original, and carries no injected header.
+  assert.match(mime, /\r\nReferences: <root-1@mail\.example\.org> <second-2@mail\.example\.org> <orig-9@mail\.example\.org>\r\n/);
+  assert.doesNotMatch(mime, /Injected/);
+  assert.ok(g.calls.includes("GET /gmail/v1/users/me/messages/m9"));
+});
+
+test("gmail send --reply: the approval draft and an autonomous send both carry the thread", async () => {
+  const s1 = setup();
+  const r1 = withReplyable(s1.g);
+  s1.deps.fetchFn = r1.fetchFn;
+  assert.equal((await runGoogleAction(s1.deps, s1.account, "gmail.send", { ...MAIL, replyTo: "m9" })).kind, "pending");
+  assert.equal(r1.bodies.find((b) => b.message?.raw)!.message.threadId, "t9");
+
+  const auto = acct({ policies: { mail: "autonomous", calendar: "approve", drive: "approve" } });
+  const s2 = setup(auto);
+  const r2 = withReplyable(s2.g);
+  s2.deps.fetchFn = r2.fetchFn;
+  assert.equal((await runGoogleAction(s2.deps, auto, "gmail.send", { ...MAIL, replyTo: "m9" })).kind, "result");
+  assert.equal(r2.bodies.find((b) => b.raw)!.threadId, "t9");
+});
+
+test("--reply needs Read Gmail, and a message without a Message-ID is refused, never sent as a new thread", async () => {
+  const draftsOnly = acct({ scopes: ["openid", GOOGLE_AREA_SCOPES.gmail] });
+  const s = setup(draftsOnly);
+  await assert.rejects(runGoogleAction(s.deps, draftsOnly, "gmail.draft", { ...MAIL, replyTo: "m9" }), /needs Read Gmail/);
+  assert.equal(s.g.drafts.size, 0);
+  const t = setup();
+  await assert.rejects(runGoogleAction(t.deps, t.account, "gmail.draft", { ...MAIL, replyTo: "m1" }), /no usable Message-ID/);
+  assert.equal(t.g.drafts.size, 0);
+});

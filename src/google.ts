@@ -208,6 +208,11 @@ export interface MailFields {
   bcc: string[];
   subject: string;
   body: string;
+  /** A reply: the original's `Message-ID`, and the `References` chain it extends
+   *  (`replyTarget`). Without both headers Gmail starts a new conversation, for
+   *  the person AND for the recipient's client, whatever the threadId says. */
+  inReplyTo?: string;
+  references?: string;
 }
 
 export interface MailAttachment {
@@ -345,7 +350,14 @@ export function buildMime(fields: MailFields, attachments: readonly MailAttachme
   list("Cc", fields.cc);
   list("Bcc", fields.bcc);
   if (CONTROL.test(fields.subject)) throw new GoogleInputError("The subject contains a line break or control character.");
-  head.push(`Subject: ${encodeHeaderText(fields.subject)}`, "MIME-Version: 1.0");
+  head.push(`Subject: ${encodeHeaderText(fields.subject)}`);
+  if (fields.inReplyTo) {
+    // Built from replyTarget's checked ids; re-checked here because a header
+    // carrying a line break is a header injection.
+    if (!MESSAGE_ID_RE.test(fields.inReplyTo) || CONTROL.test(fields.references ?? "")) throw new GoogleInputError("The message being replied to has an unusable Message-ID.");
+    head.push(`In-Reply-To: ${fields.inReplyTo}`, `References: ${fields.references || fields.inReplyTo}`);
+  }
+  head.push("MIME-Version: 1.0");
   const text = ['Content-Type: text/plain; charset="UTF-8"', "Content-Transfer-Encoding: base64", "", wrap76(Buffer.from(fields.body, "utf8").toString("base64"))];
   if (!attachments.length) return [...head, ...text].join("\r\n") + "\r\n";
   const parts = [`--${boundary}`, ...text];
@@ -524,14 +536,17 @@ export function parseGmailMessage(payload: GmailPart | undefined): MailContent {
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 
-export async function createGmailDraft(token: string, raw: string, fetchFn: FetchFn): Promise<{ id: string }> {
-  const j = await sendJson<{ id?: string }>("draft creation", "POST", `${GMAIL}/drafts`, token, { message: { raw } }, fetchFn);
+/** `threadId` puts the draft in that conversation (a reply, `replyTarget`). */
+const gmailMessage = (raw: string, threadId?: string) => ({ raw, ...(threadId ? { threadId } : {}) });
+
+export async function createGmailDraft(token: string, raw: string, fetchFn: FetchFn, threadId?: string): Promise<{ id: string }> {
+  const j = await sendJson<{ id?: string }>("draft creation", "POST", `${GMAIL}/drafts`, token, { message: gmailMessage(raw, threadId) }, fetchFn);
   if (!j.id) throw new GoogleError("Gmail created the draft but returned no id.", 502, false);
   return { id: j.id };
 }
 
-export async function updateGmailDraft(token: string, draftId: string, raw: string, fetchFn: FetchFn): Promise<{ id: string }> {
-  await sendJson("draft update", "PUT", `${GMAIL}/drafts/${pathId("draft", draftId)}`, token, { message: { raw } }, fetchFn);
+export async function updateGmailDraft(token: string, draftId: string, raw: string, fetchFn: FetchFn, threadId?: string): Promise<{ id: string }> {
+  await sendJson("draft update", "PUT", `${GMAIL}/drafts/${pathId("draft", draftId)}`, token, { message: gmailMessage(raw, threadId) }, fetchFn);
   return { id: draftId };
 }
 
@@ -556,9 +571,45 @@ export async function deleteGmailDraft(token: string, draftId: string, fetchFn: 
   throw await failure("draft deletion", res);
 }
 
-export async function sendGmailMessage(token: string, raw: string, fetchFn: FetchFn): Promise<{ id: string }> {
-  const j = await sendJson<{ id?: string }>("send", "POST", `${GMAIL}/messages/send`, token, { raw }, fetchFn, true);
+export async function sendGmailMessage(token: string, raw: string, fetchFn: FetchFn, threadId?: string): Promise<{ id: string }> {
+  const j = await sendJson<{ id?: string }>("send", "POST", `${GMAIL}/messages/send`, token, gmailMessage(raw, threadId), fetchFn, true);
   return { id: j.id ?? "" };
+}
+
+/** One RFC 5322 msg-id: `<…>`, no space, no line break. */
+const MESSAGE_ID_RE = /^<[^\s<>]{1,250}>$/;
+/** At most this many ids are carried in `References` (the most recent ones). */
+export const MAX_REFERENCES = 20;
+
+export interface ReplyTarget {
+  threadId: string;
+  inReplyTo: string;
+  references: string;
+  /** The original's subject, for the card and the log. */
+  subject: string;
+}
+
+/**
+ * What a reply to `messageId` needs (needs `gmail_read`: `gmail.compose` cannot
+ * read a message): its conversation, its `Message-ID` and the `References`
+ * chain extended with it — the three things that make Gmail, and the
+ * recipient's client, file the reply under the original.
+ */
+export async function replyTarget(token: string, messageId: unknown, fetchFn: FetchFn): Promise<ReplyTarget> {
+  const q = ["Message-ID", "References", "Subject"].map((h) => `metadataHeaders=${h}`).join("&");
+  const m = await getJson<GmailMessage>("reply lookup", `${GMAIL}/messages/${pathId("message", messageId)}?format=metadata&${q}`, token, fetchFn);
+  return replyHeaders(m);
+}
+
+/** Pure half of `replyTarget`, tested on its own. */
+export function replyHeaders(m: { threadId?: string; payload?: { headers?: { name?: string; value?: string }[] } }): ReplyTarget {
+  const raw = (name: string) => ((m.payload?.headers ?? []).find((h) => (h.name ?? "").toLowerCase() === name)?.value ?? "").trim();
+  const id = raw("message-id");
+  if (!MESSAGE_ID_RE.test(id) || !m.threadId) throw new GoogleInputError("That message cannot be replied to in its thread (it has no usable Message-ID).");
+  // Only well-formed ids survive: the chain is someone else's header.
+  const prior = raw("references").split(/\s+/).filter((r) => MESSAGE_ID_RE.test(r) && r !== id);
+  const references = [...prior.slice(-(MAX_REFERENCES - 1)), id].join(" ");
+  return { threadId: m.threadId, inReplyTo: id, references, subject: decodeWords(raw("subject")).replace(/\s+/g, " ").trim() };
 }
 
 // ---- Gmail, reading (the `gmail_read` area: gmail.readonly) --------------

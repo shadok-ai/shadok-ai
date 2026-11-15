@@ -236,6 +236,13 @@ TEXT
 
 `sheet update` OVERWRITES exactly the range you name.
 
+**Replying in a thread:** add `--reply <message id>` (the id `gmail search` /
+`gmail read` print) to `gmail draft` or `gmail send`, with the recipients and
+a `Re: …` subject as usual. The draft, or the sent email, then sits in the
+original's conversation — for the person and for the recipient. It needs
+`gmail_read` (finding the original is reading it); without it, say so and
+send a new email instead.
+
 `gmail draft` leaves a draft in their Gmail and sends nothing. `--update <draft id>`
 rewrites one made with `gmail draft` through this cockpit — never another
 draft of their mailbox, which is refused. Sheet cells are written as plain values: a cell starting

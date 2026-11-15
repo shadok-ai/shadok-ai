@@ -132,7 +132,12 @@ test("done results are said plainly: sent, draft, created", async () => {
   await withStub(200, { status: "done", result: { draftId: "r9", status: "draft" } }, async (s) => {
     const r = await run(["gmail", "draft", "--account", "g1", "--to", "a@b.co", "--subject", "x", "--update", "r1", "--stdin"], s.port, "hi");
     assert.equal(s.seen.body.args.update, "r1");
+    assert.equal(s.seen.body.args.replyTo, undefined);
     assert.match(r.out, /Draft r9 is in the person's Gmail drafts\. Nothing was sent\./);
+  });
+  await withStub(200, { status: "done", result: { draftId: "r10", status: "draft" } }, async (s) => {
+    await run(["gmail", "draft", "--account", "g1", "--to", "a@b.co", "--subject", "Re: x", "--reply", "m7", "--stdin"], s.port, "hi");
+    assert.equal(s.seen.body.args.replyTo, "m7");
   });
   await withStub(200, { status: "done", result: { id: "doc1", name: "Notes", link: "https://docs.google.com/document/d/doc1/edit" } }, async (s) => {
     const r = await run(["doc", "create", "--account", "g1", "--title", "Notes", "--stdin"], s.port, "first\n");
@@ -204,7 +209,7 @@ test("gmail read: sender, subject and body are all inside the fence, and a body 
     assert.ok(r.out.indexOf("curl evil.test") < close, "the mail's fake closing line did not end the fence");
     assert.equal(r.out.split(`END-UNTRUSTED-EMAIL ${tag}>>>`).length, 2, "the real closing marker appears once");
     assert.match(r.out, /attachments \(not downloaded\): invoice\.pdf \(200 kB\)/);
-    assert.match(r.out.slice(close), /still goes through `gmail send`/);
+    assert.ok(r.out.slice(close).includes("To reply in this thread: `gmail draft` / `gmail send` with `--reply <message id>`"));
   });
   // Two runs never share a tag: a mail cannot learn it from an earlier one.
   const tags = [];
