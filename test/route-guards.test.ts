@@ -219,3 +219,14 @@ test("wiring: mono-tenant secret overwrite/delete go through monoSecretRefusal",
   const del = route("delete", "/secrets");
   assert.ok(del.indexOf("monoSecretRefusal(") > 0 && del.indexOf("monoSecretRefusal(") < del.indexOf("deleteSecret("));
 });
+
+test("wiring: PUT /secrets/profiles reads the old binding BEFORE writing, then audits it", () => {
+  const r = route("put", "/secrets/profiles");
+  const read = r.indexOf("const before = loadVault()");
+  const write = r.indexOf("setSecretProfiles(");
+  const audit = r.indexOf("auditSecretProfiles(req, name, profileSecretDiff(before, profiles))");
+  // Read first, or the "before" set is the one just written and every diff is
+  // empty — the log would record nothing while looking wired.
+  assert.ok(read > 0 && read < write, "the previous profiles must be read before setSecretProfiles");
+  assert.ok(audit > write, "the audit row goes after the write succeeded");
+});

@@ -137,3 +137,29 @@ export function auditLine(s) {
   if (typeof s.updatedAt === "number" && s.updatedAt > (s.createdAt || 0) + 1000 && date(s.updatedAt)) parts.push("updated " + date(s.updatedAt));
   return parts.length > 1 || who ? parts.join(" · ") : "";
 }
+
+/** The vault's "every profile" wildcard (`ANY_PROFILE`, src/secrets.ts). */
+export const ANY_PROFILE = "*";
+
+/**
+ * The set a chip row holds after ONE click, from the set the server last
+ * confirmed. Returned sorted and deduplicated, so two clicks that end on the
+ * same selection produce the same body.
+ *
+ * `exclusive` names an option that cannot coexist with the others — the
+ * profiles row passes `ANY_PROFILE`: "this secret goes to every agent" and "it
+ * goes to these two profiles" are different statements, and a row showing both
+ * would be lying about one of them. Ticking it clears the rest; ticking a named
+ * one clears it.
+ *
+ * It takes the CONFIRMED set rather than reading the checkboxes because the
+ * card writes as it is ticked: the body must say what the click meant, not what
+ * the DOM happens to show while a previous write is still in flight.
+ */
+export function secretChipPick(current, key, on, exclusive = null) {
+  const k = String(key ?? "");
+  const kept = [...new Set((Array.isArray(current) ? current : []).map(String))].filter((v) => v !== k);
+  if (!on) return kept.sort();
+  if (exclusive != null && k === String(exclusive)) return [k];
+  return [...(exclusive != null ? kept.filter((v) => v !== String(exclusive)) : kept), k].sort();
+}

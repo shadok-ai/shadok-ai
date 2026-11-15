@@ -1996,6 +1996,20 @@ function auditProfileSecrets(
   recordSecretAudit({ action: "detached", secrets: diff.removed, ...base });
 }
 
+/** One audit row per profile a SECRET gained or lost (the mirror of
+ *  `auditProfileSecrets`, which records the same link from the profile's side:
+ *  there the diff is over secret names, here over profile names). */
+function auditSecretProfiles(
+  req: { headers: Record<string, unknown>; body?: unknown },
+  secret: string,
+  diff: { added: string[]; removed: string[] },
+): void {
+  const who = auditActorOf(req);
+  for (const [action, profiles] of [["attached", diff.added], ["detached", diff.removed]] as const)
+    for (const profile of profiles)
+      recordSecretAudit({ action, secrets: [secret], profile, ...who, instance: process.cwd() });
+}
+
 /**
  * A PERSON in a browser on our own origin — the only caller allowed through the
  * "browser-only" gates (guardrails, accounts, shell mode, uploads…).
@@ -5428,8 +5442,17 @@ app.put("/secrets/profiles", (req, res) => {
     return res.status(403).json({ error: "Only a person, from the web UI, can choose which profiles receive a secret." });
   const target = secretWriteTarget(req);
   if ("refused" in target) return res.status(403).json({ error: target.refused });
+  // The binding BEFORE the write, so the audit can name the direction. Read
+  // here and not from the body: the client sends the whole set, so "added" and
+  // "removed" exist only as a difference with what the vault currently holds.
+  const before = loadVault()[target.ownerGroup]?.[name]?.profiles;
   if (!setSecretProfiles(name, target.ownerGroup, profiles))
     return res.status(404).json({ error: "no such secret in your group", name });
+  // One row per profile gained or lost. Which agents receive a credential is
+  // the whole point of the log, and the vault panel now writes this on every
+  // tick (no Save button), so an unrecorded binding would be the one move in
+  // the vault that leaves no trace.
+  auditSecretProfiles(req, name, profileSecretDiff(before, profiles));
   res.json({ ok: true });
 });
 // Who wrote, attached and RECEIVED which secret (names only). Admin only: it
