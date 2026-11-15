@@ -565,6 +565,17 @@ import {
 import { fetchMember, createPost, uploadImage, LinkedInError } from "./linkedin.js";
 import { GoogleError, GoogleInputError, GoogleTokens, fetchUser as fetchGoogleUser, revokeToken as revokeGoogleToken } from "./google.js";
 import {
+  GithubError,
+  GithubTokens,
+  fetchInstallations as fetchGithubInstallations,
+  fetchUser as fetchGithubUser,
+  githubGitEnv,
+  githubInfo,
+  needsKeepalive as githubNeedsKeepalive,
+  pickGithubAccount,
+  reachesRepositories,
+} from "./github.js";
+import {
   actionLogged,
   actionSetting,
   actionVerdict,
@@ -617,6 +628,7 @@ import {
   GONE_IN_GMAIL_SENTENCE,
   type Draft,
   type LogEntry,
+  expirySentence,
 } from "./social-drafts.js";
 import {
   draftExpiredNotice,
@@ -633,6 +645,7 @@ import {
 import {
   brokerBase,
   brokerStartUrl,
+  connectedGithub,
   connectedGoogle,
   connectedMember,
   connectReadAllowed,
@@ -4304,6 +4317,8 @@ const SKILL_SOURCES: ReadonlyArray<readonly [string, string]> = [
   ["social-skill", "shadok-social"],
   // Acting in a connected Google account (src/google-actions.ts).
   ["google-skill", "shadok-google"],
+  // git + gh on a connected GitHub account (src/github.ts): the credential helper.
+  ["github-skill", "shadok-github"],
   // The lead's once-only write of the instance context (src/instance-context.ts).
   ["instance-context-skill", "shadok-instance-context"],
   // Seeded to the server HOME by seedFactorySkill; a Skillsmith running as a
@@ -5516,7 +5531,7 @@ const accountsFile = () => accountsFileFor(process.cwd());
 type BrokerProviders = ReturnType<typeof healthProviders>;
 let brokerHealth: { providers: BrokerProviders; at: number } | null = null;
 async function brokerProviders(now: number): Promise<BrokerProviders> {
-  const up = (p: BrokerProviders) => p.linkedin || p.google;
+  const up = (p: BrokerProviders) => p.linkedin || p.google || p.github;
   if (brokerHealth && now - brokerHealth.at < (up(brokerHealth.providers) ? 5 * 60_000 : 60_000)) return brokerHealth.providers;
   let providers = healthProviders(null);
   try {
@@ -5549,7 +5564,14 @@ app.get("/connect/status", async (req, res) => {
   if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
   // `available` is LinkedIn's, as before the second provider existed.
   const p = await brokerProviders(Date.now());
-  res.json({ available: p.linkedin, providers: { linkedin: p.linkedin, google: p.google }, googleTesting: p.googleTesting, googleAreas: p.googleAreas });
+  res.json({
+    available: p.linkedin,
+    providers: { linkedin: p.linkedin, google: p.google, github: p.github },
+    googleTesting: p.googleTesting,
+    googleAreas: p.googleAreas,
+    // Where a person picks the repositories the GitHub App reaches.
+    githubInstallUrl: p.githubInstallUrl,
+  });
 });
 
 // One set of routes for every provider: /connect/<provider>/{start,done,complete}.
@@ -5632,7 +5654,18 @@ app.post("/connect/:provider/complete", async (req, res) => {
     return refuse("damaged");
   }
   let incoming: ReturnType<typeof connectedMember>;
-  if (provider === "google") {
+  if (provider === "github") {
+    // Who the token is, and which repositories it reaches — none yet is
+    // normal (authorizing grants no repository; installing does), and the
+    // panel then says "Choose repositories".
+    try {
+      const user = await fetchGithubUser(payload.access_token, fetch);
+      const installs = await fetchGithubInstallations(payload.access_token, fetch).catch(() => []);
+      incoming = connectedGithub(person, githubInfo(user, installs, now), payload, now);
+    } catch {
+      return refuse("profile-failed");
+    }
+  } else if (provider === "google") {
     // No refresh token = an account that dies within the hour: not stored.
     if (!payload.refresh_token) return refuse("no-refresh");
     try {
@@ -5657,13 +5690,57 @@ app.post("/connect/:provider/complete", async (req, res) => {
 /** One account as the PAGE gets it: `publicView` (never a token), the areas
  *  Google granted, and the owner's own banner flags (`ownerExpiryFlags`). */
 function accountRow(a: ConnectedAccount, viewerName: string | null, now: number) {
-  return { ...publicView(a), ...(a.provider === "google" ? { areas: grantedAreas(a) } : {}), ...ownerExpiryFlags(a, viewerName, now) };
+  return {
+    ...publicView(a),
+    ...(a.provider === "google" ? { areas: grantedAreas(a) } : {}),
+    // GitHub: can the agents reach any repository yet, and where to pick them.
+    ...(a.provider === "github" ? { reachesRepos: reachesRepositories(a.github), installUrl: brokerHealth?.providers.githubInstallUrl ?? null } : {}),
+    ...ownerExpiryFlags(a, viewerName, now),
+  };
 }
 
-app.get("/connected-accounts", (req, res) => {
+/**
+ * Re-read the installations of the GitHub accounts in `list` whose copy is
+ * older than a minute: a person picks repositories on github.com, in another
+ * tab, and comes back to the panel — which re-reads the list on focus. Bounded
+ * (5 s overall, never throws); a failure keeps the old copy.
+ */
+const GITHUB_INSTALLS_TTL_MS = 60_000;
+const githubInstallsInflight = new Map<string, Promise<void>>();
+async function refreshGithubInstalls(list: readonly ConnectedAccount[], now: number): Promise<void> {
+  const stale = list.filter((a) => a.provider === "github" && a.status !== "expired" && a.github && now - a.github.checkedAt > GITHUB_INSTALLS_TTL_MS);
+  if (!stale.length) return;
+  const one = (a: ConnectedAccount) => {
+    const running = githubInstallsInflight.get(a.id);
+    if (running) return running;
+    const p = (async () => {
+      try {
+        const token = await githubTokens.accessToken(a.id);
+        const installations = await fetchGithubInstallations(token, fetch);
+        const cur = loadAccountsStore(accountsFile()).find((x) => x.id === a.id);
+        if (cur?.github) patchAccount(a.id, { github: { ...cur.github, installations, checkedAt: Date.now() } });
+      } catch {
+        /* keep the old copy: an unreachable GitHub is not "no repositories" */
+      }
+    })().finally(() => githubInstallsInflight.delete(a.id));
+    githubInstallsInflight.set(a.id, p);
+    return p;
+  };
+  await Promise.race([Promise.all(stale.map(one)), new Promise((r) => setTimeout(r, 5_000).unref())]);
+}
+
+app.get("/connected-accounts", async (req, res) => {
   if (!connectReader(req)) return res.status(403).json({ error: "web UI only" });
   const viewer = viewerFor(currentAccount(req));
   const groups = loadGroups();
+  // GitHub rows say which repositories the agents reach; that changes on
+  // github.com, so a stale copy is re-read first (bounded).
+  await refreshGithubInstalls(
+    loadAccountsStore(accountsFile()).filter((a) => accountVisible(a, viewer, groups, { peerBox: null, agentsUnwalled: AGENTS_UNWALLED })),
+    Date.now(),
+  );
+  // The install link rides on the broker's health (cached).
+  await brokerProviders(Date.now());
   const now = Date.now();
   // The owner's own rows carry the banner flags (`ownerExpiryFlags`): the DM
   // reaches the operator alone, the page reaches every owner.
@@ -5757,6 +5834,9 @@ app.delete("/connected-accounts/:id", (req, res) => {
       console.log(`connect: google account ${id} ${ok ? "revoked at Google" : "could not be revoked at Google (it lapses on its own)"}`),
     );
   }
+  // GitHub: revoking the authorization there needs the app's client secret,
+  // which only the broker holds — the tokens are forgotten here, and the
+  // refresh token lapses on its own (the panel says where to revoke it).
   console.log(`connect: ${found.account.provider} disconnected ${found.account.id} by ${currentAccount(req)?.name ?? "?"}`);
   res.json({ ok: true });
 });
@@ -5826,6 +5906,20 @@ const googleTokens = new GoogleTokens({
   broker: CONNECT_BROKER,
   fetchFn: fetch,
   now: () => Date.now(),
+  store: {
+    get: (id) => loadAccountsStore(accountsFile()).find((a) => a.id === id),
+    patch: patchAccount,
+  },
+});
+
+// GitHub user tokens last 8 hours and the refresh token ROTATES: `githubTokens`
+// renews one through the broker, one refresh per account at a time, and saves
+// the new refresh token (synchronously, atomically) before using the access token.
+const githubTokens = new GithubTokens({
+  broker: CONNECT_BROKER,
+  fetchFn: fetch,
+  now: () => Date.now(),
+  log: (line) => console.log(line),
   store: {
     get: (id) => loadAccountsStore(accountsFile()).find((a) => a.id === id),
     patch: patchAccount,
@@ -5989,6 +6083,17 @@ function watchConnectedAccounts(): void {
     }
     saveWarned(warnedFile, warned, accounts.map((a) => a.id));
 
+    // GitHub: renew a refresh token close to its deadline (each refresh issues
+    // a fresh ~6-month one), so a rarely used account does not lapse. The
+    // warning above only fires once this has failed for a week.
+    for (const a of accounts) {
+      if (!githubNeedsKeepalive(a, now)) continue;
+      void githubTokens.accessToken(a.id, true).then(
+        () => console.log(`social: github account ${a.id} authorisation renewed ahead of its deadline`),
+        (e) => console.log(`social: github account ${a.id} could not be renewed ahead of its deadline (${e instanceof GithubError ? e.status : "error"})`),
+      );
+    }
+
     if (expire.length) {
       const ids = new Set(expire.map((a) => a.id));
       saveAccountsStore(accountsFile(), accounts.map((a) => (ids.has(a.id) ? { ...a, status: "expired" as const, updatedAt: now } : a)));
@@ -6019,6 +6124,46 @@ function watchConnectedAccounts(): void {
     console.log(`social: expiry watch failed (${(e as Error).message})`);
   }
 }
+
+/**
+ * An agent's git credential helper and `gh` wrapper (`shadok-github` skill)
+ * ask for the CURRENT access token of a GitHub account it may use:
+ * `{account?, owner?}` → `{account, login, email, token, expiresAt}`. The ONE
+ * route that hands an agent a provider token, by design — git and gh must hold
+ * it. Bounded: the 8-hour access token only (the refresh token never leaves),
+ * the repositories the person picked, the share scope (`accountVisible`).
+ * Never logged with the token; a request is one console line.
+ */
+app.post("/github/token", async (req, res) => {
+  const agent = agentPrincipal(req);
+  if (!agent) return res.status(403).json({ error: "Agents only: send your x-shadok-session-key." });
+  const body = req.body ?? {};
+  const viewer = viewerFor(currentAccount(req));
+  const groups = loadGroups();
+  const peerBox = restrictedBoxOf(req);
+  const now = Date.now();
+  const visible = loadAccountsStore(accountsFile()).filter(
+    (a) => a.provider === "github" && accountVisible(a, viewer, groups, { peerBox, agentsUnwalled: AGENTS_UNWALLED, agentProfile: agent.profile }),
+  );
+  const pick = pickGithubAccount(visible, { account: body.account, owner: body.owner }, now, (a) => expirySentence(a, now));
+  if (!pick.ok) return res.status(pick.status).json({ error: pick.reason, ...(pick.accounts ? { accounts: pick.accounts } : {}) });
+  const a = pick.account;
+  try {
+    const token = await githubTokens.accessToken(a.id);
+    const cur = loadAccountsStore(accountsFile()).find((x) => x.id === a.id) ?? a;
+    res.json({
+      account: a.id,
+      login: cur.github?.login ?? cur.label,
+      email: cur.github?.email ?? "",
+      token,
+      expiresAt: cur.expiresAt,
+    });
+  } catch (e) {
+    const err = e instanceof GithubError ? e : new GithubError("GitHub access could not be obtained.", 502);
+    console.log(`social: github account ${a.id} token for ${agent.sessionId.slice(0, 8)} refused (${err.status})`);
+    res.status(err.expired ? 409 : err.status >= 500 ? 502 : err.status).json({ error: err.expired ? expirySentence({ ...a, status: "expired" }, Date.now()) : err.message });
+  }
+});
 
 app.get("/social/accounts", (req, res) => {
   const agent = agentPrincipal(req);
@@ -9222,6 +9367,13 @@ function makePilot(
   // so a dropped agent was handed a registry under /root (700) it cannot read and
   // `--peer` died silently (an unreadable file parses as "no peers"). Invariant 54.
   env.SHADOK_PEERS_FILE = peersOutFileFor(process.cwd(), agentStateHome(user));
+  // git asks the server for a connected GitHub account's CURRENT token at use
+  // time (the shadok-github skill's credential helper). Only the helper's PATH
+  // goes in the env — a token frozen here could not be refreshed (invariant 33).
+  // Set for every agent: an account connected later must work without a reload,
+  // and the helper says nothing when none is shared. Absolute: git runs it
+  // through a shell that would not expand `~` inside quotes.
+  Object.assign(env, githubGitEnv(SKILLS_BASE === HOME_SKILLS_BASE ? path.join(os.homedir(), ".claude", "skills") : SKILLS_BASE, { ...process.env, ...env }));
   // Args = base + profile flags (role / guardrails / model) + a note listing the
   // injected env-var names (so the agent knows what it has) + the cockpit pilot
   // prompt. Profile flags first so a profile never overrides the cockpit context.
@@ -12445,6 +12597,24 @@ function seedGoogleSkill(): void {
   }
 }
 if (SEED_SKILLS) seedGoogleSkill();
+
+/** The `shadok-github` skill — git's credential helper and the `gh` wrapper
+ *  for a connected GitHub account. Every agent's env names its script
+ *  (`githubGitEnv`), so it must be on disk where that path points. */
+function seedGithubSkill(): void {
+  try {
+    const src = path.join(__dirname, "..", "context", "github-skill");
+    if (!fs.existsSync(path.join(src, "SKILL.md"))) return;
+    const dst = path.join(os.homedir(), ".claude", "skills", "shadok-github");
+    fs.mkdirSync(path.join(dst, "scripts"), { recursive: true });
+    fs.copyFileSync(path.join(src, "SKILL.md"), path.join(dst, "SKILL.md"));
+    fs.copyFileSync(path.join(src, "scripts", "github.mjs"), path.join(dst, "scripts", "github.mjs"));
+    fs.chmodSync(path.join(dst, "scripts", "github.mjs"), 0o755);
+  } catch {
+    /* best effort — a missing skill means git asks GitHub without a credential, not a broken boot */
+  }
+}
+if (SEED_SKILLS) seedGithubSkill();
 // The lead agent's once-only write of the instance context: seeded to the server
 // HOME like shadok-files (a root lead reads it there), and listed in
 // SKILL_SOURCES for the machine-wide tier a dropped lead reads.

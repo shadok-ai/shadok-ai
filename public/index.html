@@ -1178,6 +1178,10 @@
   .ca-list .ca-area { font-size: 11px; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--line); color: var(--text); }
   .ca-list .ca-area.missing { color: var(--text-dim); text-decoration: line-through; opacity: .7; }
   .ca-list .ca-test { font-size: 11px; color: var(--amber); }
+  /* GitHub: which repositories the agents reach, and the link to pick them. */
+  .ca-list .ca-repos { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12.5px; color: var(--text-dim); }
+  .ca-list .ca-repos.none { color: var(--amber); }
+  .ca-list .ca-repos a { color: var(--accent, var(--amber)); }
   #secretsList li.sec-ro code { opacity: .85; }
   #secretsList li.sec-row { flex-wrap: wrap; }
   .sec-meta { flex-basis: 100%; font-size: 11px; color: var(--text-dim); margin-top: 2px; }
@@ -3561,6 +3565,7 @@
           <span class="ca-connects">
             <button type="button" id="caConnect" hidden>Connect LinkedIn</button>
             <button type="button" id="caConnectGoogle" hidden>Connect Google</button>
+            <button type="button" id="caConnectGithub" hidden>Connect GitHub</button>
           </span>
         </div>
         <p id="caUnavailable" class="sec-note" hidden>Account connection is unavailable right now.</p>
@@ -13191,7 +13196,7 @@
   // ── Connected accounts (LinkedIn, Google) ──────────────────────────
   // GET /connect/status probes the broker (up to 5s on a cold cache), so the
   // section loads on its own and never holds the vault panel back.
-  let caState = { available: false, google: false, googleTesting: false, googleAreas: [], accounts: [], softLayer: false, loaded: false };
+  let caState = { available: false, google: false, github: false, googleTesting: false, googleAreas: [], accounts: [], softLayer: false, loaded: false };
   async function loadConnectedAccounts() {
     const [st, ac] = await Promise.all([
       fetch("/connect/status").then((r) => (r.ok ? r.json() : null)).catch(() => null),
@@ -13201,6 +13206,7 @@
       available: !!(st && st.available),
       // A provider is offered only when the broker lists it (its secrets exist there).
       google: !!(st && st.providers && st.providers.google),
+      github: !!(st && st.providers && st.providers.github),
       googleTesting: !!(st && st.googleTesting),
       googleAreas: st && Array.isArray(st.googleAreas) ? st.googleAreas : [],
       accounts: ac && Array.isArray(ac.accounts) ? ac.accounts : [],
@@ -13219,7 +13225,8 @@
     $("caConnect").hidden = !caState.loaded || !caState.available;
     $("caConnectGoogle").hidden = !caState.loaded || !caState.google;
     if (!caState.google) $("caGoogleDialog").hidden = true;
-    $("caUnavailable").hidden = !caState.loaded || caState.available || caState.google;
+    $("caConnectGithub").hidden = !caState.loaded || !caState.github;
+    $("caUnavailable").hidden = !caState.loaded || caState.available || caState.google || caState.github;
     $("caSoftLayer").hidden = !caState.softLayer;
     const ul = $("caList");
     ul.textContent = "";
@@ -13249,6 +13256,22 @@
       }
       if (m.testNote) areas.appendChild(el("span", "ca-test", m.testNote));
       title.appendChild(areas);
+    }
+    // GitHub: what the agents reach, and where to pick it. Authorizing the app
+    // grants no repository, so an empty list is the normal state right after
+    // connecting — and the button that fixes it is right there. Opens in a new
+    // tab; coming back re-reads the list (visibilitychange below).
+    if (m.provider === "github") {
+      const repos = el("div", "ca-repos" + (m.needsRepos ? " none" : ""));
+      repos.appendChild(el("span", null, m.reposText));
+      if (m.installUrl) {
+        const link = el("a", null, m.installLabel);
+        link.href = m.installUrl;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        repos.appendChild(link);
+      }
+      title.appendChild(repos);
     }
     head.append(title, el("span", "ca-exp " + m.tone, m.expiryText));
 
@@ -13291,7 +13314,10 @@
         profiles,
         (key, on) => (key === "*" && !on ? null : { share: window.toggleProfile(a.share, key, on, vaultGroups) })));
     }
-    if (m.provider === "google") {
+    if (m.provider === "github") {
+      // No approval setting: GitHub's own repository protection (branch
+      // protection, required reviews) is the guardrail.
+    } else if (m.provider === "google") {
       // One setting per kind of action: sending mail, any event added,
       // changed or deleted, and — once the whole Drive is granted — an edit to
       // a file the cockpit did not create.
@@ -13337,16 +13363,17 @@
       if (!entries.length) logList.appendChild(el("li", null, "Nothing published or attempted on this account yet."));
       logList.hidden = false;
     });
-    foot.appendChild(logBtn);
+    // GitHub has no publication log: nothing it does goes through a draft.
+    if (m.provider !== "github") foot.appendChild(logBtn);
     foot.appendChild(el("span", "ca-spacer"));
-    if (m.provider === "google" ? caState.google : caState.available) {
+    if (m.provider === "google" ? caState.google : m.provider === "github" ? caState.github : caState.available) {
       const re = el("button", "ca-btn", "Reconnect");
       re.type = "button";
       // Google: back through the area dialog, with what is granted today
       // pre-ticked — a reconnect is also how an area is added.
       re.addEventListener("click", () => (m.provider === "google"
         ? openGoogleDialog(m.areas.filter((x) => x.granted).map((x) => x.key))
-        : startLinkedInConnect(re)));
+        : startProviderConnect(m.provider, re)));
       foot.appendChild(re);
     }
     const dis = el("button", "ca-btn danger", "Disconnect");
@@ -13431,10 +13458,11 @@
     return true;
   }
   /** Connect / Reconnect: the server mints a single-use attempt and answers the
-   *  broker URL; the broker sends the browser back to /connect/linkedin/done. */
-  async function startLinkedInConnect(btn) {
+   *  broker URL; the broker sends the browser back to /connect/<provider>/done.
+   *  LinkedIn and GitHub take no options (Google has its area dialog). */
+  async function startProviderConnect(provider, btn) {
     btn.disabled = true;
-    const r = await fetch("/connect/linkedin/start", {
+    const r = await fetch("/connect/" + provider + "/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ origin: location.origin }),
@@ -13444,7 +13472,8 @@
     btn.disabled = false;
     showCaError(j.error || "The cockpit did not answer.");
   }
-  $("caConnect").addEventListener("click", () => startLinkedInConnect($("caConnect")));
+  $("caConnect").addEventListener("click", () => startProviderConnect("linkedin", $("caConnect")));
+  $("caConnectGithub").addEventListener("click", () => startProviderConnect("github", $("caConnectGithub")));
 
   /** Connect Google: the person picks the areas FIRST (Calendar, Drive files,
    *  Gmail — on by default; Read Gmail — off until ticked), then leaves for Google's consent screen. The

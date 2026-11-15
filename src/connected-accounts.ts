@@ -88,7 +88,7 @@ export function profileAllowed(share: ShareScope, profile: string | null | undef
   return profiles.length === 0 || (!!profile && profiles.includes(profile));
 }
 
-export type AccountProvider = "linkedin" | "google";
+export type AccountProvider = "linkedin" | "google" | "github";
 export type AccountPolicy = "approve" | "autonomous";
 
 /** A Google account's three approval settings: sending mail; any calendar
@@ -138,6 +138,28 @@ export function grantedAreas(a: Pick<ConnectedAccount, "scopes">): GoogleArea[] 
   return GOOGLE_AREAS.filter((k) => scopes.includes(GOOGLE_AREA_SCOPES[k]));
 }
 
+/** One GitHub App installation the account's user token reaches: whose
+ *  repositories (`account`), all of them or a picked list, and how many. */
+export interface GithubInstallation {
+  id: number;
+  account: string;
+  selection: "all" | "selected";
+  /** `null` when the count could not be read. */
+  repos: number | null;
+}
+
+/** GitHub only: who the token is, and what `GET /user/installations` last said.
+ *  No secret in it. */
+export interface GithubInfo {
+  login: string;
+  id: number;
+  /** The noreply commit address, `<id>+<login>@users.noreply.github.com`. */
+  email: string;
+  installations: GithubInstallation[];
+  /** When `installations` was read (ms). */
+  checkedAt: number;
+}
+
 export interface ConnectedAccount {
   id: string;
   provider: AccountProvider;
@@ -153,13 +175,16 @@ export interface ConnectedAccount {
   policies?: GooglePolicies;
   /** Google only: the scopes Google granted, from the token response. */
   scopes?: string[];
+  /** GitHub only: identity and installations (`GithubInfo`). */
+  github?: GithubInfo;
   /** Never leaves the server: every route returns `publicView`. */
   token: string;
   /** LinkedIn: when the account stops working. Google: when the ACCESS token
    *  lapses (about an hour) — it is refreshed, so see `accountDeadline`. */
   expiresAt: number;
   refreshToken?: string;
-  /** Google: when the refresh token lapses (7 days while the app is in Testing). */
+  /** Google: when the refresh token lapses (7 days while the app is in Testing).
+   *  GitHub: about 6 months, renewed (rotated) by every refresh. */
   refreshExpiresAt?: number;
   status?: "ok" | "expired";
   createdAt: number;
@@ -178,15 +203,19 @@ export function publicView(a: ConnectedAccount): PublicAccount {
   return a.provider === "google" ? { ...rest, policies: googlePolicies(a) } : rest;
 }
 
+/** The providers whose access token the server renews by itself, so whose
+ *  reconnect deadline is the REFRESH token's. */
+export const refreshesItself = (p: AccountProvider | undefined) => p === "google" || p === "github";
+
 /**
  * When the account stops working unless a person reconnects it, or null when
- * no such date is known. LinkedIn: `expiresAt`. Google: the REFRESH token's
- * expiry — its `expiresAt` is the hourly access token's, which the server
- * renews by itself, so reading it as the deadline would expire every Google
- * account one hour after it was connected.
+ * no such date is known. LinkedIn: `expiresAt`. Google and GitHub: the REFRESH
+ * token's expiry — their `expiresAt` is the short-lived access token's (an
+ * hour, eight hours), which the server renews by itself, so reading it as the
+ * deadline would expire every such account within hours of connecting it.
  */
 export function accountDeadline(a: Pick<ConnectedAccount, "provider" | "expiresAt" | "refreshExpiresAt">): number | null {
-  if (a.provider !== "google") return a.expiresAt;
+  if (!refreshesItself(a.provider)) return a.expiresAt;
   return typeof a.refreshExpiresAt === "number" ? a.refreshExpiresAt : null;
 }
 
@@ -210,7 +239,14 @@ export function agentAccountView(a: ConnectedAccount, now: number) {
     kind: a.kind,
     ...(a.provider === "google"
       ? { policies: googlePolicies(a), areas: grantedAreas(a) }
-      : { policy: a.policy }),
+      : a.provider === "github"
+        ? {
+            login: a.github?.login ?? a.label,
+            email: a.github?.email ?? "",
+            // Whose repositories it reaches — what an agent picks an account by.
+            owners: (a.github?.installations ?? []).map((i) => ({ owner: i.account, selection: i.selection, repos: i.repos })),
+          }
+        : { policy: a.policy }),
     expiresAt: accountDeadline(a),
     status: accountLapsed(a, now) ? ("expired" as const) : ("ok" as const),
   };
@@ -279,6 +315,7 @@ export function upsertAccount(
       connectedVia: incoming.connectedVia,
       label: incoming.label,
       ...(incoming.scopes ? { scopes: incoming.scopes } : {}),
+      ...(incoming.github ? { github: incoming.github } : {}),
       status: "ok",
       updatedAt: now,
     };
@@ -436,6 +473,9 @@ export function policyPatch(
   const isPolicy = (v: unknown): v is AccountPolicy => v === "approve" || v === "autonomous";
   const { policy, policies } = body ?? {};
   if (policy === undefined && policies === undefined) return { ok: true, patch: null };
+  // No approval layer on GitHub: the repositories' own protection (branch
+  // protection, required reviews) is the guardrail. Nothing to set.
+  if (a.provider === "github") return { ok: false, reason: "A GitHub account has no approval setting: protect the repositories on GitHub (branch protection, required reviews)." };
   if (a.provider === "google") {
     if (policy !== undefined) return { ok: false, reason: "A Google account has three settings: policies.mail, policies.calendar and policies.drive." };
     if (!policies || typeof policies !== "object" || Array.isArray(policies)) return { ok: false, reason: "invalid policies" };

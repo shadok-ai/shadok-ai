@@ -166,3 +166,26 @@ test("a Google send orphaned by a restart says to check Gmail and the calendar, 
   const d = draft({ provider: "google", action: "gmail.send", status: "publishing", publishingAt: NOW - STALE_PUBLISHING_MS });
   assert.equal(stalePublishing([d], NOW).failed[0].error, STALE_GOOGLE_SENTENCE);
 });
+
+// ── GitHub: the deadline is the ~6-month refresh token's, renewed by the watch ──
+const ghacct = (o: Partial<ConnectedAccount> = {}): ConnectedAccount => ({
+  id: "h1", provider: "github", kind: "member", label: "octo", externalId: "42", owner: "ana", connectedVia: "ana",
+  share: { personal: true, groups: [], everyone: false, profiles: [] }, policy: "approve",
+  token: "AT", refreshToken: "RT", expiresAt: Date.UTC(2026, 10, 15, 20), refreshExpiresAt: Date.UTC(2027, 4, 1),
+  createdAt: 1, updatedAt: 1, ...o,
+});
+
+test("github: never expired by its 8-hour access token, warned 7 days before the refresh deadline", () => {
+  const now = Date.UTC(2026, 10, 16); // the access token lapsed hours ago
+  assert.deepEqual(expiryActions([ghacct()], [], now, {}).expire, []);
+  assert.deepEqual(expiryActions([ghacct()], [], now, {}).warn, []);
+  const close = ghacct({ refreshExpiresAt: now + 3 * 24 * 3600_000 });
+  assert.deepEqual(expiryActions([close], [], now, {}).warn.map((a) => a.id), ["h1"]);
+  assert.deepEqual(expiryActions([ghacct({ refreshExpiresAt: now - 1 })], [], now, {}).expire.map((a) => a.id), ["h1"]);
+});
+
+test("github: the warning says the cockpit could not renew it, and where to reconnect", () => {
+  const t = expiryWarningText(ghacct({ refreshExpiresAt: Date.UTC(2027, 4, 1) }));
+  assert.match(t, /^Your GitHub connection 'octo' must be reconnected by 2027-05-01 \(the cockpit could not renew it\)/);
+  assert.match(t, /Secrets → Connected accounts/);
+});

@@ -18,6 +18,8 @@ import {
   outcomeResponse,
   parseConnectHash,
   startOriginOk,
+  connectedGithub,
+  githubInstallUrlOf,
 } from "../src/connect-routes.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -183,13 +185,14 @@ test("health: the areas a broker accepts — the first three for one that does n
   assert.deepEqual(parseAreas(["drive_all", "drive"]), ["drive", "drive_all"]);
 });
 
+const NOGH = { github: false, githubInstallUrl: null };
 test("health: a provider is offered only when the broker lists it; Testing only for a listed Google", () => {
-  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin"] }), { linkedin: true, google: false, googleTesting: false, googleAreas: [] });
-  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"], testing: ["google"] }), { linkedin: true, google: true, googleTesting: true, googleAreas: BASE });
-  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"] }), { linkedin: true, google: true, googleTesting: false, googleAreas: BASE });
-  assert.deepEqual(healthProviders({ providers: ["linkedin"], testing: ["google"] }), { linkedin: true, google: false, googleTesting: false, googleAreas: [] });
-  assert.deepEqual(healthProviders(null), { linkedin: false, google: false, googleTesting: false, googleAreas: [] });
-  assert.deepEqual(healthProviders({ providers: "google" }), { linkedin: false, google: false, googleTesting: false, googleAreas: [] });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin"] }), { linkedin: true, google: false, googleTesting: false, googleAreas: [], ...NOGH });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"], testing: ["google"] }), { linkedin: true, google: true, googleTesting: true, googleAreas: BASE, ...NOGH });
+  assert.deepEqual(healthProviders({ ok: true, providers: ["linkedin", "google"] }), { linkedin: true, google: true, googleTesting: false, googleAreas: BASE, ...NOGH });
+  assert.deepEqual(healthProviders({ providers: ["linkedin"], testing: ["google"] }), { linkedin: true, google: false, googleTesting: false, googleAreas: [], ...NOGH });
+  assert.deepEqual(healthProviders(null), { linkedin: false, google: false, googleTesting: false, googleAreas: [], ...NOGH });
+  assert.deepEqual(healthProviders({ providers: "google" }), { linkedin: false, google: false, googleTesting: false, googleAreas: [], ...NOGH });
 });
 
 test("a connected Google account: email as label, sub as identity, GRANTED scopes, both settings on approve", () => {
@@ -222,4 +225,33 @@ test("outcomes name the provider; Google's access_denied names the test list", (
   assert.match(String(denied.body.error), /not on the test list of the shadok app — ask the instance operator/);
   assert.equal(outcomeResponse(errorOutcome("access_denied")).status, 502, "LinkedIn's is an ordinary provider error");
   assert.match(String(outcomeResponse("no-refresh", "google").body.error), /long-lived authorisation/);
+});
+
+test("health: GitHub is offered only with its installation page (authorizing alone grants no repository)", () => {
+  const url = "https://github.com/apps/shadok-ai/installations/new";
+  const on = healthProviders({ providers: ["github"], githubInstallUrl: url });
+  assert.equal(on.github, true);
+  assert.equal(on.githubInstallUrl, url);
+  assert.equal(healthProviders({ providers: ["github"] }).github, false, "no install link: a dead end, not offered");
+  assert.equal(healthProviders({ providers: [], githubInstallUrl: url }).github, false, "not listed: not offered");
+  assert.equal(githubInstallUrlOf("https://evil.example/apps/x/installations/new"), null);
+  assert.equal(githubInstallUrlOf("javascript:alert(1)"), null);
+});
+
+test("a connected GitHub account: login as label, numeric id as identity, 8 h access, ~6 months to reconnect", () => {
+  const info = { login: "octo", id: 42, email: "42+octo@users.noreply.github.com", installations: [], checkedAt: 1_000 };
+  const a = connectedGithub("ana", info, { access_token: "AT", expires_in: 28800, scope: "", refresh_token: "RT", refresh_token_expires_in: 15_897_600 }, 1_000);
+  assert.equal(a.provider, "github");
+  assert.equal(a.label, "octo");
+  assert.equal(a.externalId, "42");
+  assert.equal(a.owner, "ana");
+  assert.deepEqual(a.share, { personal: true, groups: [], everyone: false, profiles: [] });
+  assert.equal(a.expiresAt, 1_000 + 28_800_000);
+  assert.equal(a.refreshToken, "RT");
+  assert.equal(a.refreshExpiresAt, 1_000 + 15_897_600_000);
+  assert.equal(a.github, info);
+  // A non-expiring app: no refresh token, no expiry — a lasting token.
+  const lasting = connectedGithub("ana", info, { access_token: "AT", expires_in: 0, scope: "" }, 1_000);
+  assert.equal(lasting.expiresAt, Number.MAX_SAFE_INTEGER);
+  assert.equal(lasting.refreshExpiresAt, undefined);
 });

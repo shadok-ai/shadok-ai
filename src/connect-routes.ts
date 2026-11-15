@@ -6,14 +6,14 @@
  * Design: docs/superpowers/specs/2026-11-08-connected-accounts-linkedin-design.md §2.
  */
 import type { TokenPayload } from "./connect-crypto.js";
-import { GOOGLE_AREAS, GOOGLE_BASE_AREAS, defaultGooglePolicies, defaultShare, type AccountProvider, type GoogleArea, type IncomingAccount } from "./connected-accounts.js";
+import { GOOGLE_AREAS, GOOGLE_BASE_AREAS, defaultGooglePolicies, defaultShare, type AccountProvider, type GithubInfo, type GoogleArea, type IncomingAccount } from "./connected-accounts.js";
 
 export const DEFAULT_CONNECT_BROKER = "https://connect.shadok.ai";
 
-export const CONNECT_PROVIDERS: readonly AccountProvider[] = ["linkedin", "google"];
+export const CONNECT_PROVIDERS: readonly AccountProvider[] = ["linkedin", "google", "github"];
 export const isConnectProvider = (v: unknown): v is AccountProvider =>
   typeof v === "string" && (CONNECT_PROVIDERS as readonly string[]).includes(v);
-export const PROVIDER_LABEL: Record<AccountProvider, string> = { linkedin: "LinkedIn", google: "Google" };
+export const PROVIDER_LABEL: Record<AccountProvider, string> = { linkedin: "LinkedIn", google: "Google", github: "GitHub" };
 
 /** Where the broker hands the browser back: one fixed path per provider (the
  *  broker validates it, broker/src/core.ts `returnPathFor`). */
@@ -228,9 +228,12 @@ export function connectedGoogle(
  * Broker `/health` → which providers it offers, and which of them run a Testing
  * app (`testing: ["google"]`). A provider is offered only when listed: an
  * unreachable or older broker offers none of the ones it does not name.
+ * GitHub is offered only WITH its installation page (`githubInstallUrl`):
+ * authorizing the app grants no repository, so a GitHub account the person
+ * cannot point at repositories would be a dead end.
  */
-export function healthProviders(body: unknown): { linkedin: boolean; google: boolean; googleTesting: boolean; googleAreas: GoogleArea[] } {
-  const b = body as { providers?: unknown; testing?: unknown; googleAreas?: unknown } | null;
+export function healthProviders(body: unknown): { linkedin: boolean; google: boolean; googleTesting: boolean; googleAreas: GoogleArea[]; github: boolean; githubInstallUrl: string | null } {
+  const b = body as { providers?: unknown; testing?: unknown; googleAreas?: unknown; githubInstallUrl?: unknown } | null;
   const providers = Array.isArray(b?.providers) ? b.providers : [];
   const testing = Array.isArray(b?.testing) ? b.testing : [];
   const google = providers.includes("google");
@@ -239,7 +242,41 @@ export function healthProviders(body: unknown): { linkedin: boolean; google: boo
   // the person to a broker error page instead of Google.
   const named = Array.isArray(b?.googleAreas) ? b.googleAreas : null;
   const googleAreas = !google ? [] : GOOGLE_AREAS.filter((k) => (named ? named.includes(k) : (GOOGLE_BASE_AREAS as readonly string[]).includes(k)));
-  return { linkedin: providers.includes("linkedin"), google, googleTesting: google && testing.includes("google"), googleAreas };
+  const githubInstallUrl = providers.includes("github") ? githubInstallUrlOf(b?.githubInstallUrl) : null;
+  return { linkedin: providers.includes("linkedin"), google, googleTesting: google && testing.includes("google"), googleAreas, github: githubInstallUrl !== null, githubInstallUrl };
+}
+
+/** Only a github.com app-installation page becomes a link the panel opens. */
+export function githubInstallUrlOf(v: unknown): string | null {
+  return typeof v === "string" && /^https:\/\/github\.com\/apps\/[a-z0-9-]{1,64}\/installations\/new$/.test(v) ? v : null;
+}
+
+/**
+ * The GitHub account a successful connect stores. The identity is the numeric
+ * user id (a login can be renamed), the label the login. `expiresAt` is the
+ * 8-hour access token's; the reconnect deadline is `refreshExpiresAt` (~6
+ * months, renewed by every refresh). A non-expiring app sends neither an
+ * expiry nor a refresh token: its token lasts, so it is stored as lasting.
+ */
+export function connectedGithub(person: string, info: GithubInfo, payload: TokenPayload, now: number): IncomingAccount {
+  const lasting = !payload.refresh_token && !(typeof payload.expires_in === "number" && payload.expires_in > 0);
+  const a: IncomingAccount = {
+    provider: "github",
+    kind: "member",
+    label: info.login,
+    externalId: String(info.id),
+    owner: person,
+    connectedVia: person,
+    share: defaultShare(),
+    policy: "approve",
+    github: info,
+    token: payload.access_token,
+    expiresAt: lasting ? Number.MAX_SAFE_INTEGER : now + (payload.expires_in > 0 ? payload.expires_in : 8 * 3600) * 1000,
+    refreshToken: payload.refresh_token,
+  };
+  if (typeof payload.refresh_token_expires_in === "number" && payload.refresh_token_expires_in > 0)
+    a.refreshExpiresAt = now + payload.refresh_token_expires_in * 1000;
+  return a;
 }
 
 /** Broker `/health` answer → does it offer LinkedIn? */

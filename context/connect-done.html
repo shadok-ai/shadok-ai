@@ -21,7 +21,7 @@
 <script nonce="__CSP_NONCE__">
 (async () => {
   const msg = document.getElementById("msg");
-  const LABELS = { linkedin: "LinkedIn", google: "Google" };
+  const LABELS = { linkedin: "LinkedIn", google: "Google", github: "GitHub" };
   const m = /^\/connect\/([a-z]+)\/done$/.exec(location.pathname);
   const provider = m && LABELS[m[1]] ? m[1] : "linkedin";
   const label = LABELS[provider];

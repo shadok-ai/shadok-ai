@@ -19,6 +19,8 @@ import {
   googlePolicyRows,
   GOOGLE_AREA_CHOICES,
   googleAreaChips,
+  githubReposLines,
+  safeInstallUrl,
 } from "../public/social-card.js";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -460,4 +462,61 @@ test("log line: a mail search and a mail read are shown like the rest", () => {
     logEntryLine({ at: NOW, accountId: "a2", origin: "agent", channel: "general", approvedBy: "none", action: "gmail.search", text: 'search "is:unread" — 3 results', outcome: "done" }),
     '2026-11-08 12:00 UTC · gmail.search · done · general (agent) · search "is:unread" — 3 results',
   );
+});
+
+// ── GitHub rows ──
+const INSTALL = "https://github.com/apps/shadok-ai/installations/new";
+const ghAccount = (over: Record<string, unknown> = {}) => ({
+  id: "h1",
+  provider: "github",
+  label: "octo",
+  connectedVia: "ana",
+  share: { personal: true, groups: [], everyone: false, profiles: [] },
+  expiresAt: NOW + 3600_000,
+  refreshExpiresAt: NOW + 180 * DAY,
+  installUrl: INSTALL,
+  reachesRepos: true,
+  github: { login: "octo", installations: [{ account: "acme", selection: "selected", repos: 3 }, { account: "octo", selection: "all", repos: null }] },
+  ...over,
+});
+
+test("github row: the deadline is the refresh token's, never the 8-hour access token's", () => {
+  const m = accountRowModel(ghAccount(), NOW);
+  assert.equal(accountDeadline(ghAccount()), NOW + 180 * DAY);
+  assert.equal(m.provider, "github");
+  assert.equal(m.tone, "ok");
+  assert.equal(m.expiryText, "reconnect in 180 days");
+  assert.equal(accountRowModel(ghAccount({ status: "expired" }), NOW).tone, "expired");
+  assert.equal(accountRowModel(ghAccount({ refreshExpiresAt: NOW + 3 * DAY }), NOW).tone, "soon");
+});
+
+test("github row: what the agents reach, and Manage repositories", () => {
+  const m = accountRowModel(ghAccount(), NOW);
+  assert.deepEqual(githubReposLines(ghAccount()), ["3 repositories of acme", "all repositories of octo"]);
+  assert.equal(m.needsRepos, false);
+  assert.equal(m.installLabel, "Manage repositories");
+  assert.equal(m.installUrl, INSTALL);
+  assert.equal(m.policyText, "");
+  assert.deepEqual(m.areas, []);
+});
+
+test("github row: no repository yet says so, with Choose repositories", () => {
+  const none = accountRowModel(ghAccount({ reachesRepos: false, github: { login: "octo", installations: [] } }), NOW);
+  assert.equal(none.needsRepos, true);
+  assert.equal(none.installLabel, "Choose repositories");
+  assert.match(none.reposText, /No repository chosen yet/);
+  const empty = accountRowModel(ghAccount({ reachesRepos: false, github: { login: "octo", installations: [{ account: "acme", selection: "selected", repos: 0 }] } }), NOW);
+  assert.equal(empty.needsRepos, true);
+});
+
+test("github row: only a github.com installation page becomes a link", () => {
+  assert.equal(safeInstallUrl(INSTALL), INSTALL);
+  assert.equal(safeInstallUrl("https://github.com.evil.example/apps/x/installations/new"), null);
+  assert.equal(safeInstallUrl("javascript:alert(1)"), null);
+  assert.equal(accountRowModel(ghAccount({ installUrl: "http://github.com/apps/x/installations/new" }), NOW).installUrl, null);
+});
+
+test("github banner names GitHub", () => {
+  const [b] = accountBanners([ghAccount({ expired: true })]);
+  assert.match(b.text, /^Your GitHub connection 'octo' has expired/);
 });
