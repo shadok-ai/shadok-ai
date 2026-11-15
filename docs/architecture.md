@@ -2589,7 +2589,7 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   the profile side alone (`secretUsers`), so on a grouped instance every binding
   the panel itself had just made answered "nobody", and a caller that reads an
   empty list as "no one to tell" showed nothing at all: the offer was silently
-  dead there (invariant 72). The same union now feeds the flat list's
+  dead there (invariant 73). The same union now feeds the flat list's
   *"⚠ no profile uses it"* tag, which an `ANY_PROFILE` binding used to trip while
   every agent received the secret.
   On top of it, `plusReloadPlan` (pure) decides what the chat's **+** does once

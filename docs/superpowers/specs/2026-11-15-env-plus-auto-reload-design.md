@@ -31,7 +31,7 @@ if (!agents.length) { box.hidden = true; return; }
 ```
 
 No banner, no error, nothing in the console. The person pasted a value, the
-agent never saw it, and nothing said a reload was needed. That is invariant 72,
+agent never saw it, and nothing said a reload was needed. That is invariant 73,
 and the fix is a pure union read by every caller of the question —
 `secretReceivers(profiles, vaultSecrets, name)` → `{ profiles, any }`. The flat
 list's *"⚠ no profile uses it"* tag had the same hole for an `ANY_PROFILE`

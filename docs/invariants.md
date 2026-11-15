@@ -2399,9 +2399,9 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     The log line was accurate both times and nobody could have acted on it —
     the same shape as invariant 27: assert only what you observed.
 
-<a id="inv-76"></a>
+<a id="inv-77"></a>
 
-72. **The secret↔profile link is written from BOTH ends, so anything that asks
+73. **The secret↔profile link is written from BOTH ends, so anything that asks
     "who receives this secret" must read both — one side alone answers
     "nobody", in silence.** A profile carries a `secrets` list
     (`PUT /profiles`, what the vault's flat form writes, and what an agent

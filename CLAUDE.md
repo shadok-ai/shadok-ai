@@ -228,7 +228,7 @@ A quick per-file index. The FULL responsibility of each file — the war stories
 | `public/deep-link.js` | Pure `buildMessageLink` / `buildRoomMessageLink` / `parseMessageLink` / `samePrompt` — a link to ONE message: `#agent=<full session id>&msg=<transcript uuid>` for an agent, `#room=<r_… id>&msg=<message uuid>` for a room (`parseMessageLink` returns `{agent,msg}` or `{room,msg}`; a room id is never UUID-shaped, so the two can't be confused). |
 | `src/slash-commands.ts` | The `/` commands the composer offers (`GET /commands`): only the factory skills the agent has (shared with it). A `/command` prompt goes in bare (`isSlashCommand`), with no header or ledger paste. |
 | `src/prompt-kind.ts` | `userPromptText` and `classifyUserLine` — the ONE rule for "is this transcript line a prompt a human sees in the chat", shared by `loadHistory` and the live tail (which emits a prompt's uuid for the link button). |
-| `public/env-ask.js` | Pure `envVarAsks(text)` / `isEnvAsk(name)` — the env var names an agent's message asks the human to provide, feeding the + beside them (`decorateEnvAsks` → `openSecretFor`, which opens the vault on that name with the asking agent's profile pre-ticked and remembers which agent asked; the submit then writes it and reloads THAT agent — `plusReloadPlan`, invariant 72). |
+| `public/env-ask.js` | Pure `envVarAsks(text)` / `isEnvAsk(name)` — the env var names an agent's message asks the human to provide, feeding the + beside them (`decorateEnvAsks` → `openSecretFor`, which opens the vault on that name with the asking agent's profile pre-ticked and remembers which agent asked; the submit then writes it and reloads THAT agent — `plusReloadPlan`, invariant 73). |
 | `public/echo-author.js` | Pure `echoAuthor(msg)` — the author label above a prompt that came from ANOTHER client: the sender's name when the emitting client knows it (Telegram does), else its origin, else the generic wording. |
 | `public/channel-store.js` | Pure `pickChannelSource` / `dirKey` — how the client's boot restore chooses its channel list. |
 | `public/shadok-soul.js` | Pure `MAXIMS` / `pumpLine` / `gabuzomeu` / `pickMaxim` / `mascotSay` — the Shadok's VOICE (its body is `shadokInner` in `index.html`): what the header mark says when clicked, the thinking indicator's rotating pump lines, the empty states' maxim, counting in base 4 (GA BU ZO MEU). Randomness injected, so tested. |
@@ -395,9 +395,9 @@ The FULL text — every war story, every "measured on …", the reason each rule
 
 - **71.** A control that writes without a Save must put the screen back when the server refuses (the last CONFIRMED set, not the ticks on screen) and must be unable to race itself — the Save was also the moment screen and server were known to agree. · [detail](docs/invariants.md#inv-75)
 
-- **72.** The secret↔profile link is written from BOTH ends (a profile's `secrets`, a secret's `profiles`), so anything asking "who receives this secret" must read both — one side alone answers "nobody", and a caller that reads an empty answer as "no one to tell" then shows nothing at all. · [detail](docs/invariants.md#inv-76)
-
 - **72.** A missing Telegram topic never ends an agent, and a topic a channel claims is never an orphan: the boot reconcile UNBINDS on an inferred absence (`topicReconcilePlan`), because one failed probe once deleted a live agent's topic and the next boot then deleted the agent, leaving its process running with no row. · [detail](docs/invariants.md#inv-76)
+
+- **73.** The secret↔profile link is written from BOTH ends (a profile's `secrets`, a secret's `profiles`), so anything asking "who receives this secret" must read both — one side alone answers "nobody", and a caller that reads an empty answer as "no one to tell" then shows nothing at all. · [detail](docs/invariants.md#inv-77)
 
 ## Conventions
 
