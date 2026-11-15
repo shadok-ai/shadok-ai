@@ -2398,3 +2398,38 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     a topic (`forum_topic_closed`, an observed event) still ends it.
     The log line was accurate both times and nobody could have acted on it —
     the same shape as invariant 27: assert only what you observed.
+
+<a id="inv-76"></a>
+
+72. **The secret↔profile link is written from BOTH ends, so anything that asks
+    "who receives this secret" must read both — one side alone answers
+    "nobody", in silence.** A profile carries a `secrets` list
+    (`PUT /profiles`, what the vault's flat form writes, and what an agent
+    attaching a secret it created writes through `PUT /profiles/secret`), and a
+    secret carries a `profiles` list (`PUT /secrets/profiles`, what the panel's
+    chips and the grouped add form write). Neither is a cache of the other:
+    `secretsForProfile` merges them at spawn, which is why both work.
+    `offerReload` — the banner that proposes reloading the live agents a new
+    value concerns — asked `secretUsers(profileCache, name)`, i.e. the profile
+    side only. On a grouped instance every binding the panel had just made lived
+    on the vault side, so the answer was always the empty list, and the next
+    line read it as "nobody to tell": `if (!agents.length) { box.hidden = true;
+    return; }`. The feature was not broken, it was *absent* — no banner, no
+    error, nothing in the console, and the person was left with a secret the
+    running agent could not see and no hint that a reload was needed. The flat
+    list's "⚠ no profile uses it" tag had the same hole: an `ANY_PROFILE`
+    binding (which no profile's own list can carry) read as "no profile uses
+    it" while every agent on the instance received it.
+    The fix is one pure union, `secretReceivers(profiles, vaultSecrets, name)`
+    → `{ profiles, any }`, used by every caller that asks the question. Two
+    honest limits in it: the vault side is only known for a secret the caller
+    may edit (`GET /secrets` sends `profiles` for an own secret, and Main's to
+    whoever may write Main), and an own secret shadows a Main one of the same
+    name per group, which the union ignores. Both are acceptable where the
+    answer is used to OFFER a reload — naming one agent too many costs a
+    respawn that keeps its history — and neither would be acceptable in a
+    resolution path, which is the server's and stays the server's.
+    The generalisation: a datum with two writable homes needs ONE reader that
+    knows both, placed where every caller reaches it. A second reader that
+    knows one home is not a smaller version of the feature, it is a feature
+    that silently does nothing for half its inputs.

@@ -9,6 +9,8 @@ import {
   panelGroupOptions,
   publicWriteTarget,
   secretChipPick,
+  secretReceivers,
+  plusReloadPlan,
   ANY_PROFILE,
   PUBLIC_BUCKET,
 } from "../public/secrets-panel.js";
@@ -205,4 +207,51 @@ test("secretChipPick: 'Any profile' is exclusive with the named profiles, both w
   assert.deepEqual(secretChipPick([ANY_PROFILE], ANY_PROFILE, false, ANY_PROFILE), []);
   // The sharing row has no exclusive option: "*" would be an ordinary value.
   assert.deepEqual(secretChipPick(["g1"], "g2", true), ["g1", "g2"]);
+});
+
+// ── Who receives a secret, and what the "+" does once it is written ──────────
+
+const PROFS = [
+  { name: "Shadok-dev", secrets: ["OLD_TOKEN"] },
+  { name: "Shadok-QA", secrets: [] },
+];
+
+test("secretReceivers: both ends of the link, merged", () => {
+  // The profile side alone (what the flat form writes).
+  assert.deepEqual(secretReceivers(PROFS, [], "OLD_TOKEN"), { profiles: ["Shadok-dev"], any: false });
+  // The vault side alone — the binding the grouped panel writes. Reading only
+  // the profile side here answered "nobody", which silenced the reload offer.
+  const vault = [{ name: "NEW_TOKEN", source: "own", profiles: ["Shadok-QA"] }];
+  assert.deepEqual(secretReceivers(PROFS, vault, "NEW_TOKEN"), { profiles: ["Shadok-QA"], any: false });
+  // Both, deduplicated and sorted.
+  const both = [{ name: "OLD_TOKEN", source: "own", profiles: ["Shadok-QA", "Shadok-dev"] }];
+  assert.deepEqual(secretReceivers(PROFS, both, "OLD_TOKEN"), { profiles: ["Shadok-QA", "Shadok-dev"].sort(), any: false });
+});
+
+test("secretReceivers: ANY_PROFILE is not a profile name but a flag", () => {
+  const vault = [{ name: "T", source: "own", profiles: [ANY_PROFILE, "Shadok-dev"] }];
+  assert.deepEqual(secretReceivers([], vault, "T"), { profiles: ["Shadok-dev"], any: true });
+  // A read-only tier arrives with no `profiles` at all: the profile side is all
+  // we know, and an absent list is not an empty one.
+  assert.deepEqual(secretReceivers(PROFS, [{ name: "OLD_TOKEN", source: "main" }], "OLD_TOKEN"),
+    { profiles: ["Shadok-dev"], any: false });
+  assert.deepEqual(secretReceivers(null, null, "T"), { profiles: [], any: false });
+});
+
+test("plusReloadPlan: the agent that asked is reloaded, but never mid-turn", () => {
+  const recv = { profiles: ["Shadok-dev"], any: false };
+  const dev = { profile: "Shadok-dev", live: true, busy: false };
+  assert.equal(plusReloadPlan(dev, recv).action, "reload");
+  assert.equal(plusReloadPlan({ ...dev, busy: true }, recv).action, "offer");
+  assert.equal(plusReloadPlan({ ...dev, live: false }, recv).action, "none");
+  // Nothing feeds it: a respawn would change nothing, so say so instead.
+  assert.equal(plusReloadPlan({ ...dev, profile: "Shadok-QA" }, recv).action, "unbound");
+  assert.equal(plusReloadPlan({ ...dev, profile: null }, recv).action, "unbound");
+  // "unbound" outranks a dead agent: the binding is what the person can fix.
+  assert.equal(plusReloadPlan({ profile: "Shadok-QA", live: false, busy: false }, recv).action, "unbound");
+  // Any profile reaches an agent with no profile of its own.
+  assert.equal(plusReloadPlan({ profile: null, live: true, busy: false }, { profiles: [], any: true }).action, "reload");
+  // The panel opened by hand: a later Add never restarts a bystander.
+  assert.equal(plusReloadPlan(null, recv).action, "none");
+  assert.equal(plusReloadPlan(dev, undefined).action, "unbound");
 });

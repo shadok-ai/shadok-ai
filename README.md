@@ -392,8 +392,15 @@ Enter to skip; you can add it later from the web UI).
 - **Provide the variable an agent asks for** — when an agent names a missing
   credential in code (`` `HUBSPOT_TOKEN missing from the environment` ``), a
   **+** sits right after it: one click opens the secret vault with the name
-  filled in and the agent's profile ticked, so you only paste the value (then
-  reload the agent when offered — a value reaches a process at spawn). Only
+  filled in and the agent's profile ticked, so you only paste the value — and
+  on *Add* **that agent is reloaded for you**, since a value only reaches a
+  process at spawn. Three cases it declines to do silently: an agent **mid-turn**
+  is offered instead of cut short (a reload is a respawn: the history is kept,
+  a running turn is not), an agent that **no binding feeds** is named so you can
+  tick a profile rather than restart it for nothing, and a **stopped** one needs
+  nothing — it reads the vault when it next launches. Any other live agent on a
+  profile that receives the secret is still offered, with a count of those
+  mid-turn. Only
   names that look like a credential or a connection setting get one (`…_TOKEN`,
   `…_KEY`, `…_URL`, `…_ID`…), never `NODE_ENV` nor shadok's own `SHADOK_*`.
 - **`/` commands** — type `/` in the composer and a menu lists the Skill

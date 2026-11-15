@@ -163,3 +163,65 @@ export function secretChipPick(current, key, on, exclusive = null) {
   if (exclusive != null && k === String(exclusive)) return [k];
   return [...(exclusive != null ? kept.filter((v) => v !== String(exclusive)) : kept), k].sort();
 }
+
+/**
+ * The profiles that RECEIVE a secret, read from BOTH ends of the link — plus
+ * `any`, the `ANY_PROFILE` wildcard, which reaches an agent whatever its
+ * profile (even one with none).
+ *
+ * The link is writable from either side and stored on the side it was written:
+ * a profile's `secrets` list (`PUT /profiles`, what the flat form writes) and a
+ * secret's `profiles` list (`PUT /secrets/profiles`, what the panel's chips and
+ * the grouped form write). `secretsForProfile` merges both server-side at spawn,
+ * so anything that asks "who receives this secret" must merge both too — asking
+ * one side alone answers "nobody" for every binding made from the other, and a
+ * caller that treats an empty answer as "no one to tell" then says nothing at
+ * all. That is exactly how the reload offer went silent on a grouped instance.
+ *
+ * The vault side is only known for a secret the caller may edit (`GET /secrets`
+ * sends `profiles` for an own secret, and for Main's to whoever may write Main);
+ * for a shared or read-only tier the profile side is all we have. And an own
+ * secret SHADOWS a Main one of the same name per group, which this union
+ * ignores: a receiver list is used to OFFER a reload, where naming one agent
+ * too many costs a respawn that keeps its history.
+ */
+export function secretReceivers(profiles, vaultSecrets, name) {
+  const out = new Set();
+  let any = false;
+  const n = String(name ?? "");
+  for (const p of Array.isArray(profiles) ? profiles : [])
+    if (p && typeof p.name === "string" && (p.secrets || []).includes(n)) out.add(p.name);
+  for (const s of Array.isArray(vaultSecrets) ? vaultSecrets : []) {
+    if (!s || s.name !== n || !Array.isArray(s.profiles)) continue;
+    for (const p of s.profiles) {
+      if (String(p) === ANY_PROFILE) any = true;
+      else out.add(String(p));
+    }
+  }
+  return { profiles: [...out].sort(), any };
+}
+
+/**
+ * What the "+" beside an agent's `MISSING_TOKEN` should do once the secret is
+ * written: `reload` the agent that asked, `offer` it instead, `unbound` (it
+ * receives nothing, so there is nothing to pick up) or `none`.
+ *
+ * `agent` is `{ profile, live, busy }` — null when the panel was not opened by
+ * a "+", which is why a later Add never restarts a bystander.
+ *
+ * Order is the point. "Does it receive it?" comes first: a reload cannot help
+ * an agent no binding feeds, and saying so is more use than a respawn. A turn
+ * in flight is never cut short on the cockpit's own initiative — `restart`
+ * kills the process (invariant 23) and no `busy` check stands in its way — so a
+ * working agent falls back to the offer, where a person decides. And a dead
+ * agent needs nothing: it reads the vault at its next launch.
+ */
+export function plusReloadPlan(agent, receivers) {
+  if (!agent) return { action: "none" };
+  const r = receivers || {};
+  const named = Array.isArray(r.profiles) ? r.profiles : [];
+  if (!r.any && !(agent.profile && named.includes(agent.profile))) return { action: "unbound" };
+  if (!agent.live) return { action: "none" };
+  if (agent.busy) return { action: "offer" };
+  return { action: "reload" };
+}
