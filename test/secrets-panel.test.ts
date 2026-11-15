@@ -8,6 +8,8 @@ import {
   auditLine,
   panelGroupOptions,
   publicWriteTarget,
+  secretChipPick,
+  ANY_PROFILE,
   PUBLIC_BUCKET,
 } from "../public/secrets-panel.js";
 
@@ -175,4 +177,32 @@ test("shareTargets: a commons-owned secret (Main or a public group) offers no gr
   assert.deepEqual(shareTargets(groups, "main"), []);
   assert.deepEqual(shareTargets(groups, "pub"), []);
   assert.deepEqual(shareTargets(groups, "x").map((g: { id: string }) => g.id), ["comex"]);
+});
+
+// ── The chip rows write as they are ticked (no Save), so one click = one body ──
+
+test("secretChipPick: a click adds or removes, sorted and deduplicated", () => {
+  assert.deepEqual(secretChipPick(["b"], "a", true), ["a", "b"]);
+  assert.deepEqual(secretChipPick(["a", "b"], "a", false), ["b"]);
+  // Already there (a double event, a stale card): the body is the same set.
+  assert.deepEqual(secretChipPick(["a", "b"], "a", true), ["a", "b"]);
+  assert.deepEqual(secretChipPick(["a", "a", "b"], "c", true), ["a", "b", "c"]);
+  assert.deepEqual(secretChipPick(undefined, "a", true), ["a"]);
+  assert.deepEqual(secretChipPick(null, "a", false), []);
+});
+
+test("secretChipPick: a value with no chip is carried along, never dropped", () => {
+  // The panel hides managed roles, and a secret can be bound to one (an agent
+  // on that role attaching a secret it created). A click elsewhere must not
+  // detach it — the row may only state what it shows.
+  assert.deepEqual(secretChipPick(["Shadok-Tweak"], "dev", true), ["Shadok-Tweak", "dev"].sort());
+  assert.deepEqual(secretChipPick(["Shadok-Tweak", "dev"], "dev", false), ["Shadok-Tweak"]);
+});
+
+test("secretChipPick: 'Any profile' is exclusive with the named profiles, both ways", () => {
+  assert.deepEqual(secretChipPick(["dev", "ops"], ANY_PROFILE, true, ANY_PROFILE), ["*"]);
+  assert.deepEqual(secretChipPick([ANY_PROFILE], "dev", true, ANY_PROFILE), ["dev"]);
+  assert.deepEqual(secretChipPick([ANY_PROFILE], ANY_PROFILE, false, ANY_PROFILE), []);
+  // The sharing row has no exclusive option: "*" would be an ordinary value.
+  assert.deepEqual(secretChipPick(["g1"], "g2", true), ["g1", "g2"]);
 });

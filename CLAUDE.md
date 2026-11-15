@@ -390,6 +390,8 @@ The FULL text — every war story, every "measured on …", the reason each rule
 
 - **70.** `busy` gates every door into an agent and is only a BELIEF, so it must be unable to latch: when none of its four legitimate holders is behind it and the pane shows no work, the watcher takes it back — a flag left up makes the agent refuse every prompt for the life of the process, in silence, and Telegram's "/stop then send it again" cannot lower it. · [detail](docs/invariants.md#inv-74)
 
+- **71.** A control that writes without a Save must put the screen back when the server refuses (the last CONFIRMED set, not the ticks on screen) and must be unable to race itself — the Save was also the moment screen and server were known to agree. · [detail](docs/invariants.md#inv-75)
+
 ## Conventions
 
 - TypeScript, ESM, Node 20. `.js` extensions in imports (NodeNext).

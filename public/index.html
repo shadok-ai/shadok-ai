@@ -1191,7 +1191,8 @@
   .sec-val button.sec-val-save { border-color: var(--amber); color: var(--amber); }
   .sec-from { margin-left: 8px; font-size: 11px; color: var(--text-dim); font-family: var(--sans, inherit); }
   /* Grouped mode: each own secret is a card — name + actions, one meta line, then
-     the "Shared with" / "Injected into" chip rows and ONE Save. */
+     the "Shared with" / "Injected into" chip rows, which write as they are
+     ticked (no Save) and answer on the card's status line. */
   #secretsList li.sec-row { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; background: none; }
   #secretsList li.sec-row:nth-child(odd) { background: none; }
   .sec-ctl { flex-basis: 100%; display: flex; flex-direction: column; gap: 8px; font-size: 12px; margin-top: 10px; }
@@ -1204,12 +1205,13 @@
   .sec-chip:has(input:checked) { border-color: var(--amber); background: color-mix(in srgb, var(--amber) 16%, transparent); color: var(--text); }
   .sec-chip:has(input:checked)::before { content: "✓"; font-size: 11px; color: var(--amber); }
   .sec-chip:has(input:focus-visible) { outline: 2px solid var(--amber); outline-offset: 1px; }
+  /* A row is disabled while its write is in flight — so a click lands on one
+     set, not on a race (see secretControls). */
+  .sec-chip:has(input:disabled) { opacity: .5; cursor: default; border-color: var(--line); }
   .sec-foot { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
   .sec-status { flex: 1; font-size: 12px; color: var(--text-dim); }
   .sec-status.err { color: #e2564a; }
-  #secretsList button.sec-save { font-size: 12px; padding: 4px 14px; border-radius: 6px; border: 1px solid var(--amber); color: var(--amber); }
-  #secretsList button.sec-save:hover:not(:disabled) { background: color-mix(in srgb, var(--amber) 15%, transparent); }
-  #secretsList button.sec-save:disabled { opacity: .35; cursor: default; border-color: var(--line); color: var(--text-dim); }
+  .sec-status.ok { color: var(--ok); }
   .sec-err { margin: 0 0 10px; padding: 8px 11px; border: 1px solid #e2564a; border-radius: 8px; color: #e2564a; background: color-mix(in srgb, #e2564a 8%, transparent); font-size: 12.5px; }
   @media (max-width: 520px) { .sec-field { grid-template-columns: 1fr; gap: 4px; } .sec-field-label { padding-top: 0; } }
   .group-head .gkey { flex: none; font-size: 12px; padding: 0 4px; cursor: pointer; visibility: hidden; }
@@ -4614,7 +4616,7 @@
     defaultAgentName,
     hasReadonlyPreset,
     applyReadonlyPreset, isManagedProfile, profileSaveBody, secretUsers } from "/profile-card.js?v=__ASSET_V__";
-  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget } from "/secrets-panel.js?v=__ASSET_V__";
+  import { secretsPanelMode, secretSections, keyGroups, shareTargets, auditLine, panelGroupOptions, publicWriteTarget, secretChipPick } from "/secrets-panel.js?v=__ASSET_V__";
   import { notifyState, BLINK_MS } from "/notify.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
@@ -4719,6 +4721,7 @@
   window.publicWriteTarget = publicWriteTarget;
   window.keyGroups = keyGroups;
   window.shareTargets = shareTargets;
+  window.secretChipPick = secretChipPick;
   window.auditLine = auditLine;
   window.profileSaveBody = profileSaveBody;
   window.isManagedProfile = isManagedProfile;
@@ -4877,6 +4880,10 @@
     keyGroups: () => [],
     shareTargets: () => [],
     auditLine: () => "",
+    // A chip row writes as it is ticked, so a stub that guessed wrong would
+    // GRANT something: before the module lands, every click resolves to the set
+    // already confirmed — the tick springs back and nothing widens.
+    secretChipPick: (current) => (Array.isArray(current) ? current : []),
     extractLiveText: () => "",
     livePreviewDecision: () => null,
     echoAuthor: () => "",
@@ -12859,7 +12866,7 @@
     actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
     if (!ro) {
       actions.append(
-        actionBtn("s-edit", "✎", "Update this secret's value / the profiles it feeds", () =>
+        actionBtn("s-edit", "✎", "Replace this secret's value (its profiles are the chips below)", () =>
           grouped ? startInlineEdit(li, sec) : startEditSecret(k, null)),
         actionBtn("s-del", "✕", "Remove from vault", async () => {
           // The row's OWNER group, not the panel's write target (see secretControls).
@@ -12938,87 +12945,98 @@
     return "refused (HTTP " + r.status + ")";
   }
   /** Own secret, grouped mode: who it is lent to (PUT /secrets/share) and which
-   *  profiles inject it (PUT /secrets/profiles), edited as chips and saved by ONE
-   *  button that only lights up once something changed. Both calls target the
-   *  secret's OWNER group, never the panel's selection: in the "Public groups"
-   *  view the panel's write target is the first public group, which sent every
-   *  row there (a 403 or a 404 for a secret living in another public group). A
-   *  refusal is shown in the card, not swallowed. */
+   *  profiles inject it (PUT /secrets/profiles), as chips that WRITE AS THEY ARE
+   *  TICKED — the card has no Save. Three things make that safe, and all three
+   *  are load-bearing:
+   *   - a refusal puts the chips back the way the server has them. #410 fixed
+   *     the opposite bug (a 403 left the ticks on screen as if saved) by keeping
+   *     them for a retry; with no Save to retry from, keeping them would leave
+   *     the card asserting an access that does not exist.
+   *   - the row is disabled while its write is in flight. Each PUT carries the
+   *     WHOLE set, so two quick clicks would race and the vault would keep
+   *     whichever landed last — not necessarily the one on screen.
+   *   - nothing re-renders the panel: `loadVault(); renderSecrets()` per tick
+   *     would rebuild the list under the cursor. The row patches the card's own
+   *     model (`sec`, an object of `vaultSecrets`) so a later render agrees.
+   *  Both calls target the secret's OWNER group, never the panel's selection: in
+   *  the "Public groups" view the panel's write target is the first public group,
+   *  which sent every row there (a 403 or a 404 for a secret living in another
+   *  public group). */
   function secretControls(sec) {
     const box = document.createElement("div"); box.className = "sec-ctl";
     const targets = window.shareTargets ? window.shareTargets(vaultGroups, sec.ownerGroup) : [];
     const profs = profileCache.map((p) => p.name).filter((n) => !(window.isManagedProfile && window.isManagedProfile(n))).sort();
-    const same = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
-    const fields = [];
-    const field = (label, hint, options, current) => {
+    // One status line for the card: what is being written, or why it was not.
+    const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
+    const put = (url, body) => fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: sec.name, group: String(sec.ownerGroup), ...body }) });
+    let rows = 0;
+    /**
+     * One chip row. `bodyFor(set)` is the PUT body, `apply(set)` patches the
+     * card's model once the server agreed, `exclusive` names the option that
+     * cannot coexist with the others, and `confirmPick(key)` may stop a click
+     * before anything is written.
+     */
+    const field = (label, hint, options, current, url, bodyFor, apply, exclusive = null, confirmPick = null) => {
       if (!options.length) return null;
       const row = document.createElement("div"); row.className = "sec-field";
       const l = document.createElement("span"); l.className = "sec-field-label"; l.textContent = label; l.title = hint;
       const chips = document.createElement("div"); chips.className = "sec-chips";
-      const initial = (current || []).map(String);
+      // What the server last confirmed — the only truth a refusal can fall back
+      // on, and what each click computes the next set from. Values with no chip
+      // are KEPT in it (a profile this panel hides, e.g. a managed role an agent
+      // bound itself to): the row may only state what it shows, so it must not
+      // silently drop what it does not. The old Save dropped them, which was
+      // one deliberate click; a row that writes on every tick would do it by
+      // accident.
+      let applied = (current || []).map(String);
       const cbs = options.map((o) => {
         const lab = document.createElement("label"); lab.className = "sec-chip";
-        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = initial.includes(o.value);
+        const cb = document.createElement("input"); cb.type = "checkbox"; cb.value = o.value; cb.checked = applied.includes(o.value);
         const t = document.createElement("span"); t.textContent = o.label;
         lab.append(cb, t); chips.appendChild(lab); return cb;
       });
-      row.append(l, chips); box.appendChild(row);
-      const f = { cbs, initial: initial.filter((v) => options.some((o) => o.value === v)), value: () => cbs.filter((c) => c.checked).map((c) => c.value) };
-      fields.push(f);
-      return f;
-    };
-    const share = field("Shared with", "Groups that may READ this secret (it stays owned by its group)",
-      targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith);
-    // "Any profile" (the vault's ANY_PROFILE, "*") is exclusive with the named
-    // profiles: picking one clears the other, so the chips never say both.
-    const inject = field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
-      profs.length ? [{ value: "*", label: "Any profile" }, ...profs.map((n) => ({ value: n, label: n }))] : [], sec.profiles);
-    if (inject) {
-      const commons = String(sec.ownerGroup) === "main" || vaultGroups.some((g) => String(g.id) === String(sec.ownerGroup) && g.nature === "public");
-      for (const cb of inject.cbs) cb.addEventListener("change", () => {
-        if (!cb.checked) return;
-        if (cb.value === "*" && !confirm(commons
-          ? `Give ${sec.name} to EVERY agent on this instance — every group, Personal ones included, whatever its profile?`
-          : `Give ${sec.name} to every agent that can read it, whatever its profile?`)) { cb.checked = false; return; }
-        for (const o of inject.cbs) if (o !== cb && (cb.value === "*" || o.value === "*")) o.checked = false;
+      const paint = (set) => { for (const c of cbs) c.checked = set.includes(c.value); };
+      for (const cb of cbs) cb.addEventListener("change", async () => {
+        if (cb.checked && confirmPick && !confirmPick(cb.value)) { paint(applied); return; }
+        const wanted = window.secretChipPick(applied, cb.value, cb.checked, exclusive);
+        paint(wanted); // show the exclusivity at once; the write follows
+        for (const c of cbs) c.disabled = true;
+        status.className = "sec-status"; status.textContent = "Saving…";
+        let err;
+        try { err = await vaultError(await put(url, bodyFor(wanted))); }
+        catch (e) { err = "network error: " + (e && e.message || e); }
+        for (const c of cbs) c.disabled = false;
+        if (err) {
+          paint(applied);
+          status.className = "sec-status err"; status.textContent = label + " not saved: " + err;
+          return;
+        }
+        applied = wanted; apply(wanted);
+        status.className = "sec-status ok"; status.textContent = "Saved.";
       });
-    }
-    if (!fields.length) return box;
+      row.append(l, chips); box.appendChild(row); rows++;
+      return cbs;
+    };
+    field("Shared with", "Groups that may READ this secret (it stays owned by its group)",
+      targets.map((g) => ({ value: String(g.id), label: g.name })), sec.sharedWith,
+      "/secrets/share", (set) => ({ sharedWith: set }), (set) => { sec.sharedWith = set; });
+    const commons = String(sec.ownerGroup) === "main" || vaultGroups.some((g) => String(g.id) === String(sec.ownerGroup) && g.nature === "public");
+    field("Injected into", "Profiles whose agents receive it as an environment variable at spawn",
+      profs.length ? [{ value: "*", label: "Any profile" }, ...profs.map((n) => ({ value: n, label: n }))] : [], sec.profiles,
+      "/secrets/profiles", (set) => ({ profiles: set }), (set) => { sec.profiles = set; },
+      // "Any profile" (the vault's ANY_PROFILE, "*") is exclusive with the named
+      // profiles, and handing it out is confirmed BEFORE the write, never after.
+      "*",
+      (value) => value !== "*" || confirm(commons
+        ? `Give ${sec.name} to EVERY agent on this instance — every group, Personal ones included, whatever its profile?`
+        : `Give ${sec.name} to every agent that can read it, whatever its profile?`));
+    if (!rows) return box;
     const foot = document.createElement("div"); foot.className = "sec-foot";
-    const status = document.createElement("span"); status.className = "sec-status"; status.setAttribute("role", "status");
-    const save = document.createElement("button"); save.type = "button"; save.className = "sec-save"; save.textContent = "Save"; save.disabled = true;
-    const dirty = () => fields.some((f) => !same(f.value(), f.initial));
-    box.addEventListener("change", () => {
-      save.disabled = !dirty();
-      if (status.classList.contains("ok")) { status.textContent = ""; status.className = "sec-status"; }
-    });
-    save.addEventListener("click", async () => {
-      save.disabled = true; status.className = "sec-status"; status.textContent = "Saving…";
-      const put = (url, body) => fetch(url, { method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: sec.name, group: String(sec.ownerGroup), ...body }) });
-      const errors = [];
-      try {
-        if (share && !same(share.value(), share.initial)) {
-          const e = await vaultError(await put("/secrets/share", { sharedWith: share.value() }));
-          if (e) errors.push("Sharing not saved: " + e);
-        }
-        if (inject && !same(inject.value(), inject.initial)) {
-          const e = await vaultError(await put("/secrets/profiles", { profiles: inject.value() }));
-          if (e) errors.push("Profiles not saved: " + e);
-        }
-      } catch (err) { errors.push("Network error: " + (err && err.message || err)); }
-      if (errors.length) {
-        // Keep the user's ticks on screen so they can retry or undo — a reload
-        // here would silently reset them to the server's state.
-        status.className = "sec-status err"; status.textContent = errors.join(" · ");
-        save.disabled = false;
-        return;
-      }
-      await loadVault(); renderSecrets();
-    });
-    foot.append(status, save); box.appendChild(foot);
+    foot.appendChild(status); box.appendChild(foot);
     return box;
   }
+
   /** Panel-level refusal (add / update / delete): shown above the list until the
    *  next successful write or the panel is reopened. */
   function showVaultError(msg) {
@@ -14811,8 +14829,9 @@
     if (window.secretsPanelMode(vaultGroups) === "flat") await syncSecretToProfiles(name, wanted); // refreshes profileCache
     else if (isNew && wanted.length) {
       // Grouped mode: a new secret is bound to the ticked profiles in its group
-      // right away (the same route as the card's chips), so creating one no
-      // longer means "add, then find its card, tick, Save".
+      // right away (the same route as the card's chips). The form's ticks CANNOT
+      // write as they are ticked the way a card's do — the secret does not exist
+      // yet, and PUT /secrets/profiles answers 404 — so they wait for this Add.
       const e = await vaultError(await fetch("/secrets/profiles", { method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, profiles: wanted, ...(writtenGroup ? { group: writtenGroup } : {}) }) }));
       if (e) showVaultError(name + " was saved, but not attached to its profiles: " + e);

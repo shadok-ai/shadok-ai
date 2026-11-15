@@ -178,7 +178,12 @@ Enter to skip; you can add it later from the web UI).
 - **Secret vault** — stored under `~/.shadok-ai`, never in your repo, injected
   as env vars into the agents that need them. Add or **update** a secret from the
   panel, tick the **profiles** it should feed right there, and reload the running
-  agents on those profiles in one click so a rotated value takes effect now. On
+  agents on those profiles in one click so a rotated value takes effect now.
+  On an existing secret's card, the *Shared with* / *Injected into* chips **are
+  the save**: a tick is written straight away, and a refused one goes back to
+  what the cockpit holds with the reason on the card — there is no Save button
+  to forget. (Only the creation form waits, since a secret must exist before it
+  can be bound to anything.) On
   an instance with groups, **Any profile** feeds a secret to every agent that can
   read it, whatever its profile (only a person can pick it, not an agent). An
   agent that **obtains** a credential (a CLI login, a key it just provisioned)
@@ -1578,7 +1583,8 @@ Light/dark **mode** is an orthogonal, **per-browser** choice in the same menu
 endpoint — the accent is the instance's shared identity, the mode is personal),
 `/profiles`, `/secrets`, `/secrets/audit` (GET, **admin only** — the secret
 audit log: who created/updated/deleted a secret, which profile it was attached
-to, and which agent **received** it at spawn or in a cron guard, with the person
+to — from the profile's editor or from a tick on the secret's *Injected into*
+chips, both directions of the same link — and which agent **received** it at spawn or in a cron guard, with the person
 or door that caused it; names only, never a value; filters `secret`, `action`,
 `actor`, `agent`, `since`, `limit`. Also in the vault panel → *Audit log*, and
 🕘 on each secret), `/telegram`, `/defaults`, `/first-agent` (GET —

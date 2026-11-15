@@ -2326,3 +2326,40 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     and the `try` (a transcript read, a screen read, a broadcast) could each
     throw into the gap. And neither `finishTurn` caller that nobody awaits —
     the spontaneous resume, the auto-retry — swallows its error any more.
+
+<a id="inv-75"></a>
+
+71. **A control that writes WITHOUT a Save must put the screen back when the
+    server says no — and must be unable to race itself.** Dropping the Save
+    button is a UI simplification; what it actually removes is the moment at
+    which the screen and the server are known to agree. Everything that moment
+    used to carry has to be rebuilt, and the vault's chip rows are the worked
+    example (`secretControls`, `public/index.html`, 2026-11-15).
+    PR #410 had fixed the opposite failure on the same card: a refused
+    share/profiles write left the ticks on screen as if saved. Its fix was to
+    *keep* the user's ticks and show the server's message, so they could retry
+    from the Save — correct, and correct only while a Save exists. With none,
+    keeping them is the original bug again: the card asserts an access the
+    vault does not grant, and nothing will ever come to correct it. So a
+    refusal repaints the row from the last set the server **confirmed**, which
+    means that set has to be held as state (`applied`) rather than read back
+    off the checkboxes.
+    The race is the half that is easy to miss. `PUT /secrets/profiles` and
+    `PUT /secrets/share` replace the WHOLE list — a delta would be meaningless
+    on a route like that — so two quick clicks send two full sets, and the vault
+    keeps whichever lands last, which need not be the one on screen. The row is
+    therefore disabled while its write is in flight (the same answer the
+    connected-account card already gave), and the body is computed by a pure
+    `secretChipPick(confirmed, key, on, exclusive)` from the confirmed set, not
+    from the DOM — while a write is in flight the DOM is not yet a statement
+    anyone has agreed to.
+    Two smaller consequences. Nothing may re-render the panel per tick: the old
+    Save ended on `loadVault(); renderSecrets()`, which rebuilds the whole list
+    and would yank the card out from under the cursor — the row patches the
+    card's own model instead. And a confirm (here *Any profile*, which can hand
+    a credential to every agent on the instance) must run BEFORE the write, so
+    cancelling it costs nothing; a cancelled click repaints from the confirmed
+    set, since by then the exclusivity may already have moved other boxes.
+    Finally, if a click is now a write, it is also an event worth recording: the
+    binding this card edits had no audit row at all until the Save went away
+    (`auditSecretProfiles`, the mirror of `auditProfileSecrets`).

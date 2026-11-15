@@ -2511,6 +2511,28 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   profiles, and edits them there; everyone else still sees them as the
   read-only "Inherited from Main" tier. A commons-owned secret offers no
   "Shared with" targets — it already resolves for every agent.
+  On an existing secret's card both chip rows **write as they are ticked**
+  (`secretControls`, no Save): `secretChipPick` (pure, `public/secrets-panel.js`)
+  turns one click into the whole set to PUT — that route replaces the list, so a
+  delta would be meaningless — and three rules keep it honest. A refusal
+  **repaints the row from the last set the server confirmed**: PR #410 fixed the
+  opposite bug (a 403 left the ticks on screen as if saved) by keeping them for a
+  retry, which only makes sense while a Save exists; without one, keeping them
+  would leave the card asserting an access that does not exist. The row is
+  **disabled while its write is in flight**, because each PUT carries the whole
+  set and two quick clicks would race — the vault keeping whichever landed last,
+  not the one on screen. And nothing re-renders the panel per tick (that would
+  rebuild the list under the cursor): the row patches the card's own model. The
+  A value with no chip (a managed profile an agent bound itself to) stays in the
+  set: a row may only state what it shows, so it must not silently drop what it
+  does not — the old Save did, which was at least one deliberate click. The
+  creation form cannot work this way — its secret does not exist yet, so
+  `PUT /secrets/profiles` would answer 404 — and still binds at *Add*. Since a
+  tick is now a write, `PUT /secrets/profiles` records the binding in the secret
+  audit (`auditSecretProfiles`: one `attached`/`detached` row per profile gained
+  or lost, the mirror of `auditProfileSecrets` on the profile side). `PUT
+  /secrets/share` is still unaudited — the log has no verb for a share, and
+  inventing one touches `SECRET_AUDIT_ACTIONS` and the panel's filters.
 - **Ledger** (`ledger.ts`, `context/ledger-skill/`): rows carry `group` and
   `scope`. The skill no longer writes the file; it calls `POST /ledger/record`,
   where the server stamps the caller's group from the session. Default is
