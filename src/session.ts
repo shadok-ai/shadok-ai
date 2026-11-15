@@ -1,7 +1,7 @@
 import { isAgentCredentialVar, withoutAgentCredentials } from "./agent-principal.js";
 import pty from "node-pty";
 import xterm from "@xterm/headless";
-import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, submitFailure, type SubmitError, type SubmitFailure, typeIntoBox } from "./detect.js";
+import { idleStep, settleStep, DIALOG_HOLD_MS, screenShowsWork, inputText, boxText, submitFailure, IdleTimeoutError, type SubmitError, type SubmitFailure, typeIntoBox } from "./detect.js";
 import { dropArgv, dropEnv } from "./osusers.js";
 
 const { Terminal } = xterm;
@@ -380,9 +380,7 @@ export class PtyPilot {
       lastScreen = step.lastScreen;
       await sleep(150);
     }
-    throw new Error(
-      `waitForIdle: timed out after ${timeoutMs} ms. Last screen:\n${this.screen()}`,
-    );
+    throw new IdleTimeoutError(timeoutMs, this.screen());
   }
 
   /** Waits for the process to exit (after /exit for example). */

@@ -38,7 +38,7 @@ import {
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { backgroundTasks, screenShowsWork, moveToOption, boxText, SubmitError } from "./detect.js";
+import { backgroundTasks, screenShowsWork, moveToOption, boxText, SubmitError, IdleTimeoutError, keepWaitingAfterTimeout, idleTimeoutMessage } from "./detect.js";
 import {
   submitRecoveryVerdict,
   submitWithRecovery,
@@ -10815,6 +10815,9 @@ function releaseBusyLatch(s: Live, heldMs: number): void {
   flushParentInbox(s.id);
 }
 
+/** One wait of a turn; a still-working agent gets as many as it needs. */
+const TURN_WAIT_MS = 900_000;
+
 async function finishTurn(s: Live) {
   s.busy = true;
   // Everything from here is INSIDE the try, including the three statements
@@ -10835,11 +10838,23 @@ async function finishTurn(s: Live) {
     broadcast(s, workingMessage(s));
     // Read on every poll, so an interrupt arriving mid-wait takes effect at
     // once instead of at the next turn.
-    await s.pilot.waitForIdle({
-      stableMs: () => (s.interruptedAt ? INTERRUPTED_STABLE_MS : 2000),
-      timeoutMs: 900_000,
-      settleOn: dialogSettleKey,
-    });
+    // A turn longer than one wait is not a fault: wait again for as long as the
+    // screen still shows work (`keepWaitingAfterTimeout`). Giving up dropped
+    // `busy` under a running agent and showed the person a raw screen dump for
+    // a turn that then finished fine.
+    for (;;) {
+      try {
+        await s.pilot.waitForIdle({
+          stableMs: () => (s.interruptedAt ? INTERRUPTED_STABLE_MS : 2000),
+          timeoutMs: TURN_WAIT_MS,
+          settleOn: dialogSettleKey,
+        });
+        break;
+      } catch (e) {
+        if (!keepWaitingAfterTimeout(e, s.pilot.isWorking())) throw e;
+        console.log(`[sk-${s.id}] turn still running after another ${TURN_WAIT_MS / 60_000} min — still waiting`);
+      }
+    }
     // A MULTI-QUESTION AskUserQuestion ends on a recap page ("Ready to submit
     // your answers? · Submit answers / Cancel"). That is NOT a real question —
     // every question was already answered one by one — and it mis-parses as a
@@ -12375,6 +12390,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
       if (session) session.busy = false;
       // `unresponsive` reaches the client as a CODE: the Telegram bridge says
       // something different to a guest for it, and must not match on prose.
+      // A wait that gave up carries the last screen: that belongs in the log,
+      // not in the chat, where it read as a raw terminal dump.
+      if (err instanceof IdleTimeoutError) {
+        console.error(`[sk-${session?.id ?? "?"}] ${err.message}`);
+        fail(idleTimeoutMessage(err.timeoutMs), "turn-timeout");
+        return;
+      }
       fail(err instanceof Error ? err.message : String(err), err instanceof UnresponsiveError ? err.code : undefined);
     }
   });

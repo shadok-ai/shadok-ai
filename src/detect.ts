@@ -266,6 +266,51 @@ export function stuckScreenKind(screen: string): StuckKind | null {
 }
 
 /**
+ * `waitForIdle` ran out of time, with the last screen as DATA.
+ *
+ * A bare `Error` carried the screen inside its message, and the server's catch
+ * forwarded that message to the chat — so a person got a raw terminal dump
+ * ("waitForIdle: timed out after 900000 ms. Last screen: …") for what was, most
+ * of the time, simply a long turn. The message keeps its old wording (the CLI
+ * prints it, and there the screen is useful); the server decides on the type.
+ */
+export class IdleTimeoutError extends Error {
+  constructor(
+    readonly timeoutMs: number,
+    readonly screen: string,
+  ) {
+    super(`waitForIdle: timed out after ${timeoutMs} ms. Last screen:\n${screen}`);
+    this.name = "IdleTimeoutError";
+  }
+}
+
+/**
+ * After a turn's wait timed out: wait again, or give up?
+ *
+ * A turn longer than the wait's cap is not a fault — "fix everything" on a real
+ * codebase runs well past fifteen minutes. Giving up on it lied twice: `busy`
+ * dropped while the agent was plainly still working (so a new prompt could be
+ * typed into a running turn), and the person was shown an error for a turn that
+ * then finished fine. So a timeout is retried for as long as the screen still
+ * shows WORK — the same marker the idle check itself waits on, so this never
+ * outlasts what the agent is visibly doing. A screen that keeps changing
+ * WITHOUT that marker is a real hang and still gives up.
+ */
+export function keepWaitingAfterTimeout(err: unknown, stillWorking: boolean): boolean {
+  return err instanceof IdleTimeoutError && stillWorking;
+}
+
+/**
+ * What the chat says when a wait really gives up — a screen that kept changing
+ * with no work marker. A sentence for a person, pointing at where to look; the
+ * screen itself goes to the server log.
+ */
+export function idleTimeoutMessage(timeoutMs: number): string {
+  const min = Math.round(timeoutMs / 60_000);
+  return `This turn never settled: after ${min} min the agent shows no sign of working, but its screen keeps changing. Open the terminal view to see where it is.`;
+}
+
+/**
  * Which half of `submit` gave up: the text never showed in the box, or it did
  * and Enter never sent it.
  */
