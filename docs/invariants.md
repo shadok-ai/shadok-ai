@@ -2363,3 +2363,38 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     Finally, if a click is now a write, it is also an event worth recording: the
     binding this card edits had no audit row at all until the Save went away
     (`auditSecretProfiles`, the mirror of `auditProfileSecrets`).
+
+<a id="inv-76"></a>
+
+72. **A missing Telegram topic never ends an agent — and a topic a channel
+    claims is never an orphan.** The boot reconcile (`reconcileOnBoot`) used to
+    hold two rules that were each reasonable and, chained, deleted a running
+    agent. It probed every bound topic and remembered the ones CONFIRMED to
+    exist; the orphan sweep then deleted every tracked topic not in that set.
+    A probe can fail (`unknown`: a rate limit while nine bridges replay their
+    backlog, a network blip), and a failed probe is not in the confirmed set —
+    so the sweep, whose own probe then succeeded, deleted the topic of a live
+    agent as "no channel". Nothing looked wrong: the web kept working, Telegram
+    logged `message thread not found` on every answer. At the NEXT boot the
+    first rule saw a topic that was really gone and dropped the channel row,
+    since "a topic deleted while we were down is the same close, seen late".
+    The agent vanished from every interface a day after the mistake, mid-use,
+    while its tmux process kept running with no row to reach it by.
+    Both links are cut in `topicReconcilePlan` (pure, tested).
+    **Orphan means unclaimed, not unconfirmed.** The sweep asks whether a
+    channel row CLAIMS the topic, read from the registry at sweep time — the
+    pass takes about a minute on a busy board, so the snapshot the probes were
+    made from is already old, and a topic created meanwhile would be swept too.
+    The claim is re-read once more after the existence probe, right before the
+    delete: it is the one irreversible call in the function.
+    **An inferred absence unbinds; it does not close.** Bot API has no "topic
+    deleted" update, so a deletion is never observed, only deduced at a later
+    boot. A deduction is not enough to end an agent along with its schedules
+    and webhooks: the channel keeps its row and loses its binding
+    (`telegram: null`, and `mirror: false` so the 5s loop does not recreate a
+    topic someone removed on purpose — the rule a room's topic already
+    followed). The cost is deliberate: deleting a topic in Telegram no longer
+    closes its agent, which stays as a web agent until closed there. Closing
+    a topic (`forum_topic_closed`, an observed event) still ends it.
+    The log line was accurate both times and nobody could have acted on it —
+    the same shape as invariant 27: assert only what you observed.
