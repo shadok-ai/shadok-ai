@@ -3286,6 +3286,10 @@
       box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent), 0 8px 20px -16px rgba(0, 0, 0, 0.45);
     }
     .transcript { padding-top: calc(22px + var(--chanbar-h, 0px)); scroll-padding-top: var(--chanbar-h, 0px); }
+    /* The engine room is not a conversation: nothing gives the height back
+       there, so the bar must not overlap it — its first rows would sit under
+       the glass. */
+    .chat-pane.terminal-mode #chanBar { margin-bottom: 0; }
     @media (max-width: 640px) { .transcript { padding-top: calc(14px + var(--chanbar-h, 0px)); } }
   }
 
@@ -5165,7 +5169,9 @@
   // synchronously, then `prefAppliers[key]` re-applies the server's value once
   // it lands. A key the server has never seen but this browser has is pushed
   // up once, so a person's existing choice becomes their account's instead of
-  // being reset by the first device that asks.
+  // being reset by the first device that asks — EXCEPT "tour seen", which is
+  // only pushed from a copy known to be this account's (public/pref-sync.js):
+  // inherited from the browser, it hid the tour from every later account.
   const PREF_CACHE = {
     mode:       { key: "cp.mode",         enc: (v) => v,               dec: (s) => (s === "light" || s === "dark" ? s : undefined) },
     soundMuted: { key: "cp.muteNotif",    enc: (v) => (v ? "1" : "0"), dec: (s) => (s === "1" ? true : s === "0" ? false : undefined) },
@@ -5191,26 +5197,39 @@
   // Started at once and awaited only by what must not act on a stale cache (the
   // tour). Bounded: a server that does not answer must not hold the page — the
   // cache is then what we go by, exactly as before this existed.
+  // Whose preferences the localStorage copy holds. localStorage is the
+  // BROWSER's; the preferences are an ACCOUNT's — and several accounts pass
+  // through one browser (public/pref-sync.js).
+  const PREFS_OWNER_KEY = "cp.prefsOwner";
   const prefsReady = (async () => {
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), 3000);
     try {
-      const r = await fetch("/prefs", { signal: ctl.signal });
+      const [r, who, mod] = await Promise.all([
+        fetch("/prefs", { signal: ctl.signal }),
+        fetch("/me", { signal: ctl.signal }).then((x) => (x.ok ? x.json() : null)).catch(() => null),
+        import("/pref-sync.js?v=__ASSET_V__"),
+      ]);
       if (!r.ok) return; // an agent/peer view or logged out: keep the cache
       const server = await r.json();
-      const push = {};
-      for (const name of Object.keys(PREF_CACHE)) {
-        const local = cachedPref(name);
-        if (server[name] !== undefined) {
-          if (server[name] !== local) {
-            cachePref(name, server[name]);
-            try { prefAppliers[name]?.(server[name]); } catch { /* one bad applier must not stop the rest */ }
-          }
-        } else if (local !== undefined) {
-          push[name] = local;
+      const owner = who && typeof who.name === "string" ? who.name : null;
+      let cacheOwner = null;
+      try { cacheOwner = localStorage.getItem(PREFS_OWNER_KEY); } catch { /* private mode */ }
+      const names = Object.keys(PREF_CACHE);
+      const local = {};
+      for (const name of names) { const v = cachedPref(name); if (v !== undefined) local[name] = v; }
+      const plan = mod.prefSyncPlan({ names, owner, cacheOwner, server, local });
+      for (const [name, value] of Object.entries(plan.cache)) {
+        if (value === null) {
+          // Someone else's "I did this" (the tour): not this account's to keep.
+          try { localStorage.removeItem(PREF_CACHE[name].key); } catch { /* private mode */ }
+          continue;
         }
+        cachePref(name, value);
+        try { prefAppliers[name]?.(value); } catch { /* one bad applier must not stop the rest */ }
       }
-      if (Object.keys(push).length) putPrefs(push);
+      if (owner != null) { try { localStorage.setItem(PREFS_OWNER_KEY, owner); } catch { /* private mode */ } }
+      if (Object.keys(plan.push).length) putPrefs(plan.push);
     } catch { /* timeout or offline: the cache stands */ }
     finally { clearTimeout(timer); }
   })();
