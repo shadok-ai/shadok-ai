@@ -253,6 +253,7 @@ import {
 import { runPrivileged, TREE_OP_TIMEOUT_MS } from "./privileged.js";
 import { HOME_SKILLS_BASE, missingHomeSkillLinks, rewriteSkillsBase } from "./skill-paths.js";
 import { instanceKey } from "./paths.js";
+import { prefsFor, savePrefsFor } from "./user-prefs.js";
 import {
   peerFileFor,
   loadPeers,
@@ -2764,6 +2765,32 @@ app.get("/mute", (_req, res) => {
 app.put("/mute", (req, res) => {
   setMutedForCwd(loadConfig(), process.cwd(), req.body?.muted === true);
   res.json({ muted: mutedForCwd(loadConfig(), process.cwd()) });
+});
+// The caller's OWN display preferences (light/dark, chime, rail, tour seen),
+// stored per account so they follow the person across browsers and devices
+// (src/user-prefs.ts). A PERSON's: an agent or a peer is refused — it has no
+// screen to paint, and a peer's name is not an account name, so letting it
+// write could land on a human's row of the same name. No password = the
+// bootstrap admin, the one person such an instance has.
+function prefsOwner(req: express.Request, res: express.Response): string | null {
+  const me = currentAccount(req);
+  if (!me) { res.status(401).json({ error: "unauthorized" }); return null; }
+  if (me.agent || peerRow(req)) { res.status(403).json({ error: "preferences belong to a person" }); return null; }
+  return me.name;
+}
+app.get("/prefs", (req, res) => {
+  const who = prefsOwner(req, res);
+  if (who) res.json(prefsFor(who));
+});
+// A PATCH in spirit: only the keys sent change, unknown keys are dropped.
+app.put("/prefs", (req, res) => {
+  const who = prefsOwner(req, res);
+  if (!who) return;
+  try {
+    res.json(savePrefsFor(who, req.body));
+  } catch (e) {
+    res.status(500).json({ error: `could not save preferences: ${(e as Error).message}` });
+  }
 });
 // Materialises shadok-ai's own source for the "Tweak Shadok-AI" CTA, and hands
 // back the directory to start the agent in. Sits here so it inherits the same
