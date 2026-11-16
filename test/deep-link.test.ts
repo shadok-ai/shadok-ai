@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import fs from "node:fs";
 // @ts-ignore — plain ESM shared with the browser
 import { buildMessageLink, buildRoomMessageLink, parseMessageLink, samePrompt } from "../public/deep-link.js";
 
@@ -7,10 +8,24 @@ const S = "113f3745-0b5e-4c1a-9d2f-0123456789ab";
 const M = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const R = "r_0123456789abcdef";
 
-test("link: build → parse round trip, hash replaced not appended", () => {
+test("link: the agent rides in the path, the message in the hash", () => {
   const url = buildMessageLink("https://cockpit.example/#agent=old", S, M);
-  assert.equal(url, `https://cockpit.example/#agent=${S}&msg=${M}`);
-  assert.deepEqual(parseMessageLink(new URL(url!).hash), { agent: S, msg: M });
+  assert.equal(url, `https://cockpit.example/a/${S}#msg=${M}`);
+  // Whatever path the page was on, the link starts from the origin.
+  assert.equal(buildMessageLink("https://cockpit.example:8443/a/x", S, M), `https://cockpit.example:8443/a/${S}#msg=${M}`);
+});
+
+test("link: the page's head script turns /a/<id>#msg= back into the parsed hash form", () => {
+  // The rewrite lives inline in index.html (it must run before any parsing);
+  // replay its two regexes here on a built link.
+  const url = new URL(buildMessageLink("https://cockpit.example/", S, M)!);
+  const m = /^\/a\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(url.pathname);
+  const msg = /(?:^#|&)msg=([0-9a-f-]{36})(?:&|$)/i.exec(url.hash);
+  assert.ok(m && msg);
+  assert.deepEqual(parseMessageLink(`#agent=${m![1]}&msg=${msg![1]}`), { agent: S, msg: M });
+  const html = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.ok(html.includes(String(/^\/a\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i)), "index.html carries the same path pattern");
+  assert.ok(html.includes(String(/(?:^#|&)msg=([0-9a-f-]{36})(?:&|$)/i)), "index.html carries the same msg pattern");
 });
 
 test("link: a short or malformed id builds nothing", () => {
