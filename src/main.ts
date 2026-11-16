@@ -88,7 +88,16 @@ async function main(): Promise<number> {
   }
   const guiPassword = process.env.SHADOK_GUI_PASSWORD ?? cfg.guiPassword;
 
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, PORT: String(port) };
+  // Tells the server a supervisor is watching it, which is what makes applying
+  // an update (exit 75) a RESTART rather than the server simply vanishing. It
+  // is why self-update can default to on here and stay off for a hand-run
+  // `dist/server.js` — see `resolveAutoUpdate`. Asserted on every spawn, not
+  // just the first: a respawned child is just as supervised as the first one.
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    PORT: String(port),
+    SHADOK_SUPERVISED: "1",
+  };
   if (token) childEnv.TELEGRAM_BOT_TOKEN = token;
   else delete childEnv.TELEGRAM_BOT_TOKEN;
   if (guiPassword) childEnv.SHADOK_GUI_PASSWORD = guiPassword;
