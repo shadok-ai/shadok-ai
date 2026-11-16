@@ -1617,9 +1617,15 @@ key picked from the ⋯ menu, e.g. `emerald`; unknown/`amber` reverts to default
 The default palette (stored key `amber`, labelled *Shadok*) is the Teams purple in
 light mode and an indigo in dark mode; light mode follows Microsoft Teams, dark
 mode a neutral near-black.
-Light/dark **mode** is an orthogonal, **per-browser** choice in the same menu
-(default dark; stored in `localStorage`, applied before first paint) and needs no
-endpoint — the accent is the instance's shared identity, the mode is personal),
+Light/dark **mode** is an orthogonal, **personal** choice in the same menu
+(default light) — the accent is the instance's shared identity, the mode is
+personal), `/prefs` (GET/PUT — the caller's OWN display preferences, stored per
+account so they follow the person to another browser, the phone or the desktop
+client: light/dark `mode`, `soundMuted` (the chime), `railMini` (collapsed groups
+column), `tourSeen`. PUT merges the keys it carries and drops unknown ones; an
+agent or a peer gets 403. The browser keeps a localStorage copy so the mode is
+applied before first paint, and pushes a choice it already had up to the account
+the first time),
 `/profiles`, `/secrets`, `/secrets/audit` (GET, **admin only** — the secret
 audit log: who created/updated/deleted a secret, which profile it was attached
 to — from the profile's editor or from a tick on the secret's *Injected into*
