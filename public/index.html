@@ -3355,7 +3355,8 @@
   body.room-active #chanGallery, body.room-active #chanCron, body.room-active #chanWebhooks, body.room-active #chanInfo,
   body.room-active #chanTerm, body.room-active #chanUpdate, body.room-active #skillBtn { display: none !important; }
 </style>
-<!-- Light/dark mode is a per-browser choice (localStorage). Set it BEFORE the
+<!-- Light/dark mode is a per-account choice (GET/PUT /prefs); this reads the
+     browser's localStorage CACHE of it, because it must be set BEFORE the
      body paints — here in <head> — so a dark-preferring viewer never sees a
      flash of the light default. Nonce'd like every inline script (invariant 12).
      Default LIGHT: the attribute is set unless the viewer explicitly chose dark,
@@ -5067,6 +5068,66 @@
   });
 
   const $ = (id) => document.getElementById(id);
+
+  // ── Personal preferences: the server is the authority, localStorage a cache ─
+  // Light/dark, the chime, the collapsed rail and "tour seen" are stored PER
+  // ACCOUNT (GET/PUT /prefs, src/user-prefs.ts) so they follow the person to
+  // another browser, the phone or the desktop client. The localStorage copy
+  // stays because the mode must be set before the first paint (the <head>
+  // script), long before a fetch answers; each feature reads the cache
+  // synchronously, then `prefAppliers[key]` re-applies the server's value once
+  // it lands. A key the server has never seen but this browser has is pushed
+  // up once, so a person's existing choice becomes their account's instead of
+  // being reset by the first device that asks.
+  const PREF_CACHE = {
+    mode:       { key: "cp.mode",         enc: (v) => v,               dec: (s) => (s === "light" || s === "dark" ? s : undefined) },
+    soundMuted: { key: "cp.muteNotif",    enc: (v) => (v ? "1" : "0"), dec: (s) => (s === "1" ? true : s === "0" ? false : undefined) },
+    railMini:   { key: "cp.railMini",     enc: (v) => (v ? "1" : "0"), dec: (s) => (s === "1" ? true : s === "0" ? false : undefined) },
+    tourSeen:   { key: "shadok.tourSeen", enc: (v) => (v ? "1" : "0"), dec: (s) => (s === "1" ? true : s === "0" ? false : undefined) },
+  };
+  const prefAppliers = {};
+  function cachedPref(name) {
+    try { return PREF_CACHE[name].dec(localStorage.getItem(PREF_CACHE[name].key)); } catch { return undefined; }
+  }
+  function cachePref(name, value) {
+    try { localStorage.setItem(PREF_CACHE[name].key, PREF_CACHE[name].enc(value)); } catch { /* private mode */ }
+  }
+  function putPrefs(patch) {
+    fetch("/prefs", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) })
+      .catch(() => { /* offline: the cache still holds it, the next change re-sends */ });
+  }
+  /** A person changed a preference: cache it for the next paint, tell the server. */
+  function savePref(name, value) {
+    cachePref(name, value);
+    putPrefs({ [name]: value });
+  }
+  // Started at once and awaited only by what must not act on a stale cache (the
+  // tour). Bounded: a server that does not answer must not hold the page — the
+  // cache is then what we go by, exactly as before this existed.
+  const prefsReady = (async () => {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 3000);
+    try {
+      const r = await fetch("/prefs", { signal: ctl.signal });
+      if (!r.ok) return; // an agent/peer view or logged out: keep the cache
+      const server = await r.json();
+      const push = {};
+      for (const name of Object.keys(PREF_CACHE)) {
+        const local = cachedPref(name);
+        if (server[name] !== undefined) {
+          if (server[name] !== local) {
+            cachePref(name, server[name]);
+            try { prefAppliers[name]?.(server[name]); } catch { /* one bad applier must not stop the rest */ }
+          }
+        } else if (local !== undefined) {
+          push[name] = local;
+        }
+      }
+      if (Object.keys(push).length) putPrefs(push);
+    } catch { /* timeout or offline: the cache stands */ }
+    finally { clearTimeout(timer); }
+  })();
+
   const tabbar = $("tabbar"), newTabBtn = $("newTab"), newGroupBtn = $("newGroup");
   const viewLabelEl = $("viewLabel");
   const ungroupedEl = $("ungrouped"), groupsEl = $("groups");
@@ -7485,16 +7546,17 @@
   });
   document.addEventListener("click", () => { if (!iconPicker.hidden) closeIconPicker(); });
 
-  // Collapse the rail to its icons; remembered per browser.
+  // Collapse the rail to its icons; remembered per person (/prefs).
   function applyRailMini(on) {
     document.body.classList.toggle("rail-mini", on);
     $("railMini").textContent = on ? "»" : "«";
     $("railMini").title = on ? "Expand the groups column" : "Collapse the groups column";
   }
-  applyRailMini(localStorage.getItem("cp.railMini") === "1");
+  applyRailMini(cachedPref("railMini") === true);
+  prefAppliers.railMini = (on) => applyRailMini(on);
   $("railMini").addEventListener("click", () => {
     const on = !document.body.classList.contains("rail-mini");
-    localStorage.setItem("cp.railMini", on ? "1" : "0");
+    savePref("railMini", on);
     applyRailMini(on);
   });
   // A group restored before the module landed drew the stub's plain folder:
@@ -8025,9 +8087,9 @@
     }
   }
 
-  // ── Light / dark mode: per BROWSER (localStorage), not per instance ─────────
+  // ── Light / dark mode: per PERSON (their account, /prefs), not per instance ──
   // A comfort choice that belongs to the person, not the cockpit's identity (the
-  // accent palette is the shared one). The <head> script already set the
+  // accent palette is the shared one). localStorage is only the pre-paint cache. The <head> script already set the
   // attribute before paint; this syncs the toggle and re-paints the favicon
   // (which reads --bg / --amber live). Dark → no attribute (default is light).
   function syncModeButtons() {
@@ -8036,12 +8098,12 @@
       b.classList.toggle("active", b.dataset.mode === (light ? "light" : "dark"));
     }
   }
-  function applyMode(mode) {
+  function applyMode(mode, persist = true) {
     const light = mode === "light";
     const root = document.documentElement;
     if (light) root.setAttribute("data-mode", "light");
     else root.removeAttribute("data-mode");
-    try { localStorage.setItem("cp.mode", light ? "light" : "dark"); } catch (e) {}
+    if (persist) savePref("mode", light ? "light" : "dark");
     syncModeButtons();
     paint(); // the favicon tile follows --bg (safe here: user click, well after init)
   }
@@ -8049,6 +8111,8 @@
     b.addEventListener("click", (e) => { e.stopPropagation(); applyMode(b.dataset.mode); });
   }
   syncModeButtons(); // init: the <head> script already applied the attribute pre-paint
+  // The account's choice, once /prefs answers (it may differ from this browser's).
+  prefAppliers.mode = (m) => applyMode(m, false);
 
   /** A themed CSS custom property, read live so the favicon follows the palette.
      A standalone SVG data-URI can't see the page's variables, so we inline the
@@ -8343,7 +8407,8 @@
   document.addEventListener("DOMContentLoaded", () => paint());
 
   // Sound: a short two-note chime via Web Audio (no asset). Muted pref persists.
-  let muted = localStorage.getItem("cp.muteNotif") === "1";
+  // Per person (/prefs), cached in this browser — see PREF_CACHE.
+  let muted = cachedPref("soundMuted") === true;
   let audioCtx = null;
   function unlockAudio() {
     try {
@@ -8377,11 +8442,12 @@
   }
   muteBtn.addEventListener("click", () => {
     muted = !muted;
-    localStorage.setItem("cp.muteNotif", muted ? "1" : "0");
+    savePref("soundMuted", muted);
     renderMute();
     if (!muted) unlockAudio();
   });
   renderMute();
+  prefAppliers.soundMuted = (v) => { muted = v; renderMute(); };
 
   function fmtTokens(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
@@ -16734,7 +16800,6 @@
     else alert((await r.json()).error || "update failed");
   }
   // --- Guided tour --------------------------------------------------------
-  const TOUR_SEEN_KEY = "shadok.tourSeen";
   let tourSteps = [];
   let tourAt = 0;
   let tourOnEnd = null;
@@ -16808,7 +16873,7 @@
   function endTour() {
     $("tourOverlay").hidden = true;
     $("tourOverlay").classList.remove("spotlight");
-    try { localStorage.setItem(TOUR_SEEN_KEY, "1"); } catch { /* private mode */ }
+    savePref("tourSeen", true);
     const done = tourOnEnd;
     tourOnEnd = null;
     done?.();
@@ -16837,10 +16902,12 @@
    * they know what the thing is. The card is DEFERRED, never skipped: signing
    * in is not optional, so it opens the moment the tour ends either way.
    */
-  function maybeStartTour() {
-    let seen = false;
-    try { seen = !!localStorage.getItem(TOUR_SEEN_KEY); } catch { seen = true; }
-    if (seen) { checkAuth(); return; }
+  async function maybeStartTour() {
+    // Wait for the account's answer: a person who already saw the tour on
+    // another device must not get it again on this one. Bounded (prefsReady
+    // gives up after 3s and leaves the cache in charge).
+    await prefsReady;
+    if (cachedPref("tourSeen") === true) { checkAuth(); return; }
     startTour(() => checkAuth());
   }
 
