@@ -125,9 +125,13 @@ export function parseArgs(argv) {
     env: { flags: [], required: [], pos: 0 },
     tz: { flags: [], required: [], pos: 1 },
     del: { flags: [], required: [], pos: 1, posRequired: 1 },
+    // No --check on purpose: `update` is pre-allowed past the auto-mode
+    // classifier (skillScriptAllow), and a check is a shell command the server
+    // runs later. Changing a check stays `del` + `add`, which is judged.
+    update: { flags: ["--schedule", "--prompt", "--tz"], required: [], pos: 1, posRequired: 1 },
   };
   if (!cmd || !(cmd in known)) {
-    throw new UsageError(`usage: schedule {add,list,del,tz,env} …\ninvalid choice: '${cmd ?? ""}'`);
+    throw new UsageError(`usage: schedule {add,list,update,del,tz,env} …\ninvalid choice: '${cmd ?? ""}'`);
   }
   const spec = known[cmd];
   const opts = {};
@@ -225,6 +229,42 @@ async function cmdEnv(ctx) {
   if (missing.length) console.log(`  referenced but NOT in the vault, so absent at run time: ${missing.join(", ")}`);
 }
 
+/** The cron of THIS channel an id (or the 8-character prefix `list` prints)
+ *  names. Pure; throws a UsageError with a sentence. */
+export function resolveMine(all, sid, needle) {
+  const n = String(needle ?? "").trim();
+  const hits = (Array.isArray(all) ? all : []).filter((c) => c.sessionId === sid && n && String(c.id).startsWith(n));
+  if (!hits.length) throw new UsageError(`no schedule '${n}' on this channel (run: schedule list)`);
+  if (hits.length > 1) throw new UsageError(`'${n}' matches ${hits.length} schedules — give more of the id`);
+  return hits[0];
+}
+
+/** The body that rewrites `c` with only the given changes. The server REPLACES
+ *  a cron on update, so everything not changed is carried over — the check
+ *  above all, which would otherwise be dropped in silence. Pure. */
+export function updateBody(c, opts) {
+  if (opts.schedule === undefined && opts.prompt === undefined && opts.tz === undefined)
+    throw new UsageError("schedule update: give at least one of --schedule, --prompt, --tz");
+  const body = {
+    id: c.id,
+    sessionId: c.sessionId,
+    prompt: opts.prompt ?? c.prompt,
+    schedule: opts.schedule !== undefined ? parseSchedule(opts.schedule) : c.schedule,
+  };
+  if (c.check) body.check = c.check;
+  if (opts.tz !== undefined) body.tz = opts.tz;
+  // A spent one-shot keeps its stored instant, which is past: the server
+  // refuses that, and says so — better than silently re-arming it.
+  return body;
+}
+
+async function cmdUpdate(ctx, id, opts) {
+  const all = await api(ctx, "GET", "/crons");
+  const c = resolveMine(all, ctx.sid, id);
+  const r = await api(ctx, "POST", "/crons", updateBody(c, opts));
+  console.log(`updated [${String(r.id).slice(0, 8)}] ${label(r.schedule, r.timezone)}${r.check ? " +guard" : ""}${r.enabled ? "" : " (paused)"}`);
+}
+
 async function cmdDel(ctx, id) {
   // `list` only prints 8 characters of an id: the server accepts that prefix.
   // Print WHAT IT deleted — an older version announced "deleted" without ever
@@ -249,6 +289,7 @@ export async function main(argv) {
     else if (parsed.cmd === "tz") await cmdTz(ctx, parsed.pos[0]);
     else if (parsed.cmd === "env") await cmdEnv(ctx);
     else if (parsed.cmd === "del") await cmdDel(ctx, parsed.pos[0]);
+    else if (parsed.cmd === "update") await cmdUpdate(ctx, parsed.pos[0], parsed.opts);
   } catch (e) {
     // A bad --schedule is a command-line mistake, not a server error.
     if (e instanceof UsageError) die(e.message);

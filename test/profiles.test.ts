@@ -5,6 +5,7 @@ import {
   READONLY_DENY,
   COCKPIT_DENY,
   CROSS_SESSION_DENY,
+  skillScriptAllow,
   envVarsNote,
   DEFAULT_PROFILES,
   seedMissingPlan,
@@ -34,13 +35,14 @@ import { normalizeVault, secretsFor, secretWriteVerdict } from "../src/secrets.j
  * restating it in every case.
  */
 const BASELINE_DENY = new Set<string>([...COCKPIT_DENY, ...CROSS_SESSION_DENY]);
+const BASELINE_ALLOW = new Set<string>(skillScriptAllow());
 function profileOnly(...args: Parameters<typeof profileArgs>): string[] {
   const out = profileArgs(...args);
   const i = out.indexOf("--settings");
   if (i < 0) return out;
   const settings = JSON.parse(out[i + 1]);
   const deny = (settings.permissions?.deny ?? []).filter((d: string) => !BASELINE_DENY.has(d));
-  const allow = settings.permissions?.allow ?? [];
+  const allow = (settings.permissions?.allow ?? []).filter((a: string) => !BASELINE_ALLOW.has(a));
   const rest = [...out.slice(0, i), ...out.slice(i + 2)];
   return deny.length || allow.length
     ? [...rest.slice(0, i), "--settings", JSON.stringify({ permissions: { deny, allow } }), ...rest.slice(i)]
@@ -553,4 +555,20 @@ test("profileArgs: the override does not disturb role or guardrails", () => {
   assert.ok(args.includes("--append-system-prompt"));
   assert.ok(args.some((a) => a.includes("git commit")));
   assert.deepEqual(args.slice(-2), ["--model", "opus"]);
+});
+
+test("skillScriptAllow: every agent may run the cockpit-only skill verbs unprompted, never add/--check or an outside skill", () => {
+  const base = profileArgs(undefined);
+  const settings = JSON.parse(base[base.indexOf("--settings") + 1]);
+  const allow: string[] = settings.permissions.allow;
+  for (const base of ["~/.claude/skills", "/etc/claude-code/.claude/skills"]) {
+    assert.ok(allow.includes(`Bash(node ${base}/shadok-scheduler/scripts/schedule.mjs update:*)`), base);
+    assert.ok(allow.includes(`Bash(node ${base}/shadok-ledger/ledger.mjs:*)`), base);
+  }
+  assert.ok(!allow.some((a) => /schedule\.mjs add|schedule\.mjs:\*/.test(a)), "add carries a shell --check: never pre-allowed");
+  assert.ok(!allow.some((a) => /shadok-(github|google|social|secrets)/.test(a)), "skills acting outside the cockpit stay judged");
+  // A profile's own rules are kept, after the baseline.
+  const own = profileArgs({ name: "p", allow: ["Bash(git log:*)"] } as never);
+  const withOwn = JSON.parse(own[own.indexOf("--settings") + 1]);
+  assert.ok(withOwn.permissions.allow.includes("Bash(git log:*)"));
 });

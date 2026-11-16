@@ -484,6 +484,40 @@ export const COCKPIT_DENY = ["Artifact"] as const;
 export const CROSS_SESSION_DENY = ["SendMessage", "ListAgents"] as const;
 
 /**
+ * The shadok skill commands an agent may run WITHOUT Claude Code's auto-mode
+ * classifier judging them. That classifier is the right guard for what an agent
+ * does to the world, but these commands only talk to the cockpit, which already
+ * enforces who may do what (session key, group, invariant 58): the classifier
+ * adds nothing there except refusals — measured: an agent asked to tighten its
+ * own hourly watch to 15 minutes was refused and had to ask the human for a
+ * Bash rule. Deliberately narrow:
+ *  - only skills whose effect stays inside the cockpit (ledger, reload, report,
+ *    handing a file to the person, the scheduler's read and edit verbs);
+ *  - NOT `schedule.mjs add`: its `--check` is a shell command the server runs
+ *    later as the agent, so pre-allowing it would launder any command past the
+ *    classifier. `update` takes no `--check` for the same reason;
+ *  - NOT the GitHub / Google / LinkedIn / secrets skills, which act outside or
+ *    on credentials.
+ * Both bases are listed: `~` is what a SKILL.md says, the machine-wide tier is
+ * what multi-tenant rewrites it to (`rewriteSkillsBase`). A prefix rule never
+ * matches a compound command, so `… && rm -rf` is still judged.
+ */
+export function skillScriptAllow(bases: readonly string[] = ["~/.claude/skills", "/etc/claude-code/.claude/skills"]): string[] {
+  const scripts = [
+    "shadok-ledger/ledger.mjs",
+    "shadok-reload/reload.mjs",
+    "shadok-report/scripts/report.mjs",
+    "shadok-files/scripts/send.mjs",
+    "shadok-scheduler/scripts/schedule.mjs list",
+    "shadok-scheduler/scripts/schedule.mjs update",
+    "shadok-scheduler/scripts/schedule.mjs del",
+    "shadok-scheduler/scripts/schedule.mjs tz",
+    "shadok-scheduler/scripts/schedule.mjs env",
+  ];
+  return bases.flatMap((b) => scripts.map((s) => `Bash(node ${b.replace(/\/+$/, "")}/${s}:*)`));
+}
+
+/**
  * The model to pass as `--model` at spawn, with the right precedence:
  * the agent's explicit choice, then the profile's pinned model, then — ONLY for
  * a privilege-DROPPED agent — the instance default.
@@ -526,7 +560,7 @@ export function profileArgs(
     ...(process.env.SHADOK_ALLOW_ARTIFACTS === "1" ? [] : COCKPIT_DENY),
     ...(profile?.deny ?? []),
   ];
-  const allow = profile?.allow ?? [];
+  const allow = [...skillScriptAllow(), ...(profile?.allow ?? [])];
   // Before --settings on purpose: --mcp-config is VARIADIC and swallows every
   // following non-flag word, and --settings is always emitted (CROSS_SESSION_DENY).
   if (profile?.mcpServers && Object.keys(profile.mcpServers).length)

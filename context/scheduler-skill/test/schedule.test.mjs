@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { fakeCockpit } from "./fake-cockpit.mjs";
-import { parseSchedule, label, parseArgs } from "../scripts/schedule.mjs";
+import { parseSchedule, label, parseArgs, resolveMine, updateBody } from "../scripts/schedule.mjs";
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "schedule.mjs");
 
@@ -179,4 +179,49 @@ test("parseSchedule: a daily restricted to some days sends the list as written",
 
 test("label: a restricted daily names its days", () => {
   assert.equal(label({ kind: "daily", hour: 9, minute: 0, days: [1, 3] }, "Europe/Paris"), "mon,wed 09:00 (Europe/Paris)");
+});
+
+const CRONS = [
+  { id: "3f2a9c1e-aaaa", sessionId: "sess-1", prompt: "watch", schedule: { kind: "interval", everyMin: 60 }, check: "sh guard.sh", enabled: true },
+  { id: "3f2b0000-bbbb", sessionId: "sess-1", prompt: "other", schedule: { kind: "daily", hour: 9, minute: 0 }, enabled: true },
+  { id: "9e9e9e9e-cccc", sessionId: "sess-2", prompt: "not mine", schedule: { kind: "interval", everyMin: 5 }, enabled: true },
+];
+
+test("update: takes no --check (it is pre-allowed past the classifier) and needs an id", () => {
+  assert.deepEqual(parseArgs(["update", "3f2a9c1e", "--schedule", "every:15m"]).opts, { schedule: "every:15m" });
+  assert.throws(() => parseArgs(["update", "3f2a9c1e", "--check", "rm -rf /"]), /unrecognized argument --check/);
+  assert.throws(() => parseArgs(["update"]), /required/);
+});
+
+test("resolveMine: a prefix names one schedule of THIS channel, never another's", () => {
+  assert.equal(resolveMine(CRONS, "sess-1", "3f2a9c1e").id, "3f2a9c1e-aaaa");
+  assert.throws(() => resolveMine(CRONS, "sess-1", "3f2"), /matches 2 schedules/);
+  assert.throws(() => resolveMine(CRONS, "sess-1", "9e9e"), /no schedule '9e9e'/);
+  assert.throws(() => resolveMine(CRONS, "sess-1", ""), /no schedule/);
+});
+
+test("updateBody: changes only what is given and carries the guard over", () => {
+  assert.deepEqual(updateBody(CRONS[0], { schedule: "every:15m" }), {
+    id: "3f2a9c1e-aaaa", sessionId: "sess-1", prompt: "watch", schedule: { kind: "interval", everyMin: 15 }, check: "sh guard.sh",
+  });
+  assert.equal(updateBody(CRONS[1], { prompt: "new" }).check, undefined);
+  assert.equal(updateBody(CRONS[1], { tz: "Europe/Paris" }).tz, "Europe/Paris");
+  assert.throws(() => updateBody(CRONS[0], {}), /at least one/);
+});
+
+test("update end to end: resolves the prefix, posts the full cron with its id", async () => {
+  const cockpit = await fakeCockpit({
+    "GET /crons": CRONS,
+    "POST /crons": { id: "3f2a9c1e-aaaa", schedule: { kind: "interval", everyMin: 15 }, check: "sh guard.sh", enabled: true },
+  });
+  try {
+    const r = await run(["update", "3f2a9c1e", "--schedule", "every:15m"], AGENT(cockpit.port));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /updated \[3f2a9c1e\] every 15m \+guard/);
+    const post = cockpit.seen.find((x) => x.method === "POST");
+    assert.equal(post.body.id, "3f2a9c1e-aaaa");
+    assert.equal(post.body.check, "sh guard.sh");
+  } finally {
+    await cockpit.close();
+  }
 });
