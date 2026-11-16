@@ -841,6 +841,20 @@
   .folder-body { display: flex; flex-direction: column; gap: 2px; margin-left: 12px; padding-left: 6px; border-left: 1px solid var(--line); }
   .agent-folder.folded > .folder-body { display: none; }
   body.dragging-tab .folder-body:empty { min-height: 22px; border: 1px dashed var(--line); border-radius: 4px; }
+  /* Agent families: the agents a parent launched sit indented under it. DERIVED
+     from the parent link on every layout, never stored — so nothing here can be
+     dragged into being; the tab menu's "Report to…" is what changes it. */
+  .kin-body { display: flex; flex-direction: column; gap: 2px; margin-left: 10px; padding-left: 5px; border-left: 1px solid var(--line); }
+  .kin-body.folded { display: none; }
+  /* The fold toggle on a parent's tab: caret + how many agents sit under it.
+     Folded, it carries the mood of what it hides (same three as a folder). */
+  .tab .kin { flex: 0 0 auto; cursor: pointer; font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 4px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .tab .kin:hover { color: var(--amber); background: var(--amber-soft); }
+  .tab .kin.needs-answer { background: color-mix(in srgb, var(--amber) 28%, transparent); color: var(--text); font-weight: 700; animation: breathe 1.2s ease-in-out infinite; }
+  .tab .kin.unread { color: var(--phosphor); font-weight: 700; }
+  .tab .kin.working { animation: breathe 1.8s ease-in-out infinite; }
+  @media (prefers-reduced-motion: reduce) { .tab .kin { animation: none !important; } }
+  .tab.kin-holds-active { box-shadow: inset 0 0 0 1px var(--line); }
   /* While dragging a tab, empty drop zones become visible targets. */
   body.dragging-tab #ungrouped:empty,
   body.dragging-tab .group-body:empty {
@@ -4678,6 +4692,10 @@
   window.folderChildren = folderChildren;
   window.effectiveFolder = effectiveFolder;
   window.removeFolder = removeFolder;
+  import { familyParents, familyChildren, familyDescendants } from "/agent-family.js?v=__ASSET_V__";
+  window.familyParents = familyParents;
+  window.familyChildren = familyChildren;
+  window.familyDescendants = familyDescendants;
   window.searchEmoji = searchEmoji;
   window.looksLikeEmoji = looksLikeEmoji;
   import { pumpLine, mascotSay, pickMaxim } from "/shadok-soul.js?v=__ASSET_V__";
@@ -5011,6 +5029,10 @@
     folderChildren: () => () => [],
     effectiveFolder: () => null,
     removeFolder: (folders) => ({ folders, refile: new Map() }),
+    // Families before the module lands: a flat column, every agent a root.
+    familyParents: () => new Map(),
+    familyChildren: () => () => [],
+    familyDescendants: () => [],
     looksLikeEmoji: () => false,
     uploadFailure: (status, contentType) =>
       /json/i.test(contentType || "") ? null : status === 413 ? "too large (over the server's upload limit)" : `upload failed (HTTP ${status || "?"})`,
@@ -5450,6 +5472,18 @@
       const r = link.getBoundingClientRect();
       openTabMenu(tab, r.left, r.bottom + 4);
     });
+    // Fold toggle for the agents this one launched (drawn indented under it).
+    // Hidden until it has any; painted by paintKin.
+    const kin = document.createElement("span");
+    kin.className = "kin";
+    kin.hidden = true;
+    kin.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!tab.sessionId) return;
+      if (!foldedKin.delete(tab.sessionId)) foldedKin.add(tab.sessionId);
+      saveFoldedKin();
+      paintKin();
+    });
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
     // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
     // left, context % hard right (no longer hidden behind the icons).
@@ -5464,7 +5498,7 @@
     paintAvatar();
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(name, timer, mute, cron, tg, shells, monitors, update, link, close);
+    row1.append(name, timer, mute, cron, tg, shells, monitors, update, link, kin, close);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
     row2.append(lastAt, ctxNum);
@@ -5496,7 +5530,7 @@
       updateState: null, // Claude Code update: "restart" (reload to apply) | "failed" (install then reload) | null
       staleReasons: [],  // server-side "reload to apply" reasons: prompt/guardrails/skills/secrets changed, auth token expired, claude binary updated
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, linkEl: link,
+      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, linkEl: link, kinEl: kin,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -6668,6 +6702,14 @@
   function saveFolded() {
     try { localStorage.setItem(FOLD_KEY(), JSON.stringify([...foldedFolders])); } catch {}
   }
+  // Families fold the same way: this browser's choice, keyed by the PARENT's
+  // session id (the tree itself is derived and has no id of its own).
+  const KIN_FOLD_KEY = () => dirKey("cp.kinCollapsed", instanceKey);
+  let foldedKin = new Set();
+  try { foldedKin = new Set(JSON.parse(localStorage.getItem(KIN_FOLD_KEY()) || "[]")); } catch { foldedKin = new Set(); }
+  function saveFoldedKin() {
+    try { localStorage.setItem(KIN_FOLD_KEY(), JSON.stringify([...foldedKin])); } catch {}
+  }
   // A local edit not yet confirmed by the server: a poll in between must not
   // put the old tree back under the user's hands.
   let folderPushTimer = null;
@@ -6798,29 +6840,56 @@
       folderEls.delete(id);
     }
     paintFolderHeads();
+    paintKin();
   }
   function layoutScope(key, scope) {
     if (scope.querySelector("input.rename")) return; // a re-nest would eat the typing
-    const own = folders.some((f) => (f.group ?? null) === key);
-    if (!own && !scope.querySelector(".agent-folder")) return;
     const kids = window.folderChildren(folders, key);
     const tabEls = [...scope.querySelectorAll(".tab")];
     const place = (b) => window.effectiveFolder(folders, b._tab?.folder ?? null, key);
+    // Families nest INSIDE a level: a child sits under its parent only when both
+    // were filed in the same place (public/agent-family.js) — the tree is
+    // derived, so it must never pull an agent out of the folder it was put in.
+    const sid = (b) => b._tab?.sessionId ?? null;
+    const items = tabEls.map((b) => ({ id: sid(b), parent: b._tab?.parent ?? null, slot: place(b) }));
+    const shown = window.familyParents(items);
+    const own = folders.some((f) => (f.group ?? null) === key);
+    if (!own && !shown.size && !scope.querySelector(".agent-folder, .kin-body")) return;
+    const kidIds = window.familyChildren(items, shown);
+    const elBySid = new Map(tabEls.filter(sid).map((b) => [String(sid(b)), b]));
+    const isRoot = (b) => !sid(b) || !shown.has(String(sid(b)));
+    const kidEls = (b) => (sid(b) ? kidIds(sid(b)).map((id) => elBySid.get(id)).filter(Boolean) : []);
+    const tabSig = (b) => {
+      const k = kidEls(b);
+      return "t" + (b._tab?.id ?? "") + (k.length ? ",[" + k.map(tabSig).join(",") + "]" : "");
+    };
     const desired = (parent) =>
       [...kids(parent).map((f) => "f" + f.id + "(" + desired(f.id) + ")"),
-       ...tabEls.filter((b) => place(b) === parent).map((b) => "t" + (b._tab?.id ?? ""))].join(",");
+       ...tabEls.filter((b) => place(b) === parent && isRoot(b)).map(tabSig)].join(",");
     const actual = (box) =>
       [...box.children].map((ch) =>
         ch.classList.contains("agent-folder") ? "f" + ch.dataset.folder + "(" + actual(ch._folderBody) + ")"
+          : ch.classList.contains("kin-body") ? "[" + actual(ch) + "]"
           : ch.classList.contains("tab") ? "t" + (ch._tab?.id ?? "") : "?").join(",");
     if (desired(null) === actual(scope)) return;
+    // One body per parent, kept on its tab across layouts.
+    const usedKin = new Set();
+    const putTab = (box, b) => {
+      box.appendChild(b);
+      const k = kidEls(b);
+      if (!k.length) return;
+      const body = b._tab.kinBodyEl || (b._tab.kinBodyEl = Object.assign(document.createElement("div"), { className: "kin-body" }));
+      usedKin.add(body);
+      box.appendChild(body);
+      for (const c of k) putTab(body, c);
+    };
     const build = (box, parent) => {
       for (const f of kids(parent)) {
         const rec = folderEl(f);
         box.appendChild(rec.el);
         build(rec.body, f.id);
       }
-      for (const b of tabEls) if (place(b) === parent) box.appendChild(b);
+      for (const b of tabEls) if (place(b) === parent && isRoot(b)) putTab(box, b);
     };
     const keep = new Set();
     const mark = (parent) => { for (const f of kids(parent)) { keep.add(f.id); mark(f.id); } };
@@ -6829,6 +6898,30 @@
     // A folder of another group that ended up here (its group was dissolved):
     // it is empty by now, every tab having been placed above.
     for (const el of [...scope.querySelectorAll(".agent-folder")]) if (!keep.has(el.dataset.folder)) el.remove();
+    // Same for a family body whose parent closed or lost its last child.
+    for (const el of [...scope.querySelectorAll(".kin-body")]) if (!usedKin.has(el)) el.remove();
+  }
+
+  /** The fold toggle of every parent: caret + count, and — folded — the mood of
+   *  the agents it hides. Guarded writes, for the same reason as the folders'. */
+  function paintKin() {
+    for (const t of tabs) {
+      if (!t.kinEl) continue;
+      const body = t.kinBodyEl;
+      const inside = body && body.isConnected ? [...body.querySelectorAll(".tab")] : [];
+      const folded = inside.length > 0 && foldedKin.has(t.sessionId);
+      if (body) body.classList.toggle("folded", folded);
+      if (t.kinEl.hidden !== !inside.length) t.kinEl.hidden = !inside.length;
+      const label = inside.length ? (folded ? "▸" : "▾") + inside.length : "";
+      if (t.kinEl.textContent !== label) t.kinEl.textContent = label;
+      const title = inside.length
+        ? (folded ? "Show" : "Hide") + " the " + inside.length + (inside.length > 1 ? " agents" : " agent") + " under this one"
+        : "";
+      if (t.kinEl.title !== title) t.kinEl.title = title;
+      const mood = folded ? window.groupMood(inside.map((b) => b._tab).filter(Boolean).map(moodOf)) : null;
+      for (const m of ["needs-answer", "unread", "working"]) t.kinEl.classList.toggle(m, m === mood);
+      t.btnEl.classList.toggle("kin-holds-active", folded && inside.some((b) => b.classList.contains("active")));
+    }
   }
 
   /** Count, fold caret, icon and mood of every folder header. Guarded writes:

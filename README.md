@@ -273,6 +273,13 @@ Enter to skip; you can add it later from the web UI).
   child's own "Detach from…", or, on the parent, "Children reporting here…" to
   drop an agent whose reports you no longer want. An agent can do the same over
   the CLI with `pilotctl set-parent <id> <parent|none>`.
+  The agents column **draws the link as a tree**: the agents an agent launched
+  sit indented under it, and the ▾ count on its tab folds them away (folded, it
+  carries the mood of what it hides — a child waiting for an answer still
+  shows). Nothing is arranged by hand and nothing is stored: the tree follows
+  the link. It never overrides where you filed an agent, though — a child you
+  put in another folder or group stays there, and when a parent is closed its
+  children simply move up a level.
 - **Quota gauges + pace guard** — 5h and 7d subscription usage, with an
   optional block when you're burning faster than the window elapses (any
   message can force through).
