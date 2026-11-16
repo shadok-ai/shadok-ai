@@ -50,7 +50,10 @@ export interface Config {
   guiPassword?: string;
   /**
    * Auto-apply a newer npm release (GUI checkbox). Authoritative once set;
-   * when unset the server falls back to the SHADOK_AUTOUPDATE env var.
+   * when unset the server falls back to SHADOK_AUTOUPDATE, and then to the
+   * default — ON, but only under a supervisor that can respawn the server
+   * (`resolveAutoUpdate`, src/update-channel.ts). So "absent" means "never
+   * chose", not "off": leaving it unset is how an instance TAKES the default.
    */
   autoUpdate?: boolean;
   /**

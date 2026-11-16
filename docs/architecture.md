@@ -1379,8 +1379,23 @@ restarts it on a dedicated exit code.
   instead of its usual exponential backoff, which would otherwise have climbed to
   8–15s during the gap and left the page waiting that long after the server was
   already back before reloading onto the new build.
-- `autoUpdate` is a GUI checkbox persisted in `config.json`, and **config wins
-  over env once set** — `SHADOK_AUTOUPDATE=0` alone will not stop it.
+- `autoUpdate` is **ON by default**, so an ordinary deployment tracks its
+  channel — beta, unless changed — with nothing to configure. That default is
+  gated on being SUPERVISED (`SHADOK_SUPERVISED`, asserted by `main.ts` on the
+  child it spawns): applying an update means exiting 75 for the supervisor to
+  reinstall and relaunch, so on a hand-run `dist/server.js` (`npm run web`, the
+  side-by-side build of CLAUDE.md) that exit would just be the server
+  disappearing. It stays off there.
+- An explicit choice always wins, in this order: the GUI checkbox persisted in
+  `config.json`, then `SHADOK_AUTOUPDATE` — which can now force it **OFF**
+  (`0`/`false`) and not only on. With the old default-off reading, "off" needed
+  no spelling, so the variable could only ever enable the feature; left that way
+  a flipped default would have made `SHADOK_AUTOUPDATE=0` a no-op — an instance
+  updating itself while its own configuration says not to. **Config still wins
+  over env once set**, so `SHADOK_AUTOUPDATE=0` will not override a ticked box.
+  Only an instance that expressed no choice at all takes the default, which is
+  what makes flipping it override nobody's setting (`resolveAutoUpdate`,
+  `src/update-channel.ts`; same precedence as the ledger reflex).
 - CI publishes on every merge to main; the version is `major.minor.<commit
   count>`. The repo's `package.json` stays at `0.1.0`, so a local version
   "behind" npm is normal.

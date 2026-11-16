@@ -54,3 +54,50 @@ export function pickTarget(
   if (!tags.latest) return tags.alpha;
   return isNewer(tags.latest, tags.alpha) ? tags.latest : tags.alpha;
 }
+
+/**
+ * Whether a brand-new instance applies a newer release by itself.
+ *
+ * ON, so an ordinary `npx shadok-ai` deployment follows its channel without
+ * anyone setting `SHADOK_AUTOUPDATE=1` — on the beta channel, which is already
+ * `DEFAULT_CHANNEL`, so the calm stream is what a default install tracks.
+ */
+export const DEFAULT_AUTO_UPDATE = true;
+
+/**
+ * Should this instance apply a newer release by itself?
+ *
+ * Config first (the GUI checkbox, persisted), then the env var, then the
+ * default — the same precedence as the shared-ledger reflex, and for the same
+ * reason: the only instance that gets a NEW default is one that never expressed
+ * a choice, so flipping the default cannot override anybody's setting.
+ *
+ * Two things this function exists to prevent, both of them silent.
+ *
+ * **The env var has to be able to say NO.** It used to be read as
+ * `/^(1|true|yes|on)$/.test(env ?? "")`, which could only ever turn the feature
+ * ON: absence meant off, so off needed no spelling. With the default ON, that
+ * same expression would make `SHADOK_AUTOUPDATE=0` a no-op — an instance
+ * updating itself while its own configuration says not to, which is the worst
+ * shape this flag can fail in. A non-empty value is therefore parsed, so
+ * anything that is not truthy (`0`, `false`, `no`, `off`) is a refusal.
+ *
+ * **A default ON is only safe where something respawns the server.** Applying
+ * an update means exiting 75 for the supervisor to reinstall and relaunch
+ * (`src/supervisor.ts`); with no supervisor that exit is just the server
+ * disappearing. `npm run web` and the side-by-side build in CLAUDE.md both run
+ * `dist/server.js` directly, and they are safe today only because the default
+ * is off — so the default is gated on `supervised`, which `main.ts` asserts on
+ * the child it spawns. An EXPLICIT choice still wins either way: someone who
+ * ticks the box on a hand-run server asked for it.
+ */
+export function resolveAutoUpdate(
+  configured: boolean | null | undefined,
+  env: string | undefined,
+  supervised: boolean,
+): boolean {
+  if (typeof configured === "boolean") return configured;
+  const raw = (env ?? "").trim();
+  if (raw) return /^(1|true|yes|on)$/i.test(raw);
+  return supervised ? DEFAULT_AUTO_UPDATE : false;
+}
