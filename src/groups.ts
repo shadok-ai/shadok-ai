@@ -472,9 +472,11 @@ export function secretOwnGroupIds(groups: readonly Group[], viewer: Viewer | nul
  * public rows are added by the caller regardless). It is the groups they belong
  * to, PLUS their commons home (`spawnGroupFor` — Main when they have no single
  * own group), so a commons operator still sees the commons' own rows while a
- * restricted-group member does NOT see Main-private ones. There is no
- * super-view: an admin with no memberships resolves to `{main}` exactly like
- * anyone else. Mono-tenant (no groups, or a null viewer) collapses to `{main}`,
+ * restricted-group member does NOT see Main-private ones. PLUS every public
+ * group bar the commons, which no one can be a member of and which everyone can
+ * already see (`canSeeGroup`) — the rule `secretOwnGroupIds` applies to secrets.
+ * There is still no super-view: a restricted group stays closed to an admin who
+ * does not belong to it. Mono-tenant (no groups, or a null viewer) collapses to `{main}`,
  * which — since every row's authoring group normalises to Main there — keeps the
  * whole table visible, today's behaviour.
  */
@@ -482,6 +484,24 @@ export function ledgerGroupsFor(groups: readonly Group[], viewer: Viewer | null)
   const out = memberGroupIds(groups, viewer);
   const home = spawnGroupFor(viewer, groups);
   out.add(home ? home.id : MAIN_GROUP_ID);
+  // A PUBLIC group has no membership to BE in: `memberOf` reads the `members`
+  // array, and nothing fills it for a public group, so `memberGroupIds` can
+  // never contain one. Its rows therefore reached NO human at all — while the
+  // agents whose channel lives in it read them normally, which is the asymmetry
+  // that made this look like "the ledger is off here". Measured on a migrated
+  // instance: 61 rows authored by a public group, an empty viewer for the admin
+  // who owns the cockpit. Not a new policy either — `secretOwnGroupIds` above
+  // already reads a public group's secrets for exactly this reason, and a
+  // credential is the more guarded of the two objects.
+  // The COMMONS stays out: it also carries every row written before groups
+  // existed (authoring group `null` normalises to Main), which a member of
+  // another group must not inherit — that call belongs to `spawnGroupFor`'s home
+  // above, and reversing it is a separate decision.
+  // Human only: an agent-backed viewer is scoped to its channel's group
+  // (`viewerInGroup` keys on `agentGroup`), and widening that would hand an
+  // agent rows its own session never authored.
+  if (viewer && viewer.agentGroup === undefined)
+    for (const g of groups) if (g.nature === "public" && g.id !== MAIN_GROUP_ID) out.add(g.id);
   return out;
 }
 

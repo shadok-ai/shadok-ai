@@ -2615,7 +2615,16 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   `scope`. The skill no longer writes the file; it calls `POST /ledger/record`,
   where the server stamps the caller's group from the session. Default is
   group-private; `--public` is the explicit crossing. `GET /ledger` and the push
-  delta are filtered by `ledgerGroupsFor`.
+  delta are filtered by `ledgerGroupsFor`. That filter used to be membership-only,
+  which made a PUBLIC group's rows unreadable by every human: nobody can be a
+  member of a public group, so `memberGroupIds` could never hold one, while the
+  agents of that same group read it through their `agentGroup`. A migrated
+  instance where every group is public therefore showed an EMPTY viewer to the
+  admin who owned it and a working `check` to its agents — and the README already
+  promised "your groups plus the public ones" for the ledger. `ledgerGroupsFor`
+  now adds every public group bar the commons, the rule `secretOwnGroupIds`
+  already applied to secrets; the commons stays out, since it also holds the rows
+  written before groups existed.
 - **Talk** (`talk.ts`, `POST /talk`): an agent can write to an agent in another
   group. `talkVerdict` keys on the recipient: public free, restricted only with a
   handle the recipient side shared, private sealed with no break-glass. The letter
