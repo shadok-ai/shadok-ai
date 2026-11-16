@@ -275,6 +275,16 @@ A quick per-file index. The FULL responsibility of each file — the war stories
     `prefaceMatches`: dropping a fresh preface only delays it (the tail still
     delivers it), whereas keeping a stale one leaves a permanent duplicate —
     nothing ever comes to edit it away.
+  - **On the web, the text written before a question must stay ABOVE it.** The
+    transcript writes a suspended message (its text included) only once the
+    tool resolves, i.e. after the answer — so its `stream-text` arrives AFTER
+    the dialog card. The client promotes the in-flight text (grey preview, else
+    the server's `preface`) above the card, and the authoritative block later
+    takes THAT slot (`slot.replaceWith`), or lands before the card
+    (`dialogAnchor`) when nothing was promoted. The anchor is cleared by the
+    message's own `stream-tool`, by `turn-done` and by a new prompt. Removing
+    the promoted copy and appending the block at the bottom put the text after
+    the question and the answer — `test/dialog-preface-order.test.ts`.
 - **Sessions outlive clients** on *disconnect* (reload, another device, a
   dropped WS): the process keeps running and is reclaimed only after
   `SHADOK_IDLE_MIN` min (default 60) with no client. With tmux, it also

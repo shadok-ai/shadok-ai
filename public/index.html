@@ -9517,11 +9517,17 @@
    * into a persistent bubble, rendered just before the question, instead of
    * clearing it. When `stream-text` later delivers the authoritative block it is
    * de-duplicated against this (a screen window is a substring of the full text),
-   * so it is not shown twice. Mirrors the Telegram bridge's `preface`.
+   * so it is not shown twice, and it takes the promoted copy's place — it must
+   * not move below the question. Mirrors the Telegram bridge's `preface`.
    */
-  function promotePreface(tab) {
+  function promotePreface(tab, serverPreface) {
     if (tab.prefaceEl) return;                 // already promoted (multi-select re-render)
-    const txt = tab.livePreviewBubble ? tab.livePreviewBubble.textContent : "";
+    // The grey preview first; failing that, the server's own read of the screen
+    // (`dialogMessage`, already filtered for a stale previous answer). The
+    // preview only exists if a WORKING screen showed the text — a text and its
+    // question painted in the same burst never produced one, and the message
+    // then had nothing above the question.
+    const txt = (tab.livePreviewBubble ? tab.livePreviewBubble.textContent : "") || serverPreface || "";
     const nT = normPreview(txt);
     if (!nT || isFinalizedBlock(tab, nT)) return; // nothing new to show (already a real block)
     const b = addTurn(tab, "claude", "claude", txt, "live", Date.now());
@@ -9765,6 +9771,13 @@
       turn.append(label, bubble);
       tab.transcriptEl.appendChild(turn);
       tab.dialogBubble = bubble;
+      // The FIRST question card of a suspended message. The transcript writes
+      // that message — the text before the question included — only once the
+      // tool resolves, i.e. after the answer; its text blocks then arrive
+      // here and must land ABOVE this card, not below it. Cleared by the
+      // message's own `stream-tool` (written right after its text) or turn-done.
+      // A permission prompt suspends a message exactly the same way.
+      if (!tab.dialogAnchor?.isConnected) tab.dialogAnchor = turn;
     }
     // The box's own text above the question — a permission prompt's title,
     // what it will do and to what ("… (outside working directory) via a
@@ -11046,6 +11059,7 @@
         t.turnHadText = false;
         break;
       case "prompt-echo":
+        t.dialogAnchor = null; // same reason as in submitPrompt
         // Prompt sent by another tab/interface — or by the server itself
         // when it auto-retries a turn that died on a transient API error.
         // Name the author when the sending client knew it (Telegram tells us
@@ -11102,6 +11116,10 @@
         // A complete assistant text block, streamed from the transcript.
         // Text ends the current activity block: the next tool call opens a new
         // one, so the transcript keeps the real text/tools interleaving.
+        // Where it goes: at the bottom, unless it belongs ABOVE a question (see
+        // `dialogAnchor`) — then in the promoted preface's place, or just
+        // before the question's card when nothing was promoted.
+        let slot = null;
         retireChoices(t);
         closeActivity(t);
         // Accumulate the block's complete AUTHORITATIVE text (msg.text) for the
@@ -11117,7 +11135,11 @@
           // other — the screen window can be a truncated substring of the full
           // block, or carry a transient trailing char (a cursor) the block lacks.
           if (t.prefaceEl && t.prefaceNorm && (fin.includes(t.prefaceNorm) || t.prefaceNorm.includes(fin))) {
-            t.prefaceEl.remove();
+            // Keep its SLOT: the clean block takes the promoted copy's place,
+            // above the question. Removing it and appending the block at the
+            // bottom put the text the agent wrote BEFORE asking after the
+            // question — and after your answer (the reported bug).
+            slot = t.prefaceEl;
             clearPreface(t);
           }
         }
@@ -11129,6 +11151,8 @@
         // with no timestamp): a live block was just written, the gap is nil.
         {
           const b = addTurn(t, "claude", "claude", msg.text, "live", msg.at ?? Date.now());
+          if (slot?.isConnected) slot.replaceWith(b.parentElement);
+          else if (t.dialogAnchor?.isConnected) t.dialogAnchor.before(b.parentElement);
           // A hidden internal block (thinking / dropped placeholder) separated
           // this text from the one before it: keep its own label instead of
           // gluing the two bubbles into one wordless run (the CSS group rule
@@ -11147,6 +11171,9 @@
         if (msg.draft) renderSocialDraft(t, msg.draft, msg.draft.createdAt);
         break;
       case "stream-tool":
+        // The suspended message's tool_use is written right AFTER its text
+        // blocks: from here on, new text really comes after the question.
+        t.dialogAnchor = null;
         // A tool call, grouped into the open activity block.
         addToolLine(t, msg);
         break;
@@ -11160,6 +11187,7 @@
         // A promoted preface that was never matched by a stream-text stays as the
         // shown text; just stop tracking it so the next turn starts clean.
         clearPreface(t);
+        t.dialogAnchor = null;
         // Activity recedes now the turn is over — errors excepted.
         sealTurn(t);
         if (msg.sessionId && msg.sessionId !== t.sessionId) {
@@ -11202,7 +11230,7 @@
         closeActivity(t);
         // Keep the message the agent wrote BEFORE the question visible — promote
         // the in-flight preview into a real bubble instead of dropping it.
-        promotePreface(t);
+        promotePreface(t, msg.preface);
         clearLivePreview(t);
         renderDialog(t, msg);
         stopTurnTimer(t);
@@ -11508,6 +11536,9 @@
       addTurn(t, "system", "", "Not sent: this agent is not connected. Your text is still in the box.");
       return;
     }
+    // A new message starts new content: nothing it triggers belongs above an
+    // earlier question card (a dialog that never got its turn-done).
+    t.dialogAnchor = null;
     // The turn is in flight but the server's `working` has not come back yet, so
     // t.status is still "ready". Mark the gap so a second fast Enter QUEUES
     // (queueForNextTurn) instead of firing another raw prompt the server would

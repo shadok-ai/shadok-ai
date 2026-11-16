@@ -10940,9 +10940,10 @@ const SUBMIT_PAGE = /ready to submit|submit answers/i;
  * already has it.
  *
  * Provisional by construction (unwrapped, truncated if the screen scrolled):
- * the client replaces it with the authoritative block from the tail. The web
- * ignores it, it already has its grey bubble; the Telegram bridge is what uses
- * it.
+ * the client replaces it with the authoritative block from the tail. The
+ * Telegram bridge relies on it; the web prefers its own grey preview bubble and
+ * falls back to this when the text and the question were painted in the same
+ * burst (no working screen, hence no preview, ever showed the text).
  *
  * Not to be confused with `d.body`, which rides along in the spread: that one
  * is the dialog box's OWN text (a permission prompt's "This will read … via a
