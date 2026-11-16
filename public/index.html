@@ -326,9 +326,6 @@
   /* Same for the opposite: an agent with scheduled prompts can speak without
      anyone having asked it anything. */
   .tab .cron, .tab .tg { font-size: 9px; opacity: 0.75; flex: 0 0 auto; }
-  /* A parent/child link exists on this agent (it reports to another, or others
-     report to it). Clicking opens the tab menu, where the link can be cut. */
-  .tab .link { font-size: 9px; opacity: 0.75; flex: 0 0 auto; cursor: pointer; }
   /* Background shells the agent left running. Last of the row on purpose: it is
      the most transient thing a tab says, so it must not shift the icons that sit
      still. It TURNS because a stopped hourglass and a running one look the same,
@@ -626,6 +623,10 @@
      without it the tab grows by a line as they appear (jump / clip). */
   .tab-row2 { display: flex; align-items: baseline; gap: 6px; min-height: 12px; line-height: 1.1; }
   .tab-row2 .ctxnum { margin-left: auto; }
+  /* The status icons, pushed to the right of row 2 (under the ✕). */
+  .tab-row2 .tab-icons { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; align-self: center; }
+  .tab-row2 .tab-icons + .ctxnum { margin-left: 0; }
+  .tab-row2 .tab-icons [hidden] { display: none; }
   /* Boot: each row's "xxx ago" + % + bar ease in one after the other as the
      glance lands (paintGlance) — a quick cascade top to bottom instead of one
      late burst. --gi is the row's rank, capped so the tail never drags. */
@@ -848,7 +849,7 @@
   .kin-body.folded { display: none; }
   /* The fold toggle on a parent's tab: caret + how many agents sit under it.
      Folded, it carries the mood of what it hides (same three as a folder). */
-  .tab .kin { flex: 0 0 auto; cursor: pointer; font-size: 10px; line-height: 1; padding: 2px 4px; border-radius: 4px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .tab .kin { flex: 0 0 auto; cursor: pointer; font-size: 10px; line-height: 1; padding: 1px 4px; border-radius: 4px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
   .tab .kin:hover { color: var(--amber); background: var(--amber-soft); }
   .tab .kin.needs-answer { background: color-mix(in srgb, var(--amber) 28%, transparent); color: var(--text); font-weight: 700; animation: breathe 1.2s ease-in-out infinite; }
   .tab .kin.unread { color: var(--phosphor); font-weight: 700; }
@@ -3234,7 +3235,27 @@
     background-color: color-mix(in srgb, var(--text) 7%, transparent);
     box-shadow: 0 8px 20px -14px var(--ac, var(--amber));
   }
-  :root[data-mode="light"] .tab.active { background-color: var(--bg-raised); box-shadow: var(--soft-shadow); }
+  /* Light mode: the selection is a SHAPE, not a fill. It used to be a white pill
+     with a soft shadow on a white card — white on white, so the agent you were
+     on was the quietest row of the list, quieter than a working (tinted) or
+     unread one. An accent bar, a hairline edge and a real lift mark it without
+     taking the fill, which stays free to carry the state: a selected agent that
+     is working still shows its tint (the `.working.active` rule below wins the
+     background, and this shadow rides on top of it). */
+  :root[data-mode="light"] .tab.active {
+    background-color: var(--bg-raised);
+    box-shadow: inset 4px 0 0 var(--amber), 0 6px 18px -8px rgba(30, 30, 60, .35), 0 0 0 1px rgba(0, 0, 0, .06);
+  }
+  :root[data-mode="light"] .tab.active .name { font-weight: 700; }
+  /* The case that matters most is the agent you are WATCHING work — and
+     `breathe` fades the whole row to 35% opacity, bar, name and avatar with it,
+     so the mark above washed out exactly then. For that one row the fill
+     breathes instead of the row: same pulse, and what says "you are here"
+     stays solid. */
+  @keyframes breathe-fill { 50% { background-color: var(--bg-raised); } }
+  @media (prefers-reduced-motion: no-preference) {
+    :root[data-mode="light"] .tab.working.active { animation-name: breathe-fill; }
+  }
   .tab.unread { border-radius: 12px; }
   .tav { box-shadow: 0 4px 10px -4px var(--ac, var(--amber)); }
   .rail-item.active { border-color: transparent; }
@@ -3247,6 +3268,26 @@
 
   /* Channel header melts into the conversation instead of a ruled band. */
   #chanBar { background: transparent; border-bottom: 0; }
+  /* Frosted glass: the header floats OVER the conversation, which scrolls
+     underneath and shows through, blurred. The bar stays in the flow and pulls
+     what follows up under itself by its own height (--chanbar-h, measured in JS
+     since the bar wraps on a phone); the transcript gives that height back as
+     top padding, so the first message still starts below the bar. Only where
+     the blur exists: without it a see-through bar is just unreadable text over
+     text, so those browsers keep the plain header. */
+  @supports ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    #chanBar {
+      position: relative; z-index: 6;
+      margin-bottom: calc(-1 * var(--chanbar-h, 0px));
+      background: color-mix(in srgb, var(--pane-main, var(--bg)) 58%, transparent);
+      -webkit-backdrop-filter: blur(20px) saturate(180%);
+      backdrop-filter: blur(20px) saturate(180%);
+      border-bottom: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 16%, transparent), 0 8px 20px -16px rgba(0, 0, 0, 0.45);
+    }
+    .transcript { padding-top: calc(22px + var(--chanbar-h, 0px)); scroll-padding-top: var(--chanbar-h, 0px); }
+    @media (max-width: 640px) { .transcript { padding-top: calc(14px + var(--chanbar-h, 0px)); } }
+  }
 
   /* Messages: rounder bubbles with a tail corner; yours carry the accent. */
   .bubble { border-radius: 18px; }
@@ -5460,18 +5501,6 @@
     update.className = "update";
     update.hidden = true;
     update.addEventListener("click", (e) => { e.stopPropagation(); handleClaudeUpdate(tab); });
-    // Parent/child link indicator. Shown when this agent reports to another OR
-    // others report to it; clicking opens the tab menu, where either link can be
-    // cut (both the child-side "Detach from…" and the parent-side children list).
-    const link = document.createElement("span");
-    link.className = "link";
-    link.hidden = true;
-    link.textContent = "🔗";
-    link.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const r = link.getBoundingClientRect();
-      openTabMenu(tab, r.left, r.bottom + 4);
-    });
     // Fold toggle for the agents this one launched (drawn indented under it).
     // Hidden until it has any; painted by paintKin.
     const kin = document.createElement("span");
@@ -5485,8 +5514,8 @@
       paintKin();
     });
     // Name + time stacked (the time UNDER the title, so as not to truncate it).
-    // Two rows: row 1 = led + name + icons; row 2 FULL WIDTH = "xxx ago" on the
-    // left, context % hard right (no longer hidden behind the icons).
+    // Two rows: row 1 = name + timer + ✕; row 2 FULL WIDTH = "xxx ago" on the
+    // left, the status icons and the context % on the right.
     // Teams-style avatar: initials on a colour derived from the name, with the
     // state LED riding its corner as a presence dot. Follows renames.
     const avatar = document.createElement("span");
@@ -5498,10 +5527,15 @@
     paintAvatar();
     const row1 = document.createElement("div");
     row1.className = "tab-row1";
-    row1.append(name, timer, mute, cron, tg, shells, monitors, update, link, kin, close);
+    // Row 1 keeps the name, the running timer and the ✕; every status icon sits
+    // on row 2, so a long name is no longer truncated to make room for them.
+    row1.append(name, timer, close);
+    const icons = document.createElement("span");
+    icons.className = "tab-icons";
+    icons.append(mute, cron, tg, shells, monitors, update, kin);
     const row2 = document.createElement("div");
     row2.className = "tab-row2";
-    row2.append(lastAt, ctxNum);
+    row2.append(lastAt, icons, ctxNum);
     btn.append(avatar, row1, row2);
     // Context-window usage no longer paints on the tab — it lives in the agent
     // menu now (tm-ctxbar), kept as `tab.contextPct` and read when the menu opens.
@@ -5530,7 +5564,7 @@
       updateState: null, // Claude Code update: "restart" (reload to apply) | "failed" (install then reload) | null
       staleReasons: [],  // server-side "reload to apply" reasons: prompt/guardrails/skills/secrets changed, auth token expired, claude binary updated
       btnEl: btn, ledEl: led, nameEl: name, timerEl: timer,
-      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, linkEl: link, kinEl: kin,
+      ctxNumEl: ctxNum, muteEl: mute, cronEl: cron, tgEl: tg, shellsEl: shells, monitorsEl: monitors, updateEl: update, kinEl: kin,
       mirror: false,     // mirrored into Telegram? (the ✈️ on the tab)
       lastAtEl: lastAt,
     };
@@ -6035,26 +6069,6 @@
   /** The agents that report to this one (its children in the kinship tree). */
   function childTabsOf(tab) {
     return tab.sessionId ? tabs.filter((t) => t.sessionId && t.parent === tab.sessionId) : [];
-  }
-
-  /**
-   * Light the 🔗 on a tab when it has a parent OR any children, and say which in
-   * the tooltip. A parent change moves the badge on BOTH ends (the child gains a
-   * parent, the parent gains a child), so callers refresh every tab — cheap, and
-   * it never leaves one side stale.
-   */
-  function refreshLinkBadge(tab) {
-    if (!tab.linkEl) return;
-    const kids = childTabsOf(tab);
-    const hasParent = !!tab.parent;
-    tab.linkEl.hidden = !hasParent && kids.length === 0;
-    const bits = [];
-    if (hasParent) bits.push("Reports to " + parentLabel(tab.parent));
-    if (kids.length) bits.push(kids.length + (kids.length > 1 ? " agents report here" : " agent reports here"));
-    tab.linkEl.title = bits.join(" · ");
-  }
-  function refreshAllLinkBadges() {
-    for (const t of tabs) refreshLinkBadge(t);
   }
 
   /**
@@ -7542,6 +7556,15 @@
   // Collapsing the rail, resizing the window, or a group renamed to a longer
   // name moves the rows: follow without gliding.
   if (window.ResizeObserver) new ResizeObserver(() => placeRailPill({ animate: false })).observe(railList);
+  // The glass header overlaps the conversation by its own height (see the CSS
+  // of #chanBar): publish that height, 0 while the bar is hidden. Measured, not
+  // assumed — the bar wraps on a narrow screen and its height follows.
+  {
+    const bar = $("chanBar"), pane = bar.closest(".chat-pane");
+    const publish = () => pane.style.setProperty("--chanbar-h", (bar.hidden ? 0 : bar.offsetHeight) + "px");
+    if (window.ResizeObserver) new ResizeObserver(publish).observe(bar);
+    publish();
+  }
 
   let railFrame = 0;
   let railSig = "";
@@ -7967,9 +7990,10 @@
       }
     }
     lastChannelIds = current;
-    // Parents are re-applied above from the registry; refresh every 🔗 once the
-    // pass has settled, so a link made on another device lights up here too.
-    refreshAllLinkBadges();
+    // Parents are re-applied above from the registry; re-nest once the pass has
+    // settled, so a link made on another device redraws the tree here too. A
+    // changed `parent` is not a DOM mutation, so nothing else would trigger it.
+    layoutFolders();
   }
 
   // Is the server currently starting this instance's lead agent? Never inferred
@@ -11412,7 +11436,7 @@
         // Broadcast to every client, like `profile`: attaching from one tab
         // must update the others without a reload.
         t.parent = msg.parent;
-        refreshAllLinkBadges();   // moves the 🔗 on both ends of the link
+        layoutFolders();   // the tree is derived from this link: redraw it now
         break;
       case "tokens":
         t.tokens = msg.tokens;
