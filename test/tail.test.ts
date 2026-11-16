@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, stripTrailingNothingToShow, startOffset, sessionFilePath, newestTranscriptById } from "../src/tail.js";
+import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, stripTrailingNothingToShow, startOffset, sessionFilePath, newestTranscriptById, resumeOrStartArgs } from "../src/tail.js";
 
 test("parseLine: assistant text block → one text event", () => {
   const ev = parseLine(
@@ -377,4 +377,17 @@ test("isNothingToShow: the upper-case sentinel used as a PREFACE drops the whole
   assert.equal(isNothingToShow("Nothing to show for now, the build is running."), false);
   assert.equal(isNothingToShow("The cron said NOTHING TO SHOW twice."), false);
   assert.equal(isNothingToShow("NOTHING TO SHOWCASE here"), false);
+});
+
+test("resumeOrStartArgs: a resume with no transcript starts fresh under the same id", () => {
+  const id = "ba08e44e-1d58-43ba-a0ee-79722d83682e";
+  assert.deepEqual(resumeOrStartArgs(["--resume", id], false), ["--session-id", id]);
+  assert.deepEqual(resumeOrStartArgs(["--model", "x", "--resume", id, "--effort", "high"], false), ["--model", "x", "--session-id", id, "--effort", "high"]);
+});
+
+test("resumeOrStartArgs: an existing transcript, or no resume at all, leaves the args alone", () => {
+  const id = "ba08e44e-1d58-43ba-a0ee-79722d83682e";
+  assert.deepEqual(resumeOrStartArgs(["--resume", id], true), ["--resume", id]);
+  assert.deepEqual(resumeOrStartArgs(["--session-id", id], false), ["--session-id", id]);
+  assert.deepEqual(resumeOrStartArgs(["--resume"], false), ["--resume"]);
 });
