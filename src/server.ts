@@ -511,7 +511,7 @@ import {
   type Worktree,
 } from "./worktree.js";
 import { latestVersion, update } from "./updater.js";
-import { resolveChannel, type UpdateChannel } from "./update-channel.js";
+import { resolveAutoUpdate, resolveChannel, type UpdateChannel } from "./update-channel.js";
 import type { SpawnStep } from "./spawn-steps.js";
 import { isNewer } from "./version.js";
 import { RELOAD_EXIT_CODE } from "./supervisor.js";
@@ -7792,11 +7792,18 @@ let latestKnown: string | null = null;
 // How often to poll npm for a newer release (minutes; 0 disables the check).
 const VERSION_CHECK_MIN = Number(process.env.SHADOK_VERSION_CHECK_MIN ?? 15);
 // Auto-apply a newer release: notify clients, then exit 75 so the supervisor
-// installs it and respawns. Runtime-toggleable via the GUI checkbox; the
-// persisted config wins, falling back to the SHADOK_AUTOUPDATE env var. The
+// installs it and respawns. ON by default where a supervisor is there to do
+// that respawn — so an ordinary `npx shadok-ai` deployment tracks its channel
+// (beta, unless changed) with nothing to configure, while a hand-run
+// `dist/server.js` still never exits out from under its operator. An explicit
+// choice wins either way: the GUI checkbox, or SHADOK_AUTOUPDATE, which can now
+// force it OFF (`0`/`false`) and not just on. See `resolveAutoUpdate`. The
 // display poll runs regardless of this flag.
-let autoUpdate: boolean =
-  loadConfig().autoUpdate ?? /^(1|true|yes|on)$/i.test(process.env.SHADOK_AUTOUPDATE ?? "");
+let autoUpdate: boolean = resolveAutoUpdate(
+  loadConfig().autoUpdate,
+  process.env.SHADOK_AUTOUPDATE,
+  process.env.SHADOK_SUPERVISED === "1",
+);
 // Shared-ledger reflex: ON by default. An explicit choice always wins — the
 // config (GUI toggle / POST /ledger), or SHADOK_LEDGER, which can now force it
 // EITHER way (`0`/`false` turns it off, not just `1` on). Only an instance that

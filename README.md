@@ -268,8 +268,8 @@ Enter to skip; you can add it later from the web UI).
   children and nothing else, so a busy channel never wakes it. What arrives is
   the child's own summary plus pointers (branch, diff link) — never the diff
   itself, which on a large session costs far more than it is worth. The link is
-  set automatically at spawn; you can also change it by hand. A 🔗 on the tab
-  marks any agent that has a link, and its menu cuts it from **either** end — the
+  set automatically at spawn; you can also change it by hand: an agent's tab
+  menu cuts it from **either** end — the
   child's own "Detach from…", or, on the parent, "Children reporting here…" to
   drop an agent whose reports you no longer want. An agent can do the same over
   the CLI with `pilotctl set-parent <id> <parent|none>`.
@@ -1434,7 +1434,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_AUTO_RELOAD_IDLE_SEC` | how long an agent must be quiet before that automatic reload (120) |
 | `SHADOK_SUBMIT_RECOVERY=0` | don't restart an agent whose terminal stopped taking input — report the failed message as an error instead |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
-| `SHADOK_AUTOUPDATE` | fallback only — the GUI setting wins once used |
+| `SHADOK_AUTOUPDATE=0` | don't apply a newer release by itself (**ON by default** under the supervisor, i.e. `npx shadok-ai`; a server run directly never self-updates, since nothing would respawn it). `0`/`false` turns it off, `1`/`true` forces it on; the GUI setting wins over either once used |
 | `SHADOK_PILOT_PROMPT=0` | don't inject the cockpit system prompt |
 | `SHADOK_GREETING=0` | the lead agent starts silent — no first-message greeting |
 | `SHADOK_LEDGER=0` | turn OFF the shared-ledger reflex — a per-instance state table siblings read/write so they stop re-surfacing resolved work, plus a `⟦ledger⟧` delta pushed ahead of each message (**ON by default**; `SHADOK_LEDGER=0` or the GUI/config setting turns it off) |
@@ -1517,7 +1517,7 @@ TUI in the engine room.
 npm install
 npm run build      # tsc → dist/
 npm test
-npm run web        # run the server directly (no supervisor, no auto-update)
+npm run web        # run the server directly (no supervisor, so no auto-update)
 ```
 
 ### Update channels
