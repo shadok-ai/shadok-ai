@@ -8387,8 +8387,11 @@ app.post("/claude-update", async (req, res) => {
 // CLI's `check`/`list` (which run their own recall over these rows). Filtered by
 // the CALLER's group, so another group's group-scoped rows never leak:
 //  - an AGENT (its per-session key) → its CHANNEL's group ∪ public;
-//  - a BROWSER → its member groups ∪ its commons home ∪ public (NO super-view,
-//    so an admin sees no more than the groups they belong to).
+//  - a BROWSER → its member groups ∪ its commons home ∪ every PUBLIC group bar
+//    the commons ∪ public rows. That last term is not a super-view (a
+//    restricted group stays closed to an admin outside it): nobody can be a
+//    MEMBER of a public group, so without it such a group's rows reached no
+//    human at all while its own agents read them — see `ledgerGroupsFor`.
 // This replaces the old "return the Main file unfiltered" viewer, which showed
 // Main-private rows to any authenticated member.
 app.get("/ledger", (req, res) => {
