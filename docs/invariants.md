@@ -389,6 +389,14 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     multi-question recap page is excluded from `settleOn` — right after the Enter
     that confirms it the screen still shows it, and settling there would end the
     wait before the submitted turn even starts.
+    Clearing the key in `finishTurn` has a price: whoever ELSE published the
+    same dialog first gets a duplicate. The watcher did exactly that in the
+    `choose` handler's gap — `busy` is down between the keystroke and
+    `finishTurn`, so answering question 1 of a form showed question 2 twice. A
+    handler that answers a dialog (`choose`, `freetext`, `confirm`) therefore
+    holds `Live.answering` for its whole run, and the watcher stays out while
+    it is up; `freetext` publishes the next question through `publishDialog`,
+    never a raw broadcast the watcher would announce again.
 
 <a id="inv-22"></a>
 

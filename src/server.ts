@@ -9631,6 +9631,12 @@ interface Live {
   /** Identity of the dialog last broadcast, so the screen watcher can surface a
    *  NEW question without re-sending the current one 3 times a second. */
   lastDialogKey: string | null;
+  /** Dialog answers in flight (`choose` / `freetext` / `confirm`). While one
+   *  runs, the HANDLER owns what happens next — the screen watcher must stay
+   *  out: it used to catch the next question of a multi-question form in the
+   *  gap between the keystroke and `finishTurn`, publish it, and `finishTurn`
+   *  (which clears the dedup key on purpose) published it a second time. */
+  answering: number;
   /** Context-window fill (%), computed from the transcript's token usage. */
   contextPct: number | null;
   /** What the pane says is still running (its footer's counts). Live, never stored. */
@@ -10386,6 +10392,7 @@ async function createSession(
     screenTimer: null,
     lastScreen: "",
     lastDialogKey: null,
+    answering: 0,
     contextWindow,
     backend: backend.kind,
     // A reattached session must show its bar at once, not only after the next
@@ -10659,7 +10666,7 @@ async function attachPilot(s: Live): Promise<void> {
       // screen change closes that hole for `key` and for any future path that
       // bypasses `finishTurn`. `publishDialog` dedups, so a dialog sitting
       // there while the footer clock ticks is announced exactly once.
-      if (settled && !s.busy) {
+      if (settled && !s.busy && !s.answering) {
         const d = detectDialog(scr);
         if (d) publishDialog(s, d);
         else s.lastDialogKey = null;
@@ -10670,7 +10677,7 @@ async function attachPilot(s: Live): Promise<void> {
     // finishTurn, so watch for it here and signal the turn like any other.
     // SAY it when that fails: this is the one `finishTurn` call with nobody to
     // report to, and swallowing it is how a flag left up here stayed invisible.
-    if (settled && !s.busy && pilot.isWorking())
+    if (settled && !s.busy && !s.answering && pilot.isWorking())
       finishTurn(s).catch((e) =>
         console.error(`[sk-${s.id}] finishTurn (spontaneous resume) failed — ${e instanceof Error ? e.message : e}`),
       );
@@ -12305,9 +12312,16 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // running — either way there's nothing to select here.
           if (!detectDialog(session.pilot.screen()))
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
-          await selectOption(session.pilot, msg.n);
-          await sleep(500);
-          await finishTurn(session);
+          // Keep the screen watcher out until finishTurn has published whatever
+          // comes next (see `Live.answering`).
+          session.answering++;
+          try {
+            await selectOption(session.pilot, msg.n);
+            await sleep(500);
+            await finishTurn(session);
+          } finally {
+            session.answering--;
+          }
           break;
         }
 
@@ -12333,15 +12347,25 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             return fail(session.busy ? "a response is already in progress" : "this dialog is no longer active");
           const t = msg.text.trim();
           if (!t) return;
-          session.pilot.write(String(msg.n));
-          await sleep(700);
-          session.pilot.write(`\x1b[200~${t}\x1b[201~`);
-          await sleep(400);
-          session.pilot.press("enter");
-          await sleep(600);
-          const d = detectDialog(session.pilot.screen());
-          if (d) broadcast(session, dialogMessage(session, d));
-          else await finishTurn(session);
+          session.answering++;
+          try {
+            session.pilot.write(String(msg.n));
+            await sleep(700);
+            session.pilot.write(`\x1b[200~${t}\x1b[201~`);
+            await sleep(400);
+            session.pilot.press("enter");
+            await sleep(600);
+            const d = detectDialog(session.pilot.screen());
+            if (d) {
+              // The next question of a form, or the same one again: either way a
+              // fresh ask. Through publishDialog, so the key is recorded and the
+              // watcher does not announce it a second time once we let go.
+              session.lastDialogKey = null;
+              publishDialog(session, d);
+            } else await finishTurn(session);
+          } finally {
+            session.answering--;
+          }
           break;
         }
 
@@ -12359,24 +12383,29 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
           // — in the multi-question case that Enter answered the next question
           // with its default (silently, wrongly), corrupting the form. Wait for
           // whichever screen Tab produced, then decide.
-          session.pilot.press("tab");
-          await session.pilot
-            .waitFor(
-              (scr) => SUBMIT_PAGE.test(scr) || (detectDialog(scr)?.question ?? before.question) !== before.question,
-              { timeoutMs: 5000 },
-            )
-            .catch(() => {}); // neither settled in time: fall through and inspect
-          await sleep(300);
-          const scr = session.pilot.screen();
-          const next = detectDialog(scr);
-          if (SUBMIT_PAGE.test(scr) || !next) {
-            // The recap/submit page (this was the last question), or the form is
-            // gone: let finishTurn drive it — it auto-confirms the recap.
-            await finishTurn(session);
-          } else {
-            // Tab landed on a FURTHER question — hand it back to the user to
-            // answer rather than auto-picking its default with Enter.
-            publishDialog(session, next);
+          session.answering++;
+          try {
+            session.pilot.press("tab");
+            await session.pilot
+              .waitFor(
+                (scr) => SUBMIT_PAGE.test(scr) || (detectDialog(scr)?.question ?? before.question) !== before.question,
+                { timeoutMs: 5000 },
+              )
+              .catch(() => {}); // neither settled in time: fall through and inspect
+            await sleep(300);
+            const scr = session.pilot.screen();
+            const next = detectDialog(scr);
+            if (SUBMIT_PAGE.test(scr) || !next) {
+              // The recap/submit page (this was the last question), or the form is
+              // gone: let finishTurn drive it — it auto-confirms the recap.
+              await finishTurn(session);
+            } else {
+              // Tab landed on a FURTHER question — hand it back to the user to
+              // answer rather than auto-picking its default with Enter.
+              publishDialog(session, next);
+            }
+          } finally {
+            session.answering--;
           }
           break;
         }
