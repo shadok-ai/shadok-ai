@@ -707,6 +707,15 @@ if (!instanceLock.ok) {
 process.on("exit", () => releaseInstanceLock());
 
 const app = express();
+// Nothing a cockpit serves belongs in a search index: the login page and the
+// share card are public on purpose (a link preview needs them), but a
+// preview bot ignores this header while a search crawler honours it. A
+// header rather than robots.txt: a robots.txt Disallow would also stop the
+// preview bots that respect it, and the preview is the point.
+app.use((_req, res, next) => {
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
+  next();
+});
 app.use(express.json({ limit: "1mb" }));
 /** A screenshot is a few hundred kB, but any file can be pasted now (a PDF
  *  easily tops 12 MB); past this a paste is really an upload it shouldn't be. */
@@ -1703,6 +1712,13 @@ interface LoginView {
  * The login page. A shared link lands here for anyone without a session — and
  * so does a chat app's preview bot, which is why it names the instance and
  * carries the `og:*` tags. The mascot is the same drawing as the share card's.
+ *
+ * Its typeface is a Latin-1 WOFF2 subset of Inter (~34 KB a weight), not the
+ * full TTFs: those are ~410 KB each and exist for the share card's server-side
+ * rasteriser, which needs every glyph. A character outside the subset falls
+ * back to the system font, glyph by glyph. `swap`: the form is usable at once.
+ * Regenerated from the TTFs with the `subset-font` package (U+0020–007E,
+ * U+00A0–00FF and the typographic punctuation ‘’“”–—…·•→), target `woff2`.
  */
 function loginHtml(v: LoginView): string {
   const e = escapeXml;
@@ -1721,8 +1737,9 @@ function loginHtml(v: LoginView): string {
     : '<input id=pw type=password placeholder="Password" autofocus autocomplete=current-password>';
   const title = v.invite ? `${e(name)} — choose a password` : `${e(name)} — sign in`;
   return `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
+<meta name=robots content="noindex,nofollow"><link rel=icon href="/icons/icon-192.png">
 <title>${title}</title>${v.meta ? "\n" + v.meta : ""}
-<style>@font-face{font-family:Inter;src:url(/fonts/Inter-Regular.ttf);font-weight:400}@font-face{font-family:Inter;src:url(/fonts/Inter-Bold.ttf);font-weight:700}
+<style>@font-face{font-family:Inter;src:url(/fonts/inter-latin-400.woff2) format("woff2");font-weight:400;font-display:swap}@font-face{font-family:Inter;src:url(/fonts/inter-latin-700.woff2) format("woff2");font-weight:700;font-display:swap}
 :root{--accent:${accent}}
 body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 28%,color-mix(in srgb,var(--accent) 16%,transparent),transparent 55%),#12151c;color:#e8e8ea;font-family:Inter,system-ui,sans-serif}
 form{background:#1b1f29;border:1px solid #2c3140;padding:30px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.55);width:min(340px,88vw);text-align:center}

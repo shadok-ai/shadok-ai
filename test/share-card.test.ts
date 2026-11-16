@@ -77,3 +77,16 @@ test("server: the share routes sit before the gate, and the login page is themed
   // A preview bot may skip a 401 body: the login page answers 200.
   assert.match(src, /sendAuthPage\(res, loginHtml\(\{ \.\.\.brand, agent, meta \}\), 200\)/);
 });
+
+test("login page: never indexed, and light — a WOFF2 subset, never the full TTFs", () => {
+  const src = fs.readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  assert.match(src, /<meta name=robots content="noindex,nofollow">/);
+  assert.match(src, /res\.setHeader\("X-Robots-Tag", "noindex, nofollow"\)/);
+  const login = src.slice(src.indexOf("function loginHtml("), src.indexOf("function sendLogin("));
+  assert.doesNotMatch(login, /\.ttf/, "the ~410 KB TTFs are for the server-side card only");
+  for (const w of ["400", "700"]) {
+    assert.match(login, new RegExp(`/fonts/inter-latin-${w}\\.woff2`));
+    const size = fs.statSync(new URL(`../public/fonts/inter-latin-${w}.woff2`, import.meta.url)).size;
+    assert.ok(size < 60_000, `inter-latin-${w}.woff2 is ${size} bytes`);
+  }
+});
