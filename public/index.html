@@ -3375,6 +3375,16 @@
      stays the ABSENCE of the attribute, which every `:not([data-mode="light"])`
      rule relies on — only the default this script picks has flipped. -->
 <script nonce="__CSP_NONCE__">
+  // A shared link to an agent is `/a/<id>#msg=<uuid>` — the id in the PATH so
+  // the server can name the agent in the link preview. Every deep-link path of
+  // this page reads the HASH (`#agent=<id>&msg=…`), so put it back there before
+  // anything parses it, and leave the address bar on `/`.
+  (function () {
+    var m = /^\/a\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i.exec(location.pathname);
+    if (!m) return;
+    var msg = /(?:^#|&)msg=([0-9a-f-]{36})(?:&|$)/i.exec(location.hash);
+    history.replaceState(history.state, "", "/#agent=" + m[1].toLowerCase() + (msg ? "&msg=" + msg[1].toLowerCase() : ""));
+  })();
   try {
     if (localStorage.getItem("cp.mode") === "dark") document.documentElement.removeAttribute("data-mode");
     else document.documentElement.setAttribute("data-mode", "light");

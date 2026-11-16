@@ -554,6 +554,7 @@ import {
 } from "./claude-bin.js";
 import { ensureTmux, tmuxInstallCommand, type TmuxInstall } from "./tmux-install.js";
 import { cspHeader, injectNonce, NONCE_PLACEHOLDER, injectAssetVersion, injectInstanceKey } from "./csp.js";
+import { accentFor, escapeXml, mascotSvg, previewMeta, renderCard, TAGLINE } from "./share-card.js";
 import { newAttempt, decryptPayload, PendingAttempts, type TokenPayload } from "./connect-crypto.js";
 import {
   accountsFileFor,
@@ -1684,19 +1685,70 @@ function passwordMatches(input: string): boolean {
 // the CSP forbids handler attributes (that is exactly what neutralises an
 // `<img onerror>` injected elsewhere), and a login page exempting itself from
 // its own policy would send an odd message.
-const LOGIN_HTML = `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>shadok-ai — login</title><style>body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;background:#14161a;color:#e8e8ea;font-family:system-ui}
-form{background:#1b1d22;padding:28px;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.5);width:min(320px,90vw)}
-h1{font-size:16px;margin:0 0 14px;color:#e0a44a}input{width:100%;box-sizing:border-box;padding:9px 11px;border-radius:7px;border:1px solid #333;background:#0d0f12;color:inherit;font-size:14px}
-button{margin-top:12px;width:100%;padding:9px;border-radius:7px;border:none;background:#e0a44a;color:#14161a;font-weight:600;cursor:pointer}.err{color:#e26;font-size:12px;margin-top:8px;min-height:14px}
-input+input{margin-top:8px}.hint{font-size:13px;color:#aab;margin:0 0 10px}.alt{display:block;margin-top:12px;font-size:12px;color:#aab}</style>
-<form id=f data-action="/login">
-<h1>◆ shadok-ai</h1><input id=u placeholder="User (blank = admin)" autocomplete=username><input id=pw type=password placeholder="Password" autofocus autocomplete=current-password><button>Enter</button><div class=err></div></form>
-<form id=pk hidden><h1>◆ second step</h1><p class=hint>Confirm with this device's passkey (fingerprint, face, or device PIN).</p><button id=pkGo type=button>Use my passkey</button><a href=# id=pkCode class=alt>New device? Use a code from another one</a><div class=err></div></form>
-<form id=en hidden><h1>◆ register this device</h1><p class=hint>Enter the code shown on a device already signed in (Users panel → Add a device), or the one an admin gave you.</p><input id=enCode placeholder="Code" autocomplete=one-time-code autocapitalize=characters><input id=enLabel placeholder="Name this device (e.g. MacBook)"><button>Register with my fingerprint / face</button><div class=err></div></form>
+/** What the login shell shows around its form. Everything here is the
+ *  operator's input or derived from it, and goes through `escapeXml`. */
+interface LoginView {
+  /** The cockpit's title, or "" (the default name is shown then). */
+  instance: string;
+  theme: string | null;
+  /** A shared link to one agent (`/a/<id>`): name it under the heading. */
+  agent?: string | null;
+  /** `og:*` tags for a shared link's preview (`previewMeta`). */
+  meta?: string;
+  /** The invitation variant: a greeting, no user field, a new password. */
+  invite?: { name: string; token: string };
+}
+
+/**
+ * The login page. A shared link lands here for anyone without a session — and
+ * so does a chat app's preview bot, which is why it names the instance and
+ * carries the `og:*` tags. The mascot is the same drawing as the share card's.
+ */
+function loginHtml(v: LoginView): string {
+  const e = escapeXml;
+  const accent = accentFor(v.theme);
+  const name = v.instance || "Shadok-AI";
+  const heading = v.invite ? `Welcome, ${e(v.invite.name)}` : e(name);
+  const sub = v.invite
+    ? "Choose a password to join this cockpit."
+    : v.agent
+      ? `Sign in to open <b>${e(v.agent)}</b>.`
+      : "Sign in to continue.";
+  const action = v.invite ? `/invite/${encodeURIComponent(v.invite.token)}` : "/login";
+  const user = v.invite ? "" : '<input id=u placeholder="User (blank = admin)" autocomplete=username>';
+  const pw = v.invite
+    ? '<input id=pw type=password placeholder="Choose a password (8+ characters)" autofocus autocomplete=new-password>'
+    : '<input id=pw type=password placeholder="Password" autofocus autocomplete=current-password>';
+  const title = v.invite ? `${e(name)} — choose a password` : `${e(name)} — sign in`;
+  return `<!doctype html><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>${title}</title>${v.meta ? "\n" + v.meta : ""}
+<style>@font-face{font-family:Inter;src:url(/fonts/Inter-Regular.ttf);font-weight:400}@font-face{font-family:Inter;src:url(/fonts/Inter-Bold.ttf);font-weight:700}
+:root{--accent:${accent}}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 50% 28%,color-mix(in srgb,var(--accent) 16%,transparent),transparent 55%),#12151c;color:#e8e8ea;font-family:Inter,system-ui,sans-serif}
+form{background:#1b1f29;border:1px solid #2c3140;padding:30px;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.55);width:min(340px,88vw);text-align:center}
+.brand{font-size:12px;font-weight:700;letter-spacing:.18em;color:var(--accent);margin-top:4px}
+h1{font-size:24px;margin:6px 0 4px;color:#f2f2f4;overflow-wrap:anywhere}.sub{font-size:14px;color:#a1a6b3;margin:0 0 20px}.sub b{color:#e8e8ea}
+input{width:100%;box-sizing:border-box;padding:11px 12px;border-radius:8px;border:1px solid #333a48;background:#0d0f14;color:inherit;font:inherit;font-size:16px}
+button{margin-top:14px;width:100%;padding:11px;border-radius:8px;border:none;background:var(--accent);color:#12151c;font:inherit;font-weight:700;cursor:pointer}.err{color:#f87171;font-size:13px;margin-top:10px;min-height:16px}
+input+input{margin-top:9px}.hint{font-size:13px;color:#a1a6b3;margin:0 0 12px}.alt{display:block;margin-top:12px;font-size:12px;color:#a1a6b3}
+.tag{margin-top:18px;font-size:12px;color:#6b7280}</style>
+<form id=f data-action="${action}">
+${mascotSvg(96)}<div class=brand>SHADOK-AI</div><h1>${heading}</h1><p class=sub>${sub}</p>${user}${pw}<button>Sign in</button><div class=err></div><div class=tag>${e(TAGLINE.join(" "))}</div></form>
+<form id=pk hidden>${mascotSvg(72)}<h1>Second step</h1><p class=hint>Confirm with this device's passkey (fingerprint, face, or device PIN).</p><button id=pkGo type=button>Use my passkey</button><a href=# id=pkCode class=alt>New device? Use a code from another one</a><div class=err></div></form>
+<form id=en hidden>${mascotSvg(72)}<h1>Register this device</h1><p class=hint>Enter the code shown on a device already signed in (Users panel → Add a device), or the one an admin gave you.</p><input id=enCode placeholder="Code" autocomplete=one-time-code autocapitalize=characters><input id=enLabel placeholder="Name this device (e.g. MacBook)"><button>Register with my fingerprint / face</button><div class=err></div></form>
 <script src="/vendor/simplewebauthn.js"></script>
 <script nonce="${NONCE_PLACEHOLDER}">
 const $ = (id) => document.getElementById(id);
+// Where to go once signed in: back to the shared agent link this page answered
+// for (\`/a/<id>\`, whose hash carries the message), else the cockpit.
+const home = () => (/^[/]a[/][0-9a-f-]{36}[/]?$/i.test(location.pathname) ? location.pathname : "/") + location.hash;
+// Signing in on the page a link opened usually means the target IS the current
+// address, and assigning it is an in-page hash jump, not a load. Reload then.
+const goHome = () => {
+  const to = home();
+  if (to === location.pathname + location.hash) location.reload();
+  else location.assign(to);
+};
 const post = (url, body) => fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}) })
   .then(async (r) => ({ ok: r.ok, j: await r.json().catch(() => ({})) }));
 const show = (id) => { for (const f of ["f", "pk", "en"]) $(f).hidden = f !== id; };
@@ -1707,7 +1759,7 @@ const webauthn = () => window.isSecureContext && window.SimpleWebAuthnBrowser &&
 function nextStep(j) {
   if (j.next === "passkey") return show("pk");
   if (j.next === "enroll") { show("en"); if (j.code) $("enCode").value = j.code; return; }
-  location.assign("/" + location.hash);
+  goHome();
 }
 document.getElementById("f").addEventListener("submit", (e) => {
   e.preventDefault();
@@ -1731,7 +1783,7 @@ $("pkGo").addEventListener("click", async () => {
   try { response = await SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: o.j.options }); }
   catch (err) { return fail("pk", "Cancelled or not available: " + (err && err.message || err)); }
   const r = await post("/login/passkey", { challengeId: o.j.challengeId, response });
-  if (r.ok) return location.assign("/" + location.hash);
+  if (r.ok) return goHome();
   fail("pk", r.j.error || "Not accepted");
 });
 $("pkCode").addEventListener("click", (e) => { e.preventDefault(); show("en"); });
@@ -1745,10 +1797,11 @@ $("en").addEventListener("submit", async (e) => {
   try { response = await SimpleWebAuthnBrowser.startRegistration({ optionsJSON: o.j.options }); }
   catch (err) { return fail("en", "Cancelled or not available: " + (err && err.message || err)); }
   const r = await post("/login/enroll", { challengeId: o.j.challengeId, response, code, label: $("enLabel").value });
-  if (r.ok) return location.assign("/" + location.hash);
+  if (r.ok) return goHome();
   fail("en", r.j.error || "Not registered");
 });
 </script>`;
+}
 
 /** Serves a login-shaped page with its CSP and nonce (these sit outside the
  *  gate, so they do not go through the index route). */
@@ -1758,22 +1811,40 @@ function sendAuthPage(res: express.Response, html: string, status: number): void
   res.status(status).type("html").send(injectNonce(html, nonce));
 }
 
-function sendLogin(res: express.Response): void {
-  sendAuthPage(res, LOGIN_HTML, 401);
+/** The instance's title and palette, as the login page and the share card show them. */
+function brandView(): { instance: string; theme: string | null } {
+  const cfg = loadConfig();
+  return { instance: titleForCwd(cfg, process.cwd()) || "", theme: themeForCwd(cfg, process.cwd()) };
+}
+
+/** This request's own origin, as a preview bot reached it — `og:image` and
+ *  `og:url` must be absolute. Behind a TLS proxy, its forwarded scheme. */
+function requestOrigin(req: express.Request): string {
+  const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
+  const https = requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers);
+  return `${https ? "https" : "http"}://${req.headers.host ?? "localhost"}`;
+}
+
+/**
+ * The login page, with the preview of what was shared. Answered **200**, not
+ * 401: a page that renders fine is not an error to a browser either way, but
+ * a preview bot may drop a 401 body without reading its tags — and then the
+ * link shows nothing at all. JSON callers still get their 401 from the gate.
+ */
+function sendLogin(req: express.Request, res: express.Response, agentId?: string): void {
+  const brand = brandView();
+  const agent = agentId ? loadChannels().find((c) => c.sessionId === agentId)?.name ?? null : null;
+  const origin = requestOrigin(req);
+  const image = `${origin}/share/card.png${agent ? `?a=${agentId}` : ""}`;
+  const meta = previewMeta({ ...brand, agent }, image, origin + req.originalUrl);
+  sendAuthPage(res, loginHtml({ ...brand, agent, meta }), 200);
 }
 
 /** The page an invited person lands on: the login shell, pointed at the
  *  redemption route. Same CSP and same nonce — a page that exempted itself from
  *  the policy protecting every other page would be a strange message. */
 function invitePage(name: string, token: string): string {
-  return LOGIN_HTML
-    .replace("<title>shadok-ai — login</title>", "<title>shadok-ai — choose a password</title>")
-    .replace('data-action="/login"', `data-action="/invite/${encodeURIComponent(token)}"`)
-    // The name is the admin's input: it must never be able to close the tag.
-    .replace("◆ shadok-ai", `Welcome, ${name.replace(/[<>&"']/g, "")}`)
-    .replace('<input id=u placeholder="User (blank = admin)" autocomplete=username>', "")
-    .replace('placeholder="Password"', 'placeholder="Choose a password (8+ characters)"')
-    .replace("autocomplete=current-password", "autocomplete=new-password");
+  return loginHtml({ ...brandView(), invite: { name, token } });
 }
 
 /** This server's same-origin guard (see `originAllowed`). */
@@ -2358,6 +2429,37 @@ app.post("/hooks/:id", express.raw({ type: () => true, limit: "256kb" }), (req, 
 
 // Who am I? The client labels itself with this, and a tab whose session expired
 // finds out here rather than by a silent failure.
+// A shared link to one agent. The agent rides in the PATH, not the hash, so
+// the server — and a chat app's preview bot — can name it: the preview shows
+// the agent and the instance, never a message (`src/share-card.ts`). Signed
+// in, it is just the cockpit; the page moves the id back into the hash
+// (`#agent=`), which is what every deep-link path of the client reads.
+const SHARE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+app.get("/a/:id", (req, res) => {
+  const id = String(req.params.id ?? "").toLowerCase();
+  if (!SHARE_ID.test(id)) return res.redirect(302, "/");
+  if (requestAuthed(req)) return sendIndex(res);
+  return sendLogin(req, res, id);
+});
+
+// The preview card itself. Public by design — a preview bot carries no
+// session — and it reveals exactly what the login page's tags already say: the
+// instance's title, and the agent's name for an id that exists. An unknown id
+// gets the instance card, so probing ids learns nothing a 404 would not.
+app.get("/share/card.png", async (req, res) => {
+  const id = String(req.query.a ?? "").toLowerCase();
+  const agent = SHARE_ID.test(id) ? loadChannels().find((c) => c.sessionId === id)?.name ?? null : null;
+  try {
+    const png = await renderCard({ ...brandView(), agent });
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    if (png) return res.type("png").send(png);
+  } catch (e) {
+    console.warn(`share card: ${(e as Error).message}`);
+  }
+  // No rasteriser on this platform: the plain icon still beats no picture.
+  return res.sendFile(path.join(__dirname, "..", "public", "icons", "icon-512.png"));
+});
+
 app.get("/me", (req, res) => {
   const me = currentAccount(req);
   return me ? res.json(me) : res.status(401).json({ error: "unauthorized" });
@@ -2368,14 +2470,15 @@ app.get("/me", (req, res) => {
 app.use((req, res, next) => {
   // `/icons/`: the Home Screen icon is fetched by the OS, which may not carry
   // the session cookie, and it is the same static Shadok for every instance.
-  if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || req.path.startsWith("/icons/") || requestAuthed(req)) return next();
+  // `/fonts/`: the login page's own typeface, the same for every instance.
+  if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || req.path.startsWith("/icons/") || req.path.startsWith("/fonts/") || requestAuthed(req)) return next();
   // A peer is a NARROW principal, not a member: over HTTP it may reach ONLY
   // `GET /diff` (of its own agents — the handler ownership-checks). Everything
   // else stays denied, so a peer never touches B's vault, profiles, crons, other
   // agents or the account routes. Its spawn/drive path is the WS (verifyClient).
   if (req.method === "GET" && req.path === "/diff" && peerName(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
-    return sendLogin(res);
+    return sendLogin(req, res);
   return res.status(401).json({ error: "unauthorized" });
 });
 
@@ -2410,12 +2513,15 @@ app.get("/manifest.webmanifest", (_req, res) => {
 });
 
 const INDEX_PATH = path.join(__dirname, "..", "public", "index.html");
-app.get(["/", "/index.html"], (_req, res) => {
+app.get(["/", "/index.html"], (_req, res) => sendIndex(res));
+
+function sendIndex(res: express.Response): void {
   let html: string;
   try {
     html = fs.readFileSync(INDEX_PATH, "utf8");
   } catch {
-    return res.status(500).type("text").send("index.html not found");
+    res.status(500).type("text").send("index.html not found");
+    return;
   }
   const nonce = randomUUID();
   res.setHeader("Content-Security-Policy", cspHeader(nonce));
@@ -2423,7 +2529,7 @@ app.get(["/", "/index.html"], (_req, res) => {
   // demander que les modules de sa propre version, jamais ceux d'une plus
   // ancienne restés en cache (cf. invariant 10).
   res.type("html").send(injectInstanceKey(injectAssetVersion(injectNonce(html, nonce), OWN_VERSION), instanceKey()));
-});
+}
 
 /**
  * Any file pasted into the composer — an image, a PDF, a CSV, anything. The web
