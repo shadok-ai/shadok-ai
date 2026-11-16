@@ -9,6 +9,17 @@
      fields (see the coarse-pointer query) fix it at the source instead. -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>shadok-ai — cockpit</title>
+<!-- Installable as an app: Home Screen on iOS / Android, "Install" on desktop.
+     The manifest is generated per instance (its name is this cockpit's title)
+     and sits behind the password gate, hence use-credentials. iOS reads the
+     apple-* tags, not the manifest's icons. Required for Web Push on iOS, which
+     only works for a cockpit opened from its Home Screen icon. -->
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#14161d">
 <!-- The idle favicon: a resting Shadok. paint() swaps in the pumping / "!" / "?"
      variants once the JS runs; this is only the pre-script icon. -->
 <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%2314161d%22%2F%3E%3Cline%20x1%3D%2210.8%22%20y1%3D%2223%22%20x2%3D%2210.4%22%20y2%3D%2230.6%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%2216.400000000000002%22%20y1%3D%2223%22%20x2%3D%2216.8%22%20y2%3D%2230.6%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%228.8%22%20y1%3D%2230.7%22%20x2%3D%2211.9%22%20y2%3D%2230.7%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%2215.4%22%20y1%3D%2230.7%22%20x2%3D%2218.5%22%20y2%3D%2230.7%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cline%20x1%3D%2219.6%22%20y1%3D%2217.2%22%20x2%3D%2224.000000000000004%22%20y2%3D%2220.4%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%221.3%22%20stroke-linecap%3D%22round%22%2F%3E%3Cg%3E%3Cline%20x1%3D%2211.600000000000001%22%20y1%3D%225.399999999999999%22%20x2%3D%229.600000000000001%22%20y2%3D%222.8%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%220.9%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%229.600000000000001%22%20cy%3D%222.8%22%20r%3D%221%22%20fill%3D%22%23f0a848%22%2F%3E%3Cline%20x1%3D%2216%22%20y1%3D%225.399999999999999%22%20x2%3D%2218%22%20y2%3D%222.8%22%20stroke%3D%22%23f0a848%22%20stroke-width%3D%220.9%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2218%22%20cy%3D%222.8%22%20r%3D%221%22%20fill%3D%22%23f0a848%22%2F%3E%3Ccircle%20cx%3D%2213.8%22%20cy%3D%2216.2%22%20r%3D%228.4%22%20fill%3D%22%23f0a848%22%2F%3E%3Cpath%20d%3D%22M12.200000000000001%2018.2%20L15.4%2018.2%20L13.8%2021.6%20Z%22%20fill%3D%22%23f0a848%22%2F%3E%3Ccircle%20cx%3D%2210.9%22%20cy%3D%227.799999999999999%22%20r%3D%222.6%22%20fill%3D%22%23fff%22%2F%3E%3Ccircle%20cx%3D%2216.7%22%20cy%3D%227.799999999999999%22%20r%3D%222.6%22%20fill%3D%22%23fff%22%2F%3E%3Ccircle%20cx%3D%2211.200000000000001%22%20cy%3D%228.1%22%20r%3D%221.3%22%20fill%3D%22%2314161d%22%2F%3E%3Ccircle%20cx%3D%2217%22%20cy%3D%228.1%22%20r%3D%221.3%22%20fill%3D%22%2314161d%22%2F%3E%3C%2Fg%3E%3C%2Fsvg%3E">
@@ -3525,6 +3536,9 @@
   <div class="vm-hint" id="vmLedgerHint"></div>
   <label class="vm-check"><input type="checkbox" id="muteInstanceChk"><span>Mute this instance</span></label>
   <div class="vm-hint" id="vmMuteHint">No favicon change, title badge, blink or sound — for every agent, on every tab of this instance.</div>
+  <label class="vm-check"><input type="checkbox" id="pushChk"><span>Notify this device</span></label>
+  <div class="vm-hint" id="vmPushHint"></div>
+  <button class="vm-btn" id="pushTestBtn" type="button" hidden>Send a test notification</button>
   <div class="vm-row"><span class="vm-label">Default model</span>
     <select id="defModelSel"><option value="">Claude Code's own default</option></select>
   </div>
@@ -8905,7 +8919,18 @@
     }
     deepLinkTimer = setTimeout(followDeepLink, 300);
   }
-  window.addEventListener("hashchange", () => { pendingDeepLink = null; followDeepLink(); });
+  /** `#agent=<id>` with no message — what a push notification opens: just show
+   *  that agent. True when the hash was this shape (handled or not). */
+  function followAgentHash() {
+    const m = /^#agent=([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(location.hash);
+    if (!m) return false;
+    if (restoring) { setTimeout(followAgentHash, 200); return true; }
+    const tab = tabs.find((t) => t.sessionId === m[1].toLowerCase());
+    clearDeepLinkHash();
+    if (tab && active !== tab) activate(tab);
+    return true;
+  }
+  window.addEventListener("hashchange", () => { pendingDeepLink = null; if (!followAgentHash()) followDeepLink(); });
   window.addEventListener("shadok-bridge-ready", () => { if (!pendingDeepLink) followDeepLink(); });
 
   /** The author label of a prompt that came from elsewhere — the decision lives
@@ -10716,6 +10741,136 @@
     .catch(() => {});
   const muteInstanceChk = $("muteInstanceChk");
   if (muteInstanceChk) muteInstanceChk.addEventListener("change", () => saveMuted(muteInstanceChk.checked));
+
+  // ── Notifications on this device (Web Push) ───────────────────────────────
+  // The page's badge and chime die with the page, and a phone suspends a
+  // backgrounded page within seconds: only the SERVER can wake a device. This
+  // subscribes the browser to its push service and hands the subscription to
+  // the server (POST /push/subscribe), which pushes when an agent asks a question
+  // or finishes a turn. On iOS it exists only in a cockpit opened from its Home
+  // Screen icon. docs/superpowers/specs/2026-11-16-web-push-design.md
+  const pushChk = $("pushChk");
+  const pushHint = $("vmPushHint");
+  const pushTestBtn = $("pushTestBtn");
+  let swReg = null;
+  let pushKey = null;
+  const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+  function pushUnsupported() {
+    if (!window.isSecureContext) return "Needs HTTPS (or localhost) — browsers only allow push on a secure page.";
+    if (!("serviceWorker" in navigator)) return "This browser has no service workers, so it cannot receive push.";
+    if (!("PushManager" in window) || !("Notification" in window)) {
+      return isIOS() && !isStandalone()
+        ? "On iPhone / iPad: Share → Add to Home Screen, open the cockpit from that icon, and turn this on there."
+        : "This browser does not support push notifications.";
+    }
+    return null;
+  }
+  const b64uToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "===".slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+  const bytesToB64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  async function refreshPush() {
+    if (!pushChk) return;
+    const why = pushUnsupported();
+    if (why) {
+      pushChk.checked = false;
+      pushChk.disabled = true;
+      pushTestBtn.hidden = true;
+      pushHint.textContent = why;
+      return;
+    }
+    pushChk.disabled = false;
+    try {
+      if (!swReg) swReg = await navigator.serviceWorker.register("/sw.js");
+      const j = await (await fetch("/push")).json();
+      pushKey = j.publicKey;
+      let sub = await swReg.pushManager.getSubscription();
+      // A subscription bound to ANOTHER server key (the instance's key file was
+      // recreated) can never be delivered, and blocks a new subscribe with an
+      // InvalidStateError. Drop it here, outside any click, so the click that
+      // turns notifications on can call subscribe() first thing — Safari only
+      // allows it inside the user's gesture.
+      const subKey = sub?.options?.applicationServerKey;
+      if (sub && subKey && bytesToB64u(subKey) !== pushKey) {
+        await sub.unsubscribe().catch(() => {});
+        sub = null;
+      }
+      const on = !!sub && (j.devices || []).some((d) => d.endpoint === sub.endpoint);
+      pushChk.checked = on;
+      pushTestBtn.hidden = !on;
+      pushHint.textContent =
+        Notification.permission === "denied"
+          ? "Notifications are blocked for this site — allow them in the browser's settings first."
+          : on
+            ? "This device is notified when an agent asks a question or finishes a turn. Muted agents stay quiet."
+            : "Get a notification on this device when an agent asks a question or finishes a turn.";
+    } catch (e) {
+      pushHint.textContent = "Notifications unavailable: " + e.message;
+    }
+  }
+  if (pushChk) {
+    pushChk.addEventListener("change", async () => {
+      const want = pushChk.checked;
+      pushChk.disabled = true;
+      try {
+        if (want) {
+          if (!swReg || !pushKey) throw new Error("not ready yet — try again in a second");
+          // FIRST call in the handler: it carries the permission prompt, and
+          // Safari refuses it once the gesture has been spent on another await.
+          const sub = await swReg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(pushKey) });
+          const r = await fetch("/push/subscribe", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ subscription: sub.toJSON() }),
+          });
+          if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "refused (" + r.status + ")");
+        } else {
+          const sub = swReg && (await swReg.pushManager.getSubscription());
+          if (sub) {
+            await fetch("/push/unsubscribe", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ endpoint: sub.endpoint }),
+            });
+            await sub.unsubscribe().catch(() => {});
+          }
+        }
+        await refreshPush();
+      } catch (e) {
+        await refreshPush();
+        pushHint.textContent =
+          Notification.permission === "denied"
+            ? "Notifications are blocked for this site — allow them in the browser's settings first."
+            : "Could not " + (want ? "turn on" : "turn off") + " notifications: " + e.message;
+      } finally {
+        pushChk.disabled = !!pushUnsupported();
+      }
+    });
+    pushTestBtn.addEventListener("click", async () => {
+      pushTestBtn.disabled = true;
+      try {
+        const r = await fetch("/push/test", { method: "POST" });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || "refused (" + r.status + ")");
+        const results = j.results || [];
+        const bad = results.filter((x) => !x.ok);
+        pushHint.textContent = bad.length
+          ? "Sent to " + (results.length - bad.length) + "/" + results.length + " device(s). Failed: " + bad.map((x) => (x.device || "device") + " (" + (x.status || "network") + ")").join(", ")
+          : "Sent to " + results.length + " device(s) — it should appear in a few seconds.";
+      } catch (e) {
+        pushHint.textContent = "Test failed: " + e.message;
+      } finally {
+        pushTestBtn.disabled = false;
+      }
+    });
+    refreshPush();
+  }
+  // A tap on a notification while a cockpit is already open: the service worker
+  // focuses it and names the agent; going through the hash reuses the link path.
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (e) => {
+      if (e.data && e.data.type === "shadok-open" && typeof e.data.hash === "string" && e.data.hash) location.hash = e.data.hash;
+    });
+  }
   // Click outside closes it; clicks inside the menu don't.
   document.addEventListener("click", (e) => {
     if (!verMenu.hidden && !verMenu.contains(e.target) && e.target !== verView && e.target !== verChan) toggleVerMenu(false);
@@ -17973,7 +18128,11 @@
       }
       // Come back to the channel active before the reload (fallback: the first).
       // A link to a message names its agent: open THAT one first.
-      const savedActive = window.parseMessageLink(location.hash)?.agent || localStorage.getItem("cp.activeSession");
+      const savedActive =
+        window.parseMessageLink(location.hash)?.agent ||
+        // A notification's link names only the agent (no message).
+        /^#agent=([0-9a-f-]{36})$/i.exec(location.hash)?.[1]?.toLowerCase() ||
+        localStorage.getItem("cp.activeSession");
       let targetIdx = pending.findIndex((p) => p.t.sessionId === savedActive);
       if (targetIdx < 0) targetIdx = 0;
       activate(pending[targetIdx].t);
@@ -18008,7 +18167,7 @@
     // Only now: `syncChannels` is a no-op while `restoring`, so kicking the loop
     // off any earlier would leave the first EFFECTIVE pass a full period away —
     // which is the four-second blank this whole change is about.
-    followDeepLink();
+    if (!followAgentHash()) followDeepLink();
     syncLoop();
   })();
 </script>

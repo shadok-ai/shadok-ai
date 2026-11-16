@@ -1263,6 +1263,23 @@ Dock or taskbar signals it, and a notification appears. It wraps the web page
 as it is, so the server needs no change. `cd desktop && npm install && npm start`;
 packaging and shortcuts are in [`desktop/README.md`](desktop/README.md).
 
+### On a phone: Home Screen app and notifications
+
+The cockpit installs like an app: on iPhone, **Share → Add to Home Screen**;
+on Android or desktop Chrome/Edge, **Install**. The icon carries the cockpit's
+title, so several instances stay apart.
+
+From that installed app (on iOS, only from there), tick **Notify this device**
+in the version menu (click the version number). The server then sends a push
+notification when an agent asks a question or finishes a turn that produced
+something. Muted agents and muted instances stay quiet. Tapping the notification
+opens that agent, and **Send a test notification** checks the device right away.
+
+This needs HTTPS (see "Behind TLS"). Each person gets notifications only for
+the agents they can see. The push service relays an encrypted payload it cannot
+read. `SHADOK_PUSH_SUBJECT` sets the contact sent to push services (default:
+the project's URL). Design: `docs/superpowers/specs/2026-11-16-web-push-design.md`.
+
 ### Signing in to Claude
 
 A fresh machine — most often a fresh container — has two things in its way, and

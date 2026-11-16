@@ -460,6 +460,16 @@ import {
   readTalkHandle,
   type Account,
 } from "./accounts.js";
+import { parseSubscription, preview, sendPush, type PushMessage } from "./webpush.js";
+import {
+  loadPushState,
+  savePushState,
+  upsertSubscription,
+  removeSubscription,
+  dropEndpoints,
+  deviceLabel,
+  type StoredSubscription,
+} from "./push-store.js";
 import {
   type AgentPrincipal,
   AGENT_CREDENTIAL_VARS,
@@ -2356,7 +2366,9 @@ app.get("/me", (req, res) => {
 // Gate everything else behind the cookie when a password is set. /me answers
 // for itself: it must return 401, not the login page.
 app.use((req, res, next) => {
-  if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || requestAuthed(req)) return next();
+  // `/icons/`: the Home Screen icon is fetched by the OS, which may not carry
+  // the session cookie, and it is the same static Shadok for every instance.
+  if (req.path === "/me" || req.path === "/logout" || req.path.startsWith("/invite/") || req.path.startsWith("/icons/") || requestAuthed(req)) return next();
   // A peer is a NARROW principal, not a member: over HTTP it may reach ONLY
   // `GET /diff` (of its own agents — the handler ownership-checks). Everything
   // else stays denied, so a peer never touches B's vault, profiles, crons, other
@@ -2375,6 +2387,28 @@ app.use((req, res, next) => {
 // page as soon as index.html was edited: you reload, nothing moves, you go hunt
 // the bug elsewhere. A 170 KB file read once per tab opening does not register;
 // the trap does.
+// The Web App Manifest: what "Add to Home Screen" installs. Generated rather than
+// static so the installed app carries THIS cockpit's name — someone with three
+// instances gets three icons they can tell apart. Behind the gate (the page links
+// it with crossorigin="use-credentials"): the title is the operator's, not public.
+app.get("/manifest.webmanifest", (_req, res) => {
+  const title = titleForCwd(loadConfig(), process.cwd()) || "shadok-ai";
+  res.type("application/manifest+json").json({
+    name: title,
+    short_name: title.length > 12 ? "shadok" : title,
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    background_color: "#14161d",
+    theme_color: "#14161d",
+    icons: [
+      { src: "/icons/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "/icons/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "/icons/maskable-512.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    ],
+  });
+});
+
 const INDEX_PATH = path.join(__dirname, "..", "public", "index.html");
 app.get(["/", "/index.html"], (_req, res) => {
   let html: string;
@@ -2765,6 +2799,64 @@ app.get("/mute", (_req, res) => {
 app.put("/mute", (req, res) => {
   setMutedForCwd(loadConfig(), process.cwd(), req.body?.muted === true);
   res.json({ muted: mutedForCwd(loadConfig(), process.cwd()) });
+});
+
+// ── Web Push: wake a phone (or any browser) when an agent needs its person ──
+// The page's own attention signal (title badge, chime) dies with the page, and a
+// phone suspends a backgrounded page within seconds. A push is the only signal
+// that reaches a pocket; on iOS it works for a cockpit added to the Home Screen.
+// Design: docs/superpowers/specs/2026-11-16-web-push-design.md.
+//
+// Subscribing is a PERSON's act from a real page: an agent has nothing to be
+// woken on, and letting one register an endpoint would let it make the server
+// POST wherever it likes (parseSubscription also allowlists the push services).
+app.get("/push", (req, res) => {
+  const me = currentAccount(req);
+  if (!me) return res.status(401).json({ error: "unauthorized" });
+  const st = loadPushState();
+  res.json({
+    publicKey: st.vapid.publicKey,
+    devices: st.subs.filter((x) => x.user === me.name).map((x) => ({ endpoint: x.endpoint, device: x.device ?? null, createdAt: x.createdAt })),
+  });
+});
+app.post("/push/subscribe", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
+  const me = currentAccount(req);
+  if (!me || me.agent) return res.status(401).json({ error: "unauthorized" });
+  const parsed = parseSubscription(req.body?.subscription);
+  if (!parsed.ok) return res.status(400).json({ error: parsed.reason });
+  const st = loadPushState();
+  st.subs = upsertSubscription(st.subs, parsed.sub, me.name, Date.now(), deviceLabel(req.headers["user-agent"]));
+  savePushState(st);
+  res.json({ ok: true });
+});
+app.post("/push/unsubscribe", (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
+  const me = currentAccount(req);
+  if (!me || me.agent) return res.status(401).json({ error: "unauthorized" });
+  const st = loadPushState();
+  st.subs = removeSubscription(st.subs, String(req.body?.endpoint ?? ""), me.name);
+  savePushState(st);
+  res.json({ ok: true });
+});
+// "Did it work?" has to be answerable from the phone itself, without waiting for
+// an agent to ask something: send one notification to the caller's devices and
+// report what each push service answered.
+app.post("/push/test", async (req, res) => {
+  if (!requestFromBrowser(req)) return res.status(403).json({ error: "same-origin browser only" });
+  const me = currentAccount(req);
+  if (!me || me.agent) return res.status(401).json({ error: "unauthorized" });
+  const st = loadPushState();
+  const mine = st.subs.filter((x) => x.user === me.name);
+  if (!mine.length) return res.status(404).json({ error: "no device subscribed for this account" });
+  const msg: PushMessage = {
+    title: titleForCwd(loadConfig(), process.cwd()) || "shadok-ai",
+    body: "Notifications work on this device.",
+    tag: "shadok-test",
+    url: "/",
+  };
+  const results = await deliverPush(mine, msg);
+  res.json({ results: results.map((r) => ({ device: r.sub.device ?? null, ok: r.ok, status: r.status, error: r.error })) });
 });
 // The caller's OWN display preferences (light/dark, chime, rail, tour seen),
 // stored per account so they follow the person across browsers and devices
@@ -10910,6 +11002,8 @@ async function finishTurn(s: Live) {
       s.lastDialogKey = null;
       broadcast(s, { type: "turn-done", sessionId: s.id });
       maybeScheduleRetry(s);
+      // A turn that said nothing (a quiet cron: NOTHING TO SHOW) wakes nobody.
+      if (!s.lastTurnSilent) pushAttention(s, "done", s.recentTexts[s.recentTexts.length - 1] ?? "");
       // As a CHILD: tell whoever launched this agent that it is done, with its
       // own last block as the summary — what it wrote to be read.
       notifyParent(s, { kind: "done", summary: s.recentTexts[s.recentTexts.length - 1], silent: s.lastTurnSilent });
@@ -11010,6 +11104,74 @@ function sendPendingDialog(s: Live, send: (msg: object) => void) {
  * else that ever bypasses `finishTurn` — the dedup key is what makes that
  * affordable three times a second.
  */
+/**
+ * Push the attention signal to the subscribed devices: an agent asked a
+ * question, or finished a turn that produced something.
+ *
+ * Fire-and-forget: a push service that is slow or down must never delay the
+ * turn. Skipped for a muted agent or a muted instance — the same switches that
+ * silence the page's badge and chime, so "mute" means one thing everywhere.
+ * Each device's ACCOUNT must still be able to see the agent at send time
+ * (group membership changes after subscribing), and a dead endpoint (404/410)
+ * is dropped so it does not cost a request per event forever.
+ */
+function pushAttention(s: Live, kind: "question" | "done", text: string): void {
+  try {
+    const st = loadPushState();
+    if (!st.subs.length) return;
+    const cfg = loadConfig();
+    if (mutedForCwd(cfg, process.cwd())) return;
+    const chans = loadChannels();
+    const chan = chans.find((c) => c.sessionId === s.id);
+    if (chan?.muted) return;
+    const groups = loadGroups();
+    const accounts = loadAccounts();
+    const targets = st.subs.filter((sub) => {
+      if (DEPLOYMENT_MODE !== "multi-tenant") return true;
+      const role = sub.user === BOOTSTRAP_ADMIN ? "admin" : accounts.find((a) => a.name === sub.user)?.role;
+      if (!role) return false; // the account was deleted
+      return canSeeSession(s.id, chans, groups, viewerFor({ name: sub.user, role }));
+    });
+    if (!targets.length) return;
+    const who = chan?.name || s.id.slice(0, 8);
+    const cockpit = titleForCwd(cfg, process.cwd());
+    const msg: PushMessage = {
+      title: cockpit ? `${who} · ${cockpit}` : who,
+      body: preview(text) || (kind === "question" ? "Waiting for your answer." : "Finished."),
+      // One live notification per agent: the next one replaces it.
+      tag: `agent-${s.id}`,
+      url: `/#agent=${s.id}`,
+    };
+    if (kind === "question") msg.body = `❓ ${msg.body}`;
+    void deliverPush(targets, msg).catch(() => {});
+  } catch (e) {
+    console.warn(`push: ${(e as Error).message}`);
+  }
+}
+
+/** Send to each device, drop the dead ones, log the failures once each. */
+async function deliverPush(
+  targets: StoredSubscription[],
+  msg: PushMessage,
+): Promise<Array<{ sub: StoredSubscription; ok: boolean; status: number; error?: string }>> {
+  const st = loadPushState();
+  const subject = process.env.SHADOK_PUSH_SUBJECT || "https://github.com/shadok-ai/shadok-ai";
+  const out = await Promise.all(
+    targets.map(async (sub) => {
+      const r = await sendPush(sub, msg, st.vapid, subject);
+      if (!r.ok) console.warn(`push: ${sub.device ?? "device"} → ${r.status || "network"} ${r.error}`);
+      return { sub, ok: r.ok, status: r.status, error: r.ok ? undefined : r.error, gone: !r.ok && r.gone };
+    }),
+  );
+  const gone = new Set(out.filter((r) => r.gone).map((r) => r.sub.endpoint));
+  if (gone.size) {
+    const fresh = loadPushState();
+    fresh.subs = dropEndpoints(fresh.subs, gone);
+    savePushState(fresh);
+  }
+  return out;
+}
+
 function publishDialog(s: Live, d: TuiDialog): void {
   if (isResumeSummaryDialog(d)) return;
   // Never surface the multi-question recap ("Ready to submit your answers?").
@@ -11022,6 +11184,8 @@ function publishDialog(s: Live, d: TuiDialog): void {
   if (key === s.lastDialogKey) return;
   s.lastDialogKey = key;
   broadcast(s, dialogMessage(s, d));
+  // Same funnel, same dedup: one push per NEW question, whichever path raised it.
+  pushAttention(s, "question", d.question);
   // A child blocked on a question is the deadlock this whole thing exists to
   // break: its turn is suspended, and its parent believes it is still working.
   // Hooking HERE covers every path — including raw `key` input — because this
