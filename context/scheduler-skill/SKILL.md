@@ -69,6 +69,7 @@ check that needs a secret.
 ```
 node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs add --schedule <spec> --prompt "<text>" [--check "<shell command>"] [--tz <zone>]
 node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs list
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs update <id> [--schedule <spec>] [--prompt "<text>"] [--tz <zone>]
 node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs del <id>
 node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs tz [<zone>|-]
 node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs env
@@ -77,6 +78,13 @@ node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs env
 `<spec>`: `every:30m` · `every:2h` · `daily:09:00` · `once:2026-08-25T08:42`.
 Only on some days of the week: `daily:09:00@mon-fri`, `daily:08:30@mon,wed,fri`,
 `daily:10:00@weekend` (English or French day names, ranges allowed).
+
+`update` changes a schedule in place — its frequency, its prompt or its zone —
+and keeps everything else, its guard included: `schedule.mjs update 3f2a9c1e
+--schedule every:15m`. Use it instead of deleting and re-adding. It cannot
+change a guard: for that, `del` then `add` (a guard is a shell command, so it
+is always reviewed). `list`, `update`, `del`, `tz` and `env` run without a
+permission prompt; `add` may ask.
 
 ### One-shot — a reminder on a given date
 
