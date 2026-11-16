@@ -3234,7 +3234,27 @@
     background-color: color-mix(in srgb, var(--text) 7%, transparent);
     box-shadow: 0 8px 20px -14px var(--ac, var(--amber));
   }
-  :root[data-mode="light"] .tab.active { background-color: var(--bg-raised); box-shadow: var(--soft-shadow); }
+  /* Light mode: the selection is a SHAPE, not a fill. It used to be a white pill
+     with a soft shadow on a white card — white on white, so the agent you were
+     on was the quietest row of the list, quieter than a working (tinted) or
+     unread one. An accent bar, a hairline edge and a real lift mark it without
+     taking the fill, which stays free to carry the state: a selected agent that
+     is working still shows its tint (the `.working.active` rule below wins the
+     background, and this shadow rides on top of it). */
+  :root[data-mode="light"] .tab.active {
+    background-color: var(--bg-raised);
+    box-shadow: inset 4px 0 0 var(--amber), 0 6px 18px -8px rgba(30, 30, 60, .35), 0 0 0 1px rgba(0, 0, 0, .06);
+  }
+  :root[data-mode="light"] .tab.active .name { font-weight: 700; }
+  /* The case that matters most is the agent you are WATCHING work — and
+     `breathe` fades the whole row to 35% opacity, bar, name and avatar with it,
+     so the mark above washed out exactly then. For that one row the fill
+     breathes instead of the row: same pulse, and what says "you are here"
+     stays solid. */
+  @keyframes breathe-fill { 50% { background-color: var(--bg-raised); } }
+  @media (prefers-reduced-motion: no-preference) {
+    :root[data-mode="light"] .tab.working.active { animation-name: breathe-fill; }
+  }
   .tab.unread { border-radius: 12px; }
   .tav { box-shadow: 0 4px 10px -4px var(--ac, var(--amber)); }
   .rail-item.active { border-color: transparent; }
