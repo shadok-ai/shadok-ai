@@ -268,8 +268,8 @@ Enter to skip; you can add it later from the web UI).
   children and nothing else, so a busy channel never wakes it. What arrives is
   the child's own summary plus pointers (branch, diff link) — never the diff
   itself, which on a large session costs far more than it is worth. The link is
-  set automatically at spawn; you can also change it by hand. A 🔗 on the tab
-  marks any agent that has a link, and its menu cuts it from **either** end — the
+  set automatically at spawn; you can also change it by hand: an agent's tab
+  menu cuts it from **either** end — the
   child's own "Detach from…", or, on the parent, "Children reporting here…" to
   drop an agent whose reports you no longer want. An agent can do the same over
   the CLI with `pilotctl set-parent <id> <parent|none>`.

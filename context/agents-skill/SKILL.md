@@ -118,8 +118,8 @@ attaches it elsewhere. To change the link on an agent that is **already
 running** — detach one whose notifications you no longer want, or move it under
 a different lead — use `set-parent <id> <parent-id|none>`. In the cockpit the
 same thing is a click: an agent's tab menu offers "Detach from…" (child side)
-and, on the parent, "Children reporting here…", and a 🔗 on the tab marks any
-agent that has a link.
+and, on the parent, "Children reporting here…"; the agents column draws the
+link as a tree, children indented under their parent.
 
 ## Talking across groups: a letter, not a remote control (`talk`)
 
