@@ -19,6 +19,10 @@ const groups: Group[] = [
   { id: "comex", name: "COMEX", nature: "restricted", members: ["ada"], createdAt: 0 },
   { id: "sales", name: "Sales", nature: "restricted", members: ["ada", "bob"], createdAt: 0 },
 ];
+// A public group that is NOT the commons — the shape a migrated instance leaves
+// behind, and the one nobody could read: `members` is empty because a public
+// group has no membership to be in.
+const withTech: Group[] = [...groups, { id: "tech", name: "Tech", nature: "public", members: [], createdAt: 0 }];
 const ada = { name: "ada", role: "member" as const }; // comex + sales
 const bob = { name: "bob", role: "member" as const }; // sales only
 const cleo = { name: "cleo", role: "member" as const }; // no group
@@ -40,6 +44,30 @@ test("ledgerGroupsFor: NO super-view — an admin with no membership resolves to
   assert.deepEqual([...ledgerGroupsFor(groups, viewerFor(admin))].sort(), ["main"]);
   // a group-less human is the same (their home is the commons)
   assert.deepEqual([...ledgerGroupsFor(groups, viewerFor(cleo))].sort(), ["main"]);
+});
+
+test("ledgerGroupsFor: a public group's rows reach a human — nobody can be a member of one", () => {
+  // The reported bug: an admin who owns the cockpit saw an EMPTY ledger while
+  // the agents of that same instance read 61 rows. Every group was public, so
+  // `memberGroupIds` was empty and the scope collapsed to {main} — a filter no
+  // human could ever satisfy. `secretOwnGroupIds` already had this rule.
+  assert.deepEqual([...ledgerGroupsFor(withTech, viewerFor(admin))].sort(), ["main", "tech"]);
+  assert.deepEqual([...ledgerGroupsFor(withTech, viewerFor(cleo))].sort(), ["main", "tech"]);
+});
+
+test("ledgerGroupsFor: a public group does NOT open the commons, nor a restricted group", () => {
+  // bob is in `sales` only: he gains Tech (public, everyone sees it) and must
+  // still NOT inherit the commons' pre-groups rows, nor COMEX, which he is not
+  // in. Widening the public case must not become the super-view this refuses.
+  assert.deepEqual([...ledgerGroupsFor(withTech, viewerFor(bob))].sort(), ["sales", "tech"]);
+  assert.ok(!ledgerGroupsFor(withTech, viewerFor(admin)).has("comex"));
+});
+
+test("ledgerGroupsFor: an AGENT stays on its own channel's group, public groups included", () => {
+  // The agent path keys on `agentGroup`, so an agent must not collect the rows
+  // of a public group its session never authored — only the browser widens.
+  const agent = { name: "sk", role: "member" as const, agent: { group: "sales" } };
+  assert.deepEqual([...ledgerGroupsFor(withTech, viewerFor(agent))].sort(), ["sales"]);
 });
 
 test("ledgerGroupsFor: mono-tenant (no groups / null viewer) collapses to {main}", () => {
