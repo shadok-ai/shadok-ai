@@ -378,12 +378,17 @@ Enter to skip; you can add it later from the web UI).
   **Board group** and every such conversation is closed at once.
 - **Link to a message** — every message (yours and the agent's, and a **room**'s
   too) has a 🔗 link button beside copy. It copies a URL like
-  `…/#agent=<session>&msg=<id>` for an agent, `…/#room=<room>&msg=<id>` for a
+  `…/a/<session>#msg=<id>` for an agent, `…/#room=<room>&msg=<id>` for a
   room; whoever opens it — someone who already has access to this cockpit, after
   the usual sign-in — lands on that conversation, scrolled to that message,
-  highlighted. The link lives in the URL's `#` part, so it never reaches the
-  server or a proxy log. A message older than the history shown, or a
-  conversation that was closed, says so instead of opening somewhere else.
+  highlighted. The message lives in the URL's `#` part, so it never reaches the
+  server or a proxy log. The agent's id sits in the path on purpose: pasted into
+  Slack, WhatsApp, iMessage or Telegram, the link **previews** as a card naming
+  the agent and the cockpit (`/share/card.png`, generated on the fly in the
+  cockpit's colour) — and that is all it reveals, to anyone holding the link:
+  never a message. Older `#agent=<session>&msg=<id>` links still open. A message
+  older than the history shown, or a conversation that was closed, says so
+  instead of opening somewhere else.
 - **Run the command an agent asks you to** — when an agent writes `! cmd` for
   you to run (typically because it cannot), a ▶ run button sits right on that
   command's code block, beside its copy button — so it runs where it was
