@@ -108,7 +108,7 @@ import {
 } from "./preprompt.js";
 import { ensureSpawnHelperExecutable } from "./node-pty-fix.js";
 import { TmuxPilot, tmuxAvailable, tmuxHasSession, tmuxKillSession, tmuxPaneCwd, tmuxSessionCreated } from "./tmux.js";
-import { scanUsageSamples, scanUsageSamplesAsync, subagentDirFor, sessionFilePath, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
+import { scanUsageSamples, scanUsageSamplesAsync, subagentDirFor, sessionFilePath, resumeOrStartArgs, tailSession, clearTailPos, seedTailPos, isNothingToShow, newestTranscriptById, type TokenUsage } from "./tail.js";
 import { windowStats, latestModel, type MsgSample, type TokenStats } from "./token-stats.js";
 import { strandedWorktreePlan, type WorktreeRelocation } from "./worktree-relocate.js";
 import { detectFork, rootIdOfFile } from "./forktrace.js";
@@ -10353,11 +10353,14 @@ async function createSession(
    *  so its profile's secrets resolve by the agent's REAL group, not always Main. */
   group: string | null = null,
 ): Promise<Live> {
-  const pilot = makePilot(id, cwd, args, profile, model, effort, user, group);
   // A dropped group agent writes its transcript under ITS OWN home, not the
   // server's — so the content tail / history must read from there (invariant:
   // all content comes from the .jsonl). `agentStateHome` is the one answer.
   const transcriptHome = agentStateHome(user);
+  // A resume of an agent that never got a first prompt has no transcript to
+  // resume: start it under the same id instead (`resumeOrStartArgs`).
+  args = resumeOrStartArgs(args, fs.existsSync(sessionFilePath(cwd, id, transcriptHome)));
+  const pilot = makePilot(id, cwd, args, profile, model, effort, user, group);
   // Resumed sessions start with what the transcript already consumed. One scan
   // feeds both the context gauge (last message's usage) and the stats windows
   // (every message's usage + time + model), so a huge file is read once here.

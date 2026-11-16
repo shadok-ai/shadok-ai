@@ -85,6 +85,24 @@ export function sessionFilePath(cwd: string, sessionId: string, home: string = o
 }
 
 /**
+ * The CLI arguments that actually start session `id`: `--resume` only when its
+ * transcript exists. Claude Code writes the `.jsonl` at the FIRST prompt, so an
+ * agent spawned and never spoken to (a Tweak agent opened and left) has none —
+ * and `claude --resume <id>` on it prints "No conversation found" and exits.
+ * The process dies before attaching, every reopen does the same, and the agent
+ * is dead for good with nothing lost to recover. `--session-id` starts it fresh
+ * under the SAME id, so the channel row, its worktree and its triggers still
+ * point at it. `sessionFilePath` already searched every project dir by id, so
+ * "absent" here is absent everywhere, never a wrong-cwd miss.
+ */
+export function resumeOrStartArgs(args: string[], transcriptExists: boolean): string[] {
+  if (transcriptExists) return args;
+  const i = args.indexOf("--resume");
+  if (i < 0 || i + 1 >= args.length) return args;
+  return [...args.slice(0, i), "--session-id", args[i + 1], ...args.slice(i + 2)];
+}
+
+/**
  * The most-recently-modified `<id>.jsonl` across all project dirs, or null.
  *
  * `home` is the HOME whose `.claude/projects` to search — the SERVER's by
