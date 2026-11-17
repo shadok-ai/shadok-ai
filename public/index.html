@@ -2124,6 +2124,9 @@
        and it costs a good third of the conversation still visible; it comes back
        the moment the keyboard closes. */
     body.kb-up header { display: none; }
+    /* The keyboard covers the home indicator: the safe-area padding that keeps
+       the field clear of it would only leave a dead band above the keyboard. */
+    body.kb-up #composer { padding-bottom: 8px; }
   }
   /* iOS Safari ZOOMS INTO any focused field whose font is under 16px. That zoom is
      the single cause of two symptoms that look unrelated: the layout viewport
@@ -12862,14 +12865,20 @@
   if (window.visualViewport && matchMedia("(pointer: coarse)").matches) {
     const vv = window.visualViewport;
     let pending = 0;
+    // The keyboard-free height: the tallest the visible viewport has been since
+    // the last rotation. The keyboard used to be read as `innerHeight - vv.height`,
+    // but that assumes the LAYOUT viewport keeps its height when the keyboard
+    // opens — and an installed (Home Screen) cockpit on a recent iOS shrinks both,
+    // so the gap stayed 0: no `kb-up`, the header never folded away and the
+    // composer kept its home-indicator padding above the keyboard (a dead band).
+    let fullH = Math.max(window.innerHeight, vv.height);
+    const kbOpen = () => fullH - vv.height > 120; // a retracting URL bar is not a keyboard
     const syncViewport = () => {
       pending = 0;
+      fullH = Math.max(fullH, vv.height);
       document.documentElement.style.setProperty("--app-h", vv.height + "px");
       document.body.classList.add("vv-sized");
-      // `innerHeight` is the LAYOUT viewport: it does not move when the keyboard
-      // opens, so the gap between the two IS the keyboard. The threshold keeps a
-      // retracting URL bar from being read as one.
-      document.body.classList.toggle("kb-up", window.innerHeight - vv.height > 120);
+      document.body.classList.toggle("kb-up", kbOpen());
       // The chassis now fits above the keyboard: if the browser already dragged
       // the document, that offset hides nothing but the header.
       if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
@@ -12880,6 +12889,27 @@
     const schedule = () => { if (!pending) pending = requestAnimationFrame(syncViewport); };
     vv.addEventListener("resize", schedule);
     vv.addEventListener("scroll", schedule);
+    // A rotation changes what "full height" means: start over from what is seen.
+    matchMedia("(orientation: portrait)").addEventListener("change", () => {
+      fullH = 0;
+      setTimeout(() => { fullH = Math.max(window.innerHeight, vv.height); schedule(); }, 300);
+    });
+    // Closing: iOS reports the new height only once the keyboard has finished
+    // sliding away, so for that whole animation the chassis stayed keyboard-sized
+    // and the composer floated mid-screen above an empty band, then snapped down.
+    // Leaving the field IS the keyboard closing (unless focus moves to another
+    // text field), so give the chassis its full height at once: the keyboard then
+    // slides off a page already in place. The real resize lands later and agrees.
+    const typesText = (el) => !!el && (el.isContentEditable || el.tagName === "TEXTAREA"
+      || (el.tagName === "INPUT" && !/^(button|submit|reset|checkbox|radio|file|range|color|image)$/i.test(el.type)));
+    document.addEventListener("focusout", (e) => {
+      if (!document.body.classList.contains("kb-up") || typesText(e.relatedTarget)) return;
+      if (pending) { cancelAnimationFrame(pending); pending = 0; }
+      document.documentElement.style.setProperty("--app-h", fullH + "px");
+      document.body.classList.remove("kb-up");
+      if (window.scrollY || window.scrollX) window.scrollTo(0, 0);
+      if (active) pinBottom(active);
+    });
     syncViewport();
   }
 

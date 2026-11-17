@@ -71,3 +71,19 @@ test("the chassis height follows the browser chrome and the keyboard", () => {
   assert.match(INDEX, /body\.vv-sized \{ height: var\(--app-h\); \}/);
   assert.match(INDEX, /--app-h", vv\.height/);
 });
+
+test("the keyboard is measured against the tallest viewport seen, not the layout viewport", () => {
+  // An installed iOS cockpit shrinks innerHeight WITH the keyboard, so
+  // `innerHeight - vv.height` stayed 0: no kb-up, header kept, dead band.
+  assert.doesNotMatch(INDEX, /window\.innerHeight - vv\.height/);
+  assert.match(INDEX, /const kbOpen = \(\) => fullH - vv\.height > 120;/);
+  // Above the keyboard, the home-indicator padding is a dead band.
+  assert.match(INDEX, /body\.kb-up #composer \{ padding-bottom: 8px; \}/);
+});
+
+test("leaving the field gives the chassis its full height before the keyboard finishes closing", () => {
+  const handler = INDEX.match(/document\.addEventListener\("focusout", \(e\) => \{[\s\S]*?\n    \}\);/)?.[0] ?? "";
+  assert.match(handler, /typesText\(e\.relatedTarget\)/, "focus moving to another field keeps the keyboard");
+  assert.match(handler, /--app-h", fullH \+ "px"/);
+  assert.match(handler, /classList\.remove\("kb-up"\)/);
+});
