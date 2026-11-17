@@ -128,7 +128,7 @@ function groupPanelScript(): string {
 
 test("openGroupPanel exists and is opened from a group-head control", () => {
   assert.match(groupPanelScript(), /async function openGroupPanel\(groupId\)/);
-  assert.match(html, /e\.target === ggear\)[^\n]*openGroupPanel\(group\.id\)/);
+  assert.match(html, /on\(ggear\)\)[^\n]*openGroupPanel\(group\.id\)/);
   assert.match(html, /id="groupPanelOverlay" class="overlay"/);
 });
 
@@ -143,7 +143,7 @@ test("member list + add/remove exist only in the restricted branch", () => {
 
 test("private shows a sealed only-you state with no add control", () => {
   const s = groupPanelScript();
-  assert.match(s, /🔒/);
+  assert.match(s, /LineIcons\.el\("lock"/);
   assert.match(s, /Only you — this space is sealed/);
 });
 
@@ -197,7 +197,7 @@ test("walled group x routes to DELETE /groups; public keeps dissolveGroup", () =
   assert.match(b, /"x-shadok-instance":\s*instanceKey/);
   assert.match(b, /confirm\(/);
   assert.match(b, /dissolveGroup\(group\)/);
-  assert.match(html, /e\.target === gclose\) return closeGroupGesture\(group\)/);
+  assert.match(html, /on\(gclose\)\) return closeGroupGesture\(group\)/);
   assert.doesNotMatch(html, /e\.target === gclose\) return dissolveGroup/);
 });
 

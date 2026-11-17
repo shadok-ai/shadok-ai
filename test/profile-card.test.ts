@@ -54,12 +54,12 @@ test("blurb: too long a sentence → truncation on a word boundary", () => {
 test("badges: access — full access (✏️) vs read-only (🔒), each with an explanation", () => {
   const full = profileBadges({ name: "x" });
   assert.equal(full[0].label, "full access");
-  assert.equal(full[0].icon, "✏️");
+  assert.equal(full[0].icon, "rename");
   assert.match(full[0].title, /commit|change/i);
   assert.deepEqual(profileBadges({ name: "x", deny: [] })[0].label, "full access");
   const ro = profileBadges({ name: "x", deny: ["Bash(git commit:*)"] });
   assert.equal(ro[0].label, "read-only");
-  assert.equal(ro[0].icon, "🔒");
+  assert.equal(ro[0].icon, "lock");
   assert.match(ro[0].title, /blocked/i);
 });
 
@@ -114,7 +114,7 @@ test("badges: a deny we cannot read is neither full access nor a git claim", () 
 test("badges: model and secrets, in the order access → model → secrets", () => {
   const b = profileBadges({ name: "x", deny: ["Bash(git push:*)"], model: "opus", secrets: ["A", "B"] });
   assert.deepEqual(b.map((x) => x.label), ["read-only", "opus", "2 secrets"]);
-  assert.equal(b[2].icon, "🔑");
+  assert.equal(b[2].icon, "key");
   assert.match(b[2].title, /secret/i);
 });
 

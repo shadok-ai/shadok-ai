@@ -321,6 +321,17 @@
     padding: 6px 9px; border-radius: 4px;
   }
   #tabMenu .tm-item:hover { background: var(--menu-hover); }
+  /* Entries carrying a line icon (the header toolbar's set): icon column,
+     then the label. Entries without one (radio lists, ‹ Back) are unchanged. */
+  #tabMenu .tm-item:has(.tm-ico) { display: flex; align-items: center; gap: 9px; }
+  #tabMenu .tm-ico { display: inline-flex; flex: 0 0 auto; color: var(--text-dim); }
+  #tabMenu .tm-ico svg { display: block; }
+  #tabMenu .tm-item:hover .tm-ico { color: var(--text); }
+  #tabMenu .tm-head .tm-ico { vertical-align: -2px; margin-right: 5px; }
+  #tabMenu .tm-sep { height: 1px; background: var(--line); margin: 4px 6px; }
+  /* Closing ends the session: set apart and in the error colour. */
+  #tabMenu .tm-item.danger, #tabMenu .tm-item.danger .tm-ico { color: var(--err); }
+  #tabMenu .tm-item.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
   /* A muted channel says so on its own tab: silence must be explainable. */
   .tab .mute { font-size: 10px; opacity: 0.75; flex: 0 0 auto; }
   /* Same for the opposite: an agent with scheduled prompts can speak without
@@ -654,7 +665,10 @@
     white-space: nowrap;
   }
   /* Main channel of the environment (Telegram General): a home marker, no close. */
-  .tab.main-tab .name::before { content: "🏠 "; }
+  .tab.main-tab .name::before {
+    content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 5px; vertical-align: -1px;
+    background: currentColor; -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 10.5 12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5h-4v-6h-5v6h-4A1.5 1.5 0 0 1 4 19z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 10.5 12 4l8 6.5V19a1.5 1.5 0 0 1-1.5 1.5h-4v-6h-5v6h-4A1.5 1.5 0 0 1 4 19z'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
   .tab input.rename {
     flex: 1;
     min-width: 0;
@@ -715,6 +729,19 @@
     text-align: left;
   }
   #newRoom { margin-top: 0; }
+  /* Line icons in the column's buttons (the header toolbar's style), in place of
+     emojis: they take the text colour, hover included. */
+  .side-ico { vertical-align: -2px; margin-right: 6px; flex: 0 0 auto; }
+  /* The line-icon set (public/line-icons.js): one inline box, sitting on the
+     text's baseline, in the text colour. */
+  .ico { display: inline-flex; vertical-align: -2px; margin-right: 6px; flex: 0 0 auto; }
+  .ico svg { display: block; }
+  .glyph svg { display: block; margin: auto; }
+  #viewIcon svg { display: inline-block; vertical-align: -3px; }
+  .tg-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; background: var(--text-dim); }
+  .tg-dot.ok { background: var(--ok); }
+  .tg-dot.warn { background: var(--amber); }
+  #newFolder .side-ico { margin-right: 3px; } /* label lines up with the ＋ rows */
   #newTab:hover, #newRoom:hover, #newGroup:hover, #newGroupBare:hover, #newFolder:hover { color: var(--amber); background: var(--amber-soft); border-color: transparent; }
   #newGroup { margin-top: 4px; }
   /* The fallback "new group" entry: only on desktop, only while the rail (which
@@ -3464,8 +3491,11 @@
     border-radius: 8px; background: #64748b; box-shadow: none;
   }
   .tab.room .tav > span:first-child, body.room-active #chanAvatar { font-size: 0; }
-  .tab.room .tav::before, body.room-active #chanAvatar::before { content: "💬"; font-size: 15px; line-height: 1; }
-  body.room-active #chanAvatar::before { font-size: 18px; }
+  .tab.room .tav::before, body.room-active #chanAvatar::before {
+    content: ""; display: block; width: 15px; height: 15px; background: #fff;
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 5h14a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 5 5z'/%3E%3C/svg%3E") center / contain no-repeat; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 5h14a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 5 5z'/%3E%3C/svg%3E") center / contain no-repeat;
+  }
+  body.room-active #chanAvatar::before { width: 18px; height: 18px; }
   .tab.room .tav .led, .tab.room .timer { display: none; }
   .tab.room .name { font-style: italic; }
   .tab.room .kind { color: var(--text-dim); font-size: 11px; }
@@ -3574,7 +3604,7 @@
       <button id="signOut" hidden>Sign out</button>
       <div class="mm-sep" id="whoSep" hidden></div>
       <button id="toggleDiff">Diff</button>
-      <button id="instanceStatsBtn">📊 Instance stats</button>
+      <button id="instanceStatsBtn"><svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 19v-6M12 19V6M18 19v-9"/></svg>Instance stats</button>
       <button id="tourReplay">Replay the guided tour</button>
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
            pushed the icons off the row); it reappears here instead. -->
@@ -3618,21 +3648,21 @@
   <!-- Optional dedicated claude.ai login that feeds ONLY the 5h/7d gauges (a
        setup-token cannot read usage). Hidden until /auth says it applies. -->
   <div class="vm-row" id="vmGaugeRow" hidden><span class="vm-label">Usage gauge</span><span id="vmGauge">—</span></div>
-  <button class="vm-btn" id="gaugeLoginBtn" type="button" hidden>📊 Usage gauge login…</button>
+  <button class="vm-btn" id="gaugeLoginBtn" type="button" hidden data-ico="stats" data-ico-size="13">Usage gauge login…</button>
   <!-- Re-login to Claude without waiting for the token to lapse. Shown when
        signed in (signed out, the sign-in card opens on its own) — and on a
        migrated multi-tenant instance whenever the AGENTS' credential is known,
        whatever the server's own sign-in says (agentCredentialRows). -->
-  <button class="vm-btn" id="reloginBtn" type="button" hidden>↻ Re-login to Claude</button>
+  <button class="vm-btn" id="reloginBtn" type="button" hidden data-ico="reload" data-ico-size="13">Re-login to Claude</button>
   <!-- Rotate the long-lived subscription token group agents authenticate with
        (multi-tenant + admin only). Shown by renderAuthRows when a token is held. -->
-  <button class="vm-btn" id="mtTokenReplaceBtn" type="button" hidden>🔑 Replace subscription token…</button>
+  <button class="vm-btn" id="mtTokenReplaceBtn" type="button" hidden data-ico="key" data-ico-size="13">Replace subscription token…</button>
   <!-- Agent auth mode: token vs per-user login (for claude.ai connectors).
        Multi-tenant + admin only; shown by renderAuthRows. -->
-  <button class="vm-btn" id="agentAuthBtn" type="button" hidden>🔌 Agent auth &amp; connectors…</button>
-  <button class="vm-btn" id="backendBtn" type="button">⚙ Model backend…</button>
+  <button class="vm-btn" id="agentAuthBtn" type="button" hidden data-ico="plug" data-ico-size="13">Agent auth &amp; connectors…</button>
+  <button class="vm-btn" id="backendBtn" type="button" data-ico="gear" data-ico-size="13">Model backend…</button>
   <!-- The instance context every agent receives at spawn (src/instance-context.ts). -->
-  <button class="vm-btn" id="instanceContextBtn" type="button">🧭 Instance context…</button>
+  <button class="vm-btn" id="instanceContextBtn" type="button" data-ico="compass" data-ico-size="13">Instance context…</button>
   <label class="vm-check"><input type="checkbox" id="autoUpdateChk"><span>Auto-update</span></label>
   <div class="vm-hint" id="vmHint"></div>
   <div class="vm-row"><span class="vm-label">Channel</span>
@@ -3647,7 +3677,7 @@
       <option value="default">Ask before each action</option>
       <option value="acceptEdits">Auto-apply edits</option>
       <option value="auto">Auto mode — no prompts</option>
-      <option value="bypassPermissions">Bypass — 0 questions ⚠️</option>
+      <option value="bypassPermissions">Bypass — 0 questions ⚠</option>
     </select>
   </div>
   <div class="vm-hint" id="vmModeHint"></div>
@@ -3666,7 +3696,7 @@
   <div class="vm-hint" id="vmRestartHint">Respawn every agent (they resume with history).</div>
   <!-- Only the agents flagged as running on the OLD Claude Code binary (their ↻
        badge). Shown only when there are any. -->
-  <button class="vm-btn" id="reloadUpdatesBtn" type="button" hidden>↻ Reload agents to apply update</button>
+  <button class="vm-btn" id="reloadUpdatesBtn" type="button" hidden>Reload agents to apply update</button>
   <div class="vm-hint" id="vmReloadUpdatesHint" hidden></div>
 </div>
 
@@ -3816,7 +3846,7 @@
        secrets popin's id, so $("secretsPanel") could land on the wrong one. -->
   <div id="cronPanel" class="sec-panel modal">
     <div class="sec-head">
-      <strong>⏰ Schedule — <span class="obj" id="cronChanName">this agent</span></strong>
+      <strong data-ico="schedule">Schedule — <span class="obj" id="cronChanName">this agent</span></strong>
       <button id="cronClose" title="Close">✕</button>
     </div>
     <div class="modal-body">
@@ -3875,7 +3905,7 @@
 <div id="webhookOverlay" class="overlay" hidden>
   <div id="webhookPanel" class="sec-panel modal">
     <div class="sec-head">
-      <strong>⚡ Webhooks — <span class="obj" id="hookChanName">this agent</span></strong>
+      <strong data-ico="bolt">Webhooks — <span class="obj" id="hookChanName">this agent</span></strong>
       <button id="hookClose" title="Close">✕</button>
     </div>
     <div class="modal-body">
@@ -3903,7 +3933,7 @@
 <div id="statsOverlay" class="overlay" hidden>
   <div id="statsPanel" class="sec-panel modal">
     <div class="sec-head">
-      <strong>📊 Stats — <span class="obj" id="statsChanName">this agent</span></strong>
+      <strong data-ico="stats">Stats — <span class="obj" id="statsChanName">this agent</span></strong>
       <button id="statsClose" title="Close">✕</button>
     </div>
     <div class="modal-body">
@@ -3941,8 +3971,8 @@
       <div class="field">
         <span class="label">Type</span>
         <div id="groupCreateType" class="nature-cards" role="group" aria-label="Group type">
-          <button type="button" class="nature-card active" data-nature="public" aria-pressed="true"><span class="nature-ico">🌐</span><span class="nature-name">Public</span></button>
-          <button type="button" class="nature-card" data-nature="restricted" aria-pressed="false"><span class="nature-ico">🔒</span><span class="nature-name">Private</span></button>
+          <button type="button" class="nature-card active" data-nature="public" aria-pressed="true"><span class="nature-ico" data-ico="globe" data-ico-size="20"></span><span class="nature-name">Public</span></button>
+          <button type="button" class="nature-card" data-nature="restricted" aria-pressed="false"><span class="nature-ico" data-ico="lock" data-ico-size="20"></span><span class="nature-name">Private</span></button>
         </div>
         <span class="check-hint" id="groupCreateNoPrivate" hidden>Private groups need a multi-tenant instance.</span>
       </div>
@@ -4177,7 +4207,7 @@
     <div class="sec-head"><strong id="profEditTitle">New profile</strong></div>
     <div class="field"><span class="label">Name</span><input id="profName" placeholder="marketing" autocomplete="off" spellcheck="false"></div>
     <div class="field"><span class="label">Role (system prompt)</span><textarea id="profRole" rows="3" placeholder="You are the paid-marketing agent for this product…"></textarea>
-      <span class="check-hint" id="profTracked" hidden>📎 Tracked — this is the prompt shipped with the build, and it updates itself. <button type="button" class="linkish" id="profFork">Edit it anyway</button></span>
+      <span class="check-hint" id="profTracked" hidden data-ico="paperclip" data-ico-size="12">Tracked — this is the prompt shipped with the build, and it updates itself. <button type="button" class="linkish" id="profFork">Edit it anyway</button></span>
     </div>
     <label class="check"><input type="checkbox" id="profReadonly"><span>Read-only preset <span class="check-hint">— deny git commit/push/add/reset/rebase/merge/checkout</span></span></label>
     <div class="field"><span class="label">Deny (one per line)</span><textarea id="profDeny" rows="2" placeholder="Bash(git commit:*)"></textarea></div>
@@ -4207,7 +4237,7 @@
       <summary>How to set it up, step by step</summary>
       <ol>
         <li>In Telegram, open <b>@BotFather</b>, send <code>/newbot</code>, pick a name and a username ending in <code>bot</code>. It answers with a <b>token</b>.</li>
-        <li>Paste that token below and click <b>Save</b>. The status above turns 🟢 with the bot's name.</li>
+        <li>Paste that token below and click <b>Save</b>. The status above turns green with the bot's name.</li>
         <li>Create a Telegram <b>group</b>, open its settings and turn on <b>Topics</b>.</li>
         <li>Add your bot to the group and make it an <b>admin</b> with <i>Manage topics</i> (and <i>Delete messages</i>, so <code>/secret</code> can scrub values).</li>
         <li>Click <b>Pair Telegram</b> below, then send <code>/setup &lt;code&gt;</code> in the group (or use the one-click link). The status above now shows the bound group, and you own the bot's DMs.</li>
@@ -4483,9 +4513,9 @@
     <button id="newGroup" title="New agent group">＋ <span class="rail-txt">new group</span></button>
   </nav>
   <div id="iconPicker" class="icon-picker" hidden>
-    <input id="iconInput" placeholder="type a word (rocket, bug…) or an emoji" autocomplete="off" spellcheck="false">
+    <input id="iconInput" placeholder="search: rocket, bug, chart…" autocomplete="off" spellcheck="false">
     <div id="iconGrid" class="icon-grid"></div>
-    <div id="iconEmpty" class="icon-empty" hidden>No emoji for that word.</div>
+    <div id="iconEmpty" class="icon-empty" hidden>No icon for that word.</div>
   </div>
   <nav id="tabbar" aria-label="Agents">
     <div class="label side-label"><span class="sl-all">Agents</span><span class="sl-view"><span id="viewIcon"></span> <span id="viewLabel"></span></span></div>
@@ -4494,7 +4524,7 @@
     <p id="viewEmpty" class="check-hint" hidden>No agent in this group yet — create one, or drag one onto the group.</p>
     <button id="newTab" title="New agent">＋ new agent</button>
     <button id="newRoom" title="New room — a conversation between people, no agent">＋ new room</button>
-    <button id="newFolder" type="button" title="New folder in this group — arranges its agents, changes nothing about who sees them">📁 new folder</button>
+    <button id="newFolder" type="button" title="New folder in this group — arranges its agents, changes nothing about who sees them"><svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5A1.5 1.5 0 0 1 5 6h4.2l2 2.2H19a1.5 1.5 0 0 1 1.5 1.5v7.8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5z"/></svg>new folder</button>
     <!-- The rail carries "+ new group" at its foot, but the rail is gone until a
          group exists — so this is the way to create the FIRST one. Desktop-only
          and only while there are no groups (CSS); it hands off to the rail's
@@ -4503,7 +4533,7 @@
     <div id="tweakSlot">
       <button id="tweakCta" type="button"
               title="Change shadok-ai itself — the agent works on a branch and opens a pull request">
-        <span class="tweak-row"><span class="tweak-title">🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span></span><span class="tweak-ver" id="tweakVer"></span></span>
+        <span class="tweak-row"><span class="tweak-title"><svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>Tweak Shadok-AI <span class="tweak-arrow">›</span></span><span class="tweak-ver" id="tweakVer"></span></span>
         <span class="tweak-sub">change the cockpit itself</span>
       </button>
     </div>
@@ -4611,8 +4641,8 @@
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
       </button>
       <div id="cmpPlusMenu" class="cmp-plus-menu" role="menu" hidden>
-        <button type="button" role="menuitem" data-for="attachBtn">📎 Attach a file</button>
-        <button type="button" role="menuitem" data-for="skillBtn" id="cmpPlusSkill">✨ Add a skill</button>
+        <button type="button" role="menuitem" data-for="attachBtn" data-ico="paperclip">Attach a file</button>
+        <button type="button" role="menuitem" data-for="skillBtn" id="cmpPlusSkill" data-ico="sparkle">Add a skill</button>
       </div>
       <!-- Pick a file to send: the same path as a paste or a drop (attachFile). -->
       <button type="button" id="attachBtn" class="cmp-attach" title="Attach a file" aria-label="Attach a file">
@@ -4732,6 +4762,8 @@
 <script src="/vendor/marked.js"></script>
 <script src="/vendor/simplewebauthn.js"></script>
 <script src="/vendor/purify.js"></script>
+<!-- The line-icon set (classic script: the main script below paints with it while parsing). -->
+<script src="/line-icons.js?v=__ASSET_V__"></script>
 <!-- Render agent Markdown with GFM soft line breaks ON. The .jsonl carries
      newlines where the agent meant them (one URL per line, a short list), but
      the default Markdown rule turns a LONE "\n" into a word-space, so those
@@ -5568,14 +5600,14 @@
     const mute = document.createElement("span");
     mute.className = "mute";
     mute.hidden = true;
-    mute.textContent = "🔕";
+    mute.innerHTML = LineIcons.svg("mute", 11);
     mute.title = "Notifications muted for this agent";
     // An agent can speak on its own (a scheduled prompt): the tab must say so,
     // or a message arriving with nobody asking has no visible explanation.
     const cron = document.createElement("span");
     cron.className = "cron";
     cron.hidden = true;
-    cron.textContent = "⏰";
+    cron.innerHTML = LineIcons.svg("schedule", 11);
     // Mirrored to Telegram? Say it on the tab — nothing else distinguishes a
     // channel you follow on your phone from a purely local one.
     const tg = document.createElement("span");
@@ -5589,13 +5621,13 @@
     const shells = document.createElement("span");
     shells.className = "shells";
     shells.hidden = true;
-    shells.innerHTML = '<span class="glass">\u23F3</span><span class="n"></span>';
+    shells.innerHTML = '<span class="glass">' + LineIcons.svg("hourglass", 11) + '</span><span class="n"></span>';
     // Monitors it armed. More dangerous to forget than a shell: a `persistent`
     // one runs for the whole session by construction and never ends on its own.
     const monitors = document.createElement("span");
     monitors.className = "monitors";
     monitors.hidden = true;
-    monitors.innerHTML = '<span class="eye">\u{1F441}</span><span class="n"></span>';
+    monitors.innerHTML = '<span class="eye">' + LineIcons.svg("eye", 11) + '</span><span class="n"></span>';
     // Claude Code updated (or failed to update) its binary under this agent. The
     // icon/colour is set by setUpdateState; clicking does the right thing for the
     // state (reload to apply, or install then reload).
@@ -5925,7 +5957,7 @@
     if (!btn) return;
     const n = pendingUpdateTabs().length;
     btn.hidden = n === 0 || claudeInstalling;
-    if (n > 0) btn.textContent = "↻ Reload " + n + " agent" + (n > 1 ? "s" : "") + " to apply changes";
+    if (n > 0) labelWithIcon(btn, "reload", "Reload " + n + " agent" + (n > 1 ? "s" : "") + " to apply changes");
   }
   function paintUpdateBadge(tab) {
     const el = tab.updateEl;
@@ -6261,6 +6293,35 @@
     } catch { return ""; }
   }
 
+  // The agent menu draws from the shared line-icon set (public/line-icons.js).
+  function menuIcon(name, size = 15) { return LineIcons.el(name, size, "tm-ico"); }
+  /** A button's label led by a line icon (replaces its whole content). */
+  function labelWithIcon(btn, name, text, size = 13) { btn.replaceChildren(LineIcons.el(name, size), text); }
+  /** Paint menu entries in groups, a thin rule between two non-empty groups.
+   *  An entry is { icon, label, run, danger? }. */
+  function renderMenuGroups(groups) {
+    let first = true;
+    for (const group of groups) {
+      if (!group.length) continue;
+      if (!first) tabMenu.appendChild(Object.assign(document.createElement("div"), { className: "tm-sep" }));
+      first = false;
+      for (const it of group) {
+        const b = document.createElement("button");
+        b.className = "tm-item" + (it.danger ? " danger" : "");
+        b.append(menuIcon(it.icon), it.label);
+        b.addEventListener("click", (e) => { e.stopPropagation(); closeTabMenu(); it.run(); });
+        tabMenu.appendChild(b);
+      }
+    }
+  }
+  /** A header sub-line led by an icon instead of an emoji. */
+  function menuSub(icon, text) {
+    const s = document.createElement("span");
+    s.className = "tm-sub";
+    s.append(menuIcon(icon, 12), text);
+    return s;
+  }
+
   function openTabMenu(tab, x, y, extra = []) {
     tabMenu.replaceChildren();
     if (tab.roomId) return openRoomMenu(tab, x, y);
@@ -6270,7 +6331,7 @@
     head.className = "tm-head";
     const who = document.createElement("b");
     who.textContent = tab.profile || "No profile";
-    head.append("👤 ", who);
+    head.append(menuIcon("profile", 12), who);
     if (!tab.profile) head.title = "Spawned without a profile — no role, no extra guardrails";
     // Profile changed but not applied yet: say so, or the header would lie about
     // what is actually running.
@@ -6287,96 +6348,84 @@
     // the line to "set → actual (last message)" in place (the same datum the
     // Stats panel shows, surfaced here so it is one click closer).
     if (tab.sessionId) {
-      const ms = document.createElement("span");
-      ms.className = "tm-sub";
       const setLabel = modelLabel(tab.model);
-      ms.textContent = "🧠 " + setLabel;
+      const ms = menuSub("model", setLabel);
       head.appendChild(ms);
       lastRunModel(tab).then((ran) => {
         // Bail if the menu was torn down (replaceChildren) before the answer.
-        if (ran && ms.isConnected) ms.textContent = "🧠 " + setLabel + " → " + ran + " (last message)";
+        if (ran && ms.isConnected) ms.lastChild.textContent = setLabel + " → " + ran + " (last message)";
       });
     }
     // The context-window gauge, moved here off the tab: "📊 Context NN%" + a tiny
     // track. Snapshot of `tab.contextPct` at open (the menu is short-lived).
     if (tab.sessionId && tab.contextPct != null) {
       const p = tab.contextPct;
-      const cx = document.createElement("span");
-      cx.className = "tm-sub";
+      const cx = menuSub("stats", "Context " + p + "%");
       const bar = document.createElement("span");
       bar.className = "tm-ctxbar";
       const fill = document.createElement("span");
       fill.className = "tm-ctxfill" + (p >= 85 ? " crit" : p >= 60 ? " warn" : "");
       fill.style.width = Math.min(100, p) + "%";
       bar.appendChild(fill);
-      cx.append("📊 Context " + p + "%", bar);
+      cx.append(bar);
       head.appendChild(cx);
     }
-    if (tab.crons && tab.crons.length) {
-      const sub = document.createElement("span");
-      sub.className = "tm-sub";
-      sub.textContent = "⏰ " + tab.crons.join(" · ");
-      head.appendChild(sub);
-    }
+    if (tab.crons && tab.crons.length) head.appendChild(menuSub("schedule", tab.crons.join(" · ")));
     tabMenu.appendChild(head);
-    const items = [
-      ...extra,
-      [tab.muted ? "🔔 Unmute notifications" : "🔕 Mute notifications",
-       () => setMuted(tab, !tab.muted)],
-      ["↻ Reload agent", () => reloadTab(tab)],
-      ["✎ Rename", () => startRename(tab)],
-      ["☰ Context sent", () => showPreprompt(tab)],
-    ];
-    // The profile is only set here for a launched agent: otherwise the creation
-    // box carries it, and there is no session to restart.
-    if (tab.sessionId) items.push(["👤 Change profile…", () => openProfileSwitcher(tab)]);
-    if (tab.sessionId) items.push(["🧠 Change model…", () => openModelSubmenu(tab)]);
-    if (tab.sessionId) items.push(["🤔 Thinking effort…", () => openEffortSubmenu(tab)]);
-    // Token + notional-cost stats over rolling windows, plus up-since / last respawn.
-    if (tab.sessionId) items.push(["📊 Stats", () => openStatsPanel(tab)]);
-    // Scheduled prompts (crons) for this agent — the panel targets the active
-    // channel, so switch to it first (this menu can be opened on any tab).
-    if (tab.sessionId) items.push(["⏰ Schedule…", () => { activate(tab); $("cronOverlay").hidden = false; renderCrons(); }]);
-    // Webhooks — the event-driven twin, in its own popin.
-    if (tab.sessionId) items.push(["⚡ Webhooks…", () => { activate(tab); openWebhooks(); }]);
+    // Grouped by what the entry touches, a rule between groups: what this agent
+    // IS (profile / model / effort), what WAKES it (schedule / webhooks /
+    // reporting), where it SPEAKS (notifications / Telegram), what to LOOK at
+    // (stats / context), the session itself (rename / reload), and closing it
+    // last and apart, the one entry that cannot be undone.
+    // Launched-agent-only entries: without a session there is nothing to
+    // restart, schedule or link (the creation box carries the profile).
+    const live = !!tab.sessionId;
+    const identity = [], wakes = [], speaks = [], look = [], session = [], end = [];
+    if (live) {
+      identity.push({ icon: "profile", label: "Change profile…", run: () => openProfileSwitcher(tab) });
+      identity.push({ icon: "model", label: "Change model…", run: () => openModelSubmenu(tab) });
+      identity.push({ icon: "effort", label: "Thinking effort…", run: () => openEffortSubmenu(tab) });
+      // Scheduled prompts (crons) for this agent — the panel targets the active
+      // channel, so switch to it first (this menu can be opened on any tab).
+      wakes.push({ icon: "schedule", label: "Schedule…", run: () => { activate(tab); $("cronOverlay").hidden = false; renderCrons(); } });
+      // Webhooks — the event-driven twin, in its own popin.
+      wakes.push({ icon: "bolt", label: "Webhooks…", run: () => { activate(tab); openWebhooks(); } });
+      // Who hears about this agent. Set automatically when an agent spawns
+      // another; this is the manual half, for an agent started by hand.
+      wakes.push({
+        icon: "link",
+        label: tab.parent ? "Detach from " + parentLabel(tab.parent) : "Report to…",
+        run: () => (tab.parent ? sendTo(tab, { type: "set-parent", parent: null }) : openParentPicker(tab)),
+      });
+      // The parent-side half: the agents reporting to THIS one, detachable from
+      // here — so you can cut a link without hunting down the child's own tab.
+      const kids = childTabsOf(tab);
+      if (kids.length) wakes.push({ icon: "link", label: "Children reporting here (" + kids.length + ")…", run: () => openChildrenDetacher(tab) });
+    }
+    speaks.push({ icon: tab.muted ? "bell" : "mute", label: tab.muted ? "Unmute notifications" : "Mute notifications", run: () => setMuted(tab, !tab.muted) });
     // The Telegram mirror. The label states the action AND its cost: turning it
     // off deletes the topic, hence the conversation on the phone — so we confirm.
     // The main channel (the General) is the board's home base: not un-mirrorable.
     // Admin-only, like the rest of the Telegram surface (the server refuses a
     // member's mirror write regardless; this just doesn't offer it).
     if (!tab.isMain && me?.role === "admin") {
-      items.push([
-        tab.mirror ? "✈️ Stop mirroring (deletes the topic)" : "✈️ Mirror to Telegram",
-        () => {
+      speaks.push({
+        icon: "telegram",
+        label: tab.mirror ? "Stop mirroring (deletes the topic)" : "Mirror to Telegram",
+        run: () => {
           if (tab.mirror && !confirm("Stop mirroring this agent?\n\nIts Telegram topic will be deleted, with the messages it holds. The agent itself keeps running.")) return;
           setMirror(tab, !tab.mirror);
         },
-      ]);
+      });
     }
-    // Who hears about this agent. Set automatically when an agent spawns
-    // another; this is the manual half, for an agent started by hand.
-    if (tab.sessionId) {
-      items.push([
-        tab.parent ? "🔗 Detach from " + parentLabel(tab.parent) : "🔗 Report to…",
-        () => (tab.parent ? sendTo(tab, { type: "set-parent", parent: null }) : openParentPicker(tab)),
-      ]);
-      // The parent-side half: the agents reporting to THIS one, detachable from
-      // here — so you can cut a link without hunting down the child's own tab.
-      const kids = childTabsOf(tab);
-      if (kids.length) items.push([
-        "🔗 Children reporting here (" + kids.length + ")…",
-        () => openChildrenDetacher(tab),
-      ]);
-    }
+    // Token + notional-cost stats over rolling windows, plus up-since / last respawn.
+    if (live) look.push({ icon: "stats", label: "Stats", run: () => openStatsPanel(tab) });
+    look.push({ icon: "context", label: "Context sent", run: () => showPreprompt(tab) });
+    session.push({ icon: "rename", label: "Rename", run: () => startRename(tab) });
+    session.push({ icon: "reload", label: "Reload agent", run: () => reloadTab(tab) });
     // The main channel is the environment's home base — it can't be closed.
-    if (!tab.isMain) items.push(["✕ Close agent", () => closeTab(tab)]);
-    for (const [label, run] of items) {
-      const b = document.createElement("button");
-      b.className = "tm-item";
-      b.textContent = label;
-      b.addEventListener("click", (e) => { e.stopPropagation(); closeTabMenu(); run(); });
-      tabMenu.appendChild(b);
-    }
+    if (!tab.isMain) end.push({ icon: "close", label: "Close agent", run: () => closeTab(tab), danger: true });
+    renderMenuGroups([extra, identity, wakes, speaks, look, session, end]);
     placeTabMenu(x, y);
   }
   let lastMenuX = 0, lastMenuY = 0;
@@ -6432,8 +6481,8 @@
     const head = document.createElement("div");
     head.className = "tm-head";
     const who = document.createElement("b");
-    who.textContent = "🤔 Thinking effort";
-    head.appendChild(who);
+    who.textContent = "Thinking effort";
+    head.append(menuIcon("effort", 12), who);
     const sub = document.createElement("span");
     sub.className = "tm-sub";
     // Say the cost out loud: thinking tokens are billed even when collapsed.
@@ -6473,8 +6522,8 @@
     const head = document.createElement("div");
     head.className = "tm-head";
     const who = document.createElement("b");
-    who.textContent = "🧠 Model";
-    head.appendChild(who);
+    who.textContent = "Model";
+    head.append(menuIcon("model", 12), who);
     const sub = document.createElement("span");
     sub.className = "tm-sub";
     sub.textContent = "Picking one restarts the agent — history is kept.";
@@ -7058,8 +7107,7 @@
       if (!rec.head.querySelector("input.rename") && rec.name.textContent !== f.name) rec.name.textContent = f.name;
       const caret = folded ? "▸" : "▾";
       if (rec.caret.textContent !== caret) rec.caret.textContent = caret;
-      const icon = f.icon || (folded ? "📁" : "📂");
-      if (rec.icon.textContent !== icon) rec.icon.textContent = icon;
+      LineIcons.paint(rec.icon, f.icon || (folded ? "📁" : "📂"), 14);
       const inside = [...rec.body.querySelectorAll(".tab")];
       const n = String(inside.length || "");
       if (rec.count.textContent !== n) rec.count.textContent = n;
@@ -7113,7 +7161,7 @@
     gname.title = opts.nature === "private" ? "" : "Double-click to rename";
     const glock = document.createElement("span");
     glock.className = "glock";
-    glock.textContent = "🔒";
+    glock.innerHTML = LineIcons.svg("lock", 12);
     glock.title = groupTypeLabel(opts.nature);
     const gclose = document.createElement("span");
     gclose.className = "gclose";
@@ -7129,13 +7177,13 @@
     // 🔑 opens THIS group's secrets directly (a flat panel when only Main exists).
     const gkey = document.createElement("span");
     gkey.className = "gkey";
-    gkey.textContent = "🔑";
+    gkey.innerHTML = LineIcons.svg("key", 13);
     gkey.title = "Secrets of this group";
     head.append(caret, gicon, gname);
     if (isWalled(opts.nature)) head.append(glock);
     const ggear = document.createElement("span");
     ggear.className = "gkey";
-    ggear.textContent = "⚙";
+    ggear.innerHTML = LineIcons.svg("gear", 13);
     ggear.title = "Settings and members of this group";
     head.append(ggear, gkey, gadd, gclose);
     const body = document.createElement("div");
@@ -7155,11 +7203,14 @@
     };
     paintCaret();
     head.addEventListener("click", (e) => {
-      if (e.target === gclose) return closeGroupGesture(group);
-      if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
-      if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
-      if (e.target === gkey) { e.stopPropagation(); return openSecretsPanel(group.id); }
-      if (e.target === ggear) { e.stopPropagation(); return openGroupPanel(group.id); }
+      // `contains`, not `===`: the icon, key and gear are drawn as SVG, so a
+      // click usually lands on a <path> inside them.
+      const on = (n) => n.contains(e.target);
+      if (on(gclose)) return closeGroupGesture(group);
+      if (on(gicon)) { e.stopPropagation(); return openIconPicker(group, gicon); }
+      if (on(gadd)) { e.stopPropagation(); return openSetup(group.id); }
+      if (on(gkey)) { e.stopPropagation(); return openSecretsPanel(group.id); }
+      if (on(ggear)) { e.stopPropagation(); return openGroupPanel(group.id); }
       el.classList.toggle("collapsed");
       paintCaret();
       persistGroups();
@@ -7455,10 +7506,10 @@
     for (const g of groups) {
       g.el.classList.toggle("in-view", String(g.id) === v);
       const gi = g.headEl.querySelector(".gicon");
-      if (gi && gi.textContent !== g.icon) gi.textContent = g.icon;
+      if (gi) LineIcons.paint(gi, g.icon, 14);
     }
     const g = groups.find((x) => String(x.id) === v);
-    $("viewIcon").textContent = g ? g.icon : "";
+    LineIcons.paint($("viewIcon"), g ? g.icon : "", 16);
     // A cached reference, never $("viewLabel"): while it is being renamed the
     // span is swapped out for the input, and a lookup by id would return null
     // and throw on the very next sync.
@@ -7519,8 +7570,8 @@
     if (mood) item.classList.add(mood);
     const ic = document.createElement("button");
     ic.type = "button";
-    ic.className = "rail-icon";
-    ic.textContent = icon;
+    ic.className = "rail-icon glyph";
+    LineIcons.paint(ic, icon, 18);
     if (group) ic.title = "Double-click to change the icon";
     const nm = document.createElement("span");
     nm.className = "rail-name";
@@ -7542,7 +7593,7 @@
       lead.className = "rail-icon-wrap";
       const lock = document.createElement("span");
       lock.className = "rail-lock";
-      lock.textContent = "🔒";
+      lock.innerHTML = LineIcons.svg("lock", 9);
       lead.append(ic, lock);
     }
     item.append(lead, nm, dot, count, add);
@@ -7554,7 +7605,7 @@
       const gear = document.createElement("button");
       gear.type = "button";
       gear.className = "rail-gear";
-      gear.textContent = "⚙";
+      gear.innerHTML = LineIcons.svg("gear", 13);
       gear.title = "Settings and members of " + name;
       item.appendChild(gear);
       gear.addEventListener("click", (e) => { e.stopPropagation(); openGroupPanel(group.id); });
@@ -7725,7 +7776,8 @@
     });
   }).observe(tabbar, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
 
-  // The icon picker: the shortlist, or any emoji typed in.
+  // The icon picker: the line-icon set, searched by word. The pick is stored as
+  // its emoji (line-icons.js says why); a literal emoji typed in still sets itself.
   const iconPicker = $("iconPicker"), iconInput = $("iconInput");
   let iconTarget = null;
   function setGroupIcon(icon) {
@@ -7744,9 +7796,9 @@
   // typed word ("rocket") was simply truncated by cleanGroupIcon to "ro".
   function iconCandidates(query) {
     const q = String(query || "").trim();
-    if (!q) return { list: window.GROUP_ICONS || ["📁"], isDefault: true };
+    if (!q) return { list: LineIcons.PICKER, isDefault: true };
     if (window.looksLikeEmoji(q)) return { list: [window.cleanGroupIcon(q)].filter(Boolean), isDefault: false };
-    return { list: window.searchEmoji(q), isDefault: false };
+    return { list: LineIcons.search(q), isDefault: false };
   }
   function paintIconGrid(query) {
     const grid = $("iconGrid");
@@ -7756,8 +7808,10 @@
       ...list.map((ic) => {
         const b = document.createElement("button");
         b.type = "button";
-        b.textContent = ic;
-        if (isDefault && ic === current) b.classList.add("current");
+        b.className = "glyph";
+        LineIcons.paint(b, ic, 18);
+        b.title = LineIcons.forEmoji(ic) || ic;
+        if (isDefault && LineIcons.forEmoji(ic) && LineIcons.forEmoji(ic) === LineIcons.forEmoji(current)) b.classList.add("current");
         b.addEventListener("click", (e) => { e.stopPropagation(); setGroupIcon(ic); });
         return b;
       }),
@@ -7792,7 +7846,7 @@
       const v = iconInput.value;
       // A literal emoji sets itself; a searched word takes the first match.
       if (window.looksLikeEmoji(v)) return setGroupIcon(v);
-      const hit = window.searchEmoji(v)[0];
+      const hit = LineIcons.search(v)[0];
       if (hit) setGroupIcon(hit);
     }
   });
@@ -9075,7 +9129,7 @@
     const b = document.createElement("button");
     b.type = "button";
     b.className = "copy link";
-    b.textContent = "🔗 link";
+    labelWithIcon(b, "link", "link", 11);
     b.title = "Copy a link to this message (for someone with access to this cockpit)";
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -9086,7 +9140,7 @@
       const ok = !!url && (await copyText(url));
       b.textContent = ok ? "✓ link copied" : "⚠ failed";
       b.classList.toggle("done", ok);
-      setTimeout(() => { b.textContent = "🔗 link"; b.classList.remove("done"); }, 1500);
+      setTimeout(() => { labelWithIcon(b, "link", "link", 11); b.classList.remove("done"); }, 1500);
     });
     if (copy) {
       const row = document.createElement("div");
@@ -9322,7 +9376,7 @@
     det.className = "compaction-box";
     const sum = document.createElement("summary");
     sum.className = "compaction-sum";
-    sum.textContent = "🗜 Context summary — earlier conversation compacted";
+    sum.append(LineIcons.el("compress", 13), "Context summary — earlier conversation compacted");
     const time = fmtTime(at);
     if (time) sum.appendChild(time);
     det.appendChild(sum);
@@ -10744,7 +10798,7 @@
     default: "New agents ask before each action.",
     acceptEdits: "New agents auto-apply file edits, and ask before other actions.",
     auto: "New agents start in auto mode (Shift+Tab): no prompts, though a risky action can still be refused.",
-    bypassPermissions: "⚠️ No permission checks at all — any command runs with no question. Agents aren't sandboxed and read untrusted content; a prompt injection could do real damage.",
+    bypassPermissions: "⚠ No permission checks at all — any command runs with no question. Agents aren't sandboxed and read untrusted content; a prompt injection could do real damage.",
   };
   function renderPermMode(mode) {
     const m = mode || "default";
@@ -10817,7 +10871,7 @@
     }
     if (gBtn) {
       gBtn.hidden = !(gLine !== null && gLine !== undefined && (!me || me.role === "admin"));
-      gBtn.textContent = a && a.gauge && a.gauge.state !== "none" ? "📊 Renew usage gauge login…" : "📊 Set up usage gauge login…";
+      labelWithIcon(gBtn, "stats", a && a.gauge && a.gauge.state !== "none" ? "Renew usage gauge login…" : "Set up usage gauge login…");
     }
     // The "replace subscription token" button only makes sense once a token is
     // actually held (longLived) on a multi-tenant instance, for an admin.
@@ -10835,11 +10889,11 @@
       accEl.textContent = ag.account; accEl.title = "";
       tokEl.textContent = ag.token; tokEl.title = "";
       tokEl.style.color = ag.tokenTone === "err" ? "var(--err)" : ag.tokenTone === "warn" ? "var(--amber)" : "";
-      if (relBtn) { relBtn.hidden = !ag.relogin; if (ag.relogin) relBtn.textContent = ag.relogin; }
+      if (relBtn) { relBtn.hidden = !ag.relogin; if (ag.relogin) labelWithIcon(relBtn, ag.reloginIcon || "reload", ag.relogin); }
       if (mtBtn) mtBtn.hidden = !ag.replaceToken;
       return;
     }
-    if (relBtn) relBtn.textContent = "↻ Re-login to Claude";
+    if (relBtn) labelWithIcon(relBtn, "reload", "Re-login to Claude");
     if (a && a.backend === "custom" && a.state !== "signed-in") {
       accEl.textContent = a.backendModel ? a.backendModel + " · custom backend" : "custom model backend";
       accEl.title = "";
@@ -12292,7 +12346,7 @@
           if (tab === active && !promptInput.value.trim()) { promptInput.value = pending._roomText || ""; autosizePrompt(); }
           else tab.draft = tab.draft || pending._roomText || "";
         }
-        addTurn(tab, "system", "", "⚠️ " + (msg.error || "refused"), null, Date.now());
+        addTurn(tab, "system", "", "⚠ " + (msg.error || "refused"), null, Date.now());
         break;
       }
       case "room-closed":
@@ -12325,7 +12379,7 @@
     const text = [typed, lines].filter(Boolean).join("\n");
     if (!text) return;
     if (!t.ws || t.ws.readyState !== WebSocket.OPEN) {
-      addTurn(t, "system", "", "⚠️ Not connected to the room yet — try again in a moment.", null, Date.now());
+      addTurn(t, "system", "", "⚠ Not connected to the room yet — try again in a moment.", null, Date.now());
       return;
     }
     const clientId = "p" + (++roomPostSeq) + "-" + Date.now();
@@ -12350,7 +12404,7 @@
       if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
       return j;
     } catch (e) {
-      addTurn(tab, "system", "", "⚠️ " + e.message, null, Date.now());
+      addTurn(tab, "system", "", "⚠ " + e.message, null, Date.now());
       syncRooms(); // put the column back to what the server holds
       return null;
     }
@@ -12384,33 +12438,30 @@
   function openRoomMenu(tab, x, y) {
     const head = document.createElement("div");
     head.className = "tm-head";
-    head.append("💬 ", Object.assign(document.createElement("b"), { textContent: "Room" }));
+    head.append(menuIcon("chat", 12), Object.assign(document.createElement("b"), { textContent: "Room" }));
     const sub = document.createElement("span");
     sub.className = "tm-sub";
     sub.textContent = "people only — no agent";
     head.appendChild(sub);
     tabMenu.appendChild(head);
-    const items = [
-      [tab.muted ? "🔔 Unmute notifications" : "🔕 Mute notifications", () => setMuted(tab, !tab.muted)],
-      ["✎ Rename", () => startRename(tab)],
+    const speaks = [
+      { icon: tab.muted ? "bell" : "mute", label: tab.muted ? "Unmute notifications" : "Mute notifications", run: () => setMuted(tab, !tab.muted) },
     ];
     if (me?.role === "admin") {
-      items.push([
-        tab.mirror ? "✈️ Stop mirroring (deletes the topic)" : "✈️ Mirror to Telegram",
-        () => {
+      speaks.push({
+        icon: "telegram",
+        label: tab.mirror ? "Stop mirroring (deletes the topic)" : "Mirror to Telegram",
+        run: () => {
           if (tab.mirror && !confirm("Stop mirroring this room?\n\nIts Telegram topic will be deleted, with the messages it holds. The room itself stays here.")) return;
           patchRoom(tab, { mirror: !tab.mirror }).then((j) => { if (j) tab.mirror = j.mirror; });
         },
-      ]);
+      });
     }
-    items.push(["✕ Close room", () => closeRoom(tab)]);
-    for (const [label, fn] of items) {
-      const b = document.createElement("button");
-      b.className = "tm-item";
-      b.textContent = label;
-      b.addEventListener("click", (e) => { e.stopPropagation(); closeTabMenu(); fn(); });
-      tabMenu.appendChild(b);
-    }
+    renderMenuGroups([
+      speaks,
+      [{ icon: "rename", label: "Rename", run: () => startRename(tab) }],
+      [{ icon: "close", label: "Close room", run: () => closeRoom(tab), danger: true }],
+    ]);
     placeTabMenu(x, y);
   }
 
@@ -12554,7 +12605,7 @@
       } else {
         const ic = document.createElement("span");
         ic.className = "cmp-ic";
-        ic.textContent = a.state === "error" ? "⚠" : "📎";
+        if (a.state === "error") ic.textContent = "⚠"; else ic.innerHTML = LineIcons.svg("paperclip", 13);
         chip.appendChild(ic);
         const nm = document.createElement("span");
         nm.className = "cmp-nm";
@@ -13078,7 +13129,7 @@
     // top (bar-overflow.js): clicking one clicks the real button.
     const hidden = new Set(window.chanOverflowIds().filter((id) => $(id)?.classList.contains("bar-ovf")));
     const on = new Set(window.chanOverflowIds().filter((id) => $(id)?.classList.contains("on")));
-    const extra = window.chanOverflowItems(hidden, on).map((it) => [it.label, () => $(it.id).click()]);
+    const extra = window.chanOverflowItems(hidden, on).map((it) => ({ icon: it.icon, label: it.label, run: () => $(it.id).click() }));
     openTabMenu(active, r.right, r.bottom + 4, extra);
   });
 
@@ -13471,7 +13522,9 @@
   }
   function actionBtn(cls, text, title, fn) {
     const b = document.createElement("button");
-    b.type = "button"; b.className = cls; b.textContent = text; b.title = title;
+    b.type = "button"; b.className = cls; b.title = title;
+    // No text = the audit button, drawn as a line icon.
+    if (text) b.textContent = text; else b.innerHTML = LineIcons.svg("history", 13);
     b.addEventListener("click", fn);
     return b;
   }
@@ -13517,7 +13570,7 @@
     }
     const actions = document.createElement("div");
     actions.className = "s-actions";
-    actions.append(actionBtn("s-edit", "🕘", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
+    actions.append(actionBtn("s-edit", "", "Audit log for this secret — who wrote it and which agents received it", () => openSecretAudit(k)));
     if (!ro) {
       actions.append(
         actionBtn("s-edit", "✎", "Replace this secret's value (its profiles are the chips below)", () =>
@@ -14291,7 +14344,7 @@
       av.style.background = memberColor(name);
       av.textContent = memberInitial(name);
       const badge = document.createElement("span");
-      if (isSelf) { badge.className = "member-lock"; badge.textContent = "🔒"; }
+      if (isSelf) { badge.className = "member-lock"; badge.append(LineIcons.el("lock", 10)); }
       else { badge.className = "member-check"; badge.innerHTML = MEMBER_CHECK_SVG; }
       av.append(badge);
       const nm = document.createElement("div");
@@ -14334,7 +14387,8 @@
     hdr.textContent = groupDisplayName(g) + " · " + groupTypeLabel(g.nature);
     const note = (t) => { const p = document.createElement("p"); p.className = "sec-note"; p.textContent = t; body.append(p); };
     if (g.nature === "private") {
-      note("🔒 Only you — this space is sealed.");
+      note("Only you — this space is sealed.");
+      body.lastChild.prepend(LineIcons.el("lock", 12));
       return;
     }
     if (g.nature === "restricted") {
@@ -14725,7 +14779,7 @@
   function facSharedLabels(owner) {
     if (!owner || owner === "main") return ["Everyone"];
     if (owner.startsWith("user:")) return ["Only me"];
-    return (facScopeIds(owner) || []).map((id) => { const g = facGroup(id); return g ? `${g.icon ? g.icon + " " : ""}${g.name}` : `group ${id}`; });
+    return (facScopeIds(owner) || []).map((id) => { const g = facGroup(id); return g ? `${g.name}` : `group ${id}`; });
   }
   /** A coloured tile with the skill's initials — the same palette as the agents' avatars. */
   function facAvatar(s, size) {
@@ -14845,7 +14899,7 @@
     fl.appendChild(facEl("span", { class: "fp-flabel", text: "Shared with" }));
     fl.appendChild(chip(fac.f.shared, "me", "Only me"));
     fl.appendChild(chip(fac.f.shared, "all", "Everyone"));
-    for (const g of facGroups()) fl.appendChild(chip(fac.f.shared, "g" + g.id, `${g.icon ? g.icon + " " : ""}${g.name}`));
+    for (const g of facGroups()) fl.appendChild(chip(fac.f.shared, "g" + g.id, `${g.name}`));
     fl.appendChild(facEl("span", { class: "fp-flabel", text: "Status" }));
     for (const [k, label] of FAC_STATUS) {
       const n = d.skills.filter((s) => (k === "archived" ? s.archived : !s.archived && facStatus(s).includes(k))).length;
@@ -14893,7 +14947,7 @@
           : facEl("span", { class: "fp-ver", text: "saved" })]),
         facEl("td", {}, [s.attachedTo.length ? `${s.attachedTo.length} agent${s.attachedTo.length > 1 ? "s" : ""}` : facEl("span", { class: "fp-sub", text: "unused" })]),
         facEl("td", {}, [facEl("span", { class: "fp-runs", text: String(s.runs7d || 0) }),
-          facOpenFeedback(s).length ? facEl("div", {}, [facEl("span", { class: "fp-badge info", text: `💬 ${facOpenFeedback(s).length}` })]) : null]),
+          facOpenFeedback(s).length ? facEl("div", {}, [facEl("span", { class: "fp-badge info", }, [LineIcons.el("chat", 11), String(facOpenFeedback(s).length)])]) : null]),
       ]));
     }
     box.appendChild(t);
@@ -14937,11 +14991,11 @@
     const mode = cur.startsWith("user:") ? "me" : cur === "main" ? "all" : "groups";
     const radio = (v, label) => facEl("label", {}, [facEl("input", { type: "radio", name: "fpShare" + (s ? s.id : "bulk"), value: v, checked: mode === v }), label]);
     const boxes = facGroups().map((g) => facEl("label", { style: "margin-left:22px" }, [
-      facEl("input", { type: "checkbox", value: String(g.id), checked: ids.has(g.id) }), `${g.icon ? g.icon + " " : ""}${g.name}`]));
+      facEl("input", { type: "checkbox", value: String(g.id), checked: ids.has(g.id) }), `${g.name}`]));
     const panel = facEl("div", { class: "fp-share fp-card" }, [
-      radio("me", "🔒 Only me"),
-      radio("all", "🏢 Everyone"),
-      facGroups().length ? radio("groups", "👥 These groups:") : facEl("div", { class: "fp-hint", text: "Create a group in the cockpit to share with a team." }),
+      radio("me", "Only me"),
+      radio("all", "Everyone"),
+      facGroups().length ? radio("groups", "These groups:") : facEl("div", { class: "fp-hint", text: "Create a group in the cockpit to share with a team." }),
       ...boxes,
       facEl("div", { class: "fp-actions", style: "margin-top:4px" }, [
         facEl("button", { class: "primary", text: "Apply", onclick: async () => {
@@ -15027,7 +15081,7 @@
     for (const [gid, list] of Object.entries(byGroup)) {
       const g = gid === "" ? null : facGroup(gid);
       d.appendChild(facEl("div", { class: "fp-card" }, [
-        facEl("b", { text: g ? `${g.icon ? g.icon + " " : ""}${g.name}` : "No group" }),
+        facEl("b", { text: g ? `${g.name}` : "No group" }),
         ...list.map((a) => facEl("div", { style: "margin-top:4px" }, [
           a.name,
           facEl("span", { class: "fp-sub", text: ` · ${a.runs || 0} run${a.runs === 1 ? "" : "s"}` }),
@@ -15046,7 +15100,7 @@
         facEl("button", { class: "fp-agent-link", type: "button", title: "Open this agent", text: u.name, onclick: () => openAgentInfo(u.sessionId) }),
         facEl("span", { class: "fp-sub", text: u.cronRuns ? ` · ${u.cronRuns} scheduled run${u.cronRuns === 1 ? "" : "s"}, 7 days` : " · not fired yet" }),
         ...u.crons.map((c) => facEl("div", { style: "margin-top:4px" }, [
-          facEl("b", { text: "⏰ " + c.label }),
+          facEl("b", {}, [LineIcons.el("schedule", 12), c.label]),
           c.enabled ? null : facEl("span", { class: "fp-sub", text: " (paused)" }),
           facEl("div", { class: "fp-sub", style: "white-space:pre-wrap;overflow-wrap:anywhere", text: c.prompt }),
         ])),
@@ -15062,7 +15116,7 @@
     const open = facOpenFeedback(s);
     d.appendChild(facEl("h2", { text: `Feedback${open.length ? " (" + open.length + ")" : ""}` }));
     for (const f of open)
-      d.appendChild(facEl("div", { class: "fp-card" }, [`💬 ${f.text}`, facEl("div", { class: "fp-sub", text: `${f.by}, ${facAgo(f.at)}` }),
+      d.appendChild(facEl("div", { class: "fp-card" }, [LineIcons.el("chat", 12), f.text, facEl("div", { class: "fp-sub", text: `${f.by}, ${facAgo(f.at)}` }),
         facEl("button", { class: "fp-link", text: "handled", onclick: () => facCall("POST", `/factory/skills/${s.id}/feedback/${f.id}/done`).then(reload).catch((e) => facMsg(e.message, true)) })]));
     const fin = facEl("input", { type: "text", placeholder: "What is wrong or missing?", style: "flex:1" });
     d.appendChild(facEl("div", { class: "fp-actions" }, [fin, facEl("button", { text: "Add", onclick: () => fin.value.trim() &&
@@ -15135,7 +15189,7 @@
     const ids = new Set();
     const groupBoxes = facGroups().map((g) => facEl("label", { class: "fp-choice fp-pill" }, [
       facEl("input", { type: "checkbox", value: String(g.id), onchange: (e) => { e.target.checked ? ids.add(g.id) : ids.delete(g.id); scroll.querySelector('input[value="groups"]').checked = true; } }),
-      facEl("div", {}, [`${g.icon ? g.icon + " " : ""}${g.name}`])]));
+      facEl("div", {}, [`${g.name}`])]));
     const choice = (value, head, text) => facEl("label", { class: "fp-choice" }, [
       facEl("input", { type: "radio", name: "fpScope", value, checked: value === "me" }),
       facEl("div", {}, [facEl("b", { text: head }), facEl("span", { text })])]);
@@ -15159,10 +15213,10 @@
       facEl("div", { class: "fp-field" }, [facEl("label", { for: "fpDescIn", text: "What does it do, and when should it be used?" }), desc,
         facEl("div", { class: "fp-hint", text: "An agent reads this to decide to use the skill. You can refine it later." })]),
       facEl("div", { class: "fp-field" }, [facEl("span", { class: "fp-label", text: "Shared with" }),
-        choice("me", "🔒 Only me", "Only you see it; you can use it on any agent."),
-        facGroups().length ? choice("groups", "👥 Some groups", "Only the agents of the groups you tick can run it. It can be shared with several.") : facEl("div", { class: "fp-hint", text: "👥 To share with teams, create groups in the cockpit first." }),
+        choice("me", "Only me", "Only you see it; you can use it on any agent."),
+        facGroups().length ? choice("groups", "Some groups", "Only the agents of the groups you tick can run it. It can be shared with several.") : facEl("div", { class: "fp-hint", text: "To share with teams, create groups in the cockpit first." }),
         groupBoxes.length ? facEl("div", { class: "fp-groups" }, groupBoxes) : null,
-        choice("all", "🏢 Everyone", "Any agent can run it.")]),
+        choice("all", "Everyone", "Any agent can run it.")]),
       facEl("div", { class: "fp-field" }, [facEl("label", { text: "Tags" }), tags, facEl("div", { class: "fp-hint", text: "Optional, separated by commas: they help filter the list." })]),
       facEl("div", { class: "fp-actions" }, [
         facEl("button", { class: "primary", text: "Create", onclick: create }),
@@ -15688,7 +15742,7 @@
     if (!mine.length) body.appendChild(facEl("div", { class: "ip-empty", text: "No Skill Factory skill is shared with this agent." }));
     for (const { s, a } of mine) {
       const runs = a.runs || 0, cr = a.cronRuns || 0;
-      const meta = runs ? `${runs} run${runs === 1 ? "" : "s"}${cr ? ` · ⏰ ${cr}` : ""}` : "not used yet";
+      const meta = runs ? `${runs} run${runs === 1 ? "" : "s"}${cr ? ` · ${cr} scheduled` : ""}` : "not used yet";
       body.appendChild(facEl("button", { class: "ip-skill", type: "button", title: `Open “${facTitle(s)}” in the Skill Factory — ${meta}, last 7 days`, onclick: () => openSkillCard(s.id) }, [
         facEl("span", { class: "ip-name", text: facTitle(s) }),
         facEl("span", { class: "ip-meta", text: meta }),
@@ -15704,7 +15758,7 @@
     for (const c of list) {
       const uses = named(c.id);
       body.appendChild(facEl("div", { class: "ip-cron" }, [
-        facEl("b", { text: "⏰ " + fmtSchedule(c.schedule) }),
+        facEl("b", {}, [LineIcons.el("schedule", 12), fmtSchedule(c.schedule)]),
         c.enabled ? null : facEl("span", { class: "ip-k", text: " (paused)" }),
         facEl("div", { class: "ip-prompt", text: c.prompt.length > 200 ? c.prompt.slice(0, 197) + "…" : c.prompt }),
         uses.length ? facEl("div", {}, uses.map(chip)) : null,
@@ -16099,8 +16153,8 @@
     }
     const now = Date.now();
     const parts = [];
-    if (data.upSince) parts.push("⏱ Up " + fmtDur(now - data.upSince));
-    if (data.lastRespawn) parts.push("↻ respawn " + relTime(data.lastRespawn));
+    if (data.upSince) parts.push("Up " + fmtDur(now - data.upSince));
+    if (data.lastRespawn) parts.push("respawn " + relTime(data.lastRespawn));
     // Model: what it's SET to (the --model arg, "profile default" when unset),
     // and — when a message has been written — the model that actually produced
     // the LAST one (the resolved name, the only observable "real" model). Shown
@@ -16108,7 +16162,7 @@
     // are both visible; just the setting when nothing has been answered yet.
     const setLabel = modelLabel(data.model);
     const ran = resolvedModelLabel(data.lastModel);
-    parts.push("🧠 " + (ran ? setLabel + " → " + ran + " (last message)" : setLabel));
+    parts.push("Model " + (ran ? setLabel + " → " + ran + " (last message)" : setLabel));
     $("statsUptime").textContent = parts.join("  ·  ") || "No activity yet.";
     fillStatsRows(data.windows);
   }
@@ -16128,7 +16182,7 @@
       $("statsUptime").textContent = "Stats unavailable (" + (e && e.message || "error") + ").";
       return;
     }
-    $("statsUptime").textContent = "📊 Across " + (data.agents ?? 0) + " agent" + (data.agents === 1 ? "" : "s") + " you can see";
+    $("statsUptime").textContent = "Across " + (data.agents ?? 0) + " agent" + (data.agents === 1 ? "" : "s") + " you can see";
     fillStatsRows(data.windows);
   }
   $("statsClose").addEventListener("click", () => { $("statsOverlay").hidden = true; });
@@ -16259,7 +16313,8 @@
         const s = document.createElement("span");
         s.className = "pc-badge";
         // Each badge = icon + label, with an explanation on hover (title).
-        s.textContent = (b.icon ? b.icon + " " : "") + b.label;
+        if (b.icon) s.append(LineIcons.el(b.icon, 11));
+        s.append(b.label);
         if (b.title) s.title = b.title;
         badges.appendChild(s);
       }
@@ -16383,13 +16438,13 @@
       // (PUT /profiles), so its name is not trusted data.
       const strong = document.createElement("b");
       strong.textContent = p.name;
-      // SYMMETRIC access badge (🔒 read-only / ✏️ full access) + explanation on
+      // SYMMETRIC access badge (padlock read-only / pencil full access) + explanation on
       // hover — same source as the New agent cards (profileBadges, tested), so an
       // unrestricted profile is no longer "icon-less" (the padlock ambiguity).
       const access = (window.profileBadges ? window.profileBadges(p) : [])[0];
       const guard = document.createElement("span");
       if (access && access.icon) {
-        guard.textContent = " " + access.icon;
+        guard.append(" ", LineIcons.el(access.icon, 11));
         guard.title = access.label + " — " + access.title;
       }
       const pmeta = document.createElement("div");
@@ -16671,7 +16726,7 @@
       flip.textContent = u.role === "admin" ? "make member" : "make admin";
       flip.addEventListener("click", async () => {
         const r = await adminWrite("/users/role", "POST", { name: u.name, role: u.role === "admin" ? "member" : "admin" });
-        if (r?.pending) alert("Asked. A second admin must approve it from their Security panel (🛡).");
+        if (r?.pending) alert("Asked. A second admin must approve it from their Security panel (shield icon).");
         renderUsers();
       });
       const del = document.createElement("button");
@@ -16732,7 +16787,7 @@
   /** What a recovery hands over: a link, a code — or nothing yet, when a
    *  second admin still has to approve. */
   function showHandover(name, r) {
-    if (r.pending) return alert("Asked. A second admin must approve it from their Security panel (🛡)" +
+    if (r.pending) return alert("Asked. A second admin must approve it from their Security panel (shield icon)" +
       (r.level === 3 ? " — or it takes effect on its own in 24 h." : "."));
     const h = r.handover;
     if (!h) return;
@@ -16851,7 +16906,7 @@
     for (const k of st.passkeys) {
       const li = document.createElement("li");
       const label = document.createElement("span");
-      label.textContent = "🔑 " + k.label + " · added " + new Date(k.createdAt).toLocaleDateString() + (k.lastUsedAt ? " · used " + new Date(k.lastUsedAt).toLocaleDateString() : "");
+      label.append(LineIcons.el("key", 12), k.label + " · added " + new Date(k.createdAt).toLocaleDateString() + (k.lastUsedAt ? " · used " + new Date(k.lastUsedAt).toLocaleDateString() : ""));
       const del = document.createElement("button");
       del.textContent = "remove";
       del.addEventListener("click", async () => {
@@ -17022,7 +17077,7 @@
     ding();
     if (!$("reportsOverlay").hidden) renderReports();
   };
-  const REPORT_KIND = { access: "🔑 access", bug: "🐞 bug", blocked: "⛔ blocked" };
+  const REPORT_KIND = { access: ["key", "access"], bug: ["bug", "bug"], blocked: ["blocked", "blocked"] };
   function reportRow(r) {
     const li = document.createElement("li");
     if (r.unread) li.classList.add("unread");
@@ -17030,7 +17085,8 @@
     const head = document.createElement("div");
     head.className = "rep-head";
     const kind = document.createElement("span");
-    kind.textContent = REPORT_KIND[r.kind] || r.kind;
+    const rk = REPORT_KIND[r.kind];
+    if (rk) kind.append(LineIcons.el(rk[0], 12), rk[1]); else kind.textContent = r.kind;
     const title = document.createElement("span");
     title.className = "rep-title";
     title.textContent = r.title + (r.count > 1 ? "  ×" + r.count : "");
@@ -17202,7 +17258,8 @@
   let tgAllowed = [];
   function renderTelegram(s) {
     tgAllowed = s.allowedChats.slice();
-    const dot = s.running && s.username ? "🟢" : s.tokenError ? "🟠" : "⚪";
+    const dot = document.createElement("span");
+    dot.className = "tg-dot" + (s.running && s.username ? " ok" : s.tokenError ? " warn" : "");
     const who = s.username ? s.username : s.hasToken ? "(token set)" : "no token";
     // A DM-only instance has no board group and never will: saying "no group
     // bound" there would describe a step that is refused on purpose.
@@ -17211,7 +17268,7 @@
       ? " · private messages only"
       : s.boundGroup ? ` · group ${s.boundGroup.chatId}` : " · no group bound (pair it below)";
     const err = s.tokenError ? ` — ${s.tokenError}` : "";
-    $("tgStatus").textContent = `${dot} ${who}${grp}${err}`;
+    $("tgStatus").replaceChildren(dot, `${who}${grp}${err}`);
     $("tgUnbind").hidden = !s.boundGroup; // only offer unbind when a group is bound
     // Nothing can redeem a code on a DM-only instance (`/setup` is refused
     // everywhere), so the button that issues one is not offered.
@@ -18076,7 +18133,7 @@
     }
     if (r && r.ok) {
       $("mtTokenCode").value = "";
-      msg.textContent = "✅ Token stored. Agents can start now.";
+      msg.textContent = "✓ Token stored. Agents can start now.";
       msg.hidden = false;
       refreshAuthRows();   // clears the missing-token banner + repaints the expiry row
       setTimeout(() => { $("mtTokenOverlay").hidden = true; }, 1600);
@@ -18124,7 +18181,7 @@
       row.style.gap = "8px";
       const label = document.createElement("span");
       label.className = "label";
-      let status = u.loggedIn ? "✅ signed in" : "⚠️ needs login";
+      let status = u.loggedIn ? "✓ signed in" : "⚠ needs login";
       if (u.loggedIn && typeof u.expiresAt === "number" && window.fmtExpiry) {
         const line = window.fmtExpiry(u.expiresAt, Date.now());
         if (line) status += " · " + line;
@@ -18178,7 +18235,7 @@
     } catch { r = { ok: false, error: "the server did not answer" }; }
     if (r && r.ok) {
       $("agentLoginCode").value = "";
-      msg.textContent = "✅ Signed in. This user's agents have your connectors now.";
+      msg.textContent = "✓ Signed in. This user's agents have your connectors now.";
       msg.hidden = false;
       $("agentLoginFlow").hidden = true;
       agentLoginUser = null;
@@ -18262,7 +18319,7 @@
       tweakSub.textContent = "click to retry";
     } else {
       // A fixed literal of this file, never text written by an agent.
-      tweakTitle.innerHTML = '🛠 Tweak Shadok-AI <span class="tweak-arrow">›</span>';
+      tweakTitle.innerHTML = '<svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>Tweak Shadok-AI <span class="tweak-arrow">›</span>';
       tweakSub.textContent = "change the cockpit itself";
     }
   }

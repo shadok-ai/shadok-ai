@@ -96,7 +96,7 @@ export function accountExpiryLine(auth, now = Date.now()) {
  *          connect?: {state: string, multiTenant: boolean, agentAuth: string, user: string|null, expiresAt: number|null}}|null} auth
  * @param {boolean} isAdmin
  * @param {number} [now]
- * @returns {{account: string, token: string, tokenTone: ""|"warn"|"err", relogin: string|null, replaceToken: boolean}|null}
+ * @returns {{account: string, token: string, tokenTone: ""|"warn"|"err", relogin: string|null, reloginIcon: string, replaceToken: boolean}|null}
  */
 export function agentCredentialRows(auth, isAdmin, now = Date.now()) {
   const c = auth && auth.connect;
@@ -121,8 +121,10 @@ export function agentCredentialRows(auth, isAdmin, now = Date.now()) {
   }
   // "unknown" is a failed probe, not a state to act on (invariant 27).
   const relogin = !isAdmin || c.state === "unknown" ? null
-    : c.state === "no" ? "🔌 Connect Claude…" : "↻ Re-login to Claude";
-  return { account, token, tokenTone, relogin, replaceToken: isAdmin && !!auth.longLived && !login };
+    : c.state === "no" ? "Connect Claude…" : "Re-login to Claude";
+  // The line icon the button draws in front of the label (public/line-icons.js).
+  const reloginIcon = relogin && c.state === "no" ? "plug" : "reload";
+  return { account, token, tokenTone, relogin, reloginIcon, replaceToken: isAdmin && !!auth.longLived && !login };
 }
 
 /** 5 days: the usage-gauge login is a month-long credential whose renewal needs
