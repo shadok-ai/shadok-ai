@@ -3,7 +3,7 @@ import test from "node:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, stripTrailingNothingToShow, startOffset, sessionFilePath, newestTranscriptById, resumeOrStartArgs } from "../src/tail.js";
+import { parseLine, parseUsage, resultText, scanUsage, isNothingToShow, stripTrailingNothingToShow, startOffset, sessionFilePath, newestTranscriptById, resumeOrStartArgs, isSyntheticPlaceholder } from "../src/tail.js";
 
 test("parseLine: assistant text block → one text event", () => {
   const ev = parseLine(
@@ -390,4 +390,16 @@ test("resumeOrStartArgs: an existing transcript, or no resume at all, leaves the
   assert.deepEqual(resumeOrStartArgs(["--resume", id], true), ["--resume", id]);
   assert.deepEqual(resumeOrStartArgs(["--session-id", id], false), ["--session-id", id]);
   assert.deepEqual(resumeOrStartArgs(["--resume"], false), ["--resume"]);
+});
+
+test("isSyntheticPlaceholder: Claude Code's own 'No response requested.' is dropped from the stream", () => {
+  const line = { type: "assistant", message: { model: "<synthetic>", content: [{ type: "text", text: "No response requested." }] } };
+  assert.equal(isSyntheticPlaceholder(line.message), true);
+  assert.deepEqual(parseLine(JSON.stringify(line)), []);
+});
+
+test("isSyntheticPlaceholder: a real answer with that text, or another synthetic message, is kept", () => {
+  assert.equal(isSyntheticPlaceholder({ model: "claude-opus-5-5", content: [{ type: "text", text: "No response requested." }] }), false);
+  assert.equal(isSyntheticPlaceholder({ model: "<synthetic>", content: [{ type: "text", text: "API Error: 529 overloaded" }] }), false);
+  assert.equal(isSyntheticPlaceholder({ model: "<synthetic>", content: [] }), false);
 });

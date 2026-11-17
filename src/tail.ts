@@ -391,6 +391,22 @@ const NOTHING_TO_SHOW = /^[*_`\s]*nothing to show[*_`\s.!]*$/i;
  * the build is still running" is prose and stays.
  */
 const LEADING_NOTHING_TO_SHOW = /^[*_`\s]*NOTHING TO SHOW(?![A-Za-z0-9])/;
+/**
+ * The placeholder Claude Code writes ITSELF, not the model: an assistant
+ * message with `model: "<synthetic>"` whose only text is "No response
+ * requested.". It appears when a session is resumed on a transcript whose last
+ * message is the user's (a turn cut off mid-way, e.g. by a restart), to keep
+ * the user/assistant alternation the API needs. Nobody said it, so it is not
+ * shown. Other `<synthetic>` messages (an API error, "Prompt is too long") ARE
+ * information and stay: only this exact text is dropped.
+ */
+export function isSyntheticPlaceholder(message: any): boolean {
+  if (message?.model !== "<synthetic>" || !Array.isArray(message.content)) return false;
+  const texts = message.content.filter((b: any) => b?.type === "text");
+  return texts.length > 0 && message.content.length === texts.length
+    && texts.every((b: any) => typeof b.text === "string" && b.text.trim() === "No response requested.");
+}
+
 export function isNothingToShow(text: string): boolean {
   return NOTHING_TO_SHOW.test(text) || LEADING_NOTHING_TO_SHOW.test(text);
 }
@@ -443,6 +459,7 @@ export function parseLine(line: string): TailEvent[] {
   const when = at === null ? {} : { at };
 
   if (e.type === "assistant") {
+    if (isSyntheticPlaceholder(e.message)) return [];
     const usage = parseUsage(e.message);
     const usageModel = typeof e.message?.model === "string" ? e.message.model : "";
     if (usage) out.push({ kind: "usage", messageId: e.message.id ?? e.uuid, usage, model: usageModel });
