@@ -17,7 +17,7 @@ at the desk.</p>
 
 <p><code>npx shadok-ai</code></p>
 
-<a href="https://shadok.ai"><img width="720" alt="The cockpit: three agents running in parallel, one of them asking a multiple-choice question that is answered with a click, then the diff it wrote" src="https://shadok.ai/demo.gif"></a>
+<a href="https://shadok.ai"><img width="720" alt="The cockpit: three agents running in parallel, one of them asking a multiple-choice question that is answered with a click, then the diff it wrote" src="https://shadok.ai/demo.gif?v=4d87b75"></a>
 
 </div>
 
