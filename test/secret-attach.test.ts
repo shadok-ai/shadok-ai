@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { secretAttachVerdict } from "../src/profiles.js";
-import { normalizeOrigins } from "../src/secrets.js";
+import { creatorProfile, createAttachRefusal, secretNamesForProfile, type Vault, type SecretEntry } from "../src/secrets.js";
 import { parseArgs } from "../context/secrets-skill/scripts/secret.mjs";
 
 // The whole point of this feature, and its whole danger, live in one function:
@@ -93,20 +93,68 @@ test("set --attach is opt-in, and --stdin stays mandatory with it", () => {
   assert.throws(() => parseArgs(["set", "TOK", "--attach"]), /--stdin/);
 });
 
-// ── Origin ledger ────────────────────────────────────────────────────────
+// ── Who created it: read off the vault entry, never a name-keyed sidecar ──
 
-test("origins: a corrupt or foreign file never throws, it yields nothing", () => {
-  assert.deepEqual(normalizeOrigins(null), {});
-  assert.deepEqual(normalizeOrigins("nope"), {});
-  assert.deepEqual(normalizeOrigins([1, 2]), {});
-  assert.deepEqual(normalizeOrigins({ A: 42 }), {});
+const profiles: Record<string, string> = { a1: "Shadok-Marketing", b1: "Shadok-Content" };
+const profileOf = (id: string) => profiles[id] ?? null;
+
+test("creator: an agent-created entry resolves to that agent's profile", () => {
+  assert.equal(creatorProfile({ createdBy: "agent:a1" }, profileOf), "Shadok-Marketing");
 });
 
-test("origins: only a named profile counts as a creator", () => {
-  assert.deepEqual(normalizeOrigins({ A: { profile: "Shadok-dev", at: 1 } }), {
-    A: { profile: "Shadok-dev", at: 1 },
+test("creator: a person, a missing entry or a vanished agent is NOT a creator", () => {
+  // Absence denies: each of these must make the attach refuse.
+  assert.equal(creatorProfile({ createdBy: "alice" }, profileOf), null);
+  assert.equal(creatorProfile({ createdBy: "" }, profileOf), null);
+  assert.equal(creatorProfile(undefined, profileOf), null);
+  assert.equal(creatorProfile({ createdBy: "agent:gone" }, profileOf), null);
+  assert.equal(creatorProfile({ createdBy: "agent:x" }, () => "   "), null);
+});
+
+test("a person's secret re-created under a name an agent once used stays unattachable", () => {
+  // The old sidecar kept the agent as "creator" across a delete + re-create by
+  // a person, so the agent could then attach the person's new value.
+  const v = secretAttachVerdict({
+    caller: "Shadok-Marketing",
+    name: "ADS_TOKEN",
+    inVault: true,
+    origin: creatorProfile({ createdBy: "alice" }, profileOf),
   });
-  // A blank profile is not a creator — it would make the secret attachable by
-  // any agent whose own profile is somehow blank.
-  assert.deepEqual(normalizeOrigins({ A: { profile: "   ", at: 1 } }), {});
+  assert.equal(v.ok, false);
+});
+
+// ── Create-and-attach in one write (`PUT /secrets {attach: true}`) ─────────
+
+test("create-and-attach: allowed on a creation by an agent with a profile", () => {
+  assert.equal(createAttachRefusal({ verdict: "created", callerProfile: "Shadok-Marketing" }), null);
+});
+
+test("create-and-attach: never on an overwrite — that would claim someone else's secret", () => {
+  assert.match(createAttachRefusal({ verdict: "updated", callerProfile: "Shadok-Marketing" }) ?? "", /creating/);
+  assert.notEqual(createAttachRefusal({ verdict: "refused", callerProfile: "Shadok-Marketing" }), null);
+});
+
+test("create-and-attach: a caller with no profile (a person, a bare agent) is refused", () => {
+  assert.match(createAttachRefusal({ verdict: "created", callerProfile: null }) ?? "", /no profile/);
+});
+
+test("the bind lives on the group's entry, so a same-named secret elsewhere is not reached", () => {
+  // Why the attach writes `entry.profiles` and not the global profile.secrets
+  // list: a name resolves per group, so a profile-level name would also inject
+  // group 2's RESEND_KEY into Shadok-Marketing agents running in group 2.
+  const entry = (createdBy: string, p: string[]): SecretEntry => ({
+    value: createdBy,
+    ownerGroup: "",
+    sharedWith: [],
+    profiles: p,
+    createdBy,
+    createdAt: 0,
+    updatedAt: 0,
+  });
+  const vault: Vault = {
+    "1": { RESEND_KEY: entry("agent:a1", ["Shadok-Marketing"]) },
+    "2": { RESEND_KEY: entry("bob", []) },
+  };
+  assert.deepEqual(secretNamesForProfile(vault, "1", "Shadok-Marketing"), ["RESEND_KEY"]);
+  assert.deepEqual(secretNamesForProfile(vault, "2", "Shadok-Marketing"), []);
 });

@@ -395,8 +395,8 @@ import {
   MT_CLAUDE_OAUTH_TOKEN_NAME,
   longLivedTokenInfo,
   loadVault,
-  recordOrigin,
-  originProfile,
+  creatorProfile,
+  createAttachRefusal,
   ANY_PROFILE,
   agentOverwriteRefusal,
   secretNameRefusal,
@@ -2016,9 +2016,12 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
   if (!id) return { id: null, profile: null };
   // Same resolution as `agentPrincipal`, so the two can never disagree on
   // which profile an agent carries.
-  const profile =
-    sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
-  return { id, profile };
+  return { id, profile: profileOfAgent(id) };
+}
+
+/** The profile an agent carries — live session first, then its channel row. */
+function profileOfAgent(id: string): string | null {
+  return sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
 }
 
 /**
@@ -5743,7 +5746,7 @@ mountFactory(app, {
 });
 
 app.put("/secrets", (req, res) => {
-  const { name, value, overwrite } = req.body ?? {};
+  const { name, value, overwrite, attach } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
     return res.status(400).json({ error: "name and value required" });
   const key = name.trim();
@@ -5765,6 +5768,17 @@ app.put("/secrets", (req, res) => {
     const bad = secretNameRefusal(key);
     if (bad) return res.status(400).json({ error: bad, name: key });
   }
+  // `attach: true` — the shadok-secrets skill's `set --attach`: create the
+  // secret AND bind it to the caller's own profile in ONE write (invariant 37).
+  // Decided before anything is stored, so a refusal leaves nothing half-done.
+  // The bind lands on the ENTRY (`profiles`), which lives in the caller's own
+  // group, never on the global `profile.secrets` name list: that list resolves
+  // by name in every group, so it would reach same-named secrets elsewhere.
+  const attachTo = attach === true ? callerOf(req).profile : null;
+  if (attach === true) {
+    const r = createAttachRefusal({ verdict, callerProfile: attachTo });
+    if (r) return res.status(403).json({ error: r, name: key });
+  }
   if (verdict === "updated") {
     const slice = loadVault()[ownerGroup];
     const entry = slice && Object.hasOwn(slice, key) ? slice[key] : undefined;
@@ -5779,17 +5793,13 @@ app.put("/secrets", (req, res) => {
   }
   // createdBy is STAMPED server-side (the agent's session or the account) — a
   // client-claimed owner/createdBy is ignored by construction.
-  setSecret(key, value, ownerGroup, secretCreatedBy(req));
+  // `createdBy` is also what makes a LATER `PUT /profiles/secret` possible:
+  // `creatorProfile` reads it back, and it is never rewritten on an overwrite.
+  setSecret(key, value, ownerGroup, secretCreatedBy(req), attachTo ? [attachTo] : []);
   recordSecretAudit({ action: verdict, secrets: [key], ...auditActorOf(req), instance: process.cwd() });
-  // Remember WHO created it, so the agent can later attach it to its own
-  // profile (`PUT /profiles/secret`). Only on a creation: recording an
-  // overwrite too would let an agent clobber a human's secret to become its
-  // "creator" and then claim the name.
-  if (verdict === "created") {
-    const { profile } = callerOf(req);
-    if (profile) recordOrigin(key, profile);
-  }
-  res.json({ names: secretNames(ownerGroup), result: verdict });
+  if (attachTo)
+    recordSecretAudit({ action: "attached", secrets: [key], ...auditActorOf(req), profile: attachTo, instance: process.cwd() });
+  res.json({ names: secretNames(ownerGroup), result: verdict, ...(attachTo ? { attached: attachTo } : {}) });
 });
 // Edit a secret's SHARING (the groups it is lent to) — the name↔group link
 // lives on the secrets side. Owner-group gated, like every vault write.
@@ -7659,32 +7669,42 @@ app.put("/profiles/prompt", (req, res) => {
  * Everything dangerous about this is in `secretAttachVerdict`: the vault is
  * global, so attaching an arbitrary name would hand any agent every credential
  * on the machine. Only provenance is accepted, and the lead gets no exception.
- * Guardrails still cannot be reached — `deny`/`allow`/`model` are copied from
- * the stored profile, never read from the body.
+ * The profile itself is never written (the bind lives on the vault entry), so
+ * its guardrails — `deny`/`allow`/`model` — are out of reach by construction.
+ *
+ * The skill now creates and attaches in one `PUT /secrets {attach: true}`; this
+ * route stays for an older seeded skill, and for a secret created earlier by
+ * the same profile (invariant 57: seeded scripts and server can skew).
  */
 app.put("/profiles/secret", (req, res) => {
   const { profile: caller } = callerOf(req);
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-  const existing = caller ? getProfile(caller) : undefined;
+  // The secret is looked up in the caller's OWN group — the very group its
+  // `PUT /secrets` wrote to. This used to read Main only (`secretNames()`), so
+  // in multi-tenant, where an agent's group is not Main, every attach answered
+  // "no secret named X in the vault" for a secret the agent had just stored.
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const slice = loadVault()[target.ownerGroup];
+  const entry = slice && Object.hasOwn(slice, name) ? slice[name] : undefined;
   const verdict = secretAttachVerdict({
     caller,
     name,
-    inVault: secretNames().includes(name),
-    origin: originProfile(name),
+    inVault: !!entry && !RESERVED_SECRET_NAMES.has(name),
+    origin: creatorProfile(entry, profileOfAgent),
   });
   if (!verdict.ok) return res.status(403).json({ error: verdict.error });
-  if (!existing) return res.status(404).json({ error: `${caller} no longer exists` });
-  // Start from the stored profile: guardrails survive by construction, not by
-  // vigilance (same rule as /profiles/prompt).
-  const secrets = [...new Set([...(existing.secrets ?? []), name])];
-  upsertProfile({ ...existing, secrets });
+  // Bound on the ENTRY, in that group — same reason as `PUT /secrets`'s attach:
+  // the global `profile.secrets` list resolves by name in every group.
+  const before = entry!.profiles;
+  const profiles = [...new Set([...before, caller!])];
+  setSecretProfiles(name, target.ownerGroup, profiles);
   console.log(`profile-secret: ${caller} += ${name}`);
-  if (!(existing.secrets ?? []).includes(name))
+  if (!before.includes(caller!))
     recordSecretAudit({ action: "attached", secrets: [name], ...auditActorOf(req), profile: caller!, instance: process.cwd() });
   res.json({
     ok: true,
     profile: caller,
-    secrets,
     note: "injected as an environment variable at your next reload, not in this process",
   });
 });
