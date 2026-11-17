@@ -1010,6 +1010,69 @@ type CheckResult =
   | { kind: "quiet" }
   | { kind: "failed"; detail: string };
 
+/** The environment a guard for `sessionId` would run in — or why it cannot. */
+type GuardEnvPlan =
+  | { ok: true; env: NodeJS.ProcessEnv; user: string | null; secrets: Record<string, string> }
+  | { ok: false; detail: string };
+
+/**
+ * Build the environment a cron guard runs with, for ONE session. Extracted so
+ * that `runCronCheck` and the `/crons/env` preview cannot disagree about it.
+ *
+ * That split is the whole point. The scheduler skill used to answer "what will
+ * my guard see?" by reading the PROFILE's `secrets` list, which is only half of
+ * a two-homed link: a secret bound from the SECRET's side (`PUT /secrets/profiles`,
+ * the vault panel's chip row) reaches the guard and was reported absent — and a
+ * `*` binding reached a profile-less agent the tool told to expect nothing. Both
+ * are false negatives, which is the expensive direction: an operator shown a
+ * correct setup as broken goes looking for a fault that is not there. There is
+ * now one builder, and the preview calls it instead of re-deriving it.
+ */
+function cronGuardEnv(sessionId: string, target: SessionTarget): GuardEnvPlan {
+  const profile = target.profile ? getProfile(target.profile) : undefined;
+  // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
+  // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
+  const secrets = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
+  // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
+  // multi-tenant — with the server's whole environment: a root shell for
+  // anyone able to write a cron, holding the GUI password and every token the
+  // server has. Now it runs as the TARGET agent's own OS user (the same
+  // `setpriv` drop as its spawn) with an allow-listed environment plus the
+  // profile's secrets. Mono-tenant keeps the server's user — there is only one
+  // — but gets the same clean environment.
+  let user: string | null = null;
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    if (!target.known) return { ok: false, detail: "no channel for this session — refusing to guess whose rights to run the check with" };
+    const who = osUserForChannelGroup(
+      target.group,
+      loadGroups(),
+      commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
+    );
+    if (!who.ok) return { ok: false, detail: "the agent's group no longer exists — check not run" };
+    user = who.user;
+  }
+  const env = cronCheckEnv({
+    base: process.env,
+    secrets,
+    session: {
+      id: sessionId,
+      port: String(boundPort || START_PORT),
+      key: sessionKeyFor(sessionId),
+      // The TARGET agent's own registry, resolved exactly like its spawn's.
+      peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
+    },
+    user,
+    home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
+    // The same `gh` token the agent itself is spawned with (`makePilot`), and
+    // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
+    // own empty home, so without this every `gh` call in it fails — silently,
+    // because guards swallow a failed call to survive a network hiccup. Only
+    // when dropping; the server's own user reads its config dir directly.
+    ghToken: user ? serverGhToken() : undefined,
+  });
+  return { ok: true, env, user, secrets };
+}
+
 /**
  * Run a cron's optional guard command WITHOUT the LLM (in the channel's cwd,
  * with the profile's secrets). stdout is the only content signal: whatever it
@@ -1018,47 +1081,9 @@ type CheckResult =
 function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
   if (!c.check?.trim()) return Promise.resolve({ kind: "quiet" }); // no guard → the agent always runs
   return new Promise((resolve) => {
-    const profile = target.profile ? getProfile(target.profile) : undefined;
-    // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
-    // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
-    const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
-    // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
-    // multi-tenant — with the server's whole environment: a root shell for
-    // anyone able to write a cron, holding the GUI password and every token the
-    // server has. Now it runs as the TARGET agent's own OS user (the same
-    // `setpriv` drop as its spawn) with an allow-listed environment plus the
-    // profile's secrets. Mono-tenant keeps the server's user — there is only one
-    // — but gets the same clean environment.
-    let user: string | null = null;
-    if (DEPLOYMENT_MODE === "multi-tenant") {
-      if (!target.known) return resolve({ kind: "failed", detail: "no channel for this session — refusing to guess whose rights to run the check with" });
-      const who = osUserForChannelGroup(
-        target.group,
-        loadGroups(),
-        commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
-      );
-      if (!who.ok) return resolve({ kind: "failed", detail: "the agent's group no longer exists — check not run" });
-      user = who.user;
-    }
-    const env = cronCheckEnv({
-      base: process.env,
-      secrets: secretEnv,
-      session: {
-        id: c.sessionId,
-        port: String(boundPort || START_PORT),
-        key: sessionKeyFor(c.sessionId),
-        // The TARGET agent's own registry, resolved exactly like its spawn's.
-        peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
-      },
-      user,
-      home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
-      // The same `gh` token the agent itself is spawned with (`makePilot`), and
-      // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
-      // own empty home, so without this every `gh` call in it fails — silently,
-      // because guards swallow a failed call to survive a network hiccup. Only
-      // when dropping; the server's own user reads its config dir directly.
-      ghToken: user ? serverGhToken() : undefined,
-    });
+    const plan = cronGuardEnv(c.sessionId, target);
+    if (!plan.ok) return resolve({ kind: "failed", detail: plan.detail });
+    const { env, user, secrets: secretEnv } = plan;
     const run = cronCheckCommand(user, c.check!);
     recordSecretAudit({
       action: "cron-check",
@@ -3884,6 +3909,49 @@ app.get("/instance/stats", async (req, res) => {
 // Scoped like every other per-session read (invariant 60): a cron carries its
 // prompt and its guard command, i.e. another group's monitoring logic.
 app.get("/crons", (req, res) => res.json(loadCrons().filter((c) => mayActFor(req, c.sessionId))));
+/**
+ * What a guard for this session would ACTUALLY receive — variable names only,
+ * never a value. Built by the same `cronGuardEnv` the real tick uses, so the
+ * preview cannot drift from the thing it previews.
+ *
+ * This exists because the honest answer is not computable client-side. The
+ * secret↔profile link has two writable homes — the profile's `secrets` list and
+ * the secret's own `profiles` list — and `GET /secrets` withholds the second
+ * from an agent for commons secrets, so the scheduler skill could only ever see
+ * half of it. There is no reload or propagation delay to account for either:
+ * `cronGuardEnv` reads `profiles.json` and the vault on every call, so this is
+ * what the NEXT tick gets.
+ */
+app.get("/crons/env", (req, res) => {
+  const sessionId = String(req.query.session ?? "").trim();
+  if (!sessionId) return res.status(400).json({ error: "session required" });
+  // Scoped exactly like GET /crons (invariant 60): the guard command of another
+  // group is already gated there, and its secret NAMES are no more public.
+  if (!mayActFor(req, sessionId)) return res.status(403).json({ error: "not your agent" });
+  const target = resolveSessionTarget(loadChannels(), sessionId, process.cwd());
+  const plan = cronGuardEnv(sessionId, target);
+  if (!plan.ok) return res.status(409).json({ error: plan.detail });
+  // Declared by the profile but NOT resolvable: a typo, or a secret owned by a
+  // group this agent neither belongs to nor was lent. The caller cannot work
+  // this out for itself — `GET /secrets` lists what the CALLER sees, which is
+  // not what the guard resolves (own → shared-in → commons, by the AGENT's
+  // group). `secretsFor` skips an unknown name silently, so without this a typo
+  // looks exactly like a working guard until the day it runs.
+  const declared = (target.profile ? getProfile(target.profile)?.secrets : undefined) ?? [];
+  res.json({
+    cwd: target.cwd,
+    known: target.known,
+    profile: target.profile,
+    profileMissing: !!target.profile && !getProfile(target.profile),
+    secrets: Object.keys(plan.secrets).sort(),
+    unresolved: [...new Set(declared.filter((n) => !Object.hasOwn(plan.secrets, n)))].sort(),
+    // The whole key list, plumbing included: the allow-list is short and
+    // invisible from the agent's own shell, so "does my guard even have TZ?" is
+    // a real question — and one the agent used to answer by guessing.
+    env: Object.keys(plan.env).sort(),
+    user: plan.user,
+  });
+});
 // Create (no id) or update (id present). Body: { id?, sessionId, prompt,
 // schedule:{kind,...}, enabled? }.
 app.post("/crons", (req, res) => {

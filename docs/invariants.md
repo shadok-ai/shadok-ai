@@ -2452,6 +2452,31 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     knows both, placed where every caller reaches it. A second reader that
     knows one home is not a smaller version of the feature, it is a feature
     that silently does nothing for half its inputs.
+    **It bit a third reader, and that one was a DIAGNOSTIC — which is worse.**
+    The scheduler skill's `schedule.mjs env` answers "what will my guard see?",
+    and it answered it by reading the profile's `secrets` list and diffing
+    against `GET /secrets`. So a secret bound from the vault side reached the
+    guard and was reported absent, and a `*` binding reached a profile-less
+    agent the tool told to expect nothing at all ("guard secrets: NONE — this
+    channel has no profile"). Both are FALSE NEGATIVES on a working setup, and
+    a tool that reports a correct configuration as broken is more expensive than
+    no tool: an agent trusted it over testing the guard, told the operator the
+    credential was missing, and the operator went looking for a fault that did
+    not exist. What settled it was running the guard itself: it printed the
+    variable the tool had just reported absent. (The incident is what surfaced
+    this; the blindness is not inferred from it — a vault-side binding is
+    invisible to that code path by construction, every time.)
+    Two things it could not have got right on its own, and they are the reason
+    the answer now comes from the server. `GET /secrets` **withholds** the
+    `profiles` list from an AGENT for commons secrets (`mainWritable` is false
+    for an agent viewer), so the vault side was not merely unread, it was
+    unavailable. And "is this name resolvable?" depends on the AGENT's group
+    (own → shared-in → commons), which a caller cannot compute from the list of
+    names it happens to see. `GET /crons/env` therefore returns what
+    `cronGuardEnv` — the one builder the real tick uses — would inject: secret
+    names, the names the profile asks for that do NOT resolve, and every
+    variable name in the guard's environment. Names only, never a value, so it
+    is safe for the agent whose guard it is to read.
 
 <a id="inv-78"></a>
 
