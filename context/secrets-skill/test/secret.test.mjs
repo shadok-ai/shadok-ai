@@ -36,6 +36,30 @@ test("set reads the value from stdin and sends it in the body", async () => {
   assert.match(res.out, /profile/i);
 });
 
+test("set --attach creates and attaches in ONE request", async () => {
+  // Two calls (store, then attach) used to leave "stored, but NOT attached"
+  // behind; the server now does both in the same write, or neither.
+  const srv = await fakeCockpit(200, { names: ["A"], result: "created", attached: "Shadok-Marketing" });
+  const res = await run(["set", "A", "--stdin", "--attach"], srv.port, "s3cr3t\n");
+  await srv.close();
+  assert.equal(res.code, 0, res.err);
+  assert.deepEqual(srv.seen.paths, ["PUT /secrets"]);
+  assert.deepEqual(srv.seen.body, { name: "A", value: "s3cr3t", attach: true });
+  assert.match(res.out, /attached to your profile \(Shadok-Marketing\)/);
+  assert.doesNotMatch(res.out, /s3cr3t/);
+});
+
+test("set --attach falls back to the attach route on a server that ignores `attach`", async () => {
+  // A seeded script can be newer than the server it calls (invariant 57).
+  const srv = await fakeCockpit(200, { names: ["A"], result: "created", profile: "Shadok-dev" });
+  const res = await run(["set", "A", "--stdin", "--attach"], srv.port, "s3cr3t\n");
+  await srv.close();
+  assert.equal(res.code, 0, res.err);
+  assert.deepEqual(srv.seen.paths, ["PUT /secrets", "PUT /profiles/secret"]);
+  assert.deepEqual(srv.seen.body, { name: "A" });
+  assert.match(res.out, /attached to your profile \(Shadok-dev\)/);
+});
+
 test("set requires --stdin, so a value can never be passed in argv", async () => {
   const srv = await fakeCockpit(200, {});
   const res = await run(["set", "A"], srv.port, "");

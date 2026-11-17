@@ -2560,7 +2560,8 @@ by its own server. `POST`/`DELETE /groups` are browser-only and admin-gated
   profiles receive a secret is a person's decision: `PUT /secrets/profiles` is
   browser-only altogether (an agent binding a Main secret it wrote to other
   profiles would inject values into every group's agents on them; an agent
-  attaches a secret it CREATED to its OWN profile via `PUT /profiles/secret`),
+  attaches a secret it CREATED to its OWN profile via `PUT /secrets {attach: true}`
+  at creation, or `PUT /profiles/secret`),
   an agent may not overwrite a `*` secret (`agentOverwriteRefusal`), and `"*"`
   is refused as a profile name.
   The panel's group selector always offers **Public** first (Main and every public group are one commons), then Personal, then the restricted groups:
@@ -3075,8 +3076,12 @@ agents get exactly two profile writes, and neither can reach a guardrail:
 `/profiles/prompt` (PUT) — a `systemPrompt`, its own or, under the lead profile,
 any; refused outright in multi-tenant, where profiles are shared by every group
 (`promptWriteRefusal`, invariant 63) — and `/profiles/secret` (PUT) — attach to ITS OWN profile a vault secret
-IT created (provenance from `secret-origin.json`; no exception for the lead,
-cf. invariant 37). `GET /profiles`
+IT created (provenance from the entry's server-stamped `createdBy`, looked up
+and bound on the entry in the caller's own group; no exception for the lead,
+cf. invariant 37). The skill's `set --attach` no longer needs it: `PUT /secrets`
+takes `attach: true` and creates the entry already bound to the caller's
+profile, in one write (`createAttachRefusal`: creation only). The route stays
+for an older seeded skill (invariant 57). `GET /profiles`
 adds a **derived** `origin` per profile (`stock` / `edited` / `custom`, never
 stored, cf. invariant 6): seeding only ever fills an EMPTY vault, so a starter
 profile edited once never catches up on a newer upstream wording — the panel

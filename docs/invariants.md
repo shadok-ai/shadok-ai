@@ -1036,15 +1036,27 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     security boundary.** The vault is global — one file for every profile and
     every instance — so "let an agent attach a secret to its profile" is one
     rule away from "any agent grants itself every credential on the machine".
-    The rule is provenance: `PUT /secrets` records the creating PROFILE in a
-    sidecar (`~/.shadok-ai/secret-origin.json`), and `PUT /profiles/secret`
-    attaches a name only when that origin equals the caller's own profile. An
-    agent therefore gains NO access it did not already have — it held that value
-    already; it only makes it survive into its next sessions. Three details
-    carry the weight. The origin is recorded **only on a creation**, never on an
-    overwrite, or an agent could clobber a human's secret to become its
-    "creator" and then claim the name. A **missing** origin means a human stored
-    it, which must read as a refusal — absence denies, it never grants. And the
+    The rule is provenance. The normal path is ONE write: the skill's
+    `set --attach` sends `PUT /secrets {name, value, attach: true}`, and the
+    server creates the entry already bound to the caller's own profile
+    (`createAttachRefusal`: a creation only, a caller with a profile only —
+    decided before anything is stored). `PUT /profiles/secret` remains for an
+    older seeded skill: it attaches a name only when the entry's own
+    server-stamped `createdBy` resolves to an agent of the caller's profile
+    (`creatorProfile`). An agent therefore gains NO access it did not already
+    have — it held that value already; it only makes it survive into its next
+    sessions. Four details carry the weight. The creator is stamped **only on a
+    creation** and kept on an overwrite, or an agent could clobber a human's
+    secret to become its "creator" and then claim the name. A **missing** or
+    unresolvable creator means a person stored it, which must read as a refusal
+    — absence denies, it never grants. The secret is looked up, and bound, in
+    the caller's **own group** — on the entry's `profiles`, never the global
+    `profile.secrets` name list, which resolves by name in EVERY group and would
+    reach a same-named secret elsewhere. (The attach route once read Main only,
+    so in multi-tenant every attach answered "no secret named X in the vault"
+    for a secret the agent had just stored; and the provenance once lived in a
+    name-keyed sidecar, `secret-origin.json`, which a same-named creation in
+    another group, or a person's delete + re-create, silently re-stamped.) And the
     lead profile gets **no exception**, deliberately unlike `promptEditVerdict`:
     editing any prompt gives the lead nothing it lacks (it can already spawn a
     full-access agent), whereas handing out vault secrets would. The value lands
@@ -2404,10 +2416,10 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
 73. **The secret↔profile link is written from BOTH ends, so anything that asks
     "who receives this secret" must read both — one side alone answers
     "nobody", in silence.** A profile carries a `secrets` list
-    (`PUT /profiles`, what the vault's flat form writes, and what an agent
-    attaching a secret it created writes through `PUT /profiles/secret`), and a
+    (`PUT /profiles`, what the vault's flat form writes), and a
     secret carries a `profiles` list (`PUT /secrets/profiles`, what the panel's
-    chips and the grouped add form write). Neither is a cache of the other:
+    chips and the grouped add form write, and what an agent attaching a secret
+    it created writes — `PUT /secrets {attach: true}` or `PUT /profiles/secret`). Neither is a cache of the other:
     `secretsForProfile` merges them at spawn, which is why both work.
     `offerReload` — the banner that proposes reloading the live agents a new
     value concerns — asked `secretUsers(profileCache, name)`, i.e. the profile
