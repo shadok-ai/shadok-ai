@@ -2441,3 +2441,31 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     knows both, placed where every caller reaches it. A second reader that
     knows one home is not a smaller version of the feature, it is a feature
     that silently does nothing for half its inputs.
+
+<a id="inv-78"></a>
+
+74. **The input box is not always where its `❯` is — a box that scrolled reads
+    as empty unless you look for its border.** Every submit check (`boxText`,
+    `boxRaw`, `src/detect.ts`) located the box by its `❯` line. A prompt taller
+    than the pane makes the box scroll: the `❯` line leaves the screen and the
+    top border turns into `─── ↑ 244 more ───`. With no `❯` in sight the box
+    read as EMPTY while holding hundreds of lines, and everything built on
+    that reading went wrong at once: the paste "never appeared", so it was
+    pasted again on top of itself for all six attempts; the clearing step saw
+    nothing to clear; Enter was never pressed.
+    What made it permanent is the recovery. A respawn is the right answer to a
+    wedged TUI, and here the TUI was fine: the fresh process received the same
+    prompt, which scrolled the fresh box exactly as before. And the prompt
+    could only grow — the ledger watermark advances after a submit that LANDS
+    (deliberately, so a failed one does not burn the block), so each retry
+    carried the whole backlog again plus whatever had been recorded since. An
+    agent left idle while its siblings were busy was the one most likely to
+    hit it, and it then looked idle and healthy while refusing every message.
+    `boxRaw` now reads from the scroll border when it sits below the last `❯`
+    (an `❯` further up is then an older line of the conversation), and keeps
+    the border's count in what it returns: the visible rows can be identical
+    before and after a paste or a Ctrl-U, the count cannot.
+    The generalisation: a screen reader keyed on ONE landmark must say what it
+    does when the landmark scrolls away, and "nothing there" is the one answer
+    it may not give by default — absence of the marker is not absence of the
+    thing.

@@ -152,6 +152,13 @@ export function inputText(screen: string): string {
 const BOX_END = /^\s*(?:[─━]{10,}|⏵⏵|⏸|\?\s+for shortcuts)/;
 
 /**
+ * The top border of a box that has scrolled: `─── ↑ 244 more ───────`. Anchored
+ * on the rule characters on BOTH sides, so an "↑ 3 more" in ordinary output is
+ * not mistaken for it. Captured from a live pane (2.1.326).
+ */
+const BOX_SCROLLED = /^\s*[─━]{2,}\s*↑\s*(\d+)\s+more\s*[─━]{2,}/;
+
+/**
  * The WHOLE input box, not just its first line.
  *
  * `inputText` reads the `❯` line alone, which is everything there is while a
@@ -199,6 +206,23 @@ export function boxRaw(screen: string): string {
   let start = -1;
   for (let i = 0; i < lines.length; i++) {
     if (lines[i].trimStart().startsWith("❯") || /^!\s/.test(lines[i])) start = i;
+  }
+  // A box taller than the pane SCROLLS: its `❯` line leaves the screen and the
+  // top border becomes `─── ↑ 244 more ───`. Keyed on the `❯` alone, that box
+  // read as EMPTY — so a long prompt (a ledger backlog pasted ahead of a
+  // message is enough) "never appeared", was pasted again on top of itself six
+  // times, and Enter was never pressed. A respawn changes nothing: the same
+  // prompt is delivered again and scrolls the box again, so the agent stayed
+  // deaf for good while looking idle. Read from the scroll border instead when
+  // it is the lower of the two — a `❯` further up is then an older line of the
+  // conversation, not the box. The count is kept in the text read: the visible
+  // rows can be identical before and after a paste or a Ctrl-U, the count never.
+  let scrolled = -1;
+  for (let i = 0; i < lines.length; i++) if (BOX_SCROLLED.test(lines[i])) scrolled = i;
+  if (scrolled > start) {
+    const rows = [`↑ ${lines[scrolled].match(BOX_SCROLLED)![1]} more`];
+    for (let i = scrolled + 1; i < lines.length && !BOX_END.test(lines[i]); i++) rows.push(lines[i]);
+    return rows.map((l) => l.trimEnd()).join("\n");
   }
   if (start === -1) return "";
   const out = [lines[start].replace(/^\s*[❯!]\s*/, "")];
