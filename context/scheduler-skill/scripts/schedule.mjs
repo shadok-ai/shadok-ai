@@ -51,6 +51,35 @@ async function api(ctx, method, path, body) {
   return raw ? JSON.parse(raw) : {};
 }
 
+/**
+ * Like `api`, but a 404 answers `null` instead of dying.
+ *
+ * Skills are re-seeded from the running build at every boot, so normally this
+ * file and the server move together. They do NOT when several cockpits share
+ * one machine: the machine-wide skill tier is written by whichever instance
+ * booted last, so an agent can be running this script against an older server.
+ * A missing route then has to degrade, not abort.
+ */
+async function apiMaybe(ctx, method, path) {
+  let res;
+  try {
+    res = await fetch(ctx.base + path, {
+      method,
+      headers: {
+        "content-type": "application/json",
+        ...(ctx.key ? { "x-shadok-session-key": ctx.key } : {}),
+      },
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+  } catch (e) {
+    die(`cannot reach the cockpit on ${ctx.base}: ${e.message}`);
+  }
+  if (res.status === 404) return null;
+  const raw = await res.text();
+  if (!res.ok) die(`API error ${res.status}: ${raw.slice(0, 200)}`);
+  return raw ? JSON.parse(raw) : {};
+}
+
 /** `every:30m` · `every:2h` · `every:45` · `daily:09:00` · `daily:09:00@mon-fri`
  *  · `once:2026-08-25T08:42` → the API's schedule. */
 export function parseSchedule(spec) {
@@ -191,10 +220,52 @@ async function cmdTz(ctx, zone) {
 }
 
 async function cmdEnv(ctx) {
-  // A guard runs server-side, not in this agent's process: it gets the secrets
-  // of the CHANNEL's profile, never whatever happens to sit in this shell.
-  // Agents that can't see that list assume the worst and hardcode the value
-  // into the check script — printing it is the fix.
+  // A guard runs server-side, not in this agent's process, so this ASKS the
+  // server what it would inject instead of deriving it here.
+  //
+  // Deriving it is what this command used to do, and it was wrong in the
+  // expensive direction. The secret↔profile link has TWO writable homes — the
+  // profile's `secrets` list and the secret's own `profiles` list (the vault
+  // panel's chip row) — and a secret bound from the second one reaches the
+  // guard while a reader of the first reports it absent. A `*` ("any profile")
+  // binding reaches an agent with no profile at all, which this command used to
+  // answer with a flat "NONE". Both are false negatives, and a correct setup
+  // reported as broken costs more than no answer: it sends someone hunting a
+  // fault that is not there. `/crons/env` is built by the same function the
+  // real tick uses, so it cannot drift from it.
+  const view = await apiMaybe(ctx, "GET", `/crons/env?session=${encodeURIComponent(ctx.sid)}`);
+  if (!view) return cmdEnvHalfBlind(ctx);
+  if (!view.known) {
+    // Not "no secrets at all": a “any profile” binding still reaches a guard
+    // with no profile, and the list below proves it when there is one.
+    console.log("this channel is not registered server-side: a guard would run from the");
+    console.log("server's own directory, with no profile — so only a secret bound to");
+    console.log("“any profile” can reach it.");
+  }
+  console.log(`guard cwd: ${view.cwd || "(server default)"}`);
+  if (view.profileMissing)
+    console.log(`note: the channel points at profile '${view.profile}', which no longer exists.`);
+  const names = view.secrets ?? [];
+  const where = view.profile ? `profile '${view.profile}'` : "no profile";
+  console.log(`guard secrets (${where}): ${names.length ? names.join(", ") : "NONE"}`);
+  if (!names.length) {
+    console.log("  A secret reaches a guard through the channel's profile, or by being bound");
+    console.log("  to this profile (or to “any profile”) from the web Secrets panel.");
+  }
+  // A name the profile asks for that does not resolve for THIS agent: a typo,
+  // or a secret owned by a group it neither belongs to nor was lent. The server
+  // is the only place that can tell — it resolves by the agent's real group.
+  if (view.unresolved?.length)
+    console.log(`  listed by the profile but NOT resolvable, so absent at run time: ${view.unresolved.join(", ")}`);
+  console.log(`guard env (names only): ${(view.env ?? []).join(", ")}`);
+  console.log("This is what the NEXT run gets: the server re-reads the profiles and the");
+  console.log("vault at every tick, so nothing above is waiting for a reload.");
+}
+
+/** The pre-`/crons/env` answer, for an older cockpit (see `apiMaybe`). It sees
+ *  only the PROFILE side of the link, so it can report a bound secret as
+ *  absent — it says so rather than sounding certain. */
+async function cmdEnvHalfBlind(ctx) {
   const channels = await api(ctx, "GET", "/channels");
   const ch = channels.find((c) => c.sessionId === ctx.sid);
   if (!ch) {
@@ -204,29 +275,19 @@ async function cmdEnv(ctx) {
   }
   console.log(`guard cwd: ${ch.cwd || "(server default)"}`);
   const pname = ch.profile;
-  if (!pname) {
-    console.log("guard secrets: NONE — this channel has no profile.");
-    console.log("  Secrets reach a guard only through the channel's profile; attach one");
-    console.log("  (web UI, the agent's profile picker) that lists the names you need.");
-    return;
-  }
-  const profiles = await api(ctx, "GET", "/profiles");
-  const prof = profiles.find((p) => p.name === pname);
-  if (!prof) {
-    // Same end result as "no secrets", but a very different cause: say which
-    // one, or the report reads as a working setup.
-    console.log(`guard secrets: NONE — the channel points at profile '${pname}', which no longer exists.`);
-    return;
-  }
-  const wanted = prof.secrets ?? [];
-  if (!wanted.length) return console.log(`guard secrets: NONE — profile '${pname}' lists no secret.`);
+  const profiles = pname ? await api(ctx, "GET", "/profiles") : [];
+  const prof = pname ? profiles.find((p) => p.name === pname) : undefined;
+  const wanted = prof?.secrets ?? [];
   const vault = new Set((await api(ctx, "GET", "/secrets")).names ?? []);
   const present = wanted.filter((n) => vault.has(n));
   const missing = wanted.filter((n) => !vault.has(n));
-  console.log(`guard secrets (profile '${pname}'): ${present.length ? present.join(", ") : "NONE"}`);
+  console.log(`guard secrets (profile '${pname ?? "none"}'): ${present.length ? present.join(", ") : "NONE"}`);
   // `secretsFor` skips an unknown name without a word, so a typo here looks
   // exactly like a working guard until the day it runs.
   if (missing.length) console.log(`  referenced but NOT in the vault, so absent at run time: ${missing.join(", ")}`);
+  console.log("This cockpit is older than this skill, so the list above reads ONLY the");
+  console.log("profile's own list: a secret bound to this profile from the Secrets panel");
+  console.log("reaches the guard and is missing here. Test the guard itself if it matters.");
 }
 
 /** The cron of THIS channel an id (or the 8-character prefix `list` prints)

@@ -125,24 +125,82 @@ test("del sends the 8-char prefix the listing prints, url-encoded", async () => 
   assert.match(res.out, /deleted abcdef01/);
 });
 
-test("env names the secrets a guard really gets, and the ones it won't", async () => {
+test("env reports what the SERVER resolves, not what the profile lists", async () => {
+  // CHIPPED is bound to the profile from the SECRET's side, so it is absent
+  // from `profiles[].secrets` and present in the guard. Deriving the answer
+  // here reported it missing; asking the server is the fix.
   const srv = await fakeCockpit({
+    "GET /crons/env": {
+      body: {
+        cwd: "/w/t", known: true, profile: "P",
+        secrets: ["CHIPPED", "HAVE"], unresolved: ["ELSEWHERE"],
+        env: ["PATH", "SHADOK_PORT", "TZ"],
+      },
+    },
+    "GET /profiles": { body: [{ name: "P", secrets: ["HAVE", "ELSEWHERE"] }] },
+  });
+  const res = await run(["env"], AGENT(srv.port));
+  await srv.close();
+  assert.equal(srv.seen[0].query, "session=sess-1");
+  assert.match(res.out, /guard cwd: \/w\/t/);
+  assert.match(res.out, /guard secrets \(profile 'P'\): CHIPPED, HAVE/);
+  assert.match(res.out, /NOT resolvable[^\n]*ELSEWHERE/);
+  assert.match(res.out, /guard env \(names only\): PATH, SHADOK_PORT, TZ/);
+  // No reload is involved: saying so stops the next agent inventing one.
+  assert.match(res.out, /next run/i);
+  // The profile list must not be consulted at all any more.
+  assert.ok(!srv.seen.some((r) => r.path === "/profiles"), "still reads /profiles");
+});
+
+test("env lists an 'any profile' secret even with no profile at all", async () => {
+  // The old answer was a flat "NONE — this channel has no profile", which is
+  // false: a `*` binding reaches a profile-less agent.
+  const srv = await fakeCockpit({
+    "GET /crons/env": { body: { cwd: "/w/t", known: true, profile: null, secrets: ["WIDE"], env: ["PATH"] } },
+  });
+  const res = await run(["env"], AGENT(srv.port));
+  await srv.close();
+  assert.match(res.out, /guard secrets \(no profile\): WIDE/);
+});
+
+test("env on an unregistered channel does not claim 'no secrets at all'", async () => {
+  // It used to say exactly that, which a `*` binding contradicts on the very
+  // next line.
+  const srv = await fakeCockpit({
+    "GET /crons/env": { body: { cwd: "/srv", known: false, profile: null, secrets: ["WIDE"], env: ["PATH"] } },
+  });
+  const res = await run(["env"], AGENT(srv.port));
+  await srv.close();
+  assert.match(res.out, /not registered server-side/);
+  assert.match(res.out, /guard secrets \(no profile\): WIDE/);
+  assert.doesNotMatch(res.out, /no profile secrets at all/);
+});
+
+test("env with nothing bound explains BOTH ways a secret can arrive", async () => {
+  const srv = await fakeCockpit({
+    "GET /crons/env": { body: { cwd: "/w/t", known: true, profile: "P", secrets: [], env: ["PATH"] } },
+  });
+  const res = await run(["env"], AGENT(srv.port));
+  await srv.close();
+  assert.match(res.out, /guard secrets \(profile 'P'\): NONE/);
+  assert.match(res.out, /any profile/);
+});
+
+test("env on an older cockpit degrades, and says it is half-blind", async () => {
+  // Several cockpits on one machine share the skill tier, so this file can run
+  // against a server that predates /crons/env. A 404 must not abort the command.
+  const srv = await fakeCockpit({
+    "GET /crons/env": { status: 404, body: { error: "not found" } },
     "GET /channels": { body: [{ sessionId: "sess-1", cwd: "/w/t", profile: "P" }] },
     "GET /profiles": { body: [{ name: "P", secrets: ["HAVE", "MISSING"] }] },
     "GET /secrets": { body: { names: ["HAVE"] } },
   });
   const res = await run(["env"], AGENT(srv.port));
   await srv.close();
-  assert.match(res.out, /guard cwd: \/w\/t/);
+  assert.equal(res.code, 0);
   assert.match(res.out, /guard secrets \(profile 'P'\): HAVE/);
   assert.match(res.out, /NOT in the vault[^\n]*MISSING/);
-});
-
-test("env says which cause when a channel has no profile", async () => {
-  const srv = await fakeCockpit({ "GET /channels": { body: [{ sessionId: "sess-1", cwd: "/w/t" }] } });
-  const res = await run(["env"], AGENT(srv.port));
-  await srv.close();
-  assert.match(res.out, /guard secrets: NONE — this channel has no profile/);
+  assert.match(res.out, /older than this skill/);
 });
 
 test("an API error is reported, not swallowed", async () => {
