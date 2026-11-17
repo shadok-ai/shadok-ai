@@ -4753,7 +4753,7 @@
   import { shrinkToFit, nameReads, chanOverflowIds, chanOverflowItems } from "/bar-overflow.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
-  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
+  import { TOUR_STEPS, bubblePlacement, tourStanding, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
   import { EFFORT_CHOICES, effortLabel } from "/effort-choice.js?v=__ASSET_V__";
@@ -4846,6 +4846,7 @@
   window.bubblePlacement = bubblePlacement;
   window.unionRect = unionRect;
   window.visibleSteps = visibleSteps;
+  window.tourStanding = tourStanding;
   window.extractLiveText = extractLiveText;
   window.livePreviewDecision = livePreviewDecision;
   window.profileBlurb = profileBlurb;
@@ -5053,6 +5054,7 @@
     bubblePlacement: () => null,
     unionRect: () => null,
     visibleSteps: (steps) => steps ?? [],
+    tourStanding: () => ({ step: null, index: 0, total: 0 }),
     // The viewer is opened by a click, so the module is long since loaded —
     // but a stub is still the rule (invariant 10), and the honest one here
     // shows the table UNFILTERED rather than an empty panel that reads as
@@ -6645,6 +6647,10 @@
   // directory), so it survives a wiped browser, another device or a reboot.
   let channelPushTimer = null;
   let restoring = true; // suppress pushes until the initial restore is done
+  // Resolved once the boot restore has painted its tabs (or found none) — what
+  // the guided tour waits for before counting its steps.
+  let markBootSettled = () => {};
+  const bootSettled = new Promise((r) => { markBootSettled = r; });
   // Set once the server on this origin turns out to be a DIFFERENT instance than
   // the one this page was loaded from (its port was taken over after a stop).
   // From then on the tab must not write — it would only poison the new
@@ -17140,7 +17146,7 @@
     $("peerName").value = ""; $("peerBrief").value = "";
     renderPeers();
   });
-  loadMe();
+  const meReady = loadMe(); // the guided tour waits for it: the role decides its people step
 
   $("profilesBtn").addEventListener("click", () => openProfilesPanel());
   $("editProfilesLink").addEventListener("click", () => openProfilesPanel());
@@ -17309,8 +17315,11 @@
     else alert((await r.json()).error || "update failed");
   }
   // --- Guided tour --------------------------------------------------------
-  let tourSteps = [];
-  let tourAt = 0;
+  // The id of the step on screen, null before the first one. NOT an index into
+  // a list filtered at start: which steps exist is re-read from the page at
+  // every step (window.tourStanding), because the tour can start before the
+  // agents and the account have landed.
+  let tourId = null;
   let tourOnEnd = null;
 
   /** Every element a step points at, in DOM order. */
@@ -17327,14 +17336,15 @@
     });
   }
 
-  function paintTourStep() {
-    const step = tourSteps[tourAt];
+  function paintTourStep(advance = false) {
+    const { step, index, total } = window.tourStanding(window.TOUR_STEPS, tourId, tourVisible, advance);
     if (!step) return endTour();
+    tourId = step.id;
     const overlay = $("tourOverlay");
     $("tourTitle").textContent = step.title;
     $("tourBody").textContent = step.body;
-    $("tourCount").textContent = `${tourAt + 1}/${tourSteps.length}`;
-    $("tourNext").textContent = tourAt === tourSteps.length - 1 ? "Done" : "Next ›";
+    $("tourCount").textContent = `${index}/${total}`;
+    $("tourNext").textContent = index === total ? "Done" : "Next ›";
 
     if (step.target === null) {
       overlay.classList.remove("spotlight");
@@ -17348,7 +17358,7 @@
     const box = window.unionRect(rects);
     // The step was filtered in because it was visible; if it vanished since
     // (a closed tab), skip forward rather than frame nothing.
-    if (!box) { tourAt++; return paintTourStep(); }
+    if (!box) return paintTourStep(true);
     overlay.classList.add("spotlight");
     const pad = 6;
     Object.assign($("tourHole").style, {
@@ -17371,12 +17381,17 @@
   function startTour(onEnd) {
     // window.visibleSteps comes from the ESM bridge, which runs AFTER this
     // classic script — so this must never be called at parse time (invariant 10).
-    tourSteps = window.visibleSteps(window.TOUR_STEPS, tourVisible);
-    if (!tourSteps.length) { onEnd?.(); return; }
+    tourId = null;
+    // Nothing to show (or the bridge never landed): hand over WITHOUT marking
+    // the tour as seen — endTour would, and the person never saw it.
+    if (!window.tourStanding(window.TOUR_STEPS, null, tourVisible).step) { onEnd?.(); return; }
     tourOnEnd = onEnd ?? null;
-    tourAt = 0;
     $("tourOverlay").hidden = false;
     paintTourStep();
+    // One repaint a moment later: something that lands just after the first
+    // paint (the groups column is drawn a frame behind the tabs) should not
+    // leave the welcome card on a count the next step contradicts.
+    setTimeout(() => { if (!$("tourOverlay").hidden) paintTourStep(); }, 1200);
   }
 
   function endTour() {
@@ -17388,7 +17403,7 @@
     done?.();
   }
 
-  $("tourNext").addEventListener("click", () => { tourAt++; paintTourStep(); });
+  $("tourNext").addEventListener("click", () => paintTourStep(true));
   $("tourSkip").addEventListener("click", endTour);
   // A click on the overlay itself — including through the hole, which has
   // pointer-events: none — ends it. Nobody is trapped in a tutorial.
@@ -17417,6 +17432,16 @@
     // gives up after 3s and leaves the cache in charge).
     await prefsReady;
     if (cachedPref("tourSeen") === true) { checkAuth(); return; }
+    // And for the page itself: the agents (boot restore) and the account
+    // (loadMe) decide which steps have a target. Started before them, the
+    // welcome card read "1/5" on a cockpit whose tour has eleven stops. Each
+    // step re-reads the page anyway, so this only makes the FIRST count right
+    // — hence bounded: a slow server delays the tour by 4s at most, never
+    // holds it.
+    await Promise.race([
+      Promise.all([bootSettled, meReady]).catch(() => {}),
+      new Promise((r) => setTimeout(r, 4000)),
+    ]);
     startTour(() => checkAuth());
   }
 
@@ -18490,6 +18515,10 @@
     // Only now: `syncChannels` is a no-op while `restoring`, so kicking the loop
     // off any earlier would leave the first EFFECTIVE pass a full period away —
     // which is the four-second blank this whole change is about.
+    // The tabs are painted (or there are none): the guided tour may count its
+    // steps. A restore that threw never gets here — the tour's own 4s bound is
+    // what releases it then.
+    markBootSettled();
     if (!followAgentHash()) followDeepLink();
     syncLoop();
   })();

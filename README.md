@@ -597,6 +597,9 @@ Enter to skip; you can add it later from the web UI).
   isn't on screen is **dropped rather than faked** — an empty cockpit has no
   agent menu, a cockpit with no group has no groups column, a member has no
   Reports button — so it gets a shorter tour instead of a spotlight on nothing.
+  Which steps exist is **re-read from the page at every step**, and the first
+  count waits (4s at most) for the agents and the account to load — a tour that
+  filtered its list once, at start, played five stops on a cockpit that has eleven.
   The bubble sits below its target, above it, or **beside** it when the target
   is a full-height column, so it never covers what it describes. The
   **phone gets the whole tour**, because a step can name the landmark on either
