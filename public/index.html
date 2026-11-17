@@ -3350,14 +3350,39 @@
      the rail, the agents column and the engine room, so a wide window can still
      hold a narrow composer. */
   #composer { container: composer / inline-size; }
+  /* The "+" and its menu exist only for the narrow composer below. */
+  #cmpPlus, .cmp-plus-menu { display: none; }
+  #sendBtn .send-ico { display: none; }
   @container composer (max-width: 560px) {
+    /* ONE row on a phone: + · field · mic · ↑. It used to be two (the field on
+       its own row, five buttons beneath), which spent a whole extra row of a
+       small screen on buttons. Folding the paperclip and the skill button behind
+       "+" and reducing Send to an arrow leaves the field ~220px at 390px — the
+       old one-row layout had ~110px, which is why it was split. */
+    #composer { gap: 6px; align-items: flex-end; }
     #composer .cmp-mic-msg { order: -3; }
     #composer .cmp-atts { order: -2; }
-    #composer textarea { order: -1; flex-basis: 100%; }
-    #composer .cmp-mic { margin-left: auto; }
-    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 38px; }
-    #composer .cmp-attach { width: 38px; }
+    #composer #attachBtn, #composer #skillBtn { display: none; }
+    #composer #cmpPlus { display: inline-flex; }
+    #composer .cmp-plus-menu:not([hidden]) { display: flex; }
+    #composer .cmp-attach, #composer .cmp-mic, #composer #sendBtn { height: 42px; }
+    #composer .cmp-attach { width: 42px; }
+    #composer .cmp-mic { border-radius: 21px; }  /* round like + and ↑; a pill while the timer shows */
+    #composer #sendBtn { width: 42px; min-width: 42px; padding: 0; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; align-self: flex-end; }
+    #composer #sendBtn .send-txt { display: none; }
+    #composer #sendBtn .send-ico { display: block; }
   }
+  .cmp-plus-menu {
+    position: absolute; left: 12px; bottom: 100%; z-index: 30; margin-bottom: 6px;
+    flex-direction: column; gap: 2px; padding: 4px; min-width: 190px;
+    background: var(--bg-raised); border-radius: 14px;
+    box-shadow: 0 22px 50px -18px rgba(0, 0, 0, .6), 0 0 0 1px var(--line);
+  }
+  .cmp-plus-menu button { text-align: left; border: 0; background: transparent; color: var(--text); padding: 10px 12px; border-radius: 10px; font: inherit; font-size: 15px; }
+  .cmp-plus-menu button:hover:not(:disabled) { background: var(--amber-soft); }
+  .cmp-plus-menu button:disabled { opacity: 0.45; }
+  /* A room has no skills: the skill button is hidden there, so is its twin. */
+  body.room-active #cmpPlusSkill { display: none; }
 
   /* Floating menus: lifted, not outlined. */
   #moreMenu, #tabMenu, #verMenu, .slash-menu {
@@ -4568,6 +4593,16 @@
       <div id="composerAtts" class="cmp-atts" hidden></div>
       <!-- Transient status for the dictate button (permission, nothing heard…). -->
       <div id="micMsg" class="cmp-mic-msg" role="status" aria-live="polite" hidden></div>
+      <!-- A narrow composer (a phone) keeps ONE row: the paperclip and the skill
+           button fold behind this "+", which opens a two-item menu that clicks
+           the real buttons (so their handlers and disabled state still apply). -->
+      <button type="button" id="cmpPlus" class="cmp-attach" title="Attach a file or add a skill" aria-label="More" aria-haspopup="true" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div id="cmpPlusMenu" class="cmp-plus-menu" role="menu" hidden>
+        <button type="button" role="menuitem" data-for="attachBtn">📎 Attach a file</button>
+        <button type="button" role="menuitem" data-for="skillBtn" id="cmpPlusSkill">✨ Add a skill</button>
+      </div>
       <!-- Pick a file to send: the same path as a paste or a drop (attachFile). -->
       <button type="button" id="attachBtn" class="cmp-attach" title="Attach a file" aria-label="Attach a file">
         <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M21 11.5l-8.6 8.6a5.5 5.5 0 0 1-7.8-7.8l8.6-8.6a3.7 3.7 0 0 1 5.2 5.2l-8.6 8.6a1.8 1.8 0 0 1-2.6-2.6l7.9-7.9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -4588,7 +4623,7 @@
         <svg class="mic-rec" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>
         <span class="mic-time" aria-hidden="true"></span>
       </button>
-      <button type="submit" class="primary" id="sendBtn">Send</button>
+      <button type="submit" class="primary" id="sendBtn" aria-label="Send"><span class="send-txt">Send</span><svg class="send-ico" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
     </form>
 
     <!-- Interactive terminal, per channel, filling the main area (toggled by ⌨️
@@ -12776,6 +12811,27 @@
       composer.requestSubmit();
     }
   });
+  // The phone "+": opens Attach / Add a skill, each clicking the real button.
+  // Disabled mirrors the real button at open time (no agent, upload running…).
+  {
+    const plus = $("cmpPlus"), menu = $("cmpPlusMenu");
+    const close = () => { menu.hidden = true; plus.setAttribute("aria-expanded", "false"); };
+    plus.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!menu.hidden) return close();
+      for (const b of menu.querySelectorAll("button[data-for]")) b.disabled = !!$(b.dataset.for)?.disabled;
+      menu.hidden = false;
+      plus.setAttribute("aria-expanded", "true");
+    });
+    menu.addEventListener("click", (e) => {
+      const b = e.target.closest("button[data-for]");
+      if (!b || b.disabled) return;
+      e.stopPropagation(); // the skill menu opens on this click: don't let the document close it
+      close();
+      $(b.dataset.for)?.click();
+    });
+    document.addEventListener("click", (e) => { if (!menu.hidden && !menu.contains(e.target)) close(); });
+  }
   function autosizePrompt() {
     promptInput.style.height = "auto";
     promptInput.style.height = Math.min(promptInput.scrollHeight, 160) + "px";
