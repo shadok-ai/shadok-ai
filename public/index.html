@@ -7180,11 +7180,14 @@
     };
     paintCaret();
     head.addEventListener("click", (e) => {
-      if (e.target === gclose) return closeGroupGesture(group);
-      if (e.target === gicon) { e.stopPropagation(); return openIconPicker(group, gicon); }
-      if (e.target === gadd) { e.stopPropagation(); return openSetup(group.id); }
-      if (e.target === gkey) { e.stopPropagation(); return openSecretsPanel(group.id); }
-      if (e.target === ggear) { e.stopPropagation(); return openGroupPanel(group.id); }
+      // `contains`, not `===`: the icon, key and gear are drawn as SVG, so a
+      // click usually lands on a <path> inside them.
+      const on = (n) => n.contains(e.target);
+      if (on(gclose)) return closeGroupGesture(group);
+      if (on(gicon)) { e.stopPropagation(); return openIconPicker(group, gicon); }
+      if (on(gadd)) { e.stopPropagation(); return openSetup(group.id); }
+      if (on(gkey)) { e.stopPropagation(); return openSecretsPanel(group.id); }
+      if (on(ggear)) { e.stopPropagation(); return openGroupPanel(group.id); }
       el.classList.toggle("collapsed");
       paintCaret();
       persistGroups();
@@ -16393,13 +16396,13 @@
       // (PUT /profiles), so its name is not trusted data.
       const strong = document.createElement("b");
       strong.textContent = p.name;
-      // SYMMETRIC access badge (🔒 read-only / ✏️ full access) + explanation on
+      // SYMMETRIC access badge (padlock read-only / pencil full access) + explanation on
       // hover — same source as the New agent cards (profileBadges, tested), so an
       // unrestricted profile is no longer "icon-less" (the padlock ambiguity).
       const access = (window.profileBadges ? window.profileBadges(p) : [])[0];
       const guard = document.createElement("span");
       if (access && access.icon) {
-        guard.textContent = " " + access.icon;
+        guard.append(" ", LineIcons.el(access.icon, 11));
         guard.title = access.label + " — " + access.title;
       }
       const pmeta = document.createElement("div");
