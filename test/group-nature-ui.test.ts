@@ -143,7 +143,7 @@ test("member list + add/remove exist only in the restricted branch", () => {
 
 test("private shows a sealed only-you state with no add control", () => {
   const s = groupPanelScript();
-  assert.match(s, /🔒/);
+  assert.match(s, /LineIcons\.el\("lock"/);
   assert.match(s, /Only you — this space is sealed/);
 });
 

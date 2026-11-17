@@ -5,7 +5,7 @@ import fs from "node:fs";
 const HTML = fs.readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
 
 test("a version-menu entry opens the instance-context popin", () => {
-  assert.match(HTML, /<button class="vm-btn" id="instanceContextBtn" type="button">/);
+  assert.match(HTML, /<button class="vm-btn" id="instanceContextBtn" type="button"[^>]*>/);
   assert.match(HTML, /<div id="icOverlay" class="overlay" hidden>/);
   assert.match(HTML, /\$\("instanceContextBtn"\)\.addEventListener\("click"/);
 });

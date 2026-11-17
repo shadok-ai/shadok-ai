@@ -134,7 +134,7 @@ const mt = (connect: Record<string, unknown>, extra: Record<string, unknown> = {
 test("agentCredentialRows: a root signed out does not hide the agents' re-login", () => {
   const r = agentCredentialRows(mt({}, { longLived: true }), true, NOW)!;
   assert.equal(r.account, "agents · long-lived token");
-  assert.equal(r.relogin, "↻ Re-login to Claude");
+  assert.equal(r.relogin, "Re-login to Claude");
   assert.equal(r.replaceToken, true);
 });
 
@@ -148,7 +148,7 @@ test("agentCredentialRows: a login-mode space shows its expiry and tone", () => 
 });
 
 test("agentCredentialRows: not connected offers Connect; unknown offers nothing", () => {
-  assert.equal(agentCredentialRows(mt({ state: "no" }), true, NOW)!.relogin, "🔌 Connect Claude…");
+  assert.equal(agentCredentialRows(mt({ state: "no" }), true, NOW)!.relogin, "Connect Claude…");
   assert.equal(agentCredentialRows(mt({ state: "unknown" }), true, NOW)!.relogin, null);
 });
 

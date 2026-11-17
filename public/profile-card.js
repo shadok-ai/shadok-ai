@@ -41,19 +41,19 @@ function access(deny, gitBlocked, files) {
   if (!deny.length)
     return {
       label: "full access",
-      icon: "✏️",
+      icon: "rename",
       title: "Can change and commit the code — no permission guardrail on this profile.",
     };
   if (files === "all")
     return gitBlocked
       ? {
           label: "read-only",
-          icon: "🔒",
+          icon: "lock",
           title: "Cannot edit files and cannot commit. This profile runs, reads and reports — it changes nothing.",
         }
       : {
           label: "no file writes",
-          icon: "🔒",
+          icon: "lock",
           title: "Cannot create or edit any file. It can still run commands and commit what it did not write.",
         };
   // Only some directories are out of reach: the agent still writes its
@@ -62,20 +62,20 @@ function access(deny, gitBlocked, files) {
     return gitBlocked
       ? {
           label: "no source edits",
-          icon: "🧪",
+          icon: "flask",
           title:
             "Writes its deliverable outside the directories its guardrails protect — it cannot edit the source, and git writes are blocked, so a human commits.",
         }
       : {
           label: "no source edits",
-          icon: "🧪",
+          icon: "flask",
           title:
             "Can run commands and commit, but cannot create or edit files in the directories its guardrails protect. Its deliverable lives beside the code, not in it.",
         };
   if (gitBlocked)
     return {
       label: "read-only",
-      icon: "🔒",
+      icon: "lock",
       title:
         "Git writes blocked (commit / push / merge…). This profile reads and diagnoses, it does not change the code.",
     };
@@ -84,7 +84,7 @@ function access(deny, gitBlocked, files) {
   // naming a restriction we did not read would be the other one.
   return {
     label: "guarded",
-    icon: "🔒",
+    icon: "lock",
     title: "This profile carries custom permission guardrails — read its deny list for what it cannot do.",
   };
 }
@@ -120,7 +120,7 @@ export function profileBadges(profile) {
   if (n)
     out.push({
       label: n + " secret" + (n > 1 ? "s" : ""),
-      icon: "🔑",
+      icon: "key",
       title: "Vault secret(s) injected as environment variables when the agent starts.",
     });
   return out;
