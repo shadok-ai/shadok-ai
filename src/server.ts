@@ -38,7 +38,7 @@ import {
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
-import { backgroundTasks, screenShowsWork, moveToOption, boxText, SubmitError, IdleTimeoutError, keepWaitingAfterTimeout, idleTimeoutMessage } from "./detect.js";
+import { backgroundTasks, screenShowsWork, inputBoxVisible, moveToOption, boxText, SubmitError, IdleTimeoutError, keepWaitingAfterTimeout, idleTimeoutMessage } from "./detect.js";
 import {
   submitRecoveryVerdict,
   submitWithRecovery,
@@ -10848,14 +10848,14 @@ async function attachPilot(s: Live): Promise<void> {
   // restarts, and turns can run for many minutes) must not block on idle —
   // the screen watcher above signals the running turn right after `settled`.
   const isUp = (scr: string) =>
-    /do you trust the files/i.test(scr) || screenShowsWork(scr) || scr.includes("❯");
+    /do you trust the files/i.test(scr) || screenShowsWork(scr) || inputBoxVisible(scr);
   let screen: string;
   try {
     screen = await pilot.waitFor(isUp, { timeoutMs: 60_000 });
     if (/do you trust the files/i.test(screen)) {
       pilot.press("enter");
       screen = await pilot.waitFor(
-        (scr) => screenShowsWork(scr) || scr.includes("❯"),
+        (scr) => screenShowsWork(scr) || inputBoxVisible(scr),
         { timeoutMs: 30_000 },
       );
     }
@@ -10881,7 +10881,7 @@ async function attachPilot(s: Live): Promise<void> {
     if (full && /resum|summary/i.test(rd!.question)) {
       await selectOption(pilot, full.n);
       await pilot
-        .waitFor((scr) => screenShowsWork(scr) || scr.includes("❯"), { timeoutMs: 30_000 })
+        .waitFor((scr) => screenShowsWork(scr) || inputBoxVisible(scr), { timeoutMs: 30_000 })
         .catch(() => {});
     }
   }

@@ -2469,3 +2469,10 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     does when the landmark scrolls away, and "nothing there" is the one answer
     it may not give by default — absence of the marker is not absence of the
     thing.
+    The same landmark guarded the DOOR. The session start registered an agent
+    once `screen.includes("❯")`, so a pane left with a scrolled box could not
+    be adopted: opening the agent timed out after a minute and "Reload agent",
+    which goes through the same wait, failed with it. The submit bug made the
+    state, and this made it impossible to leave from the cockpit.
+    `inputBoxVisible` is now the one answer to "is the box on screen", used by
+    all three waits.
