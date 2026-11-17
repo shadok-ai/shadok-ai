@@ -4,7 +4,7 @@
 
 <h3>Many Claude Codes. One cockpit. And it wrote itself.</h3>
 
-<p>Run <b>real</b> Claude Code sessions side by side, each in its own git worktree,
+<p>Run <b>real</b> Claude Code sessions side by side,
 on the Claude subscription you already pay for. When one of them has a question,
 you answer it with a click — in the browser, or from Telegram when you are not
 at the desk.</p>
@@ -22,7 +22,7 @@ at the desk.</p>
 </div>
 
 **It does not stop at one.** An agent can start other agents — each with its own
-worktree, branch and role — and it is told when one of its own finishes, blocks on
+branch and role — and it is told when one of its own finishes, blocks on
 a question, or dies. Nothing else wakes it.
 
 **It keeps working when you are not there.** Mirror an agent to a Telegram topic
@@ -37,7 +37,7 @@ windows, and can hold an agent back when it is burning faster than the window
 elapses.
 
 **It wrote itself.** shadok-ai is largely built by agents running inside shadok-ai,
-in their own worktrees, landed as reviewed pull requests. The section below is what
+in isolation, landed as reviewed pull requests. The section below is what
 that produced.
 
 ## Quick start
