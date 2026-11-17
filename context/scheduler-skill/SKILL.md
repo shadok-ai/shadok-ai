@@ -36,9 +36,14 @@ omit the check — the prompt runs every time.
 ### What a check can see — secrets and cwd
 
 A check does **not** run inside this agent's process. The server runs it with
-`sh -c`, in the CHANNEL's directory, with the secrets of the channel's
-**profile** injected as environment variables. On a multi-tenant instance it
+`sh -c`, in the CHANNEL's directory, with the vault secrets that resolve for
+this agent injected as environment variables. On a multi-tenant instance it
 runs as this agent's own OS user, exactly like the agent.
+
+A secret reaches it two ways, and they are stored in different places: the
+channel's **profile** lists it, OR the secret itself is bound to that profile —
+or to “any profile” — from the web Secrets panel. The second kind reaches a
+guard that has no profile at all, so never conclude "no profile, no secrets".
 
 Its environment is otherwise SMALL on purpose: `PATH`, the locale and time
 zone, proxy/CA settings, and `SHADOK_SESSION_ID` / `SHADOK_PORT` /
@@ -55,14 +60,33 @@ server answers 403. A check-less cron on a sibling is fine.
 So reference a secret by name (`$MY_API_KEY`) and trust it: never hardcode a
 value into a check script, and never try to source a shell profile to get one.
 
-The sharp edge is the other direction. A channel with **no profile**, or a
-profile that doesn't list that name, gets **nothing** — the variable is simply
-absent, and you find out at 6am rather than now. A name that isn't in the vault
-is skipped just as silently. Your own shell having the key proves nothing about
-the guard's.
+The sharp edge is the other direction. A name nothing binds to this agent is
+simply **absent** at run time — no error, and you find out at 6am rather than
+now. A name that isn't in the vault, or that lives in a group this agent cannot
+reach, is skipped just as silently. Your own shell having the key proves nothing
+about the guard's.
 
-`node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs env` prints exactly what a guard gets here. Run it before writing a
-check that needs a secret.
+So ask, before writing a check that needs a secret:
+
+```
+node ~/.claude/skills/shadok-scheduler/scripts/schedule.mjs env
+```
+
+It asks the server what it would inject and prints the variable NAMES (never a
+value): the secrets that resolve, the ones the profile asks for that do not, and
+the whole environment. Two things follow from it being the server's answer and
+not a guess:
+
+- **Trust it over your own shell, and over this file.** It reads both halves of
+  the secret↔profile link, which no client can.
+- **Nothing in it waits for a reload.** The server re-reads the profiles and the
+  vault at every tick, so a secret attached a minute ago is already there. A
+  *Reload agent* changes only **your** process environment, not the guard's.
+
+And if a guard still behaves as though a variable were missing, test the guard
+itself — a one-minute schedule whose check is
+`[ -n "$MY_KEY" ] && echo present` costs one wake-up and settles it. Printing a
+presence test is fine; printing the value is not.
 
 ## Commands
 

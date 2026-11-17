@@ -1679,7 +1679,7 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/channels/glance` (GET — each visible row's last-message time and context %,
 read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
-register per group, filtered like `/groups`), `/crons` (+ POST `/crons/:id/run` — fire a schedule now, its next slot unchanged), `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
+register per group, filtered like `/groups`), `/crons` (+ POST `/crons/:id/run` — fire a schedule now, its next slot unchanged; GET `/crons/env?session=<id>` — the variable NAMES a guard for that session would receive, values never included, so an agent can check its own guard before trusting it), `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent

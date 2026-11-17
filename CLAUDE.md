@@ -319,7 +319,9 @@ The full message + endpoint reference — every field, every refusal `code`, the
 **HTTP** (everything but `/login` sits behind the optional password gate):
 
 - usage/sessions: `/usage`, `/live`, `/sessions`, `/recover`, `/diff`
-- schedules: `/crons` (+ `/crons/:id/run` — fire now), `/timezone`
+- schedules: `/crons` (+ `/crons/:id/run` — fire now, `/crons/env` — the variable
+  NAMES a guard for that session would get, built by the same `cronGuardEnv` the
+  tick uses), `/timezone`
 - rooms (people only, src/rooms.ts): `/rooms` (GET/POST), `/rooms/:id` (PATCH), `/rooms/:id/{archive,read}` (POST), `/rooms/:id/messages` (GET); `/paste` takes `x-shadok-room`
 - per-dir cockpit: `/channels` (+ `/glance`), `/groups`, `/agent-folders`, `/defaults`, `/first-agent`, `/title`, `/theme`, `/mute`
 - push (src/webpush.ts): `/push` (GET — public key + own devices), `/push/{subscribe,unsubscribe,test}` (POST, browser person only); `/manifest.webmanifest` (per-instance name); `/icons/*` is served BEFORE the gate

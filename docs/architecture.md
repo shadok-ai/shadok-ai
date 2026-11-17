@@ -1658,13 +1658,40 @@ It is pure and total: an empty prefix and an ambiguous prefix are both
 `{ok:true}` used to mean "deleted" while deleting nothing, and a bare
 `/cron del` wiped whichever cron came first (invariant #17).
 
-Surfaces: `GET`/`POST`/`DELETE /crons`, `POST /crons/:id/run` (fire it now — the
+Surfaces: `GET`/`POST`/`DELETE /crons`, `GET /crons/env` (what a guard for a
+session would receive — see "Answering *what will my guard see?*" below),
+`POST /crons/:id/run` (fire it now — the
 Schedule popin's **Run now**: same `fireCron`, guard included, but it leaves `nextRun`
 and the retry state alone and only records `lastRun`/`lastOutcome`; refused 409 while
 that cron is already in flight, same ACL as editing it), the `⏰` on a channel tab (fed by the
 **derived** `crons` field that `GET /channels` computes and never stores — see
 invariant #6), Telegram's `/cron every 30m …` / `daily HH:MM …` / `list` / `on` /
 `off` / `del`, and the `shadok-scheduler` skill.
+
+### Answering *what will my guard see?*
+
+A guard's environment is built in exactly one place, `cronGuardEnv(sessionId,
+target)`: the allow-listed slice of the server env (`CHECK_ENV_ALLOW`,
+`src/group-exec.ts`), the secrets `secretsForProfile` resolves for the agent's
+REAL group, the session plumbing, and — only when dropping — the server's `gh`
+token. `runCronCheck` calls it, and so does `GET /crons/env`, which returns the
+same thing with the values stripped: resolved secret names, the names the
+profile asks for that do NOT resolve, and every variable name in the
+environment.
+
+The route exists because the question is not answerable client-side, and the
+scheduler skill's attempt to answer it anyway was wrong in the direction that
+costs most — it reported working setups as broken. Two reasons, both structural:
+the secret↔profile link has two writable homes and `GET /secrets` withholds the
+vault side from an agent for commons secrets (invariant #73), and resolvability
+depends on the agent's group, which a caller cannot derive from the names it can
+see. A source-scan test (`test/route-guards.test.ts`) pins that `runCronCheck`
+no longer builds an env of its own, because two derivations of this answer is
+precisely the bug.
+
+Nothing here waits for a reload: `cronGuardEnv` reads `profiles.json` and the
+vault on every call, so an attachment made now is in the next tick. A *reload*
+only refreshes the agent's own process env, which is injected at spawn.
 
 **A schedule does not outlive its channel.** Closing an agent (`endChannel`)
 deletes the schedules and webhooks that target it — `forgetChannelTriggers`,
