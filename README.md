@@ -573,7 +573,8 @@ Enter to skip; you can add it later from the web UI).
   own bar and, when the keyboard opens, sits right above it (the instrument bar
   folds away while you type). Fields are 16px, which is what stops Safari from
   zooming in on focus. The agents column is replaced by a channel selector in
-  the channel bar.
+  the channel bar. The composer keeps one row: **+** (attach a file, add a
+  skill) · the field · the mic · **↑** to send.
 - **Tweak Shadok-AI** — a card pinned at the bottom of the agents column, with the running version in grey beside its title (the code a tweak starts from). One
   click clones shadok-ai's own source into `~/.shadok-ai/self/shadok-ai` and
   starts an agent on it in its own worktree; that agent delivers its change as a
