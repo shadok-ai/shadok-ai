@@ -130,32 +130,81 @@ test("the diff fallback includes untracked files", async () => {
   }
 });
 
-test("stop with no live holder cleans the state without reattaching", async () => {
-  const mock = await startMockServer();
+// `stop` used to go through the local holder: with the holder gone (always, once
+// a `prompt` over a peer link returned) it sent nothing and only cleared local
+// state, so peers piled up finished agents. It now sends `stop` by id on a bare
+// socket — no `start`, nothing resumed — and trusts only the server's answer.
+test("stop with no live holder still stops the agent, by id, without resuming it", async () => {
+  const mock = await startMockServer({ stop: [{ type: "stop-result", sessionId: "dead", ok: true }] });
   process.env.SHADOK_PORT = String(mock.port);
   writeState("dead", { sessionId: "dead", cwd: "/tmp/x", holderPid: 999999 });
   try {
     const r = await run(["stop", "dead"]);
-    assert.equal(r.stopped, false);
+    assert.equal(r.stopped, true);
     assert.equal(readState("dead"), null);
-    assert.equal(mock.received.length, 0); // no start sent
+    assert.deepEqual(mock.received.map((m) => m.type), ["stop"]); // no start → no resume
+    assert.equal(mock.received[0].sessionId, "dead");
   } finally {
     await mock.close();
   }
 });
 
-test("stop with a live session sends stop and cleans up", async () => {
-  const mock = await startMockServer({
-    start: [{ type: "ready", sessionId: "abc", cwd: "/tmp/x" }],
-    stop: [{ type: "stopped" }],
-  });
-  process.env.SHADOK_PORT = String(mock.port);
-  // the test process' pid: alive, simulates an active holder
-  writeState("abc", { sessionId: "abc", cwd: "/tmp/x", holderPid: process.pid });
+test("stop over a peer link needs no local state and sends the stop to the peer", async () => {
+  const mock = await startMockServer({ stop: [{ type: "stop-result", sessionId: "w1", ok: true }] });
   try {
-    const r = await run(["stop", "abc"]);
+    const r = await run(["stop", "w1", "--peer-url", `http://127.0.0.1:${mock.port}`, "--peer-token", "T"]);
     assert.equal(r.stopped, true);
-    assert.equal(readState("abc"), null);
+    assert.deepEqual(mock.received.map((m) => m.type), ["stop"]);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("a refused stop keeps the local state and says why", async () => {
+  const mock = await startMockServer({ stop: [{ type: "error", message: "a restricted peer may only stop its own agents", code: "peer-scope" }] });
+  process.env.SHADOK_PORT = String(mock.port);
+  writeState("theirs", { sessionId: "theirs", cwd: "/tmp/x", holderPid: null });
+  try {
+    const r = await run(["stop", "theirs"]);
+    assert.equal(r.stopped, false);
+    assert.equal(r.code, "peer-scope");
+    assert.ok(readState("theirs"));
+  } finally {
+    await mock.close();
+  }
+});
+
+test("a local agent pilotctl never drove needs --force", async () => {
+  const mock = await startMockServer({ stop: [{ type: "stop-result", sessionId: "ui-1", ok: true }] });
+  process.env.SHADOK_PORT = String(mock.port);
+  try {
+    const r = await run(["stop", "ui-1"]);
+    assert.equal(r.stopped, false);
+    assert.match(r.note, /--force/);
+    assert.equal(mock.received.length, 0);
+    assert.equal((await run(["stop", "ui-1", "--force"])).stopped, true);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("reap over a restricted peer closes its idle leftovers, never a busy or watched one", async () => {
+  const mock = await startMockServer({
+    live: [
+      { id: "done", busy: false, clients: 0, idleSec: 4000 },
+      { id: "dormant", busy: false, clients: 0, idleSec: -1, running: false },
+      { id: "working", busy: true, clients: 0, idleSec: 9000 },
+      { id: "watched", busy: false, clients: 1, idleSec: 9000 },
+      { id: "fresh", busy: false, clients: 0, idleSec: 60 },
+    ],
+    liveHeaders: { "x-shadok-peer-scope": "restricted" },
+    stop: [{ type: "stop-result", sessionId: "done", ok: true }],
+  });
+  try {
+    const url = `http://127.0.0.1:${mock.port}`;
+    const dry = await run(["reap", "--peer-url", url, "--peer-token", "T", "--dry-run"]);
+    assert.deepEqual(dry.wouldStop, ["done", "dormant"]);
+    assert.equal(mock.received.length, 0);
   } finally {
     await mock.close();
   }
@@ -178,18 +227,3 @@ test("screen returns the last screen received", async () => {
   }
 });
 
-test("stop with a live holder but a dead session cleans up and reports stopped:false", async () => {
-  const mock = await startMockServer({
-    start: [{ type: "error", message: "no session" }],
-  });
-  process.env.SHADOK_PORT = String(mock.port);
-  writeState("zombie", { sessionId: "zombie", cwd: "/tmp/x", holderPid: process.pid });
-  try {
-    const r = await run(["stop", "zombie"]);
-    assert.equal(r.stopped, false);
-    assert.match(r.note, /not reattachable/);
-    assert.equal(readState("zombie"), null);
-  } finally {
-    await mock.close();
-  }
-});

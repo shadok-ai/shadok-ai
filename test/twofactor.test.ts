@@ -39,14 +39,14 @@ const member = (name: string, keys = 0): Account => ({ ...admin(name, keys), rol
 // ── The cookie's second-factor flag ─────────────────────────────────────────
 
 test("session: the mfa flag round-trips and defaults to off", () => {
-  assert.deepEqual(readSessionFull(signSession("alex", 1_000, SECRET, true), SECRET, 2_000, WEEK), { user: "alex", mfa: true, issuedAt: 1_000 });
-  assert.deepEqual(readSessionFull(signSession("alex", 1_000, SECRET), SECRET, 2_000, WEEK), { user: "alex", mfa: false, issuedAt: 1_000 });
+  assert.deepEqual(readSessionFull(signSession("alex", 1_000, SECRET, true), SECRET, 2_000, WEEK), { user: "alex", mfa: true, issuedAt: 1_000, since: 1_000 });
+  assert.deepEqual(readSessionFull(signSession("alex", 1_000, SECRET), SECRET, 2_000, WEEK), { user: "alex", mfa: false, issuedAt: 1_000, since: 1_000 });
 });
 
 test("session: a cookie issued before 2FA existed still reads — as NOT second-factor", () => {
   const body = `${Buffer.from("alex").toString("base64url")}.1000`;
   const old = `${body}.${createHmac("sha256", SECRET).update(body).digest("hex")}`;
-  assert.deepEqual(readSessionFull(old, SECRET, 2_000, WEEK), { user: "alex", mfa: false, issuedAt: 1000 });
+  assert.deepEqual(readSessionFull(old, SECRET, 2_000, WEEK), { user: "alex", mfa: false, issuedAt: 1000, since: 1000 });
   assert.equal(readSession(old, SECRET, 2_000, WEEK), "alex");
 });
 

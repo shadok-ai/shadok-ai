@@ -2392,6 +2392,14 @@
   /* Above the other popins: during the tour it is the thing being interacted
      with, and the sign-in card may already be on screen behind it. */
   #tourOverlay { z-index: 60; }
+  /* The tour's example scene (tourDemoOn). The rows borrow `.tab` for their
+     look and nothing else; the note stays on screen for the whole tour. */
+  #tourDemoList .tab { cursor: default; }
+  #tourDemoList .tab .lastat, #tourDemoChat .tour-demo-note { font-style: italic; }
+  #tourDemoChat .tour-demo-note {
+    align-self: center; margin: 4px 0 14px; padding: 6px 12px; border-radius: 999px;
+    font-size: 12px; color: var(--text-dim); background: var(--bg-inset); text-align: center;
+  }
   #tourBubble {
     max-width: 340px;
     background: var(--bg-raised);
@@ -2412,8 +2420,8 @@
     position: fixed;
     border-radius: 10px;
     box-shadow: 0 0 0 9999px rgba(8, 9, 13, 0.72);
-    /* Clicks in the hole fall through to the overlay, which ends the tour —
-       the same "click outside" gesture as everywhere else. */
+    /* Clicks in the hole fall through to the overlay, which swallows them: the
+       tour ends on Skip, Done or Escape, never on a click that missed. */
     pointer-events: none;
     transition: top .18s ease, left .18s ease, width .18s ease, height .18s ease;
   }
@@ -3597,7 +3605,7 @@
       <div class="mm-sep" id="whoSep" hidden></div>
       <button id="toggleDiff">Diff</button>
       <button id="instanceStatsBtn"><svg class="side-ico" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 19v-6M12 19V6M18 19v-9"/></svg>Instance stats</button>
-      <button id="tourReplay">Guided tour</button>
+      <button id="tourReplay">Replay the guided tour</button>
       <!-- On a phone the header star pill is dropped (it's the widest tool, and
            pushed the icons off the row); it reappears here instead. -->
       <button id="starMenuItem">★ Star on GitHub</button>
@@ -4785,7 +4793,7 @@
   import { shrinkToFit, nameReads, chanOverflowIds, chanOverflowItems } from "/bar-overflow.js?v=__ASSET_V__";
   import { echoAuthor, isOwnPrompt } from "/echo-author.js?v=__ASSET_V__";
   import { dialPos, dialColor, dialTitle } from "/gauge-dial.js?v=__ASSET_V__";
-  import { TOUR_STEPS, bubblePlacement, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
+  import { TOUR_DEMO, TOUR_STEPS, bubblePlacement, tourNeedsDemo, tourStanding, unionRect, visibleSteps } from "/tour-steps.js?v=__ASSET_V__";
   import { pickChannelSource, dirKey, serverSwapped } from "/channel-store.js?v=__ASSET_V__";
   import { MODEL_CHOICES, composeModel } from "/model-choice.js?v=__ASSET_V__";
   import { EFFORT_CHOICES, effortLabel } from "/effort-choice.js?v=__ASSET_V__";
@@ -4878,6 +4886,9 @@
   window.bubblePlacement = bubblePlacement;
   window.unionRect = unionRect;
   window.visibleSteps = visibleSteps;
+  window.tourStanding = tourStanding;
+  window.TOUR_DEMO = TOUR_DEMO;
+  window.tourNeedsDemo = tourNeedsDemo;
   window.extractLiveText = extractLiveText;
   window.livePreviewDecision = livePreviewDecision;
   window.profileBlurb = profileBlurb;
@@ -5085,6 +5096,9 @@
     bubblePlacement: () => null,
     unionRect: () => null,
     visibleSteps: (steps) => steps ?? [],
+    tourStanding: () => ({ step: null, index: 0, total: 0 }),
+    // No bridge, no set: an example scene must never be staged on a guess.
+    tourNeedsDemo: () => false,
     // The viewer is opened by a click, so the module is long since loaded —
     // but a stub is still the rule (invariant 10), and the honest one here
     // shows the table UNFILTERED rather than an empty panel that reads as
@@ -5354,6 +5368,11 @@
   // One channel = one WebSocket connection = one claude session server-side
   // (sessions are shared: several clients can attach to the same id).
   let tabs = [];
+  // True while the guided tour stages its example scene (tourDemoOn, far
+  // below). Declared HERE because applyView / renderRail / refreshChrome read
+  // it from the first paint on: beside its functions it would still be in its
+  // temporal dead zone, and the boot would throw.
+  let tourDemo = false;
   let active = null;
   let seq = 0;
   // The server's launch directory — the sensible default for new channels.
@@ -6694,6 +6713,10 @@
   // directory), so it survives a wiped browser, another device or a reboot.
   let channelPushTimer = null;
   let restoring = true; // suppress pushes until the initial restore is done
+  // Resolved once the boot restore has painted its tabs (or found none) — what
+  // the guided tour waits for before counting its steps.
+  let markBootSettled = () => {};
+  const bootSettled = new Promise((r) => { markBootSettled = r; });
   // Set once the server on this origin turns out to be a DIFFERENT instance than
   // the one this page was loaded from (its port was taken over after a stop).
   // From then on the tab must not write — it would only poison the new
@@ -7477,7 +7500,7 @@
   function applyView() {
     const v = currentView();
     // No group → no column (invariant: the rail earns its space, see the CSS).
-    document.body.classList.toggle("has-groups", groups.length > 0);
+    document.body.classList.toggle("has-groups", groups.length > 0 || tourDemo);
     tabbar.dataset.view = v;
     layoutFolders();
     for (const g of groups) {
@@ -7711,6 +7734,11 @@
       { view: "ungrouped", icon: "📥", name: "Main" },
       ...[...groupsEl.children].map((el) =>
         ({ view: String(el._group.id), icon: el._group.icon, name: el._group.nameEl.textContent, group: el._group })),
+      // The guided tour's set (tourDemoOn): example groups, only when there is
+      // none of your own. No `group` behind them, so nothing to rename or drag.
+      ...(tourDemo && !groupsEl.children.length
+        ? window.TOUR_DEMO.groups.map((g, i) => ({ view: "tour-demo-" + i, icon: g.icon, name: g.name }))
+        : []),
     ];
     // The column mutates all the time (LEDs, timers, reconnects): rebuild only
     // when what the rail SHOWS changed, or every click would land on an item
@@ -8765,6 +8793,15 @@
   function rebuildChanSelect() {
     const led = $("pickerLed"), name = $("pickerName");
     if (!led || !name) return;
+    // The guided tour's set stands in for the agent that is not there yet.
+    // Here, not only in paintTourDemoChrome: this function has other callers,
+    // and each one wrote the "—" back over the example's name.
+    if (tourDemo && !active) {
+      const lead = window.TOUR_DEMO.agents.find((a) => a.active) || window.TOUR_DEMO.agents[0];
+      led.className = "led on";
+      name.textContent = lead.name;
+      return;
+    }
     led.className = active && active.ledEl ? active.ledEl.className : "led";
     name.textContent = active ? (active.nameEl ? active.nameEl.textContent : "agent " + active.id) : "—";
   }
@@ -8796,6 +8833,11 @@
   function refreshChrome() {
     rebuildChanSelect();   // keeps the mobile selector in step (list + active)
     const t = active;
+    // The guided tour's set: a real agent on screen strikes it; with none, the
+    // set IS the chrome, and this function must not paint "no agent" over it
+    // (the first-agent poll calls it every few seconds).
+    if (tourDemo && t) tourDemoOff({ repaint: false });
+    if (tourDemo) { paintTourDemoChrome(); return; }
     if (!t) {
       document.body.classList.remove("room-active");
       $("led").className = "led ";
@@ -17196,7 +17238,7 @@
     $("peerName").value = ""; $("peerBrief").value = "";
     renderPeers();
   });
-  loadMe();
+  const meReady = loadMe(); // the guided tour waits for it: the role decides its people step
 
   $("profilesBtn").addEventListener("click", () => openProfilesPanel());
   $("editProfilesLink").addEventListener("click", () => openProfilesPanel());
@@ -17366,8 +17408,95 @@
     else alert((await r.json()).error || "update failed");
   }
   // --- Guided tour --------------------------------------------------------
-  let tourSteps = [];
-  let tourAt = 0;
+  // The id of the step on screen, null before the first one. NOT an index into
+  // a list filtered at start: which steps exist is re-read from the page at
+  // every step (window.tourStanding), because the tour can start before the
+  // agents and the account have landed.
+  let tourId = null;
+
+  // ── The demo scene ──────────────────────────────────────────────────────
+  // What the tour stages when the cockpit holds no agent — see TOUR_DEMO in
+  // public/tour-steps.js for why. Three rules keep it harmless:
+  //  - it never goes through createTab: nothing here enters `tabs`, so it
+  //    cannot be persisted, resumed or counted (persistChannels keeps only
+  //    rows carrying a `_tab` with a session id, and these rows live in their
+  //    own container, outside the scopes the column lays out);
+  //  - it is text only (textContent), opens no socket and wires no handler —
+  //    the tour's overlay sits above it, so it cannot be clicked anyway;
+  //  - it is struck by endTour, and by refreshChrome the moment a real agent
+  //    takes the screen.
+  function tourDemoEl(tag, cls, text) {
+    const el = document.createElement(tag);
+    if (cls) el.className = cls;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  function paintTourDemoChrome() {
+    const demo = window.TOUR_DEMO;
+    const lead = demo.agents.find((a) => a.active) || demo.agents[0];
+    $("emptyState").classList.remove("visible");
+    $("startingState").classList.remove("visible");
+    document.body.classList.remove("room-active");
+    $("chanBar").hidden = false;
+    $("chanBarName").textContent = lead.name;
+    $("chanBarName").title = "";
+    paintTabAvatar($("chanAvatar"), $("chanAvatar"), lead.name);
+    $("led").className = "led on";
+    $("state").textContent = demo.tag;
+    $("cwdView").textContent = "—";
+    $("sessionView").textContent = "—";
+    $("branchGauge").hidden = true;
+    // Shown at full strength: a dimmed button reads as "not for you".
+    for (const id of ["chanCron", "chanWebhooks", "chanGallery", "chanInfo"]) $(id).disabled = false;
+    composer.hidden = false;
+    promptInput.disabled = true;
+    // The bar just came out of hiding: on a phone its icons must give way to
+    // the name, exactly as for a real agent.
+    scheduleReflow();
+  }
+  function tourDemoOn() {
+    if (tourDemo) return;
+    const demo = window.TOUR_DEMO;
+    tourDemo = true;
+    document.body.classList.add("tour-demo");
+    const list = tourDemoEl("div");
+    list.id = "tourDemoList";
+    for (const a of demo.agents) {
+      const row = tourDemoEl("div", "tab" + (a.active ? " active" : "") + (a.working ? " working" : ""));
+      const avatar = tourDemoEl("span", "tav");
+      const initials = tourDemoEl("span");
+      avatar.append(initials, tourDemoEl("span", "led " + (a.working ? "busy" : "on")));
+      paintTabAvatar(avatar, initials, a.name);
+      const row1 = tourDemoEl("div", "tab-row1");
+      row1.append(tourDemoEl("span", "name", a.name));
+      const row2 = tourDemoEl("div", "tab-row2");
+      row2.append(tourDemoEl("span", "lastat", demo.tag));
+      row.append(avatar, row1, row2);
+      list.append(row);
+    }
+    ungroupedEl.before(list);
+    const chat = tourDemoEl("div", "transcript");
+    chat.id = "tourDemoChat";
+    chat.append(tourDemoEl("div", "tour-demo-note", demo.note));
+    for (const m of demo.chat) {
+      const turn = tourDemoEl("div", "turn " + m.role);
+      turn.append(tourDemoEl("span", "label", m.who), tourDemoEl("div", "bubble", m.text));
+      chat.append(turn);
+    }
+    transcripts.append(chat);
+    paintTourDemoChrome();
+    applyView(); // the rail: example groups, when there is none of your own
+  }
+  function tourDemoOff({ repaint = true } = {}) {
+    if (!tourDemo) return;
+    tourDemo = false;
+    document.body.classList.remove("tour-demo");
+    $("tourDemoList")?.remove();
+    $("tourDemoChat")?.remove();
+    promptInput.disabled = false;
+    if (repaint) refreshChrome();
+    applyView();
+  }
   let tourOnEnd = null;
 
   /** Every element a step points at, in DOM order. */
@@ -17384,14 +17513,15 @@
     });
   }
 
-  function paintTourStep() {
-    const step = tourSteps[tourAt];
+  function paintTourStep(advance = false) {
+    const { step, index, total } = window.tourStanding(window.TOUR_STEPS, tourId, tourVisible, advance);
     if (!step) return endTour();
+    tourId = step.id;
     const overlay = $("tourOverlay");
     $("tourTitle").textContent = step.title;
     $("tourBody").textContent = step.body;
-    $("tourCount").textContent = `${tourAt + 1}/${tourSteps.length}`;
-    $("tourNext").textContent = tourAt === tourSteps.length - 1 ? "Done" : "Next ›";
+    $("tourCount").textContent = `${index}/${total}`;
+    $("tourNext").textContent = index === total ? "Done" : "Next ›";
 
     if (step.target === null) {
       overlay.classList.remove("spotlight");
@@ -17405,7 +17535,7 @@
     const box = window.unionRect(rects);
     // The step was filtered in because it was visible; if it vanished since
     // (a closed tab), skip forward rather than frame nothing.
-    if (!box) { tourAt++; return paintTourStep(); }
+    if (!box) return paintTourStep(true);
     overlay.classList.add("spotlight");
     const pad = 6;
     Object.assign($("tourHole").style, {
@@ -17428,28 +17558,41 @@
   function startTour(onEnd) {
     // window.visibleSteps comes from the ESM bridge, which runs AFTER this
     // classic script — so this must never be called at parse time (invariant 10).
-    tourSteps = window.visibleSteps(window.TOUR_STEPS, tourVisible);
-    if (!tourSteps.length) { onEnd?.(); return; }
+    tourId = null;
+    // No agent and no room on screen: stage the example scene, so the steps
+    // about an agent have something to point at.
+    if (window.tourNeedsDemo(tabs.length)) tourDemoOn();
+    // Nothing to show (or the bridge never landed): hand over WITHOUT marking
+    // the tour as seen — endTour would, and the person never saw it.
+    if (!window.tourStanding(window.TOUR_STEPS, null, tourVisible).step) { tourDemoOff(); onEnd?.(); return; }
     tourOnEnd = onEnd ?? null;
-    tourAt = 0;
     $("tourOverlay").hidden = false;
     paintTourStep();
+    // One repaint a moment later: something that lands just after the first
+    // paint (the groups column is drawn a frame behind the tabs) should not
+    // leave the welcome card on a count the next step contradicts.
+    setTimeout(() => { if (!$("tourOverlay").hidden) paintTourStep(); }, 1200);
   }
 
   function endTour() {
     $("tourOverlay").hidden = true;
     $("tourOverlay").classList.remove("spotlight");
+    tourDemoOff();
     savePref("tourSeen", true);
     const done = tourOnEnd;
     tourOnEnd = null;
     done?.();
   }
 
-  $("tourNext").addEventListener("click", () => { tourAt++; paintTourStep(); });
+  $("tourNext").addEventListener("click", () => paintTourStep(true));
   $("tourSkip").addEventListener("click", endTour);
-  // A click on the overlay itself — including through the hole, which has
-  // pointer-events: none — ends it. Nobody is trapped in a tutorial.
-  $("tourOverlay").addEventListener("click", (e) => { if (e.target === $("tourOverlay")) endTour(); });
+  // A click beside the bubble does NOT end the tour. It used to ("the same
+  // click-outside gesture as everywhere else"), and that is the wrong gesture
+  // here: a popin is closed by someone who opened it, the tour is met by
+  // someone who did not ask for it and is reaching for a button behind the
+  // dim. One stray click threw the whole thing away, marked as seen. Leaving
+  // is a decision — Skip, Done, or Escape — and nobody is trapped: all three
+  // are always available, and ⋯ → "Replay the guided tour" brings it back.
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !$("tourOverlay").hidden) { endTour(); e.preventDefault(); }
   });
@@ -17474,6 +17617,16 @@
     // gives up after 3s and leaves the cache in charge).
     await prefsReady;
     if (cachedPref("tourSeen") === true) { checkAuth(); return; }
+    // And for the page itself: the agents (boot restore) and the account
+    // (loadMe) decide which steps have a target. Started before them, the
+    // welcome card read "1/5" on a cockpit whose tour has eleven stops. Each
+    // step re-reads the page anyway, so this only makes the FIRST count right
+    // — hence bounded: a slow server delays the tour by 4s at most, never
+    // holds it.
+    await Promise.race([
+      Promise.all([bootSettled, meReady]).catch(() => {}),
+      new Promise((r) => setTimeout(r, 4000)),
+    ]);
     startTour(() => checkAuth());
   }
 
@@ -18547,6 +18700,10 @@
     // Only now: `syncChannels` is a no-op while `restoring`, so kicking the loop
     // off any earlier would leave the first EFFECTIVE pass a full period away —
     // which is the four-second blank this whole change is about.
+    // The tabs are painted (or there are none): the guided tour may count its
+    // steps. A restore that threw never gets here — the tour's own 4s bound is
+    // what releases it then.
+    markBootSettled();
     if (!followAgentHash()) followDeepLink();
     syncLoop();
   })();

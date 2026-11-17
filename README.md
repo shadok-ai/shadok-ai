@@ -17,7 +17,7 @@ at the desk.</p>
 
 <p><code>npx shadok-ai</code></p>
 
-<a href="https://shadok.ai"><img width="720" alt="The cockpit: three agents running in parallel, one of them asking a multiple-choice question that is answered with a click, then the diff it wrote" src="https://shadok.ai/demo.gif"></a>
+<a href="https://shadok.ai"><img width="720" alt="The cockpit: three agents running in parallel, one of them asking a multiple-choice question that is answered with a click, then the diff it wrote" src="https://shadok.ai/demo.gif?v=4d87b75"></a>
 
 </div>
 
@@ -39,6 +39,23 @@ elapses.
 **It wrote itself.** shadok-ai is largely built by agents running inside shadok-ai,
 in isolation, landed as reviewed pull requests. The section below is what
 that produced.
+
+<div align="center">
+
+<table>
+<tr>
+<td width="420"><a href="https://shadok.ai"><img alt="The cockpit: real claude sessions grouped by team, one open with its transcript" src="https://shadok.ai/shots/cockpit-teams.webp"></a><br><sub><b>One cockpit.</b> Real <code>claude</code> sessions, grouped by team.</sub></td>
+<td width="420"><a href="https://shadok.ai"><img alt="The schedule panel: a prompt on a timer with a guard that runs without the model" src="https://shadok.ai/shots/panel-schedule.webp"></a><br><sub><b>On a schedule.</b> A guard runs without the model — quiet days cost zero tokens.</sub></td>
+</tr>
+<tr>
+<td width="420"><a href="https://shadok.ai"><img alt="The profiles panel: roles with guardrails for each agent" src="https://shadok.ai/shots/panel-profiles.webp"></a><br><sub><b>On a leash.</b> A role sets the prompt, model, secrets, and commands it may not run.</sub></td>
+<td width="420"><a href="https://shadok.ai"><img alt="The shared ledger: what sibling agents have resolved or decided" src="https://shadok.ai/shots/panel-ledger.webp"></a><br><sub><b>Shared ledger.</b> Parallel agents stop re-solving each other's work.</sub></td>
+</tr>
+</table>
+
+<p><img width="280" alt="The cockpit on a phone: an agent's question with its option cards filling the screen, quota bars at the top" src="https://shadok.ai/shots/cockpit-phone.webp"><br><sub><b>From your phone.</b> The same live session your browser is watching.</sub></p>
+
+</div>
 
 ## Quick start
 
@@ -558,6 +575,17 @@ Enter to skip; you can add it later from the web UI).
   agent so a change that does not stick cannot loop. A message you send while
   the respawn runs waits a few seconds for it instead of being refused. Clicking
   still reloads at once; `SHADOK_AUTO_RELOAD=0` turns the automatic part off.
+- **A failed Claude Code self-update is installed for you** — when an agent's
+  footer says *Auto-update failed* (typically an agent that runs as a user who
+  cannot write the global npm directory), the server checks the registry and,
+  if a newer Claude Code exists, installs it once for the whole machine; the
+  agents then reload onto it one at a time through the automatic reload above.
+  Never two installs at once (one in flight per server, plus a lock file shared
+  by every server on the host), nothing retried for an hour after an install
+  or 30 minutes after a failure, and an agent still on the previous binary
+  counts as "needs a reload", not "needs another install". A footer saying
+  *Update installed · Restart to apply* reloads the agent the same way.
+  `SHADOK_CLAUDE_AUTO_INSTALL=0` turns it off (the ⚠ button still works).
 - **An agent that stops listening restarts itself** — Claude Code's terminal can
   stop taking input while the process behind it stays alive (an upstream bug;
   nothing on screen shows it). When a message cannot be typed into an agent for
@@ -592,11 +620,21 @@ Enter to skip; you can add it later from the web UI).
   about, terminal), its ⋯ menu, schedules and webhooks, the composer (attach, add
   a skill, dictate), the toolbar (secrets, ledger, Skill Factory, profiles,
   Telegram, sound, and what the ⋯ holds), the people buttons (Users, Reports,
-  Security), the quota bars, and the cockpit's name and settings menu. Skip and
-  Escape end it at any point; ⋯ → *Guided tour* replays it. A step whose target
-  isn't on screen is **dropped rather than faked** — an empty cockpit has no
-  agent menu, a cockpit with no group has no groups column, a member has no
-  Reports button — so it gets a shorter tour instead of a spotlight on nothing.
+  Security), the quota bars, and the cockpit's name and settings menu. Each card
+  is a couple of plain sentences. Skip and Escape end it at any point — a click
+  beside the card does **not**, so a stray click cannot throw the tour away — and
+  ⋯ → *Replay the guided tour* brings it back. A step whose target
+  isn't on screen is **dropped rather than faked** — a member has no Reports
+  button, a phone has no groups column — so it gets a shorter tour instead of a
+  spotlight on nothing. One case is staged instead: a cockpit with **no agent
+  at all**, which is every first visit (the tour runs before the sign-in). The
+  tour then shows an **example scene** — example agents in the list, the real
+  agent bar and composer over an example conversation, example groups — tagged
+  as an example on every surface, never saved, and removed when the tour ends
+  or the moment a real agent takes the screen.
+  Which steps exist is **re-read from the page at every step**, and the first
+  count waits (4s at most) for the agents and the account to load — a tour that
+  filtered its list once, at start, played five stops on a cockpit that has eleven.
   The bubble sits below its target, above it, or **beside** it when the target
   is a full-height column, so it never covers what it describes. The
   **phone gets the whole tour**, because a step can name the landmark on either
@@ -998,7 +1036,8 @@ know before opening it up:
   else you do. Accounts belong to **one instance** (one launch directory), like
   its channels and its scheduled prompts. With no password there are no
   accounts and no login screen — nothing changes for a machine you use alone.
-  When a signed-in session **expires** (the cookie lasts a week), the open tab
+  When a signed-in session **expires** (after a week without a visit — using
+  the cockpit renews it — or 30 days after the sign-in at the latest), the open tab
   returns you to the login screen on its next request instead of failing in
   place — a paste that would not send, an agent list that would not refresh.
 - **Two-factor sign-in (passkeys).** From the **Users** panel, anyone signed in
@@ -1433,6 +1472,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_IDLE_MIN` | minutes with no client before a session is reclaimed (60) |
 | `SHADOK_AUTO_RELOAD=0` | don't apply a pending "reload to apply" by itself — leave it to the ↻ click |
 | `SHADOK_AUTO_RELOAD_IDLE_SEC` | how long an agent must be quiet before that automatic reload (120) |
+| `SHADOK_CLAUDE_AUTO_INSTALL=0` | don't install a failed Claude Code self-update by itself — leave it to the ⚠ button |
 | `SHADOK_SUBMIT_RECOVERY=0` | don't restart an agent whose terminal stopped taking input — report the failed message as an error instead |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE=0` | don't apply a newer release by itself (**ON by default** under the supervisor, i.e. `npx shadok-ai`; a server run directly never self-updates, since nothing would respawn it). `0`/`false` turns it off, `1`/`true` forces it on; the GUI setting wins over either once used |
@@ -1639,7 +1679,7 @@ HTTP endpoints (same auth): `/usage`, `/live`, `/sessions`, `/recover`,
 `/channels/glance` (GET — each visible row's last-message time and context %,
 read from the transcript's tail so the list fills before the agents resume),
 `/channel` (DELETE), `/groups`, `/groups/ssh` (GET — the SSH **public** key to
-register per group, filtered like `/groups`), `/crons` (+ POST `/crons/:id/run` — fire a schedule now, its next slot unchanged), `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
+register per group, filtered like `/groups`), `/crons` (+ POST `/crons/:id/run` — fire a schedule now, its next slot unchanged; GET `/crons/env?session=<id>` — the variable NAMES a guard for that session would receive, values never included, so an agent can check its own guard before trusting it), `/webhooks` (GET; POST create, PATCH/DELETE `/webhooks/:id`, POST `/webhooks/:id/rotate` — writes browser person only, the token is returned only by create/rotate; the call itself, `POST /hooks/:id`, sits before the password gate and authenticates with the webhook's own token), `/timezone`, `/title` (GET/PUT — the
 cockpit's name, per launch directory: click the header brand to rename it, so
 several cockpits stay apart in the tab bar; an empty PUT reverts to the default),
 `/theme` (GET/PUT — the cockpit's colour palette, per launch directory: an accent

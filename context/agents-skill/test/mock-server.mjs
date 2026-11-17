@@ -23,6 +23,7 @@ export function startMockServer(script = {}) {
       res.setHeader("content-type", "application/json");
       if (req.url.startsWith("/live")) {
         if (script.liveStatus) res.statusCode = script.liveStatus;
+        for (const [k, v] of Object.entries(script.liveHeaders ?? {})) res.setHeader(k, v);
         return res.end(JSON.stringify(script.live ?? []));
       }
       if (req.url.startsWith("/sessions")) return res.end(JSON.stringify(script.sessions ?? []));

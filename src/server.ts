@@ -37,6 +37,7 @@ import {
 // Same implementation as the web client's preview (plain JS, loaded as is by
 // the browser): one source for reading the in-flight text off the screen.
 import { extractLiveText } from "../public/live-text.js";
+import { claudeUpdateState } from "../public/update-ready.js";
 import { findTransientErrors, newTransientErrors, RETRY_DELAYS_MS } from "./retry.js";
 import { backgroundTasks, screenShowsWork, inputBoxVisible, moveToOption, boxText, SubmitError, IdleTimeoutError, keepWaitingAfterTimeout, idleTimeoutMessage } from "./detect.js";
 import {
@@ -50,6 +51,7 @@ import {
 } from "./submit-recovery.js";
 import { busyLatchVerdict, busyLatchLog, BUSY_LATCH_GRACE_MS } from "./busy-latch.js";
 import { autoReloadVerdict, autoReloadEnabled } from "./auto-reload.js";
+import { autoInstallVerdict, autoInstallEnabled, failingOnInstalled, newerPublished, lockHeld } from "./claude-auto-update.js";
 import { PtyPilot } from "./session.js";
 import { ensureClaudeHome, ensureProjectTrusted,
   getDefaultModel,
@@ -393,8 +395,8 @@ import {
   MT_CLAUDE_OAUTH_TOKEN_NAME,
   longLivedTokenInfo,
   loadVault,
-  recordOrigin,
-  originProfile,
+  creatorProfile,
+  createAttachRefusal,
   ANY_PROFILE,
   agentOverwriteRefusal,
   secretNameRefusal,
@@ -445,6 +447,7 @@ import {
   sessionSecret,
   signSession,
   readSessionFull,
+  sessionRenewal,
   sessionAlive,
   bootstrapSessionsAfter,
   saveAccounts,
@@ -823,6 +826,12 @@ function presentsSecret(req: { headers: Record<string, unknown> }, name: string,
 // the cookie ride a top-level GET the user themselves initiated.
 /** A week, matching the cookie's Max-Age: one is the other's enforcement. */
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+/** A cookie older than this is re-issued on the next request, so the week above
+ *  counts from the last VISIT rather than from the sign-in (`sessionRenewal`). */
+const SESSION_RENEW_AFTER_MS = 24 * 3600 * 1000;
+/** ...up to this long after the sign-in. Then the password is asked again,
+ *  however active the session: the ceiling on what a stolen cookie is worth. */
+const SESSION_MAX_LIFE_MS = 30 * 24 * 3600 * 1000;
 // Sessions are signed with a per-instance secret, NOT with the password: the
 // password reaches every agent's environment, so signing with it would let an
 // agent mint a cookie for anyone. Drawn lazily, so an instance with no password
@@ -1008,6 +1017,69 @@ type CheckResult =
   | { kind: "quiet" }
   | { kind: "failed"; detail: string };
 
+/** The environment a guard for `sessionId` would run in — or why it cannot. */
+type GuardEnvPlan =
+  | { ok: true; env: NodeJS.ProcessEnv; user: string | null; secrets: Record<string, string> }
+  | { ok: false; detail: string };
+
+/**
+ * Build the environment a cron guard runs with, for ONE session. Extracted so
+ * that `runCronCheck` and the `/crons/env` preview cannot disagree about it.
+ *
+ * That split is the whole point. The scheduler skill used to answer "what will
+ * my guard see?" by reading the PROFILE's `secrets` list, which is only half of
+ * a two-homed link: a secret bound from the SECRET's side (`PUT /secrets/profiles`,
+ * the vault panel's chip row) reaches the guard and was reported absent — and a
+ * `*` binding reached a profile-less agent the tool told to expect nothing. Both
+ * are false negatives, which is the expensive direction: an operator shown a
+ * correct setup as broken goes looking for a fault that is not there. There is
+ * now one builder, and the preview calls it instead of re-deriving it.
+ */
+function cronGuardEnv(sessionId: string, target: SessionTarget): GuardEnvPlan {
+  const profile = target.profile ? getProfile(target.profile) : undefined;
+  // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
+  // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
+  const secrets = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
+  // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
+  // multi-tenant — with the server's whole environment: a root shell for
+  // anyone able to write a cron, holding the GUI password and every token the
+  // server has. Now it runs as the TARGET agent's own OS user (the same
+  // `setpriv` drop as its spawn) with an allow-listed environment plus the
+  // profile's secrets. Mono-tenant keeps the server's user — there is only one
+  // — but gets the same clean environment.
+  let user: string | null = null;
+  if (DEPLOYMENT_MODE === "multi-tenant") {
+    if (!target.known) return { ok: false, detail: "no channel for this session — refusing to guess whose rights to run the check with" };
+    const who = osUserForChannelGroup(
+      target.group,
+      loadGroups(),
+      commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
+    );
+    if (!who.ok) return { ok: false, detail: "the agent's group no longer exists — check not run" };
+    user = who.user;
+  }
+  const env = cronCheckEnv({
+    base: process.env,
+    secrets,
+    session: {
+      id: sessionId,
+      port: String(boundPort || START_PORT),
+      key: sessionKeyFor(sessionId),
+      // The TARGET agent's own registry, resolved exactly like its spawn's.
+      peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
+    },
+    user,
+    home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
+    // The same `gh` token the agent itself is spawned with (`makePilot`), and
+    // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
+    // own empty home, so without this every `gh` call in it fails — silently,
+    // because guards swallow a failed call to survive a network hiccup. Only
+    // when dropping; the server's own user reads its config dir directly.
+    ghToken: user ? serverGhToken() : undefined,
+  });
+  return { ok: true, env, user, secrets };
+}
+
 /**
  * Run a cron's optional guard command WITHOUT the LLM (in the channel's cwd,
  * with the profile's secrets). stdout is the only content signal: whatever it
@@ -1016,47 +1088,9 @@ type CheckResult =
 function runCronCheck(c: Cron, target: SessionTarget): Promise<CheckResult> {
   if (!c.check?.trim()) return Promise.resolve({ kind: "quiet" }); // no guard → the agent always runs
   return new Promise((resolve) => {
-    const profile = target.profile ? getProfile(target.profile) : undefined;
-    // Resolve the guard's secrets by the agent's REAL group (own → shared-in →
-    // Main), not always Main (T9 carry). Mono-tenant leaves `group` null → Main.
-    const secretEnv = secretsForProfile(target.profile, profile?.secrets, target.group ?? MAIN_GROUP_ID, commonsGroupIds());
-    // WHO the guard runs as (invariant 60). It used to be the SERVER — root, in
-    // multi-tenant — with the server's whole environment: a root shell for
-    // anyone able to write a cron, holding the GUI password and every token the
-    // server has. Now it runs as the TARGET agent's own OS user (the same
-    // `setpriv` drop as its spawn) with an allow-listed environment plus the
-    // profile's secrets. Mono-tenant keeps the server's user — there is only one
-    // — but gets the same clean environment.
-    let user: string | null = null;
-    if (DEPLOYMENT_MODE === "multi-tenant") {
-      if (!target.known) return resolve({ kind: "failed", detail: "no channel for this session — refusing to guess whose rights to run the check with" });
-      const who = osUserForChannelGroup(
-        target.group,
-        loadGroups(),
-        commonsOsUser({ migrated: groupsMigrated, mode: DEPLOYMENT_MODE }),
-      );
-      if (!who.ok) return resolve({ kind: "failed", detail: "the agent's group no longer exists — check not run" });
-      user = who.user;
-    }
-    const env = cronCheckEnv({
-      base: process.env,
-      secrets: secretEnv,
-      session: {
-        id: c.sessionId,
-        port: String(boundPort || START_PORT),
-        key: sessionKeyFor(c.sessionId),
-        // The TARGET agent's own registry, resolved exactly like its spawn's.
-        peersFile: peersOutFileFor(process.cwd(), agentStateHome(user)),
-      },
-      user,
-      home: user ? homeForUser(user, GROUP_HOME_BASE) : null,
-      // The same `gh` token the agent itself is spawned with (`makePilot`), and
-      // for the same reason: a DROPPED guard reads `GH_CONFIG_DIR` out of its
-      // own empty home, so without this every `gh` call in it fails — silently,
-      // because guards swallow a failed call to survive a network hiccup. Only
-      // when dropping; the server's own user reads its config dir directly.
-      ghToken: user ? serverGhToken() : undefined,
-    });
+    const plan = cronGuardEnv(c.sessionId, target);
+    if (!plan.ok) return resolve({ kind: "failed", detail: plan.detail });
+    const { env, user, secrets: secretEnv } = plan;
     const run = cronCheckCommand(user, c.check!);
     recordSecretAudit({
       action: "cron-check",
@@ -1482,9 +1516,9 @@ function cookieToken(cookieHeader: string | undefined): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 /** The session a request's cookie carries, verified, or null. */
-function cookieSession(req: { headers: Record<string, unknown> }): { user: string; mfa: boolean; issuedAt: number } | null {
+function cookieSession(req: { headers: Record<string, unknown> }): { user: string; mfa: boolean; issuedAt: number; since: number } | null {
   const tok = cookieToken(req.headers.cookie as string | undefined);
-  return tok ? readSessionFull(tok, signingSecret(), Date.now(), SESSION_TTL_MS) : null;
+  return tok ? readSessionFull(tok, signingSecret(), Date.now(), SESSION_TTL_MS, SESSION_MAX_LIFE_MS) : null;
 }
 /**
  * Who this request is, or null. Re-reads the account file every time, so
@@ -1604,8 +1638,8 @@ function secureAttr(req: CookieReq): string {
   const sock = req.socket as { remoteAddress?: string; encrypted?: boolean } | undefined;
   return requestIsHttps(!!sock?.encrypted, sock?.remoteAddress, req.headers) ? "; Secure" : "";
 }
-function sessionCookie(name: string, mfa: boolean, req: CookieReq): string {
-  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
+function sessionCookie(name: string, mfa: boolean, req: CookieReq, since?: number): string {
+  return `sk_auth=${signSession(name, Date.now(), signingSecret(), mfa, since)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_TTL_MS / 1000}${secureAttr(req)}`;
 }
 function pendingCookie(name: string, req: CookieReq): string {
   return `sk_pending=${signPending(name, Date.now(), signingSecret())}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${PENDING_TTL_MS / 1000}${secureAttr(req)}`;
@@ -1982,9 +2016,12 @@ function callerOf(req: Caller & { body?: unknown }): { id: string | null; profil
   if (!id) return { id: null, profile: null };
   // Same resolution as `agentPrincipal`, so the two can never disagree on
   // which profile an agent carries.
-  const profile =
-    sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
-  return { id, profile };
+  return { id, profile: profileOfAgent(id) };
+}
+
+/** The profile an agent carries — live session first, then its channel row. */
+function profileOfAgent(id: string): string | null {
+  return sessions.get(id)?.profile ?? loadChannels().find((c) => c.sessionId === id)?.profile ?? null;
 }
 
 /**
@@ -2477,6 +2514,23 @@ app.get("/share/card.png", async (req, res) => {
   return res.sendFile(path.join(__dirname, "..", "public", "icons", "icon-512.png"));
 });
 
+// Renew a PERSON's session on use. `cookieAccount` is the test, not
+// `currentAccount`: it is null for an agent, a peer and the server's own
+// client, none of which holds a browser cookie worth extending — and it has
+// already applied every refusal (reset access, two-factor, the retired
+// bootstrap cookies), so a dead session is never brought back. `since` rides
+// along unchanged. A handler that sets its own cookie afterwards (sign-out, a
+// passkey change) simply replaces this header.
+app.use((req, res, next) => {
+  if (!GUI_PASSWORD) return next();
+  const sess = cookieSession(req);
+  if (sess && sessionRenewal(sess, Date.now(), { renewAfterMs: SESSION_RENEW_AFTER_MS, maxLifeMs: SESSION_MAX_LIFE_MS })) {
+    const acct = cookieAccount(req);
+    if (acct) res.setHeader("Set-Cookie", sessionCookie(acct.name, sess.mfa, req, sess.since));
+  }
+  next();
+});
+
 app.get("/me", (req, res) => {
   const me = currentAccount(req);
   return me ? res.json(me) : res.status(401).json({ error: "unauthorized" });
@@ -2494,6 +2548,9 @@ app.use((req, res, next) => {
   // else stays denied, so a peer never touches B's vault, profiles, crons, other
   // agents or the account routes. Its spawn/drive path is the WS (verifyClient).
   if (req.method === "GET" && req.path === "/diff" && peerName(req)) return next();
+  // And `GET /live`, so a peer can find the agents it left behind: the handler
+  // narrows a restricted peer to the ones it spawned (`restrictedBoxOf`).
+  if (req.method === "GET" && req.path === "/live" && peerName(req)) return next();
   if (req.method === "GET" && (req.headers.accept ?? "").includes("text/html"))
     return sendLogin(req, res);
   return res.status(401).json({ error: "unauthorized" });
@@ -2738,18 +2795,34 @@ app.get("/live", (req, res) => {
     if (!g) return false; // unresolvable → fail closed
     return canSeeGroup(g, viewer);
   };
-  res.json(
-    [...sessions.values()]
-      .filter((s) => !s.pilot.hasExited && visible(s.id))
-      .map((s) => ({
-        id: s.id,
-        cwd: s.cwd,
-        branch: s.worktree?.branch ?? null,
-        busy: s.busy,
-        clients: s.clients.size,
-        lastPrompt: s.lastPrompt,
-      })),
-  );
+  type LiveRow = { id: string; cwd: string; branch: string | null; busy: boolean; clients: number; idleSec: number; lastPrompt?: string; running?: false };
+  const running: LiveRow[] = [...sessions.values()]
+    .filter((s) => !s.pilot.hasExited && visible(s.id))
+    .map((s) => ({
+      id: s.id,
+      cwd: s.cwd,
+      branch: s.worktree?.branch ?? null,
+      busy: s.busy,
+      clients: s.clients.size,
+      // How long nothing has happened on it — what `pilotctl reap --idle` sorts by.
+      idleSec: Math.round((Date.now() - Math.max(s.lastActivityAt ?? 0, s.lastContentAt ?? 0)) / 1000),
+      lastPrompt: s.lastPrompt,
+    }));
+  // A RESTRICTED PEER also gets the agents it spawned that are no longer
+  // running: a process reclaimed after its idle window still leaves its channel
+  // row in this cockpit, and this list is the only one such a peer can read —
+  // without these rows its leftovers were invisible to the one caller entitled
+  // to close them. Nobody else's list changes. The scope rides in a header so
+  // the shape stays an array for every existing reader.
+  if (box && peerName(req)) {
+    res.setHeader("x-shadok-peer-scope", "restricted");
+    const live = new Set(running.map((r) => r.id));
+    for (const c of chans) {
+      if (live.has(c.sessionId) || !ownedByPeer(c, box)) continue;
+      running.push({ id: c.sessionId, cwd: c.cwd, branch: c.branch ?? null, busy: false, clients: 0, idleSec: -1, running: false });
+    }
+  }
+  res.json(running);
 });
 // Current 5-hour and 7-day subscription usage, each window enriched with how it
 // compares to the time already elapsed (for the quota gauges and the send guard).
@@ -3882,6 +3955,49 @@ app.get("/instance/stats", async (req, res) => {
 // Scoped like every other per-session read (invariant 60): a cron carries its
 // prompt and its guard command, i.e. another group's monitoring logic.
 app.get("/crons", (req, res) => res.json(loadCrons().filter((c) => mayActFor(req, c.sessionId))));
+/**
+ * What a guard for this session would ACTUALLY receive — variable names only,
+ * never a value. Built by the same `cronGuardEnv` the real tick uses, so the
+ * preview cannot drift from the thing it previews.
+ *
+ * This exists because the honest answer is not computable client-side. The
+ * secret↔profile link has two writable homes — the profile's `secrets` list and
+ * the secret's own `profiles` list — and `GET /secrets` withholds the second
+ * from an agent for commons secrets, so the scheduler skill could only ever see
+ * half of it. There is no reload or propagation delay to account for either:
+ * `cronGuardEnv` reads `profiles.json` and the vault on every call, so this is
+ * what the NEXT tick gets.
+ */
+app.get("/crons/env", (req, res) => {
+  const sessionId = String(req.query.session ?? "").trim();
+  if (!sessionId) return res.status(400).json({ error: "session required" });
+  // Scoped exactly like GET /crons (invariant 60): the guard command of another
+  // group is already gated there, and its secret NAMES are no more public.
+  if (!mayActFor(req, sessionId)) return res.status(403).json({ error: "not your agent" });
+  const target = resolveSessionTarget(loadChannels(), sessionId, process.cwd());
+  const plan = cronGuardEnv(sessionId, target);
+  if (!plan.ok) return res.status(409).json({ error: plan.detail });
+  // Declared by the profile but NOT resolvable: a typo, or a secret owned by a
+  // group this agent neither belongs to nor was lent. The caller cannot work
+  // this out for itself — `GET /secrets` lists what the CALLER sees, which is
+  // not what the guard resolves (own → shared-in → commons, by the AGENT's
+  // group). `secretsFor` skips an unknown name silently, so without this a typo
+  // looks exactly like a working guard until the day it runs.
+  const declared = (target.profile ? getProfile(target.profile)?.secrets : undefined) ?? [];
+  res.json({
+    cwd: target.cwd,
+    known: target.known,
+    profile: target.profile,
+    profileMissing: !!target.profile && !getProfile(target.profile),
+    secrets: Object.keys(plan.secrets).sort(),
+    unresolved: [...new Set(declared.filter((n) => !Object.hasOwn(plan.secrets, n)))].sort(),
+    // The whole key list, plumbing included: the allow-list is short and
+    // invisible from the agent's own shell, so "does my guard even have TZ?" is
+    // a real question — and one the agent used to answer by guessing.
+    env: Object.keys(plan.env).sort(),
+    user: plan.user,
+  });
+});
 // Create (no id) or update (id present). Body: { id?, sessionId, prompt,
 // schedule:{kind,...}, enabled? }.
 app.post("/crons", (req, res) => {
@@ -5630,7 +5746,7 @@ mountFactory(app, {
 });
 
 app.put("/secrets", (req, res) => {
-  const { name, value, overwrite } = req.body ?? {};
+  const { name, value, overwrite, attach } = req.body ?? {};
   if (typeof name !== "string" || !name.trim() || typeof value !== "string")
     return res.status(400).json({ error: "name and value required" });
   const key = name.trim();
@@ -5652,6 +5768,17 @@ app.put("/secrets", (req, res) => {
     const bad = secretNameRefusal(key);
     if (bad) return res.status(400).json({ error: bad, name: key });
   }
+  // `attach: true` — the shadok-secrets skill's `set --attach`: create the
+  // secret AND bind it to the caller's own profile in ONE write (invariant 37).
+  // Decided before anything is stored, so a refusal leaves nothing half-done.
+  // The bind lands on the ENTRY (`profiles`), which lives in the caller's own
+  // group, never on the global `profile.secrets` name list: that list resolves
+  // by name in every group, so it would reach same-named secrets elsewhere.
+  const attachTo = attach === true ? callerOf(req).profile : null;
+  if (attach === true) {
+    const r = createAttachRefusal({ verdict, callerProfile: attachTo });
+    if (r) return res.status(403).json({ error: r, name: key });
+  }
   if (verdict === "updated") {
     const slice = loadVault()[ownerGroup];
     const entry = slice && Object.hasOwn(slice, key) ? slice[key] : undefined;
@@ -5666,17 +5793,13 @@ app.put("/secrets", (req, res) => {
   }
   // createdBy is STAMPED server-side (the agent's session or the account) — a
   // client-claimed owner/createdBy is ignored by construction.
-  setSecret(key, value, ownerGroup, secretCreatedBy(req));
+  // `createdBy` is also what makes a LATER `PUT /profiles/secret` possible:
+  // `creatorProfile` reads it back, and it is never rewritten on an overwrite.
+  setSecret(key, value, ownerGroup, secretCreatedBy(req), attachTo ? [attachTo] : []);
   recordSecretAudit({ action: verdict, secrets: [key], ...auditActorOf(req), instance: process.cwd() });
-  // Remember WHO created it, so the agent can later attach it to its own
-  // profile (`PUT /profiles/secret`). Only on a creation: recording an
-  // overwrite too would let an agent clobber a human's secret to become its
-  // "creator" and then claim the name.
-  if (verdict === "created") {
-    const { profile } = callerOf(req);
-    if (profile) recordOrigin(key, profile);
-  }
-  res.json({ names: secretNames(ownerGroup), result: verdict });
+  if (attachTo)
+    recordSecretAudit({ action: "attached", secrets: [key], ...auditActorOf(req), profile: attachTo, instance: process.cwd() });
+  res.json({ names: secretNames(ownerGroup), result: verdict, ...(attachTo ? { attached: attachTo } : {}) });
 });
 // Edit a secret's SHARING (the groups it is lent to) — the name↔group link
 // lives on the secrets side. Owner-group gated, like every vault write.
@@ -7546,32 +7669,42 @@ app.put("/profiles/prompt", (req, res) => {
  * Everything dangerous about this is in `secretAttachVerdict`: the vault is
  * global, so attaching an arbitrary name would hand any agent every credential
  * on the machine. Only provenance is accepted, and the lead gets no exception.
- * Guardrails still cannot be reached — `deny`/`allow`/`model` are copied from
- * the stored profile, never read from the body.
+ * The profile itself is never written (the bind lives on the vault entry), so
+ * its guardrails — `deny`/`allow`/`model` — are out of reach by construction.
+ *
+ * The skill now creates and attaches in one `PUT /secrets {attach: true}`; this
+ * route stays for an older seeded skill, and for a secret created earlier by
+ * the same profile (invariant 57: seeded scripts and server can skew).
  */
 app.put("/profiles/secret", (req, res) => {
   const { profile: caller } = callerOf(req);
   const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
-  const existing = caller ? getProfile(caller) : undefined;
+  // The secret is looked up in the caller's OWN group — the very group its
+  // `PUT /secrets` wrote to. This used to read Main only (`secretNames()`), so
+  // in multi-tenant, where an agent's group is not Main, every attach answered
+  // "no secret named X in the vault" for a secret the agent had just stored.
+  const target = secretWriteTarget(req);
+  if ("refused" in target) return res.status(403).json({ error: target.refused });
+  const slice = loadVault()[target.ownerGroup];
+  const entry = slice && Object.hasOwn(slice, name) ? slice[name] : undefined;
   const verdict = secretAttachVerdict({
     caller,
     name,
-    inVault: secretNames().includes(name),
-    origin: originProfile(name),
+    inVault: !!entry && !RESERVED_SECRET_NAMES.has(name),
+    origin: creatorProfile(entry, profileOfAgent),
   });
   if (!verdict.ok) return res.status(403).json({ error: verdict.error });
-  if (!existing) return res.status(404).json({ error: `${caller} no longer exists` });
-  // Start from the stored profile: guardrails survive by construction, not by
-  // vigilance (same rule as /profiles/prompt).
-  const secrets = [...new Set([...(existing.secrets ?? []), name])];
-  upsertProfile({ ...existing, secrets });
+  // Bound on the ENTRY, in that group — same reason as `PUT /secrets`'s attach:
+  // the global `profile.secrets` list resolves by name in every group.
+  const before = entry!.profiles;
+  const profiles = [...new Set([...before, caller!])];
+  setSecretProfiles(name, target.ownerGroup, profiles);
   console.log(`profile-secret: ${caller} += ${name}`);
-  if (!(existing.secrets ?? []).includes(name))
+  if (!before.includes(caller!))
     recordSecretAudit({ action: "attached", secrets: [name], ...auditActorOf(req), profile: caller!, instance: process.cwd() });
   res.json({
     ok: true,
     profile: caller,
-    secrets,
     note: "injected as an environment variable at your next reload, not in this process",
   });
 });
@@ -8488,21 +8621,18 @@ app.get(["/media/:name", "/media/:key/:name"], (req, res) => {
 // footer reports "Auto-update failed"; running agents still need a reload
 // afterwards to pick up the new binary (the client does that). BROWSER-ONLY: a
 // deliberate operator action, not something an agent should trigger for the
-// whole machine (cf. the profile-guardrail boundary). Single-flight so two
-// clicks don't race two installs (ENOTEMPTY, see `rewriteInProgress`).
-let claudeUpdateInFlight: Promise<void> | null = null;
+// whole machine (cf. the profile-guardrail boundary). The server now also does
+// it by itself (`claudeAutoInstallSweep`); both go through `installClaudeOnce`,
+// so a click and the sweep can never run two installs.
 app.post("/claude-update", async (req, res) => {
   if (!requestFromBrowser(req)) return res.status(403).json({ ok: false, error: "browser-only" });
   try {
-    if (!claudeUpdateInFlight) {
-      console.log("claude-update: installing @anthropic-ai/claude-code (npm i -g)…");
-      claudeUpdateInFlight = installClaudeCli().finally(() => { claudeUpdateInFlight = null; });
+    // The sweep may have installed it a minute ago: the badge on an agent not
+    // reloaded yet still says "install", and a click must not reinstall.
+    if (!claudeUpdateInFlight && Date.now() - claudeInstallSettledAt < CLAUDE_INSTALL_SETTLE_MS) {
+      return res.json({ ok: true, already: true });
     }
-    await claudeUpdateInFlight;
-    // The cached binary path rots on any reinstall (invariant 32): drop it so the
-    // next spawn re-resolves the freshly installed launcher.
-    claudeReady = null;
-    rememberClaudeBin(null);
+    await installClaudeOnce("button");
     console.log("claude-update: install ok");
     res.json({ ok: true });
   } catch (e) {
@@ -8511,6 +8641,127 @@ app.post("/claude-update", async (req, res) => {
     res.status(500).json({ ok: false, error });
   }
 });
+
+// ── Claude Code auto-install (see src/claude-auto-update.ts) ─────────────────
+const CLAUDE_AUTO_INSTALL = autoInstallEnabled(process.env.SHADOK_CLAUDE_AUTO_INSTALL);
+const CLAUDE_INSTALL_SETTLE_MS = 60 * 60_000;
+const CLAUDE_INSTALL_BACKOFF_MS = 30 * 60_000;
+const CLAUDE_INSTALL_LOCK_STALE_MS = 20 * 60_000;
+let claudeUpdateInFlight: Promise<void> | null = null;
+let claudeInstallSettledAt = 0;
+let claudeInstallFailedAt = 0;
+
+/** Cross-process half of the single-flight: two shadok servers on one host share
+ *  the global npm directory, and two concurrent `npm i -g` collide (ENOTEMPTY).
+ *  `wx` creates the file only if absent — the one atomic test-and-set the fs has. */
+function claudeInstallLockFile(): string {
+  return path.join(os.homedir(), ".shadok-ai", "claude-install.lock");
+}
+function readClaudeInstallLock(): number | null {
+  try {
+    const t = Number(fs.readFileSync(claudeInstallLockFile(), "utf8").trim());
+    return Number.isFinite(t) ? t : 0;
+  } catch {
+    return null;
+  }
+}
+function takeClaudeInstallLock(): boolean {
+  const file = claudeInstallLockFile();
+  if (lockHeld(readClaudeInstallLock(), Date.now(), CLAUDE_INSTALL_LOCK_STALE_MS)) return false;
+  try { fs.rmSync(file, { force: true }); } catch { /* a stale lock we cannot remove: wx below fails */ }
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, String(Date.now()), { flag: "wx" });
+    return true;
+  } catch {
+    return false; // someone took it between our read and our write
+  }
+}
+
+/** THE one way to install Claude Code once it is running: the button, the
+ *  auto-install sweep and the missing-binary path all share this promise, and the
+ *  lock keeps another process out. The cached binary path rots on any reinstall
+ *  (invariant 32), and the version cache would hide the change from the staleness
+ *  sweep for a minute: both are dropped on success, so the reload half starts at
+ *  once. */
+function installClaudeOnce(by: string): Promise<void> {
+  if (claudeUpdateInFlight) return claudeUpdateInFlight;
+  if (!takeClaudeInstallLock()) return Promise.reject(new Error("another Claude Code install is already running on this machine"));
+  console.log(`claude-update: installing @anthropic-ai/claude-code (npm i -g) — ${by}`);
+  claudeUpdateInFlight = installClaudeCli()
+    .then(() => {
+      claudeInstallSettledAt = Date.now();
+      claudeReady = null;
+      rememberClaudeBin(null);
+      claudeVerCache = null;
+    })
+    .catch((e) => {
+      claudeInstallFailedAt = Date.now();
+      throw e;
+    })
+    .finally(() => {
+      claudeUpdateInFlight = null;
+      try { fs.rmSync(claudeInstallLockFile(), { force: true }); } catch { /* stale after 20 min anyway */ }
+    });
+  return claudeUpdateInFlight;
+}
+
+/** The version npm would install, or null when the registry cannot say. */
+function publishedClaudeVersion(): Promise<string | null> {
+  return new Promise((resolve) => {
+    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+    execFile(npm, ["view", "@anthropic-ai/claude-code", "version"], { timeout: 30_000 }, (err, out) =>
+      resolve(err ? null : parseClaudeVersion(String(out)) ?? (String(out).trim() || null)),
+    );
+  });
+}
+
+/** Every 30 s, beside the auto-reload sweep: an agent's footer says its own
+ *  update failed → install it for everyone, once. The reload follows through the
+ *  `claude` staleness reason. */
+let claudeAutoInstallChecking = false;
+async function claudeAutoInstallSweep(): Promise<void> {
+  if (!CLAUDE_AUTO_INSTALL || claudeAutoInstallChecking) return;
+  const channels = loadChannels();
+  let failing = 0;
+  let current: string | null | undefined;
+  for (const s of sessions.values()) {
+    if (s.pilot.hasExited || claudeUpdateState(s.pilot.screen()) !== "failed") continue;
+    if (current === undefined) current = currentClaudeVersion();
+    const spawnVer = channels.find((c) => c.sessionId === s.id)?.spawnClaudeVer ?? null;
+    if (failingOnInstalled(spawnVer, current)) failing++;
+  }
+  const now = Date.now();
+  const verdict = autoInstallVerdict({
+    enabled: CLAUDE_AUTO_INSTALL,
+    failingOnCurrent: failing,
+    inFlight: !!claudeUpdateInFlight,
+    externalInstall: claudeInstallInProgress() || lockHeld(readClaudeInstallLock(), now, CLAUDE_INSTALL_LOCK_STALE_MS),
+    sinceLastSettledMs: now - claudeInstallSettledAt,
+    sinceLastFailureMs: now - claudeInstallFailedAt,
+    settleMs: CLAUDE_INSTALL_SETTLE_MS,
+    failureBackoffMs: CLAUDE_INSTALL_BACKOFF_MS,
+  });
+  if (!verdict.install) return;
+  claudeAutoInstallChecking = true;
+  try {
+    // A footer is a screen heuristic (invariant 2): ask the registry before
+    // pulling a few hundred MB. Nothing newer → settle, nothing installed.
+    const installed = current ?? currentClaudeVersion();
+    const published = await publishedClaudeVersion();
+    if (!newerPublished(installed, published)) {
+      claudeInstallSettledAt = Date.now();
+      console.log(`claude-update: ${failing} agent(s) report a failed auto-update, but ${installed} is already the latest — nothing to install`);
+      return;
+    }
+    await installClaudeOnce(`auto: ${failing} agent(s) report a failed auto-update (${installed ?? "?"} → ${published ?? "latest"})`);
+    console.log(`claude-update: auto-install ok (now ${currentClaudeVersion() ?? "?"}) — idle agents reload onto it one at a time`);
+  } catch (e) {
+    console.log(`claude-update: auto-install FAILED — ${e instanceof Error ? e.message : e} (next try in ${CLAUDE_INSTALL_BACKOFF_MS / 60_000} min)`);
+  } finally {
+    claudeAutoInstallChecking = false;
+  }
+}
 
 // The shared-ledger table — ONE per instance (keyed by the launch dir). Read by
 // the GUI viewer (the version-menu / header button) AND by the `shadok-ledger`
@@ -10215,6 +10466,12 @@ let autoReloadRunning = false;
 function pendingReloadReasons(s: Live, channels: Channel[]): string[] {
   const out = sessionStaleness(s, channels).map((r) => r.kind as string);
   if ((s.appliedProfile ?? null) !== (s.profile ?? null)) out.push("profile");
+  // Claude Code's own footer: "Update installed · Restart to apply". Its updater
+  // may have written a binary the server's `claude --version` never sees (a
+  // per-user install), so the `claude` reason above can miss it. The backoff in
+  // autoReloadVerdict keeps a footer that survives the reload from looping.
+  if (!out.includes("claude") && !s.pilot.hasExited && claudeUpdateState(s.pilot.screen()) === "restart")
+    out.push("claude-restart");
   return out;
 }
 
@@ -10448,7 +10705,7 @@ function ensureClaudeOnce(revalidate = true): Promise<EnsureClaudeResult> {
     // transient, so failing hard on the first sample would report a healthy
     // install as broken. Nothing here runs at boot.
     find: () => findClaudeBinWithRetry(liveClaudeDeps()),
-    install: installClaudeCli,
+    install: () => installClaudeOnce("missing binary"),
     // Claude Code's auto-updater reinstalls the package in place; installing
     // over it is how a fresh instance's first agent died on ENOTEMPTY.
     installInProgress: claudeInstallInProgress,
@@ -12738,8 +12995,13 @@ wss.on("connection", (ws: WebSocket, req: IncomingMessage) => {
             const ch = loadChannels().find((c) => c.sessionId === id);
             if (!ownedByPeer(ch, callerPeer)) return fail("a restricted peer may only stop its own agents", "peer-scope");
           }
-          await endChannel(id);
+          const ended = await endChannel(id);
           if (session?.id === id) session = null;
+          // Answer the SENDER, attached or not. `stopped` is broadcast only to the
+          // viewers of a LIVE session, so a caller that stopped a dormant agent by
+          // id (pilotctl, whose holder is long gone) heard nothing and could not
+          // tell "gone" from "ignored". `ended: false` = the home base, kept.
+          send({ type: "stop-result", sessionId: id, ok: ended });
           break;
         }
       }
@@ -13205,7 +13467,12 @@ server.listen(port, HOST, () => {
   staleTimer.unref();
   // Auto-reload: twice a minute, respawn (at most) one idle agent that is
   // behind — the "reload to apply" badge applying itself. See autoReloadSweep.
-  const autoReloadTimer = setInterval(() => void autoReloadSweep().catch(() => {}), 30_000);
+  // The install half first: a failed Claude Code self-update on any agent is
+  // installed once, server-side, and the reload sweep then picks it up.
+  const autoReloadTimer = setInterval(() => {
+    void claudeAutoInstallSweep().catch(() => {});
+    void autoReloadSweep().catch(() => {});
+  }, 30_000);
   autoReloadTimer.unref();
   // The lead agent, if this instance has none. Deferred a beat so it dials a
   // server that is already accepting, and never awaited: a cockpit that starts

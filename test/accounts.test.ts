@@ -239,7 +239,7 @@ test("invite: 48 hours, not a week", () => {
 
 test("session: the cookie says when it was issued", () => {
   const t = signSession("ada", 1_000, SECRET, true);
-  assert.deepEqual(readSessionFull(t, SECRET, 2_000, WEEK), { user: "ada", mfa: true, issuedAt: 1_000 });
+  assert.deepEqual(readSessionFull(t, SECRET, 2_000, WEEK), { user: "ada", mfa: true, issuedAt: 1_000, since: 1_000 });
 });
 
 test("sessionAlive: a session opened before a reset is dead, one after it is fine", () => {
@@ -247,4 +247,46 @@ test("sessionAlive: a session opened before a reset is dead, one after it is fin
   assert.equal(sessionAlive(1_000, { sessionsAfter: 2_000 }), false);
   assert.equal(sessionAlive(2_000, { sessionsAfter: 2_000 }), true); // re-issued in the same millisecond
   assert.equal(sessionAlive(3_000, { sessionsAfter: 2_000 }), true);
+});
+
+// ── Renewal on use ──────────────────────────────────────────────────────────
+import { sessionRenewal } from "../src/accounts.js";
+
+const DAY = 24 * 3600 * 1000;
+const RENEW = { renewAfterMs: DAY, maxLifeMs: 30 * DAY };
+
+test("session: a sign-in keeps the four-field shape, a renewal carries the sign-in instant", () => {
+  assert.equal(signSession("ada", 1_000, SECRET).split(".").length, 4);
+  const renewed = signSession("ada", 5_000, SECRET, true, 1_000);
+  assert.equal(renewed.split(".").length, 5);
+  assert.deepEqual(readSessionFull(renewed, SECRET, 6_000, WEEK), { user: "ada", mfa: true, issuedAt: 5_000, since: 1_000 });
+  // A sign-in IS its own start.
+  assert.equal(readSessionFull(signSession("ada", 1_000, SECRET), SECRET, 2_000, WEEK)?.since, 1_000);
+});
+
+test("session: the sign-in instant is signed — it cannot be moved forward by hand", () => {
+  const [u, at, mfa, , mac] = signSession("ada", 5_000, SECRET, false, 1_000).split(".");
+  assert.equal(readSessionFull(`${u}.${at}.${mfa}.4000.${mac}`, SECRET, 6_000, WEEK), null);
+  // ...nor dropped, to pass for a fresh sign-in.
+  assert.equal(readSessionFull(`${u}.${at}.${mfa}.${mac}`, SECRET, 6_000, WEEK), null);
+});
+
+test("session: renewed only once it is a day old, so a polling page does not get a cookie per request", () => {
+  assert.equal(sessionRenewal({ issuedAt: 0, since: 0 }, DAY - 1, RENEW), false);
+  assert.equal(sessionRenewal({ issuedAt: 0, since: 0 }, DAY, RENEW), true);
+});
+
+test("session: daily use outlives the week, but never the ceiling counted from the sign-in", () => {
+  // Day 29: used every day since day 0, last renewed yesterday — still renewed.
+  assert.equal(sessionRenewal({ issuedAt: 28 * DAY, since: 0 }, 29 * DAY, RENEW), true);
+  assert.ok(readSessionFull(signSession("ada", 29 * DAY, SECRET, false, 0), SECRET, 30 * DAY, WEEK, 30 * DAY));
+  // Past the ceiling: not renewed, and refused although issued an hour ago.
+  assert.equal(sessionRenewal({ issuedAt: 29 * DAY, since: 0 }, 30 * DAY, RENEW), false);
+  const late = signSession("ada", 30 * DAY, SECRET, false, 0);
+  assert.equal(readSessionFull(late, SECRET, 30 * DAY + 3_600_000, WEEK, 30 * DAY), null);
+});
+
+test("session: a week of absence still signs out, renewed cookie or not", () => {
+  const t = signSession("ada", 10 * DAY, SECRET, false, 0);
+  assert.equal(readSessionFull(t, SECRET, 17 * DAY + 1, WEEK, 30 * DAY), null);
 });

@@ -1055,15 +1055,27 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     security boundary.** The vault is global — one file for every profile and
     every instance — so "let an agent attach a secret to its profile" is one
     rule away from "any agent grants itself every credential on the machine".
-    The rule is provenance: `PUT /secrets` records the creating PROFILE in a
-    sidecar (`~/.shadok-ai/secret-origin.json`), and `PUT /profiles/secret`
-    attaches a name only when that origin equals the caller's own profile. An
-    agent therefore gains NO access it did not already have — it held that value
-    already; it only makes it survive into its next sessions. Three details
-    carry the weight. The origin is recorded **only on a creation**, never on an
-    overwrite, or an agent could clobber a human's secret to become its
-    "creator" and then claim the name. A **missing** origin means a human stored
-    it, which must read as a refusal — absence denies, it never grants. And the
+    The rule is provenance. The normal path is ONE write: the skill's
+    `set --attach` sends `PUT /secrets {name, value, attach: true}`, and the
+    server creates the entry already bound to the caller's own profile
+    (`createAttachRefusal`: a creation only, a caller with a profile only —
+    decided before anything is stored). `PUT /profiles/secret` remains for an
+    older seeded skill: it attaches a name only when the entry's own
+    server-stamped `createdBy` resolves to an agent of the caller's profile
+    (`creatorProfile`). An agent therefore gains NO access it did not already
+    have — it held that value already; it only makes it survive into its next
+    sessions. Four details carry the weight. The creator is stamped **only on a
+    creation** and kept on an overwrite, or an agent could clobber a human's
+    secret to become its "creator" and then claim the name. A **missing** or
+    unresolvable creator means a person stored it, which must read as a refusal
+    — absence denies, it never grants. The secret is looked up, and bound, in
+    the caller's **own group** — on the entry's `profiles`, never the global
+    `profile.secrets` name list, which resolves by name in EVERY group and would
+    reach a same-named secret elsewhere. (The attach route once read Main only,
+    so in multi-tenant every attach answered "no secret named X in the vault"
+    for a secret the agent had just stored; and the provenance once lived in a
+    name-keyed sidecar, `secret-origin.json`, which a same-named creation in
+    another group, or a person's delete + re-create, silently re-stamped.) And the
     lead profile gets **no exception**, deliberately unlike `promptEditVerdict`:
     editing any prompt gives the lead nothing it lacks (it can already spawn a
     full-access agent), whereas handing out vault secrets would. The value lands
@@ -2423,10 +2435,10 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
 73. **The secret↔profile link is written from BOTH ends, so anything that asks
     "who receives this secret" must read both — one side alone answers
     "nobody", in silence.** A profile carries a `secrets` list
-    (`PUT /profiles`, what the vault's flat form writes, and what an agent
-    attaching a secret it created writes through `PUT /profiles/secret`), and a
+    (`PUT /profiles`, what the vault's flat form writes), and a
     secret carries a `profiles` list (`PUT /secrets/profiles`, what the panel's
-    chips and the grouped add form write). Neither is a cache of the other:
+    chips and the grouped add form write, and what an agent attaching a secret
+    it created writes — `PUT /secrets {attach: true}` or `PUT /profiles/secret`). Neither is a cache of the other:
     `secretsForProfile` merges them at spawn, which is why both work.
     `offerReload` — the banner that proposes reloading the live agents a new
     value concerns — asked `secretUsers(profileCache, name)`, i.e. the profile
@@ -2452,6 +2464,31 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     knows both, placed where every caller reaches it. A second reader that
     knows one home is not a smaller version of the feature, it is a feature
     that silently does nothing for half its inputs.
+    **It bit a third reader, and that one was a DIAGNOSTIC — which is worse.**
+    The scheduler skill's `schedule.mjs env` answers "what will my guard see?",
+    and it answered it by reading the profile's `secrets` list and diffing
+    against `GET /secrets`. So a secret bound from the vault side reached the
+    guard and was reported absent, and a `*` binding reached a profile-less
+    agent the tool told to expect nothing at all ("guard secrets: NONE — this
+    channel has no profile"). Both are FALSE NEGATIVES on a working setup, and
+    a tool that reports a correct configuration as broken is more expensive than
+    no tool: an agent trusted it over testing the guard, told the operator the
+    credential was missing, and the operator went looking for a fault that did
+    not exist. What settled it was running the guard itself: it printed the
+    variable the tool had just reported absent. (The incident is what surfaced
+    this; the blindness is not inferred from it — a vault-side binding is
+    invisible to that code path by construction, every time.)
+    Two things it could not have got right on its own, and they are the reason
+    the answer now comes from the server. `GET /secrets` **withholds** the
+    `profiles` list from an AGENT for commons secrets (`mainWritable` is false
+    for an agent viewer), so the vault side was not merely unread, it was
+    unavailable. And "is this name resolvable?" depends on the AGENT's group
+    (own → shared-in → commons), which a caller cannot compute from the list of
+    names it happens to see. `GET /crons/env` therefore returns what
+    `cronGuardEnv` — the one builder the real tick uses — would inject: secret
+    names, the names the profile asks for that do NOT resolve, and every
+    variable name in the guard's environment. Names only, never a value, so it
+    is safe for the agent whose guard it is to read.
 
 <a id="inv-78"></a>
 
@@ -2487,3 +2524,25 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     state, and this made it impossible to leave from the cockpit.
     `inputBoxVisible` is now the one answer to "is the box on screen", used by
     all three waits.
+    **And once it is READ, it is also the only signal the screen gives for
+    free: a box the pane cannot hold is text, never furniture.** Everything
+    else that asks "is there something in there" has to tell content from the
+    TUI's own decoration — the resting example, the greyed previous message —
+    and both of those are ONE line. That matters because `survives` (the check
+    that catches a paste landing on top of a leftover) compares the box's first
+    VISIBLE line, and a box this tall has scrolled that line off the top: the
+    leftover of a failed attempt therefore reads as a clean box, and the
+    message goes out with the junk glued above it. Measured on a live pane
+    (2.1.326), pasting an eight-chunk prelude onto an eight-chunk leftover: the
+    paste reported "landed" and the box ended on 113 hidden rows where a clean
+    one gives 50 — the shape a person reads as "it recopied things". So
+    `boxScrolled` is checked BEFORE the first paste of every attempt and the box
+    emptied when it answers yes, which costs nothing on the normal path (a box
+    at rest is one line) and is a fact rather than the guess `survives` has to
+    make.
+    The clearing itself needed the same correction. Ctrl-U clears a VISUAL row,
+    so `MAX_CLEARS` (40) does not reach a box of sixty: measured, 120 presses
+    did not empty an eight-chunk prelude, while ONE Ctrl-C does. The rescue kept
+    for "a box that will not clear" is therefore tried FIRST on a scrolled box
+    instead of after forty presses have spent sixteen seconds of the message's
+    own path getting nowhere.

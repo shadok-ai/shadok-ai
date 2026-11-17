@@ -230,3 +230,33 @@ test("wiring: PUT /secrets/profiles reads the old binding BEFORE writing, then a
   assert.ok(read > 0 && read < write, "the previous profiles must be read before setSecretProfiles");
   assert.ok(audit > write, "the audit row goes after the write succeeded");
 });
+
+// ── Crons: the guard-env preview ──────────────────────────────────────────────
+test("wiring: GET /crons/env is scoped like GET /crons, before it resolves anything", () => {
+  const r = route("get", "/crons/env");
+  const gate = r.indexOf("mayActFor(req, sessionId)");
+  const resolve = r.indexOf("resolveSessionTarget(");
+  assert.ok(gate > 0, "the preview must be gated by mayActFor");
+  assert.ok(gate < resolve, "gate first: a refused caller must not learn another group's cwd");
+});
+
+test("wiring: GET /crons/env returns NAMES only — never a secret value", () => {
+  const r = route("get", "/crons/env");
+  assert.match(r, /secrets: Object\.keys\(plan\.secrets\)/, "secret names only");
+  assert.match(r, /env: Object\.keys\(plan\.env\)/, "env names only");
+  // The whole point of the route is that it is safe for an agent to call, so
+  // the two objects that hold VALUES must never be sent as they are.
+  assert.doesNotMatch(r, /secrets: plan\.secrets/, "would ship every secret value");
+  assert.doesNotMatch(r, /env: plan\.env/, "would ship the guard's whole environment");
+});
+
+test("wiring: the preview and the real tick build the guard env with ONE function", () => {
+  // The bug this fixes was two derivations of the same answer disagreeing. If
+  // `runCronCheck` ever builds its own env again, the preview silently starts
+  // describing something else.
+  const check = SERVER_SRC.slice(SERVER_SRC.indexOf("function runCronCheck("));
+  const body = check.slice(0, check.indexOf("\nfunction "));
+  assert.match(body, /cronGuardEnv\(c\.sessionId, target\)/, "the tick must use the shared builder");
+  assert.doesNotMatch(body, /cronCheckEnv\(\{/, "runCronCheck must not build the env itself any more");
+  assert.match(route("get", "/crons/env"), /cronGuardEnv\(sessionId, target\)/, "the preview must use it too");
+});

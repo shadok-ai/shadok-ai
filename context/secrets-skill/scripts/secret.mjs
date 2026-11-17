@@ -147,7 +147,14 @@ export async function main(argv) {
 
   const value = (await readStdin()).trim();
   if (!value) die("nothing on stdin — pipe the value in, e.g. `gh auth token | ... --stdin`");
-  await api(ctx, "PUT", "/secrets", { name: parsed.name, value });
+  // `--attach` rides on the SAME request: the server creates the secret and
+  // binds it to this agent's own profile in one write, or refuses before
+  // storing anything. Two calls used to leave "stored, but NOT attached".
+  const stored = await api(ctx, "PUT", "/secrets", {
+    name: parsed.name,
+    value,
+    ...(parsed.attach ? { attach: true } : {}),
+  });
   // Never echo the value back: this output lands in the transcript, and may be
   // mirrored to Telegram.
   console.log(`stored ${parsed.name} in the vault`);
@@ -156,15 +163,20 @@ export async function main(argv) {
     console.log("or re-run with --attach to attach it to your own profile).");
     return;
   }
-  // The vault write already succeeded, so a refusal here must not read as
-  // "nothing was stored" — say both halves, and still exit non-zero so the
-  // agent notices it did not get what it asked for.
-  const att = await apiSoft(ctx, "PUT", "/profiles/secret", { name: parsed.name });
-  if (!att.ok) {
-    process.stderr.write(`stored, but NOT attached: ${att.error}\n`);
-    process.exit(1);
+  let profile = stored.attached;
+  if (!profile) {
+    // An older server ignores `attach` (this script can be newer than the
+    // server it calls, invariant 57): fall back to the separate attach route.
+    // The vault write already succeeded, so a refusal here must not read as
+    // "nothing was stored" — say both halves, and still exit non-zero.
+    const att = await apiSoft(ctx, "PUT", "/profiles/secret", { name: parsed.name });
+    if (!att.ok) {
+      process.stderr.write(`stored, but NOT attached: ${att.error}\n`);
+      process.exit(1);
+    }
+    profile = att.body.profile;
   }
-  console.log(`attached to your profile (${att.body.profile}).`);
+  console.log(`attached to your profile (${profile}).`);
   console.log("It is injected as an environment variable at your next reload, not in this");
   console.log("process: node ~/.claude/skills/shadok-reload/reload.mjs");
 }
