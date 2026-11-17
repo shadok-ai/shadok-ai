@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { idleStep, screenShowsWork, inputHasProbe, inputText, boxText, boxRaw, shouldHardClear, describeStuckScreen, nextScreenDelay, SCREEN_FAST_MS, SCREEN_SLOW_MS, typeIntoBox } from "../src/detect.js";
+import { readFileSync } from "node:fs";
+import { idleStep, screenShowsWork, inputHasProbe, inputText, boxText, boxRaw, shouldHardClear, describeStuckScreen, inputBoxVisible, nextScreenDelay, SCREEN_FAST_MS, SCREEN_SLOW_MS, typeIntoBox } from "../src/detect.js";
 
 const idle = [
   "⏺ Done.",
@@ -738,4 +739,18 @@ test("typeIntoBox: a prompt that scrolls the box is seen to land", async () => {
   const ok = await typeIntoBox(pilot as any, "what decides whether the banner shows?", { prelude: ["chunk one", "chunk two"], appearMs: 10, settleMs: 0, clearMs: 10 });
   assert.equal(ok, true);
   assert.equal(pastes, 3, "two prelude chunks and the message, each pasted exactly once");
+});
+
+test("inputBoxVisible: a scrolled box still counts as the TUI being up", () => {
+  // The session start waits on this; keyed on the ❯ alone it timed out on an
+  // agent whose box a failed submit had left full, so it could not be reopened.
+  assert.equal(inputBoxVisible(scrolledBox(244)), true);
+  assert.equal(inputBoxVisible("● Done.\n❯\u00a0\n" + "─".repeat(40)), true);
+  assert.equal(inputBoxVisible("Welcome to Claude Code\n  ↑ 3 more above"), false);
+});
+
+test("the session start waits on inputBoxVisible, not on a bare ❯", () => {
+  const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+  assert.ok(!src.includes('scr.includes("❯")'), "a bare ❯ check misses a scrolled input box");
+  assert.ok(src.includes("inputBoxVisible(scr)"));
 });

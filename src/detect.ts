@@ -159,6 +159,20 @@ const BOX_END = /^\s*(?:[─━]{10,}|⏵⏵|⏸|\?\s+for shortcuts)/;
 const BOX_SCROLLED = /^\s*[─━]{2,}\s*↑\s*(\d+)\s+more\s*[─━]{2,}/;
 
 /**
+ * Is Claude Code's input box on screen — i.e. is the TUI up and at a prompt?
+ *
+ * The session start waits on this before it registers an agent. It used to be
+ * `screen.includes("❯")`, which is false for a box that scrolled (see
+ * `boxRaw`): an agent whose box was left full by a failed submit could then
+ * not be opened at all — adopting its pane timed out after a minute, and
+ * "Reload agent" goes through the same wait. The one state that most needed a
+ * way back in was the one that locked the door.
+ */
+export function inputBoxVisible(screen: string): boolean {
+  return screen.includes("❯") || screen.split("\n").some((l) => BOX_SCROLLED.test(l));
+}
+
+/**
  * The WHOLE input box, not just its first line.
  *
  * `inputText` reads the `❯` line alone, which is everything there is while a
