@@ -575,6 +575,17 @@ Enter to skip; you can add it later from the web UI).
   agent so a change that does not stick cannot loop. A message you send while
   the respawn runs waits a few seconds for it instead of being refused. Clicking
   still reloads at once; `SHADOK_AUTO_RELOAD=0` turns the automatic part off.
+- **A failed Claude Code self-update is installed for you** — when an agent's
+  footer says *Auto-update failed* (typically an agent that runs as a user who
+  cannot write the global npm directory), the server checks the registry and,
+  if a newer Claude Code exists, installs it once for the whole machine; the
+  agents then reload onto it one at a time through the automatic reload above.
+  Never two installs at once (one in flight per server, plus a lock file shared
+  by every server on the host), nothing retried for an hour after an install
+  or 30 minutes after a failure, and an agent still on the previous binary
+  counts as "needs a reload", not "needs another install". A footer saying
+  *Update installed · Restart to apply* reloads the agent the same way.
+  `SHADOK_CLAUDE_AUTO_INSTALL=0` turns it off (the ⚠ button still works).
 - **An agent that stops listening restarts itself** — Claude Code's terminal can
   stop taking input while the process behind it stays alive (an upstream bug;
   nothing on screen shows it). When a message cannot be typed into an agent for
@@ -1460,6 +1471,7 @@ machine, which silently shifts every daily prompt on a server running in UTC.
 | `SHADOK_IDLE_MIN` | minutes with no client before a session is reclaimed (60) |
 | `SHADOK_AUTO_RELOAD=0` | don't apply a pending "reload to apply" by itself — leave it to the ↻ click |
 | `SHADOK_AUTO_RELOAD_IDLE_SEC` | how long an agent must be quiet before that automatic reload (120) |
+| `SHADOK_CLAUDE_AUTO_INSTALL=0` | don't install a failed Claude Code self-update by itself — leave it to the ⚠ button |
 | `SHADOK_SUBMIT_RECOVERY=0` | don't restart an agent whose terminal stopped taking input — report the failed message as an error instead |
 | `SHADOK_PERMISSION_MODE` | mode new agents start in (default `acceptEdits`) |
 | `SHADOK_AUTOUPDATE=0` | don't apply a newer release by itself (**ON by default** under the supervisor, i.e. `npx shadok-ai`; a server run directly never self-updates, since nothing would respawn it). `0`/`false` turns it off, `1`/`true` forces it on; the GUI setting wins over either once used |
