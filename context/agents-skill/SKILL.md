@@ -92,9 +92,16 @@ Write the **whole** prompt: it replaces the old one, it does not add to it.
 5. task finished: `diff <id>` and present the changes to the user. The
    `shadok-ai/<tag>` branch and its worktree are NEVER merged or deleted
    automatically — the user is the one who merges.
+6. result delivered, nothing left to ask it: `stop <id>`. An agent left open
+   stays a channel in the human's cockpit and a process resumed at every
+   restart. Stopping loses no work (the branch, and a checkout with uncommitted
+   changes, are kept — only an empty worktree is pruned). Keep it only when the
+   human wants to steer it, when it must still answer a review, or when it owns
+   a schedule or a webhook: those are deleted with the channel.
 
 Parallel agents: repeat `spawn` (one id per agent), and launch the `prompt`
-calls in the background simultaneously.
+calls in the background simultaneously — and `stop` each one as its result
+comes in.
 
 ## You get told: your agents report back
 

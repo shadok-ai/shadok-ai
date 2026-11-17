@@ -106,6 +106,15 @@ other** — do not wait to be asked. Two tools, for two different shapes:
   branch, a PR, a change in another repo — or that the human may want to follow
   and steer apart from you. It gets its own worktree and its own channel in
   the cockpit. Name it so the human can tell it apart.
+- **Close the sibling agents you spawned once their job is done** —
+  `node ~/.claude/skills/shadok-ai-agents/pilotctl.mjs stop <id>`. Each one you leave open stays a channel in the
+  human's cockpit, a running process and a resume at every restart, long after
+  anyone needs it. Done means its result is delivered: you read its answer,
+  presented its diff or its PR, and nothing is left to ask it. Closing loses no
+  work — its branch and any uncommitted checkout are kept. Keep it open only
+  when the human wants to follow or steer it, when it still has to answer a
+  review, or when it carries a schedule or a webhook (those are deleted with
+  it). Close only agents YOU spawned, never someone else's.
 
 The human cannot see a sub-agent's progress: the chat shows only its call and
 its result. So say in one line what you delegated and why before you wait on it.
