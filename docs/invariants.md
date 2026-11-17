@@ -588,6 +588,17 @@ Numbers are STABLE handles referenced across the codebase and docs ("see invaria
     browser's rescue scroll has nothing left to do. Guarded on `(pointer: coarse)`:
     on a desktop `visualViewport` also tracks pinch-zoom, and resizing the page on
     every pinch would be a regression for nobody's benefit.
+    **The keyboard's height is NOT `innerHeight - vv.height`.** That assumes the
+    layout viewport keeps its height when the keyboard opens; a cockpit installed
+    on the Home Screen of a recent iOS shrinks both, so the difference stayed 0:
+    no `kb-up`, the header never folded away, and the composer kept its
+    home-indicator padding above the keyboard as a dead band. It is measured
+    against the tallest visible height seen since the last rotation (`fullH`).
+    And iOS reports the CLOSING height only once the keyboard has finished
+    sliding away, so the chassis stayed keyboard-sized for the whole animation —
+    the composer floating mid-screen, then snapping down. Leaving a text field
+    is the keyboard closing (unless focus moves to another one), so `focusout`
+    restores the full height at once and the real resize lands later and agrees.
     The sideways drift had the same single root cause as the jump, and it is not
     where anyone looks: **Safari zooms into any focused field whose font is under
     16px.** The zoom makes the layout viewport wider than the screen, so the whole
